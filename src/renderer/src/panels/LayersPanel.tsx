@@ -988,7 +988,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
                   showLayer(pref);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'ArrowLeft') (e.preventDefault(), setState({ selection: ref }), rowFor(id)?.focus());
+                  if (e.key === 'ArrowLeft') (e.preventDefault(), showLayer(ref), rowFor(id)?.focus());
                   if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
                     e.preventDefault();
                     if (e.key === ' ' && !psel) pickRow('toggle', pref);

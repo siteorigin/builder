@@ -108,7 +108,8 @@ function sendRects() {
 // ---------------------------------------------------------------------------
 
 /**
- * Where the selection showed at the last measurement: which of its elements, the point of it to keep (its top, or for
+ * Where the selection showed at the last measurement: which of its elements (`el`, and its item ids and place among the
+ * elements with those ids, to find it again once the page renders it afresh), the point of it to keep (its top, or for
  * one whose top is scrolled away, the middle of what showed of it, through the editor's element there when there is
  * one) and how far down the frame that point was, as a share of its height. Null when none of it showed.
  */
@@ -117,77 +118,98 @@ let keepSample = null;
 let keepHold = null;
 /** How long after the last change of width the page may still move it (a re-render, an image) and have it put back. */
 const KEEP_MS = 250;
+/** The width the page was last told about by a resize event. */
+let lastWidth = innerWidth;
 
+const itemsOf = (el) => el.getAttribute('data-so-items') || '';
 function sampleSelection(els, boxes) {
+  // Laid out at a new width the resize event has not announced yet: what showed at the old width is still the one to keep.
+  if (innerWidth !== lastWidth) return;
   keepSample = null;
   if (!selected || mode !== 'edit') return;
+  const w = innerWidth;
   const h = innerHeight;
-  const index = boxes.findIndex((b) => b && b.y < h && b.y + b.height > 0);
+  const index = boxes.findIndex((b) => b && b.y < h && b.y + b.height > 0 && b.x < w && b.x + b.width > 0);
   if (index < 0) return;
   const el = els[index];
   const b = boxes[index];
+  const items = itemsOf(el);
+  const nth = els.slice(0, index).filter((e) => itemsOf(e) === items).length;
+  const base = { desc: selected, width: w, el, items, nth };
   if (b.y >= 0) {
-    keepSample = { desc: selected, width: innerWidth, index, at: b.y / h, depth: 0, landmark: null };
+    keepSample = { ...base, at: b.y / h, depth: 0, landmark: null };
     return;
   }
   const y = (Math.max(0, b.y) + Math.min(h, b.y + b.height)) / 2;
-  const x = Math.min(Math.max(b.x + b.width / 2, 0), innerWidth - 1);
+  const x = (Math.max(0, b.x) + Math.min(w, b.x + b.width)) / 2;
   const hit = innermost(document.elementFromPoint(x, y));
   const hb = hit && hit !== el && el.contains(hit) ? rectOf(hit) : null;
-  keepSample = { desc: selected, width: innerWidth, index, at: y / h, depth: (y - b.y) / b.height, landmark: hb ? { desc: descOf(hit), depth: (y - hb.y) / hb.height } : null };
+  const landmark = hb && hb.height > 0 && hb.y <= y && y <= hb.y + hb.height ? { el: hit, desc: descOf(hit), depth: (y - hb.y) / hb.height } : null;
+  keepSample = { ...base, at: y / h, depth: (y - b.y) / b.height, landmark };
 }
-/** The page changed width (`widthChanged`) or only height: hold the point the selection showed at the last width. */
-function holdSelection(widthChanged, lastWidth) {
+/** The page changed width (`widthChanged`, from `before`) or only height: hold the point the selection showed at the last width. */
+function holdSelection(widthChanged, before) {
   if (!widthChanged) {
     keepHold = null;
     return;
   }
   const now = performance.now();
-  // Still settling from the last width (a drag through many): the same point is kept.
-  if (keepHold && now <= keepHold.until) keepHold.until = now + KEEP_MS;
-  else if (keepSample && keepSample.width === lastWidth && sameDesc(keepSample.desc, selected)) keepHold = { ...keepSample, until: now + KEEP_MS };
+  // Still settling from the last width (a drag through many): the same point is kept. What the browser does to the
+  // scroll position for the new width is not the author scrolling.
+  if (keepHold && now <= keepHold.until) Object.assign(keepHold, { until: now + KEEP_MS, scrollY: null });
+  else if (keepSample && keepSample.width === before && sameDesc(keepSample.desc, selected)) keepHold = { ...keepSample, until: now + KEEP_MS, scrollY: null };
   else keepHold = null;
+}
+/** The selection's element the hold is about: the same one while it is on the page, else the one rendered in its place. */
+function heldElement(k) {
+  if (k.el.isConnected && findAll(selected).includes(k.el)) return k.el;
+  return findAll(selected).filter((e) => itemsOf(e) === k.items)[k.nth] || null;
+}
+/** Where the held point is in the frame now, or null when it cannot be found. */
+function heldPoint(k, el) {
+  if (k.landmark) {
+    const l = k.landmark;
+    const mark = l.el.isConnected && el.contains(l.el) ? l.el : findAll(l.desc).find((m) => el.contains(m));
+    const mb = mark && rectOf(mark);
+    if (mb) return mb.y + l.depth * mb.height;
+  }
+  const b = rectOf(el);
+  return b ? b.y + k.depth * b.height : null;
 }
 /** Puts the held point back where it showed, before the outlines are measured. */
 function keepInView() {
   const k = keepHold;
   if (!k) return;
-  // The list item open in the inspector is brought into view by its own reveal.
-  if (performance.now() > k.until || mode !== 'edit' || editing || reveal || !sameDesc(k.desc, selected)) {
+  // The list item open in the inspector is brought into view by its own reveal. Anything else that scrolled the page
+  // since the last correction (a scrollbar dragged, the site's own code) has the last word.
+  if (performance.now() > k.until || mode !== 'edit' || editing || reveal || !sameDesc(k.desc, selected) || (k.scrollY !== null && Math.abs(scrollY - k.scrollY) > 1)) {
     keepHold = null;
     return;
   }
-  const els = findAll(selected);
-  const el = els[k.index] || els[0];
-  if (!el) return;
-  let y = null;
-  if (k.landmark) {
-    const mark = findAll(k.landmark.desc).find((m) => el.contains(m));
-    const mb = mark && rectOf(mark);
-    if (mb) y = mb.y + k.landmark.depth * mb.height;
-  }
-  if (y === null) {
-    const b = rectOf(el);
-    if (!b) return;
-    y = b.y + k.depth * b.height;
-  }
+  const el = heldElement(k);
+  const y = el && heldPoint(k, el);
+  if (y === null || y === undefined) return;
   const delta = y - k.at * innerHeight;
-  // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.
-  if (Math.abs(delta) > 1) window.scrollBy({ top: delta, behavior: 'instant' });
+  if (Math.abs(delta) > 1) {
+    // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.
+    window.scrollBy({ top: delta, behavior: 'instant' });
+    const after = heldPoint(k, el);
+    // A point that does not move with the page (something sticky or fixed) cannot be put back: it is left alone.
+    if (after === null || Math.abs(after - (y - delta)) > Math.abs(delta) / 2) {
+      keepHold = null;
+      return;
+    }
+  }
+  k.scrollY = scrollY;
 }
 /** Another page or a scroll the editor asked for: what showed before is no longer there to keep. */
 function stopKeeping() {
   keepHold = null;
   keepSample = null;
 }
-// The author's own scrolling (or a click, a key) is never undone, and what shows is measured afresh after it, before
-// any change of width can use what showed before.
-for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
-  window.addEventListener(type, () => {
-    stopKeeping();
-    if (selected) scheduleRects();
-  }, { capture: true, passive: true });
-}
+// The author's own scrolling (or a click, a key) just after a change of width is never undone. What shows is measured
+// again as the page scrolls.
+for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => (keepHold = null), { capture: true, passive: true });
 
 // ---------------------------------------------------------------------------
 // The list item open in the editor's inspector, revealed while it is edited
@@ -1388,8 +1410,10 @@ window.addEventListener('message', async (e) => {
         stopKeeping();
         const target = getComputedStyle(el).display === 'contents' ? el.firstElementChild || el : el;
         const r = target.getBoundingClientRect();
-        // One taller than the frame shows from its top.
-        if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+        // Shown from Layers (`show`), one taller than the frame shows from its top. A pick on the page itself keeps its
+        // place on the page.
+        const block = m.payload.show && r.height > innerHeight - 80 ? 'start' : 'center';
+        if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
       }
       break;
     }
@@ -1478,7 +1502,6 @@ window.addEventListener('message', async (e) => {
 });
 
 window.addEventListener('scroll', scheduleRects, { passive: true });
-let lastWidth = innerWidth;
 window.addEventListener('resize', () => {
   // The item is checked at another width: brought back into view if the new layout moved it out. A change of
   // height alone (the editor window resized) leaves the page where the author put it.

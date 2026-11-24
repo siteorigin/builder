@@ -561,10 +561,15 @@ export function Canvas() {
     if (ready) syncTrack();
   }, [ready, selection, hover, snapshot?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A new selection is scrolled to, and so is one a Layers row asks to show again (showLayer).
+  // A new selection is scrolled to, and so is one a Layers row asks to show again (showLayer). Asked from Layers, one
+  // taller than the page shows from its top.
+  const shownFor = useRef(showSelection);
   useEffect(() => {
     const desc = ready ? descFor(selection) : null;
-    if (desc) post('scrollTo', { desc });
+    if (!desc) return;
+    const show = shownFor.current !== showSelection;
+    shownFor.current = showSelection;
+    post('scrollTo', show ? { desc, show } : { desc });
   }, [ready, selection && refKey(selection), showSelection]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**

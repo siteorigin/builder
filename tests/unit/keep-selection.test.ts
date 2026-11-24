@@ -2,7 +2,8 @@
  * The selected element stays in view when the preview changes width (issue #168): the real preview bridge, in a real
  * browser frame, on a long page whose sections grow taller at phone width. Switching width keeps the selection (or the
  * part of a tall one the author was looking at) on screen at both widths, while a page with nothing selected, a
- * selection the author scrolled away from, Preview and a change of height alone are left where the author put them.
+ * selection the author scrolled away from, Preview, a change of height alone and the author's own scrolling are left
+ * where the author put them.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -14,24 +15,28 @@ const browserInstalled = existsSync(chromium.executablePath());
 
 const block = (node: string, h: number, phone: number, inner = '') =>
   `<section id="${node}" data-so-ctx="page:p" data-so-node="${node}" style="--h:${h}px;--ph:${phone}px">${inner}</section>`;
-const para = (i: number) => `<p id="t${i}" data-so-ctx="page:p|tall" data-so-node="para-${i}">Paragraph ${i}</p>`;
-// A hero, a row of cards that stack at phone width, a gallery, a section taller than the frame at any width, and a
-// footer. The browser's own scroll anchoring is off, so what moves the page is the bridge alone.
+// The first three paragraphs grow far more than the rest at phone width, so the same share of the whole section lands
+// in another paragraph there: only the paragraph itself says where the author was.
+const para = (i: number) => `<p id="t${i}"${i < 3 ? ' class="grow"' : ''} data-so-ctx="page:p|tall" data-so-node="para-${i}">Paragraph ${i}</p>`;
+// A hero, a row of cards that stack at phone width, a gallery, a section taller than the frame at any width, one with
+// nothing of the editor's inside it, and a footer. The browser's own scroll anchoring is off, so what moves the page
+// is the bridge alone.
 const FRAME = `<!doctype html><html><head><style>
 html{overflow-anchor:none}body{margin:0;font:16px/20px sans-serif}
 section{box-sizing:border-box;margin:0;height:var(--h)}
 #tall{height:auto}#tall p{margin:0;height:200px}
-@media (max-width:600px){section{height:var(--ph)}#tall p{height:300px}}
+@media (max-width:600px){section{height:var(--ph)}#tall p{height:250px}#tall p.grow{height:600px}}
 </style></head><body>
 ${block('hero', 400, 700)}
 ${block('cards', 300, 900)}
 ${block('gallery', 300, 540, '<h2 data-so-ctx="page:p|gallery" data-so-node="title">Gallery</h2><p id="photo" data-so-ctx="page:p|gallery" data-so-node="photo" data-so-items="x">A photo</p>')}
 ${block('tall', 0, 0, Array.from({ length: 8 }, (_, i) => para(i)).join(''))}
+${block('plain', 1400, 2200, '<div style="height:100%">Nothing the editor knows of</div>')}
 ${block('footer', 400, 400)}
 <script>
   // A site that renders a section afresh at another width, as a Svelte component reading the width does.
   window.remount = false;
-  addEventListener('resize', () => window.remount && queueMicrotask(() => { const old = document.getElementById('tall'); old.replaceWith(old.cloneNode(true)); }));
+  addEventListener('resize', () => window.remount && queueMicrotask(() => { const old = document.getElementById('tall'); window.replaced = old; old.replaceWith(old.cloneNode(true)); }));
 </script>
 <script type="module" src="/bridge.js"></script></body></html>`;
 
@@ -46,6 +51,8 @@ const HOST = `<!doctype html><title>host</title>
 const DESKTOP = { width: 900, height: 600 };
 // As the editor's canvas at Fit: the narrower page is drawn larger, so the frame holds fewer page pixels of height.
 const PHONE = { width: 390, height: 400 };
+/** Longer than the bridge keeps putting the selection back after a change of width. */
+const SETTLED_MS = 400;
 const sel = (node: string, ctx = 'page:p') => ({ ctx, node, items: '' });
 
 describe.skipIf(!browserInstalled)('keeping the selection in view across preview widths', () => {
@@ -72,6 +79,11 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
 
   /** Waits two frames in the page, so a command's effects and the next outline report have landed. */
   const settle = () => page.frames()[1].evaluate(`new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 30))))`);
+  /** Waits until a change of width has settled and nothing puts the selection back any more. */
+  const settled = async () => {
+    await page.waitForTimeout(SETTLED_MS);
+    await settle();
+  };
   const send = async (type: string, payload: unknown) => {
     await page.evaluate(`window.post(${JSON.stringify(type)}, ${JSON.stringify(payload)})`);
     await settle();
@@ -83,6 +95,9 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
     await settle();
     await settle();
   };
+  /** Runs `code` (with `win`, `doc` and the host's `document`) two frames after the frame's next resize event. */
+  const afterNextResize = (code: string) =>
+    inFrame(`win.addEventListener('resize', () => win.requestAnimationFrame(() => win.requestAnimationFrame(() => { ${code} })), { once: true });`);
   const scrollTo = async (y: number) => {
     await inFrame(`win.scrollTo({ top: ${y}, behavior: 'instant' });`);
     await settle();
@@ -103,6 +118,11 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
     const b = await box(id);
     return b.top / b.height;
   };
+  /** How far down the element the middle of the frame is, as a share of the element's height. */
+  const middleDepth = async (id: string) => {
+    const b = await box(id);
+    return (b.height / 2 - b.top) / (b.bottom - b.top);
+  };
   /** The element's top is on screen, with room below it to see some of it. */
   const topInView = async (id: string) => {
     const b = await box(id);
@@ -110,7 +130,7 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
   };
 
   beforeEach(async () => {
-    await inFrame(`win.remount = false;`);
+    await inFrame(`win.remount = false; for (const id of ['hero', 'footer']) doc.getElementById(id).style.height = '';`);
     await send('reveal', { target: null });
     await send('mode', { mode: 'edit' });
     await send('track', { selected: null, hovered: null });
@@ -131,6 +151,16 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
     expect(Math.abs((await share('gallery')) - at) * DESKTOP.height).toBeLessThan(2);
   });
 
+  it('keeps it where the author last scrolled it at the other width', async () => {
+    await send('track', { selected: sel('gallery'), hovered: null });
+    await placeAt('gallery', 250);
+    await resize(PHONE);
+    await settled();
+    await placeAt('gallery', 100);
+    await resize(DESKTOP);
+    expect(Math.abs((await share('gallery')) - 100 / PHONE.height) * DESKTOP.height).toBeLessThan(2);
+  });
+
   it('keeps the part of a tall selected section the author was looking at in view', async () => {
     await send('track', { selected: sel('tall'), hovered: null });
     await placeAt('t3', 40);
@@ -149,38 +179,38 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
   });
 
   it('finds what it kept again when the site renders the section afresh at the new width', async () => {
-    await inFrame(`win.remount = true;`);
+    await inFrame(`win.remount = true; win.replaced = null;`);
     await send('track', { selected: sel('tall'), hovered: null });
-    await placeAt('t5', 100);
+    await placeAt('t5', 150);
     const before = await atMiddle();
+    expect(before.id).toBe('t5');
+    const old = await inFrame<boolean>(`return doc.getElementById('t5') === doc.getElementById('tall').querySelector('#t5');`);
+    expect(old).toBe(true);
     await resize(PHONE);
+    // The section the bridge measured is gone: what stays in view was found again by what the editor calls it.
+    expect(await inFrame<boolean>(`return !!win.replaced && !win.replaced.isConnected;`)).toBe(true);
     const after = await atMiddle();
-    expect(after.id).toBe(before.id);
+    expect(after.id).toBe('t5');
     expect(Math.abs(after.depth - before.depth)).toBeLessThan(0.02);
   });
 
-  it('leaves a list item open in the inspector to its own reveal', async () => {
-    await send('track', { selected: sel('gallery'), hovered: null });
-    await send('reveal', { target: { ctx: 'page:p|gallery', list: 'photos', items: 'x', nodes: ['photo'], within: { photo: 0 } } });
-    await placeAt('photo', 300);
+  it('keeps the same point of a tall selection with nothing of the editor’s inside it', async () => {
+    await send('track', { selected: sel('plain'), hovered: null });
+    await placeAt('plain', -500);
+    const before = await middleDepth('plain');
     await resize(PHONE);
-    // The item is in view, where its reveal puts it, and nothing scrolls the page after that.
-    const b = await box('photo');
-    expect(b.top).toBeGreaterThanOrEqual(0);
-    expect(b.bottom).toBeLessThanOrEqual(b.height);
-    const y = await scrollY();
-    await settle();
-    await settle();
-    expect(await scrollY()).toBe(y);
+    expect(Math.abs((await middleDepth('plain')) - before) * 2200).toBeLessThan(2);
   });
 
-  it('still keeps it after a key pressed in the page (a shortcut to the command menu, then a width from it)', async () => {
+  it('puts it back when the page moves it again while the new width settles', async () => {
     await send('track', { selected: sel('gallery'), hovered: null });
     await placeAt('gallery', 250);
-    await inFrame(`win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'k', metaKey: true }));`);
-    await settle();
+    const at = await share('gallery');
+    // The page grows above the gallery and shrinks below it, so neither its height nor its elements change.
+    await afterNextResize(`win.setTimeout(() => { doc.getElementById('hero').style.height = '900px'; doc.getElementById('footer').style.height = '200px'; }, 30);`);
     await resize(PHONE);
-    expect(await topInView('gallery')).toBe(true);
+    await settled();
+    expect(Math.abs((await share('gallery')) - at) * PHONE.height).toBeLessThan(2);
   });
 
   it('follows the selection through a drag across many widths', async () => {
@@ -192,6 +222,24 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
     }
   });
 
+  it('still keeps it after a key pressed in the page (a shortcut to the command menu, then a width from it)', async () => {
+    await send('track', { selected: sel('gallery'), hovered: null });
+    await placeAt('gallery', 250);
+    await inFrame(`win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'k', metaKey: true }));`);
+    await settle();
+    await resize(PHONE);
+    expect(await topInView('gallery')).toBe(true);
+  });
+
+  it('never undoes the author scrolling while the new width settles', async () => {
+    await send('track', { selected: sel('gallery'), hovered: null });
+    await placeAt('gallery', 250);
+    await afterNextResize(`win.dispatchEvent(new win.WheelEvent('wheel', { deltaY: -100 })); win.scrollTo({ top: 100, behavior: 'instant' });`);
+    await resize(PHONE);
+    await settled();
+    expect(await scrollY()).toBe(100);
+  });
+
   it('leaves free scrolling alone when nothing is selected', async () => {
     await scrollTo(250);
     await resize(PHONE);
@@ -200,20 +248,33 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
     expect(await scrollY()).toBe(250);
   });
 
-  it('leaves the page where the author scrolled it when the selection was already out of view', async () => {
+  it('leaves the page where the author scrolled it when the selection was already out of view, above or below', async () => {
     await send('track', { selected: sel('hero'), hovered: null });
     await scrollTo(1400);
     expect((await box('hero')).bottom).toBeLessThan(0);
     await resize(PHONE);
     expect(await scrollY()).toBe(1400);
+    await resize(DESKTOP);
+    await settled();
+    await send('track', { selected: sel('footer'), hovered: null });
+    await scrollTo(0);
+    expect((await box('footer')).top).toBeGreaterThan(DESKTOP.height);
+    await resize(PHONE);
+    expect(await scrollY()).toBe(0);
   });
 
-  it('leaves the page where it is when only the height changes', async () => {
+  it('leaves the page where it is when only the height changes, also while a new width settles', async () => {
     await send('track', { selected: sel('gallery'), hovered: null });
     await placeAt('gallery', 450);
     const y = await scrollY();
     await resize({ height: 400 });
     expect(await scrollY()).toBe(y);
+    await resize({ height: DESKTOP.height });
+    // Two frames after the width changed (and the gallery was put back), only the height changes.
+    await afterNextResize(`win.keptY = win.scrollY; document.querySelector('iframe').style.height = '${PHONE.height - 50}px';`);
+    await resize(PHONE);
+    await settled();
+    expect(await scrollY()).toBe(await inFrame<number>(`return win.keptY;`));
   });
 
   it('leaves the page to the visitor in Preview', async () => {
@@ -225,10 +286,30 @@ describe.skipIf(!browserInstalled)('keeping the selection in view across preview
     expect(await scrollY()).toBe(y);
   });
 
-  it('scrolls to a selection taller than the frame so its top shows', async () => {
-    await send('scrollTo', { desc: sel('tall') });
-    const b = await box('tall');
+  it('leaves a list item open in the inspector to its own reveal', async () => {
+    await send('track', { selected: sel('gallery'), hovered: null });
+    await send('reveal', { target: { ctx: 'page:p|gallery', list: 'photos', items: 'x', nodes: ['photo'], within: { photo: 0 } } });
+    await placeAt('photo', 300);
+    await resize(PHONE);
+    await settled();
+    // The item's own reveal centres it, and the selection's correction leaves it there.
+    const b = await box('photo');
+    expect(Math.abs((b.top + b.bottom) / 2 - b.height / 2)).toBeLessThan(2);
+  });
+
+  it('shows a selection taller than the frame from its top when Layers asks, and centres anything else', async () => {
+    await send('scrollTo', { desc: sel('tall'), show: true });
+    let b = await box('tall');
     expect(b.top).toBeGreaterThan(-1);
     expect(b.top).toBeLessThan(80);
+    // A pick on the page keeps the centring it always had, tall or not.
+    await scrollTo(0);
+    await send('scrollTo', { desc: sel('tall') });
+    b = await box('tall');
+    expect(Math.abs((b.top + b.bottom) / 2 - b.height / 2)).toBeLessThan(2);
+    await scrollTo(0);
+    await send('scrollTo', { desc: sel('gallery'), show: true });
+    b = await box('gallery');
+    expect(Math.abs((b.top + b.bottom) / 2 - b.height / 2)).toBeLessThan(2);
   });
 });

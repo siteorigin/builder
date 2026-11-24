@@ -153,16 +153,16 @@ describe('sections selected together in Layers', () => {
   });
 
   it('a plain Layers row asks the page to show its layer every time, even one already selected (#168)', () => {
-    const { testimonials } = pickGalleryAndTestimonials();
+    // Gallery, picked with Testimonials (which is the selection), becomes the one layer selected.
+    const { gallery } = pickGalleryAndTestimonials();
     const asked = getState().showSelection;
-    showLayer(ref(home(), testimonials));
-    expect(getState().selection).toEqual(ref(home(), testimonials));
+    showLayer(ref(home(), gallery));
+    expect(getState().selection).toEqual(ref(home(), gallery));
     expect(getState().layerSet).toBeNull();
     expect(getState().showSelection).toBe(asked + 1);
     // The same row again, with nothing else changed: the page is asked again, as the page may have scrolled it away.
-    const selection = getState().selection;
-    showLayer(ref(home(), testimonials));
-    expect(getState().selection).toEqual(selection);
+    showLayer(ref(home(), gallery));
+    expect(getState().selection).toEqual(ref(home(), gallery));
     expect(getState().showSelection).toBe(asked + 2);
   });
 
