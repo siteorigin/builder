@@ -10,7 +10,7 @@
  * content the page itself renders (never the shared header and footer, which every page has). Old addresses kept for
  * renamed pages only send visitors on, so they are never results; a page found always links to where it is now.
  */
-import type { PageDoc, ProjectState } from '@shared/types';
+import type { NodeTree, PageDoc, ProjectState, ResponsiveStyles } from '@shared/types';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { renderedContent } from './checks';
 import { isDraftPage } from './index';
@@ -31,19 +31,49 @@ export interface SearchEntry {
   text: string;
 }
 
-const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
+/** Text on one line. A value that is not text (a hand-edited document) is no text. */
+const oneLine = (s: unknown) => (typeof s === 'string' ? s.replace(/\s+/g, ' ').trim() : '');
 
-/** Whether a page is left out of the site's own search. Only an explicit choice hides one. */
+/**
+ * Whether a page is left out of the site's own search. Read as the Inspector's switch reads it, so a hand-edited
+ * value the switch shows as on hides the page too.
+ */
 export function searchHidden(page: PageDoc): boolean {
-  return page.seo?.searchHidden === true;
+  return !!page.seo?.searchHidden;
+}
+
+const SIZES = ['phone', 'tablet', 'desktop'] as const;
+
+/** Whether a layer's own styles hide it at every size: the "Hide at every size" choice, or each size hidden. */
+function hiddenEverywhere(styles: ResponsiveStyles | undefined): boolean {
+  if (!styles) return false;
+  return SIZES.every((size) => styles[size]?.hidden === true || (styles.base?.hidden === true && styles[size]?.hidden !== false));
+}
+
+/**
+ * The page's layers that hide themselves at every size, with everything inside them: nothing there is shown to
+ * visitors, so nothing there is found. A placement hides by its own root override, which nothing else shows again.
+ */
+function hiddenLayers(tree: NodeTree): Set<string> {
+  const out = new Set<string>();
+  const hide = (id: string) => {
+    if (out.has(id)) return;
+    out.add(id);
+    const n = tree.nodes[id];
+    const inside = n?.kind === 'element' ? n.children : n?.kind === 'instance' ? Object.values(n.slots ?? {}).flat() : [];
+    for (const c of inside) hide(c);
+  };
+  for (const n of Object.values(tree.nodes)) if (hiddenEverywhere(n.kind === 'instance' ? n.overrides?.root : n.styles)) hide(n.id);
+  return out;
 }
 
 /** The words a page shows, one line per field that shows any: its text, rich text, button labels and list items. */
 export function pageText(state: ProjectState, page: PageDoc): string {
   const lines: string[] = [];
+  const hidden = hiddenLayers(page);
   for (const c of renderedContent(state, page)) {
     // Where a link goes is not something the visitor reads, and what custom code shows of a setting is unknown.
-    if (c.kind !== 'text' || c.custom) continue;
+    if (c.kind !== 'text' || c.custom || hidden.has(c.nodeId)) continue;
     let text = '';
     if (typeof c.value === 'string' || typeof c.value === 'number') text = c.rich && typeof c.value === 'string' ? plain(c.value) : String(c.value);
     else if (c.rich && Array.isArray(c.value)) text = plain(c.value);
@@ -68,20 +98,24 @@ export function buildSearchIndex(state: ProjectState): SearchEntry[] {
     const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
     // A draft is not a page of the website: like the sitemap, the index never lists one.
     if (!page || searchHidden(page) || isDraftPage(state, page)) continue;
-    const title = oneLine(page.title ?? '');
+    const alias = oneLine(page.seo?.title);
+    // A result is a link named by its title: a page with none is named by its browser title, else its address.
+    const title = oneLine(page.title) || alias || page.route;
     const entry: SearchEntry = { route: page.route, title, text: pageText(state, page) };
-    const alias = oneLine(page.seo?.title ?? '');
     if (alias && alias !== title) entry.alias = alias;
-    const description = oneLine(page.seo?.description ?? '');
+    const description = oneLine(page.seo?.description);
     if (description) entry.description = description;
     out.push(entry);
   }
   return out;
 }
 
-/** Whether a component of the site searches it: its code imports the search code from the runtime folder. */
+/**
+ * Whether a component of the site searches it: its code names the search code (however it spells the path there).
+ * Naming it without importing it only writes two files the build leaves alone.
+ */
 export function usesSiteSearch(state: ProjectState): boolean {
-  return Object.values(state.components).some((def) => def.kind === 'code' && typeof def.source === 'string' && def.source.includes(`runtime/${SEARCH_HELPER_FILE}`));
+  return Object.values(state.components).some((def) => def.kind === 'code' && typeof def.source === 'string' && def.source.includes(SEARCH_HELPER_FILE));
 }
 
 /** The index as a module: the same pages always give the same bytes. */
@@ -93,8 +127,9 @@ export function generateSearchIndex(state: ProjectState): string {
 /**
  * The search code as the website runs it. Plain JavaScript with no dependencies, so the site needs nothing else to
  * search. Matching ignores case and accents ("cafe" finds "Café"), and a page matches when every word searched for
- * is in its title, browser title, description or content. Pages whose title matches come first, then pages that
- * have the words as a phrase, then the rest, each group in page order.
+ * is in its title, browser title, description or content. A page named exactly by the search comes first, then pages
+ * whose title has the words as a phrase, then pages that have the phrase anywhere, then the rest, each group in page
+ * order. Highlights and passages are cut where they never split a character from its accents.
  */
 export const SEARCH_JS = `// Generated by SiteOrigin Builder. Site search for this website: finds the pages that have every word searched for.
 
@@ -105,24 +140,38 @@ export function loadPages() {
 
 /** How many results show at once. */
 export const SHOWN = 20;
-/** About how many characters of a page's text show under its title. */
+/** About how many characters of a page's text show under its title, and how many of them come before the match. */
 const EXCERPT = 180;
+const LEAD = 60;
 
 const ASCII = /^[\\x00-\\x7f]*$/;
+const MARK = /^\\p{M}/u;
+
+/** One character as search compares it: lower case, without accents, and a final sigma like any other. */
+function foldChar(c) {
+	return c.normalize('NFKD').replace(/\\p{M}/gu, '').toLowerCase().replace(/\\u03c2/g, '\\u03c3');
+}
+
+/** Text as search compares it. */
+function fold(text) {
+	if (ASCII.test(text)) return text.toLowerCase();
+	let out = '';
+	for (const c of text) out += foldChar(c);
+	return out;
+}
 
 /**
- * Text as search compares it: lower case and without accents. Each character is folded on its own, so a match
- * found in the folded text maps back to the characters a visitor sees (\`from\` and \`to\` give, for each folded
- * character, where its character starts and ends in the text; absent when they are the same).
+ * Text as search compares it, with where each folded character's character starts and ends in the text, so a match
+ * maps back to what the visitor sees (\`from\` and \`to\` are absent when they are the same).
  */
-function fold(text) {
+function foldMap(text) {
 	if (ASCII.test(text)) return { text: text.toLowerCase() };
 	let out = '';
 	const from = [];
 	const to = [];
 	let i = 0;
 	for (const c of text) {
-		const f = c.normalize('NFKD').replace(/\\p{M}/gu, '').toLowerCase();
+		const f = foldChar(c);
 		for (let k = 0; k < f.length; k++) {
 			from.push(i);
 			to.push(i + c.length);
@@ -133,13 +182,27 @@ function fold(text) {
 	return { text: out, from, to };
 }
 
-/** Where a match in the folded text is in the text itself. */
-const startOf = (f, at) => (f.from ? (at < f.from.length ? f.from[at] : f.to.length ? f.to[f.to.length - 1] : 0) : at);
-const endOf = (f, end) => (f.to ? (end > 0 ? f.to[end - 1] : 0) : end);
+const startOf = (f, at) => (f.from ? f.from[at] : at);
+const endOf = (f, end) => (f.to ? f.to[end - 1] : end);
+
+/**
+ * The nearest place at or after \`i\` that splits no character: not inside a surrogate pair, not before the accents
+ * of the character before it, not inside a sequence joined by a zero-width joiner.
+ */
+function settle(text, i) {
+	while (i > 0 && i < text.length) {
+		const code = text.charCodeAt(i);
+		const before = text.charCodeAt(i - 1);
+		if (code >= 0xdc00 && code <= 0xdfff && before >= 0xd800 && before <= 0xdbff) i++;
+		else if (code === 0x200d || before === 0x200d || MARK.test(text.slice(i, i + 2))) i += text.codePointAt(i) > 0xffff ? 2 : 1;
+		else break;
+	}
+	return i;
+}
 
 /** The words searched for, folded. */
 export function searchWords(query) {
-	return fold(String(query ?? '')).text.split(/\\s+/).filter(Boolean);
+	return fold(String(query ?? '')).split(/\\s+/).filter(Boolean);
 }
 
 // Each page is folded once, the first time it is searched.
@@ -147,7 +210,7 @@ const prepared = new WeakMap();
 function prepare(page) {
 	let p = prepared.get(page);
 	if (!p) {
-		const f = (s) => (typeof s === 'string' && s ? fold(s) : null);
+		const f = (s) => (typeof s === 'string' && s ? fold(s) : '');
 		p = { title: f(page.title), alias: f(page.alias), description: f(page.description), text: f(page.text) };
 		prepared.set(page, p);
 	}
@@ -155,56 +218,53 @@ function prepare(page) {
 }
 
 /**
- * Every place each word is in the folded text, as ranges of the text itself, merged where they touch or only
- * spaces part them, so a phrase found reads as one.
+ * Short text as parts to show, every place a word searched for is in it marked: overlapping places are one mark,
+ * and so are places only spaces part, so a phrase found reads as one.
  */
-function marks(text, f, words) {
+function highlight(text, words) {
+	const f = foldMap(text);
 	const ranges = [];
 	for (const w of words) {
-		for (let at = f.text.indexOf(w); at >= 0; at = f.text.indexOf(w, at + w.length)) ranges.push([startOf(f, at), endOf(f, at + w.length)]);
+		for (let at = f.text.indexOf(w); at >= 0; at = f.text.indexOf(w, at + 1)) ranges.push([startOf(f, at), settle(text, endOf(f, at + w.length))]);
 	}
 	ranges.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
 	const out = [];
+	let at = 0;
+	let open = null;
+	const close = () => {
+		if (open[0] > at) out.push({ text: text.slice(at, open[0]), mark: false });
+		out.push({ text: text.slice(open[0], open[1]), mark: true });
+		at = open[1];
+	};
 	for (const r of ranges) {
-		const last = out[out.length - 1];
-		if (last && (r[0] <= last[1] || !text.slice(last[1], r[0]).trim())) last[1] = Math.max(last[1], r[1]);
-		else out.push([r[0], r[1]]);
+		if (open && (r[0] <= open[1] || !text.slice(open[1], r[0]).trim())) open[1] = Math.max(open[1], r[1]);
+		else {
+			if (open) close();
+			open = [r[0], r[1]];
+		}
 	}
+	if (open) close();
+	if (text.length > at) out.push({ text: text.slice(at), mark: false });
 	return out;
 }
 
-/** A piece of text as parts to show, the words searched for marked. */
-function parts(text, f, words, start = 0, end = text.length) {
-	const out = [];
-	let at = start;
-	for (const [a, b] of marks(text, f, words)) {
-		if (b <= start || a >= end) continue;
-		const s = Math.max(a, start);
-		const e = Math.min(b, end);
-		if (s > at) out.push({ text: text.slice(at, s), mark: false });
-		out.push({ text: text.slice(s, e), mark: true });
-		at = e;
-	}
-	if (end > at) out.push({ text: text.slice(at, end), mark: false });
-	return out;
-}
-
-/** A passage of the text around a place in it (the start, without one), cut at spaces, words marked. */
-function passage(text, f, words, at) {
-	const center = at >= 0 ? startOf(f, at) : 0;
-	let start = Math.max(0, center - Math.floor(EXCERPT / 3));
+/** A passage of the text around a place in its folded form (its start, without one), cut at spaces where it can. */
+function passage(text, words, at) {
+	const center = at >= 0 ? startOf(foldMap(text), at) : 0;
+	let start = Math.max(0, center - LEAD);
 	if (start > 0) {
+		// From the first space before the match; in writing without spaces, from where the passage would start.
 		const space = text.slice(start, center).search(/\\s/);
-		start = space >= 0 ? start + space + 1 : center;
+		start = settle(text, space >= 0 ? start + space + 1 : start);
 	}
 	let end = Math.min(text.length, start + EXCERPT);
 	if (end < text.length) {
 		const space = Math.max(text.lastIndexOf(' ', end), text.lastIndexOf('\\n', end));
-		if (space > center) end = space;
+		end = space > center ? space : settle(text, end);
 	}
-	const out = parts(text, f, words, start, end).map((p) => ({ ...p, text: p.text.replace(/\\s+/g, ' ') }));
-	if (start > 0 && out.length) out[0] = { ...out[0], text: '…' + out[0].text.trimStart() };
-	if (end < text.length && out.length) out[out.length - 1] = { ...out[out.length - 1], text: out[out.length - 1].text.trimEnd() + '…' };
+	const out = highlight(text.slice(start, end).replace(/\\n/g, ' '), words);
+	if (start > 0) out.unshift({ text: '…', mark: false });
+	if (end < text.length) out.push({ text: '…', mark: false });
 	return out;
 }
 
@@ -223,13 +283,12 @@ function firstMatch(text, words, phrase) {
 /** The passage that shows why a page matched: from its content, else its description, else how either starts. */
 function excerpt(page, p, words, phrase) {
 	for (const key of ['text', 'description']) {
-		const f = p[key];
-		if (!f) continue;
-		const at = firstMatch(f.text, words, phrase);
-		if (at >= 0) return passage(page[key], f, words, at);
+		if (!p[key]) continue;
+		const at = firstMatch(p[key], words, phrase);
+		if (at >= 0) return passage(page[key], words, at);
 	}
 	const key = p.description ? 'description' : p.text ? 'text' : null;
-	return key ? passage(page[key], p[key], words, -1) : [];
+	return key ? passage(page[key], words, -1) : [];
 }
 
 /**
@@ -245,15 +304,15 @@ export function searchPages(pages, query, limit = SHOWN) {
 	pages.forEach((page, order) => {
 		if (!page || typeof page.route !== 'string') return;
 		const p = prepare(page);
-		const fields = [p.title, p.alias, p.description, p.text].filter(Boolean).map((f) => f.text);
+		const fields = [p.title, p.alias, p.description, p.text].filter(Boolean);
 		if (!unique.every((w) => fields.some((t) => t.includes(w)))) return;
-		const title = p.title ? p.title.text : '';
-		const alias = p.alias ? p.alias.text : '';
 		let score = 0;
-		if (title === phrase || alias === phrase) score += 1000;
-		if (title.includes(phrase) || alias.includes(phrase)) score += 300;
+		if (p.title === phrase) score += 1000;
+		else if (p.alias === phrase) score += 500;
+		if (p.title.includes(phrase)) score += 300;
+		else if (p.alias.includes(phrase)) score += 200;
 		else if (fields.some((t) => t.includes(phrase))) score += 100;
-		for (const w of unique) if (title.includes(w) || alias.includes(w)) score += 10;
+		for (const w of unique) if (p.title.includes(w) || p.alias.includes(w)) score += 10;
 		found.push({ page, p, score, order });
 	});
 	found.sort((a, b) => b.score - a.score || a.order - b.order);
@@ -261,7 +320,7 @@ export function searchPages(pages, query, limit = SHOWN) {
 		total: found.length,
 		results: found.slice(0, Math.max(0, limit)).map(({ page, p }) => ({
 			route: page.route,
-			title: p.title ? parts(page.title, p.title, unique) : [],
+			title: typeof page.title === 'string' ? highlight(page.title, unique) : [],
 			excerpt: excerpt(page, p, unique, phrase)
 		}))
 	};

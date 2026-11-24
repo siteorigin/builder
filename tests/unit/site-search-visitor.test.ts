@@ -107,7 +107,7 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
     await browser?.close();
   });
 
-  async function withSearch(body: (page: Page, visited: string[]) => Promise<void>) {
+  async function withSearch(body: (page: Page, visited: string[]) => Promise<void>, at = AT) {
     const context = await browser.newContext({ viewport: { width: 360, height: 740 }, hasTouch: true, isMobile: true });
     const visited: string[] = [];
     try {
@@ -118,7 +118,7 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
         visited.push(url.pathname);
         return route.fulfill({ contentType: 'text/html; charset=utf-8', body: PAGE });
       });
-      await page.goto(`${ORIGIN}${AT}`);
+      await page.goto(`${ORIGIN}${at}`);
       await page.evaluate(`window.mountSearch(${JSON.stringify({ heading: 'Find a project' })})`);
       await body(page, visited);
     } finally {
@@ -156,6 +156,14 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
       await page.getByRole('button', { name: 'Search' }).tap();
       await expect.poll(() => status(page).innerText()).toBe('Type a word or phrase to search for.');
       await expect(results(page).count()).resolves.toBe(0);
+      await box(page).fill('commission');
+      await box(page).press('Enter');
+      await expect.poll(() => results(page).count()).toBe(20);
+      // Spaces alone are no search either, and the results of the last one go.
+      await box(page).fill('   ');
+      await box(page).press('Enter');
+      await expect.poll(() => status(page).innerText()).toBe('Type a word or phrase to search for.');
+      await expect(results(page).count()).resolves.toBe(0);
       await box(page).fill('zeppelin');
       await box(page).press('Enter');
       await expect.poll(() => status(page).innerText()).toBe('No pages match “zeppelin”. Try fewer or different words.');
@@ -170,6 +178,8 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
       await expect.poll(() => status(page).innerText()).toBe('150 pages match “workshop”. The first 20 are shown; add words to narrow the search.');
       await expect(results(page).count()).resolves.toBe(20);
       await expect(results(page).first().locator('mark').first().innerText()).resolves.toBe('Workshop');
+      // Part of the title marked, its words still read apart.
+      await expect(results(page).first().getByRole('link').innerText()).resolves.toBe('Workshop commission 1');
     });
   });
 
@@ -182,7 +192,7 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
       await expect(box(page).inputValue()).resolves.toBe('');
       await expect(results(page).count()).resolves.toBe(0);
       await expect(status(page).innerText()).resolves.toBe('');
-      await expect(box(page).evaluate((el) => el === el.ownerDocument.activeElement)).resolves.toBe(true);
+      await expect(page.evaluate('document.activeElement === document.querySelector(".so-search__input")')).resolves.toBe(true);
     });
   });
 
@@ -195,6 +205,14 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
       await expect.poll(() => results(page).count()).toBe(0);
       await expect(box(page).inputValue()).resolves.toBe('');
     });
+  });
+
+  it('runs a search that arrives in the address, as one sent before the page started does', async () => {
+    await withSearch(async (page) => {
+      await expect.poll(() => status(page).innerText()).toBe('1 page matches “commission 105”.');
+      await expect(box(page).inputValue()).resolves.toBe('commission 105');
+      await expect(results(page).first().getByRole('link').getAttribute('href')).resolves.toBe(`${BASE}/portfolio/workshop-commission-105/`);
+    }, `${AT}?q=commission+105`);
   });
 
   it('fits a phone screen with targets big enough to tap', async () => {

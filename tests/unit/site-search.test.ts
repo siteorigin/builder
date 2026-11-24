@@ -46,11 +46,11 @@ afterAll(() => {
 });
 
 /** The search code and an index as the exported site has them, imported as modules. */
-async function runtime(index: string): Promise<{ loadPages: () => Promise<SearchEntry[]>; searchPages: (pages: unknown, query: string, limit?: number) => Found; searchWords: (q: string) => string[] }> {
+async function runtime(index: string, helper = SEARCH_JS): Promise<{ loadPages: () => Promise<SearchEntry[]>; searchPages: (pages: unknown, query: string, limit?: number) => Found; searchWords: (q: string) => string[] }> {
   const dir = mkdtempSync(join(tmpdir(), 'so-search-'));
   dirs.push(dir);
   writeFileSync(join(dir, 'package.json'), '{"type":"module"}');
-  writeFileSync(join(dir, SEARCH_HELPER_FILE), SEARCH_JS);
+  writeFileSync(join(dir, SEARCH_HELPER_FILE), helper);
   writeFileSync(join(dir, SEARCH_INDEX_FILE), index);
   return import(/* @vite-ignore */ pathToFileURL(join(dir, SEARCH_HELPER_FILE)).href);
 }
@@ -86,6 +86,7 @@ describe('site search files', () => {
     const keys = [...clean.keys()];
     const def = Object.values(searched.components).find((d) => d.componentId === 'site.search')!;
     expect(keys.indexOf(INDEX)).toBeLessThan(keys.indexOf(defFile(def)));
+    expect(keys.indexOf(HELPER)).toBeLessThan(keys.indexOf(defFile(def)));
     expect(clean.get(defFile(def))).toContain(`from '../runtime/${SEARCH_HELPER_FILE}'`);
   });
 
@@ -95,7 +96,11 @@ describe('site search files', () => {
     const after = apply(s, [{ type: 'component.makeUnique', owner: home(s), nodeId: node.id, name: 'Project finder' }]);
     const copy = Object.values(after.components).find((d) => d.owner === 'project' && d.kind === 'code')!;
     expect(copy.sourcePath).toMatch(/^src\/lib\/siteorigin\/custom\//);
+    // The copy alone keeps the search files, with the theme's original gone from the project.
+    delete after.components[node.definitionId];
+    expect(usesSiteSearch(after)).toBe(true);
     const files = generateProject(after);
+    expect(files.has(HELPER)).toBe(true);
     expect(files.get(copy.sourcePath!)).toContain(`from '../runtime/${SEARCH_HELPER_FILE}'`);
     expect(files.has(INDEX)).toBe(true);
   });
@@ -194,6 +199,9 @@ describe('site search index', () => {
     expect(routes).not.toContain('/portfolio/workshop-commission-1/');
     expect(routes).not.toContain('/portfolio/workshop-commission-2/');
     expect(searchPages(pages, 'harbour bench').results.map((r) => r.route)).toEqual(['/portfolio/harbour-bench/']);
+    // The search code the export ships finds the same.
+    const shipped = await runtime(files.get(INDEX)!, files.get(HELPER)!);
+    expect(shipped.searchPages(await shipped.loadPages(), 'harbour bench').total).toBe(1);
     // Only the page still called a workshop commission is found by that name.
     expect(searchPages(pages, 'workshop commission').results.map((r) => read(r.title))).toEqual(['Workshop commission 3']);
   });
@@ -212,10 +220,59 @@ describe('site search index', () => {
     expect(entry.description).toBe('A walnut & oak bench.');
   });
 
-  it('is the same bytes for the same pages', () => {
+  it('is the same bytes for the same pages, and changes with them', () => {
     let s = withSearch();
     s = project(s, 1);
-    expect(generateProject(s).get(INDEX)).toBe(generateProject(structuredClone(s)).get(INDEX));
+    const index = generateProject(s).get(INDEX)!;
+    expect(generateProject(structuredClone(s)).get(INDEX)).toBe(index);
+    expect(index).toContain('Workshop commission 1');
+    s = apply(s, [{ type: 'page.update', pageId: 'pg_project1', title: 'Oak bench' }]);
+    expect(generateProject(s).get(INDEX)).not.toBe(index);
+  });
+
+  it('follows the page order', () => {
+    let s = withSearch();
+    for (const n of [1, 2, 3]) s = project(s, n);
+    s = apply(s, [{ type: 'page.reorder', pageIds: [s.site.homePageId, 'pg_project3', 'pg_project1', ...s.site.pageOrder.filter((id) => id !== s.site.homePageId && !['pg_project3', 'pg_project1'].includes(id))] }]);
+    const routes = buildSearchIndex(s).map((e) => e.route);
+    expect(routes.indexOf('/portfolio/workshop-commission-3/')).toBeLessThan(routes.indexOf('/portfolio/workshop-commission-1/'));
+    expect(routes).toEqual(s.site.pageOrder.map((id) => s.pages[id].route));
+  });
+
+  it('leaves out text the author hid at every size, and keeps text hidden at some sizes', () => {
+    let s = withSearch();
+    s = project(s, 1, 'Shown everywhere.');
+    s = project(s, 2, 'A secret kept on every screen.');
+    s = project(s, 3, 'Hidden on phones only.');
+    const section = (id: string) => s.pages[id].nodes[s.pages[id].rootIds[0]] as InstanceNode;
+    section('pg_project2').overrides = { root: { base: { hidden: true } } };
+    section('pg_project3').overrides = { root: { phone: { hidden: true } } };
+    const text = (id: string) => buildSearchIndex(s).find((e) => e.route === s.pages[id].route)!.text;
+    expect(text('pg_project1')).toContain('Shown everywhere.');
+    expect(text('pg_project2')).not.toContain('secret');
+    expect(text('pg_project3')).toContain('Hidden on phones only.');
+    // Shown again at one size, it is shown text.
+    section('pg_project2').overrides = { root: { base: { hidden: true }, desktop: { hidden: false } } };
+    expect(text('pg_project2')).toContain('A secret kept on every screen.');
+  });
+
+  it('names a page with no title by its browser title or address, and survives hand-edited values', () => {
+    let s = withSearch();
+    s = project(s, 1);
+    s = project(s, 2);
+    s = project(s, 3);
+    s.pages.pg_project1.title = '';
+    s.pages.pg_project1.seo.title = 'Bench';
+    s.pages.pg_project2.title = '';
+    (s.pages.pg_project3.seo as Record<string, unknown>).title = 123;
+    (s.pages.pg_project3.seo as Record<string, unknown>).searchHidden = 'true';
+    const index = buildSearchIndex(s);
+    expect(index.find((e) => e.route === '/portfolio/workshop-commission-1/')).toMatchObject({ title: 'Bench' });
+    expect(index.find((e) => e.route === '/portfolio/workshop-commission-1/')!.alias).toBeUndefined();
+    expect(index.find((e) => e.route === '/portfolio/workshop-commission-2/')).toMatchObject({ title: '/portfolio/workshop-commission-2/' });
+    // A switch the Inspector shows as on hides the page, whatever the document wrote.
+    expect(index.some((e) => e.route === '/portfolio/workshop-commission-3/')).toBe(false);
+    expect(() => generateProject(s)).not.toThrow();
   });
 });
 
@@ -283,8 +340,55 @@ describe('site search as the website runs it', () => {
     expect(marked(searchPages(decomposed, 'creme').results[0].title)).toEqual(['Crème']);
   });
 
+  it('marks a word with its accents, every place it overlaps itself, and in text that expands when folded', async () => {
+    const { searchPages } = await runtime('export default [];');
+    const title = (t: string, q: string) => marked(searchPages([{ route: '/a/', title: t, text: '' }], q).results[0].title);
+    expect(title('Cafe\u0301 menu', 'cafe')).toEqual(['Cafe\u0301']);
+    expect(title('Banana', 'ana')).toEqual(['anana']);
+    expect(title('\ufb01ne café', 'cafe')).toEqual(['café']);
+    expect(searchPages([{ route: '/a/', title: 'ΟΔΟΣ', text: '' }], 'οδός').total).toBe(1);
+    expect(searchPages([{ route: '/a/', title: 'οδός', text: '' }], 'ΟΔΟΣ').total).toBe(1);
+  });
+
+  it('never splits a character at the edge of a passage, and marks no ellipsis', async () => {
+    const { searchPages } = await runtime('export default [];');
+    const lone = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    const found = searchPages([{ route: '/a/', title: 'Guide', text: 'x'.repeat(179) + '😀tail' }], 'guide');
+    expect(read(found.results[0].excerpt)).not.toMatch(lone);
+    expect(read(found.results[0].excerpt).endsWith('…')).toBe(true);
+    // Writing without spaces keeps the words before the match, so two pages stay apart.
+    const kyoto = searchPages(
+      [
+        { route: '/a/', title: 'A', text: '東'.repeat(70) + '京都の工房' },
+        { route: '/b/', title: 'B', text: '西'.repeat(70) + '京都の工房' }
+      ],
+      '京都'
+    );
+    const [a, b] = kyoto.results.map((r) => r.excerpt);
+    expect(read(a)).not.toBe(read(b));
+    expect(a[0]).toEqual({ text: '…', mark: false });
+    expect(marked(a)).toEqual(['京都']);
+  });
+
+  it('needs every word somewhere on the page, and puts a phrase before scattered words', async () => {
+    const { searchPages } = await runtime('export default [];');
+    const pages = [
+      { route: '/scattered/', title: 'Tables', text: 'A table made of walnut.' },
+      { route: '/phrase/', title: 'Furniture', text: 'Our walnut table range.' },
+      { route: '/split/', title: 'Oak bench', text: 'Built in Leeds.' },
+      { route: '/named/', title: 'Journal', alias: 'Walnut', text: '' },
+      { route: '/walnut/', title: 'Walnut', text: '' }
+    ];
+    expect(searchPages(pages, 'walnut table').results.map((r) => r.route)).toEqual(['/phrase/', '/scattered/']);
+    expect(searchPages(pages, 'leeds bench').results.map((r) => r.route)).toEqual(['/split/']);
+    // The title a visitor reads outranks a browser title that says the same.
+    expect(searchPages(pages, 'walnut').results.slice(0, 2).map((r) => r.route)).toEqual(['/walnut/', '/named/']);
+    expect(searchPages(pages, '\u0301').total).toBe(0);
+  });
+
   it('shows the description, or how the page starts, when only the title matched', async () => {
     const { searchPages } = await runtime('export default [];');
+    expect(read(searchPages([{ route: '/a/', title: 'Kitchens', description: 'Fitted in oak.', text: 'Our work.' }], 'kitchens').results[0].excerpt)).toBe('Fitted in oak.');
     expect(read(searchPages([{ route: '/a/', title: 'Kitchens', description: 'Fitted kitchens in oak.', text: 'Our work.' }], 'kitchens').results[0].excerpt)).toBe('Fitted kitchens in oak.');
     expect(read(searchPages([{ route: '/a/', title: 'Kitchens', text: 'Our work.' }], 'kitchens').results[0].excerpt)).toBe('Our work.');
     expect(searchPages([{ route: '/a/', title: 'Kitchens', text: '' }], 'kitchens').results[0].excerpt).toEqual([]);
@@ -297,6 +401,7 @@ describe('Hide from site search setting', () => {
     const s = apply(start, [{ type: 'page.update', pageId: start.site.homePageId, searchHidden: true }]);
     const read = readField(s, { type: 'page.update', pageId: s.site.homePageId, searchHidden: false });
     expect(read).toEqual({ found: true, value: { searchHidden: true } });
+    expect(readField(start, { type: 'page.update', pageId: start.site.homePageId, searchHidden: true })).toEqual({ found: true, value: { searchHidden: undefined } });
   });
 
   it('is named apart from search engines when the assistant changes it', () => {

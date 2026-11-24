@@ -13,10 +13,10 @@ const SEARCH_SOURCE = `<script>
 	 * Foundation theme code component. Props are edited in SiteOrigin Builder; the pages it finds are the
 	 * site's pages that are not hidden from site search, indexed each time the site is generated.
 	 */
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
-	import { loadPages, searchPages } from '../runtime/site-search.js';
+	import { loadPages, searchPages, searchWords } from '../runtime/site-search.js';
 
 	let {
 		eyebrow = '',
@@ -46,11 +46,16 @@ const SEARCH_SOURCE = `<script>
 		found = null;
 	}
 
-	async function submit(event) {
+	function submit(event) {
 		event.preventDefault();
+		search();
+	}
+
+	async function search() {
 		const words = query.trim();
 		const mine = ++run;
-		if (!words) {
+		// Nothing to search for: no words, or only marks and spaces that search leaves out.
+		if (!searchWords(words).length) {
 			found = null;
 			status = 'empty';
 			return;
@@ -85,6 +90,14 @@ const SEARCH_SOURCE = `<script>
 		searchedOn = path;
 	});
 	onDestroy(() => run++);
+
+	// A search sent before the page's scripts started (or a link to one) arrives in the address as ?q=: run it now.
+	onMount(() => {
+		const sent = new URLSearchParams(location.search).get('q');
+		if (!sent || !sent.trim()) return;
+		query = sent;
+		search();
+	});
 
 	const shown = $derived(found ? found.results.length : 0);
 </script>
@@ -125,7 +138,8 @@ const SEARCH_SOURCE = `<script>
 					{#each found.results as result (result.route)}
 						<li class="so-search__result">
 							<a class="so-search__link" href={resolve(result.route)}>
-								{#each result.title as part}{#if part.mark}<mark>{part.text}</mark>{:else}{part.text}{/if}{/each}
+								<!-- One span, so the title's words and its marks flow as one line of text inside the link. -->
+								<span>{#each result.title as part}{#if part.mark}<mark>{part.text}</mark>{:else}{part.text}{/if}{/each}</span>
 							</a>
 							{#if result.excerpt.length}
 								<p class="so-search__excerpt">
