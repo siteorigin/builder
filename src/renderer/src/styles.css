@@ -4192,11 +4192,11 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp-pick-many { scroll-margin-top: 124px; }
 .insp-pick-many > .field { padding-top: 8px; border-top: 1px solid var(--border); }
 .insp-pick-many .insp-pick-tile.missing img { opacity: 0.45; }
-/* Logos and transparent pictures shown whole sit on the same neutral checker as in Assets. */
-.insp-pick-many .insp-pick-tile img.contain, .insp-pick-order-thumb img.contain { object-fit: contain; background-color: #e6e9ee; background-image: conic-gradient(#d3d8df 25%, transparent 0 50%, #d3d8df 0 75%, transparent 0); background-size: 10px 10px; }
-.insp-pick-order-thumb img.contain { padding: 2px; background-clip: content-box; background-origin: content-box; }
+/* Logos and transparent pictures shown whole sit on the same neutral checker as in Assets, in every image picker and its preview. */
+.insp-pick-tile img.contain, .insp-pick-order-thumb img.contain, .insp-image-thumb img.contain { object-fit: contain; background-color: #e6e9ee; background-image: conic-gradient(#d3d8df 25%, transparent 0 50%, #d3d8df 0 75%, transparent 0); background-size: 10px 10px; }
+.insp-pick-order-thumb img.contain, .insp-image-thumb img.contain { padding: 2px; background-clip: content-box; background-origin: content-box; }
 :where(:root[data-appearance='dark']) {
-  .insp-pick-many .insp-pick-tile img.contain, .insp-pick-order-thumb img.contain { background-color: #9aa2b0; background-image: conic-gradient(#8a93a2 25%, transparent 0 50%, #8a93a2 0 75%, transparent 0); }
+  .insp-pick-tile img.contain, .insp-pick-order-thumb img.contain, .insp-image-thumb img.contain { background-color: #9aa2b0; background-image: conic-gradient(#8a93a2 25%, transparent 0 50%, #8a93a2 0 75%, transparent 0); }
 }
 /* Room inside the scrolling grid for a focused tile's whole ring. */
 .insp-pick-many .insp-pick-grid { padding: 4px; }

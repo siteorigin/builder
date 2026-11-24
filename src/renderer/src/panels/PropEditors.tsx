@@ -20,6 +20,7 @@ import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget,
 import { pickAnnouncement, pickRoom, sampleRows, startingSamples } from '../lib/gallery-picks';
 import { importAndPlace } from '../lib/place';
 import { AssetImage } from '../components/AssetImage';
+import { fitFor } from '../components/AssetPicture';
 import { AssetOrderControls, useAssetSeries } from '../components/AssetOrder';
 import { assetLabels, inSeries, sortAssets } from '@shared/asset-order';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
@@ -661,7 +662,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture }: {
         {carriedSaid.text}
       </span>
       <div className="insp-image-top">
-        <div className={`insp-image-thumb${shownAsset ? '' : ' empty'}`} data-testid={plain ? `${plain}-preview` : undefined}>{shownAsset && devUrl ? <AssetImage key={missingKey(snapshot, shownAsset.id)} asset={shownAsset} devUrl={devUrl} cover alt="" /> : gone ? <ImageOff aria-hidden="true" /> : <ImageIcon aria-hidden="true" />}</div>
+        <div className={`insp-image-thumb${shownAsset ? '' : ' empty'}`} data-testid={plain ? `${plain}-preview` : undefined}>{shownAsset && devUrl ? <AssetImage key={missingKey(snapshot, shownAsset.id)} asset={shownAsset} devUrl={devUrl} cover={!fitFor(shownAsset).contain} className={fitFor(shownAsset).contain ? 'contain' : undefined} alt="" /> : gone ? <ImageOff aria-hidden="true" /> : <ImageIcon aria-hidden="true" />}</div>
         <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
           <span className={`insp-image-name${shownAsset ? '' : gone ? ' gone' : ' none'}`} id={`${titleId}-now`} title={shownAsset?.name}>
             {shownAsset ? (labels.get(shownAsset.id)?.label ?? shownAsset.name) : over ? 'Drop to use this image' : gone ? (named ? 'This file is not an image' : 'This image is no longer in Assets') : (picture?.none ?? (plain ? 'None' : 'No image chosen'))}
@@ -721,7 +722,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture }: {
                     closeBrowser();
                   }}
                 >
-                  {devUrl ? <AssetImage key={missingKey(snapshot, a.id)} asset={a} devUrl={devUrl} cover alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
+                  {devUrl ? <AssetImage key={missingKey(snapshot, a.id)} asset={a} devUrl={devUrl} cover={!fitFor(a).contain} className={fitFor(a).contain ? 'contain' : undefined} alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
                   <span className="ellipsis">{labels.get(a.id)?.name}</span>
                   {/* Another image has this name: its ID, on a line of its own, tells them apart. */}
                   {labels.get(a.id)?.label !== labels.get(a.id)?.name && <span className="ellipsis insp-pick-id">{a.id}</span>}
