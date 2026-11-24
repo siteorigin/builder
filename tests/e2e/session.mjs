@@ -81,7 +81,19 @@ try {
   assert.ok((await naming(one.root)).length > 0, 'the app names its own profile from the start (a control for the checks below)');
   assert.deepEqual(
     started.capabilities.map((c) => `${c.op}:${c.kind}`),
-    ['session.start:session', 'session.describe:session', 'window.info:observe', 'session.close:session']
+    [
+      'session.start:session',
+      'session.describe:session',
+      'window.info:observe',
+      'window.close:act',
+      'menu.list:observe',
+      'menu.invoke:act',
+      'desktop.setAnswers:fixture',
+      'desktop.events:observe',
+      'files.stageImport:fixture',
+      'files.list:observe',
+      'session.close:session'
+    ]
   );
 
   step('several calls in a row run against the same, hidden window');

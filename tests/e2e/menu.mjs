@@ -2,12 +2,12 @@
 // left: New Project and Open Project bring a window back and do what was asked once it is ready, and Export
 // and Close Project are offered only while a project is open (#255). Needs no preview.
 //
-// Menu items are chosen through Menu.getApplicationMenu(), which runs the same click handler as the menu bar and
-// the item's shortcut. Headless runs cannot press native key equivalents, so the shortcuts are checked as the
-// accelerators the items carry.
+// Menu items are chosen through their own click handlers (harness chooseMenu), as the menu bar and the item's shortcut
+// do. Headless runs cannot press native key equivalents, so the shortcuts are checked as the accelerators the items
+// carry. The folder picker is answered by the app's chooser fixtures, which record the window it was shown over.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+import { answerChoosers, chooseMenu, choosersShown, desktopCursor, desktopEvents, eventually, launch, menuItem, scratch, step, withTimeout } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('menu');
 const dirA = join(WORK, 'sites', 'harbour-bakery');
@@ -24,38 +24,24 @@ await app.evaluate(({ app: a }) => {
 const windowsCreated = () => app.evaluate(() => globalThis.windowsCreated);
 
 /** The File menu's items by label: whether each is enabled, and its shortcut. */
-const fileMenu = () =>
-  app.evaluate(({ Menu }) => {
-    const file = Menu.getApplicationMenu().items.find((i) => i.label === 'File');
-    return Object.fromEntries(file.submenu.items.filter((i) => i.label).map((i) => [i.label, { enabled: i.enabled, accelerator: i.accelerator ?? null }]));
-  });
+const fileMenu = async () => Object.fromEntries((await menuItem(app, 'File')).items.map((i) => [i.label, { enabled: i.enabled, accelerator: i.accelerator }]));
 
 /** Choose File menu items, one after the other in the same turn of the main process. */
-const choose = (...labels) =>
-  app.evaluate(({ Menu }, ls) => {
-    const items = Menu.getApplicationMenu().items.find((i) => i.label === 'File').submenu.items;
-    for (const l of ls) {
-      const item = items.find((i) => i.label === l);
-      if (!item) throw new Error(`No menu item ${l}`);
-      if (!item.enabled) throw new Error(`${l} is disabled`);
-      item.click();
-    }
-  }, labels);
+const choose = (...labels) => chooseMenu(app, ...labels.map((l) => ['File', l]));
 
-/** Answer native folder pickers with `dir` (or cancel them), so no dialog appears during the test. Each picker
- *  records the id of the window it was shown over. */
-const answerPicker = (dir) =>
-  app.evaluate(({ dialog }, d) => {
-    globalThis.pickerParents = [];
-    dialog.showOpenDialog = async (w) => {
-      globalThis.pickerParents.push(w?.id ?? null);
-      return d ? { canceled: false, filePaths: [d] } : { canceled: true, filePaths: [] };
-    };
-  }, dir);
-const pickerParents = () => app.evaluate(() => globalThis.pickerParents);
-/** Exactly one folder picker was shown, over the current window. */
+/** The next Open Project picker answers with the project in `dir` (or is cancelled): macOS's picker takes the folder,
+ *  the others its manifest. Pickers shown from here on are what expectOnePicker checks. */
+let pickerMark = 0;
+let pickerOutcome = null;
+async function answerPicker(dir) {
+  pickerMark = await desktopCursor(app);
+  pickerOutcome = dir ? 'chosen' : 'cancelled';
+  const pick = process.platform === 'darwin' ? dir : join(dir ?? '', 'siteorigin.project.json');
+  await answerChoosers(app, [dir ? { dialog: 'open', title: 'Open a SiteOrigin Builder project', paths: [pick] } : { dialog: 'open', cancel: true }]);
+}
+/** Exactly one picker was shown since it was answered, over the current window, and it took the answer. */
 const expectOnePicker = (where) =>
-  eventually(async () => assert.deepEqual(await pickerParents(), [await windowId()], `one folder picker, shown over the window ${where}`));
+  eventually(async () => assert.deepEqual((await choosersShown(app, pickerMark)).map((c) => [c.window, c.outcome]), [[await windowId(), pickerOutcome]], `one picker, shown over the window ${where}`));
 
 const windowCount = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
 const windowId = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.id ?? null);
@@ -172,6 +158,8 @@ if (process.platform === 'darwin') {
   await chooseWithNoWindow('New Project…', 'Open Project…');
   await expectEditorFor('Harbour Bakery', dirA);
   await expectOnePicker('that came up for it');
+  const chosen = (await desktopEvents(app, pickerMark)).entries.filter((e) => e.type === 'menu').map((e) => [e.path.join(' > '), e.window]);
+  assert.deepEqual(chosen, [['File > New Project…', null], ['File > Open Project…', null]], 'both were chosen, in order, with no window open');
   assert.equal(await newProjectDialog().count(), 0, 'New Project was replaced by Open Project');
   await expectProjectItems(true, 'after opening a project with no window');
 

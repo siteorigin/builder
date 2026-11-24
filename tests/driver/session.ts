@@ -24,6 +24,8 @@ import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
 import type { ElectronApplication, Page } from 'playwright';
 import { MockOpenAIServer } from '../unit/mock-openai-server.ts';
+import { desktopInMain, inMain, invokeMenuInMain, listSessionFolder, menuTreeInMain, resolveAnswer, stageImport } from './desktop.ts';
+import type { Area } from './desktop.ts';
 import { killTree, killTreeSync, ownedEntries, processTable } from './processes.ts';
 import type { ProcessEntry } from './processes.ts';
 import { DriverError, PROTOCOL_VERSION, failure, frameIdentity, parseRequest, success } from './protocol.ts';
@@ -96,6 +98,56 @@ export const OPERATIONS: Record<string, OpSpec> = {
     usesWindow: true,
     summary: 'The bound editor window: generation, native id, address, title, visibility and size.'
   },
+  'window.close': {
+    kind: 'act',
+    defaultTimeoutMs: 10_000,
+    needsApp: true,
+    usesWindow: true,
+    summary: 'Close the bound editor window, as its close button does: the editor may first ask about unsaved work. On macOS the app keeps running with no window.'
+  },
+  'menu.list': {
+    kind: 'observe',
+    defaultTimeoutMs: 10_000,
+    needsApp: true,
+    usesWindow: false,
+    summary: 'The native application menu: every item with its label path, id, role, enabled and visible state, accelerator, and whether menu.invoke can choose it.'
+  },
+  'menu.invoke': {
+    kind: 'act',
+    defaultTimeoutMs: 10_000,
+    needsApp: true,
+    usesWindow: true,
+    summary: 'Choose an application menu item by its label path (["File", "Open Project…"]) through its own handler, for the bound editor window or, with none open, for none. Refused when it is missing, hidden, disabled or a system role.'
+  },
+  'desktop.setAnswers': {
+    kind: 'fixture',
+    defaultTimeoutMs: 10_000,
+    needsApp: true,
+    usesWindow: false,
+    summary:
+      'Set the answers for the next native choosers, in order, replacing any left ([] clears them). Each is { dialog: open|save|message, title?, message?, selection?: file|files|folder|fileOrFolder } with one of { cancel: true }, { paths } (open), { path, overwrite?: replace|decline } (save) or { button } (message). Paths are session paths: imports/…, exports/… or workspace/…. A chooser with no answer for it is closed without a choice; none is ever shown.'
+  },
+  'desktop.events': {
+    kind: 'observe',
+    defaultTimeoutMs: 10_000,
+    needsApp: true,
+    usesWindow: false,
+    summary: 'What happened at the desktop after a cursor: each chooser shown and how it was answered, links, reveals and paths the app handed to the system, menu items chosen and answers set or expired. Also the answers still waiting.'
+  },
+  'files.stageImport': {
+    kind: 'fixture',
+    defaultTimeoutMs: 10_000,
+    needsApp: true,
+    usesWindow: false,
+    summary: 'Copy a sample image into the session’s imports/ folder under a new name, for a chooser to be answered with. Never replaces a file.'
+  },
+  'files.list': {
+    kind: 'observe',
+    defaultTimeoutMs: 10_000,
+    needsApp: true,
+    usesWindow: false,
+    summary: 'One level of a session folder (default exports/): each entry’s name, path, type and size.'
+  },
   'session.close': {
     kind: 'session',
     defaultTimeoutMs: 60_000,
@@ -164,6 +216,10 @@ export interface SessionPaths {
   workspace: string;
   /** Where new projects go by default: the app's Documents/SiteOrigin. */
   projects: string;
+  /** Files for choosers to be answered with (files.stageImport). */
+  imports: string;
+  /** Where choosers may be answered to save exports. */
+  exports: string;
   home: string;
   tmp: string;
   artifacts: string;
@@ -465,6 +521,8 @@ export interface AppIdentity {
   platform: string;
   arch: string;
   paths: { userData: string; sessionData: string; documents: string; temp: string; home: string; tmpdir: string | null };
+  /** Whether the app answers its native choosers from the test (src/main/headless-desktop.ts). */
+  desktopFixtures: boolean;
 }
 
 export interface Description {
@@ -660,6 +718,23 @@ export class Session {
         return this.describe();
       case 'window.info':
         return this.windowInfo(this.windowFor(request));
+      case 'window.close':
+        return this.closeWindow(request);
+      case 'menu.list':
+        return { items: await inMain(this.app!, menuTreeInMain, undefined) };
+      case 'menu.invoke':
+        return this.invokeMenu(request);
+      case 'desktop.setAnswers':
+        return this.setAnswers(request);
+      case 'desktop.events':
+        return this.desktopEvents(request.args);
+      case 'files.stageImport':
+        return stageImport(this.appRoot, this.paths!.imports, request.args);
+      case 'files.list': {
+        const a = request.args ?? {};
+        for (const k of Object.keys(a)) if (k !== 'path') throw new DriverError('BAD_REQUEST', `files.list does not take "${k}".`);
+        return listSessionFolder(this.areas(), a.path);
+      }
       default:
         throw new DriverError('UNKNOWN_OP', `There is no operation "${request.op}".`);
     }
@@ -701,6 +776,63 @@ export class Session {
       this.acknowledged = b.ref.generation;
     }
     return b.page;
+  }
+
+  // -- the desktop around the editor (#494) ------------------------------------
+
+  /** The session folders a chooser answer may name. */
+  private areas(): Record<Area, string> {
+    const p = this.paths!;
+    return { imports: p.imports, exports: p.exports, workspace: p.workspace };
+  }
+
+  private async closeWindow(request: Request) {
+    const extra = Object.keys(request.args ?? {});
+    if (extra.length) throw new DriverError('BAD_REQUEST', `window.close does not take "${extra[0]}".`);
+    this.windowFor(request);
+    const ref = this.bound!.ref;
+    const closed = await this.app!.evaluate(({ BrowserWindow }, id) => {
+      const w = BrowserWindow.fromId(id);
+      if (!w || w.isDestroyed()) return false;
+      w.close();
+      return true;
+    }, ref.nativeId);
+    if (!closed) throw new DriverError('WINDOW_CLOSED', `Editor window ${ref.generation} is already gone.`, { retryable: true });
+    return { generation: ref.generation, nativeId: ref.nativeId, status: 'requested' as const };
+  }
+
+  /**
+   * Choose a menu item for the bound editor window. With none open (macOS keeps running without one) and no window
+   * named, the item is chosen for none, as the menu bar does then; the app brings a window up for what needs one.
+   */
+  private async invokeMenu(request: Request) {
+    const a = request.args ?? {};
+    for (const k of Object.keys(a)) if (k !== 'path') throw new DriverError('BAD_REQUEST', `menu.invoke does not take "${k}".`);
+    if (!Array.isArray(a.path) || !a.path.length || !a.path.every((l) => typeof l === 'string' && l)) throw new DriverError('BAD_REQUEST', '"path" is the item\'s labels from the menu bar down, such as ["File", "Open Project…"].');
+    let window: number | null = null;
+    if (this.appExited) throw new DriverError('APP_EXITED', 'The app is no longer running.');
+    if ((this.bound && !this.bound.closed) || request.expectWindow !== undefined) window = (this.windowFor(request), this.bound!.ref.nativeId);
+    const [done] = await inMain(this.app!, invokeMenuInMain, { paths: [a.path as string[]], window, request: request.id });
+    return { ...done, status: 'dispatched' as const };
+  }
+
+  private async setAnswers(request: Request) {
+    const a = request.args ?? {};
+    for (const k of Object.keys(a)) if (k !== 'answers') throw new DriverError('BAD_REQUEST', `desktop.setAnswers does not take "${k}".`);
+    if (!Array.isArray(a.answers)) throw new DriverError('BAD_REQUEST', '"answers" is a list ([] clears them).');
+    const answers = await Promise.all(a.answers.map((x) => resolveAnswer(this.areas(), x)));
+    const set = (await inMain(this.app!, desktopInMain, { op: 'setAnswers', answers, request: request.id })) as { ids: string[] } | { error: string };
+    // A malformed answer changes nothing: the app says which one and why.
+    if ('error' in set) throw new DriverError('BAD_REQUEST', set.error);
+    return { answers: set.ids };
+  }
+
+  private async desktopEvents(args: Record<string, unknown> | undefined) {
+    const a = args ?? {};
+    for (const k of Object.keys(a)) if (k !== 'after' && k !== 'limit') throw new DriverError('BAD_REQUEST', `desktop.events does not take "${k}".`);
+    if (a.after !== undefined && (!Number.isInteger(a.after) || (a.after as number) < 0)) throw new DriverError('BAD_REQUEST', '"after" is a cursor: a whole number from 0.');
+    if (a.limit !== undefined && (!Number.isInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 1000)) throw new DriverError('BAD_REQUEST', '"limit" is a whole number from 1 to 1000.');
+    return inMain(this.app!, desktopInMain, { op: 'events', after: a.after as number | undefined, limit: a.limit as number | undefined });
   }
 
   private async windowInfo(page: Page) {
@@ -893,7 +1025,8 @@ export class Session {
         temp: app.getPath('temp'),
         home: app.getPath('home'),
         tmpdir: process.env.TMPDIR ?? process.env.TEMP ?? null
-      }
+      },
+      desktopFixtures: !!(globalThis as Record<symbol, unknown>)[Symbol.for('siteorigin.desktopFixtures')]
     }))) as AppIdentity;
   }
 
@@ -902,6 +1035,8 @@ export class Session {
     const p = this.paths!;
     const wrong = (['userData', 'sessionData', 'documents'] as const).filter((k) => !isInside(p.root, identity.paths[k]));
     if (wrong.length) throw new DriverError('LAUNCH_FAILED', `The app is not using the session's own folders (${wrong.map((k) => `${k}: ${identity.paths[k]}`).join(', ')}).`, { details: { phase: 'isolation', paths: identity.paths } });
+    // A build that would show its own native dialogs could put one on the person's screen.
+    if (!identity.desktopFixtures) throw new DriverError('LAUNCH_FAILED', 'The app does not answer its native choosers from the test: it predates desktop fixtures. Rebuild it (npm run build).', { details: { phase: 'isolation' } });
   }
 
   private async useScriptedProvider(page: Page, baseURL: string, left: () => number) {
@@ -951,11 +1086,13 @@ export class Session {
         profile: join(root, 'profile'),
         workspace: join(root, 'workspace'),
         projects: join(root, 'workspace', 'SiteOrigin'),
+        imports: join(root, 'imports'),
+        exports: join(root, 'exports'),
         home: join(root, 'home'),
         tmp: join(root, 'tmp'),
         artifacts
       };
-      for (const dir of [paths.profile, paths.projects, paths.home, paths.tmp, paths.artifacts]) await mkdir(dir, { recursive: true });
+      for (const dir of [paths.profile, paths.projects, paths.imports, paths.exports, paths.home, paths.tmp, paths.artifacts]) await mkdir(dir, { recursive: true });
       return paths;
     } catch (e) {
       // Nothing else knows these folders yet: they were made just now, by this call.
