@@ -162,12 +162,15 @@ function describeNode(n: GraphNode): string {
   return n.name ?? (n.kind === 'link' ? 'a button' : n.kind === 'instance' ? 'a nested component' : `a ${n.kind} element`);
 }
 
-/** Put a property schema in place, moving every instance's content to it. Content that no longer fits blocks the change. */
-function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: string, schema: PropSchema) {
+/**
+ * Put a property schema in place, moving every instance's content to it. Content that no longer fits blocks the change.
+ * `bindingsChecked`: the design's bindings were already checked against the whole new schema (a design built whole).
+ */
+function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: string, schema: PropSchema, bindingsChecked = false) {
   const prev = own(def.properties, name);
   if (own(def.state, name)) fail(`"${def.name}" already has UI state "${name}". A property needs a name of its own.`);
   if (!prev && Object.keys(def.properties).length >= 60) fail('A component can have at most 60 properties.');
-  for (const site of bindingSites(def)) {
+  for (const site of bindingsChecked ? [] : bindingSites(def)) {
     const b = site.binding;
     if ('$prop' in b && b.$prop === name) {
       // A binding to one field of an object reads that field's schema.
@@ -251,8 +254,8 @@ function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): string |
   return null;
 }
 
-function removeProp(state: ProjectState, def: ComponentDefinition, name: string) {
-  const sites = bindingSites(def).filter((s) => '$prop' in s.binding && s.binding.$prop === name);
+function removeProp(state: ProjectState, def: ComponentDefinition, name: string, bindingsChecked = false) {
+  const sites = bindingsChecked ? [] : bindingSites(def).filter((s) => '$prop' in s.binding && s.binding.$prop === name);
   if (sites.length) fail(`"${name}" is still shown by ${sites.map((s) => describeNode(s.node)).join(', ')}. Unbind or remove those elements first.`);
   delete def.properties[name];
   for (const { node } of instancesOf(state, def.id)) delete node.props[name];
@@ -369,21 +372,23 @@ function moveProps(state: ProjectState, def: ComponentDefinition, renames: PropR
 }
 
 /**
- * Replace a definition's whole property schema (used when saving a code component's manifest). `renames` names the
- * stored properties that the new schema keeps under another name, so their content moves instead of being removed.
+ * Replace a definition's whole property schema (used when saving a code component's manifest, and by a design built
+ * whole). `renames` names the stored properties that the new schema keeps under another name, so their content moves
+ * instead of being removed. `bindingsChecked`: the design in place has had every binding checked against `raw` already,
+ * so only the placements' content is moved and checked here.
  */
-export function replaceProperties(state: ProjectState, def: ComponentDefinition, raw: Record<string, unknown>, renames: PropRename[] = []) {
+export function replaceProperties(state: ProjectState, def: ComponentDefinition, raw: Record<string, unknown>, renames: PropRename[] = [], { bindingsChecked = false } = {}) {
   const next = normalizeProperties(raw, state);
   checkRenames(def, next, renames);
   const from = new Set(renames.map((r) => r.from));
   const to = new Set(renames.map((r) => r.to));
   // Removed: a stored property the new schema leaves out, or whose name a renamed one takes over.
-  for (const name of Object.keys(def.properties)) if (!from.has(name) && (!Object.hasOwn(next, name) || to.has(name))) removeProp(state, def, name);
+  for (const name of Object.keys(def.properties)) if (!from.has(name) && (!Object.hasOwn(next, name) || to.has(name))) removeProp(state, def, name, bindingsChecked);
   if (renames.length) moveProps(state, def, renames);
   // Each property then takes its new schema, checked against the content it moved with.
   const ordered: Record<string, PropSchema> = {};
   for (const [name, schema] of Object.entries(next)) {
-    applyPropSchema(state, def, name, schema);
+    applyPropSchema(state, def, name, schema, bindingsChecked);
     ordered[name] = def.properties[name];
   }
   // Keep the order the caller gave, so an edited manifest reads the way it was written.

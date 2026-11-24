@@ -140,6 +140,8 @@ const describe = (name: ToolName) => ({ description: DESCRIPTIONS[name], ...(BRI
  *  theme updates by the user, pastes come from the editor's own Copy, and a component's properties are reordered
  *  in Edit everywhere. Collections get tools of their own later. */
 const NEVER_OFFERED = new Set<OperationType>([
+  // A whole design in one call reaches the assistant through a tool of its own, never as a raw operation.
+  'component.upsert',
   'asset.add',
   'asset.relink',
   'component.import',
@@ -639,6 +641,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       if (ops.some((o) => o.type === 'node.insert' && o.newNodeId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.insert does not take a newNodeId.' } };
       // So are new components' IDs: the result of each component.create names the component it made.
       if (ops.some((o) => o.type === 'component.create' && o.definitionId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'component.create does not take a definitionId.' } };
+      // A whole design is built through a tool of its own; the raw operation is never offered.
+      if (ops.some((o) => o.type === 'component.upsert')) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'component.upsert is not available here. Build a component with component.create and the node and component operations.' } };
       // The copy goes right after the original; placing it elsewhere is a node.move of the copy it returns.
       if (ops.some((o) => o.type === 'node.duplicate' && o.index !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.duplicate does not take an index.' } };
       // UI state is not offered yet (NOT_YET_OFFERED), and a call naming it anyway is refused the same way.
