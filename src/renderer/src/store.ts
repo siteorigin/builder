@@ -1067,9 +1067,15 @@ useStore.subscribe((s, prev) => {
 });
 
 // The look Edit everywhere styles belongs to that one visit: leaving the component, or editing another, starts again
-// on its base design.
+// on its base design. A look that is gone (an Undo, a removal) is forgotten whatever is on screen, so one made again
+// later under the same ID is not styled without being chosen.
 useStore.subscribe((s, prev) => {
-  if (s.variantStyle && s.definitionMode?.definitionId !== prev.definitionMode?.definitionId) useStore.setState({ variantStyle: null });
+  const v = s.variantStyle;
+  if (!v) return;
+  if (s.definitionMode?.definitionId !== prev.definitionMode?.definitionId) return void useStore.setState({ variantStyle: null });
+  if (s.snapshot === prev.snapshot) return;
+  const options = s.snapshot?.state.components[v.definitionId]?.variantAxes?.[v.axis]?.options;
+  if (!options || !Object.hasOwn(options, v.variant)) useStore.setState({ variantStyle: null });
 });
 
 export function markDraft(key: string, on: boolean, note?: string) {

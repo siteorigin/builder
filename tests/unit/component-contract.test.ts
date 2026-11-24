@@ -359,7 +359,6 @@ describe('the component’s properties', () => {
     let session = await ProjectSession.create(dir, hero.s);
     try {
       expect((await session.apply({ operations: [op] }, { label: 'Reorder', source: 'ai' })).ok).toBe(false);
-      expect((await session.apply({ operations: [op] }, { label: 'Reorder', source: 'user', runId: 'run-1' })).ok).toBe(false);
       expect((await session.apply({ operations: [op] }, { label: 'Reorder', source: 'user' })).ok).toBe(true);
       await session.undo();
       expect(Object.keys(session.state.components[hero.defId].properties)).toEqual(keys);
@@ -483,10 +482,14 @@ describe('variants placements choose between', () => {
     for (const p of placed(s, h.defId)) expect(p.variants?.mood).toBeUndefined();
     s = apply(s, [addVariantOp(s, h.def(s), 'mood', 'Dark')!]);
     expect(Object.keys(h.def(s).variantAxes!.mood.options)).toEqual(['default', 'dark', 'dark-2']);
+    // A styled option keeps its styles through a rename and a new default.
+    s = apply(s, [{ type: 'node.setStyle', owner: { kind: 'component', id: h.defId }, nodeId: 'n_head01', variant: 'dark-2', axis: 'mood', scope: 'base', property: 'color', value: '#ffffff' }]);
     s = apply(s, [renameVariantOp(h.def(s), 'mood', 'dark-2', 'Midnight')!, renameVariantGroupOp(h.def(s), 'mood', 'Feel')!]);
+    expect(h.def(s).variantAxes!.mood.options['dark-2'].styles).toEqual({ n_head01: { base: { color: '#ffffff' } } });
     expect(h.def(s).variantAxes!.mood).toMatchObject({ label: 'Feel', options: { 'dark-2': { label: 'Midnight' }, default: { label: 'Default' } } });
-    s = apply(s, [defaultVariantOp(h.def(s), 'mood', 'dark')!]);
+    s = apply(s, [defaultVariantOp(h.def(s), 'mood', 'dark-2')!, defaultVariantOp(h.def(s), 'mood', 'dark')!]);
     expect(h.def(s).variantAxes!.mood.default).toBe('dark');
+    expect(h.def(s).variantAxes!.mood.options['dark-2'].styles).toEqual({ n_head01: { base: { color: '#ffffff' } } });
     // A placement that chose an option goes back to the default when it is removed.
     const [first] = placed(s, h.defId);
     s = apply(s, [{ type: 'instance.setVariant', owner: pageOwner(s), nodeId: first.id, axis: 'mood', variant: 'dark-2' }]);

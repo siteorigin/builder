@@ -1949,10 +1949,16 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       ? (() => {
           const placed = state.components[node.definitionId];
           const rootId = placed?.parts.root?.nodeId ?? placed?.tree?.rootIds[0];
-          const inner = placed?.kind === 'managed' && rootId ? designLayers(placed, rootId, startingVariants(node.variants, def)) : [];
-          // The other choices of this design style the placed component too, as their defaults.
+          // Its choices as the site starts them: one this design's state or property sets shows that one's default.
+          const chosen = Object.fromEntries(
+            Object.entries(startingVariants(node.variants, def) ?? {}).map(([axis, v]) => [axis, isBinding(v) && '$prop' in v ? ((propBindingSchema(def.properties, v)?.default as string | undefined) ?? v) : v])
+          );
+          const inner = placed?.kind === 'managed' && rootId ? designLayers(placed, rootId, chosen) : [];
+          // The other choices of this design style the placed component too, as their defaults. Their rules and the
+          // placed design's own are equally specific, so the stylesheet's order decides: definitions by ID.
           const outer = designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles && l.styles !== lookOption!.styles?.[node.id]);
-          return cascadeStyles([...inner, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }, ...outer]);
+          const layers = def.id.localeCompare(node.definitionId) < 0 ? [...outer, ...inner] : [...inner, ...outer];
+          return cascadeStyles([...layers, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }]);
         })()
       : cascadeStyles(designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles !== lookOption!.styles?.[node.id]))
     : undefined;

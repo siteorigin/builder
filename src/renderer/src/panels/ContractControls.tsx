@@ -4,7 +4,7 @@
  * as it is when the author acts (lib/component-contract) and sends it against that revision, so a change planned on a
  * project that has moved on since is refused rather than misapplied. Every change is one Undo.
  */
-import { useEffect, useId, useState, type KeyboardEvent } from 'react';
+import { useId, useState, type KeyboardEvent } from 'react';
 import { ArrowDown, ArrowUp, Paintbrush, Plus, Trash2 } from 'lucide-react';
 import type { ProjectSnapshot } from '@shared/api';
 import type { ComponentDefinition, GraphNode, PropSchema } from '@shared/types';
@@ -59,8 +59,12 @@ function current(defId: string, nodeId?: string): { snap: ProjectSnapshot; def: 
   return snap && def ? { snap, def, node } : null;
 }
 
-/** Apply a change planned against `revision`, so one planned on a project that moved on is refused, not misapplied. */
-const apply = (operations: EditOperation[], label: string, revision: number) => applyOps(operations, label, undefined, revision);
+/**
+ * Apply a change planned on `planned`: refused if the project has moved on since, and never sent to another project
+ * opened meanwhile (a confirmation left open while the project switched), which could share its IDs and revision.
+ */
+const apply = (operations: EditOperation[], label: string, planned: ProjectSnapshot) =>
+  getState().snapshot?.workspaceKey === planned.workspaceKey ? applyOps(operations, label, undefined, planned.revision) : Promise.resolve(null);
 
 /** Enter (not one that ends an input method's composition) and Escape, for a field that is not a DraftInput. */
 const keys = (on: { enter?: () => void; escape?: () => void }) => (e: KeyboardEvent<HTMLInputElement>) => {
@@ -94,7 +98,7 @@ export function BindingControl({ def, node, content }: { def: ComponentDefinitio
     if (!now || contentNow(now.def, now.node, field)?.source !== 'design') return;
     const plan = bindNewProperty(now.snap.state, now.def, now.node!, field, label);
     if (!plan) return;
-    if (await apply(plan.operations, `Fill in ${what.toLowerCase()} on each placement`, now.snap.revision)) setOpen(false);
+    if (await apply(plan.operations, `Fill in ${what.toLowerCase()} on each placement`, now.snap)) setOpen(false);
   };
   /** Whether the field still comes from where this control showed it coming from. */
   const unchanged = (now: ReturnType<typeof current>) => {
@@ -107,7 +111,7 @@ export function BindingControl({ def, node, content }: { def: ComponentDefinitio
     // The property chosen, as the project has it now: one removed or retyped since the menu was drawn is not offered.
     const choice = bindChoices(now.snap.state, now.def, now.node, field).find((c) => choiceKey(c) === key);
     if (!choice) return;
-    if (await apply([bindExistingOp(now.def, node.id, field, choice.binding)], `Show ${choice.label} in ${what.toLowerCase()}`, now.snap.revision)) setOpen(false);
+    if (await apply([bindExistingOp(now.def, node.id, field, choice.binding)], `Show ${choice.label} in ${what.toLowerCase()}`, now.snap)) setOpen(false);
   };
   const chooser = choices.length > 0 && (
     <Field label={content.source === 'design' ? 'Or show a property it has' : 'Show another property'} controlId={`${id}-use`} hint="Each placement then shows its own value of that property.">
@@ -124,7 +128,7 @@ export function BindingControl({ def, node, content }: { def: ComponentDefinitio
   if (content.source === 'default') {
     const unbind = () => {
       const now = current(def.id, node.id);
-      if (now && unchanged(now)) void apply([unbindOp(now.def, node.id, field)], `Make ${what.toLowerCase()} the same in every placement`, now.snap.revision);
+      if (now && unchanged(now)) void apply([unbindOp(now.def, node.id, field)], `Make ${what.toLowerCase()} the same in every placement`, now.snap);
     };
     return (
       <div className="contract-bind" data-contract={field}>
@@ -195,7 +199,7 @@ export function TagBindingControl({ def, node, binding }: { def: ComponentDefini
   const unbind = () => {
     const now = current(def.id, node.id);
     if (now && same((now.node as { tag?: unknown } | undefined)?.tag))
-      void apply([{ type: 'node.setBinding', owner: { kind: 'component', id: def.id }, nodeId: node.id, field: 'tag', binding: null }], `Make ${nodeName(node).toLowerCase()} tag the same in every placement`, now.snap.revision);
+      void apply([{ type: 'node.setBinding', owner: { kind: 'component', id: def.id }, nodeId: node.id, field: 'tag', binding: null }], `Make ${nodeName(node).toLowerCase()} tag the same in every placement`, now.snap);
   };
   const label = propBindingSchema(def.properties, binding)?.label ?? binding.field ?? binding.$prop;
   return (
@@ -234,7 +238,7 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
   const move = (prop: string, delta: -1 | 1) => {
     const now = current(def.id);
     const op = now && movePropOp(now.def, prop, delta);
-    if (op) void apply([op], `Move ${now.def.properties[prop].label} ${delta < 0 ? 'up' : 'down'}`, now.snap.revision);
+    if (op) void apply([op], `Move ${now.def.properties[prop].label} ${delta < 0 ? 'up' : 'down'}`, now.snap);
   };
   const remove = async (prop: string) => {
     // What the dialog says is what is removed: planned once, and refused if the project changes while it is open.
@@ -251,7 +255,7 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
       });
       if (!ok) return;
     }
-    void apply([{ type: 'component.removePropSchema', definitionId: def.id, prop }], `Remove ${schema.label} property`, now.snap.revision);
+    void apply([{ type: 'component.removePropSchema', definitionId: def.id, prop }], `Remove ${schema.label} property`, now.snap);
   };
   return (
     <Section title="Properties" id="def-properties" level={level} scope={entries.length ? `${entries.length} filled in on each placement` : undefined}>
@@ -275,7 +279,7 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
                       if (!v.trim()) return false;
                       const now = current(def.id);
                       const op = now && renamePropOp(now.def, prop, v);
-                      if (op) void apply([op], `Rename ${schema.label} property`, now.snap.revision);
+                      if (op) void apply([op], `Rename ${schema.label} property`, now.snap);
                     }}
                   />
                   <span className="faint contract-meta">
@@ -314,7 +318,7 @@ export function PartSection({ def, node, level }: { def: ComponentDefinition; no
   if (isRoot || (!found && !canExposePart(def, node))) return null;
   const expose = () => {
     const now = current(def.id, node.id);
-    if (now?.node && canExposePart(now.def, now.node)) void apply([exposePartOp(now.snap.state, now.def, now.node, nodeName(now.node))], `Let placements style ${nodeName(node)}`, now.snap.revision);
+    if (now?.node && canExposePart(now.def, now.node)) void apply([exposePartOp(now.snap.state, now.def, now.node, nodeName(now.node))], `Let placements style ${nodeName(node)}`, now.snap);
   };
   const remove = async () => {
     const now = current(def.id);
@@ -330,7 +334,7 @@ export function PartSection({ def, node, level }: { def: ComponentDefinition; no
       });
       if (!ok) return;
     }
-    void apply([{ type: 'component.removePart', definitionId: def.id, partId: part.id }], `Stop styling ${part.part.label} on placements`, now.snap.revision);
+    void apply([{ type: 'component.removePart', definitionId: def.id, partId: part.id }], `Stop styling ${part.part.label} on placements`, now.snap);
   };
   return (
     <Section title="On each placement" id="def-part" level={level} scope={found ? `Styled as “${found.part.label}”` : 'Same in every placement'}>
@@ -346,7 +350,7 @@ export function PartSection({ def, node, level }: { def: ComponentDefinition; no
                 if (!v.trim()) return false;
                 const now = current(def.id);
                 const op = now && renamePartOp(now.def, found.id, v);
-                if (op) void apply([op], `Rename ${found.part.label} part`, now.snap.revision);
+                if (op) void apply([op], `Rename ${found.part.label} part`, now.snap);
               }}
             />
           </Field>
@@ -367,17 +371,12 @@ export function PartSection({ def, node, level }: { def: ComponentDefinition; no
 }
 
 /**
- * The variant option Edit everywhere styles, still one the component has. One that is gone (an Undo, a removal) is
- * forgotten, so an option made again later under the same ID is not styled without being chosen.
+ * The variant option Edit everywhere styles, still one the component has. The store forgets one that is gone (an
+ * Undo, a removal), so an option made again later under the same ID is not styled without being chosen.
  */
 export function useVariantStyle(def: ComponentDefinition): StyleTarget {
   const stored = useStore((s) => (s.variantStyle?.definitionId === def.id ? s.variantStyle : null));
-  const live = liveStyleTarget(def, stored ? { axis: stored.axis, variant: stored.variant } : null);
-  const stale = !!stored && !live;
-  useEffect(() => {
-    if (stale && getState().variantStyle === stored) setState({ variantStyle: null });
-  }, [stale, stored]);
-  return live;
+  return liveStyleTarget(def, stored ? { axis: stored.axis, variant: stored.variant } : null);
 }
 
 export const styleVariant = (def: ComponentDefinition, target: StyleTarget) => setState({ variantStyle: target ? { definitionId: def.id, ...target } : null });
@@ -409,7 +408,7 @@ export function VariantsSection({ def, level, onStyle }: { def: ComponentDefinit
   const run = (plan: (d: ComponentDefinition, snap: ProjectSnapshot) => EditOperation | null, label: string) => {
     const now = current(def.id);
     const op = now && plan(now.def, now.snap);
-    return op ? apply([op], label, now.snap.revision) : null;
+    return op ? apply([op], label, now.snap) : null;
   };
   const addGroup = async () => {
     if (!group.trim() || !first.trim()) return;
@@ -435,7 +434,7 @@ export function VariantsSection({ def, level, onStyle }: { def: ComponentDefinit
       });
       if (!ok) return;
     }
-    void apply([removeVariantOp(now.def, axis, option)], `Remove ${label} variant`, now.snap.revision);
+    void apply([removeVariantOp(now.def, axis, option)], `Remove ${label} variant`, now.snap);
   };
   return (
     <Section title="Variants" id="def-variants" level={level} scope={axes.length ? `${axes.length === 1 ? '1 choice' : `${axes.length} choices`} on each placement` : undefined}>
