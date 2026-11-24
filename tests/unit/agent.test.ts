@@ -2339,7 +2339,7 @@ describe('building a new component from Create component (#172)', () => {
       return finish('Nothing yet.');
     };
     const env = await setup(
-      [look, look, look],
+      Array.from({ length: 10 }, () => look),
       { codeEnabled: false, capabilities: { contextWindowTokens: 32000 } }
     );
     await env.run('Create a component called "Price tag".', task);
@@ -2349,13 +2349,14 @@ describe('building a new component from Create component (#172)', () => {
     expect(ops).toEqual(expect.arrayContaining(['component.create', 'node.insert', 'node.setBinding', 'component.setPropSchema', 'component.setVariant', 'node.setStyle']));
     for (const op of ['page.create', 'token.set', 'instance.setProp', 'component.createCode']) expect(ops).not.toContain(op);
     expect(seen[0].system).toContain('You make reusable components');
-    // "continue" typed into the chat carries on with the component, with what building one takes.
-    await env.run('continue');
-    expect(seen[1].tools.map((t) => t.name).sort()).toEqual(names);
+    // "continue" typed into the chat carries on with the component, with what building one takes, also once the
+    // request itself has left the history the model is shown.
+    for (let i = 0; i < 7; i++) await env.run('continue');
+    for (const req of seen.slice(1)) expect(req.tools.map((t) => t.name).sort()).toEqual(names);
     // The same request typed straight into the chat keeps the small site tools.
     await env.run('Create a component called "Price tag".');
-    expect(seen[2].tools.map((t) => t.name)).toContain('upsert_page_with_sections');
-    expect(seen[2].tools.map((t) => t.name)).not.toContain('apply_operations');
+    expect(seen[8].tools.map((t) => t.name)).toContain('upsert_page_with_sections');
+    expect(seen[8].tools.map((t) => t.name)).not.toContain('apply_operations');
   });
 });
 

@@ -610,11 +610,12 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       // A design read part by part: the contract came with the first part.
       if (a.structure && a.offset) return { ok: true, content: { definitionId: def.id, structure: componentStructure(state, def, a.offset) } };
       if (a.structure) {
-        // The first part shares one result with the contract; a contract too long to leave the design room is read alone.
+        // The first part shares one result with the contract. When the two would not fit one result whole (and so
+        // lose the next part's offset), the design is read alone and the contract is left to a read without structure.
         const contract = componentDetail(def);
-        const room = MAX_RESULT_CHARS - 1000 - JSON.stringify(contract).length;
-        if (room < 4000) return { ok: true, content: { definitionId: def.id, note: 'Its contract is long: read_component without structure shows it.', structure: componentStructure(state, def, 0, MAX_RESULT_CHARS - 1000) } };
-        return { ok: true, content: { ...contract, structure: componentStructure(state, def, 0, room) } };
+        const both = { ...contract, structure: componentStructure(state, def, 0, MAX_RESULT_CHARS - 1000 - JSON.stringify(contract).length) };
+        if (JSON.stringify(both).length <= MAX_RESULT_CHARS - 200) return { ok: true, content: both };
+        return { ok: true, content: { definitionId: def.id, note: 'Its contract is long: read_component without structure shows it.', structure: componentStructure(state, def, 0, MAX_RESULT_CHARS - 1000) } };
       }
       const examples = examplesFor(state, def.componentId).map(exampleSection);
       return { ok: true, content: { ...componentDetail(def), ...(examples.length ? { workedExamples: examples } : {}) } };

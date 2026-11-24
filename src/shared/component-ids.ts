@@ -6,7 +6,8 @@ import { slugify } from './routes';
  * that creates a component and places it, so the placement can name it.
  */
 export function projectDefinitionId(name: string, prefix = 'proj'): string {
-  return `${prefix}.${slugify(name) || 'component'}-${newId('x', 5).slice(2)}`;
+  // A slug cut to its length limit can end on a hyphen ("&" spells out as "and" first): never doubled before the suffix.
+  return `${prefix}.${slugify(name).replace(/-+$/, '') || 'component'}-${newId('x', 5).slice(2)}`;
 }
 
 /**

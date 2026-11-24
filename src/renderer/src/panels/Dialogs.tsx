@@ -8,7 +8,7 @@ import { uniqueCopyName } from '@engine/definitions';
 import type { LinkHolder, PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
-import { applyOps, api, getState, projectHistory, saveLocal, setState, toast, useStore } from '../store';
+import { applyOps, api, commitOps, getState, projectHistory, saveLocal, setState, toast, useStore } from '../store';
 import { Field, Modal, openMenus, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
@@ -312,6 +312,27 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
   );
 }
 
+/**
+ * Resolves once the editor shows the project at `revision` or later (true), or after a moment without it (false). The
+ * canvas ends editing a design its snapshot does not have, so a design just made is opened only once it is shown.
+ */
+function shownAt(revision: number, workspaceKey: string, ms = 3000): Promise<boolean> {
+  const ok = () => {
+    const s = getState().snapshot;
+    return !!s && s.workspaceKey === workspaceKey && s.revision >= revision;
+  };
+  if (ok()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = (v: boolean) => {
+      stop();
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const stop = useStore.subscribe(() => void (ok() && done(true)));
+    const timer = setTimeout(() => done(ok()), ms);
+  });
+}
+
 /** Where Create component would place a new component now, by the editor's own insertion point. */
 function newComponentPlaceNow() {
   const s = getState();
@@ -354,19 +375,20 @@ export function NewComponentModal() {
     if (!now || !at) return void toast('Open a page to place the new component on.', 'info');
     const plan = startBlankOps(at, name, description);
     setBusy(true);
-    let r: Awaited<ReturnType<typeof applyOps>> = null;
+    let r: Awaited<ReturnType<typeof commitOps>> = null;
     try {
-      r = await applyOps(plan.ops, `Create component ${name.trim()}`, undefined, now.revision);
+      r = await commitOps(plan.ops, `Create component ${name.trim()}`, undefined, now.revision);
     } finally {
       if (!r) setBusy(false);
     }
     if (!r) return;
+    const root = typeof r.results?.[0]?.rootNodeId === 'string' ? r.results[0].rootNodeId : null;
+    // Opened once the editor shows the change. An Undo or another change that landed meanwhile can have taken the
+    // component or its placement away again: then nothing opens.
+    await shownAt(r.revision, now.workspaceKey);
     const after = getState();
-    // Named by the change itself, which the snapshot may not show yet.
-    const root = typeof r[0]?.rootNodeId === 'string' ? r[0].rootNodeId : null;
     const shown = after.snapshot?.state;
-    // An Undo or another change that landed meanwhile can have taken the placement away again: then nothing opens.
-    const gone = !!shown?.components[plan.definitionId] && !shown.pages[at.pageId]?.nodes[plan.nodeId];
+    const gone = !shown?.components[plan.definitionId] || !shown.pages[at.pageId]?.nodes[plan.nodeId];
     const mine = after.modal === own;
     if (after.snapshot?.workspaceKey !== now.workspaceKey || !root || gone) {
       setBusy(false);

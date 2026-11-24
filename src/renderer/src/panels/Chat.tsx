@@ -459,9 +459,12 @@ export function Chat() {
   const sendHanded = (req: NonNullable<typeof handed>) => {
     // Held from the moment it starts, so whatever renders meanwhile never sends it twice.
     setState({ chatRequest: { ...req, held: true } });
-    void send(req.text, req.context).then((sent) => {
-      if (sent && getState().chatRequest?.id === req.id) setState({ chatRequest: null });
-    });
+    void send(req.text, req.context).then(
+      (sent) => {
+        if (sent && getState().chatRequest?.id === req.id) setState({ chatRequest: null });
+      },
+      () => undefined
+    );
   };
   useEffect(() => {
     if (!handed) return;

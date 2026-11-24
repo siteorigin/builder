@@ -217,6 +217,27 @@ describe('read_component with structure (#172)', () => {
     expect(offset).toBeGreaterThan(0);
     expect(seen.sort()).toEqual(Object.keys(long.tree!.nodes).sort());
   });
+
+  it('reads the design alone when its contract and its first node would not fit one result together', async () => {
+    const s = createStarterState('blank', 'Expo', false);
+    const big = structuredClone(catalogueComponent('foundation', 'features.grid')!);
+    big.id = 'proj.big-abcde';
+    big.owner = 'project';
+    for (let p = 0; p < 8; p++) big.properties[`choice${p}`] = { type: 'enum', label: `Choice ${p}`, default: 'v0', options: Array.from({ length: 40 }, (_, k) => ({ value: `v${k}-${'x'.repeat(50)}`, label: `Option ${k}` })) };
+    // A root holding hundreds of elements: one long node record before any other.
+    const root = big.tree!.nodes[big.tree!.rootIds[0]] as ElementNode;
+    for (let i = 0; i < 450; i++) {
+      const id = `n_many${i}`;
+      big.tree!.nodes[id] = { id, kind: 'divider' };
+      root.children.push(id);
+    }
+    s.components[big.id] = big;
+    const first = await read(s, { definitionId: big.id, structure: true });
+    expect(JSON.parse(serializeResult(first)).truncated).toBeUndefined();
+    expect(first.properties).toBeUndefined();
+    expect(first.note).toMatch(/without structure/);
+    expect(first.structure.next).toBeGreaterThan(0);
+  });
 });
 
 describe('the tokens a design uses (#172)', () => {
@@ -290,6 +311,10 @@ describe('the Create component dialog (#172)', () => {
     expect(r.state.components[plan.definitionId]).toMatchObject({ name: 'Price tag', description: 'Project component.' });
     expect(r.state.pages[home].rootIds[1]).toBe(plan.nodeId);
     expect((r.state.pages[home].nodes[plan.nodeId] as InstanceNode).definitionId).toBe(plan.definitionId);
+    // A full-length name whose "&" spells out past the slug's limit still gives an ID the engine takes.
+    const amp = startBlankOps({ pageId: home }, `${'a'.repeat(59)}&`, '');
+    expect(amp.definitionId).toMatch(PROJECT_DEFINITION_ID);
+    expect(applyOperations(st, amp.ops).state.components[amp.definitionId]).toBeDefined();
     // Two starts never share an ID, even under one name.
     expect(startBlankOps({ pageId: home }, 'Price tag', '').definitionId).not.toBe(plan.definitionId);
   });

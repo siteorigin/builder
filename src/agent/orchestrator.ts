@@ -639,7 +639,10 @@ export class Orchestrator {
     // The request a "continue" carries on with, read from the whole conversation: a long run of "continue"
     // messages can push it out of the history the model sees.
     // A saved request whose text cannot be read is not one to carry on with.
-    const request = [...conv.messages].reverse().find((m) => m.role === 'user' && typeof m.text === 'string' && !CONTINUE.test(m.text))?.text;
+    const prior = [...conv.messages].reverse().find((m) => m.role === 'user' && typeof m.text === 'string' && !CONTINUE.test(m.text));
+    const request = prior?.text;
+    // A Create component request goes on building a component, however many times it is told to continue.
+    const requestTask = prior?.context?.task === 'component' ? ('component' as const) : undefined;
     conv.messages.push(userMsg, assistant);
     if (conv.title === 'New conversation') conv.title = text.trim().slice(0, 60);
     const active: ActiveRun = { id: runId, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id, reached: false, recipient: intended };
@@ -647,7 +650,7 @@ export class Orchestrator {
     this.deps.onBusyChange(true);
     this.emitMessage(userMsg, runId);
     this.emitMessage(assistant, runId);
-    this.runEnded = this.execute(runId, userMsg, assistant, history, request)
+    this.runEnded = this.execute(runId, userMsg, assistant, history, request, requestTask)
       .catch((e: Error) => console.error('AI request failed', e))
       .finally(async () => {
         // A request that ended without a result (its rollback threw) still ends: nothing may wait on it.
@@ -729,7 +732,7 @@ export class Orchestrator {
     return r.ok ? { ok: true } : { ok: false, message: r.error?.message };
   }
 
-  private async execute(runId: string, userMsg: ChatMessage, msg: ChatMessage, history: ChatMessage[], request?: string) {
+  private async execute(runId: string, userMsg: ChatMessage, msg: ChatMessage, history: ChatMessage[], request?: string, requestTask?: 'component') {
     const run = this.run!;
     const signal = run.abort.signal;
     const session = this.deps.session()!;
@@ -823,10 +826,8 @@ export class Orchestrator {
     let authority: Authority = requestAuthority(userMsg.context, session.state);
     /** A request about a component's own design keeps the tools for it, even after the user widens it. */
     const definitionRun = authority.kind === 'component' || (authority.kind === 'selection' && authority.owner.kind === 'component');
-    /** The request a typed "continue" carries on with: the last one before it that was not a "continue" itself. */
-    const carried = CONTINUE.test(userMsg.text) ? [...history].reverse().find((h) => h.role === 'user' && typeof h.text === 'string' && !CONTINUE.test(h.text)) : undefined;
     /** A new component asked for from the Create component dialog (or a "continue" of one), which the whole site may hold. */
-    const componentTask = !ask && authority.kind === 'site' && (userMsg.context?.task === 'component' || carried?.context?.task === 'component');
+    const componentTask = !ask && authority.kind === 'site' && (userMsg.context?.task === 'component' || (CONTINUE.test(userMsg.text) && requestTask === 'component'));
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     // Problems the project already had (including components that already fail to build) are not the run's. Each is
