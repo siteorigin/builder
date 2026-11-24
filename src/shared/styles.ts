@@ -1127,6 +1127,8 @@ export interface StyleLayer {
    * display only at the sizes where one of these hides the element (see the generator's `unhider`).
    */
   unhides?: Array<ResponsiveStyles | undefined>;
+  /** A design's own change to a placed code component, which reads each `hidden: false` of it as the marker that shows its root. */
+  marks?: boolean;
 }
 
 const CASCADE_SIZES = ['phone', 'tablet', 'desktop'] as const;
@@ -1154,7 +1156,7 @@ export function styleDeclOrder(prop: string): number {
 type CascadeDecl = { prop: string; value: StyleValue; bucket: Bucket; strength: number; index: number; seq: number };
 
 /** Every declaration layers of rules write for one element, and how they rank, as the generated CSS cascades them. */
-function cascadeOf(layers: StyleLayer[], { inertShows = true, allShows = false } = {}) {
+function cascadeOf(layers: StyleLayer[], { inertShows = true } = {}) {
   const decls: CascadeDecl[] = [];
   layers.forEach((layer, index) => {
     const raw = layer.styles;
@@ -1168,15 +1170,14 @@ function cascadeOf(layers: StyleLayer[], { inertShows = true, allShows = false }
       for (const [prop, value] of Object.entries(folded[scope] ?? {})) {
         if (value === undefined) continue;
         // A `hidden: false` that undoes no weaker hide writes nothing: it decides nothing in the stylesheet.
-        if (!inertShows && prop === 'hidden' && value === false) continue;
+        if (!inertShows && prop === 'hidden' && value === false && !layer.marks) continue;
         push(prop, value, scope === 'base' && wideOnlyStyle(prop, value, layer.wideColumns) ? 'wide' : scope);
       }
       // A size shown again (the folding removed the value): a display that undoes a weaker hide there.
-      // `allShows`: every show counts, for a reader that takes it as a marker (a code component), not a display.
-      if (scope !== 'base' && raw[scope]?.hidden === false && (weakerHides(scope) || allShows)) push('hidden', false, scope);
+      if (scope !== 'base' && raw[scope]?.hidden === false && (weakerHides(scope) || layer.marks)) push('hidden', false, scope);
     }
     // Shown at every size: in each size it does not set itself, a display that undoes a weaker hide there.
-    if (raw.base?.hidden === false) for (const size of CASCADE_SIZES) if (raw[size]?.hidden === undefined && (weakerHides(size) || allShows)) push('hidden', false, size);
+    if (raw.base?.hidden === false) for (const size of CASCADE_SIZES) if (raw[size]?.hidden === undefined && (weakerHides(size) || layer.marks)) push('hidden', false, size);
   });
   // Within one rule, declarations are written in the generator's order, so the later one wins a shared CSS property.
   const inRule = (a: CascadeDecl, b: CascadeDecl) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop);
@@ -1250,6 +1251,9 @@ function cssNames(prop: string, value: StyleValue): string[] {
   return decls.map((d) => d.slice(0, d.indexOf(':')).trim().toLowerCase()).filter((p) => p && !p.startsWith('--'));
 }
 
+/** Display values a browser takes. */
+const DISPLAY_VALUE = /^(none|contents|block|inline|inline-block|flow-root|flex|inline-flex|grid|inline-grid|list-item|table|inline-table|table-[a-z-]+|ruby|ruby-[a-z]+|revert|revert-layer|initial|inherit|unset)$/i;
+
 /** Shorthands whose longhands are not named after them. */
 const SHORTHAND_SETS: Record<string, string[]> = {
   gap: ['row-gap', 'column-gap'],
@@ -1283,8 +1287,6 @@ export interface FlattenOptions {
    * them, except where the result would now override them.
    */
   beneath?: number;
-  /** A code component reads the result: every `hidden: false` is kept, as the marker that shows its root again. */
-  keepShown?: boolean;
   /**
    * The display the stylesheet gives an element shown again over a weaker hide, where no layout sets one (see the
    * generator's `unhider`).
@@ -1303,7 +1305,7 @@ export interface FlattenOptions {
  */
 export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): ResponsiveStyles {
   // A `hidden: false` that undoes nothing writes nothing, unless a code component reads it (as a marker).
-  const { decls, beats, winners } = cascadeOf(layers, { inertShows: !!opts.keepShown, allShows: !!opts.keepShown });
+  const { decls, beats, winners } = cascadeOf(layers, { inertShows: false });
   const beneath = opts.beneath ?? 0;
   const own = (d: CascadeDecl) => d.index >= beneath;
   // What a declaration sets besides display, which is decided on its own below.
@@ -1356,7 +1358,8 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
     // Display: every declaration that sets it at this size, ranked as the stylesheets rank them. A show writes its
     // display first in its rule, before the rule's own declarations.
     type Display = { d: CascadeDecl; order: number; value: string };
-    const displayOf = (decl: string[]) => decl.filter((x) => x.startsWith('display:')).map((x) => x.slice(8).trim()).at(-1);
+    // The last display a list of declarations sets that a browser takes (it skips a value it does not know).
+    const displayOf = (decl: string[]) => decl.filter((x) => x.startsWith('display:')).map((x) => x.slice(8).trim()).filter((v) => DISPLAY_VALUE.test(v)).at(-1);
     const candidates: Display[] = [];
     for (const d of decls) {
       if (!applies(d.bucket)) continue;
@@ -1371,7 +1374,7 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
         // The display a show writes: the layout the layers give it, or what the theme gives its kind of element.
         const layout = decls.filter((x) => x.prop === 'layout' && (x.bucket === 'base' || x.bucket === size)).at(-1);
         const v = (layout && displayOf(styleToCss('layout', layout.value))) || opts.shownDisplay?.(size) || '';
-        candidates.push({ d, order: -1, value: opts.keepShown ? 'shown' : v });
+        candidates.push({ d, order: -1, value: layers[d.index]?.marks ? 'shown' : v });
       }
     }
     const rank = (c: Display) => [c.d.strength, BUCKET_ORDER[c.d.bucket], c.d.index, c.order];

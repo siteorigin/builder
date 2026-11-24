@@ -528,6 +528,10 @@ describe('component.detachInstance (#373)', () => {
     (home(s).nodes.n_target as InstanceNode).props.box = {};
     const r = detach(s);
     expect(descendants(r.state, r.results[0].nodeId as string).some((n) => n.kind === 'text' && n.text === 'Field default')).toBe(true);
+    // A stored value that is not an object shows the defaults too.
+    (home(s).nodes.n_target as InstanceNode).props.box = null;
+    const none = detach(s);
+    expect(descendants(none.state, none.results[0].nodeId as string).some((n) => n.kind === 'text' && n.text === 'Field default')).toBe(true);
   });
 
   it('keeps a page duplicate’s copy of a detached gallery one viewer group across its sections', () => {
@@ -560,6 +564,13 @@ describe('component.detachInstance (#373)', () => {
     const phone = detach(s);
     const codedPhone = descendants(phone.state, phone.results[0].nodeId as string).find((n): n is InstanceNode => n.kind === 'instance')!;
     expect(codedPhone.overrides?.root?.phone?.hidden).toBe(false);
+    // The page placement's own show on that part gave the code no marker: it gives none after detaching either.
+    (s.components[DEF].tree!.nodes.coded as InstanceNode).overrides = undefined;
+    s.components[DEF].parts.coded = { nodeId: 'coded', label: 'Coded' };
+    (home(s).nodes.n_target as InstanceNode).overrides = { coded: { phone: { hidden: false } } };
+    const page = detach(s);
+    const codedPage = descendants(page.state, page.results[0].nodeId as string).find((n): n is InstanceNode => n.kind === 'instance')!;
+    expect(codedPage.overrides?.root?.phone?.hidden).toBeUndefined();
   });
 
   it('is offered to the AI for the placement it may change', async () => {
@@ -632,6 +643,9 @@ describe('flattenStyles', () => {
     // A template the stylesheet does not write makes no tablet-and-up rule: the later layout still shows it.
     const invalid = flattenStyles([{ styles: { base: { gridTemplate: 'garbage', customCss: 'display: none' } }, strength: 2, wideColumns: true }, { styles: { base: { layout: 'block' } }, strength: 2, wideColumns: true }]);
     for (const sz of SIZES) expect(perSize(invalid)[sz].hidden, sz).toBeUndefined();
+    // A display value the browser does not take leaves the one before it in force.
+    const bogus = flattenStyles([{ styles: { base: { customCss: 'display: none; display: bogus' } }, strength: 1 }]);
+    for (const sz of SIZES) expect(perSize(bogus)[sz].hidden, sz).toBe(true);
   });
 
   it('refuses custom CSS that one element cannot hold, rather than dropping some of it', () => {

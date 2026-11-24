@@ -33,8 +33,9 @@ function withObjectFields(def: ComponentDefinition, props: Record<string, unknow
   const out = { ...props };
   for (const [name, schema] of Object.entries(def.properties)) {
     const v = out[name];
-    if (schema.type !== 'object' || !v || typeof v !== 'object' || Array.isArray(v)) continue;
-    const stored = v as Record<string, unknown>;
+    if (schema.type !== 'object') continue;
+    // A value that is not an object (none stored, or a hand edit) shows the object's defaults.
+    const stored = v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
     const fallback = schema.default && typeof schema.default === 'object' ? schema.default : {};
     out[name] = { ...stored, ...Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, Object.hasOwn(stored, k) ? stored[k] : Object.hasOwn(fallback, k) ? fallback[k] : f.default])) };
   }
@@ -323,7 +324,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     const beneath = chain.layers;
     // The design's own change to it is three classes: it beats every option, loses to the placement's four, and shows
     // again what the placed component's design hides.
-    const nested: StyleLayer[] = src.overrides?.root ? [{ styles: src.overrides.root, strength: 3 + tie(def.id), wideColumns: true, unhides: beneath.map((l) => l.styles) }] : [];
+    const nested: StyleLayer[] = src.overrides?.root ? [{ styles: src.overrides.root, strength: 3 + tie(def.id), wideColumns: true, unhides: beneath.map((l) => l.styles), marks: chain.code }] : [];
     const layers = [...beneath, ...layersFor(src.id, at, 1), ...nested];
     const innerRoot = inner?.kind === 'managed' ? inner.tree?.rootIds[0] : undefined;
     const root = flattenStyles(layers, {
@@ -331,8 +332,6 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       wideColumns: true,
       link: !!innerRoot && inner?.tree?.nodes[innerRoot]?.kind === 'link',
       tooMuch,
-      // A code component shows a root it hides again only through the marker a `hidden: false` gives it.
-      keepShown: chain.code,
       shownDisplay: () => (innerRoot && inner ? naturalDisplay(inner.tree!.nodes[innerRoot]) : null)
     });
     const overrides = { ...(src.overrides ?? {}) };
