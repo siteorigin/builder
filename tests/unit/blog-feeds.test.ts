@@ -15,7 +15,8 @@ import { generateProject, pageFile, publishedState, resolveInstanceProps } from 
 import { pageLinks } from '@generator/archive';
 import { GenerationCache } from '@generator/cache';
 import { archivePages } from '@shared/archives';
-import { entryQuery, entryRows } from '@shared/entry-feed';
+import { entryQuery, entryRows, termsNamed } from '@shared/entry-feed';
+import { withheldRoutes } from '../../src/main/export';
 import { upsertToolSchema } from '@agent/macros';
 import { retrieveExamples } from '@agent/examples';
 import { TreeBuilder } from '@catalogue/dsl';
@@ -563,5 +564,99 @@ describe('after the review', () => {
     const after = thumbKey(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_wheel', terms: { tags: ['glaze'] } } as EditOperation), 'project.wrapper');
     expect(before).not.toBeNull();
     expect(after).not.toBe(before);
+  });
+});
+
+describe('after the focused review', () => {
+  it('gives a draft made before archive pages no hold on their addresses, whether drafts are in the state or not', () => {
+    const base = run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: 2 } as EditOperation);
+    const s = structuredClone(base);
+    const pg = structuredClone(Object.values(s.pages).find((p) => p.id !== s.site.homePageId)!);
+    Object.assign(pg, { id: 'pg_legacy', title: 'Legacy', route: '/blog/page/2/', draft: true });
+    s.pages[pg.id] = pg;
+    s.site.pageOrder.push(pg.id);
+    const live = publishedState(s);
+    const routes = (st: ProjectState) => archivePages(st).filter((p) => !p.category).map((p) => p.route);
+    expect(routes(s)).toEqual(['/blog/', '/blog/page/2/', '/blog/page/3/']);
+    expect(routes(live)).toEqual(routes(s));
+    // The archive page is what the website and the preview have there, and the export does not count it as the draft's.
+    expect(generateProject(s).get(route('/blog/page/2/'))).toContain('so-archive');
+    expect(withheldRoutes(s, live).map((r) => r.route)).not.toContain('/blog/page/2/');
+    expect(validateState(s).find((d) => d.code === 'ARCHIVE_ADDRESS_TAKEN')?.message).toMatch(/can show one of them there instead/);
+  });
+
+  it('refuses a move whose kept addresses land in the archive folders, judged as the batch keeps them', () => {
+    const s = run(
+      createStarterState('business', 'Riverside Studio', false),
+      { type: 'collection.create', collectionId: 'posts', route: '/blog/page/' } as EditOperation,
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_two', title: 'Two', slug: '2', publishedAt: '2026-01-01', draft: false, body: ['Two.'] } as EditOperation
+    );
+    // Turned into a draft and back within the move's batch, it was published at the start: its address is kept.
+    expect(() =>
+      run(
+        s,
+        { type: 'entry.update', collectionId: 'posts', entryId: 'en_two', draft: true } as EditOperation,
+        { type: 'collection.update', collectionId: 'posts', route: '/blog/' } as EditOperation,
+        { type: 'entry.update', collectionId: 'posts', entryId: 'en_two', draft: false } as EditOperation
+      )
+    ).toThrow(/archive pages/);
+    // A draft at the start keeps no address: it may move, and be published in the same batch.
+    const drafted = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_two', draft: true } as EditOperation);
+    const moved = run(drafted, { type: 'entry.update', collectionId: 'posts', entryId: 'en_two', draft: false } as EditOperation, { type: 'collection.update', collectionId: 'posts', route: '/blog/' } as EditOperation);
+    expect(moved.collections.posts.settings.route).toBe('/blog/');
+    expect(moved.site.redirects ?? []).toEqual([]);
+  });
+
+  it('hands the rows on to code converted from a design that places another design with the feed', () => {
+    const { s: placed } = onHome(blog(), 'blog.grid');
+    const s = structuredClone(placed);
+    const grid = Object.values(s.components).find((d) => d.componentId === 'blog.grid')!;
+    const design = (id: string, inner: Record<string, unknown>): ComponentDefinition =>
+      ({
+        schemaVersion: 1,
+        id,
+        componentId: id,
+        contractVersion: 1,
+        kind: 'managed',
+        owner: 'project',
+        name: id,
+        description: '',
+        category: 'custom',
+        tags: [],
+        properties: {},
+        parts: { root: { nodeId: 'root', label: 'Root' } },
+        tree: { rootIds: ['root'], nodes: { root: { id: 'root', kind: 'element', tag: 'div', children: ['inner'] }, inner: { id: 'inner', kind: 'instance', props: {}, ...inner } } }
+      }) as unknown as ComponentDefinition;
+    s.components['project.inner'] = design('project.inner', { definitionId: grid.id, props: { category: 'craft' } });
+    s.components['project.outer'] = design('project.outer', { definitionId: 'project.inner' });
+    const home = s.site.homePageId;
+    s.pages[home].nodes.n_outer = { id: 'n_outer', kind: 'instance', definitionId: 'project.outer', props: {} };
+    s.pages[home].rootIds.push('n_outer');
+    const code = run(s, { type: 'component.convertToCode', owner: page(home), nodeId: 'n_outer' } as EditOperation);
+    const source = generateProject(publishedState(code)).get(pageFile(code.pages[home]))!;
+    expect(source).toMatch(/so_pages=\{\{[^\n]*"entries":\{[^\n]*"title":"Glaze night"/);
+  });
+
+  it('matches a term whose label has a comma in it, among others', () => {
+    const s = run(blog(), {
+      type: 'collection.update',
+      collectionId: 'posts',
+      taxonomies: { categories: { label: 'Categories', terms: { arts: { label: 'Arts, Culture' }, news: { label: 'News' } } }, tags: { label: 'Tags', terms: {} } }
+    } as EditOperation);
+    const c = s.collections.posts;
+    expect(termsNamed(c, 'categories', 'Arts, Culture, News')).toEqual(['arts', 'news']);
+    expect(termsNamed(c, 'categories', 'News, Arts, Culture')).toEqual(['news', 'arts']);
+    expect(termsNamed(c, 'categories', 'Culture')).toEqual([]);
+  });
+
+  it('keeps every collection’s rows selectable in a layout whose feed reads its collection from the entry', () => {
+    let s = run(blog(), { type: 'collection.create', collectionId: 'projects' } as EditOperation, { type: 'entry.create', collectionId: 'projects', entryId: 'en_barn', title: 'Barn', publishedAt: '2026-01-01', draft: false, body: ['Barn.'] } as EditOperation);
+    s = run(s, { type: 'node.insert', owner: POSTS, parentId: null, componentId: 'blog.grid' } as EditOperation);
+    const n = Object.values(s.collections.posts.settings.template.nodes).find((x) => x.kind === 'instance' && s.components[x.definitionId]?.componentId === 'blog.grid')!;
+    s = run(s, { type: 'node.setBinding', owner: POSTS, nodeId: n.id, field: 'prop', prop: 'collection', binding: { $entry: 'excerpt' } } as EditOperation);
+    const def = s.components[(n as InstanceNode).definitionId];
+    const rows = placedFeedRows(s, def.properties.items as ListProp, POSTS, def.properties, (s.collections.posts.settings.template.nodes[n.id] as InstanceNode).props);
+    expect(rows.map((r) => r.id)).toContain('en_barn');
+    expect(rows.map((r) => r.id)).toContain('en_kiln');
   });
 });

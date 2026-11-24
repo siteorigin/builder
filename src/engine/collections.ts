@@ -329,10 +329,6 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     const under = Object.values(c.entries).find((e) => entryRoute(c, e).toLowerCase() === route.toLowerCase());
     if (under) fail(`${route} is the address of the entry “${under.title}”. Choose another address for the collection.`);
     refuseArchiveClash(state, route, c.settings.id);
-    // A published entry's address is kept working after the move: never in the archive folders the move gives the collection.
-    const stranded = Object.values(c.entries).find((e) => e.draft === false && underArchiveFolder(route, entryRoute(c, e)));
-    if (stranded)
-      fail(`Moving the collection to ${route} would keep “${stranded.title}”'s address ${entryRoute(c, stranded)} working inside ${route}${ARCHIVE_FOLDERS.find((f) => entryRoute(c, stranded).toLowerCase().startsWith(`${route.toLowerCase()}${f}/`))}/, which is kept for the collection's archive pages. Choose another address for the collection.`);
     for (const e of Object.values(c.entries)) {
       const holder = held(`${route}${e.slug}/`, { ...except, entryIds: new Set([e.id]) });
       if (holder) fail(`Moving the collection to ${route} would give “${e.title}” the address ${route}${e.slug}/, which is ${holder.label}'s. Change that entry's slug first, or choose another address.`);
@@ -343,6 +339,12 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     // Each published entry's address keeps working, sending visitors on to the entry's new one.
     const holder = routeIndex(state);
     const kept = left.filter(({ e, from }) => keepsAddress(e.id, from, e.draft === false, atStart, holder)).map(({ e, from }): SiteRedirect => ({ from, entryId: e.id }));
+    // An address kept working is never in the archive folders the move gives the collection: it would stop its index there.
+    const stranded = kept.find((k) => underArchiveFolder(route, k.from));
+    if (stranded) {
+      const folder = ARCHIVE_FOLDERS.find((f) => stranded.from.toLowerCase().startsWith(`${route.toLowerCase()}${f}/`));
+      fail(`Moving the collection to ${route} would keep “${c.entries[stranded.entryId!].title}”'s address ${stranded.from} working inside ${route}${folder}/, which is kept for the collection's archive pages. Choose another address for the collection.`);
+    }
     if (kept.length) setKeptAddresses(state, [...keptAddresses(state), ...kept]);
   }
   if (op.pageSize !== undefined) c.settings.pageSize = pageSizeOf(op.pageSize);
@@ -671,13 +673,16 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
   // A page or old address made before archive pages, inside a collection's archive folders: the collection's index or
   // a category archive stops before it, and the website leaves its later pages out.
   for (const o of routeOwners(state)) {
-    if (o.kind !== 'page' && o.kind !== 'redirect') continue;
+    if (o.kind === 'collection') continue;
     const archive = archiveRouteOwner(state, o.route);
-    if (!archive || archive.kind !== 'collection') continue;
+    if (!archive || archive.kind !== 'collection' || (o.kind === 'entry' && o.collectionId === archive.collectionId)) continue;
+    // A draft is left out of the website, where an archive page can show at its address instead; anything else there
+    // stops the archive pages before it.
+    const draft = o.kind === 'page' ? state.pages[o.pageId]?.draft === true : o.kind === 'entry' ? state.collections[o.collectionId]?.entries[o.entryId]?.draft !== false : false;
     out.push({
       severity: 'warning',
       code: 'ARCHIVE_ADDRESS_TAKEN',
-      message: `${o.label[0].toUpperCase()}${o.label.slice(1)} is at ${o.route}, an address kept for ${archive.label}, so they stop before it. ${o.kind === 'page' ? 'Give the page another address.' : 'Stop keeping that old address working.'}`,
+      message: `${o.label[0].toUpperCase()}${o.label.slice(1)} is at ${o.route}, an address kept for ${archive.label}: ${draft ? 'the website can show one of them there instead' : 'they can stop before it'}. ${o.kind === 'page' ? 'Give the page another address.' : o.kind === 'entry' ? 'Give the entry another slug, or move its collection.' : 'Stop keeping that old address working.'}`,
       owner: { kind: 'collection', id: archive.collectionId },
       site: o.route.toLowerCase()
     });

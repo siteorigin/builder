@@ -111,13 +111,17 @@ export function termNamed(collection: Collection, taxonomy: string, wanted: stri
 export function termsNamed(collection: Collection, taxonomy: string, wanted: string): string[] {
   const whole = termNamed(collection, taxonomy, wanted.trim());
   if (whole) return [whole];
-  const found = wanted
-    .split(',')
-    .map((w) => w.trim())
-    .filter(Boolean)
-    .map((w) => termNamed(collection, taxonomy, w))
-    .filter((t): t is string => !!t);
-  return [...new Set(found)];
+  // A label may hold a comma itself ("Arts, Culture"): the longest run of pieces that names a term is taken first.
+  const pieces = wanted.split(',').map((w) => w.trim());
+  const found = new Set<string>();
+  for (let i = 0; i < pieces.length; ) {
+    let j = pieces.length;
+    let term: string | undefined;
+    for (; j > i; j--) if ((term = termNamed(collection, taxonomy, pieces.slice(i, j).join(', ')))) break;
+    if (term) found.add(term);
+    i = term ? j : i + 1;
+  }
+  return [...found];
 }
 
 /** Whether an entry has the term `termId` of `taxonomy`. */

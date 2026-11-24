@@ -7,7 +7,7 @@
  * line agrees about it.
  */
 import type { Collection, EntryDoc, ProjectState } from './types';
-import { archivePageSize, hasCategoryArchives, isTermId, siteEntries } from './collections';
+import { archivePageSize, findEntry, hasCategoryArchives, isDraftEntry, isTermId, siteEntries } from './collections';
 import { hasTerm, publishedEntries } from './entry-feed';
 import { validateRoute } from './routes';
 
@@ -46,17 +46,26 @@ export function categoryTerms(collection: Collection): Array<{ id: string; label
 /**
  * Every archive page of the site, collections by ID, each one's index first and then its categories in the order they
  * are offered. A collection's index always has its first page, even with nothing to list yet; a category archive
- * exists only while the category has a published entry. An archive page never takes an address something else holds
- * (a page, an entry, an old address kept working, another collection's own address, another archive page, as a
- * project made before archives or edited by hand may have): its series stops before it, so no Previous or Next link
- * leads somewhere else.
+ * exists only while the category has a published entry. An archive page never takes an address something the website
+ * has holds (a page, an entry, an old address kept working, another collection's own address, another archive page,
+ * as a project made before archives or edited by hand may have): its series stops before it, so no Previous or Next
+ * link leads somewhere else. A draft holds nothing here: the website leaves it out, and its archive page shows there.
  */
 export function archivePages(state: ProjectState): ArchivePage[] {
+  // Only what the website has holds an address: a draft (or an old address leading to one) is left out of it, so the
+  // series is the same whether drafts are in the state or not, and an archive page shows where a draft is kept back.
+  const homeId = state.site?.homePageId;
+  const draftPage = (id: unknown) => typeof id === 'string' && Object.hasOwn(state.pages ?? {}, id) && state.pages[id].draft === true && id !== homeId;
   const held = new Set<string>();
-  for (const p of Object.values(state.pages ?? {})) if (typeof p?.route === 'string') held.add(p.route.toLowerCase());
-  for (const e of siteEntries(state)) held.add(e.route.toLowerCase());
+  for (const p of Object.values(state.pages ?? {})) if (typeof p?.route === 'string' && !draftPage(p.id)) held.add(p.route.toLowerCase());
+  for (const e of siteEntries(state)) if (!isDraftEntry(e.entry)) held.add(e.route.toLowerCase());
   const kept: unknown = state.site?.redirects;
-  for (const r of Array.isArray(kept) ? (kept as Array<{ from?: unknown }>) : []) if (typeof r?.from === 'string') held.add(r.from.toLowerCase());
+  for (const r of Array.isArray(kept) ? (kept as Array<{ from?: unknown; pageId?: unknown; entryId?: unknown }>) : []) {
+    if (typeof r?.from !== 'string' || draftPage(r.pageId)) continue;
+    const entry = typeof r.entryId === 'string' ? findEntry(state, r.entryId) : undefined;
+    if (entry && isDraftEntry(entry.entry)) continue;
+    held.add(r.from.toLowerCase());
+  }
   // Each collection's own address is its index's, whichever collection's series comes first.
   const indexes = new Set(
     Object.values(state.collections ?? {})

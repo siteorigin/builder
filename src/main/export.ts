@@ -609,11 +609,13 @@ export function withheldRoutes(state: ProjectState, live: ProjectState): Array<{
   if (live === state) return [];
   const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
   const shown = new Set(siteEntries(live).map((e) => e.route.toLowerCase()));
+  // A collection's archive page shows at a draft's address made before archive pages: nothing of the draft is there.
+  const archived = new Set(archivePages(live).map((p) => p.route.toLowerCase()));
   return [
     ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, draft: p.title })),
     ...siteEntries(state).filter((e) => !shown.has(e.route.toLowerCase())).map((e) => ({ route: e.route, draft: e.entry.title })),
     ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.title }))
-  ];
+  ].filter((r) => !archived.has(r.route.toLowerCase()));
 }
 
 /** Notes for an editable project with drafts: they are kept to edit, and its own build leaves them out. */

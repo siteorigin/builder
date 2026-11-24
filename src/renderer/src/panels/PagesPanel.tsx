@@ -7,7 +7,7 @@ import { aiActivity, applyOps, commitDraft, commitOps, getState, markDraft, rena
 import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { limitNote } from '../lib/kept-drafts';
 import { TEXT_LIMITS } from '@shared/text-limits';
-import { DraftInput, keepRefusedText, openSection, rovingKeys, useMenu } from '../components/ui';
+import { keepRefusedText, openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { goToShellPart, openLayout, selectPage, setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
@@ -1104,9 +1104,14 @@ export function PagesPanel() {
  * How a collection's index and category archives list its published entries: how many to a page, whether each
  * category has an archive of its own, and a way to see the index in the preview, as visitors get it.
  */
+/** The page sizes offered for a collection's index, besides its own (a size set in its settings file is kept). */
+const PAGE_SIZES = [2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 50, MAX_PAGE_SIZE];
+
 function CollectionArchive({ collectionId, name, route, pageSize, categories }: { collectionId: string; name: string; route: string; pageSize: number; categories: boolean }) {
   const update = (patch: { pageSize?: number; categoryArchives?: boolean }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
   const viewIndex = () => {
+    // The index is a page of the website: a layout being edited closes first, as opening a page closes it.
+    if (getState().templateMode) setState({ templateMode: null, ...(getState().selection?.owner.kind === 'template' ? { selection: null } : {}) });
     setMode('preview');
     // Once the canvas shows the preview; one still starting opens the index once it is ready.
     requestAnimationFrame(() => {
@@ -1117,18 +1122,24 @@ function CollectionArchive({ collectionId, name, route, pageSize, categories }: 
     <div className="pages-collection-archive" role="group" aria-label={`The ${name} index`}>
       <label className="pages-collection-size">
         Per page
-        <DraftInput
-          type="number"
-          className="input sm"
-          ariaLabel={`${name} entries per index page`}
+        {/* A choice made at once, so no typed value is ever held while the project changes under it. */}
+        <select
+          className="select sm"
+          aria-label={`${name} entries per index page`}
           value={String(pageSize)}
-          onCommit={(v) => {
-            const n = v.trim() === '' ? NaN : Number(v);
-            // A whole number from 1 to MAX_PAGE_SIZE; anything else is refused and left in the field.
-            if (!Number.isInteger(n) || n < 1 || n > MAX_PAGE_SIZE) return false;
-            if (n !== pageSize) void update({ pageSize: n }, `Show ${n} per page on the ${name} index`);
+          onChange={(e) => {
+            const n = Number(e.target.value);
+            if (Number.isInteger(n) && n !== pageSize) void update({ pageSize: n }, `Show ${n} per page on the ${name} index`);
           }}
-        />
+        >
+          {[...new Set([...PAGE_SIZES, pageSize])]
+            .sort((a, b) => a - b)
+            .map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+        </select>
       </label>
       <label className="pages-collection-check">
         <input type="checkbox" checked={categories} onChange={(e) => void update({ categoryArchives: e.target.checked }, e.target.checked ? 'Give categories their own pages' : 'Stop giving categories their own pages')} />

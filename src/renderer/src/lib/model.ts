@@ -117,10 +117,14 @@ export function placedFeedRows(
     // what the placement reads of the entry read for it.
     const shown = sample?.entryId ? sampleQuery(state, owner.id, sample.entryId, sample.nodeId, properties) : undefined;
     if (shown) return feedRows(state, schema, { entry: { ...entry, entryId: sample!.entryId! }, query: shown });
-    // A filter read from each entry can show any of the collection's entries on one page or another.
+    // A filter read from each entry can show any of the collection's entries on one page or another (and a collection
+    // read from each entry, any collection's).
     const bound = (k: string) => isEntryBinding(props[k]);
-    if (['collection', 'category', 'tag', 'count'].some(bound))
-      return feedRows(state, { feed: 'entries' }, { entry, query: { collection: bound('collection') ? '' : query.collection, category: bound('category') ? '' : query.category, tag: bound('tag') ? '' : query.tag } });
+    if (['collection', 'category', 'tag', 'count'].some(bound)) {
+      const widened = { category: bound('category') ? '' : query.category, tag: bound('tag') ? '' : query.tag };
+      const ids = bound('collection') ? Object.keys(state.collections ?? {}).sort() : [query.collection];
+      return ids.flatMap((collection) => feedRows(state, { feed: 'entries' }, { entry, query: { collection, ...widened } }));
+    }
     const limit = Math.min(feedLimit(schema), query.count ?? Infinity);
     return feedRows(state, { feed: 'entries' }, { entry, query: { ...query, count: Number.isFinite(limit) ? limit + 1 : undefined } });
   }

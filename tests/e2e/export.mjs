@@ -398,9 +398,7 @@ const backdated = await win.evaluate(() => window.builder.project.apply({ operat
 assert.equal(backdated.ok, true, `the post is backdated: ${backdated.error?.message}`);
 // Two posts to a page, set where the collection is listed in Pages.
 await openRail('Pages');
-const perPage = win.getByLabel('Posts entries per index page');
-await perPage.fill('2');
-await perPage.press('Tab');
+await win.getByLabel('Posts entries per index page').selectOption('2');
 await eventually(async () => assert.equal((await win.evaluate(() => window.builder.project.snapshot())).state.collections.posts.settings.pageSize, 2, 'the page size set in Pages is saved'), 10000);
 
 /** The published posts as a built website has them, wherever it was built (`root`, served under `base`). */

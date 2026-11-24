@@ -1002,11 +1002,12 @@ export function elementIds(state: ProjectState, pageId: string): Set<string> {
  */
 export function sharedPageIds(state: ProjectState, part: ShellPart): Set<string> {
   const pages = pagesShowing(state, part);
-  if (!pages.length) return new Set(LAYOUT_IDS);
+  // A collection's index and archive pages show the header and footer around a list of posts, and no page's sections.
+  const archived = archivePages(state).length > 0;
+  if (!pages.length && !archived) return new Set(LAYOUT_IDS);
   const shell = shellIds(state);
   const sets = pages.map((p) => pageIds(state, p.id, shell));
-  // A collection's index and archive pages show the header and footer around a list of posts, and no page's sections.
-  if (archivePages(state).length) sets.push(new Set([...LAYOUT_IDS, ...shell.header, ...shell.footer]));
+  if (archived) sets.push(new Set([...LAYOUT_IDS, ...shell.header, ...shell.footer]));
   return new Set([...sets[0]].filter((id) => sets.every((x) => x.has(id))));
 }
 
@@ -1882,6 +1883,9 @@ const entryTrees = new WeakMap<NodeTree, { collectionId: string; entryId: string
 /** A collection's layout as stored, when it is a tree at all (a damaged one is reported with its settings). */
 function storedLayout(state: ProjectState, collectionId: string): NodeTree | undefined {
   const t = state.collections[collectionId]?.settings?.template;
-  return t && typeof t === 'object' && Array.isArray(t.rootIds) && t.nodes && typeof t.nodes === 'object' ? t : undefined;
+  if (!(t && typeof t === 'object' && Array.isArray(t.rootIds) && t.nodes && typeof t.nodes === 'object')) return undefined;
+  // Read for no entry in particular: its feeds list its own collection's entries, leaving none out.
+  if (!entryTrees.has(t)) entryTrees.set(t, { collectionId, entryId: '' });
+  return t;
 }
 

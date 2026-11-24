@@ -2511,7 +2511,15 @@ interface RowNeeds {
  * decides; entry feeds are chosen by a placement's properties, which code does not have, so it gets none.
  */
 function pageRowNeeds(state: ProjectState, def: ComponentDefinition, memo: Map<string, RowNeeds | null> = new Map(), path: Set<string> = new Set()): RowNeeds | null {
-  if (def.kind === 'code') return !Object.hasOwn(def.properties, 'so_pages') && /\bso_pages\b/.test(def.source ?? '') ? { articles: Infinity, currentPage: true, entries: codeEntryNeeds(def.source ?? '') } : null;
+  if (def.kind === 'code') {
+    const source = def.source ?? '';
+    if (Object.hasOwn(def.properties, 'so_pages') || !/\bso_pages\b/.test(source)) return null;
+    const entries = codeEntryNeeds(source);
+    // And what the designs it places need in turn: code converted from a design imports the designs inside it.
+    for (const d of Object.values(state.components))
+      if (d.kind === 'managed' && d.tree && d.id !== def.id && source.includes(`/${defKey(d.id)}.svelte`)) for (const [k, q] of treeRowNeeds(state, d, memo, path)?.entries ?? []) entries.set(k, q);
+    return { articles: Infinity, currentPage: true, entries };
+  }
   return treeRowNeeds(state, def, memo, path);
 }
 
@@ -3624,10 +3632,6 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {},
     const cid = collection.settings.id;
     files.set(entryFile(route), file(`entry:${cid}:${entry.id}${mode}`, (s) => generateEntry(s, cid, entry.id, opts)));
   }
-  // Each collection's index and category archives. A page of one reads its series (which entries it lists, and the
-  // pages before and after it) and those entries, so a post published, backdated or turned back into a draft makes
-  // again only the pages it moves across.
-  for (const { collectionId, route } of archivePages(state)) files.set(archiveFile(route), file(`archive:${collectionId}:${route}`, (s) => generateArchive(s, collectionId, route)));
   for (const { from, page, entry } of liveRedirects(state)) {
     if (page) files.set(redirectFile(from), file(`redirect:${page.id}:${from}`, (s) => generateRedirect(s, from, s.pages[page.id])));
     else {
@@ -3637,6 +3641,11 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {},
       files.set(redirectFile(from), file(`redirect:${cid}:${eid}:${from}`, (s) => generateRedirect(s, from, { route: entryRoute(s.collections[cid], s.collections[cid].entries[eid]) })));
     }
   }
+  // Each collection's index and category archives. A page of one reads its series (which entries it lists, and the
+  // pages before and after it) and those entries, so a post published, backdated or turned back into a draft makes
+  // again only the pages it moves across. Written after everything else: where a draft made before archive pages sits
+  // at one's address, the archive page is what the website has there, in the preview too.
+  for (const { collectionId, route } of archivePages(state)) files.set(archiveFile(route), file(`archive:${collectionId}:${route}`, (s) => generateArchive(s, collectionId, route)));
   // The not-found page and the hook that makes it work at any address both read the whole site's sections; the hook
   // also gives each page in another language than the site's its own <html lang>.
   files.set(`${NOT_FOUND_DIR}/+page.svelte`, file('not-found', generateNotFound));

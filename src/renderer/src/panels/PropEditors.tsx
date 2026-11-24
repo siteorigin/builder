@@ -32,6 +32,7 @@ import type { PictureStandIn } from '../lib/sharing';
 import { effectiveItem } from '@shared/page-teasers';
 import { feedLimit } from '@shared/articles';
 import { entryQuery, feedCollection } from '@shared/entry-feed';
+import { findEntry } from '@shared/collections';
 import { openPost, selectPage } from '../lib/actions';
 import { placedFeedRows, resolveRef } from '../lib/model';
 import { groupFields, listItemImage, listRowTitle, type PropGroup } from '@shared/fields';
@@ -1551,7 +1552,15 @@ function ComputedList({ name, schema, state, place }: { name: string; schema: Li
           <ol className="computed-rows" aria-label={`${schema.label} shown here`}>
             {rows.map((r) => (
               <li key={r.id}>
-                <button className="link-btn" onClick={() => collection && void openPost(collection.settings.id, r.id)} title={`Open ${r.title} in Posts`}>
+                <button
+                  className="link-btn"
+                  onClick={() => {
+                    // Each row's own collection: one read from the entry a layout is shown on can be another.
+                    const found = findEntry(state, r.id);
+                    if (found) void openPost(found.collection.settings.id, r.id);
+                  }}
+                  title={`Open ${r.title} in Posts`}
+                >
                   {r.title}
                 </button>
                 {r.dateLabel && <span className="faint"> · {r.dateLabel}</span>}
