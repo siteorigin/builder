@@ -3082,7 +3082,7 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
   const body: string[] = [
     `\t\t<header class="so-entry__header">`,
     `\t\t\t<h1 class="so-entry__title">{${js(entry.title)}}</h1>`,
-    ...(meta.length ? [`\t\t\t<p class="so-entry__meta">${meta.join('')}</p>`] : []),
+    ...(meta.length ? [`\t\t\t<p class="so-entry__meta">${meta.join(' ')}</p>`] : []),
     `\t\t</header>`
   ];
   if (featured) {

@@ -293,17 +293,19 @@ assert.deepEqual(blogState.site.redirects?.filter((r) => r.entryId), [{ from: '/
 
 /** The published posts as a built website has them, wherever it was built (`root`, served under `base`). */
 function checkBuiltPosts(root, label, base = '') {
-  const hours = readFileSync(join(root, 'blog', 'opening-times', 'index.html'), 'utf8');
+  // Read without the comments Svelte leaves to hydrate from.
+  const page = (...path) => readFileSync(join(root, ...path, 'index.html'), 'utf8').replace(/<!--[^]*?-->/g, '');
+  const hours = page('blog', 'opening-times');
   assert.match(hours, /<h1 class="so-entry__title[^"]*">Opening hours<\/h1>/, `${label}: the renamed post is prerendered at its new address`);
-  assert.match(hours, /<time datetime="2026-01-12">January 12, 2026<\/time>/, `${label}: the post states its publication date in a <time> element`);
+  assert.match(hours, /<time datetime="2026-01-12">January 12, 2026<\/time> <span class="so-entry__author">Ana Ruiz<\/span>/, `${label}: the post states its publication date in a <time> element, and its author`);
   assert.match(hours, /<meta property="article:published_time" content="2026-01-12"/, `${label}: the post says when it was published`);
   assert.match(hours, /<meta property="og:type" content="article"/, `${label}: the post is an article`);
   assert.match(hours, /<strong>Tuesday to Saturday<\/strong>/, `${label}: the post shows its text`);
-  const spring = readFileSync(join(root, 'blog', 'spring-open-studio', 'index.html'), 'utf8');
+  const spring = page('blog', 'spring-open-studio');
   assert.match(spring, /<meta property="article:modified_time" content="2026-03-09"/, `${label}: the revised post says when it was revised`);
   const springLinks = [...spring.matchAll(/<a [^>]*href="([^"]*)"[^>]*>our hours<\/a>/g)].map((m) => new URL(m[1], `https://example.test${base}/blog/spring-open-studio/`).pathname);
   assert.deepEqual(springLinks, [`${base}/blog/opening-times/`], `${label}: the link between posts follows the rename`);
-  const old = readFileSync(join(root, 'blog', 'opening-hours', 'index.html'), 'utf8');
+  const old = page('blog', 'opening-hours');
   const refresh = old.match(/<meta http-equiv="refresh" content="0; url=([^"]*)"/)?.[1];
   assert.ok(refresh, `${label}: the old address of the renamed post sends visitors on`);
   assert.equal(new URL(refresh.replace(/&amp;/g, '&'), `https://example.test${base}/blog/opening-hours/`).pathname, `${base}/blog/opening-times/`, `${label}: the old address leads to the post's new one`);
