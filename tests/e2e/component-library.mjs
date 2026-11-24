@@ -243,7 +243,14 @@ await eventually(async () => assert.deepEqual((await snapshot()).pages[pageId], 
 assert.equal((await snapshot()).components[hall.id], undefined, 'and removes the component');
 
 step('a single heading becomes a component from its Layers row, with one part, and a second goes beside it (#185)');
-const [{ nodeId: notice }] = await apply([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }], 'Insert section');
+// A second Section after it, so a copy that ignored the selection would land there instead.
+const [{ nodeId: notice }] = await apply(
+  [
+    { type: 'node.insert', owner, parentId: null, componentId: 'layout.section' },
+    { type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }
+  ],
+  'Insert sections'
+);
 const [{ nodeId: floorHeading }] = await apply([{ type: 'node.insert', owner, parentId: notice, slot: 'content', primitive: 'heading', text: 'Floor plan' }], 'Add heading');
 const pageBefore185 = (await snapshot()).pages[pageId];
 await openRail('Layers');

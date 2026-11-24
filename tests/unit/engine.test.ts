@@ -223,6 +223,7 @@ describe('components', () => {
     const leaves = [
       { primitive: 'heading', text: 'Opening hours', props: { heading: 'text' } },
       { primitive: 'paragraph', text: 'Open daily', props: { text: 'text' } },
+      { primitive: 'richtext', text: '- Mornings\n- Evenings', props: { body: 'text' } },
       { primitive: 'image', props: { image: 'image' } },
       { primitive: 'button', text: 'Book now', props: { buttonLabel: 'label', buttonLink: 'link' } },
       { primitive: 'icon', props: { icon: 'icon' } }
