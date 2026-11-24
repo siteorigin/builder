@@ -139,7 +139,7 @@ describe('component.upsert: building a managed component in one operation (#358)
     const placed = s.state.pages[home.id].nodes[r.results![1].nodeId as string] as InstanceNode;
     expect(placed).toMatchObject({ kind: 'instance', definitionId, variants: { tone: 'dark' } });
     expect((placed.props.plans as ListItem[]).map((p) => p.name)).toEqual(['Basic', 'Pro']);
-    expect((placed.props.plans as ListItem[]).map((p) => p.id)).not.toContain('basic');
+    for (const p of placed.props.plans as ListItem[]) expect(['basic', 'pro']).not.toContain(p.id);
 
     expect(errors(s.state)).toEqual([]);
     compiles(s.state, definitionId);
@@ -549,6 +549,20 @@ describe('component.upsert: building a managed component in one operation (#358)
     const fresh = applyOperations(made.state, [{ type: 'node.insert', owner: home, parentId: null, definitionId: id }]);
     const pictured = applyOperations(fresh.state, [retype('cta', { type: 'image', label: 'Picture', default: { assetId: null, alt: '' } })]).state;
     for (const it of (pictured.pages[home.id].nodes[fresh.results[0].nodeId as string] as InstanceNode).props.plans as ListItem[]) expect(it.cta).toEqual({ assetId: null, alt: '' });
+    // An object's placements start from the object's own default: a value equal only to the field's default was set.
+    const withAction = pricing();
+    withAction.properties = { ...withAction.properties, action: { type: 'object', label: 'Action', fields: { target: { type: 'link', label: 'Target', default: { type: 'url', target: 'https://a.example' } } }, default: { target: { type: 'url', target: 'https://b.example' } } } };
+    const built = applyOperations(createStarterState('blank', 'Expo', false), [withAction]);
+    const actionId = built.results[0].definitionId as string;
+    const homeId = built.state.site.homePageId;
+    const two = applyOperations(built.state, [
+      { type: 'node.insert', owner: { kind: 'page', id: homeId }, parentId: null, definitionId: actionId },
+      { type: 'node.insert', owner: { kind: 'page', id: homeId }, parentId: null, definitionId: actionId, props: { action: { target: { type: 'url', target: 'https://a.example' } } } }
+    ]);
+    const pictureAction = { ...withAction, definitionId: actionId, properties: { ...withAction.properties, action: { type: 'object', label: 'Action', fields: { target: { type: 'image', label: 'Target', default: { assetId: null, alt: '' } } } } } };
+    expect(() => applyOperations(two.state, [pictureAction])).toThrow(/"Target" in "Action" holds content that a image field cannot keep/);
+    const untouched = applyOperations(built.state, [{ type: 'node.insert', owner: { kind: 'page', id: homeId }, parentId: null, definitionId: actionId }]);
+    expect((applyOperations(untouched.state, [pictureAction]).state.pages[homeId].nodes[untouched.results[0].nodeId as string] as InstanceNode).props.action).toEqual({ target: { assetId: null, alt: '' } });
   });
 
   it('refuses a rebuild that hides a filled slot a placement shows now, judged by its values before they move', () => {
@@ -620,6 +634,9 @@ describe('component.upsert: building a managed component in one operation (#358)
     const reshaped = { ...base, definitionId: id, properties: { ...base.properties, cta: { ...(base.properties.cta as object), fields: { label: { type: 'string', label: 'Label', default: 'Go' } } } } };
     expect(() => applyOperations(st, [reshaped])).toThrow(/"Wrapper" places "Pricing table" as .*whose fields differ/);
     // A list that now fills itself from the site's pages takes nothing passed to it.
+    // A list passed on whole must keep the kind of value of each field the two lists share.
+    const pictured = { ...base, definitionId: id, properties: { ...base.properties, extras: { type: 'list', label: 'Extras', itemLabel: 'Extra', fields: { title: { type: 'number', label: 'Title', default: 0 } }, default: [] } } };
+    expect(() => applyOperations(st, [pictured])).toThrow(/"Wrapper" places "Pricing table" as .*whose "title" takes a number, not a string/);
     const fed = { ...base, definitionId: id, properties: { ...base.properties, extras: { type: 'list', label: 'Extras', itemLabel: 'Extra', feed: 'articles', fields: { title: { type: 'string', label: 'Title', default: '' } } } } };
     expect(() => applyOperations(st, [fed])).toThrow(/fills itself from the site's pages and cannot take a property/);
   });

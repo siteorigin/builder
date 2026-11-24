@@ -129,12 +129,15 @@ function keepFieldContent(state: ProjectState, was: ComponentDefinition, next: R
     for (const [field, schema] of Object.entries(now.fields)) {
       const old = own(prevFields, field);
       if (!old || old.type === schema.type) continue;
+      // What a placement starts with: an object's own default for the field, or what a new list item gets.
+      const objectDefault = prev.type === 'object' ? (prev.default as Record<string, unknown> | undefined) : undefined;
+      const start = JSON.stringify(objectDefault && Object.hasOwn(objectDefault, field) ? objectDefault[field] : old.default);
       for (const { node, label } of instancesOf(state, was.id)) {
         const v = own(node.props, name);
         const holders = now.type === 'list' ? (Array.isArray(v) ? v.filter(record) : []) : record(v) ? [v] : [];
         for (const holder of holders) {
           if (!Object.hasOwn(holder, field) || isBinding(holder[field])) continue;
-          if (JSON.stringify(holder[field]) === JSON.stringify(old.default)) holder[field] = clone(schema.default);
+          if (JSON.stringify(holder[field]) === start) holder[field] = clone(schema.default);
           else if (!LOSSLESS[old.type]?.includes(schema.type))
             fail(`${label}: "${old.label}" in "${prev.label}" holds content that a ${schema.type} field cannot keep. Give the new field a name of its own to start it over.`);
           else if (old.type === 'richtext') holder[field] = richTextToPlain(toRichText(holder[field]));
@@ -440,7 +443,9 @@ function designAxes(op: UpsertOp, tree: NodeTree, was: ComponentDefinition | und
     if (isProtoKey(axis) || (!prev && !NAME_RE.test(axis))) fail(`Variant axis names must be camelCase identifiers ("${axis}").`);
     const options: VariantAxis['options'] = {};
     for (const [id, o] of Object.entries(a.options)) {
-      if (isProtoKey(id) || (!own(prev?.options, id) && !OPTION_RE.test(id))) fail(`Variant IDs use lowercase letters, numbers and hyphens ("${id}").`);
+      // An option kept under an ID no variant can have (an older save) is ignored already; it is not kept.
+      const kept = !!own(prev?.options, id) && !('error' in findVariant(was!, id, axis));
+      if (isProtoKey(id) || (!kept && !OPTION_RE.test(id))) fail(`Variant IDs use lowercase letters, numbers and hyphens ("${id}").`);
       for (const nodeId of Object.keys(o.styles ?? {})) if (!Object.hasOwn(tree.nodes, nodeId)) fail(`The ${axis} option "${id}" styles "${nodeId}", which is not one of the nodes.`);
       options[id] = { label: o.label.trim() || fail(`The ${axis} option "${id}" needs a label.`) };
     }
@@ -487,6 +492,12 @@ function checkBindings(state: ProjectState, def: ComponentDefinition, sites: Bin
     if (nested?.type === 'list' && nested.feed) fail(`${at} passes "${'$prop' in b ? b.$prop : b.$item}" to "${nested.label}", which fills itself from the site's pages and cannot take a property.`);
     const ok = acceptedTypes(node, field, nested);
     if (ok && !ok.includes(schema.type)) fail(`${at} cannot show a ${schema.type} as its ${field === 'prop' ? quoted(site.prop!) : field}: it needs a ${ok.join(' or ')}.`);
+    // A whole list passed on: each field the two lists share must hold the same kind of value at both ends.
+    if (nested?.type === 'list' && schema.type === 'list')
+      for (const [k, f] of Object.entries(nested.fields)) {
+        const from = own(schema.fields, k);
+        if (from && from.type !== f.type) fail(`${at} passes "${schema.label}" to "${nested.label}", whose "${k}" takes a ${f.type}, not a ${from.type}.`);
+      }
     if (field === 'list' && '$prop' in b && enclosingRepeatProp(def, node.id) === b.$prop) fail(`${at} repeats "${b.$prop}" inside a repeat of the same list.`);
     const problem = bindingProblem(state, site, schema);
     if (problem) fail(`${at} ${problem}`);

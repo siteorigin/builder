@@ -3161,7 +3161,11 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     // where the batch leaves it.
     const sameOwner = (o: unknown) => !!o && typeof o === 'object' && (o as OwnerRef).kind === problem?.owner.kind && (o as OwnerRef).id === problem?.owner.id;
     // A design built whole is named only while no later operation of the batch edits it.
-    const editedAfter = (i: number) => ops.slice(i + 1).some((o) => sameOwner((o as { owner?: unknown }).owner) || sameOwner((o as { toOwner?: unknown }).toOwner));
+    const editedAfter = (i: number) =>
+      ops.slice(i + 1).some((o) => {
+        const r = o as { owner?: unknown; toOwner?: unknown; definitionId?: unknown };
+        return sameOwner(r.owner) || sameOwner(r.toOwner) || (typeof r.definitionId === 'string' && sameOwner({ kind: 'component', id: r.definitionId }));
+      });
     const by = problem ? retagged.findLast((r) => (r.nodeId === undefined ? !editedAfter(r.i) : r.nodeId === problem.nodeId) && sameOwner(r.owner)) : undefined;
     if (problem) throw new EngineError('INVALID_ARGUMENT', ops.length > 1 && by ? `Operation ${by.i + 1} (${by.type}): ${problem.message}` : problem.message);
   }
