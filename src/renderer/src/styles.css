@@ -1643,30 +1643,58 @@ iframe { color-scheme: light dark; }
 .style-custom-keeps { display: block; margin-bottom: 3px; color: var(--text); font-weight: 500; }
 .style-input.mono { font-family: var(--mono); font-size: 12px; }
 /* Image focus: the whole picture with the crop it gets at the chosen size, and the point that stays in view. */
-.focus-editor { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 2px 0 6px; }
-.focus-stage { display: flex; flex-direction: column; align-items: center; padding: 8px; border-radius: var(--r-sm); background: var(--canvas); }
-.focus-pad { position: relative; max-width: 100%; max-height: 184px; border-radius: var(--r-sm); background: var(--canvas); touch-action: none; user-select: none; }
+.focus-editor { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 2px 0 8px; }
+.focus-caption { display: flex; align-items: flex-start; gap: 6px; margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.focus-caption > svg { flex: none; width: 13px; height: 13px; margin-top: 2px; color: var(--text-2); }
+.focus-hint { margin: -2px 0 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.focus-hint strong { font-weight: 600; color: var(--text); }
+/* The picture sits on a quiet card, its corners concentric with the card's. */
+.focus-stage { display: flex; flex-direction: column; align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
+.focus-pad { position: relative; max-width: 100%; max-height: 184px; border-radius: var(--r-xs); background: var(--canvas); touch-action: none; user-select: none; }
 /* The picture and its crop are clipped to its shape. The point sits outside this, so it stays whole at an edge. */
 .focus-clip { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: inherit; }
-/* The picture's edge, drawn over it so a dark or pale photo never melts into the panel. */
-.focus-clip::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--border-control); pointer-events: none; }
+/* The picture's edge, drawn over it so a dark or pale photo never melts into the card (the crop's own edge sits above). */
+.focus-clip::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--border-strong); pointer-events: none; }
 .focus-pad img { display: block; width: 100%; height: 100%; max-height: 184px; object-fit: fill; pointer-events: none; }
-.focus-pad:not(.is-cropped) .focus-clip::after { box-shadow: inset 0 0 0 1px var(--border-strong); }
-/* With nothing to choose, the picture is a smaller reference, not a control. */
-.focus-editor.is-idle .focus-pad, .focus-editor.is-idle .focus-pad img { max-height: 112px; }
-.focus-pad.is-cropped { cursor: crosshair; }
+/* What the crop cuts off is the same picture, dimmed and drained of colour: no tint of its own, in either theme. */
+.focus-pad.is-cropped .focus-clip > img { filter: brightness(0.5) saturate(0.4); }
+.focus-pad.is-cropped { border-radius: var(--r-sm); cursor: crosshair; }
+/* As a control, the picture takes the 3:1 control edge, firmer under the pointer, as a field does. */
+.focus-pad.is-cropped .focus-clip::after { box-shadow: inset 0 0 0 1px var(--border-control); }
+.focus-pad.is-cropped:hover .focus-clip::after { box-shadow: inset 0 0 0 1px var(--text-3); }
 .focus-pad.is-dragging { cursor: grabbing; }
-/* These sit on the author's photo, so they use a light and dark pair that holds on any picture, in either theme. */
-.focus-window { position: absolute; box-shadow: inset 0 0 0 1.5px #fff, 0 0 0 1px color-mix(in srgb, var(--ink) 70%, transparent), 0 0 0 999px color-mix(in srgb, var(--ink) 62%, transparent); pointer-events: none; }
-.focus-mark { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; border: 2px solid #fff; background: var(--select); box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ink) 82%, transparent), 0 1px 3px rgb(0 0 0 / 0.4); pointer-events: none; }
+/* These sit on the author's photo, so they use the mark's light sky and ink, a pair that holds on any picture in either theme. */
+.focus-window { position: absolute; z-index: 1; overflow: hidden; pointer-events: none; }
+.focus-window > img { position: absolute; max-width: none; max-height: none; }
+/* The crop's edge: ink outside, light sky inside, both drawn within the crop so all four sides stay whole at the
+   picture's edge. */
+.focus-window::after { content: ''; position: absolute; inset: 0; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 70%, transparent), inset 0 0 0 2.5px var(--sky-1); --guide: linear-gradient(color-mix(in srgb, var(--sky-1) 70%, transparent), color-mix(in srgb, var(--sky-1) 70%, transparent)); --guide-ink: linear-gradient(color-mix(in srgb, var(--ink) 50%, transparent), color-mix(in srgb, var(--ink) 50%, transparent)); }
+/* While dragging, thirds guide the composition: light lines with an ink shadow, so they show on any photo. */
+.focus-pad.is-dragging .focus-window::after { background: var(--guide) 33.33% 0 / 1px 100% no-repeat, var(--guide) 66.67% 0 / 1px 100% no-repeat, var(--guide) 0 33.33% / 100% 1px no-repeat, var(--guide) 0 66.67% / 100% 1px no-repeat, var(--guide-ink) calc(33.33% + 1px) 0 / 1px 100% no-repeat, var(--guide-ink) calc(66.67% + 1px) 0 / 1px 100% no-repeat, var(--guide-ink) 0 calc(33.33% + 1px) / 100% 1px no-repeat, var(--guide-ink) 0 calc(66.67% + 1px) / 100% 1px no-repeat; }
+/* The point: hollow while it shows through from another size or is the default, solid once it is set here. */
+.focus-mark { position: absolute; z-index: 3; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; border: 2px solid var(--sky-1); background: transparent; box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ink) 82%, transparent), inset 0 0 0 1.5px color-mix(in srgb, var(--ink) 82%, transparent), 0 1px 3px color-mix(in srgb, var(--ink) 50%, transparent); pointer-events: none; transition: transform 120ms; }
+.focus-mark.is-set { background: var(--select); box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ink) 82%, transparent), 0 1px 3px color-mix(in srgb, var(--ink) 50%, transparent); }
+.focus-pad.is-cropped:hover .focus-mark { transform: scale(1.1); }
 .focus-pad.is-dragging .focus-mark { transform: scale(1.25); }
-.focus-caption { margin: 0; font-size: 12px; line-height: 1.35; color: var(--text-3); }
-.focus-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
-.focus-saved { flex-basis: 100%; font-size: 12px; color: var(--text-3); }
-.focus-editor.is-idle .focus-fields { margin-top: 4px; row-gap: 4px; }
-.focus-field { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-2); }
-.focus-field .input { width: 46px; padding: 0 6px; }
-.focus-center { margin-left: auto; padding: 0 7px; }
+/* Nothing to choose: a small reference picture beside the reason and what would change it. */
+.focus-idle { display: flex; flex-direction: column; gap: 8px; }
+.focus-idle.has-picture { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 10px; }
+.focus-idle .focus-stage { padding: 6px; }
+.focus-idle .focus-pad, .focus-idle .focus-pad img { max-height: 64px; }
+.focus-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.focus-saved { flex-basis: 100%; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.focus-saved strong { font-weight: 600; color: var(--text); }
+.focus-field { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
+/* The unit sits inside the field, right after the digits. */
+.focus-number { position: relative; display: inline-flex; }
+.focus-field .input { width: 54px; padding: 0 18px 0 6px; text-align: right; font-variant-numeric: tabular-nums; }
+.focus-unit { position: absolute; right: 7px; top: 50%; translate: 0 -50%; font-size: 12px; color: var(--text-2); pointer-events: none; }
+.focus-center { margin-left: auto; padding: 0 8px; }
+.focus-error { margin: -2px 0 0; }
+/* A refused value is an error, not a change: the field drops the changed tint while it is marked. */
+.focus-field .input[aria-invalid='true'] { background-color: var(--raised); }
+/* A value shown through from elsewhere: its unit is as quiet as its digits. */
+.focus-number > .is-inherited + .focus-unit { color: var(--text-3); }
 .style-input.is-set::placeholder { color: var(--text-2); }
 .editor.defining .style-row .reset-dot:hover { background: var(--plum-soft); }
 .style-footer { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
@@ -3770,53 +3798,109 @@ button.asset-use:hover svg.go { color: var(--text); }
 .find-foot-shared { color: var(--green); }
 .find-foot-refused svg { color: var(--red); }
 @media (prefers-reduced-motion: reduce) { .find-chevron { transition: none; } }
-/* Table property editor: columns as name fields with their buttons, rows as disclosures (see TableEditor.tsx). */
-.table-editor { gap: 12px; }
+/* Table property editor: the table as it reads on the site, rows opening in place, then its columns in order (see
+   TableEditor.tsx). */
+.table-editor { gap: 10px; }
 .table-editor > .field-label { font-weight: 600; color: var(--text); }
+.table-editor .insp-count, .table-grid, .table-col-num { font-variant-numeric: tabular-nums; }
 .table-editor-part { display: flex; flex-direction: column; gap: 6px; }
-.table-editor-heading { display: flex; align-items: center; gap: 6px; min-height: 26px; font-size: 12px; font-weight: 500; color: var(--text-2); }
+/* Columns are the table's shape, a step back from its content: they sit under a straight divider. */
+.table-editor-part + .table-editor-part { margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+.table-editor-heading { display: flex; align-items: center; gap: 6px; min-height: 26px; font-size: 12px; font-weight: 600; color: var(--text-2); }
 .table-editor-heading .insp-add { margin-left: auto; }
-.table-editor .btn[aria-disabled='true'] { cursor: not-allowed; }
-.table-editor-cue { font-weight: 400; color: var(--text-3); }
-.table-editor-col { display: flex; align-items: flex-start; gap: 6px; }
-.table-full { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.table-full-text { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); overflow-wrap: anywhere; user-select: text; }
-.table-tools { display: inline-flex; align-items: center; flex: none; gap: 6px; height: 30px; }
-.table-move { display: inline-flex; align-items: center; }
-/* The table: a header over its values. It scrolls in its own frame, keeping the disclosure and header in view. */
-.table-grid-scroll { max-height: min(480px, 60vh); overflow: auto; scrollbar-width: thin; scroll-padding: 28px 0 0 28px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); }
+.table-editor-heading .table-jump { margin-left: auto; padding: 0 7px; color: var(--text-2); font-weight: 500; }
+.table-editor-heading .table-jump svg { width: 13px; height: 13px; }
+.table-editor-heading .table-jump + .insp-add { margin-left: 0; }
+.table-editor :is(.btn, .icon-btn)[aria-disabled='true'] { cursor: not-allowed; }
+.table-editor-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.table-move { display: inline-flex; align-items: center; gap: 2px; }
+/* Remove stands apart and warns on hover, as in the other list editors. */
+.table-editor .icon-btn.table-remove:hover:not(:disabled, [aria-disabled='true']) { background: var(--red-soft); color: var(--red); }
+.table-editor .btn.table-remove:hover:not(:disabled, [aria-disabled='true']) { border-color: var(--red); background: var(--red-soft); color: var(--red-ink); }
+/* A value that wraps instead of hiding its end; it grows with its text, and Enter still saves it. */
+.table-wrap { min-width: 0; }
+.table-editor .textarea.table-text { display: block; min-height: 30px; max-height: none; padding: 5px 9px; line-height: 18px; resize: none; overflow: hidden; overflow-wrap: anywhere; }
+.table-editor .textarea.table-text.sm { min-height: 26px; padding: 4px 8px; font-size: 12px; line-height: 16px; }
+
+/* The table: a header over its values, scrolling in its own frame with the disclosures and header in view. */
+.table-grid-frame { position: relative; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); overflow: hidden; }
+.table-grid-scroll { max-height: min(520px, 60vh); overflow: auto; scrollbar-width: thin; scrollbar-color: var(--border-control) transparent; scroll-padding: calc(var(--table-head, 28px) + 2px) 0 0 24px; }
+.table-grid-frame.is-wide .table-grid-scroll { scroll-padding-left: 136px; }
 .table-grid-scroll:focus-visible { outline-offset: -2px; }
 .table-grid { min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
-.table-grid :focus-visible { outline-offset: -2px; }
-.table-grid th, .table-grid td { padding: 0; text-align: left; font-weight: 400; }
-.table-grid thead th { position: sticky; top: 0; z-index: 2; min-width: 72px; max-width: 136px; height: 26px; padding: 3px 8px; background: var(--panel-2); font-weight: 600; color: var(--text-2); }
-.table-grid tbody td, .table-grid tbody th { border-top: 1px solid var(--border); background: var(--raised); }
-.table-grid-row > td:not(.table-grid-actions) { min-width: 72px; max-width: 136px; height: 30px; padding: 4px 8px; color: var(--text); cursor: text; }
+.table-grid th, .table-grid td { padding: 0; text-align: left; vertical-align: top; font-weight: 400; }
+.table-grid thead tr { background: var(--panel-2); }
+.table-grid thead th { position: sticky; top: 0; z-index: 2; min-width: 48px; max-width: 136px; padding: 6px 5px 5px; border-bottom: 1px solid var(--border-strong); background: var(--panel-2); box-shadow: 1px 0 0 var(--panel-2); line-height: 16px; font-weight: 600; color: var(--text-2); }
+/* Each cell carries its row's colour and the line above it, and paints 1px past its right edge, so columns that
+   meet on a fractional pixel never leave a seam in a tinted row. */
+.table-grid tbody tr { --row: var(--raised); --rule: var(--border); }
+.table-grid tbody tr:first-child { --rule: transparent; }
+.table-grid tbody :is(td, th) { border-top: 1px solid var(--rule); background: var(--row); box-shadow: 1px 0 0 var(--row); }
+/* The disclosure lane sits on a whole pixel and above the cell after it: it needs no overpaint, which would cut the rule. */
+.table-grid tbody .table-grid-toggle { box-shadow: none; }
+.table-grid-row > td:not(.table-grid-actions) { min-width: 48px; max-width: 136px; padding: 7px 5px; line-height: 16px; color: var(--text); cursor: text; }
+/* Values wrap to two lines and column names to three; a row's name, in the first column, is never cut. */
+.table-grid-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: break-word; }
+.table-grid thead th > .table-grid-text { -webkit-line-clamp: 3; }
+.table-grid-row > td:nth-child(2) > .table-grid-text { display: block; overflow: visible; }
+/* An open row's name is in full in the field just below it, so the row itself stays two lines. */
+.table-grid-row.is-open > td:nth-child(2) > .table-grid-text { display: -webkit-box; overflow: hidden; }
 .table-grid.is-single :is(thead th, .table-grid-row > td):not(.table-grid-toggle, .table-grid-actions) { width: 100%; max-width: 0; }
-.table-grid.is-single .ellipsis { max-width: none; }
-.table-grid .ellipsis { display: block; max-width: 120px; }
-/* A long header or row name keeps two lines, so similar entries can still be told apart. */
-.table-grid thead .ellipsis, .table-grid-row > td:nth-child(2) .ellipsis { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-height: 1.3; white-space: normal; overflow-wrap: break-word; }
-.table-grid-blank { color: var(--text-3); }
-.table-grid .table-grid-toggle { position: sticky; left: 0; z-index: 1; width: 26px; min-width: 26px; max-width: 26px; padding: 0; }
-.table-grid thead .table-grid-toggle { z-index: 3; min-width: 26px; max-width: 26px; padding: 0; }
-.table-grid thead .table-grid-actions { min-width: 26px; padding: 0; }
-.table-grid th.list-editor-head { display: table-cell; height: 30px; }
-.table-grid .list-editor-head button.title { width: 26px; height: 29px; padding: 0; justify-content: center; color: var(--text-2); }
-.table-grid .list-editor-head button.title svg { flex: none; }
-.table-grid-row:hover > :is(td, th) { background: color-mix(in srgb, var(--text) 4%, var(--raised)); }
-.table-grid-row.is-open > :is(td, th) { background: color-mix(in srgb, var(--accent) 9%, var(--raised)); }
-/* Remove has a narrow rail of its own, so it never covers a value; it shows when the row is hovered or holds focus. */
-.table-grid .table-grid-actions { width: 26px; min-width: 26px; max-width: 26px; padding: 0; }
-.table-grid-row > .table-grid-actions .icon-btn { display: flex; margin: 0 1px; opacity: 0; }
+.table-grid-blank { font-style: italic; color: var(--text-2); }
+/* A value is a way in: pointing at one marks the field it opens, with a 3:1 edge on the row's own colour. */
+.table-grid-row > td:not(.table-grid-actions):hover { outline: 1px solid var(--border-control); outline-offset: -1px; }
+.table-grid-row.is-open > td:not(.table-grid-actions):hover { outline-color: var(--accent-text); }
+.table-grid .table-grid-toggle { position: sticky; left: 0; z-index: 1; width: 24px; min-width: 24px; max-width: 24px; padding: 0; }
+.table-grid thead .table-grid-toggle { z-index: 3; box-shadow: none; }
+/* Wider than the panel: the first column stays beside the disclosures, so a row never loses its name. */
+/* Six or more columns never fit the panel: each takes room for a short name or value on one line. */
+.table-grid.is-many :is(thead th, .table-grid-row > td):not(.table-grid-toggle, .table-grid-actions) { min-width: 84px; }
+.table-grid-frame.is-wide .table-grid-row > td:nth-child(2) { position: sticky; left: 24px; z-index: 1; max-width: 112px; box-shadow: inset -1px 0 0 var(--border); }
+.table-grid-frame.is-wide .table-grid thead th:nth-child(2) { left: 24px; z-index: 3; max-width: 112px; box-shadow: inset -1px 0 0 var(--border); }
+.table-grid-frame.is-wide.more-left .table-grid-row > td:nth-child(2), .table-grid-frame.is-wide.more-left .table-grid thead th:nth-child(2) { box-shadow: inset -1px 0 0 var(--border), 6px 0 6px -6px var(--scrim); }
+.table-grid th.list-editor-head { display: table-cell; }
+.table-grid .list-editor-head button.title { width: 24px; height: 30px; padding: 0; justify-content: center; color: var(--text-2); }
+.table-grid .list-editor-head button.title > svg { flex: none; transition: transform 120ms; }
+.table-grid .list-editor-head button.title[aria-expanded='true'] { color: var(--accent-text); }
+.table-grid .list-editor-head button.title[aria-expanded='true'] > svg { transform: rotate(90deg); }
+/* Controls in the frame's clipped edges draw their focus inside; the open row's fields draw it outside, as everywhere. */
+.table-grid :is(.table-grid-toggle, .table-grid-actions) :focus-visible { outline-offset: -2px; }
+.table-grid-row:hover { --row: color-mix(in srgb, var(--text) 4%, var(--raised)); }
+/* The open row: a tinted band with its name in bold, its fields below, closed off by a firmer line. */
+.table-grid-row.is-open { --row: color-mix(in srgb, var(--accent) 10%, var(--raised)); }
+.table-grid-row.is-open > td:nth-child(2) { font-weight: 600; }
+:where(:root[data-appearance='dark']) { .table-grid-row.is-open { --row: color-mix(in srgb, var(--accent) 15%, var(--raised)); } }
+.table-grid-body:not([hidden]) + .table-grid-row { --rule: var(--border-strong); }
+/* A closed row's Remove has a lane of its own at the row's end, so it never covers a value: on a wide table it scrolls
+   with the last column rather than sitting over the others. It shows when the row is hovered or holds focus; an open
+   row has it with its fields. */
+.table-grid .table-grid-actions { width: 24px; min-width: 24px; max-width: 24px; padding: 0; }
+.table-grid thead .table-grid-actions { overflow: hidden; }
+.table-grid tbody .table-grid-actions { box-shadow: none; }
+.table-grid-row > .table-grid-actions .icon-btn { margin-top: 3px; opacity: 0; }
 .table-grid-row:hover > .table-grid-actions .icon-btn, .table-grid-row > .table-grid-actions .icon-btn:focus { opacity: 1; }
 @media (hover: none) { .table-grid-row > .table-grid-actions .icon-btn { opacity: 1; } }
-.table-row-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--border); }
-.table-row-move { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); }
+/* More to see on the right: a soft shade over the frame's edge, above the scrollbar, that takes no clicks. Not while
+   a row is open, whose fields span the frame. */
+.table-grid-frame::after { content: ''; position: absolute; top: 0; right: 0; bottom: var(--table-bar, 0px); z-index: 4; width: 14px; background: linear-gradient(to left, color-mix(in srgb, var(--scrim) 40%, transparent), transparent); opacity: 0; pointer-events: none; transition: opacity 120ms; }
+.table-grid-frame.more-right:not(.has-open)::after { opacity: 1; }
+.table-row-tools { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; padding-top: 10px; border-top: 1px solid var(--border); }
+.table-row-move { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
 /* An open row's fields stay in view however far the table is scrolled sideways. */
 .table-grid .table-grid-span { max-width: 0; }
-.table-grid .table-grid-form { position: sticky; left: 0; width: var(--table-view, 100%); border-top: 0; padding: 10px; }
-.table-grid-empty { position: sticky; left: 0; width: var(--table-view, 100%); margin: 0; padding: 10px 8px; font-size: 12px; line-height: 1.4; color: var(--text-3); }
+.table-grid .table-grid-form { position: sticky; left: 0; width: var(--table-view, 100%); gap: 10px; border-top: 0; padding: 12px 10px 10px; }
+/* In dark, the fields lift off a tray darker than the rows, as they do off the panel above. */
+:where(:root[data-appearance='dark']) { .table-grid .table-grid-form { background: var(--panel); } }
+/* The empty table's note starts where its first column does. */
+.table-grid-empty { position: sticky; left: 0; width: var(--table-view, 100%); margin: 0; padding: 12px 10px 12px 29px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+
+/* The columns, numbered in the order the site shows them: name, move pair, and Remove set apart. */
+.table-cols { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.table-col { display: flex; align-items: flex-start; gap: 4px; }
+.table-col-num { flex: none; width: 16px; height: 26px; display: grid; place-items: center end; font-size: 11px; font-weight: 600; color: var(--text-3); }
+.table-col > .table-wrap { flex: 1; margin-right: 2px; }
+.table-col > :is(.table-move, .table-remove) { flex: none; margin-top: 1px; }
+.table-col > .table-remove { margin-left: 6px; }
 .sketch-table-row { display: flex; gap: 6%; padding-bottom: 2px; border-bottom: 1px solid color-mix(in srgb, var(--text-3) 30%, var(--panel-2)); }
 
 /* Shown instead of the editor when no theme pack could be loaded. */
