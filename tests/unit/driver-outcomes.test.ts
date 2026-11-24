@@ -445,7 +445,9 @@ describe('credentials in evidence', () => {
   });
 
   it('scrubs every key and value a caller sent, whatever the key', () => {
-    expect(scrubAll({ token: KEY, ref: `x${KEY}`, [KEY]: ['ok', { role: KEY }] }, [KEY])).toEqual({ token: '[redacted]', ref: 'x[redacted]', '[redacted]': ['ok', { role: '[redacted]' }] });
+    expect(scrubAll({ token: KEY, ref: `x${KEY}`, [KEY]: ['ok', { role: KEY }] }, [KEY], true)).toEqual({ token: '[redacted]', ref: 'x[redacted]', '[redacted]': ['ok', { role: '[redacted]' }] });
+    // Without `keys`, a short credential never renames a key the driver wrote (unreplayable stays unreplayable).
+    expect(scrubAll({ unreplayable: 'why', able: 'able' }, ['able'])).toEqual({ unreplayable: 'why', able: '[redacted]' });
     expect(scrubAll('plain', [])).toBe('plain');
   });
 

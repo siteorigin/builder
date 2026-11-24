@@ -234,13 +234,16 @@ export function scrubText(s: string, secrets: string[]): string {
   return out;
 }
 
-/** A copy of a JSON value with every string and every key scrubbed (scrubText), whatever the key: for what callers sent. */
-export function scrubAll<T>(v: T, secrets: string[]): T {
+/**
+ * A copy of a JSON value with every string scrubbed (scrubText), whatever its key; with `keys`, the keys too (for what a
+ * caller sent, whose keys are theirs: the driver's own keys are never renamed by a short credential).
+ */
+export function scrubAll<T>(v: T, secrets: string[], keys = false): T {
   if (!secrets.some((x) => !!x)) return v;
   const visit = (x: unknown): unknown => {
     if (typeof x === 'string') return scrubText(x, secrets);
     if (Array.isArray(x)) return x.map(visit);
-    if (x && typeof x === 'object') return Object.fromEntries(Object.entries(x).map(([k, y]) => [scrubText(k, secrets), visit(y)]));
+    if (x && typeof x === 'object') return Object.fromEntries(Object.entries(x).map(([k, y]) => [keys ? scrubText(k, secrets) : k, visit(y)]));
     return x;
   };
   return visit(v) as T;

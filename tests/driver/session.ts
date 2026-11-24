@@ -746,8 +746,8 @@ const now = () => new Date().toISOString();
  */
 async function writeWhole(file: string, text: string, check?: () => void) {
   const tmp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
-  await writeFile(tmp, text, { flag: 'wx' });
   try {
+    await writeFile(tmp, text, { flag: 'wx' });
     check?.();
     await rename(tmp, file);
   } catch (e) {
@@ -758,8 +758,8 @@ async function writeWhole(file: string, text: string, check?: () => void) {
 
 function writeWholeSync(file: string, text: string) {
   const tmp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
-  writeFileSync(tmp, text, { flag: 'wx' });
   try {
+    writeFileSync(tmp, text, { flag: 'wx' });
     renameSync(tmp, file);
   } catch (e) {
     rmSync(tmp, { force: true });
@@ -851,6 +851,8 @@ export class Session {
   private hide: ((s: string) => string) | null = null;
   /** The replay record being written, and app.log being brought up to date: each write waits for the one before. */
   private saving: Promise<unknown> | null = null;
+  /** Closing wrote the run's last record: no save still under way replaces it. */
+  private recordSealed = false;
   private flushing: Promise<unknown> | null = null;
   private closeRequested = false;
   /** Whether closing keeps the artifacts: settled by the first close, so a later one cannot change it. */
@@ -1242,9 +1244,9 @@ export class Session {
    * What leaves the session from its record and evidence: scrubbed of every credential it knows, host paths hidden.
    * `all`: every string and key is scrubbed, whatever its key (for what callers sent: the record and a wait's evidence).
    */
-  private present<T>(v: T, all = false): T {
+  private present<T>(v: T, all = false, keys = false): T {
     const secrets = [...this.secrets];
-    const scrubbed = secrets.length ? (all ? scrubAll(v, secrets) : scrubDeep(v, secrets)) : v;
+    const scrubbed = secrets.length ? (all ? scrubAll(v, secrets, keys) : scrubDeep(v, secrets)) : v;
     return hideDeep(scrubbed, this.hider());
   }
 
@@ -1343,8 +1345,8 @@ export class Session {
       // An observation is not taken over one still stopping; a probe of the app's state never holds anything back.
       const observes = c.condition.startsWith('ui.') || c.condition === 'preview.ready';
       const left = () => deadline - Date.now() - 100;
-      if (observes && this.lingering.size && left() > 50) await this.settled(left()).catch(() => undefined);
-      const final = left() > 50 && !(observes && this.lingering.size) ? await this.boundedLook(look, left(), signal, fatal, observes) : null;
+      if (observes && this.lingering.size && left() > 0) await this.settled(left()).catch(() => undefined);
+      const final = left() > 0 && !(observes && this.lingering.size) ? await this.boundedLook(look, left(), signal, fatal, observes) : null;
       if (final) {
         progress.samples++;
         // Met in time, by a session still open: it counts.
@@ -1506,7 +1508,8 @@ export class Session {
         pageErrors: { total: this.pageErrorCount, latest: this.latestErrors(this.pageErrors) },
         log: this.appLog.troubles(8)
       },
-      artifacts: [...new Set([...artifacts.filter((n) => n !== OWNER_MARK).sort().slice(0, 200), 'replay.json'])].sort()
+      // A file still being written (a new copy about to replace app.log) is not among them.
+      artifacts: [...new Set([...artifacts.filter((n) => n !== OWNER_MARK && !/\.[0-9a-f]{12}\.tmp$/.test(n)).sort().slice(0, 200), 'replay.json'])].sort()
     };
     return this.present(record, true);
   }
@@ -1539,7 +1542,11 @@ export class Session {
       const record = await this.replayRecord(signal, screenshot);
       const file = join(paths.artifacts, 'replay.json');
       // A request that ran out of time publishes nothing after its reply.
-      await writeWhole(file, JSON.stringify(record, null, 2), () => aborted(signal));
+      // Once closing has written the last record, no earlier save replaces it.
+      await writeWhole(file, JSON.stringify(record, null, 2), () => {
+        aborted(signal);
+        if (this.recordSealed) throw new DriverError('CLOSED', 'The session closed; its record is written.');
+      });
       return { file, record };
     })();
     this.saving = run.catch(() => undefined);
@@ -1552,7 +1559,9 @@ export class Session {
    */
   private presentEntries(entries: JournalEntry[]): JournalEntry[] {
     return entries.map((e) => {
-      const shown = this.present(e, true);
+      // The entry's own fields keep their keys; what the caller sent is scrubbed in its keys too.
+      const { args, targets, ...own } = e;
+      const shown: JournalEntry = { ...this.present(own, true), ...(args ? { args: this.present(args, true, true) } : {}), ...(targets ? { targets: this.present(targets, true, true) } : {}) };
       if (shown.unreplayable || JSON.stringify([e.args ?? null, e.targets ?? null]) === JSON.stringify([shown.args ?? null, shown.targets ?? null])) return shown;
       return { ...shown, unreplayable: 'its arguments held a credential or a host path, which the record leaves out' };
     });
@@ -2056,13 +2065,18 @@ export class Session {
     this.keeping = this.keepsArtifacts(args);
     this.abortStart?.(new DriverError('CLOSED', 'The session was closed while it started.'));
     this.refs.clear();
-    // The record of a run that got going, with what the app shows now when it still can (bounded).
-    if (this.keeping && this.reachedReady && this.paths)
-      await bounded(
-        this.saveReplay(new AbortController().signal, true).catch(() => undefined),
-        RECORD_OBSERVATION_MS + 4000,
-        undefined
-      );
+    // The record of a run that got going, with what the app shows now when it still can (bounded). If that cannot be
+    // written in time (an earlier save still stuck), it is written from what the session holds, and is the last word.
+    if (this.keeping && this.reachedReady && this.paths) {
+      const stop = new AbortController();
+      const saved = await bounded(this.saveReplay(stop.signal, true).then(() => true, () => false), RECORD_OBSERVATION_MS + 4000, false);
+      this.recordSealed = true;
+      if (!saved) {
+        stop.abort();
+        const artifacts = await readdir(this.paths.artifacts).catch(() => [] as string[]);
+        await writeWhole(join(this.paths.artifacts, 'replay.json'), JSON.stringify(this.recordFrom(this.lastObservation, undefined, artifacts), null, 2)).catch(() => undefined);
+      }
+    }
     if (this.keeping && this.bound && !this.bound.closed && !this.appExited) {
       const page = this.bound.page;
       // As with every screenshot the session takes, none while any credential is known (or that cannot be told in
