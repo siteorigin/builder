@@ -182,6 +182,8 @@ describe('rules set, changed and cleared from the controls (#368)', () => {
     expect(describeConditions(d, d.tree!.nodes.badge)).toEqual(['Show when Plan perks is not None', 'Hide when Plan seats is 1']);
     expect(describeConditions(d, d.tree!.nodes['badge-wrap'])).toEqual(['Hidden when every item inside is hidden']);
     expect(describeConditions(d, d.tree!.nodes.grid)).toEqual(['Hide when Featured is off']);
+    const on = applyOperations(s, [ruleOp(owner(def), 'grid', 'when', { binding: { $prop: 'featured' }, test: 'eq', value: true })]).state.components[def.id];
+    expect(describeConditions(on, on.tree!.nodes.grid)).toEqual(['Show when Featured is on']);
     expect(describeConditions(d, d.tree!.nodes['card-title'])).toEqual([]);
     // A container with all three says all three.
     const all = applyOperations(r, [
@@ -221,11 +223,14 @@ describe('a typed comparison value made while the AI works (#368)', () => {
     expect(reads?.[0].found).toBe(true);
     expect(checkHeld(base, [op], reads!.map((r) => (r.found ? r.value : undefined)))).toEqual({ kind: 'apply' });
     expect(typedText(op)).toBe('Ready');
-    expect(shownField(op, reads![0].found ? reads![0].value : undefined)).toBe('title is Draft');
+    expect(shownField(op, reads![0].found ? reads![0].value : undefined)).toBe('title is “Draft”');
     // A newer value typed for the same rule replaces the held one, whether it compares with "is" or "is not"; the
     // other rule of the node, and the same rule of another node, are other fields.
     const isNot = ruleOp(owner(def), 'heading', 'when', { binding: { $prop: 'title' }, test: 'ne', value: 'Other' });
     expect(fieldKey([isNot])).toBe(fieldKey([op]));
+    // Keyed, the operation itself still says "is not".
+    expect(isNot).toMatchObject({ ne: 'Other' });
+    expect(isNot).not.toHaveProperty('eq');
     expect(fieldKey([ruleOp(owner(def), 'heading', 'unless', { binding: { $prop: 'title' }, test: 'eq', value: 'Ready' })])).not.toBe(fieldKey([op]));
     expect(fieldKey([ruleOp(owner(def), 'note', 'when', { binding: { $prop: 'title' }, test: 'eq', value: 'Ready' })])).not.toBe(fieldKey([op]));
   });
@@ -240,6 +245,8 @@ describe('a typed comparison value made while the AI works (#368)', () => {
     };
     expect(shown(s)).toBe('title has a value');
     expect(shown(applyOperations(s, [ruleOp(owner(def), 'heading', 'when', { binding: { $prop: 'columns' }, test: 'ne', value: 2 })]).state)).toBe('columns is not 2');
+    expect(shown(applyOperations(s, [ruleOp(owner(def), 'heading', 'when', { binding: { $prop: 'columns' }, test: 'ne', value: 0 })]).state)).toBe('columns is not 0');
+    expect(shown(applyOperations(s, [ruleOp(owner(def), 'heading', 'when', { binding: { $prop: 'title' }, test: 'eq', value: '' })]).state)).toBe('title is “”');
     expect(shown(applyOperations(s, [ruleOp(owner(def), 'heading', 'when', null)]).state)).toBe('');
   });
 
@@ -250,8 +257,7 @@ describe('a typed comparison value made while the AI works (#368)', () => {
     const read = readFields(s, [item])![0];
     expect(read.found && read.value).toMatchObject({ list: 'plans', schema: { type: 'string', label: 'Title' } });
     const prop = ruleOp(owner(def), 'badge', 'when', { binding: { $prop: 'title' }, test: 'eq', value: 'Pro' });
-    const propRead = readFields(s, [prop])![0];
-    expect(propRead.found && propRead.value).not.toHaveProperty('list');
+    expect(readFields(s, [prop])![0]).toEqual({ found: true, value: { value: undefined, schema: def.properties.title } });
   });
 
   it('is checked again when the rule, or the list the node repeats for, changed meanwhile', () => {

@@ -292,6 +292,7 @@ describe('rules made in the Inspector (#368)', () => {
       return { wrap: openTag(html, wrapCls) !== '', badge: html.includes('>New<'), extra: html.includes('>Also<') };
     };
     expect(await shows(set, {})).toEqual({ wrap: true, badge: true, extra: false });
+    expect(await shows(set, { extra: 'Also' })).toEqual({ wrap: true, badge: true, extra: true });
     // Only the second part shown: the container stays for it.
     expect(await shows(set, { tone: 'calm', extra: 'Also' })).toEqual({ wrap: true, badge: false, extra: true });
     // Neither: the container goes with them.

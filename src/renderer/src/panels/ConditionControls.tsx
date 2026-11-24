@@ -28,7 +28,7 @@ export function ConditionControls({ def, node, level }: { def: ComponentDefiniti
         <SwitchRow
           checked={collapse}
           label="Hide container when all items inside are hidden"
-          hint="Leaves the container out, spacing and background too, when the rules of the items inside hide them all. Repeated items count as shown while their list has any."
+          hint="Leaves the container out, spacing and background too, when the rules of the items inside hide them all. A repeat counts as shown while its list has items and its own rules show it."
           onChange={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'collapseEmpty', value: v }], v ? 'Hide empty container' : 'Always show container')}
         />
       )}
@@ -56,16 +56,22 @@ function ConditionRow({
   const source = rule?.source;
   const input = source ? comparisonInput(source.schema) : null;
   // A value just typed is committed as its field loses focus, which choosing "is" or "is not" makes it do, before the
-  // project has answered: that choice keeps the value typed, not the one shown a moment before. Any change to the
-  // saved rule (the answer itself, an undo) makes the saved one current again.
+  // project has answered: that choice keeps the value typed, not the one shown a moment before. Once every save of
+  // this row has been answered, the saved rule is current again: at once for one refused or held for later, and with
+  // the next change to the rule (the answer itself, an undo) otherwise.
   const typed = useRef<{ key: string; value: ConditionValue } | null>(null);
+  const inFlight = useRef(0);
   const saved = JSON.stringify(node[field] ?? null);
   useEffect(() => {
-    typed.current = null;
+    if (!inFlight.current) typed.current = null;
   }, [saved]);
   const save = (next: { binding: ConditionRule['binding']; test: ConditionTest; value?: ConditionValue } | null) => {
     typed.current = next && next.value !== undefined ? { key: sourceKey(next.binding), value: next.value } : null;
-    void applyOps([ruleOp(owner, node.id, field, next)], `${next ? 'Set' : 'Clear'} ${UNDO_LABEL[field]}`);
+    inFlight.current++;
+    void applyOps([ruleOp(owner, node.id, field, next)], `${next ? 'Set' : 'Clear'} ${UNDO_LABEL[field]}`).then((r) => {
+      inFlight.current--;
+      if (!r) typed.current = null;
+    });
   };
   const pickSource = (key: string) => {
     const s = all.find((x) => x.key === key);

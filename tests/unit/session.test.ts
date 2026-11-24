@@ -51,7 +51,8 @@ describe('project session', () => {
     /** What the design and the placement hold: the badge's flag, the icon's rule, and the placement's heading. */
     const now = () => {
       const nodes = s.state.components[defId].tree!.nodes;
-      return { collapse: (nodes['card-icon-wrap'] as { collapseEmpty?: boolean }).collapseEmpty ?? false, when: nodes['card-icon'].when ?? null, heading: (s.state.pages[homeId].nodes[placed.id] as InstanceNode).props.heading };
+      // Absent, not set to false or null: a restored design is the one saved before.
+      return { collapse: 'collapseEmpty' in nodes['card-icon-wrap'] ? (nodes['card-icon-wrap'] as { collapseEmpty?: boolean }).collapseEmpty : 'absent', when: 'when' in nodes['card-icon'] ? nodes['card-icon'].when : 'absent', heading: (s.state.pages[homeId].nodes[placed.id] as InstanceNode).props.heading };
     };
     const heading = now().heading;
     const rule = { ref: { $item: 'icon' }, ne: 'star' };
@@ -61,9 +62,9 @@ describe('project session', () => {
     expect((await s.apply({ operations: [{ type: 'node.setBinding', owner, nodeId: 'card-icon', field: 'when', binding: { $item: 'icon' }, ne: 'star' }] }, { label: 'Set show condition' })).ok).toBe(true);
     const steps = [
       { collapse: true, when: rule, heading: 'What we do' },
-      { collapse: true, when: null, heading: 'What we do' },
-      { collapse: true, when: null, heading },
-      { collapse: false, when: null, heading }
+      { collapse: true, when: 'absent', heading: 'What we do' },
+      { collapse: true, when: 'absent', heading },
+      { collapse: 'absent', when: 'absent', heading }
     ];
     expect(now()).toEqual(steps[0]);
     for (const expected of steps.slice(1)) {

@@ -324,13 +324,14 @@ export function shownField(op: EditOperation, read: unknown): string | null {
   return blank(v) ? '' : shownValue(v);
 }
 
-/** A saved condition in words: "title is Draft", "seats is not 1", "featured has a value"; undefined for none. */
+/** A saved condition in words: `title is “Draft”`, "seats is not 1", "featured has a value"; undefined for none. */
 function conditionText(c: unknown): string | undefined {
   const ref = conditionRef(c);
   if (!ref) return undefined;
   const name = '$prop' in ref ? ref.$prop : ref.$item;
   if (!isComparison(c)) return `${name} has a value`;
-  return 'eq' in c ? `${name} is ${String(c.eq)}` : `${name} is not ${String(c.ne)}`;
+  const shown = (v: unknown) => (typeof v === 'string' ? `“${v}”` : String(v));
+  return 'eq' in c ? `${name} is ${shown(c.eq)}` : `${name} is not ${shown(c.ne)}`;
 }
 
 /** Where the field `op` writes is, in the author's words: a page title, "Header", a style or file name. */

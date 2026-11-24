@@ -83,6 +83,7 @@ await eventually(async () => assert.deepEqual((await grid()).nodes['card-icon'].
 await eventually(async () => assert.deepEqual(await shownFor('card-icon'), [materials], 'only the Materials & colour card shows its icon'));
 await eventually(async () => assert.deepEqual(await shownFor('card-icon-wrap'), everyCard, 'the other cards keep an empty icon badge'));
 await eventually(async () => assert.match((await row('card-icon').locator('.layer-cond').getAttribute('title')) ?? '', /Show when Card title is “Materials & colour”/, 'Layers marks the icon with its rule'));
+assert.match((await row('card-icon').getAttribute('aria-description')) ?? '', /Show when Card title is “Materials & colour”/, 'and the row says it to assistive technology');
 
 step('hide the empty badges, and show them again');
 await selectRow('card-icon-wrap');
