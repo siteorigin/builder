@@ -419,7 +419,8 @@ export function readField(state: ProjectState, ref: FieldRef): { ok: true; conte
   };
 }
 
-export function describeSelection(state: ProjectState, ref: ElementRef | null): Record<string, unknown> | null {
+/** `operations: false`: the run edits through the selection's own tools, so the note names only those. */
+export function describeSelection(state: ProjectState, ref: ElementRef | null, opts: { operations?: boolean } = {}): Record<string, unknown> | null {
   if (!ref) return null;
   const tree: NodeTree | undefined =
     ref.owner.kind === 'page' ? state.pages[ref.owner.id] : ref.owner.kind === 'shell' ? state.site.shell[ref.owner.id as 'header' | 'footer'] : state.components[ref.owner.id]?.tree;
@@ -471,9 +472,20 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
     boundTo: binding,
     ...(inst?.kind === 'instance' ? { currentProps: selectedProps(def, inst.props, state.pages) } : {}),
     ...(itemReach ? { styleReach: itemReach } : {}),
-    note: feed
-      ? `This shows a page's article details, filled in from that page: change its title, articleDate, byline or excerpt with page.update on pageId ${itemId ?? '(the article)'}, never instance.setProp. Style the part with node.setStyle using partId.`
-      : `Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId; it changes every item.${itemReach ? ' Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.' : ''}`,
+    ...(feed
+      ? {
+          note:
+            opts.operations === false
+              ? `This shows a page's article details, filled in from that page: they change on page ${itemId ?? '(the article)'}, not here. Style the part with style_selected_element.`
+              : `This shows a page's article details, filled in from that page: change its title, articleDate, byline or excerpt with page.update on pageId ${itemId ?? '(the article)'}, never instance.setProp. Style the part with node.setStyle using partId.`
+        }
+      : opts.operations === false
+        ? itemReach
+          ? { note: 'Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem.' }
+          : {}
+        : {
+            note: `Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId; it changes every item.${itemReach ? ' Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.' : ''}`
+          }),
     // What the run may change: the app refuses anything else until the user approves a wider change. The definition's
     // root is the whole placement.
     ...(def && !(def.tree ? def.tree.rootIds[0] === (ref.instancePath[1] ?? ref.nodeId) : ref.instancePath.length === 1 && ref.partId === 'root')

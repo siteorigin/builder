@@ -4,7 +4,8 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { contextOverflow, discoverLocalContext, LocalAdapter, listLocalModels, openLocalAdapter, testLocal, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
 import { envelopeSchema, parseEnvelope, partialStatus, signature } from '@agent/constrained';
-import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
+import { dropEnumTypes, findForbiddenShapes, inlineDefinitions, OPEN_VALUE_KEY, toStrictSchema } from '@agent/strict-schema';
+import { constrainedToolSets } from './fixtures/constrained-tools';
 import { DEFAULT_LOCAL_PROFILE, localModelProfile, modelInfo } from '@agent/models';
 import { toolDefinitions } from '@agent/tools';
 import { fixComponentSource } from '@agent/fixer';
@@ -727,7 +728,9 @@ describe('constrained JSON', () => {
     expect(body.tools).toBeUndefined();
     expect(body.response_format).toMatchObject({ type: 'json_schema', json_schema: { strict: true } });
     expect(findForbiddenShapes(body.response_format.json_schema.schema)).toEqual([]);
-    expect(body.messages[0].content).toContain('read_page {pageId: string}');
+    // The compact form goes first: the same grammar, without the type beside each enum of strings.
+    expect(body.response_format.json_schema.schema).toEqual(envelopeSchema(TOOLS, { compact: true }));
+    expect(body.messages[0].content).toContain('read_page {pageId!}');
     expect(body.messages[0].content).toContain('Read a page');
     expect(body.messages[0].content).toContain('"finish"');
   });
@@ -787,8 +790,10 @@ describe('constrained JSON', () => {
   });
 
   it('replays an earlier request’s answer as a finish envelope, never as prose (#195)', async () => {
-    // The server refuses the schema, then the JSON mode: every request still shows the history in the format.
+    // The server refuses the compact schema, the full one, then the JSON mode: every request still shows the history
+    // in the format.
     server.script(
+      { status: 400, body: JSON.stringify({ error: { message: 'Failed to parse grammar' } }) },
       { status: 400, body: JSON.stringify({ error: { message: 'Failed to parse grammar' } }) },
       { status: 400, body: JSON.stringify({ error: { message: 'response_format type not supported' } }) },
       envelopeReply('finish', { message: 'Done.' }),
@@ -804,7 +809,9 @@ describe('constrained JSON', () => {
       { kind: 'user', text: 'Now the button' }
     ];
     await run(adapter(), { items });
-    expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_object', undefined]);
+    expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_schema', 'json_object', undefined]);
+    expect(posts()[0].body.response_format.json_schema.schema).toEqual(envelopeSchema(TOOLS, { compact: true }));
+    expect(posts()[1].body.response_format.json_schema.schema).toEqual(envelopeSchema(TOOLS));
     for (const post of posts()) {
       const messages = post.body.messages as Array<{ role: string; content: string }>;
       expect(messages.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
@@ -813,7 +820,7 @@ describe('constrained JSON', () => {
     }
     // Native tool calling keeps the plain text.
     await run(native(), { items: items.slice(0, 3) });
-    expect(posts()[3].body.messages[2]).toEqual({ role: 'assistant', content: 'Made the headline bolder.' });
+    expect(posts()[4].body.messages[2]).toEqual({ role: 'assistant', content: 'Made the headline bolder.' });
   });
 
   it('labels a failed tool result as an error', async () => {
@@ -881,14 +888,51 @@ describe('constrained JSON', () => {
   it('honors a structured error parameter over the wording', async () => {
     server.script({ status: 400, body: JSON.stringify({ error: { message: 'Invalid model name grammar-local', param: 'model' } }) }, { status: 400, body: JSON.stringify({ error: { message: 'bad value', param: 'response_format.json_schema' } }) }, envelopeReply('read_page', { pageId: 'p' }));
     expect(errorOf(await run(adapter())).code).toBe('invalid_request');
+    expect(posts()).toHaveLength(1);
     expect(doneOf(await run(adapter())).toolCalls).toHaveLength(1);
-    expect(posts().at(-1)?.body.response_format.type).toBe('json_object');
+    // A refusal of the schema's content gets the schema written out in full, still as a grammar.
+    expect(posts().at(-1)?.body.response_format).toMatchObject({ type: 'json_schema', json_schema: { schema: envelopeSchema(TOOLS) } });
+  });
+
+  it('takes a structured parameter over wording that would otherwise step down', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'Failed to parse grammar for model', param: 'model' } }) }, { status: 400, body: JSON.stringify({ error: { message: 'JSON schema conversion failed: $ref', param: 'model' } }) });
+    expect(errorOf(await run(adapter())).code).toBe('invalid_request');
+    expect(errorOf(await run(adapter())).code).toBe('invalid_request');
+    expect(posts()).toHaveLength(2);
+  });
+
+  it('tries the full schema once for a refusal it cannot place, then reports it without giving up the grammar', async () => {
+    const refusal = { status: 400, body: JSON.stringify({ error: { message: 'Invalid model name: schema-demo' } }) };
+    server.script(refusal, refusal);
+    expect(errorOf(await run(adapter())).code).toBe('invalid_request');
+    // The full schema is exactly what was sent before compact schemas; a model name is no reason to drop the grammar.
+    expect(posts().map((p) => p.body.response_format?.json_schema?.schema)).toEqual([envelopeSchema(TOOLS, { compact: true }), envelopeSchema(TOOLS)]);
+  });
+
+  it('still gives up the format when its refusal mentions the context window, as before', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'response_format is unsupported for this context window' } }) }, envelopeReply('read_page', { pageId: 'p' }));
+    expect(doneOf(await run(adapter())).toolCalls[0].name).toBe('read_page');
+    expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_object']);
+  });
+
+  it('skips the full schema when the wording refuses the format itself', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'response_format of type json_schema is not supported' } }) }, envelopeReply('read_page', { pageId: 'p' }));
+    expect(doneOf(await run(adapter())).toolCalls[0].name).toBe('read_page');
+    expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_object']);
+  });
+
+  it('gives up the grammar at once when the server refuses the format itself', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'bad value', param: 'response_format' } }) }, { status: 400, body: JSON.stringify({ error: { message: 'response_format type not supported' } }) }, envelopeReply('read_page', { pageId: 'p' }));
+    expect(doneOf(await run(adapter())).toolCalls[0].name).toBe('read_page');
+    expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_object', undefined]);
   });
 
   it('keeps the grammar when a 400 merely mentions the word', async () => {
-    server.script({ status: 400, body: JSON.stringify({ error: { message: 'Unknown model grammar-demo' } }) });
+    const refusal = { status: 400, body: JSON.stringify({ error: { message: 'Unknown model grammar-demo' } }) };
+    server.script(refusal, refusal);
     expect(errorOf(await run(adapter())).code).toBe('invalid_request');
-    expect(posts()).toHaveLength(1);
+    // One try with the full schema (what was sent before compact schemas), never without the grammar.
+    expect(posts().map((p) => p.body.response_format?.type)).toEqual(['json_schema', 'json_schema']);
   });
 
   it('does not strip text that merely mentions a think tag inside the JSON', () => {
@@ -907,10 +951,13 @@ describe('constrained JSON', () => {
     server.script(
       { status: 400, body: JSON.stringify({ error: { message: 'Failed to parse grammar' } }) },
       { status: 400, body: JSON.stringify({ error: { message: 'response_format type not supported' } }) },
+      { status: 400, body: JSON.stringify({ error: { message: 'response_format type not supported' } }) },
       envelopeReply('read_page', { pageId: 'p' })
     );
     expect(doneOf(await run(adapter())).toolCalls[0].name).toBe('read_page');
-    expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_object', undefined]);
+    expect(posts().map((r) => r.body.response_format?.type)).toEqual(['json_schema', 'json_schema', 'json_object', undefined]);
+    expect(posts()[0].body.response_format.json_schema.schema).toEqual(envelopeSchema(TOOLS, { compact: true }));
+    expect(posts()[1].body.response_format.json_schema.schema).toEqual(envelopeSchema(TOOLS));
   });
 
   it('sends the code fixer, which has no tools, as plain chat', async () => {
@@ -967,7 +1014,7 @@ describe('constrained JSON', () => {
   });
 
   it('writes readable signatures', () => {
-    expect(signature(toStrictSchema({ type: 'object', properties: { a: { type: 'string' }, b: { type: 'array', items: { enum: ['x', 'y'] } }, c: {} }, required: ['a'] }))).toBe('{a: string, b?: ("x"|"y")[], c?: json}');
+    expect(signature(toStrictSchema({ type: 'object', properties: { a: { type: 'string' }, b: { type: 'array', items: { enum: ['x', 'y'] } }, c: {} }, required: ['a'] }))).toBe('{a!,b:(x|y)[],c:json}');
   });
 });
 
@@ -1241,5 +1288,171 @@ describe('the loaded context window', () => {
     server.routes['/props'] = { body: { default_generation_settings: { n_ctx: 65536 } } };
     expect((await testLocal({ baseURL: server.baseURL, model: 'test-model' })).message).toBe('Connected. test-model is available, loaded with a 65,536-token context.');
     expect(posts()).toHaveLength(0);
+  });
+});
+
+describe('compact schemas on the wire (#364)', () => {
+  const image = { type: 'object', properties: { assetId: { type: ['string', 'null'] }, alt: { type: 'string', maxLength: 300 } }, required: ['assetId', 'alt'] };
+  const tone = { type: 'string', enum: ['default', 'muted', 'inverse'] };
+  const SHARED: ToolDefinition[] = ['set_hero', 'set_logo', 'set_portrait'].map((name) => ({ name, description: name, parameters: { type: 'object', properties: { image, tone }, required: ['image'] } }));
+  const schemaAt = (i: number) => posts()[i].body.response_format?.json_schema?.schema;
+  const logo = { image: { assetId: null, alt: 'Logo' } };
+
+  it.each([
+    ['llama.cpp', { error: { code: 400, message: 'JSON schema conversion failed:\nUnrecognized schema: {"$ref":"#/$defs/d0"}', type: 'invalid_request_error' } }],
+    ['vLLM (transform)', { object: 'error', message: 'Failed to transform json schema into a grammar: rule not found', type: 'BadRequestError', param: null, code: 400 }],
+    ['a server naming the format and the reference', { error: { message: 'response_format rejected schema type: unresolved $ref #/$defs/d0' } }],
+    ['vLLM', { object: 'error', message: 'The provided JSON schema contains features not supported by xgrammar.', type: 'BadRequestError', param: null, code: 400 }],
+    ['Ollama', { error: 'invalid JSON schema in format' }],
+    ['a structured parameter', { error: { message: 'bad value', param: 'response_format.json_schema.schema' } }]
+  ])('writes the schema out in full when %s refuses its shared definitions, and keeps it so', async (_server, refusal) => {
+    server.script({ status: 400, body: JSON.stringify(refusal) }, envelopeReply('set_logo', logo), envelopeReply('finish', { message: 'Done.' }));
+    const a = adapter();
+    expect(doneOf(await run(a, { tools: SHARED })).toolCalls[0]).toMatchObject({ name: 'set_logo', arguments: JSON.stringify(logo) });
+    expect(Object.keys(schemaAt(0).$defs)).not.toHaveLength(0);
+    expect(findForbiddenShapes(schemaAt(0))).toEqual([]);
+    expect(schemaAt(1)).toEqual(envelopeSchema(SHARED));
+    // Nothing the full schema accepts is lost in the compact one.
+    expect(inlineDefinitions(schemaAt(0))).toEqual(dropEnumTypes(schemaAt(1)));
+    // The adapter remembers: the next turn starts from the full schema.
+    await run(a, { tools: SHARED });
+    expect(schemaAt(2)).toEqual(envelopeSchema(SHARED));
+  });
+
+  it('keeps the compact schema when a refusal is about something else', async () => {
+    server.script(
+      { status: 400, body: JSON.stringify({ error: { code: 400, message: 'request (9000 tokens) exceeds the available context size (4096 tokens), try increasing it', type: 'exceed_context_size_error', n_prompt_tokens: 9000, n_ctx: 4096 } }) },
+      // Worded so it would also read as a schema refusal: the context check comes first.
+      { status: 400, body: JSON.stringify({ error: { message: 'Context length exceeded after JSON schema conversion' } }) },
+      envelopeReply('set_logo', logo)
+    );
+    const a = adapter();
+    expect(errorOf(await run(a, { tools: SHARED }))).toMatchObject({ code: 'invalid_request', context: { windowTokens: 4096, promptTokens: 9000 } });
+    expect(errorOf(await run(a, { tools: SHARED })).code).toBe('invalid_request');
+    expect(posts()).toHaveLength(2);
+    // The same adapter still sends the compact form.
+    await run(a, { tools: SHARED });
+    expect(posts().map((_, i) => !!schemaAt(i).$defs)).toEqual([true, true, true]);
+  });
+
+  it.each([
+    ['a validation wording', { error: { message: 'JSON schema validation failed: definitions must be inline' } }],
+    ['a keyword named beside the format', { error: { message: 'Unsupported JSON schema keyword in response_format: definitions' } }],
+    ['wording nothing here knows', { error: { message: 'Bad request' } }]
+  ])('gives the full schema a try for %s', async (_case, refusal) => {
+    server.script({ status: 400, body: JSON.stringify(refusal) }, envelopeReply('set_logo', logo));
+    expect(doneOf(await run(adapter(), { tools: SHARED })).toolCalls[0].name).toBe('set_logo');
+    expect(schemaAt(1)).toEqual(envelopeSchema(SHARED));
+  });
+
+  it('shortens the reply, keeping the compact schema, when a context error happens to quote a reference', async () => {
+    server.script({ status: 400, body: JSON.stringify({ error: { code: 400, message: 'Context length exceeded. Prompt contains $ref.', type: 'exceed_context_size_error', n_ctx: 4096, n_prompt_tokens: 2800 } }) }, envelopeReply('set_logo', logo));
+    expect(doneOf(await run(adapter(), { tools: SHARED, maxOutputTokens: 2048 })).toolCalls[0].name).toBe('set_logo');
+    expect(posts().map((p) => [p.body.max_tokens, !!schemaAt(posts().indexOf(p)).$defs])).toEqual([
+      [2048, true],
+      [1296, true]
+    ]);
+  });
+
+  it.each([400, 422])('steps on to JSON mode when the full schema is refused the same way (%i)', async (status) => {
+    const refusal = { status, body: JSON.stringify({ error: 'invalid JSON schema in format' }) };
+    server.script(refusal, refusal, envelopeReply('set_logo', logo));
+    expect(doneOf(await run(adapter(), { tools: SHARED })).toolCalls[0].name).toBe('set_logo');
+    expect(posts().map((p) => p.body.response_format?.type)).toEqual(['json_schema', 'json_schema', 'json_object']);
+    expect(schemaAt(1)).toEqual(envelopeSchema(SHARED));
+  });
+
+  it('writes the schema out in full when the stream reports it could not build the compact grammar', async () => {
+    server.script({ frames: [`data: ${JSON.stringify({ error: { code: 500, message: 'Failed to compile grammar: unresolved $ref #/$defs/d0' } })}\n\n`] }, envelopeReply('set_logo', logo));
+    expect(doneOf(await run(adapter(), { tools: SHARED })).toolCalls[0].name).toBe('set_logo');
+    expect(schemaAt(0).$defs).toBeDefined();
+    expect(schemaAt(1)).toEqual(envelopeSchema(SHARED));
+  });
+
+  it.each([
+    ['not about the schema', { code: 500, message: 'Model crashed' }],
+    ['about the request length', { code: 500, message: 'Context length exceeded after JSON schema conversion' }],
+    ['about another parameter', { code: 500, message: 'Failed to parse grammar for model', param: 'model' }]
+  ])('reports a stream error %s as it is, and keeps the compact schema', async (_case, error) => {
+    server.script({ frames: [`data: ${JSON.stringify({ error })}\n\n`] }, envelopeReply('set_logo', logo));
+    const a = adapter();
+    expect(errorOf(await run(a, { tools: SHARED }))).toBeDefined();
+    expect(posts()).toHaveLength(1);
+    await run(a, { tools: SHARED });
+    expect(schemaAt(1).$defs).toBeDefined();
+  });
+
+  it('never asks again for a reply the stream had already started showing', async () => {
+    server.script({ frames: [sseChunk({ role: 'assistant' }), sseChunk({ content: '{"brief_status":"Setting' }), `data: ${JSON.stringify({ error: { code: 500, message: 'Failed to compile grammar: unresolved $ref' } })}\n\n`] });
+    expect(errorOf(await run(adapter(), { tools: SHARED }))).toBeDefined();
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('steps through every level, stream options included, within one turn', async () => {
+    server.script(
+      { status: 400, body: JSON.stringify({ error: { message: 'unknown field stream_options' } }) },
+      { status: 400, body: JSON.stringify({ error: { message: 'JSON schema conversion failed: $ref' } }) },
+      { status: 400, body: JSON.stringify({ error: { message: 'Failed to parse grammar' } }) },
+      { status: 400, body: JSON.stringify({ error: { message: 'response_format type not supported' } }) },
+      envelopeReply('set_logo', logo)
+    );
+    expect(doneOf(await run(adapter(), { tools: SHARED })).toolCalls[0].name).toBe('set_logo');
+    expect(posts().map((p) => [p.body.response_format?.type, !!p.body.response_format?.json_schema?.schema.$defs, !!p.body.stream_options])).toEqual([
+      ['json_schema', true, true],
+      ['json_schema', true, false],
+      ['json_schema', false, false],
+      ['json_object', false, false],
+      [undefined, false, false]
+    ]);
+    expect(schemaAt(1)).toEqual(envelopeSchema(SHARED, { compact: true }));
+    expect(schemaAt(2)).toEqual(envelopeSchema(SHARED));
+  });
+
+  describe('reads the same tool call whatever the server enforces', () => {
+    const sets = constrainedToolSets();
+    const tools = (label: string) => sets.find((s) => s.label === label)!.tools;
+    // A call per kind of run, with nested objects, lists, nulls, tokens and an encoded open value.
+    const calls: Array<[string, string, Record<string, unknown>, Record<string, unknown>]> = [
+      ['site', 'upsert_page_with_sections', { slug: 'services', sections: [{ componentId: 'hero.split', variants: { tone: 'muted' }, props: { heading: 'Hi', image: { assetId: null, alt: 'A room' } } }] }, {}],
+      ['selection', 'update_selected_props', { props: { heading: 'Sharper' }, variant: 'muted' }, {}],
+      ['part', 'style_selected_element', { scope: 'phone', styles: [{ property: 'paddingBlock', value: { token: 'space.lg' } }, { property: 'color', value: null }] }, {}],
+      ['ask', 'locate_field', { owner: { kind: 'page', id: 'pg_1' }, nodeId: 'n_1', prop: 'items', itemId: 'i_1', field: 'value' }, {}],
+      ['general (code)', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: 'pg_1' }, nodeId: 'n_1', prop: 'items', value: { [OPEN_VALUE_KEY]: '[{"id":"i_1"}]' } }] }, { operations: [{ value: [{ id: 'i_1' }] }] }]
+    ];
+    const refusals = {
+      compact: [],
+      inline: [{ status: 400, body: JSON.stringify({ error: { message: 'Failed to parse grammar' } }) }],
+      json_object: [{ status: 400, body: JSON.stringify({ error: { message: 'bad value', param: 'response_format' } }) }],
+      none: [{ status: 400, body: JSON.stringify({ error: { message: 'bad value', param: 'response_format' } }) }, { status: 400, body: JSON.stringify({ error: { message: 'response_format type not supported' } }) }]
+    };
+
+    it.each(calls)('in a %s run: %s', async (label, name, wire, decodedPatch) => {
+      const offered = tools(label);
+      expect(offered.map((t) => t.name)).toContain(name);
+      const decoded = JSON.parse(JSON.stringify(wire, (k, v) => (v && typeof v === 'object' && OPEN_VALUE_KEY in v ? JSON.parse(v[OPEN_VALUE_KEY]) : v)));
+      expect(decoded).toMatchObject(decodedPatch);
+      const seen: Array<{ name: string; arguments: string }> = [];
+      for (const level of Object.values(refusals)) {
+        server.script(...level, envelopeReply(name, wire));
+        const call = doneOf(await run(adapter(), { tools: offered })).toolCalls[0];
+        seen.push({ name: call.name, arguments: call.arguments });
+      }
+      server.script(toolCallReply(name, decoded));
+      const nativeCall = doneOf(await run(native(), { tools: offered })).toolCalls[0];
+      seen.push({ name: nativeCall.name, arguments: nativeCall.arguments });
+      expect(seen).toEqual(Array(5).fill({ name, arguments: JSON.stringify(decoded) }));
+      // The levels were what they claim: compact, then the full schema, then JSON mode, then nothing.
+      const formats = posts().filter((p) => p.body.response_format || !p.body.tools).map((p) => [p.body.response_format?.type, !!p.body.response_format?.json_schema && JSON.stringify(p.body.response_format.json_schema.schema) === JSON.stringify(envelopeSchema(offered))]);
+      expect(formats).toEqual([
+        ['json_schema', false],
+        ['json_schema', false],
+        ['json_schema', true],
+        ['json_schema', false],
+        ['json_object', false],
+        ['json_schema', false],
+        ['json_object', false],
+        [undefined, false]
+      ]);
+    });
   });
 });

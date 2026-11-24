@@ -86,6 +86,9 @@ export type UpsertArgs = z.infer<typeof UPSERT_ARGS>;
 export const UPSERT_DESCRIPTION =
   'Create or update a whole page in one call, top to bottom, and wire navigation. No page IDs or revisions needed. On an existing page, a section with the same componentId is updated in place (props you omit keep their value; a list you send sets its items and their order, and an item keeps the fields you omit when it has its id from read_page, or no id and the same name or title as exactly one existing item); other existing sections stay unless removeOtherSections is true. Internal links may use the route of a page you have not built yet; they connect when that page is created. If a section is invalid, nothing is applied and the error names the section and field: call again with repair: true and only that section, with its index.';
 
+export const UPSERT_BRIEF =
+  'Create or update a whole page with all its sections, and wire navigation; no page IDs or revisions. On an existing page a section with the same componentId is updated in place: omitted props keep their value, a list you send sets its items and their order, and an item keeps omitted fields when it has its id from read_page, or no id and the same name or title as exactly one existing item. Other sections stay unless removeOtherSections is true. Links may use routes of pages not built yet. If a section is invalid nothing is applied: call again with repair: true and only that section, with its index.';
+
 /** A link whose page does not exist yet. It connects as soon as a page takes that route. */
 export interface PendingLink {
   route: string;

@@ -226,22 +226,157 @@ const FORBIDDEN_KEYWORDS = [
   'format'
 ];
 
+/**
+ * Shared definitions: a subtree that repeats is written once, under the root's `$defs`, and every place it appeared
+ * holds a lone `{ "$ref": "#/$defs/<name>" }` instead. llama.cpp, XGrammar and Outlines all follow such local
+ * references, and compile each definition into one rule rather than one per use. Names are short and plain, so
+ * they never need escaping and never match a rule name a compiler derives from a property or a primitive.
+ */
+const DEFS_KEY = '$defs';
+const DEF_PREFIX = `#/${DEFS_KEY}/`;
+const DEF_NAME = /^d\d+$/;
+
+/** The definition a lone local reference points to, or null for anything else. */
+function sharedName(node: JsonSchema): string | null {
+  const ref = node.$ref;
+  return Object.keys(node).length === 1 && typeof ref === 'string' && ref.startsWith(DEF_PREFIX) ? ref.slice(DEF_PREFIX.length) : null;
+}
+
+/** The schemas directly inside a node of the strict subset. */
+function children(node: JsonSchema): JsonSchema[] {
+  return [...(isRecord(node.properties) ? Object.values(node.properties) : []), ...(Array.isArray(node.anyOf) ? node.anyOf : []), ...(node.items !== undefined ? [node.items] : [])].filter(isRecord);
+}
+
+/** A copy of `node` with every child passed through `map`. Property keys stay own data, `__proto__` included. */
+function mapChildren(node: JsonSchema, map: (child: JsonSchema) => JsonSchema): JsonSchema {
+  const out: JsonSchema = { ...node };
+  if (isRecord(node.properties)) out.properties = Object.fromEntries(Object.entries(node.properties).map(([k, v]) => [k, isRecord(v) ? map(v) : v]));
+  if (Array.isArray(node.anyOf)) out.anyOf = node.anyOf.map((v) => (isRecord(v) ? map(v) : v));
+  if (isRecord(node.items)) out.items = map(node.items);
+  return out;
+}
+
+/**
+ * The same schema without `type: "string"` beside an enum of strings, which says nothing the enum does not. Every
+ * grammar compiler reads the enum first; only the bytes go.
+ */
+export function dropEnumTypes(schema: JsonSchema): JsonSchema {
+  const out = mapChildren(schema, dropEnumTypes);
+  if (out.type === 'string' && Array.isArray(out.enum) && out.enum.length && out.enum.every((v) => typeof v === 'string')) delete out.type;
+  return out;
+}
+
+/**
+ * The same schema with each repeated subtree moved into `$defs`, whenever writing it once and referring to it is
+ * shorter than repeating it. `inlineDefinitions` gives back exactly the input, so a grammar accepts the same
+ * replies either way. A schema that already has definitions is returned as it is.
+ */
+export function shareDefinitions(schema: JsonSchema): JsonSchema {
+  if (DEFS_KEY in schema) return schema;
+  // Older llama.cpp names a root property's rule after the property, and resolves a reference by its last segment:
+  // a definition named like one would silently take that rule instead of its own.
+  const rootKeys = new Set(isRecord(schema.properties) ? Object.keys(schema.properties).map((k) => k.replace(/[^A-Za-z0-9-]+/g, '-')) : []);
+  let root = schema;
+  const defs: Record<string, JsonSchema> = {};
+  for (let next = 0; ; ) {
+    while (rootKeys.has(`d${next}`)) next++;
+    const name = `d${next++}`;
+    const ref = JSON.stringify({ $ref: `${DEF_PREFIX}${name}` }).length;
+    const seen = new Map<string, number>();
+    const count = (node: JsonSchema) => {
+      if (sharedName(node) !== null) return;
+      const key = JSON.stringify(node);
+      seen.set(key, (seen.get(key) ?? 0) + 1);
+      children(node).forEach(count);
+    };
+    count(root);
+    // A definition's own body is not a use of itself; what repeats inside it still counts.
+    for (const def of Object.values(defs)) children(def).forEach(count);
+    let best: { key: string; saving: number } | null = null;
+    for (const [key, uses] of seen) {
+      // Every use becomes a reference, and the body is written once more, under its name.
+      const saving = uses * key.length - uses * ref - (key.length + name.length + 4);
+      if (uses > 1 && saving > 0 && (!best || saving > best.saving)) best = { key, saving };
+    }
+    if (!best) break;
+    const key = best.key;
+    const replace = (node: JsonSchema): JsonSchema => (JSON.stringify(node) === key ? { $ref: `${DEF_PREFIX}${name}` } : mapChildren(node, replace));
+    defs[name] = JSON.parse(key) as JsonSchema;
+    for (const [k, def] of Object.entries(defs)) if (k !== name) defs[k] = mapChildren(def, replace);
+    root = replace(root);
+  }
+  if (!Object.keys(defs).length) return schema;
+  const shared = { ...root, [DEFS_KEY]: defs };
+  // The `$defs` wrapper itself is not in the sums above: keep the shared form only when it is actually smaller.
+  const size = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).length;
+  return size(shared) < size(schema) ? shared : schema;
+}
+
+/** The schema with every shared definition written out in place again, and no `$defs`. */
+export function inlineDefinitions(schema: JsonSchema): JsonSchema {
+  const { [DEFS_KEY]: defs, ...rest } = schema;
+  if (!isRecord(defs)) return schema;
+  const expand = (node: JsonSchema, path: string[]): JsonSchema => {
+    const name = sharedName(node);
+    if (name === null) return mapChildren(node, (child) => expand(child, path));
+    const def = Object.hasOwn(defs, name) ? defs[name] : undefined;
+    if (!isRecord(def) || path.includes(name)) throw new Error(`Cannot inline ${DEF_PREFIX}${name}`);
+    return expand(def, [...path, name]);
+  };
+  return expand(rest, []);
+}
+
 /** Every shape in a schema that a grammar compiler cannot handle, as `path: problem`. Empty means strict. */
 export function findForbiddenShapes(schema: unknown, path = '$'): string[] {
+  if (!isRecord(schema) || !(DEFS_KEY in schema)) return shapes(schema, path, null);
+  const { [DEFS_KEY]: defs, ...rest } = schema;
+  if (!isRecord(defs)) return [`${path}: ${DEFS_KEY} is not a set of definitions`, ...shapes(rest, path, null)];
+  const problems: string[] = [];
+  // Only what shareDefinitions writes: definitions that are schemas of their own, used from inside the root.
+  // Older llama.cpp loses a definition that is only a reference, or one reached from a root that is one.
+  if (sharedName(rest) !== null) problems.push(`${path}: the root is only a reference`);
+  for (const [name, def] of Object.entries(defs)) {
+    if (!DEF_NAME.test(name)) problems.push(`${path}.${DEFS_KEY}.${name}: definition name is not plain`);
+    if (isRecord(def) && sharedName(def) !== null) problems.push(`${path}.${DEFS_KEY}.${name}: definition is only a reference`);
+    problems.push(...shapes(def, `${path}.${DEFS_KEY}.${name}`, defs));
+    if (reaches(defs, name, name, new Set())) problems.push(`${path}.${DEFS_KEY}.${name}: definition refers to itself`);
+  }
+  return [...problems, ...shapes(rest, path, defs)];
+}
+
+/** Whether definition `from` leads back to `target`: a recursive grammar has no finite expansion. */
+function reaches(defs: JsonSchema, from: string, target: string, seen: Set<string>): boolean {
+  if (seen.has(from)) return false;
+  seen.add(from);
+  const def = defs[from];
+  const refs: string[] = [];
+  const walk = (node: JsonSchema) => {
+    const name = sharedName(node);
+    if (name !== null) refs.push(name);
+    else children(node).forEach(walk);
+  };
+  if (isRecord(def)) walk(def);
+  return refs.some((r) => r === target || (Object.hasOwn(defs, r) && reaches(defs, r, target, seen)));
+}
+
+function shapes(schema: unknown, path: string, defs: JsonSchema | null): string[] {
   if (!isRecord(schema)) return [`${path}: not a schema object`];
+  const name = sharedName(schema);
+  // A reference to a root definition is checked there, once.
+  if (name !== null && defs) return Object.hasOwn(defs, name) ? [] : [`${path}: reference to a missing definition ${name}`];
   const problems: string[] = [];
   if (Object.keys(schema).length === 0) problems.push(`${path}: empty schema`);
   for (const k of FORBIDDEN_KEYWORDS) if (k in schema) problems.push(`${path}: forbidden keyword ${k}`);
-  if (Array.isArray(schema.anyOf)) (schema.anyOf as unknown[]).forEach((s, i) => problems.push(...findForbiddenShapes(s, `${path}.anyOf[${i}]`)));
+  if (Array.isArray(schema.anyOf)) (schema.anyOf as unknown[]).forEach((s, i) => problems.push(...shapes(s, `${path}.anyOf[${i}]`, defs)));
   else if (!('enum' in schema) && !('type' in schema)) problems.push(`${path}: no type`);
   if (schema.type === 'object') {
     if (schema.additionalProperties !== false) problems.push(`${path}: object is not closed`);
     if (!isRecord(schema.properties)) problems.push(`${path}: object declares no properties`);
-    else for (const [k, v] of Object.entries(schema.properties)) problems.push(...findForbiddenShapes(v, `${path}.${k}`));
+    else for (const [k, v] of Object.entries(schema.properties)) problems.push(...shapes(v, `${path}.${k}`, defs));
   } else if ('additionalProperties' in schema) problems.push(`${path}: additionalProperties outside an object`);
   if (schema.type === 'array') {
     if (!('items' in schema)) problems.push(`${path}: array without items`);
-    else problems.push(...findForbiddenShapes(schema.items, `${path}[]`));
+    else problems.push(...shapes(schema.items, `${path}[]`, defs));
   }
   return problems;
 }

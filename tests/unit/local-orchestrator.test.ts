@@ -560,3 +560,69 @@ describe('why a request does not fit', () => {
     expect(v.minimumTokens).toBe(11_264);
   });
 });
+
+describe('what a constrained local run sends first (#364)', () => {
+  /**
+   * UTF-8 bytes of `messages` + `response_format` in the first request, for the business starter. The baselines are
+   * what develop sent before #364 (pretty-printed context, full schema, TypeScript-style signatures and every
+   * tool's long description). The budgets hold today's sizes with a little room: a change that grows a prompt past
+   * one should be a deliberate decision.
+   */
+  const BUDGETS = {
+    site: { code: false, baseline: 42_641, budget: 30_500 },
+    'site (code)': { code: true, baseline: 44_027, budget: 31_800 },
+    section: { code: false, baseline: 12_723, budget: 9_700 },
+    part: { code: false, baseline: 10_001, budget: 7_550 },
+    ask: { code: false, baseline: 13_138, budget: 9_600 },
+    'ask (code)': { code: true, baseline: 13_736, budget: 10_100 }
+  } as const;
+  const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
+
+  it.each(Object.entries(BUDGETS))('keeps the %s run within its budget', async (label, { code, baseline, budget }) => {
+    const { session, run } = await setup({ toolMode: 'constrained-json' }, {}, code);
+    const home = session.state.pages[session.state.site.homePageId];
+    const section = home.nodes[home.rootIds[0]] as { id: string; definitionId: string };
+    const def = session.state.components[section.definitionId];
+    // The two selections the editor sends: a whole section, and one part of it.
+    const selection: ElementRef | null = label === 'section' ? { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: section.id } : label === 'part' ? { owner: { kind: 'page', id: home.id }, instancePath: [section.id], nodeId: def.parts.heading.nodeId, partId: 'heading' } : null;
+    server.script(envelopeReply('finish', { message: 'Done.' }));
+    await run('Hello', selection, selection ? 'Hero' : null, label.startsWith('ask') ? 'ask' : undefined);
+    const body = server.requests.find((r) => r.method === 'POST')!.body;
+    const sent = { messages: bytes(body.messages), response_format: bytes(body.response_format) };
+    const total = sent.messages + sent.response_format;
+    expect(total, JSON.stringify(sent)).toBeLessThanOrEqual(budget);
+    expect(1 - total / baseline, JSON.stringify(sent)).toBeGreaterThan(0.24);
+    // Still the strict grammar, in its compact form, and the context unindented, with all it said before.
+    expect(body.response_format.type).toBe('json_schema');
+    expect(JSON.stringify(body.response_format.json_schema.schema)).not.toContain('"type":"string","enum"');
+    expect(findForbiddenShapes(body.response_format.json_schema.schema)).toEqual([]);
+    const context = JSON.parse(/<editor_context>\n(\{.*\})\n<\/editor_context>/s.exec(body.messages.at(-1).content)![1]);
+    expect(context.selection === null, label).toBe(!selection);
+    if (selection) expect(context.selection.currentProps ?? context.selection.node.props).toHaveProperty('heading');
+    expect(context.allowedScope, label).toMatch(label.startsWith('ask') ? /^nothing: this is a read-only question$/ : label === 'section' ? /^only Hero \(.*\) unless the user approves more via request_wider_scope$/ : label === 'part' ? /^only the selected part "heading" of Hero/ : /^whole site$/);
+    // A question can still be about code; an edit run without code has no code tool to explain.
+    expect('customCode' in context, label).toBe(code || label.startsWith('ask'));
+  });
+
+  it('makes the same change from a constrained reply as from a native call', async () => {
+    const results: unknown[] = [];
+    for (const toolMode of ['constrained-json', 'native'] as const) {
+      const sentBefore = server.requests.length;
+      const { session, run } = await setup({ toolMode });
+      const home = session.state.pages[session.state.site.homePageId];
+      const ref: ElementRef = { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] };
+      const args = { props: { heading: 'Sharper', image: { assetId: null, alt: 'A calm room' } }, variants: { tone: 'muted' } };
+      server.script(...(toolMode === 'native' ? [toolCallReply('update_selected_props', args), textReply('Done.')] : [envelopeReply('update_selected_props', args), envelopeReply('finish', { message: 'Done.' })]));
+      const { result } = await run('Tighten this headline', ref, 'Hero');
+      expect(result?.status, toolMode).toBe('completed');
+      // Each in its own form: signatures in the prompt and a grammar, or native tools and the toured prompt.
+      const first = server.requests.slice(sentBefore).find((r) => r.method === 'POST')!.body;
+      if (toolMode === 'native') expect([first.tools?.length > 0, first.messages[0].content.includes('- update_selected_props changes its content')]).toEqual([true, true]);
+      else expect([first.tools, first.response_format.type, first.messages[0].content.includes('\n- update_selected_props {props:')]).toEqual([undefined, 'json_schema', true]);
+      const node = session.state.pages[home.id].nodes[home.rootIds[0]] as { props: Record<string, unknown>; variants?: Record<string, string> };
+      results.push({ heading: node.props.heading, image: node.props.image, tone: node.variants?.tone });
+    }
+    expect(results[0]).toEqual({ heading: 'Sharper', image: { assetId: null, alt: 'A calm room' }, tone: 'muted' });
+    expect(results[1]).toEqual(results[0]);
+  });
+});

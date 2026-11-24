@@ -1,7 +1,8 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { newId } from '@shared/ids';
 import { checkLocalBaseURL, localContextWindow, localKeyProblem, type LocalToolMode, type LocalURLCheck } from '@shared/local';
-import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall } from './types';
+import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall, ToolDefinition } from './types';
+import type { JsonSchema } from './strict-schema';
 import { redact } from './types';
 import { envelopeInstructions, envelopeSchema, FINISH_ACTION, parseEnvelope, partialStatus, stripThinking } from './constrained';
 import { localModelProfile, type LocalModelProfile } from './models';
@@ -21,7 +22,7 @@ const CONTEXT_DISCOVERY_MS = 1_000;
 const ERROR_BODY_MS = 5_000;
 const FINISH_REASONS = new Set(['stop', 'tool_calls', 'length', 'content_filter']);
 const MAX_CORRECTIONS = 2;
-const MAX_FALLBACKS = 3;
+const MAX_FALLBACKS = 4;
 
 /**
  * Where a local model is served. Deliberately independent of Settings: a process the app manages itself can
@@ -93,7 +94,8 @@ type LocalError = { code: ModelErrorCode; message: string; retryAfterMs?: number
 type TurnResult =
   | { kind: 'done'; event: Extract<ModelEvent, { type: 'done' }> }
   /** `streamed`: part of the reply had already arrived, so asking again would show it twice. */
-  | { kind: 'error'; error: LocalError; streamed?: boolean }
+  /** `errorBody`: an error the server sent inside the stream, as it sent it. */
+  | { kind: 'error'; error: LocalError; streamed?: boolean; errorBody?: string }
   | { kind: 'http'; status: number; body: string; retryAfterMs?: number }
   | { kind: 'unusable'; problem: string; raw: string };
 type ChatMessage = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
@@ -122,6 +124,44 @@ function serverMessage(body: string, apiKey?: string | null): string {
 function serverParam(body: string): string {
   const param = (safeJson(body) as { error?: { param?: unknown } } | undefined)?.error?.param;
   return typeof param === 'string' ? param : '';
+}
+
+/** A refusal of the structured response format, or of the grammar the server builds from it. */
+const FORMAT_REFUSED =
+  /(?:unknown|unsupported|unrecognized|invalid|extra)[^.]*(?:response_format|json_schema)|(?:response_format|json_schema)[^.]*(?:not supported|unsupported|unknown|invalid|not permitted|failed)|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
+/** A refusal of the structured format itself, which no form of the schema would get past. */
+const FORMAT_TYPE_REFUSED =
+  /response_format[^.]*type[^.]*(?:not supported|unsupported|not permitted|unknown|invalid)|type[^.]*json_(?:schema|object)[^.]*(?:not supported|unsupported|not permitted)|(?:unsupported|unknown|unrecognized) (?:value for )?response_format\b/i;
+/** A reference the server could not follow: always about the schema, whatever else the message says. */
+const REFERENCE_REFUSED = /\$ref|\$defs|resolv\w* ref/i;
+/**
+ * A refusal of what a schema contains, such as a `$ref` or `$defs` the server cannot follow, or the grammar it
+ * failed to build (llama.cpp, vLLM, Ollama and LM Studio wordings). Only wording that blames the schema or its
+ * grammar counts, so a model named after one is not taken for it.
+ */
+const SCHEMA_REFUSED =
+  /\$ref|\$defs|resolv\w* ref|unrecognized schema|json[ _]schema[^.]*(?:conver|compil|pars|transform|grammar|not supported|unsupported|invalid)|(?:unsupported|unrecognized|invalid)[^.]*json[ _]schema|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
+
+/**
+ * Whether an error refuses what the schema contains rather than the format, the request's length or anything else.
+ * A structured parameter is authoritative; otherwise the wording must blame the schema.
+ */
+function refusesSchema(text: string, param: string): boolean {
+  if (param) return param.startsWith('response_format.json_schema');
+  // A request too long for the model is about its length, whatever it quotes.
+  if (CONTEXT_FULL.test(text)) return false;
+  if (REFERENCE_REFUSED.test(text)) return true;
+  return !FORMAT_TYPE_REFUSED.test(text) && SCHEMA_REFUSED.test(text);
+}
+
+/**
+ * Whether a refused request with the compact schema should go again with the full one, which is exactly what the
+ * adapter sent before compact schemas: any refusal but one of the request's length, of the format itself, or of
+ * another parameter the server names. A server's wording for what it cannot compile is not known in advance.
+ */
+function retriesFullSchema(text: string, param: string): boolean {
+  if (param) return param.startsWith('response_format.json_schema');
+  return !CONTEXT_FULL.test(text) && !FORMAT_TYPE_REFUSED.test(text);
 }
 
 const CONTEXT_FULL = /context (size|length|window)|exceeds? .*context|n_ctx|too many tokens|prompt is too long/i;
@@ -388,6 +428,10 @@ export class LocalAdapter implements AgentModelAdapter {
   private profile: LocalModelProfile;
   private mode: 'native' | 'constrained-json';
   private responseFormat: 'json_schema' | 'json_object' | 'none' = 'json_schema';
+  /** The schema goes out compact until a server refuses it; then it is written out in full. */
+  private compactSchema = true;
+  /** Both forms of the envelope schema for a tool set, built once for the retries and turns that offer it. */
+  private envelopes = new WeakMap<ToolDefinition[], { inline: JsonSchema; compact: JsonSchema | null }>();
   private usageOption = true;
   private fetchImpl: typeof globalThis.fetch;
   /** The context size the author set in Settings. */
@@ -498,14 +542,32 @@ export class LocalAdapter implements AgentModelAdapter {
     };
     if (this.usageOption) body.stream_options = { include_usage: true };
     if (constrained) {
-      if (this.responseFormat === 'json_schema') body.response_format = { type: 'json_schema', json_schema: { name: 'agent_action', strict: true, schema: envelopeSchema(req.tools) } };
+      if (this.responseFormat === 'json_schema') {
+        const { inline, compact } = this.envelope(req.tools);
+        body.response_format = { type: 'json_schema', json_schema: { name: 'agent_action', strict: true, schema: this.compactSchema && compact ? compact : inline } };
+      }
       else if (this.responseFormat === 'json_object') body.response_format = { type: 'json_object' };
     } else if (req.tools.length) body.tools = req.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
     return body;
   }
 
-  /** Drop a request option the server refused by name. The reply is still checked when the grammar is gone. */
-  private fallBack(status: number, body: string, constrained: boolean): boolean {
+  /** The envelope schema for a tool set, and its compact form when that differs. */
+  private envelope(tools: ToolDefinition[]): { inline: JsonSchema; compact: JsonSchema | null } {
+    let entry = this.envelopes.get(tools);
+    if (!entry) {
+      const inline = envelopeSchema(tools);
+      const compact = envelopeSchema(tools, { compact: true });
+      entry = { inline, compact: JSON.stringify(compact) === JSON.stringify(inline) ? null : compact };
+      this.envelopes.set(tools, entry);
+    }
+    return entry;
+  }
+
+  /**
+   * Drop a request option the server refused by name. The reply is still checked when the grammar is gone. A compact
+   * schema the server cannot read steps down to the same schema written out in full before the grammar is given up.
+   */
+  private fallBack(status: number, body: string, constrained: boolean, tools: ToolDefinition[]): boolean {
     if (status !== 400 && status !== 422) return false;
     const text = serverMessage(body);
     const param = serverParam(body);
@@ -515,11 +577,21 @@ export class LocalAdapter implements AgentModelAdapter {
       this.usageOption = false;
       return true;
     }
-    if (constrained && this.responseFormat !== 'none' && names('response_format', /(?:unknown|unsupported|unrecognized|invalid|extra)[^.]*(?:response_format|json_schema)|(?:response_format|json_schema)[^.]*(?:not supported|unsupported|unknown|invalid|not permitted|failed)|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i)) {
+    if (!constrained || this.responseFormat === 'none') return false;
+    if (retriesFullSchema(text, param) && this.dropCompact(tools)) return true;
+    const schemaRefused = this.responseFormat === 'json_schema' && refusesSchema(text, param);
+    if (schemaRefused || names('response_format', FORMAT_REFUSED)) {
       this.responseFormat = this.responseFormat === 'json_schema' ? 'json_object' : 'none';
       return true;
     }
     return false;
+  }
+
+  /** A schema refusal gets the schema written out in full before the grammar goes. False when that was already sent. */
+  private dropCompact(tools: ToolDefinition[]): boolean {
+    if (this.responseFormat !== 'json_schema' || !this.compactSchema || !this.envelope(tools).compact) return false;
+    this.compactSchema = false;
+    return true;
   }
 
   async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
@@ -552,6 +624,11 @@ export class LocalAdapter implements AgentModelAdapter {
         return;
       }
       if (result.kind === 'error') {
+        // A server may only find out it cannot build the compact grammar once the stream has opened.
+        if (!result.streamed && constrained && fallbacks < MAX_FALLBACKS && !signal.aborted && result.errorBody && refusesSchema(serverMessage(result.errorBody), serverParam(result.errorBody)) && this.dropCompact(req.tools)) {
+          fallbacks++;
+          continue;
+        }
         if (!result.streamed && replyCap === Infinity && !corrections.length && !signal.aborted) {
           const room = this.shorterReply(result.error, Number(body.max_tokens));
           if (room) {
@@ -563,7 +640,7 @@ export class LocalAdapter implements AgentModelAdapter {
         return;
       }
       if (result.kind === 'http') {
-        if (fallbacks < MAX_FALLBACKS && this.fallBack(result.status, result.body, constrained)) {
+        if (fallbacks < MAX_FALLBACKS && this.fallBack(result.status, result.body, constrained, req.tools)) {
           fallbacks++;
           continue;
         }
@@ -692,7 +769,7 @@ export class LocalAdapter implements AgentModelAdapter {
             corrupt = true;
             continue;
           }
-          if (chunk.error) return { kind: 'error', error: this.streamError(chunk.error, model), streamed: !!raw };
+          if (chunk.error) return { kind: 'error', error: this.streamError(chunk.error, model), streamed: !!raw, errorBody: JSON.stringify({ error: chunk.error }) };
           if (typeof chunk.usage?.prompt_tokens === 'number' && typeof chunk.usage?.completion_tokens === 'number') usage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens };
           const choice = chunk.choices?.[0];
           if (!choice) continue;

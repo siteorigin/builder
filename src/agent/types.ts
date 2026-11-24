@@ -15,6 +15,11 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  /**
+   * What a grammar-constrained local model reads beside the tool's signature, which already shows every field: the
+   * description's rules in fewer words, or nothing when the name and signature say it all. Absent: the description.
+   */
+  brief?: string;
 }
 
 export interface ToolCall {

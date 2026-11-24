@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { decodeStrictValue, findForbiddenShapes, OPEN_VALUE_KEY, toStrictSchema, type JsonSchema } from '@agent/strict-schema';
+import { decodeStrictValue, dropEnumTypes, findForbiddenShapes, inlineDefinitions, OPEN_VALUE_KEY, shareDefinitions, toStrictSchema, type JsonSchema } from '@agent/strict-schema';
+import { envelopeSchema } from '@agent/constrained';
+import { constrainedToolSets } from './fixtures/constrained-tools';
 import { TOOL_ARGS, toolDefinitions } from '@agent/tools';
 
 const OPEN = { anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'boolean' }, { type: 'null' }, { type: 'object', properties: { $json: { type: 'string' } }, required: ['$json'], additionalProperties: false }] };
@@ -198,5 +200,112 @@ describe('decodeStrictValue', () => {
     const encoded = { expectedRevision: 2, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1', prop: 'cta', value: { [OPEN_VALUE_KEY]: JSON.stringify({ label: 'Go', link: { type: 'page', target: 'pg_b' } }) } }] };
     const parsed = TOOL_ARGS.apply_operations.parse(decodeStrictValue(encoded));
     expect(parsed.operations[0]).toEqual({ type: 'instance.setProp', owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1', prop: 'cta', value: { label: 'Go', link: { type: 'page', target: 'pg_b' } } });
+  });
+});
+
+describe('the compact wire schema (#364)', () => {
+  const closed = (properties: JsonSchema, required?: string[]) => ({ type: 'object', properties, ...(required ? { required } : {}), additionalProperties: false });
+  const image = closed({ assetId: { anyOf: [{ type: 'string' }, { type: 'null' }] }, alt: { type: 'string', maxLength: 300 } }, ['assetId', 'alt']);
+
+  it('drops only the type beside an enum of strings', () => {
+    const schema = closed({ a: { type: 'string', enum: ['x', 'y'] }, b: { type: 'integer', enum: [1, 2] }, c: { type: 'string', maxLength: 5 }, d: { type: 'array', items: { type: 'string', enum: ['z'] }, maxItems: 2 }, e: { enum: ['a', null] } });
+    expect(dropEnumTypes(schema)).toEqual(closed({ a: { enum: ['x', 'y'] }, b: { type: 'integer', enum: [1, 2] }, c: { type: 'string', maxLength: 5 }, d: { type: 'array', items: { enum: ['z'] }, maxItems: 2 }, e: { enum: ['a', null] } }));
+    expect(schema.properties.a).toEqual({ type: 'string', enum: ['x', 'y'] });
+    // Only an enum of strings: a string type beside a mixed list stays.
+    expect(dropEnumTypes({ type: 'string', enum: ['a', 1] })).toEqual({ type: 'string', enum: ['a', 1] });
+  });
+
+  it('writes a repeated subtree once and refers to it, and gives back exactly the input', () => {
+    const schema = closed({ hero: image, logo: image, portrait: image, name: { type: 'string' } });
+    const shared = shareDefinitions(schema);
+    expect(Object.keys(shared.$defs as object)).toEqual(['d0']);
+    expect((shared.properties as JsonSchema).logo).toEqual({ $ref: '#/$defs/d0' });
+    expect((shared.properties as JsonSchema).name).toEqual({ type: 'string' });
+    expect(JSON.stringify(shared).length).toBeLessThan(JSON.stringify(schema).length);
+    expect(findForbiddenShapes(shared)).toEqual([]);
+    expect(inlineDefinitions(shared)).toEqual(schema);
+    // A small subtree costs more as a reference than written out.
+    const small = closed({ a: { type: 'string' }, b: { type: 'string' }, c: { type: 'string' } });
+    expect(shareDefinitions(small)).toEqual(small);
+    // Nor is it shared when the `$defs` wrapper would make the whole larger.
+    const bounded = { type: 'string', maxLength: 1 };
+    const four = closed({ a: bounded, b: bounded, c: bounded, d: bounded });
+    expect(shareDefinitions(four)).toBe(four);
+  });
+
+  it('never names a definition like a root property, whose rule older llama.cpp would use instead', () => {
+    const long = { enum: ['x'.repeat(80)] };
+    const shared = shareDefinitions(closed({ d0: { enum: ['wrong'] }, x: long, y: long }));
+    expect(Object.keys(shared.$defs as object)).toEqual(['d1']);
+    expect((shared.properties as JsonSchema).x).toEqual({ $ref: '#/$defs/d1' });
+  });
+
+  it('shares nested repeats inside a shared subtree only when they still repeat', () => {
+    const card = closed({ image, caption: { type: 'string' } });
+    const shared = shareDefinitions(closed({ a: card, b: card, c: image }));
+    expect(inlineDefinitions(shared)).toEqual(closed({ a: card, b: card, c: image }));
+    expect(findForbiddenShapes(shared)).toEqual([]);
+    // The image repeats once the card is shared (inside the card's definition, and on its own), so both are shared.
+    const defs = Object.values(shared.$defs as Record<string, JsonSchema>).map((d) => JSON.stringify(d));
+    expect(defs).toContain(JSON.stringify(image));
+    expect(defs.some((d) => d.includes('"caption"'))).toBe(true);
+    // Without the lone image, only the card is.
+    const cardsOnly = shareDefinitions(closed({ a: card, b: card }));
+    expect(Object.values(cardsOnly.$defs as Record<string, JsonSchema>).map((d) => JSON.stringify(d))).toEqual([JSON.stringify(card)]);
+  });
+
+  it('keeps a __proto__ property as data when sharing and inlining', () => {
+    const odd = JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string","maxLength":300},"x":{"type":"string","maxLength":300}},"additionalProperties":false}');
+    const schema = closed({ a: odd, b: odd, c: odd });
+    const shared = shareDefinitions(schema);
+    expect(Object.keys(((shared.$defs as Record<string, JsonSchema>).d0.properties as object))).toEqual(['__proto__', 'x']);
+    const back = inlineDefinitions(shared);
+    expect(back).toEqual(schema);
+    expect(Object.keys(((back.properties as JsonSchema).a as JsonSchema).properties as object)).toEqual(['__proto__', 'x']);
+  });
+
+  it('round-trips every envelope a constrained run sends', () => {
+    for (const { label, tools } of constrainedToolSets()) {
+      const inline = envelopeSchema(tools);
+      const compact = envelopeSchema(tools, { compact: true });
+      expect(findForbiddenShapes(inline), label).toEqual([]);
+      expect(findForbiddenShapes(compact), label).toEqual([]);
+      expect(inlineDefinitions(compact), label).toEqual(dropEnumTypes(inline));
+      expect(JSON.stringify(compact).length, label).toBeLessThan(JSON.stringify(inline).length);
+    }
+  });
+
+  it('accepts root definitions only as lone local references to plain names', () => {
+    const ok = { ...closed({ a: { $ref: '#/$defs/d0' } }), $defs: { d0: { type: 'string' } } };
+    expect(findForbiddenShapes(ok)).toEqual([]);
+    expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d1' } }), $defs: { d0: { type: 'string' } } })).toEqual(['$.a: reference to a missing definition d1']);
+    expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d0', type: 'string' } }), $defs: { d0: { type: 'string' } } })).toContain('$.a: forbidden keyword $ref');
+    expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/definitions/d0' } }), $defs: { d0: { type: 'string' } } })).toContain('$.a: forbidden keyword $ref');
+    expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/name' } }), $defs: { name: { type: 'string' } } })).toContain('$.$defs.name: definition name is not plain');
+    expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d0extra' } }), $defs: { d0extra: { type: 'string' } } })).toContain('$.$defs.d0extra: definition name is not plain');
+    // Only what shareDefinitions writes: no definition that is only a reference, and no root that is one.
+    expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d0' } }), $defs: { d0: { $ref: '#/$defs/d1' }, d1: { enum: ['yes'] } } })).toEqual(['$.$defs.d0: definition is only a reference']);
+    expect(findForbiddenShapes({ $ref: '#/$defs/d0', $defs: { d0: { enum: ['yes'] } } })).toEqual(['$: the root is only a reference']);
+    expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d0' } }), $defs: { d0: closed({ b: { $ref: '#/$defs/d1' } }), d1: closed({ c: { $ref: '#/$defs/d0' } }) } })).toEqual(['$.$defs.d0: definition refers to itself', '$.$defs.d1: definition refers to itself']);
+    expect(findForbiddenShapes({ ...closed({ a: { $ref: '#/$defs/d0' } }), $defs: { d0: { type: 'object', properties: {} } } })).toEqual(['$.$defs.d0: object is not closed']);
+    expect(findForbiddenShapes({ ...closed({ a: { type: 'string' } }), $defs: [] })[0]).toMatch(/not a set of definitions/);
+    // Nowhere but the root.
+    expect(findForbiddenShapes(closed({ a: { ...closed({ b: { $ref: '#/$defs/d0' } }), $defs: { d0: { type: 'string' } } } })).join()).toContain('forbidden keyword $defs');
+    expect(findForbiddenShapes(closed({ a: { $ref: '#/$defs/d0' } })).join()).toContain('forbidden keyword $ref');
+    expect(() => inlineDefinitions({ ...closed({ a: { $ref: '#/$defs/d0' } }), $defs: { d0: closed({ b: { $ref: '#/$defs/d0' } }) } })).toThrow(/Cannot inline/);
+  });
+
+  it('never sends a description or title, while a field named so survives', () => {
+    const strict = toStrictSchema({
+      type: 'object',
+      title: 'Args',
+      description: 'The arguments',
+      properties: { description: { type: 'string', description: 'Shown under the title' }, title: { type: 'object', title: 'Nested', properties: { text: { type: 'string', description: 'x' } }, description: 'y' } }
+    });
+    expect(strict).toEqual(closed({ description: { type: 'string' }, title: closed({ text: { type: 'string' } }) }));
+    for (const { label, tools } of constrainedToolSets()) {
+      const wire = JSON.stringify(envelopeSchema(tools, { compact: true }));
+      expect(wire, label).not.toMatch(/"(?:description|title)":"/);
+    }
   });
 });
