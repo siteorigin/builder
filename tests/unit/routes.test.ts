@@ -16,6 +16,10 @@ describe('slugify', () => {
   it('keeps short slugs as they were', () => {
     expect(slugify('  Café & Bar!  ')).toBe('cafe-and-bar');
     expect(slugify('---')).toBe('');
+    // Compatibility characters fold to their plain letters.
+    expect(slugify('Oﬃce Hours')).toBe('office-hours');
+    // Exactly 60 characters, when the cut lands inside a word.
+    expect(slugify('b'.repeat(70))).toBe('b'.repeat(60));
   });
 });
 
@@ -25,6 +29,9 @@ describe('normalizeRoute', () => {
     expect(normalizeRoute('/Our  Team / Café Menu/')).toBe('/our-team/cafe-menu/');
     expect(normalizeRoute(' Crème Brûlée ')).toBe('/creme-brulee/');
     for (const typed of ['About Us', '/Our  Team / Café Menu/', ' Crème Brûlée ']) expect(validateRoute(normalizeRoute(typed)), typed).toBeNull();
+    // Space left once the accents are gone is trimmed too, and a segment of spaces is no segment.
+    expect(normalizeRoute('/\u0301 Café \u0301/')).toBe('/cafe/');
+    expect(normalizeRoute('/services/  /web-design/')).toBe('/services/web-design/');
   });
 
   it('leaves routes that were already valid as they are', () => {
@@ -44,6 +51,7 @@ describe('normalizeRoute', () => {
     expect(normalizeRoute('/a／b/')).toBe('/a／b/');
     expect(validateRoute(normalizeRoute('/a／b/'))).toMatch(/may only contain/);
     expect(normalizeRoute('/\u0301/')).not.toBe('/');
+    expect(normalizeRoute('/a/\u0301/b/')).toBe('/a/\u0301/b/');
     expect(validateRoute(normalizeRoute('/\u0301/'))).toMatch(/may only contain/);
   });
 });

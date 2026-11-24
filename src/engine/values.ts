@@ -136,6 +136,8 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
     }
     const out = linkFromTarget(target, state.pages, newTab);
     if (!out && target.startsWith('/')) fail(`${label}: no page${scope.entries ? ' or entry' : ''} has the route "${target.slice(0, 60)}".`);
+    // A number that dials nothing (one saved before numbers needed three digits) is refused, never kept as its markup.
+    if (!out && /^tel:/i.test(t)) fail(`${label}: "${t.slice(4, 44)}" is not a valid telephone number.`);
     return out;
   };
   const fromText = (s: string) => parseRichText(s, { markdown: true, link, plainAs });

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { normalizeLink } from '@engine/values';
+import { normalizeLink, normalizeRichText } from '@engine/values';
 import { linkFromTarget } from '@shared/richtext';
 import { resolveLink } from '@generator/index';
 
@@ -18,8 +18,12 @@ describe('page links written as text', () => {
     expect(about.route).toBe('/about/');
     for (const v of ['/about/#team', '/about#team', 'about#team', `${about.id}#team`]) {
       expect(normalizeLink(v, s, 'Link'), v).toEqual(team);
-      if (v !== 'about#team') expect(linkFromTarget(v, s.pages), v).toEqual(team);
+      // Rich text takes a route only with its leading slash.
+      expect(linkFromTarget(v, s.pages), v).toEqual(v === 'about#team' ? null : team);
     }
+    // Any valid id is a section, on any page.
+    const contact = Object.values(s.pages).find((p) => p.route === '/contact/')!;
+    expect(normalizeLink('/contact/#Team_2-next', s, 'Link')).toEqual({ type: 'page', target: contact.id, anchor: 'Team_2-next' });
     // Without an anchor, as before.
     expect(normalizeLink('/about/', s, 'Link')).toEqual({ type: 'page', target: about.id });
     expect(normalizeLink('about', s, 'Link')).toEqual({ type: 'page', target: about.id });
@@ -33,10 +37,13 @@ describe('page links written as text', () => {
 
   it('refuses an anchor that is empty or not a valid id, and a page that does not exist', () => {
     const s = fresh();
-    for (const v of ['/about/#', '/about/##team', '/about/#9team', '/about/#te am', '/missing/#team']) {
-      expect(() => normalizeLink(v, s, 'Link'), v).toThrow(/Link: /);
+    expect(aboutOf(s).route).toBe('/about/');
+    for (const [v, anchor] of [['/about/#', ''], ['/about/##team', '#team'], ['/about/#9team', '9team'], ['/about/#te am', 'te am']]) {
+      expect(() => normalizeLink(v, s, 'Link'), v).toThrow(`Link: "${anchor}" is not a valid anchor.`);
       expect(linkFromTarget(v, s.pages), v).toBeNull();
     }
+    expect(() => normalizeLink('/missing/#team', s, 'Link')).toThrow('Link: "/missing/#team" is not a page ID, route (with an optional #anchor)');
+    expect(linkFromTarget('/missing/#team', s.pages)).toBeNull();
   });
 
   it('stores an anchored route sent to a link property as the page and its section', () => {
@@ -51,7 +58,7 @@ describe('page links written as text', () => {
 describe('telephone links', () => {
   it('refuses a number with fewer than three digits, which would dial nothing', () => {
     const s = fresh();
-    for (const target of ['---', '( )', '...', '+1', '1 2', '(1)-2']) {
+    for (const target of ['---', '( )', '...', '+1', '1 2', '(1)-2', '123x', '1'.repeat(31)]) {
       expect(() => normalizeLink({ type: 'tel', target }, s, 'Link'), target).toThrow(/is not a valid telephone number/);
       expect(() => normalizeLink(`tel:${target}`, s, 'Link'), target).toThrow(/is not a valid telephone number/);
       expect(linkFromTarget(`tel:${target}`, s.pages), target).toBeNull();
@@ -74,10 +81,27 @@ describe('telephone links', () => {
 
   it('keeps numbers that dial', () => {
     const s = fresh();
-    for (const target of ['123', '+1 (555) 010', '555-0100', '+44 20 7946 0958']) {
+    const dials: Array<[string, string]> = [
+      ['123', 'tel:123'],
+      ['+1 (2) 3', 'tel:+123'],
+      ['+1 (555) 010', 'tel:+1555010'],
+      ['555-0100', 'tel:5550100'],
+      ['+44 20 7946 0958', 'tel:+442079460958'],
+      ['1'.repeat(30), `tel:${'1'.repeat(30)}`]
+    ];
+    for (const [target, href] of dials) {
       expect(normalizeLink({ type: 'tel', target }, s, 'Link')).toEqual({ type: 'tel', target });
       expect(linkFromTarget(`tel:${target}`, s.pages)).toEqual({ type: 'tel', target });
-      expect(resolveLink({ type: 'tel', target }, { state: s })?.href).toMatch(/^tel:\+?\d{3,}$/);
+      expect(resolveLink({ type: 'tel', target }, { state: s })).toEqual({ href });
     }
+  });
+
+  it('refuses a number in text that dials nothing, never keeping it as its markup', () => {
+    const s = fresh();
+    // As the Inspector sends text holding a number saved before the rule: it says what is wrong instead.
+    expect(() => normalizeRichText('Call [the desk](tel:---) today.', s, 'Text')).toThrow('Text: "---" is not a valid telephone number.');
+    expect(normalizeRichText('Call [the desk](tel:555-0100) today.', s, 'Text')).toEqual([
+      { type: 'p', spans: [{ text: 'Call ' }, { text: 'the desk', link: { type: 'tel', target: '555-0100' } }, { text: ' today.' }] }
+    ]);
   });
 });

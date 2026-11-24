@@ -857,10 +857,14 @@ export function runtimeFontWarnings(state: ProjectState): string[] {
 /** How many unlinked buttons an export warning names before it sums up the rest. */
 const UNLINKED_LISTED = 6;
 
-/** The trees the site renders, named for a warning: the pages in site order, then the shared header and footer when a page shows them. */
+/**
+ * The trees the site renders, named for a warning: the pages in site order, then the shared header and footer when a
+ * page shows them, or any published collection entry (an entry shows both).
+ */
 function siteTrees(state: ProjectState): Array<{ tree: NodeTree; label: string }> {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
-  const shell = SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part))).map((part) => ({ tree: state.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' }));
+  const entryShown = siteEntries(state).some((e) => !isDraftEntry(e.entry));
+  const shell = SHELL_PARTS.filter((part) => entryShown || pages.some((p) => showsPart(p, part))).map((part) => ({ tree: state.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' }));
   return [...pages.map((p) => ({ tree: p, label: p.title })), ...shell];
 }
 

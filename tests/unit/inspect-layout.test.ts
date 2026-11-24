@@ -196,6 +196,11 @@ describe('layout inspection readability checks', () => {
     expect(r.issues.find((i) => i.kind === 'heading-structure')).toBeUndefined();
   }, 30000);
 
+  it.skipIf(!browserInstalled)('names a link without words, and leaves a placeholder <a> without href alone (#208)', async () => {
+    const r = await inspect(`<h1 ${so('title')}>Studio</h1><nav ${so('nav')}><a href="/about/">About</a><a href="/contact/" ${so('empty')}></a><a ${so('placeholder')}></a></nav>`);
+    expect(of(r, 'empty-link').map((i) => i.desc?.node)).toEqual(['empty']);
+  }, 30000);
+
   it.skipIf(!browserInstalled)('keeps measuring through form controls that hide the form\'s own properties', async () => {
     // A control named "children" or "childNodes" replaces form.children or form.childNodes on the form element.
     const r = await inspect(`<form ${so('form')} style="color:#ccc">Pale words in a form<input ${so('guests')} name="children" style="display:block;min-height:44px;width:200px"><input ${so('note')} name="childNodes" style="display:block;min-height:44px;width:200px"></form>

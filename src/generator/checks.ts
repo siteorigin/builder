@@ -678,7 +678,10 @@ export interface UnlinkedMenuLink {
  */
 export function unlinkedMenuLinks(state: ProjectState, tree: NodeTree): UnlinkedMenuLink[] {
   const out: UnlinkedMenuLink[] = [];
+  const seen = new Set<string>();
+  // A header a visitor reaches by opening a disclosure or choosing a tab shows its menu all the same.
   walkRendered(state, tree, {
+    everyState: true,
     code: (def, props, reportId) => {
       if (shippedCode(state, def) !== 'shell.header' || !Array.isArray(props.links)) return;
       const schema = def.properties.links;
@@ -691,7 +694,12 @@ export function unlinkedMenuLinks(state: ProjectState, tree: NodeTree): Unlinked
         const label = String(field(item, 'label') ?? '').trim();
         if (!label || resolveLink(field(item, 'link') as LinkValue | undefined, { state })) return;
         if (!under[i] && under[i + 1]) return;
-        out.push({ nodeId: reportId, itemId: String((item as { id?: unknown } | null)?.id ?? i), label });
+        const itemId = String((item as { id?: unknown } | null)?.id ?? i);
+        // A header repeated for each item of a list shows the same menu link each time: one change fixes them all.
+        const key = JSON.stringify([reportId, itemId]);
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push({ nodeId: reportId, itemId, label });
       });
     }
   });
