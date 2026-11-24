@@ -4,12 +4,13 @@ import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } fro
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ComponentExportResult, ComponentImportResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
+import type { ComponentExportResult, ComponentImportResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { sourceHash } from '@engine/apply';
+import { websiteFormNotes } from '@engine/validate';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState, siteEntries } from '@generator/index';
 import { archivePages } from '@shared/archives';
 import { placeholderImageCount } from '@generator/checks';
@@ -17,7 +18,7 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { builtPhotosMessage, pageLanguageWarning, publicUrlWarning, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
+import { builtPhotosMessage, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -2041,7 +2042,9 @@ export class Controller {
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, format);
     if (bad) return { ok: false, message: bad, warnings: [] };
-    const warnings = ['Private files such as .env, keys and credentials were left out.'];
+    // What the export says about what it delivered, in order, with where to fix what the editor can fix.
+    const notes: ExportNote[] = [{ message: 'Private files such as .env, keys and credentials were left out.' }];
+    const warn = (...messages: string[]) => void notes.push(...messages.map((message) => ({ message })));
     return this.withStaging(async (staging) => {
       const folder = join(staging, 'project');
       const snap = await this.snapshotSource(s, folder);
@@ -2049,19 +2052,21 @@ export class Controller {
       await settleServerHook(folder, publishedState(snap.state));
       // The exported source is the published site; its drafts are kept to edit but not built.
       const live = publishedState(snap.state);
-      warnings.push(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+      // The forms the published site shows that visitors cannot send, each leading to its settings.
+      notes.push(...websiteFormNotes(snap.state));
+      warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
       for (const { file, route, draft } of withheldStaticFiles(folder, snap.state))
-        warnings.push(`${file} is served at ${route}, the address of the draft ${draft}, so a build of the exported project publishes it there. Remove or move the file before building.`);
+        warn(`${file} is served at ${route}, the address of the draft ${draft}, so a build of the exported project publishes it there. Remove or move the file before building.`);
       const kept = locationKeptNote(await locatedPhotos(folder, snap.state));
-      if (kept) warnings.push(kept);
-      warnings.push(...missingSourceWarnings(snap.state, await findMissingAssetFiles(folder, snap.state.assets.assets)));
+      if (kept) warn(kept);
+      warn(...missingSourceWarnings(snap.state, await findMissingAssetFiles(folder, snap.state.assets.assets)));
       const ownNotFound = ownNotFoundFileNote(folder);
-      if (ownNotFound) warnings.push(ownNotFound);
+      if (ownNotFound) warn(ownNotFound);
       const problem = await this.publish(s, folder, dest, format, `${slugify(snap.state.site.name) || 'website'}-source`);
       if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
-      this.recordExport(s, { kind: 'source', format, path: dest, revision: snap.revision, exportedAt: new Date().toISOString() });
-      return { ok: true, path: dest, message: format === 'zip' ? 'Source project exported as a ZIP file.' : 'Source project exported.', warnings, revision: snap.revision };
+      this.recordExport(s, { kind: 'source', format, path: dest, revision: snap.revision, exportedAt: new Date().toISOString(), notes });
+      return { ok: true, path: dest, message: format === 'zip' ? 'Source project exported as a ZIP file.' : 'Source project exported.', warnings: notes.map((n) => n.message), notes, revision: snap.revision };
     });
   }
 
@@ -2187,80 +2192,85 @@ export class Controller {
     const build = await buildProject(project);
     if (!build.ok) return { ok: false, ...explainBuildFailure(live, build, this.buildFailureContext(staging, project, s.dir)) };
     const out = join(project, 'build');
-    const warnings: string[] = [];
+    // What the export says about what it delivered, in order, with where to fix what the editor can fix.
+    const notes: ExportNote[] = [];
+    const warn = (...messages: string[]) => void notes.push(...messages.map((message) => ({ message })));
+    const warnings = () => notes.map((n) => n.message);
     // Verify page inventory.
     for (const id of live.site.pageOrder) {
       const p = live.pages[id];
       const file = join(out, p.route === '/' ? 'index.html' : join(p.route, 'index.html'));
-      if (!existsSync(file)) return { ok: false, message: `The build is missing ${p.route}.`, warnings };
+      if (!existsSync(file)) return { ok: false, message: `The build is missing ${p.route}.`, warnings: warnings() };
       const html = await fs.readFile(file, 'utf8');
-      if (EDITOR_MARKUP.test(html)) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings };
+      if (EDITOR_MARKUP.test(html)) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings: warnings() };
       const language = pageLanguageWarning(live, p, html);
-      if (language) warnings.push(language);
+      if (language) warn(language);
     }
     // Every published collection entry is a page of its own.
     for (const { route } of siteEntries(live)) {
       const file = join(out, route, 'index.html');
-      if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings };
-      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings };
+      if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings: warnings() };
+      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
     }
     // So is each page of every collection's index and category archives.
     for (const { route } of archivePages(live)) {
       const file = join(out, route, 'index.html');
-      if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings };
-      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings };
+      if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings: warnings() };
+      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
     }
     // Old addresses kept working are pages of their own on a static host: each must be there to send visitors on.
     for (const { from } of liveRedirects(live)) {
       const file = join(out, from, 'index.html');
-      if (!existsSync(file)) return { ok: false, message: `The build is missing ${from}, an old address that should send visitors on.`, warnings };
-      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings };
+      if (!existsSync(file)) return { ok: false, message: `The build is missing ${from}, an old address that should send visitors on.`, warnings: warnings() };
+      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings: warnings() };
     }
     // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
     // static/, say, would publish the address the author kept back.
     // An archive page the website has at such an address is its own (route/index.html); any other file there is not.
     for (const { route, draft, archived } of withheldRoutes(state, live))
       if ((!archived && existsSync(join(out, route, 'index.html'))) || existsSync(join(out, `${route.replace(/\/$/, '')}.html`)))
-        return { ok: false, message: `The website has a page at ${route}, which leads to the draft ${draft}. Remove the file that puts it there, then export again.`, warnings };
+        return { ok: false, message: `The website has a page at ${route}, which leads to the draft ${draft}. Remove the file that puts it there, then export again.`, warnings: warnings() };
     // The not-found page, which hosts show at any address the site does not have.
     const notFound = await readNotFoundPage(out);
     const notFoundStop = notFoundPageProblem(notFound);
-    if (notFoundStop || notFound === null) return { ok: false, message: notFoundStop ?? '', warnings };
+    if (notFoundStop || notFound === null) return { ok: false, message: notFoundStop ?? '', warnings: warnings() };
     for (const f of await listFiles(out)) {
-      if (/\.js$/.test(f) && /siteorigin-bridge|data-so-ctx/.test(await fs.readFile(join(out, f), 'utf8'))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings };
+      if (/\.js$/.test(f) && /siteorigin-bridge|data-so-ctx/.test(await fs.readFile(join(out, f), 'utf8'))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings: warnings() };
     }
     // Images the build brought in from somewhere other than the cleaned sources (a package, generated code).
     const unchecked = await cleanBuiltSite(out);
-    if (unchecked.length) return { ok: false, message: builtPhotosMessage(unchecked), warnings };
-    const noPublicUrl = publicUrlWarning(state);
-    if (noPublicUrl) warnings.push(noPublicUrl);
+    if (unchecked.length) return { ok: false, message: builtPhotosMessage(unchecked), warnings: warnings() };
+    // A form visitors cannot send leads the notes: enquiries that fail are what the author most needs to know about.
+    notes.unshift(...websiteFormNotes(state));
+    const noPublicUrl = publicUrlNote(state);
+    if (noPublicUrl) notes.push(noPublicUrl);
     const placeholders = placeholderImageCount(live);
-    if (placeholders) warnings.push(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
-    warnings.push(...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
+    if (placeholders) warn(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
+    warn(...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
     const absent = new Set(missingFiles.filter((m) => m.missing.original).map((m) => m.asset.id));
-    for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a) && !absent.has(a.id)) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
-    warnings.push(...missingUnusedWarnings(missingFiles));
+    for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a) && !absent.has(a.id)) warn(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+    warn(...missingUnusedWarnings(missingFiles));
     const left = omittedAssetsWarning(omitted);
-    if (left) warnings.push(left);
+    if (left) warn(left);
     const located = locationRemovedNote(photos.located);
-    if (located) warnings.push(located);
+    if (located) warn(located);
     const relative = notFoundAddressWarning(notFound);
-    if (relative) warnings.push(relative);
+    if (relative) warn(relative);
     const pages = live.site.pageOrder.length;
     const entries = siteEntries(live).length;
     const exported = `${pages} page${pages === 1 ? '' : 's'}${entries ? ` and ${entries} collection entr${entries === 1 ? 'y' : 'ies'}` : ''}`;
     const problem = await this.publish(s, out, dest, format);
-    if (problem) return { ok: false, message: problem, warnings };
-    warnings.push(notFoundHostNote(basePath(state)));
+    if (problem) return { ok: false, message: problem, warnings: warnings() };
+    warn(notFoundHostNote(basePath(state)));
     const exportedAt = new Date().toISOString();
     this.exportPaths.add(dest);
     if (format === 'zip') {
-      this.recordExport(s, { kind: 'site', format, path: dest, revision, exportedAt });
-      return { ok: true, path: dest, message: `Exported ${exported} as a ZIP file.`, warnings, revision };
+      this.recordExport(s, { kind: 'site', format, path: dest, revision, exportedAt, notes });
+      return { ok: true, path: dest, message: `Exported ${exported} as a ZIP file.`, warnings: warnings(), notes, revision };
     }
     // The export is done either way; a preview that cannot start only loses the preview button.
-    const previewUrl = await this.previewAndRecord(s, { kind: 'site', format, path: dest, revision, exportedAt }, basePath(state));
-    return { ok: true, path: dest, message: `Exported ${exported}.`, warnings, revision, previewUrl };
+    const previewUrl = await this.previewAndRecord(s, { kind: 'site', format, path: dest, revision, exportedAt, notes }, basePath(state));
+    return { ok: true, path: dest, message: `Exported ${exported}.`, warnings: warnings(), notes, revision, previewUrl };
   }
 
   /**

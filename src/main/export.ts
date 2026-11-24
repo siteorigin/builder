@@ -22,7 +22,7 @@ import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
 import { ownServerHook } from './project/server-hook';
-import type { MissingAssetFiles } from '@shared/api';
+import type { ExportNote, MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
 
@@ -820,9 +820,17 @@ export function publicUrlWarning(state: ProjectState): string | null {
   const raw: unknown = state.site.baseUrl;
   const saved = typeof raw === 'string' ? raw.trim() : raw == null ? '' : JSON.stringify(raw);
   const check = checkPublicUrl(saved);
-  if (!check.ok) return `The public site URL “${saved}” can’t be used, so canonical links, social image URLs and the sitemap were omitted. ${check.message} Correct it in Site settings.`;
-  return check.url ? null : 'No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.';
+  if (!check.ok) return `The public site URL “${saved}” can’t be used, so canonical links, social image URLs and the sitemap were omitted. ${check.message} Correct the Public URL in Site styles › Site details.`;
+  // Optional: a site handed over without a domain of its own is still a whole website.
+  return check.url ? null : 'No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. If the site will have its own address, add it as the Public URL in Site styles › Site details.';
 }
+
+/** The public URL warning as an export note, leading to the Public URL field. */
+export function publicUrlNote(state: ProjectState): ExportNote | null {
+  const message = publicUrlWarning(state);
+  return message ? { message, destination: { kind: 'site', field: 'baseUrl' } } : null;
+}
+
 
 /**
  * A built page that does not declare the language it is written in: the project's own server hook or page template

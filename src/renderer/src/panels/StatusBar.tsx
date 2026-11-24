@@ -5,6 +5,8 @@ import { api, applyOps, confirmDialog, getState, setState, toast, useStore } fro
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
 import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, selectPage } from '../lib/actions';
+import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
+import { openEditorDestination } from '../lib/open-destination';
 import { Modal, Spinner, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 
@@ -614,7 +616,9 @@ export function HealthModal() {
     const uses = asset ? (snap.assetUsage[asset] ?? 0) : 0;
     // A page's heading outline is reviewed (and fixed) in its outline, beside the page.
     const outlinePage = d.code.startsWith('HEADING_') && d.owner?.kind === 'page' ? d.owner.id : null;
-    const target = asset || outlinePage ? null : diagnosticTarget(st, d);
+    // A form's settings or a site setting: opened where it is fixed, as an export's notes do.
+    const dest = asset || outlinePage ? null : destinationForDiagnostic(st, d);
+    const target = asset || outlinePage || dest ? null : diagnosticTarget(st, d);
     const lead = rest === undefined ? assetLead(st, d) : null;
     return (
       <HealthRow
@@ -629,6 +633,10 @@ export function HealthModal() {
           ) : outlinePage ? (
             <button className="btn btn-sm" onClick={() => showHeadings(outlinePage, d)}>
               Show headings
+            </button>
+          ) : dest ? (
+            <button className="btn btn-sm" onClick={() => openEditorDestination(dest)}>
+              {destinationLabel(dest)}
             </button>
           ) : target ? (
             <button className="btn btn-sm" onClick={() => showElement(target)}>

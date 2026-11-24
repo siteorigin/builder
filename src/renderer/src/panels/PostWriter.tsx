@@ -554,12 +554,17 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               <Field label="Address" hint={`The last part of ${route}`}>
                 <DraftInput value={entry.slug} onCommit={(v) => (v.trim() ? (v.trim() !== entry.slug ? update({ slug: v.trim() }, 'Change post address') : undefined) : refuse())} />
               </Field>
-              <Field label="Author">
-                <DraftInput value={entry.author ?? ''} limit={MAX_AUTHOR} placeholder="Who wrote it" onCommit={(v) => (v.trim() !== (entry.author ?? '') ? update({ author: v.trim() || null }, 'Change post author') : undefined)} />
-              </Field>
-              <Field label="Excerpt" hint="A sentence or two for lists of posts and for search engines.">
-                <DraftInput multiline rows={3} value={entry.excerpt ?? ''} limit={MAX_EXCERPT} onCommit={(v) => (v.trim() !== (entry.excerpt ?? '') ? update({ excerpt: v.trim() || null }, 'Change post excerpt') : undefined)} />
-              </Field>
+              {/* data-entry-field: where Go to form lands, for a layout's form that reads this field (see open-destination). */}
+              <div data-entry-field="author" style={{ display: 'contents' }}>
+                <Field label="Author">
+                  <DraftInput value={entry.author ?? ''} limit={MAX_AUTHOR} placeholder="Who wrote it" onCommit={(v) => (v.trim() !== (entry.author ?? '') ? update({ author: v.trim() || null }, 'Change post author') : undefined)} />
+                </Field>
+              </div>
+              <div data-entry-field="excerpt" style={{ display: 'contents' }}>
+                <Field label="Excerpt" hint="A sentence or two for lists of posts and for search engines.">
+                  <DraftInput multiline rows={3} value={entry.excerpt ?? ''} limit={MAX_EXCERPT} onCommit={(v) => (v.trim() !== (entry.excerpt ?? '') ? update({ excerpt: v.trim() || null }, 'Change post excerpt') : undefined)} />
+                </Field>
+              </div>
               <Field label="Featured image" controlId={`${uid}-featured`}>
                 <select id={`${uid}-featured`} className="select" value={entry.featuredImage ?? ''} onChange={(e) => void update({ featuredImage: e.target.value || null }, 'Change featured image')}>
                   <option value="">None</option>

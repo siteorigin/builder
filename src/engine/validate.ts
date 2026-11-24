@@ -1,7 +1,8 @@
+import type { ExportNote } from '@shared/api';
 import { isArticleDate, pageArticle } from '@shared/articles';
 import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
-import type { GraphNode, ImageValue, NodeTree, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
+import type { GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { STYLE_PROP_MAP, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
@@ -9,7 +10,7 @@ import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryField
 import { validateRoute } from '@shared/routes';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { variantIdsValid, variantOptions } from '@shared/variants';
-import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds } from './tree';
+import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds, templateTrees } from './tree';
 import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
@@ -18,12 +19,13 @@ import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema
 import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
+import { entryInstanceProps } from '@generator/entry-template';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
-import { showsPart } from '@shared/page-shell';
-import { effectiveTokens, isDraftPage } from '@generator/index';
+import { SHELL_PARTS, showsPart } from '@shared/page-shell';
+import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries } from '@generator/index';
 import { componentReusabilityDiagnostics } from './reusability';
-import { formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
+import { FORM_SERVICES, formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -377,22 +379,23 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
       if (inTheme || n.kind !== 'instance' || def?.componentId !== 'contact.form' || def.kind !== 'code') continue;
       const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
-      // A binding outside a component has nothing to bind to and is exported empty, so the default decides.
-      const problem = owner.kind !== 'component' ? formConnectionProblem(def, Object.fromEntries(Object.entries(n.props).filter(([, v]) => !isBinding(v)))) : undefined;
-      if (problem) out.push({ severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. ${problem}`, owner, nodeId: n.id });
+      const unconnected = formConnectionDiagnostic(state, owner, label, n);
+      if (unconnected) out.push(unconnected);
       // A list bound from outside is only known where it is placed.
       if (namesFormFields(def) && !isBinding(props.fields)) {
         const fields = formFieldsAsSent(def, props.fields);
+        // Which field a finding is about, by its row (the one to change), so each finding leads to its own row.
+        const row = (i: number | undefined) => (i !== undefined && typeof fields[i]?.id === 'string' ? { site: `${n.id}|fields|${fields[i].id}` } : {});
         for (const clash of formKeyClashes(fields)) {
           const what = formFieldTitles(fields, clash.indexes, fields.map((_, i) => i));
           const outcome = formRefusesClashes(def) ? 'so visitors cannot send the form' : 'so the form service cannot tell those answers apart';
           const all = clash.indexes.length === 2 ? 'both' : 'all';
-          out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the contact form's ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id });
+          out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the contact form's ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id, ...row(clash.indexes[1]) });
         }
         for (const i of offersFormChoices(def) ? formUnchoosable(fields) : []) {
           const what = formFieldTitles(fields, [i], fields.map((_, j) => j));
           const outcome = formRefusesUnchoosable(def) ? 'so visitors cannot send the form' : 'so visitors cannot answer it';
-          out.push({ severity: 'warning', code: 'FORM_NO_CHOICES', message: `${label}: the contact form's ${what} field has no choices to pick from, ${outcome}. Add its choices, or change its type.`, owner, nodeId: n.id });
+          out.push({ severity: 'warning', code: 'FORM_NO_CHOICES', message: `${label}: the contact form's ${what} field has no choices to pick from, ${outcome}. Add its choices, or change its type.`, owner, nodeId: n.id, ...row(i) });
         }
       }
     }
@@ -559,6 +562,74 @@ export function formNameDiagnostics(state: ProjectState): Diagnostic[] {
     const forms = clash.forms.filter((f, i) => clash.forms.findIndex((g) => g.owner.kind === f.owner.kind && g.owner.id === f.owner.id && g.nodeId === f.nodeId) === i);
     return forms.map((f) => ({ severity: 'warning' as const, code: 'FORM_NAME_DUPLICATE', message: `${label(f)}: ${message}`, owner: f.owner, nodeId: f.nodeId }));
   });
+}
+
+/** A contact form's settings that decide where it sends: its service, and the setting each service needs. */
+const FORM_CONNECTION_PROPS = new Set(['provider', ...Object.values(FORM_SERVICES).map((s) => s.prop)]);
+
+/**
+ * Project health's finding for a placed contact form that visitors cannot send (no form service, or not the setting it
+ * needs), or undefined when it can send or is not a contact form. A form in a component's own design is judged where
+ * the component is placed, so a component owner has none. A layout's form that takes its service or setting from each
+ * entry is judged as each entry's page is built, and named by the entry that cannot send.
+ */
+export function formConnectionDiagnostic(state: ProjectState, owner: OwnerRef, label: string, node: GraphNode): Diagnostic | undefined {
+  if (owner.kind === 'component' || node.kind !== 'instance') return undefined;
+  const def = state.components[node.definitionId];
+  if (def?.componentId !== 'contact.form' || def.kind !== 'code') return undefined;
+  const found = (problem: string | undefined, where = ''): Diagnostic | undefined =>
+    problem ? { severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service${where}, so visitors cannot send it${where ? ' there' : ''}. ${problem}`, owner, nodeId: node.id } : undefined;
+  // A setting written by hand that cannot be read as text is not this check's to report, and must not stop the others.
+  const problemOf = (props: () => Record<string, unknown>) => {
+    try {
+      return formConnectionProblem(def, props());
+    } catch {
+      return undefined;
+    }
+  };
+  const collection = owner.kind === 'template' && Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
+  if (collection && Object.entries(node.props).some(([k, v]) => FORM_CONNECTION_PROPS.has(k) && isEntryBinding(v))) {
+    const failing = siteEntries(state)
+      .filter((e) => e.collection === collection)
+      .flatMap((e) => {
+        const problem = problemOf(() => entryInstanceProps(state, collection, e.entry, node));
+        const title = typeof e.entry.title === 'string' && e.entry.title.trim() ? `the “${e.entry.title.trim()}” entry` : 'an untitled entry';
+        return problem ? [{ title, problem }] : [];
+      });
+    return failing.length ? found(failing[0].problem, failing.length === 1 ? ` on ${failing[0].title}` : ` on ${failing.length} entries`) : undefined;
+  }
+  // A binding outside a component has nothing to bind to and is exported empty, so the default decides.
+  return found(problemOf(() => Object.fromEntries(Object.entries(node.props).filter(([, v]) => !isBinding(v)))));
+}
+
+/**
+ * The trees the website shows, of a published state (publishedState), named as Project health names them: the pages
+ * in site order, then the shared header and footer when a page or entry shows them, then the layout of each
+ * collection with an entry.
+ */
+export function websiteTrees(live: ProjectState): Array<{ owner: OwnerRef; tree: NodeTree; label: string }> {
+  const entries = siteEntries(live).filter((e) => !isDraftEntry(e.entry));
+  const collections = new Set(entries.map((e) => e.collection.settings.id));
+  const pages = live.site.pageOrder.filter((id) => Object.hasOwn(live.pages, id)).map((id) => live.pages[id]);
+  return [
+    ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p, label: p.title })),
+    ...SHELL_PARTS.filter((part) => entries.length > 0 || pages.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: live.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' })),
+    ...templateTrees(live).filter((t) => collections.has(t.owner.id))
+  ];
+}
+
+/**
+ * The contact forms the website publishes that visitors cannot send, each as Project health reports it, in the order
+ * of websiteTrees. Drafts are left out, as the website leaves them out.
+ */
+export function websiteFormProblems(state: ProjectState): Diagnostic[] {
+  const live = publishedState(state);
+  return websiteTrees(live).flatMap(({ owner, tree, label }) => Object.values(tree?.nodes ?? {}).flatMap((n) => formConnectionDiagnostic(live, owner, label, n) ?? []));
+}
+
+/** The website's forms visitors cannot send (websiteFormProblems) as export notes, each leading to its form's settings. */
+export function websiteFormNotes(state: ProjectState): ExportNote[] {
+  return websiteFormProblems(state).flatMap((d): ExportNote[] => (d.owner && d.nodeId ? [{ message: d.message, destination: { kind: 'form', owner: d.owner as OwnerRef, nodeId: d.nodeId, setting: 'connection' } }] : []));
 }
 
 /** A heading's words, quoted, for a message. */

@@ -132,6 +132,32 @@ function boundValue(read: EntryReadContext, node: GraphNode, field: string, entr
   }
 }
 
+/**
+ * A placed component's bound properties as one entry's page has them: what each reads of the entry, or the default of
+ * one bound to anything else (undefined: the property's own default decides).
+ */
+function boundProps(state: ProjectState, read: EntryReadContext, node: InstanceNode, withoutBody = false): Array<[string, unknown]> {
+  const def = own(state.components, node.definitionId);
+  return Object.entries(node.props ?? {}).flatMap(([prop, v]): Array<[string, unknown]> => {
+    if (!isBindingRef(v)) return [];
+    const nested = own(def?.properties, prop);
+    return [[prop, isEntryBinding(v) ? boundValue(read, node, 'prop', v.$entry, nested, withoutBody) : nested?.default]];
+  });
+}
+
+/**
+ * A layout's placed component with its properties as one entry's page has them (see materializeTemplate), without
+ * reading the rest of the layout. The values read from the entry are not copies: for reading only.
+ */
+export function entryInstanceProps(state: ProjectState, collection: Collection, entry: EntryDoc, node: InstanceNode): Record<string, unknown> {
+  const props: Record<string, unknown> = { ...node.props };
+  for (const [prop, value] of boundProps(state, { state, collection, entry, neighbours: entryNeighbours(state, collection.settings.id, entry.id) }, node)) {
+    if (value === undefined) delete props[prop];
+    else props[prop] = value;
+  }
+  return props;
+}
+
 /** The entry's page as a tree of literal values: the template read for `entry`. `template` is never changed. */
 export function materializeTemplate(state: ProjectState, collection: Collection, entry: EntryDoc, neighbours: EntryNeighbours, opts: { body?: boolean } = {}): NodeTree {
   const template = collection.settings.template;
@@ -156,11 +182,7 @@ export function materializeTemplate(state: ProjectState, collection: Collection,
       delete r[key];
     }
     if (node.kind === 'instance') {
-      const def = own(state.components, node.definitionId);
-      for (const [prop, v] of Object.entries(node.props ?? {})) {
-        if (!isBindingRef(v)) continue;
-        const nested = own(def?.properties, prop);
-        const value = isEntryBinding(v) ? boundValue(read, node, 'prop', v.$entry, nested, withoutBody) : nested?.default;
+      for (const [prop, value] of boundProps(state, read, node, withoutBody)) {
         if (value === undefined) delete (node.props as Record<string, unknown>)[prop];
         else (node.props as Record<string, unknown>)[prop] = structuredClone(value);
       }

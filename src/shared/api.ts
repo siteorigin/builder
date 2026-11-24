@@ -64,6 +64,8 @@ export interface Diagnostic {
   message: string;
   owner?: { kind: string; id: string };
   nodeId?: string;
+  /** Where in its owner the problem is (see the engine's Diagnostic): for a site setting, its field, as `favicon`. */
+  site?: string;
 }
 
 /** A library image whose files are not in the project folder: its original, and which listed copies. */
@@ -318,11 +320,27 @@ export interface StorageInfo {
 /** Exports are written as a new folder or a single ZIP file. */
 export type ExportFormat = 'folder' | 'zip';
 
+/**
+ * Where the author fixes something an export note or Project health names: a placed contact form's settings (the
+ * setting is found when it is opened, since the form's service may have changed since), or a field of Site details.
+ */
+export type EditorDestination =
+  | { kind: 'form'; owner: OwnerRef; nodeId: string; setting: 'connection' | 'fieldKeys' | 'fieldChoices' | 'formName'; itemId?: string }
+  | { kind: 'site'; field: 'baseUrl' | 'favicon' | 'socialImage' };
+
+/** One note about an export, in the order the export said it, with where to fix what it describes when it can be fixed. */
+export interface ExportNote {
+  message: string;
+  destination?: EditorDestination;
+}
+
 export interface ExportResult {
   ok: boolean;
   path?: string;
   message: string;
   warnings: string[];
+  /** The warnings again, with where to fix the ones that can be fixed in the editor. Absent from older results. */
+  notes?: ExportNote[];
   /** A failed website build: a report of everything it said, for the author to read and copy into a support request. */
   details?: string;
   revision?: number;
@@ -344,6 +362,8 @@ export interface RecentExport {
   exportedAt: string;
   /** A website folder's loopback preview, while it runs; it stops when the project closes. */
   previewUrl?: string;
+  /** What the export said about what it delivered, kept so the author can come back to it after fixing something. */
+  notes?: ExportNote[];
 }
 
 // ---------------------------------------------------------------------------
