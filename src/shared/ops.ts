@@ -44,7 +44,7 @@ const IMAGE_USE = z.discriminatedUnion('kind', [
 const scope = z.enum(['base', 'phone', 'tablet', 'desktop']).describe('Responsive scope. "base" applies at all sizes.');
 const styleState = z
   .enum(['hover', 'focus', 'active'])
-  .describe('Interactive state: "hover" (pointer over it, on devices that hover), "focus" (keyboard focus) or "active" (while pressed). Omit for the resting style. A state changes only text color, background, border (and its sides), corner radius, shadow and opacity.');
+  .describe('"hover", "focus" (keyboard) or "active" (pressed); omit for the resting style. A state sets only color, background, border, radius, shadow and opacity.');
 /** A web font's face. The family becomes a CSS font-family name, so only plain characters are allowed. */
 const FONT_FACE = z.object({
   family: z.string().regex(FONT_FAMILY_RE),
@@ -248,8 +248,8 @@ export const OPERATION_SCHEMAS = {
     itemId: z.string().optional().describe('Reset only this repeated item\'s own styles for the part, so it shows the shared style again. Needs partId. Without it the shared part styles are reset and item styles stay.'),
     variant: z.string().optional(),
     axis: z.string().optional(),
-    scope: scope.optional().describe('Reset only this size (with its hover, focus and pressed rules, unless state names one). Omit for every size.'),
-    state: styleState.optional().describe('Reset only the rules for this interactive state, at scope or at every size. Omit to reset the resting style and every state.')
+    scope: scope.optional().describe('Reset only this size, its states included.'),
+    state: styleState.optional().describe('Reset only this state, at scope or every size.')
   }),
   'node.setContent': z.object({
     type: z.literal('node.setContent'),

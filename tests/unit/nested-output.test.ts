@@ -356,6 +356,66 @@ describe.runIf(BROWSER)('variant styles of a component placed inside itself', ()
 });
 
 // ---------------------------------------------------------------------------
+// State rules a design sets on a placement inside it (#348)
+// ---------------------------------------------------------------------------
+
+/** Each element a selector finds, in turn with the pointer over it, and one computed property then. */
+async function whileHovered(page: { body: string; css: string }, selector: string, prop: string, width = 1200): Promise<string[]> {
+  const tab = await browser!.newPage({ viewport: { width, height: 800 } });
+  try {
+    await tab.setContent(`<!doctype html><html><head><style>${page.css}</style></head><body>${page.body}</body></html>`);
+    const out: string[] = [];
+    const found = tab.locator(selector);
+    for (let i = 0; i < (await found.count()); i++) {
+      await found.nth(i).hover();
+      // A string, as the browser runs it: these tests compile without the DOM's types.
+      out.push((await tab.evaluate(`getComputedStyle(document.querySelectorAll(${JSON.stringify(selector)})[${i}]).getPropertyValue(${JSON.stringify(prop)})`)) as string);
+    }
+    return out;
+  } finally {
+    await tab.close();
+  }
+}
+
+describe.runIf(BROWSER)('state rules a design sets on a placement inside it', () => {
+  it('change that placement’s part on hover, never the same part of a copy placed in its slot', async () => {
+    const s = fresh();
+    const def = tonedDef(s);
+    const host = addDef(s, {
+      componentId: 'project.host',
+      name: 'Host',
+      properties: {},
+      parts: { root: { nodeId: 'root', label: 'Host' } },
+      build: (b) => b.el('root', 'div', { name: 'Host' }, [])
+    });
+    const first = nest(host, 'root', def, { lead: 'Outer lead' });
+    const second = makeInstance(def, { lead: 'Inner lead' });
+    host.tree!.nodes[second.id] = second;
+    first.slots = { content: [second.id] };
+    first.overrides = { lead: { 'base:hover': { color: '#00aa00' } } };
+    place(s, host);
+    expect(compileErrors(s)).toEqual([]);
+    expect(errors(s)).toEqual([]);
+    const page = await renderPage(s);
+    expect(page.body.match(/>(Outer|Inner) lead</g)).toEqual(['>Outer lead<', '>Inner lead<']);
+    const [outer, inner] = await whileHovered(page, leadsOf(def), 'color');
+    expect(outer).toBe('rgb(0, 170, 0)');
+    expect(inner).not.toBe('rgb(0, 170, 0)');
+  });
+
+  it('reach a code component’s inner part on hover, over its own scoped styles', async () => {
+    const { state: s, def: code } = fancyDef(fresh());
+    const def = holder(s, 'Holder', code, { title: { 'base:hover': { color: '#00aa00' } } });
+    place(s, def);
+    expect(compileErrors(s)).toEqual([]);
+    const page = await renderPage(s);
+    expect(await whileHovered(page, '.title', 'color')).toEqual(['rgb(0, 170, 0)']);
+    // At rest it keeps the colour its own styles give it.
+    expect((await computed(page, '.title', ['color']))[0].color).toBe('rgb(255, 0, 0)');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Overrides of what a code component renders
 // ---------------------------------------------------------------------------
 
