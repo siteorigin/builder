@@ -102,6 +102,11 @@ try {
       'ui.press:act',
       'ui.scroll:act',
       'ui.drag:act',
+      'wait.for:observe',
+      'project.summary:observe',
+      'exports.inspect:observe',
+      'evidence.log:observe',
+      'evidence.save:observe',
       'session.close:session'
     ]
   );
@@ -173,6 +178,8 @@ try {
   assert.equal(existsSync(one.root), false, 'the run root is gone');
   assert.equal(closed.artifacts, join(callerArtifacts, one.id));
   assert.ok(existsSync(join(closed.artifacts, 'app.log')), 'the app log was kept');
+  const kept = JSON.parse(readFileSync(join(closed.artifacts, 'replay.json'), 'utf8'));
+  assert.deepEqual([kept.kind, kept.scenario.fixture, kept.steps[0].op], ['siteorigin-driver-replay', 'welcome', 'session.start'], 'and the replay record of the run');
   assert.equal(readFileSync(join(callerArtifacts, 'sentinel.txt'), 'utf8'), 'the caller’s own file', 'the caller’s own file is untouched');
   assert.deepEqual(await client.exited, { code: 0, signal: null }, 'the host exits once its session is closed');
 
@@ -189,7 +196,8 @@ try {
   assert.equal((await pa.evaluate(() => window.builder.ai.providers())).find((p) => p.id === 'openai').configured, true);
   a.mock.script(envelopeReply('finish', { message: 'Hello from session A.' }));
   await pa.locator('.dock-tab', { hasText: 'AI' }).click();
-  await pa.getByRole('button', { name: /^Ask: a read-only question/ }).click();
+  await pa.getByRole('button', { name: /^What your next message does: Edit/ }).click();
+  await pa.getByRole('menuitemradio', { name: /^Ask/ }).click();
   const message = pa.getByRole('textbox', { name: 'Message' });
   await message.fill('Say hello, and leave the site unchanged.');
   await message.press('Enter');

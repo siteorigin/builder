@@ -24,6 +24,9 @@ const LONG_LINK_LIST = 3;
 /** More notes than this fold into the export's own row, so a success keeps its next step in view. */
 const MANY_NOTES = 2;
 const UNEXPECTED_FAILURE = 'The export could not be completed.';
+let reports = 0;
+/** A new export report's id: unique for this editor's lifetime, across every opening of the dialog. */
+const newReportId = () => `${Date.now().toString(36)}-${++reports}`;
 
 /** A window too short to spare the room folds even a short list of links to drafts, so the choices stay in view. */
 const SHORT_WINDOW = '(max-height: 720px)';
@@ -437,7 +440,9 @@ export function ExportModal() {
   // What the website shows now, read once for every note about an earlier export.
   const liveTrees = useMemo(() => (state ? websiteTrees(publishedState(state)) : []), [state]);
   const [busy, setBusy] = useState<ExportKind | null>(null);
-  const [result, setResult] = useState<ExportResult | null>(null);
+  // Each report carries its own id, shown on the result (data-report): the same report drawn again after a cancelled
+  // retry keeps its id, a new one (even with the same words) gets another, so a test can tell them apart.
+  const [result, setResult] = useState<(ExportResult & { report: string }) | null>(null);
   const [format, setFormat] = useState<ExportFormat>('folder');
   const linksId = useId();
   const [linksOpen, setLinksOpen] = useState(false);
@@ -505,11 +510,11 @@ export function ExportModal() {
     try {
       // The website is built only if it still publishes the pages and entries counted here.
       const r = kind === 'static' ? await api.project.exportStatic(format, plan ? publicationIds(plan) : undefined) : await api.project.exportSource(format);
-      if (r.message) setResult(r);
+      if (r.message) setResult({ ...r, report: newReportId() });
       settle.current = r.message ? 'result' : kind;
     } catch (e) {
       settle.current = 'result';
-      setResult({ ok: false, message: UNEXPECTED_FAILURE, warnings: [], details: (e as Error).message });
+      setResult({ ok: false, message: UNEXPECTED_FAILURE, warnings: [], details: (e as Error).message, report: newReportId() });
     } finally {
       setBusy(null);
     }
@@ -629,7 +634,8 @@ export function ExportModal() {
         <div className="sr-only" role="status">
           {announced}
         </div>
-        <div className="export-progress" role="status">
+        {/* The report kept, by its id, while it is hidden by a running export: what a test compares a new report with. */}
+        <div className="export-progress" role="status" data-kept-report={result?.report}>
           {busy && (
             <>
               <Spinner decorative />
@@ -643,7 +649,7 @@ export function ExportModal() {
         {shown && (
           // A failure and its report read as one card; the report stays outside the alert itself.
           <div className={shown.ok ? 'export-outcome' : 'export-outcome export-failure'}>
-            <div ref={resultRef} tabIndex={-1} className={`scope-note export-result ${shown.ok ? 'shared' : 'danger'}`} role={shown.ok ? 'status' : 'alert'}>
+            <div ref={resultRef} tabIndex={-1} className={`scope-note export-result ${shown.ok ? 'shared' : 'danger'}`} role={shown.ok ? 'status' : 'alert'} data-report={shown.report}>
               {shown.ok ? <CircleCheck /> : <CircleAlert />}
               <div className="export-note-body">
                 <strong>{shown.message}</strong>

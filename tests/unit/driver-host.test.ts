@@ -73,6 +73,11 @@ describe('a session before it starts', () => {
       ['ui.press', 'act'],
       ['ui.scroll', 'act'],
       ['ui.drag', 'act'],
+      ['wait.for', 'observe'],
+      ['project.summary', 'observe'],
+      ['exports.inspect', 'observe'],
+      ['evidence.log', 'observe'],
+      ['evidence.save', 'observe'],
       ['session.close', 'session']
     ]);
     expect(Object.fromEntries(d.capabilities.map((c: any) => [c.op, c.defaultTimeoutMs]))).toEqual({
@@ -96,6 +101,11 @@ describe('a session before it starts', () => {
       'ui.press': 15000,
       'ui.scroll': 15000,
       'ui.drag': 20000,
+      'wait.for': 30000,
+      'project.summary': 15000,
+      'exports.inspect': 15000,
+      'evidence.log': 10000,
+      'evidence.save': 30000,
       'session.close': 60000
     });
   });
