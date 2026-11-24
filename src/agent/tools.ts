@@ -90,7 +90,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
-  inspect_layout: 'Measure a page in the live preview at a viewport width: horizontal overflow, elements outside the viewport, whether each image loaded (report.images: failed images are files that could not be loaded; unverified ones were still loading when the check ran out of time, which is not a problem with the site), missing alt text, heading structure and runtime errors. Structural evidence only; no screenshots.',
+  inspect_layout:
+    'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text only pixels could judge (over an image). No screenshots.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
   request_clarification:
     'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four short, concrete options in choices; the user can also type their own answer. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
@@ -356,6 +357,40 @@ function valueHint(p: StylePropDef): string {
   return '';
 }
 
+/**
+ * A layout report cut, when it must be, to fit a tool result with the rest of `envelope`: first the text previews
+ * and runtime error details, then findings from the longest lists, one at a time. One finding of every kind stays,
+ * and the counts (report.checks, report.images) are never cut, so a short list never reads as a clean page.
+ */
+export function fitInspection<R>(envelope: Record<string, unknown>, report: R): R {
+  const room = MAX_RESULT_CHARS - 200;
+  const size = (r: unknown) => JSON.stringify({ ...envelope, report: r }).length;
+  if (!report || typeof report !== 'object' || size(report) <= room) return report;
+  const r = { ...(report as Record<string, unknown>) };
+  const issues: Array<Record<string, unknown>> = Array.isArray(r.issues) ? (r.issues as Array<Record<string, unknown>>).map((i) => ({ ...i })) : [];
+  for (const i of issues) {
+    delete i.text;
+    delete i.cutText;
+    if (i.with && typeof i.with === 'object') {
+      const { text: _text, ...rest } = i.with as Record<string, unknown>;
+      i.with = rest;
+    }
+  }
+  if (Array.isArray(r.runtimeErrors)) r.runtimeErrors = (r.runtimeErrors as unknown[]).slice(-5).map((e) => String(e).slice(0, 300));
+  r.issues = issues;
+  let omitted = 0;
+  while (size(r) > room) {
+    const byKind = new Map<string, number>();
+    for (const i of issues) byKind.set(String(i.kind), (byKind.get(String(i.kind)) ?? 0) + 1);
+    const [kind, n] = [...byKind].sort((a, b) => b[1] - a[1])[0] ?? ['', 0];
+    if (n < 2) break;
+    issues.splice(issues.map((i) => String(i.kind)).lastIndexOf(kind), 1);
+    omitted++;
+  }
+  if (omitted) r.omittedIssues = omitted;
+  return r as R;
+}
+
 export function serializeResult(content: unknown): string {
   const s = JSON.stringify(content);
   if (s.length <= MAX_RESULT_CHARS) return s;
@@ -531,7 +566,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         // A preview that is not running or did not load is a failed check, never a clean result.
         if (!report || typeof report !== 'object' || report.error)
           return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${String(report?.error ?? 'no report')}` } };
-        return { ok: true, content: { revision: host.revision(), pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport], report } };
+        const envelope = { revision: host.revision(), pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport] };
+        return { ok: true, content: { ...envelope, report: fitInspection(envelope, report) } };
       } catch (e) {
         return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
       }

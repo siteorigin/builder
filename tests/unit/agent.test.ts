@@ -1259,6 +1259,52 @@ describe('run budget, parallel calls and validation', () => {
     expect(second.find((r) => r.callId === 'i2')?.isError).toBe(true);
   });
 
+  it('hands the model readability findings it can act on, within the result size, and cards the latest check (#361)', async () => {
+    let homeId = '';
+    const owner = () => ({ kind: 'page', id: homeId });
+    const checks = (failed: number, unverified = 0) => ({
+      contrast: { checked: 120, failed, unverified },
+      overlaps: { checked: 40, failed: 0, unverified: 0 },
+      clippedText: { checked: 2, failed: 0, unverified: 0 },
+      tapTargets: { checked: 9, failed: 0, unverified: 0 }
+    });
+    // A long page: far more findings than a result holds, each with a long preview.
+    const failing = () => ({
+      viewportWidth: 390,
+      documentWidth: 390,
+      checks: checks(60, 3),
+      issues: [
+        ...Array.from({ length: 60 }, (_, i) => ({ kind: 'low-contrast', ref: { owner: owner(), nodeId: `n${i}`, partId: 'heading' }, text: 'x'.repeat(80), ratio: 2.1, required: 4.5, foreground: '#aaaaaa', background: '#ffffff', message: `Text contrast is 2.10:1 (#aaaaaa on #ffffff); text this size needs at least 4.5:1. ${'y'.repeat(300)}` })),
+        { kind: 'contrast-unverified', ref: { owner: owner(), nodeId: 'hero', partId: 'heading', match: 'nearest-part' }, reason: 'image', message: 'Contrast could not be measured.' }
+      ]
+    });
+    let n = 0;
+    const env = await setup(
+      [
+        () => [call('p1', 'apply_operations', create('Wide', 0))],
+        () => [call('i1', 'inspect_layout', { pageId: homeId, viewport: 'phone' })],
+        () => [call('i2', 'inspect_layout', { pageId: homeId, viewport: 'phone' })],
+        () => finish('Fixed the contrast.')
+      ],
+      { inspectLayout: async () => (++n === 1 ? failing() : { viewportWidth: 390, documentWidth: 390, checks: checks(0), issues: [] }) }
+    );
+    homeId = env.session.state.site.homePageId;
+    const { result } = await env.run('Check the home page on a phone');
+    expect(result?.status).toBe('completed');
+    const first = env.adapter.requests[2].items.find((i) => i.kind === 'tool_result' && i.callId === 'i1') as { content: string };
+    expect(first.content.length).toBeLessThanOrEqual(24000);
+    const body = JSON.parse(first.content);
+    // Cut to fit, but never a truncated blob: the counts stand, every kind keeps a finding, and each names its element.
+    expect(body.truncated).toBeUndefined();
+    expect(body.report.checks.contrast).toEqual({ checked: 120, failed: 60, unverified: 3 });
+    expect(body.report.omittedIssues).toBeGreaterThan(0);
+    expect(body.report.issues.find((i: { kind: string }) => i.kind === 'contrast-unverified').ref).toEqual({ owner: owner(), nodeId: 'hero', partId: 'heading', match: 'nearest-part' });
+    expect(body.report.issues[0].ref).toEqual({ owner: owner(), nodeId: 'n0', partId: 'heading' });
+    // The card shows the latest check of the page at that width: the clean one.
+    expect(result!.validation).toContain('No problems with text contrast, overlaps, cut-off text and tap targets at phone width on Home.');
+    expect(result!.validation.join(' | ')).not.toMatch(/low contrast/);
+  });
+
   it('reports element overflow, clean pages and an inspection that threw', async () => {
     let homeId = '';
     const reports: Array<() => Promise<unknown>> = [

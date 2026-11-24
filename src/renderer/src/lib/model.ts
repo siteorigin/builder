@@ -5,6 +5,8 @@ import { articleRows, feedLimit } from '@shared/articles';
 import { isBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent } from '@engine/tree';
 import { effectiveItem, followsPage, inheritedValue } from '@shared/page-teasers';
+import type { InspectionDesc, InspectionRef } from '@shared/inspection';
+import { placementItems, repeatedPartList } from '@shared/item-styles';
 import { isShellPart, pagesShowing, partsShown, showsPart } from '@shared/page-shell';
 import { isDraftPage } from '@generator/index';
 import { layerLabel } from './layers';
@@ -159,6 +161,95 @@ export function createComponentTarget(snap: { state: ProjectState; readOnly?: un
     if (!Object.entries(node.slots ?? {}).some(([slot, ids]) => Object.hasOwn(declared, slot) && ids.length > 0)) return null;
   }
   return { owner: ref.owner, instancePath: [], nodeId: node.id };
+}
+
+/**
+ * The element a layout inspection's finding is about, as operations address it: a node of the owner's own tree
+ * and, inside a component placement, the declared part (the element's own, or the nearest one around it) and the
+ * one list item that part is shown for. Null when the address names nothing in the project (a stale load, or markup
+ * that is not the editor's): a finding never names an element that is not there.
+ */
+export function inspectionRef(state: ProjectState, d: InspectionDesc): InspectionRef | null {
+  if (!d || typeof d.ctx !== 'string' || typeof d.node !== 'string') return null;
+  const p = parseCtx(d.ctx);
+  if (!p) return null;
+  const items = typeof d.items === 'string' && d.items ? d.items.split(',').map(decodeItemId) : [];
+  let ref: ElementRef = { owner: p.owner, instancePath: p.path, nodeId: d.node };
+  if (!resolveRef(state, ref).node) return null;
+  // A definition's root stands for its placement, through any chain of roots.
+  ref = boundaryOf(state, ref);
+  const ownerTree = treeFor(state, ref.owner);
+  if (!ref.instancePath.length) {
+    const node = ownerTree && own(ownerTree.nodes, ref.nodeId);
+    // A placement's root takes its styles through the part declared on it, which need not be called "root".
+    const def = node?.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
+    const rootPart = def?.kind === 'managed' && def.tree ? partIdFor(def, def.tree.rootIds[0]) : undefined;
+    const alias = rootPart && rootPart !== 'root' ? { partId: rootPart } : {};
+    // Markup inside a code component is the placement's as a whole; inside a design's root, that root part's; inside
+    // another node (a link in rich text), that node's.
+    if (d.inside) return { owner: ref.owner, nodeId: ref.nodeId, ...alias, match: node?.kind !== 'instance' ? 'container' : def?.kind === 'managed' ? 'nearest-part' : 'placement' };
+    return { owner: ref.owner, nodeId: ref.nodeId, ...alias };
+  }
+  const placementId = ref.instancePath[0];
+  const placement = ownerTree && own(ownerTree.nodes, placementId);
+  const def = placement?.kind === 'instance' ? own(state.components, placement.definitionId) : undefined;
+  if (!def?.tree || placement?.kind !== 'instance') return null;
+  // The node of the placement's definition the element is in: itself, or the component placed there that renders it.
+  const direct = ref.instancePath.length === 1;
+  const inner = direct ? ref.nodeId : ref.instancePath[1];
+  const partId = nearestPart(def, inner);
+  const nearest = !direct || !!d.inside || partId !== partIdFor(def, inner);
+  // A component placed in a project component's design, or an element of it: named there too, by its own part, where
+  // a change reaches every placement of that design. It is offered beside the placement's part, never instead of it.
+  const projectDesign = def.owner === 'project' && def.kind === 'managed';
+  const placedThere = direct ? own(def.tree.nodes, inner) : undefined;
+  let definition: InspectionRef | undefined;
+  if (projectDesign && !direct && ref.instancePath.length === 2) {
+    const innerDef = resolveRef(state, ref).def;
+    const innerPart = innerDef?.tree ? nearestPart(innerDef, ref.nodeId) : undefined;
+    if (innerPart) definition = { owner: { kind: 'component', id: def.id }, nodeId: inner, partId: innerPart, ...(innerPart !== partIdFor(innerDef, ref.nodeId) || d.inside ? { match: 'nearest-part' as const } : {}) };
+  } else if (projectDesign && placedThere?.kind === 'instance' && partId !== partIdFor(def, inner)) {
+    // The root of a component placed there (its boundary), which the design does not expose as a part of its own.
+    const placedDef = own(state.components, placedThere.definitionId);
+    const rootPart = placedDef?.kind === 'managed' && placedDef.tree ? partIdFor(placedDef, placedDef.tree.rootIds[0]) : undefined;
+    definition = { owner: { kind: 'component', id: def.id }, nodeId: inner, ...(rootPart && rootPart !== 'root' ? { partId: rootPart } : {}), ...(d.inside ? { match: 'placement' as const } : {}) };
+  }
+  if (!partId) return { owner: ref.owner, nodeId: placementId, match: 'placement', ...(definition ? { definition } : {}) };
+  const out: InspectionRef = { owner: ref.owner, nodeId: placementId, partId, ...(nearest ? { match: 'nearest-part' as const } : {}), ...(definition ? { definition } : {}) };
+  // The list item the part is shown for. Only an element of the placement's own design carries that design's items
+  // (one inside a component placed there carries that component's own), outermost first; a part styled one item at
+  // a time sits inside exactly one list, so its item is the first. A part outside every list, or inside several,
+  // has none. An element outside every list that carries items, or an item the list no longer has, means the
+  // measured page was out of date: nothing is named.
+  if (direct && items.length && !inRepeat(def, ref.nodeId)) return null;
+  const list = direct && ref.owner.kind !== 'component' ? repeatedPartList(def, partId) : undefined;
+  if (list && items.length) {
+    if (!placementItems(def, placement, list).some((i) => i.id === items[0])) return null;
+    out.itemId = items[0];
+  }
+  return out;
+}
+
+/** Whether a definition's node is rendered inside one of its repeats. */
+function inRepeat(def: ComponentDefinition, nodeId: string): boolean {
+  // Each node once: a hand-edited design can leave detached nodes holding each other.
+  const seen = new Set<string>();
+  for (let at = def.tree && findParent(def.tree, nodeId); at?.parentId && !seen.has(at.parentId); at = findParent(def.tree!, at.parentId)) {
+    seen.add(at.parentId);
+    if (own(def.tree!.nodes, at.parentId)?.kind === 'repeat') return true;
+  }
+  return false;
+}
+
+/** The part declared on a definition's node, or on the nearest node around it that has one. */
+function nearestPart(def: ComponentDefinition, nodeId: string): string | undefined {
+  let partId = partIdFor(def, nodeId);
+  const seen = new Set<string>();
+  for (let at = def.tree && findParent(def.tree, nodeId); !partId && at?.parentId && !seen.has(at.parentId); at = findParent(def.tree!, at.parentId)) {
+    seen.add(at.parentId);
+    partId = partIdFor(def, at.parentId);
+  }
+  return partId;
 }
 
 /** Is this reference a useful selection target (a primitive, a declared part or bound content)? */
