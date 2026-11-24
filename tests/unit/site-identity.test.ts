@@ -26,9 +26,9 @@ import { copy, image, run, seoSite } from './fixtures/seo-site';
 const ROOT = 'https://example.com/studio/';
 const PROFILES = ['https://www.wikidata.org/wiki/Q123456', 'https://www.youtube.com/@riverside'];
 
-/** The fixture with a logo in its library. */
+/** The fixture with a logo in its library, and nothing said yet of who publishes the site. */
 function site() {
-  const fixture = seoSite();
+  const fixture = seoSite({ identity: false });
   fixture.state.assets.assets.img_logo = image('img_logo', { width: 400, height: 400 });
   return fixture;
 }

@@ -12,15 +12,11 @@ import { BASELINE_SEO_RULES, linkWords, SEO_DESCRIPTION_RANGE, SEO_TITLE_RANGE }
 import { diagnosticKey, validateState } from '@engine/validate';
 import { treeFor } from '../../src/renderer/src/lib/model';
 import { destinationLabel, noteState } from '../../src/renderer/src/lib/destinations';
-import { copy, POST_BODY, run, seoSite as unidentifiedSite } from './fixtures/seo-site';
+import { copy, POST_BODY, run, seoSite } from './fixtures/seo-site';
 
 const codes = (s: ProjectState) => runSeoAudit(s).map((f) => f.code);
-/** The SEO fixture with its publisher said, as a well set-up site has it: a named organization with a profile elsewhere. */
-const IDENTITY = { kind: 'Organization', name: 'Riverside Studio Ltd', sameAs: ['https://www.wikidata.org/wiki/Q123456'] } as const;
-function seoSite() {
-  const site = unidentifiedSite();
-  return { ...site, state: run(site.state, { type: 'site.update', identity: { ...IDENTITY, sameAs: [...IDENTITY.sameAs] } }) };
-}
+/** The SEO fixture as a project made before #586 has it: nothing said of who publishes the site. */
+const unidentifiedSite = () => seoSite({ identity: false });
 
 const only = (s: ProjectState, code: string) => runSeoAudit(s).filter((f) => f.code === code);
 const x = (n: number) => 'x'.repeat(n);

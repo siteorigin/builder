@@ -73,7 +73,8 @@ const header = s0.site.shell.header.rootIds[0];
 const aboutItem = s0.site.shell.header.nodes[header].props.links.find((l) => l.label === 'About').id;
 await apply(
   [
-    { type: 'site.update', baseUrl: '', description: '' },
+    // Who publishes the site is said (#586), so the Entity pillar has nothing to report here.
+    { type: 'site.update', baseUrl: '', description: '', identity: { kind: 'Organization', sameAs: ['https://www.wikidata.org/wiki/Q123456'] } },
     { type: 'page.update', pageId: homeId, noindex: true },
     { type: 'page.create', pageId: 'pg_kilns', title: 'Kiln hire', route: '/kiln-hire/', addToNavigation: false },
     { type: 'page.update', pageId: 'pg_kilns', seoTitle: 'Kiln hire by the hour · Riverside Studio', description: '' },

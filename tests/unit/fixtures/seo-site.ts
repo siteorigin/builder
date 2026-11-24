@@ -1,8 +1,9 @@
 /**
  * A small site set up the way the SEO audit (#580) asks: a public URL with a sub-path, a site icon and sharing image,
- * Home and Services with titles and descriptions of their own linked from the header, and a published post with a
- * described picture, a decorative one and headings in order. The audit finds nothing on it; each test changes one
- * thing to see one finding.
+ * Home and Services with titles and descriptions of their own linked from the header, a published post with a
+ * described picture, a decorative one and headings in order, and a publisher (#586): an organization, named by the
+ * site, with a profile that confirms it. The audit finds nothing on it; each test changes one thing to see one finding.
+ * `identity: false` leaves the publisher unsaid, as every project was before #586.
  */
 import type { AssetRecord, PageDoc, ProjectState, RichText } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
@@ -35,7 +36,9 @@ export const POST_BODY: RichText = [
   { type: 'h2', spans: [{ text: 'When' }] }
 ];
 
-export function seoSite() {
+export const SEO_SITE_PROFILE = 'https://www.wikidata.org/wiki/Q123456';
+
+export function seoSite({ identity = true }: { identity?: boolean } = {}) {
   let s = createStarterState('blank', 'Riverside Studio', false);
   for (const a of [image('img_icon', { width: 512, height: 512 }), image('img_share', { altSuggestion: 'The studio from the river' }), image('img_bowls'), image('img_texture')]) s.assets.assets[a.id] = a;
   const home = s.site.homePageId;
@@ -48,6 +51,7 @@ export function seoSite() {
     { type: 'collection.create', collectionId: 'posts' },
     { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring pottery classes', publishedAt: '2027-03-02', draft: false, excerpt: 'Spring wheel classes open for bookings: six weeks of throwing, trimming and glazing.', body: POST_BODY }
   );
+  if (identity) s = run(s, { type: 'site.update', identity: { kind: 'Organization', sameAs: [SEO_SITE_PROFILE] } });
   const page = (id: string) => s.pages[id] as PageDoc;
   return { state: s, home, services: 'pg_services', entry: 'en_spring', page };
 }
