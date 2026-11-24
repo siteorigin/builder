@@ -1455,6 +1455,14 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       else delete node.anchor;
       return {};
     }
+    case 'collapseEmpty': {
+      // Only a component's design leaves a container out by the conditions inside it (generator childrenCondition).
+      if (!def || node.kind !== 'element') fail('Only containers in a component’s design can hide when every item inside is hidden.');
+      if (typeof v !== 'boolean') fail('collapseEmpty is true or false.');
+      if (v) node.collapseEmpty = true;
+      else delete node.collapseEmpty;
+      return {};
+    }
   }
 }
 

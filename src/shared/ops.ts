@@ -187,7 +187,9 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('node.setContent'),
     owner,
     nodeId: z.string(),
-    field: z.enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor']),
+    field: z
+      .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty'])
+      .describe('"collapseEmpty" (containers in a component definition only): true leaves the container out when every item inside it is hidden by its own when/unless condition; false keeps it.'),
     value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'node.setBinding': z.object({

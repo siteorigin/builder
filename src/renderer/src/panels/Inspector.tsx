@@ -48,6 +48,7 @@ import { DraftInput, Field, openSection, Section, Segmented, SwitchRow, useMenu,
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, placedOnPage, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
+import { ConditionControls } from './ConditionControls';
 import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, definitionView, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
@@ -1500,6 +1501,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       <DesignContentSection state={state} def={def} node={node} />
       {/* A component placed in the design: what it is given here, the same in every placement. */}
       {node.kind === 'instance' && placedDef && <NestedInputs state={state} def={def} node={node} placedDef={placedDef} />}
+      <ConditionControls def={def} node={node} level={LEVEL} />
       <Section title="Style" id="def-style" level={LEVEL} scope={repeated ? `Every ${itemWord ?? 'item'} · ${placements}` : placements}>
         {node.kind === 'instance' ? (
           <StyleControls

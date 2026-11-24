@@ -40,6 +40,28 @@ describe('project session', () => {
     expect(s.state.tokens.custom[0].id).toBe('color.custom-teal');
   });
 
+  it('undoes and redoes a visibility rule and "hide when empty" on a component’s design (#368)', async () => {
+    const { s } = await make();
+    const home = s.state.pages[s.state.site.homePageId];
+    const placed = home.rootIds.map((id) => home.nodes[id] as InstanceNode).find((n) => s.state.components[n.definitionId]?.componentId === 'features.grid')!;
+    const forked = await s.apply({ operations: [{ type: 'component.fork', definitionId: placed.definitionId }] }, { label: 'Copy' });
+    const defId = String(forked.results?.[0]?.definitionId);
+    const owner = { kind: 'component' as const, id: defId };
+    const nodes = () => s.state.components[defId].tree!.nodes;
+    expect((await s.apply({ operations: [{ type: 'node.setContent', owner, nodeId: 'card-icon-wrap', field: 'collapseEmpty', value: true }] }, { label: 'Hide empty container' })).ok).toBe(true);
+    expect((await s.apply({ operations: [{ type: 'node.setBinding', owner, nodeId: 'card-icon', field: 'when', binding: { $item: 'icon' }, ne: 'star' }] }, { label: 'Set show condition' })).ok).toBe(true);
+    expect(nodes()['card-icon'].when).toEqual({ ref: { $item: 'icon' }, ne: 'star' });
+    await s.undo();
+    expect(nodes()['card-icon'].when).toBeUndefined();
+    expect(nodes()['card-icon-wrap']).toMatchObject({ collapseEmpty: true });
+    await s.undo();
+    expect(nodes()['card-icon-wrap']).not.toHaveProperty('collapseEmpty');
+    await s.redo();
+    await s.redo();
+    expect(nodes()['card-icon-wrap']).toMatchObject({ collapseEmpty: true });
+    expect(nodes()['card-icon'].when).toEqual({ ref: { $item: 'icon' }, ne: 'star' });
+  });
+
   it('writes, undoes and reopens an old address kept working, and gives its route back to a page (#37)', async () => {
     const { dir, s } = await make();
     const [homeId, aboutId] = s.state.site.pageOrder;

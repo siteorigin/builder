@@ -1,7 +1,9 @@
 import type { EditOperation } from '@shared/ops';
 import type { GraphNode, NodeTree, OwnerRef, ProjectState, TableValue } from '@shared/types';
+import { isComparison } from '@shared/types';
 import { getTheme } from '@catalogue/index';
-import { displayName } from '@engine/tree';
+import { displayName, enclosingRepeatProp } from '@engine/tree';
+import { boundSchema } from '@engine/schema';
 import { followsPage, inheritedValue } from '@shared/page-teasers';
 import { itemStylesOf, placementItems, repeatedPartList } from '@shared/item-styles';
 
@@ -187,6 +189,20 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const def = has(state.components, op.definitionId);
       return def ? found({ name: def.name, description: def.description }) : gone('component');
     }
+    case 'node.setBinding': {
+      // Text or a number typed for a condition to compare with is held. Choosing what a condition reads, or how it
+      // compares, is a gesture. The list the node repeats for is part of the field: a field of the same name in
+      // another list is another field, and so is the property or field it reads when its type or options change.
+      const typed = op.eq ?? op.ne;
+      if ((op.field !== 'when' && op.field !== 'unless') || !op.binding || (typeof typed !== 'string' && typeof typed !== 'number')) return null;
+      const def = op.owner.kind === 'component' ? has(state.components, op.owner.id) : undefined;
+      if (!def?.tree) return gone('component');
+      const node = has(def.tree.nodes, op.nodeId);
+      if (!node) return gone('element');
+      const schema = boundSchema(def, node.id, op.binding);
+      if (!schema) return gone('property');
+      return found({ value: node[op.field], list: enclosingRepeatProp(def, node.id) ?? null, schema });
+    }
     case 'component.setPropDefault': {
       // The schema is part of the field: it decides how the default is read.
       const schema = has(has(state.components, op.definitionId)?.properties, op.prop);
@@ -277,6 +293,7 @@ export function typedText(op: EditOperation): string | null {
     return key ? shownValue(o[key]) : null;
   }
   if (op.type === 'node.rename' || op.type === 'component.rename') return shownValue(op.name);
+  if (op.type === 'node.setBinding') return shownValue(op.eq ?? op.ne);
   if (op.type === 'token.rename') return shownValue(op.label);
   return shownValue(o.value);
 }
@@ -295,6 +312,8 @@ export function shownField(op: EditOperation, read: unknown): string | null {
   else if (op.type === 'instance.setProp' && !op.itemId) v = o.value ?? (o.schema as { default?: unknown } | undefined)?.default;
   // A page list's empty card field shows its page's value, which is what the author sees there.
   else if (op.type === 'instance.setProp' && followsPage(o.value) && typeof o.shows === 'string' && o.shows.trim()) v = o.shows;
+  // A condition shows the value it compares with; one that only tests for a value has none.
+  else if (op.type === 'node.setBinding') v = isComparison(o.value) ? ('eq' in o.value ? o.value.eq : o.value.ne) : undefined;
   else if (op.type !== 'node.rename') v = o.value;
   return blank(v) ? '' : shownValue(v);
 }
