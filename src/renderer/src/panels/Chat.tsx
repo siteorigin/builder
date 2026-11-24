@@ -463,6 +463,8 @@ export function Chat() {
   // the author sends or discards it: never sent behind a note they have not seen, and never lost.
   const handed = useStore((s) => s.chatRequest);
   const sendHanded = (req: NonNullable<typeof handed>) => {
+    // Only the request still waiting: one discarded since this render is never sent.
+    if (getState().chatRequest?.id !== req.id) return;
     // Held from the moment it starts, so whatever renders meanwhile never sends it twice.
     setState({ chatRequest: { ...req, held: true } });
     void send(req.text, req.context).then(

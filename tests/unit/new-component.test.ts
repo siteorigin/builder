@@ -259,6 +259,7 @@ describe('read_component with structure (#172)', () => {
       if (!offset) {
         const shown = out.structure.nodes[0].children as string[];
         expect(shown).toHaveLength(101);
+        expect(shown.slice(0, 100)).toEqual(root.children.slice(0, 100));
         expect(shown.at(-1)).toBe(`…and ${root.children.length - 100} more`);
       }
       seen.push(...out.structure.nodes.map((n: { id: string }) => n.id));
