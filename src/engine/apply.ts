@@ -47,7 +47,7 @@ import { slotsInsideCards } from '@generator/card-links';
 import { chosenUses, imageUses } from './image-uses';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
-import { batchTagProblem, tagKindProblem } from './semantic-tags';
+import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
@@ -1168,9 +1168,8 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
   } else if (op.primitive) {
     nodes = primitiveNode(state, op.primitive, op.text);
     // A paragraph or span container holds only inline content, so text inserted there is inline text.
-    const holder = op.parentId && !op.slot && Object.hasOwn(tree.nodes, op.parentId) ? tree.nodes[op.parentId] : undefined;
     const text = nodes[0];
-    if (holder?.kind === 'element' && (holder.tag === 'p' || holder.tag === 'span') && text.kind === 'text' && !text.rich) text.tag = 'span';
+    if (text.kind === 'text' && !text.rich && op.parentId && insertsInline(state, op.owner, op.parentId, op.slot)) text.tag = 'span';
   } else {
     let def: ComponentDefinition;
     if (op.definitionId) def = state.components[op.definitionId] ?? fail(`Component definition "${op.definitionId}" is not installed.`);

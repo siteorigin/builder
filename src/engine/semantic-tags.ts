@@ -15,7 +15,7 @@ import type { ComponentDefinition, GraphNode, NodeTree, OwnerRef, ProjectState }
 import { ELEMENT_TAGS, TEXT_TAGS, isBinding } from '@shared/types';
 import { isCardLink } from '@generator/card-links';
 import { boundSchema } from './schema';
-import { allTrees, getNode, getTree } from './tree';
+import { allTrees, getNode, getTree, instancesOf } from './tree';
 
 export interface NestingProblem {
   severity: 'error' | 'warning';
@@ -160,7 +160,7 @@ class Structure {
 }
 
 /** What a node renders as, for the rules: its kind and possible tags, or nothing known (a slot, a code component). */
-type Rendered = { node: GraphNode; kind: GraphNode['kind']; tags: readonly string[] | null; rich: boolean } | null;
+type Rendered = { node: GraphNode; kind: GraphNode['kind']; tags: readonly string[] | null; rich: boolean; via: TreeCtx[] } | null;
 
 /** The project read with one node's tag as an edit would set it. */
 class Reader {
@@ -184,27 +184,59 @@ class Reader {
     return [...new Set([...options, fallback])];
   }
 
+  /** The tags an element can render as: its own, and a link's when it is a card the link renders in place of. */
+  shown(ctx: TreeCtx, n: GraphNode): readonly string[] | null {
+    const tags = this.tags(ctx, n);
+    return tags && linkCard(n) ? [...tags, 'a'] : tags;
+  }
+
   around(a: Around): { tags: readonly string[]; node?: GraphNode } {
     if ('outer' in a) return { tags: [a.outer] };
     const node = a.ctx.tree.nodes[a.id];
-    return { tags: this.tags(a.ctx, node) ?? ['div'], node };
+    return { tags: this.shown(a.ctx, node) ?? ['div'], node };
+  }
+
+  private inlineDesigns = new Map<string, boolean>();
+
+  /** Whether everything a managed design renders is certainly inline, so it can sit in a paragraph. */
+  designInline(ctx: TreeCtx, seen = new Set<string>()): boolean {
+    const key = ownerKey(ctx.owner);
+    const known = this.inlineDesigns.get(key);
+    if (known !== undefined) return known;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    const nodes = ctx.tree.nodes;
+    const ok = (id: string): boolean => {
+      const n = Object.hasOwn(nodes, id) ? nodes[id] : undefined;
+      if (!n) return true;
+      if (n.kind === 'repeat') return n.children.every(ok);
+      if (n.kind === 'instance') {
+        const inner = this.structure.defCtx(n.definitionId);
+        return !!inner && this.designInline(inner, seen) && Object.values(n.slots ?? {}).every((ids) => (ids ?? []).every(ok));
+      }
+      if (!inline(this.rendered(ctx, n))) return false;
+      return n.kind !== 'element' || n.children.every(ok);
+    };
+    const out = ctx.tree.rootIds.every(ok);
+    this.inlineDesigns.set(key, out);
+    return out;
   }
 
   /** What a node renders as. A placed managed component renders as its design's root, through any it places there. */
   rendered(ctx: TreeCtx, n: GraphNode): Rendered {
     let at: { ctx: TreeCtx; node: GraphNode } = { ctx, node: n };
-    const seen = new Set<string>();
+    const via: TreeCtx[] = [];
     while (at.node.kind === 'instance') {
       const inner = this.structure.defCtx(at.node.definitionId);
       const rootId = inner?.tree.rootIds.length === 1 ? inner.tree.rootIds[0] : undefined;
       const root = inner && rootId && Object.hasOwn(inner.tree.nodes, rootId) ? inner.tree.nodes[rootId] : undefined;
-      if (!inner || !root || seen.has(ownerKey(inner.owner))) return null;
-      seen.add(ownerKey(inner.owner));
+      if (!inner || !root || via.some((v) => sameOwner(v.owner, inner.owner))) return null;
+      via.push(inner);
       at = { ctx: inner, node: root };
     }
     const r = at.node;
     if (r.kind === 'slot' || r.kind === 'repeat') return null;
-    return { node: r, kind: r.kind, tags: this.tags(at.ctx, r), rich: r.kind === 'text' && !!r.rich };
+    return { node: r, kind: r.kind, tags: this.shown(at.ctx, r), rich: r.kind === 'text' && !!r.rich, via };
   }
 }
 
@@ -237,12 +269,14 @@ function subject(n: GraphNode): string {
 function inline(r: Rendered): boolean {
   if (!r) return false;
   if (r.kind === 'link' || r.kind === 'icon') return true;
-  if (r.kind === 'element') return every(r.tags, ['span']);
+  if (r.kind === 'element') return every(r.tags, ['span', 'a']);
   return r.kind === 'text' && !r.rich && every(r.tags, INLINE_TEXT);
 }
 
 /** A container that renders as one link in place of its own tag: a card with a destination and no click action. */
-const linkCard = (n: GraphNode) => n.kind === 'element' && isCardLink(n) && (n.action === undefined || n.action === null);
+function linkCard(n: GraphNode): boolean {
+  return n.kind === 'element' && isCardLink(n) && (n.action === undefined || n.action === null);
+}
 
 /** Every nesting problem in one document, as `reader` reads the project. */
 function treeProblems(reader: Reader, owner: OwnerRef, tree: NodeTree): NestingProblem[] {
@@ -279,9 +313,10 @@ function treeProblems(reader: Reader, owner: OwnerRef, tree: NodeTree): NestingP
     const structure = reader.structure;
     const above = structure.ancestors(ctx, id).map((a) => reader.around(a));
     // A block inside a paragraph closes it, so the browser builds a different page from the one the site's code expects.
-    if (!inline(r)) {
+    // A placed component is inline only when everything its design renders is.
+    if (!inline(r) || !(r?.via ?? []).every((d) => reader.designInline(d))) {
       if (above.some((a) => some(a.tags, ['p']))) say('error', 'in-paragraph', 'can’t go inside a paragraph container, which holds only inline text, buttons, links and icons.');
-      else if (above.some((a) => some(a.tags, ['span']))) say('error', 'in-span', 'can’t go inside a span container, which holds only inline text, buttons, links and icons.');
+      if (above.some((a) => some(a.tags, ['span']))) say('error', 'in-span', 'can’t go inside a span container, which holds only inline text, buttons, links and icons.');
     }
     if (some(tags, LANDMARK_ENDS) && above.some((a) => some(a.tags, LANDMARK_ENDS))) say('error', 'landmark', 'can’t be a header or footer inside another header or footer.');
     for (const at of structure.up(ctx, id).parents) {
@@ -294,6 +329,11 @@ function treeProblems(reader: Reader, owner: OwnerRef, tree: NodeTree): NestingP
       if (some(tags, ['figcaption']) && !every(p.tags, ['figure'])) say('error', 'figcaption', 'is a caption, so it goes directly inside a figure.');
       if (some(tags, ['summary']) && !every(p.tags, ['details'])) say('error', 'summary', 'is a summary, so it goes directly inside a details element.');
       if (!r) continue;
+      // A linked card renders as its link, which no list or description list can hold directly.
+      if (some(p.tags, ['ul', 'ol', 'dl']) && linkCard(r.node)) {
+        say('error', 'card', 'is one link, which renders in place of its tag, so it can’t go directly inside a list or description list. Link a container inside it instead.');
+        continue;
+      }
       if (some(p.tags, ['ul', 'ol'])) {
         if (element && every(tags, ['li', 'div']) && !every(tags, ['li'])) say('warning', 'list-item', 'sits directly in a list: make it a list item (li).');
         else if (!(element && every(tags, ['li']))) say('error', 'list-child', 'can’t go directly inside a list: only list items (li) and containers can.');
@@ -377,16 +417,46 @@ export function tagKindProblem(node: GraphNode, tag: unknown): string | null {
  */
 export function batchTagProblem(before: ProjectState, after: ProjectState, owners: readonly OwnerRef[]): IntroducedProblem | null {
   if (!owners.length) return null;
-  const was = reach(before, owners);
-  return firstIntroduced(errorSites(new Reader(new Structure(before)), was), new Reader(new Structure(after)), reach(after, owners), owners);
+  const docs = reach(after, owners);
+  // Each document as it was, including one the batch only now places an edited design in: its older problems are not the batch's.
+  const keys = new Set(docs.map((d) => ownerKey(d.owner)));
+  const was = allTrees(before).filter((t) => keys.has(ownerKey(t.owner)));
+  return firstIntroduced(errorSites(new Reader(new Structure(before)), was), new Reader(new Structure(after)), docs, owners);
+}
+
+/** Whether a node renders inside a linked card: in its own document, or where its design is placed, however deep. */
+function inCard(structure: Structure, ctx: TreeCtx, id: string, seen: Set<string>): boolean {
+  if (structure.ancestors(ctx, id).some((a) => !('outer' in a) && isCardLink(a.ctx.tree.nodes[a.id]))) return true;
+  if (ctx.owner.kind !== 'component' || seen.has(ctx.owner.id)) return false;
+  seen.add(ctx.owner.id);
+  return instancesOf(structure.state, ctx.owner.id).some((p) => inCard(structure, structure.ctx(p.owner, getTree(structure.state, p.owner)), p.node.id, seen));
 }
 
 /** Disclosures are controls: a linked card around one would put a control inside a link. */
 function cardProblem(structure: Structure, owner: OwnerRef, nodeId: string, tag: string): string | null {
   if (tag !== 'details' && tag !== 'summary') return null;
   const ctx = structure.ctx(owner, getTree(structure.state, owner));
-  const inCard = structure.ancestors(ctx, nodeId).some((a) => !('outer' in a) && isCardLink(a.ctx.tree.nodes[a.id]));
-  return inCard ? 'A disclosure can’t go inside a linked card, which can hold nothing interactive.' : null;
+  return inCard(structure, ctx, nodeId, new Set()) ? 'A disclosure can’t go inside a linked card, which can hold nothing interactive.' : null;
+}
+
+/**
+ * Whether content placed in `parentId` (in its `slot`, for a placed component) renders inside a paragraph or span
+ * container, which holds only inline content: there, inserted text is inline text.
+ */
+export function insertsInline(state: ProjectState, owner: OwnerRef, parentId: string, slot?: string): boolean {
+  const structure = new Structure(state);
+  const reader = new Reader(structure);
+  const ctx = structure.ctx(owner, getTree(state, owner));
+  const node = Object.hasOwn(ctx.tree.nodes, parentId) ? ctx.tree.nodes[parentId] : undefined;
+  if (!node) return false;
+  let around: Around[] = [];
+  if (node.kind === 'element') around = [{ ctx, id: parentId }, ...structure.ancestors(ctx, parentId)];
+  else if (node.kind === 'repeat') around = structure.ancestors(ctx, parentId);
+  else if (node.kind === 'instance' && slot !== undefined) {
+    const inner = structure.defCtx(node.definitionId);
+    for (const outlet of Object.values(inner?.tree.nodes ?? {})) if (inner && outlet.kind === 'slot' && outlet.slot === slot) around.push(...structure.ancestors(inner, outlet.id));
+  }
+  return around.some((a) => some(reader.around(a).tags, ['p', 'span']));
 }
 
 /** A checker for one node's candidate tags, sharing what doesn't depend on the tag. */
