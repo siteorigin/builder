@@ -175,7 +175,7 @@ await shot('tb-zoom-menu', '.menu', { themes: ['light'], area: 'top-center' });
 await escape();
 
 // Keyboard focus on a toolbar control (a ring must show, not be clipped).
-await win.locator('[aria-label="Settings"]').focus();
+await win.locator('.toolbar [aria-label="Settings"]').focus();
 await win.keyboard.press('Shift+Tab');
 await win.keyboard.press('Tab');
 await pause(200);
@@ -217,10 +217,10 @@ await pause(300);
 
 // Both side panels hidden: the toolbar toggles and rail at rest.
 await openRail('Pages', false);
-await win.locator('[aria-label="Right panel"]').click();
+await win.locator('.toolbar [aria-label="Right panel"]').click();
 await pause(700);
 await shot('tb-panels-closed', '.toolbar', { themes: ['light'], area: 'toolbar' });
-await win.locator('[aria-label="Right panel"]').click();
+await win.locator('.toolbar [aria-label="Right panel"]').click();
 await pause(400);
 
 // Rail: Layers open, then the Site styles shortcut active.
