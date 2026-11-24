@@ -25,17 +25,21 @@ export function BrandMark() {
 export function AppearanceToggle() {
   const scheme = useEditorScheme();
   const dark = scheme === 'dark';
-  // One save at a time: a second press before the editor has redrawn would save the same scheme again.
-  const saving = useRef(false);
+  // The scheme a press is on its way to. Until the editor is drawn in it, another press would still see the old
+  // scheme and save the same one again, so it waits; the save's reply can come before the redraw.
+  const pending = useRef<'light' | 'dark' | null>(null);
+  useEffect(() => {
+    if (pending.current === scheme) pending.current = null;
+  }, [scheme]);
   const toggle = async () => {
-    if (saving.current) return;
-    saving.current = true;
+    if (pending.current) return;
+    const target = dark ? 'light' : 'dark';
+    pending.current = target;
     try {
-      setState({ settings: await api.app.setSettings({ appearance: dark ? 'light' : 'dark' }) });
+      setState({ settings: await api.app.setSettings({ appearance: target }) });
     } catch (e) {
+      pending.current = null;
       toast(`Could not change the appearance: ${errorText(e)}`, 'error');
-    } finally {
-      saving.current = false;
     }
   };
   return (
