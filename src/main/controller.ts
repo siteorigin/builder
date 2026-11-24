@@ -1593,7 +1593,8 @@ export class Controller {
     // Code from a package runs on this computer whenever the site is previewed or built: whoever imports it decides,
     // knowing that, before anything is written. (A path given directly is a test's, which has no one to ask.)
     const code = importedCode(s.state, { id: '', pkg, images: {} });
-    if (code.length && !path && (await loadSettings()).settings.developerMode) {
+    if (code.length && !path) {
+      if (!(await loadSettings()).settings.developerMode) return { ok: false, message: `“${name}” includes code components, which need Developer mode. Turn on Developer mode in Settings to import it.` };
       const names = code.map((d) => `“${d.name}”`).join(', ');
       const r = await dialog.showMessageBox(this.getWindow()!, {
         type: 'warning',

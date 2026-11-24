@@ -554,7 +554,7 @@ export async function importPackageImage(
   let changed: AssetRecord | undefined;
   for (const dup of existing.filter((a) => a.hash === p.hash && a.mime === p.mime)) {
     const at = safeJoin(projectDir, dup.file);
-    const there = await fs.lstat(at).then(() => readRegularFile(at, MAX_BYTES).catch(() => null), () => 'missing' as const);
+    const there = await fs.lstat(at).then((st) => (st.isFile() ? readRegularFile(at, MAX_BYTES).catch(() => null) : null), () => 'missing' as const);
     if (Buffer.isBuffer(there) && sha(there) === dup.hash) return { record: dup, existing: true };
     if (there !== 'missing') changed ??= dup;
   }

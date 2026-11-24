@@ -139,7 +139,7 @@ function siteLinks(def: ComponentDefinition, drop: boolean): number {
 }
 
 /** A static import's specifier, with comments allowed between the keyword and the quoted path. */
-const IMPORT_SPEC = /(\bfrom|\bimport)((?:\s|\(|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n]*\n)*)(['"])([^'"\n]*)\3/g;
+const IMPORT_SPEC = /(?<![.$\w])(from|import)((?:\s|\(|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n]*\n)*)(['"])([^'"\n]*)\3/g;
 
 /** The project file an import specifier in the file `fromFile` names, or null for a package import. */
 function resolveImport(spec: string, fromFile: string): string | null {
@@ -480,12 +480,14 @@ function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
   // Nor inside itself, even out of sight: an element that is its own ancestor is never one an edit can walk out of.
   const parentOf = new Map<string, string>();
   for (const [id, n] of Object.entries(tree.nodes)) for (const list of childLists(n as GraphNode)) for (const c of list.ids) parentOf.set(c, id);
+  const clear = new Set<string>();
   for (const id of Object.keys(tree.nodes)) {
     const seen = new Set<string>();
-    for (let at: string | undefined = id; at !== undefined; at = parentOf.get(at)) {
+    for (let at: string | undefined = id; at !== undefined && !clear.has(at); at = parentOf.get(at)) {
       if (seen.has(at)) damaged(`the element "${id}" is placed inside itself`);
       seen.add(at);
     }
+    seen.forEach((x) => clear.add(x));
   }
 }
 
@@ -687,10 +689,6 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     if (def.kind === 'code') {
       const file = fileOf.get(def.id)!;
       def.source = relinkSource(def.source ?? '', defFile(def), file, moved, keys);
-      // Code that places a form decides in its source where the form sends: that is never taken from a package.
-      const forms = new Set(defs.filter((d) => sendsFormMessages(d)).map((d) => moved.get(normalizePath(defFile(d)))));
-      if (!sendsFormMessages(def) && importedFiles(def.source, file).some((f) => forms.has(f)))
-        fail(`The code of ${quoted(def.name)} places a contact form, which a package can't bring in code. Place the form in a design instead.`);
       def.sourcePath = file;
       if (def.dependencies?.length) def.dependencies = [...new Set(def.dependencies.map((d) => ids.get(d)!))].sort();
     } else delete def.sourcePath;
@@ -721,6 +719,7 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
         if (n.kind !== 'instance') continue;
         for (const k of destinations.get(n.definitionId) ?? []) {
           const v = n.props?.[k];
+          if (isRecord(v) && v.field !== undefined) fail(`${quoted(d.name)} passes a contact form's destination on from part of a property, which a package can't bring.`);
           if (!isRecord(v) || typeof v.$prop !== 'string' || !Object.hasOwn(d.properties, v.$prop)) continue;
           const mine = destinations.get(d.id) ?? new Set<string>();
           if (mine.has(v.$prop)) continue;
@@ -729,6 +728,9 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
         }
       }
   }
+  // Code decides in its source what it passes on: a package's code never places a form, or what passes one on.
+  const guarded = new Set([...destinations.keys()].map((id) => defFile(all.find((d) => d.id === id)!)));
+  for (const def of landed) if (def.kind === 'code' && !sendsFormMessages(def) && importedFiles(def.source ?? '', defFile(def)).some((f) => guarded.has(f))) fail(`The code of ${quoted(def.name)} places a contact form, which a package can't bring in code. Place the form in a design instead.`);
   for (const def of landed) {
     for (const k of destinations.get(def.id) ?? []) if (Object.hasOwn(def.properties, k) && 'default' in def.properties[k]) (def.properties[k] as { default: unknown }).default = '';
     for (const n of Object.values(def.tree?.nodes ?? {})) {
@@ -744,5 +746,5 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     if (installed !== def.id) fail(`${quoted(def.name)} could not be installed from the theme.`);
   }
   for (const def of landed) state.components[def.id] = def;
-  return { definitionId: ids.get(pkg.rootId), definitionIds: pkg.definitions.map((d) => ids.get(d.id)), tokenIds: created };
+  return { definitionId: ids.get(pkg.rootId), definitionIds: pkg.definitions.map((d) => ids.get(d.id)), tokenIds: created, guarded: [...destinations.keys()] };
 }

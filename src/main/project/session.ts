@@ -1902,7 +1902,8 @@ export class ProjectSession extends EventEmitter {
         }
       }
       // A form decides in its code where visitors' messages go, so a package's code may never place one.
-      const files = brought ? new Set(brought.filter((d) => !sendsFormMessages(d)).map(defFile)) : null;
+      const guarded = new Set(results.flatMap((r) => (Array.isArray(r?.guarded) ? (r.guarded as string[]) : [])));
+      const files = brought ? new Set(brought.filter((d) => !sendsFormMessages(d) && !guarded.has(d.id)).map(defFile)) : null;
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
         // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,

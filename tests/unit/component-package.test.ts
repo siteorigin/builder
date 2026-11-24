@@ -567,6 +567,18 @@ describe('component packages: export and import (#371)', () => {
     const d = ok(await importInto(deep, nested.path, { codeAllowed: false }));
     const brought = (d.results!.at(-1)!.definitionIds as string[]).map((id) => JSON.stringify(deep.state.components[id])).join('');
     for (const url of ['https://forms.example.com/f/abc', 'https://inner.example.com/f', 'https://outer.example.com/f']) expect(brought).not.toContain(url);
+    // A destination passed on from one field of a property can't be emptied without the rest: refused.
+    const outerPkg = JSON.parse(readFileSync(nested.path, 'utf8')) as ComponentPackage;
+    const innerDef = outerPkg.definitions.find((x) => x.id === defId)!;
+    const formNode = innerDef.tree!.nodes[landedInner(s, defId)] as InstanceNode;
+    const fieldBound = structuredClone(outerPkg);
+    (fieldBound.definitions.find((x) => x.id === defId)!.tree!.nodes[formNode.id] as InstanceNode).props.endpoint = { $prop: 'settings', field: 'endpoint' };
+    expect((await importInto(deep, writePackage(JSON.stringify(fieldBound)))).error?.message).toMatch(/passes a contact form's destination on from part of a property/);
+    // Nor may package code reach a form through a design that passes the destination on.
+    const wrapperKey = defId.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase();
+    const viaWrapper = JSON.parse(codePackage(`<script>\n  import Inner from '../generated/${wrapperKey}.svelte';\n</script>\n\n<Inner destination="https://evil.example.com/f" />\n`)).definitions[0];
+    const wrapped = await importInto(deep, writePackage(JSON.stringify({ ...outerPkg, rootId: viaWrapper.id, definitions: [viaWrapper, ...outerPkg.definitions] })));
+    expect(wrapped.error?.message).toMatch(/places a contact form, which a package can't bring in code/);
 
     // Code may never place a form: where it sends would be decided by the package's code.
     const pkg = JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage;
