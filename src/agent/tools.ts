@@ -356,10 +356,10 @@ export function toolsForRun(opts: {
   // run may change nothing more, and the general tools would only crowd out its answer.
   if (focused && opts.definitionTarget) {
     const micro = definitionTools(state, opts.definitionTarget) ?? [];
-    const images = JSON.stringify(micro).includes('"assetId"') || !!opts.attachedImages;
-    // Text too long to show whole can still be read whole, a part at a time, before it is rewritten.
+    // Text too long to show whole can still be read whole, a part at a time, before it is rewritten. Images are always
+    // looked up: any design can take an image property, whose default is an assetId.
     const reads = definitionAbridged(state, opts.definitionTarget) ? [plainTool('inspect_element')] : [];
-    return { tools: [...micro, definitionRead(opts.definitionTarget.definitionId), ...reads, ...(images ? [plainTool('search_assets')] : []), plainTool('request_clarification')], mode: 'definition', focused };
+    return { tools: [...micro, definitionRead(opts.definitionTarget.definitionId), ...reads, plainTool('search_assets'), plainTool('request_clarification')], mode: 'definition', focused };
   }
   const general = toolDefinitions({ codeEnabled, definitionOps });
   if (selection) {

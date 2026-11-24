@@ -694,6 +694,18 @@ describe("a component's design on a small model (#360)", () => {
     expect(session.state.components[id]).toEqual(before);
   });
 
+  it('tells a small model to read shortened text whole before it rewrites it', async () => {
+    const { session, run } = await setup({}, {}, false);
+    const { id, owner } = await editEverywhere(session);
+    const long = `${'Every room is made by hand from local timber and finished with natural oils. '.repeat(5)}The end.`;
+    expect((await session.apply({ operations: [{ type: 'node.setBinding', owner, nodeId: 'lead', field: 'text', binding: null }, { type: 'node.setContent', owner, nodeId: 'lead', field: 'text', value: long }] }, { label: 'Long lead', source: 'user' })).ok).toBe(true);
+    server.script(envelopeReply('finish', { message: 'Nothing to change.' }));
+    await run('Fix the typo at the end of the intro', { owner, instancePath: [], nodeId: 'content' }, 'Content', undefined, { id, name: 'Split hero' });
+    const first = posts()[0];
+    expect(grammar(first)).toContain('inspect_element');
+    expect(first.messages[0].content).toContain('read text shown shortened (ending in …) whole with inspect_element');
+  });
+
   it('keeps a node selected in the design to what is inside it', async () => {
     const { session, run } = await setup({}, {}, false);
     const { id, owner } = await editEverywhere(session);

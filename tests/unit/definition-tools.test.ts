@@ -149,7 +149,7 @@ describe('choosing the definition tools', () => {
     // A run whose selected node is gone (it removed it, say) may change nothing more: it keeps the small reads.
     const gone = toolsForRun({ state: session.state, selection: null, capabilities: local, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: { definitionId: id, nodeId: 'gone' } });
     expect(gone).toMatchObject({ mode: 'definition', focused: true });
-    expect(names(gone.tools)).toEqual(['read_component', 'request_clarification']);
+    expect(names(gone.tools)).toEqual(['read_component', 'search_assets', 'request_clarification']);
     void owner;
   });
 
@@ -165,7 +165,7 @@ describe('choosing the definition tools', () => {
     expect(authority).toMatchObject({ kind: 'selection', part: { partId } });
     const r = toolsForRun({ state: session.state, selection: null, capabilities: local, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: definitionTarget(authority) });
     expect(r.mode).toBe('definition');
-    expect(names(r.tools)).toEqual(['style_definition_element', 'read_component', 'request_clarification']);
+    expect(names(r.tools)).toEqual(['style_definition_element', 'read_component', 'search_assets', 'request_clarification']);
     expect(prop(tool(r.tools, 'style_definition_element'), 'partId').enum).toEqual([partId]);
     const host = hostFor(session, authority);
     const styled = await run(host, 'style_definition_element', { scope: 'base', styles: [{ property: 'color', value: { token: 'color.brand' } }] });
@@ -178,11 +178,11 @@ describe('choosing the definition tools', () => {
     // One item of a part shown per item: a design styles every item alike, so nothing is offered.
     const item = authorityOf(session.state, id, { ...pick, itemPath: ['i_1'] });
     expect(item).toMatchObject({ part: { partId, itemId: 'i_1' } });
-    expect(names(toolsForRun({ state: session.state, selection: null, capabilities: local, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: definitionTarget(item) }).tools)).toEqual(['read_component', 'request_clarification']);
+    expect(names(toolsForRun({ state: session.state, selection: null, capabilities: local, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: definitionTarget(item) }).tools)).toEqual(['read_component', 'search_assets', 'request_clarification']);
     expect(errorOf(await run(hostFor(session, item), 'style_definition_element', { scope: 'base', styles: [{ property: 'color', value: null }] })).message).toMatch(/one item of it/);
     // Deeper inside the placement: nothing to change without the author's approval.
     const deeper = authorityOf(session.state, id, { ...pick, instancePath: [nested, 'n_x'] });
-    expect(names(toolsForRun({ state: session.state, selection: null, capabilities: local, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: definitionTarget(deeper) }).tools)).toEqual(['read_component', 'request_clarification']);
+    expect(names(toolsForRun({ state: session.state, selection: null, capabilities: local, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: definitionTarget(deeper) }).tools)).toEqual(['read_component', 'search_assets', 'request_clarification']);
   });
 });
 
@@ -210,6 +210,7 @@ describe('running the definition tools', () => {
     // A new option, then its content edit and a default for the whole component.
     expect((await run(host, 'add_definition_variant', { axis: 'tone', option: 'bold', label: 'Bold' })).ok).toBe(true);
     expect(session.state.components[id].variantAxes!.tone.options.bold).toMatchObject({ label: 'Bold' });
+    expect(session.state.components[id].variantAxes!.tone.default).toBe('default');
     expect((await run(host, 'manage_component_prop', { change: { action: 'set_default', prop: 'title', value: 'Welcome' } })).ok).toBe(true);
     expect(session.state.components[id].properties.title.default).toBe('Welcome');
     expect((await run(host, 'edit_definition_node', { nodeId: 'lead', content: { tag: 'h3' } })).ok).toBe(true);
@@ -229,6 +230,9 @@ describe('running the definition tools', () => {
     expect(prop(tool(definitionTools(session.state, { definitionId: id })!, 'bind_definition_field'), 'nodeId').enum).toContain(nodeId);
     expect((await run(host, 'bind_definition_field', { nodeId, field: 'text', binding: { $prop: 'tagline' } })).ok).toBe(true);
     expect((session.state.components[id].tree!.nodes[nodeId] as { text?: unknown }).text).toEqual({ $prop: 'tagline' });
+    // Without an index, at the end.
+    const last = (await run(host, 'insert_definition_node', { parentId: 'content', primitive: 'divider' })).content as { nodeId: string };
+    expect((session.state.components[id].tree!.nodes.content as { children: string[] }).children.at(-1)).toBe(last.nodeId);
     expect((await run(host, 'remove_definition_node', { nodeId: 'secondary' })).ok).toBe(true);
     expect(session.state.components[id].tree!.nodes.secondary).toBeUndefined();
     const revision = session.revision;
@@ -260,6 +264,12 @@ describe('running the definition tools', () => {
     expect((await run(host, 'manage_component_prop', { change: { action: 'add', prop: 'photo', label: 'Photo', type: 'image', default: assetId } })).ok).toBe(true);
     expect(session.state.components[id].properties.photo.default).toMatchObject({ assetId });
     expect((await run(host, 'manage_component_prop', { change: { action: 'set_default', prop: 'photo', value: assetId } })).ok).toBe(true);
+    // Anything but an ID would read as no picture, so it is refused and the default stays.
+    const revision = session.revision;
+    expect(errorOf(await run(host, 'manage_component_prop', { change: { action: 'set_default', prop: 'photo', value: false } })).message).toMatch(/default is its assetId/);
+    expect(errorOf(await run(host, 'manage_component_prop', { change: { action: 'add', prop: 'banner', label: 'Banner', type: 'image', default: 42 } })).message).toMatch(/default is its assetId/);
+    expect(session.revision).toBe(revision);
+    expect(session.state.components[id].properties.photo.default).toMatchObject({ assetId });
     // A picture bound to a property is not this node's to keep: its assetId is needed.
     expect(errorOf(await run(host, 'edit_definition_node', { nodeId: 'media', content: { image: { alt: 'x' } } })).message).toMatch(/send its assetId/);
   });
@@ -307,6 +317,7 @@ describe('running the definition tools', () => {
     expect((await run(host, 'bind_definition_field', { nodeId: 'lead', field: 'when', binding: { $prop: 'showLead' }, eq: true })).ok).toBe(true);
     expect((await run(host, 'edit_definition_node', { nodeId: 'content', exposeAsPart: { partId: 'copy', label: 'Copy' } })).ok).toBe(true);
     expect((await run(host, 'style_definition_element', { variant: { axis: 'layout', option: 'media-start' }, scope: 'base', styles: [{ property: 'gap', value: { token: 'space.lg' } }] })).ok).toBe(true);
+    expect(session.state.components[id].variantAxes!.layout.options['media-start'].styles).toMatchObject({ content: { base: { gap: { token: 'space.lg' } } } });
     expect(session.state.components[id].tree!.nodes.lead.when).toEqual({ ref: { $prop: 'showLead' }, eq: true });
     expect((await run(host, 'bind_definition_field', { nodeId: 'eyebrow', field: 'unless', binding: { $prop: 'showLead' }, ne: false })).ok).toBe(true);
     expect(session.state.components[id].tree!.nodes.eyebrow.unless).toEqual({ ref: { $prop: 'showLead' }, ne: false });

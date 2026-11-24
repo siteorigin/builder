@@ -444,6 +444,8 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
       }
       if (change.default !== undefined) {
         if (!PLAIN_DEFAULTS.has(schema.type)) return fieldError([{ field: 'change.default', message: `a ${schema.type} property starts empty: leave default out` }], NOTHING_APPLIED);
+        // Anything but an ID would read as an empty image.
+        if (schema.type === 'image' && typeof change.default !== 'string') return fieldError([{ field: 'change.default', message: "an image's default is its assetId, from search_assets" }], NOTHING_APPLIED);
         const checked = checkProps({ name: def.name, properties: { [change.prop]: schema } } as unknown as ComponentDefinition, { [change.prop]: change.default }, state, 'change.default', issues);
         for (const d of checked.deferred) issues.push({ field: 'change.default', message: `no page uses the route ${d.route}` });
         if (issues.length) return fieldError(issues.map((i) => ({ ...i, field: 'change.default' })), NOTHING_APPLIED);
@@ -455,6 +457,7 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
     if (change.action === 'remove') return applySelected([{ type: 'component.removePropSchema', definitionId: def.id, prop: change.prop }], host, `Remove ${def.properties[change.prop].label}`, callId);
     const schema = def.properties[change.prop];
     if (!PLAIN_DEFAULTS.has(schema.type)) return fieldError([{ field: 'change.prop', message: `"${change.prop}" is a ${schema.type} property, whose default is not one plain value` }], NOTHING_APPLIED);
+    if (schema.type === 'image' && typeof change.value !== 'string') return fieldError([{ field: 'change.value', message: "an image's default is its assetId, from search_assets" }], NOTHING_APPLIED);
     const checked = checkProps(def, { [change.prop]: change.value }, state, 'change.value', issues);
     for (const d of checked.deferred) issues.push({ field: 'change.value', message: `no page uses the route ${d.route}` });
     if (issues.length) return fieldError(issues.map((i) => ({ ...i, field: 'change.value' })), NOTHING_APPLIED);
