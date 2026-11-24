@@ -3,7 +3,7 @@
  * a new project that is cancelled or fails, leaves the current project open, locked and previewing as it was.
  */
 import { EventEmitter } from 'node:events';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -62,7 +62,7 @@ const { Controller } = await import('../../src/main/controller');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
 const { sha } = await import('../../src/main/project/fsutil');
-const { addRecent, recents } = await import('../../src/main/settings');
+const { addRecent, recents, saveSettings } = await import('../../src/main/settings');
 
 const dirs: string[] = [];
 const controllers: InstanceType<typeof Controller>[] = [];
@@ -562,6 +562,25 @@ describe('the recent-projects entry of a renamed site (#31)', () => {
     // Saved, so Welcome (and the next start of the app) reads it too.
     const saved = JSON.parse(readFileSync(join(env.userData, 'settings.json'), 'utf8')) as { recents: Array<{ dir: string; name: string }> };
     expect(saved.recents.find((r) => r.dir === kloof)?.name).toBe('New Kloof Studio');
+  });
+
+  it('writes the new name again when the project is left, if writing it failed when it was made', async () => {
+    const kloof = await makeProject('kloof', 'business');
+    const { c } = controller();
+    await openCurrent(c, kloof);
+    const saved = () => (JSON.parse(readFileSync(join(env.userData, 'settings.json'), 'utf8')) as { recents: Array<{ dir: string; name: string }> }).recents.find((r) => r.dir === kloof)?.name;
+    expect(saved()).toBe('kloof');
+    // The settings folder cannot be written while the rename is made: the list has the name, the disk does not.
+    chmodSync(env.userData, 0o500);
+    try {
+      expect((await c.apply({ operations: [{ type: 'site.update', name: 'New Kloof Studio' }] }, { label: 'Rename site' })).ok).toBe(true);
+      await expect(saveSettings()).rejects.toThrow();
+    } finally {
+      chmodSync(env.userData, 0o700);
+    }
+    expect(saved()).toBe('kloof');
+    expect((await c.closeProject()).ok).toBe(true);
+    expect(saved()).toBe('New Kloof Studio');
   });
 
   it('takes the name the project has when it is left for another one opened in its place', async () => {

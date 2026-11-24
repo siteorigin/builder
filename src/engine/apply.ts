@@ -2249,10 +2249,12 @@ function tokenReplace(state: ProjectState, fromId: string, toId: string): OpResu
 function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   const s = state.site;
   if (op.name !== undefined) {
-    const name = op.name.trim();
+    // One line, as the header, the footer and the browser title show it.
+    const name = op.name.replace(/\s*[\r\n]+\s*/g, ' ').trim();
     if (!name) fail('The site needs a name.');
     // The shared header and footer that showed the old name show the new one; a label of the author's own stays.
-    carrySiteName(state, s.name, name);
+    const problem = carrySiteName(state, s.name, name);
+    if (problem) fail(problem);
     s.name = name;
   }
   if (op.language !== undefined) {

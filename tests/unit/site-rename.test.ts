@@ -76,7 +76,7 @@ describe('what follows a rename and what the author keeps', () => {
     expect(line('© 2026 A+B (Studio). All rights reserved.', 'A+B (Studio)', 'AB')).toBe('© 2026 AB. All rights reserved.');
   });
 
-  it('follows a label the site build shows from the design’s default, and leaves text the property cannot hold', () => {
+  it('follows a label the site build shows from the design’s default, and refuses a name a following label cannot hold', () => {
     const s0 = createStarterState('business', 'Studio', false);
     // Null shows the design's default ("Studio"), as an absent value does.
     shell(s0, 'header').props.siteName = null;
@@ -85,9 +85,16 @@ describe('what follows a rename and what the author keeps', () => {
     expect([shell(s, 'header').props.siteName, shell(s, 'footer').props.siteName]).toEqual(['Harbour', 'Harbour']);
     const def = s.components[shell(s, 'header').definitionId];
     def.properties.siteName = { ...def.properties.siteName, maxLength: 8 } as typeof def.properties.siteName;
-    s = apply(s, { type: 'site.update', name: 'Harbour Lane' });
-    expect(shell(s, 'header').props.siteName).toBe('Harbour');
-    expect(followsSiteName(s, shell(s, 'header'), 'siteName')).toBe(false);
+    expect(() => apply(s, { type: 'site.update', name: 'Harbour Lane' })).toThrow("The header's site name follows the site name and holds at most 8 characters. Use a shorter name, or give the header its own text first.");
+    // Nothing was changed, so the header still follows the next name that fits.
+    expect(followsSiteName(s, shell(s, 'header'), 'siteName')).toBe(true);
+    s = apply(s, { type: 'site.update', name: 'Pine' });
+    expect([s.site.name, shell(s, 'header').props.siteName, shell(s, 'footer').props.siteName]).toEqual(['Pine', 'Pine', 'Pine']);
+  });
+
+  it('keeps a site name on one line', () => {
+    const s = apply(business(), { type: 'site.update', name: 'Morning\n  Paper\r\n' });
+    expect([s.site.name, shell(s, 'header').props.siteName, shell(s, 'footer').props.copyright]).toEqual(['Morning Paper', 'Morning Paper', `© ${year} Morning Paper. All rights reserved.`]);
   });
 
   it('leaves the site’s other words, and any placement in the footer’s tree other than the footer itself, as they were', () => {

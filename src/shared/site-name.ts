@@ -28,11 +28,11 @@ function shown(def: ComponentDefinition, node: InstanceNode, prop: string): stri
   return typeof v === 'string' ? v : undefined;
 }
 
-/** Whether the property can hold this text: within its length, on one line unless it takes several. */
-function fits(def: ComponentDefinition, prop: string, text: string): boolean {
+/** The most text a property holds (the engine's limit for text without one of its own). */
+const maxLength = (def: ComponentDefinition, prop: string): number => {
   const schema = def.properties[prop];
-  return schema.type === 'string' && text.length <= (schema.maxLength ?? 2000) && (!!schema.multiline || !/\n/.test(text));
-}
+  return (schema.type === 'string' && schema.maxLength) || 2000;
+};
 
 /** The brand label a placement shows. */
 export const brandLabel = (p: { node: InstanceNode; def: ComponentDefinition }): string => (shown(p.def, p.node, BRAND_PROP) ?? '').trim();
@@ -102,10 +102,14 @@ export function followsSiteName(state: ProjectState, node: InstanceNode, prop: s
  * Carries a rename from `previous` to `next` into the shared header and footer: each brand label that says the old
  * name, and each copyright line that gives it as its holder, now says the new one. Everything else is kept, and an
  * author's label the new name happens to match is marked to stay as it is.
+ *
+ * Returns why the rename cannot be carried, changing nothing, when a following text would grow past what its
+ * property holds: the author shortens the name, or gives that placement its own text first.
  */
-export function carrySiteName(state: ProjectState, previous: string, next: string): void {
-  if (previous === next) return;
-  for (const { node, def } of brandPlacements(state)) {
+export function carrySiteName(state: ProjectState, previous: string, next: string): string | null {
+  if (previous === next) return null;
+  const changes: Array<() => void> = [];
+  for (const { part, node, def } of brandPlacements(state)) {
     const keep = new Set(kept(node));
     for (const prop of BRAND_TEXT) {
       if (!textProp(def, prop)) continue;
@@ -113,14 +117,17 @@ export function carrySiteName(state: ProjectState, previous: string, next: strin
       // Kept until now: it keeps its text, which differs from the site's name from here on.
       const wasKept = keep.delete(prop);
       if (text === undefined) continue;
-      const renamed = !wasKept && says(prop, text, previous) ? (prop === BRAND_PROP ? next : renamedCopyright(text, previous, next)!) : null;
-      // Text the property cannot hold (too long for it, say) is left as it was, which shows it as its own from here.
-      if (renamed !== null) {
-        if (fits(def, prop, renamed)) node.props[prop] = renamed;
+      if (!wasKept && says(prop, text, previous)) {
+        const renamed = prop === BRAND_PROP ? next : renamedCopyright(text, previous, next)!;
+        const max = maxLength(def, prop);
+        if (renamed.length > max) return `The ${part}'s ${def.properties[prop].label.toLowerCase()} follows the site name and holds at most ${max} characters. Use a shorter name, or give the ${part} its own text first.`;
+        changes.push(() => (node.props[prop] = renamed));
       } else if (says(prop, text, next)) keep.add(prop);
     }
-    setKept(node, keep);
+    changes.push(() => setKept(node, keep));
   }
+  for (const change of changes) change();
+  return null;
 }
 
 /** What a brand field says about the site's name: whether it follows it, and so changes with a rename. */
