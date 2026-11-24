@@ -2,7 +2,7 @@ import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type Inp
 import { ArrowRight, ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleAlert, CircleCheck, FileText, Link2, ListChecks, ListX, Lock, PanelBottom, PanelRightOpen, PanelTop, Replace, Search, SearchX, Undo2 } from 'lucide-react';
 import { Modal, openSection } from '../components/ui';
 import { api, commitOps, getState, setState, toast, trackHistory, undoAction, undoAvailable, useStore } from '../store';
-import { selectPage } from '../lib/actions';
+import { pageOutOfSight, selectPage } from '../lib/actions';
 import { contentFields, contentTarget, findContent, planReplace, sampleContactMatches, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
 import type { SampleContactKind } from '@shared/sample-contact';
 import { pagesShowing } from '@shared/page-shell';
@@ -47,7 +47,7 @@ export function openContentMatch(field: ContentField) {
   const target = contentTarget(state, field, s.pageId);
   if (!target) return toast('That content is no longer on the site.', 'error');
   if (s.modal) setState({ modal: null });
-  if (s.pageId !== target.pageId || s.definitionMode) selectPage(target.pageId);
+  if (pageOutOfSight(s, target.pageId)) selectPage(target.pageId);
   setState({ mode: 'edit', selection: target.selection, rightTab: 'inspect', dockOpen: true });
   // Content may have been closed: open it once the new selection's inspector is there (and again, in case it was late).
   const openContent = (frame: number) => (frame === 1 || frame === 12) && openSection(target.section);

@@ -1136,6 +1136,8 @@ export function Canvas() {
     const navId = askFrame(nav.current, viewKey(getState()) ?? '', path);
     frameAt.current = null;
     post('navigate', { path, navId });
+    // A post previewed is on its way: what the frame showed before is not named in its place (see notePostPreviewAt).
+    if (getState().postView === 'preview' && getState().postPreviewAt !== null) setState({ postPreviewAt: null });
     return true;
   }
 

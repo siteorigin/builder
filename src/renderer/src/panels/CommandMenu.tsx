@@ -6,7 +6,7 @@ import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
 import { api, projectHistory, setState, setViewport, toast, useStore } from '../store';
 import { pageShowing, partName } from '@shared/page-shell';
-import { insert, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers } from '../lib/actions';
+import { insert, pageOutOfSight, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers } from '../lib/actions';
 import { copiedHere, copySelection, pasteFromMenu } from '../lib/clipboard';
 import { postWorkspace } from '../lib/posts';
 import { platformKeys } from './CopyPaste';
@@ -220,7 +220,7 @@ export function CommandMenu() {
             const now = st.snapshot?.state ?? snap.state;
             const pageId = x.pageId ?? (x.ref.owner.kind === 'shell' ? pageShowing(now, x.ref.owner.id, st.pageId) : undefined) ?? null;
             if (!pageId) return toast(`No page shows ${partName(x.ref.owner.id)}.`, 'info');
-            if (pageId !== st.pageId || st.definitionMode) selectPage(pageId);
+            if (pageOutOfSight(st, pageId)) selectPage(pageId);
             setState({ mode: 'edit', selection: x.ref, rightTab: 'inspect', dockOpen: true });
           }
         };
@@ -263,13 +263,14 @@ export function CommandMenu() {
   const editing = useStore((s) => s.mode === 'edit');
   const copyable = useStore((s) => s.mode === 'edit' && !s.definitionMode && planLayers(s)?.group.owner.kind === 'page');
   const pasteable = useStore((s) => !!copiedHere(s));
-  // The page under the post writer is out of sight: nothing is copied from it or pasted into it (#578).
-  const writing = useStore((s) => postWorkspace(s) === 'write');
+  // The page under the post writer, or behind a post's preview, is out of sight: nothing is copied from it, pasted into
+  // it or inserted on it (#578).
+  const posting = useStore(postWorkspace);
   const readOnly = !!snap?.readOnly;
   const unavailable = (c: Cmd) => {
     if (c.id === 'undo') return history?.canUndo ? undefined : 'Nothing to undo';
     if (c.id === 'redo') return history?.canRedo ? undefined : 'Nothing to redo';
-    if ((c.id === 'copy' || c.id === 'paste') && writing) return 'Not while writing a post';
+    if (posting && (c.id === 'copy' || c.id === 'paste' || c.id.startsWith('ins:'))) return posting === 'write' ? 'Not while writing a post' : 'Not while previewing a post';
     if (c.id === 'copy') return !editing ? 'Edit mode only' : copyable ? undefined : 'Nothing to copy';
     if (c.id === 'paste') return !editing ? 'Edit mode only' : !pasteable ? 'Nothing copied' : readOnly ? 'Read-only' : undefined;
     return undefined;

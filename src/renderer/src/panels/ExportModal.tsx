@@ -6,7 +6,7 @@ import type { SiteEntry } from '@shared/collections';
 import type { ExportFormat, ExportNote, ExportResult, RecentExport } from '@shared/api';
 import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } from '../store';
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
-import { goToShellPart, openAsset, selectPage, openLayout } from '../lib/actions';
+import { goToShellPart, openAsset, pageOutOfSight, selectPage, openLayout } from '../lib/actions';
 import { treeFor } from '../lib/model';
 import { sampleContactMatches, type ContentField, type SampleContactGroup } from '../lib/find-content';
 import { openContentMatch } from './FindReplace';
@@ -40,7 +40,7 @@ const useShortWindow = () => useSyncExternalStore(watchShortWindow, () => window
 /** Close the dialog on the page a failed build was working on, ready to edit. */
 function openFailedPage(pageId: string) {
   const s = getState();
-  if (s.pageId !== pageId || s.definitionMode) selectPage(pageId);
+  if (pageOutOfSight(s, pageId)) selectPage(pageId);
   setState({ modal: null, mode: 'edit', rightTab: 'inspect', dockOpen: true });
 }
 
@@ -62,7 +62,7 @@ function openDraftLink(l: DraftLink) {
   }
   if (l.owner.kind === 'shell') {
     if (!goToShellPart(l.owner.id)) return toast(`No page shows the shared ${l.owner.id}, so the link is not on any page.`, 'info');
-  } else if (s.pageId !== l.owner.id || s.definitionMode) selectPage(l.owner.id);
+  } else if (pageOutOfSight(s, l.owner.id)) selectPage(l.owner.id);
   setState({ modal: null, mode: 'edit', selection: { owner, instancePath: [], nodeId: l.nodeId }, rightTab: 'inspect', dockOpen: true, definitionMode: null });
   setTimeout(() => openSection('content'), 50);
 }

@@ -132,6 +132,8 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     const dm = s.definitionMode;
     const inDef = !!dm && !!s.selection;
     if (s.modal) setState({ modal: null });
+    // The page's selection under the writer is kept for when the page shows again.
+    else if (writing) return true;
     // Several layers selected together: the first Escape keeps only the one everything follows.
     else if (planLayers(s)?.several) setState({ layerSet: null });
     // While editing a component everywhere, Escape steps to the component overview, then leaves the mode;

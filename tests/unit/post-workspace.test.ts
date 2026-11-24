@@ -44,6 +44,9 @@ describe('the Posts workspace in front of the editor', () => {
     expect(postWorkspace({ ...base, leftTab: 'pages' })).toBeNull();
     expect(postWorkspace({ ...base, leftTab: null })).toBeNull();
     expect(postWorkspace({ ...base, leftTab: 'layers', mode: 'preview' })).toBeNull();
+    // Edit chosen during a post's preview: the page is what shows, before the writer comes back.
+    expect(postWorkspace({ ...previewing, mode: 'edit' })).toBeNull();
+    expect(postWorkspace({ ...previewing, leftTab: null, mode: 'edit' })).toBeNull();
   });
 });
 
@@ -57,11 +60,15 @@ describe('what the editor names while the Posts workspace is in front', () => {
     expect(postShown(s, 'write', winter, null)).toMatchObject({ kind: 'post', ref: winter, title: 'Winter hours', draft: true });
     // Where the last preview's visitor went is not what the writer shows.
     expect(postShown(s, 'write', spring, home.route)).toMatchObject({ kind: 'post', ref: spring });
+    // A post saved without its draft mark is a draft, as the Posts list says.
+    const unmarked = structuredClone(s);
+    delete (unmarked.collections.posts.entries.en_spring as { draft?: boolean }).draft;
+    expect(postShown(unmarked, 'write', spring, null)).toMatchObject({ kind: 'post', draft: true });
   });
 
   it('names the Posts workspace itself while no post is open, or the open one has gone', () => {
     expect(postShown(s, 'write', null, null)).toEqual({ kind: 'post', ref: null, title: 'Posts', draft: false });
-    expect(postShown(s, 'write', { collectionId: 'posts', entryId: 'en_gone' }, null)).toMatchObject({ kind: 'post', ref: null });
+    expect(postShown(s, 'write', { collectionId: 'posts', entryId: 'en_gone' }, null)).toEqual({ kind: 'post', ref: null, title: 'Posts', draft: false });
   });
 
   it('names the previewed post until the canvas reports where it is, then wherever a visitor went on to', () => {
@@ -72,6 +79,8 @@ describe('what the editor names while the Posts workspace is in front', () => {
     // A visitor's link to the home page, to another page, or to another post.
     expect(postShown(s, 'preview', spring, home.route)).toEqual({ kind: 'page', pageId: home.id });
     expect(postShown(s, 'preview', spring, about.route)).toEqual({ kind: 'page', pageId: about.id });
+    expect(about.route).toMatch(/.\/$/);
+    expect(postShown(s, 'preview', spring, about.route.slice(0, -1))).toEqual({ kind: 'page', pageId: about.id });
     expect(postShown(s, 'preview', spring, '/blog/winter-hours/')).toMatchObject({ kind: 'post', ref: winter, title: 'Winter hours', draft: true });
     // An address that is neither (an old one, the not-found page) is named as it is.
     expect(postShown(s, 'preview', spring, '/no-such-page/')).toEqual({ kind: 'address', path: '/no-such-page/' });

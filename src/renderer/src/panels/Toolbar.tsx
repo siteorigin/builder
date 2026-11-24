@@ -60,6 +60,13 @@ export function Toolbar() {
   const reported = useRef<string | null>(null);
   // How many times Enter has been refused in a row, so the message is announced again on each try.
   const [widthError, setWidthError] = useState(0);
+  // Once the writer covers the canvas, a width typed but not applied is let go with the field.
+  useEffect(() => {
+    if (posting !== 'write') return;
+    reported.current = null;
+    setWidthError(0);
+    setWidthDraft(String(useStore.getState().viewport));
+  }, [posting]);
   const isMac = api.platform === 'darwin';
   // In a narrow window the Edit and Preview labels go first, then Zoom and Settings move into a More menu,
   // so the page switcher, Undo, Redo, the panel toggles and Export always fit.
