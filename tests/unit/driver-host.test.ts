@@ -81,6 +81,10 @@ describe('a session before it starts', () => {
       ['exports.inspect', 'observe'],
       ['evidence.log', 'observe'],
       ['evidence.save', 'observe'],
+      ['assistant.script', 'fixture'],
+      ['assistant.release', 'fixture'],
+      ['assistant.observe', 'observe'],
+      ['assistant.wait', 'observe'],
       ['session.close', 'session']
     ]);
     expect(Object.fromEntries(d.capabilities.map((c: any) => [c.op, c.defaultTimeoutMs]))).toEqual({
@@ -111,6 +115,10 @@ describe('a session before it starts', () => {
       'exports.inspect': 15000,
       'evidence.log': 10000,
       'evidence.save': 30000,
+      'assistant.script': 10000,
+      'assistant.release': 10000,
+      'assistant.observe': 10000,
+      'assistant.wait': 30000,
       'session.close': 60000
     });
   });

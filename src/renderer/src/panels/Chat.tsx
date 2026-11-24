@@ -742,6 +742,8 @@ export function Chat() {
         ref={logRef}
         role="log"
         aria-label="AI conversation"
+        // The thread, message and run each piece belongs to, for a test to tell them apart (tests/driver/assistant.ts).
+        data-conversation-id={conversation?.id}
         tabIndex={-1}
         // Scrolling by hand during a jump ends it, so the way back can show again.
         onWheel={() => (jumping.current = false)}
@@ -860,7 +862,7 @@ export function Chat() {
       )}
       </div>
       {running && (
-        <div className={`run-strip${waiting ? ' waiting' : ''}`}>
+        <div className={`run-strip${waiting ? ' waiting' : ''}`} data-run-id={activeRunId ?? undefined}>
           {/* The one live indicator: it turns while the AI works and stops when it waits on you. */}
           <span className="run-icon" aria-hidden="true">
             {waiting ? <CircleHelp /> : <Spinner decorative />}
@@ -937,7 +939,7 @@ export function Chat() {
       {/* Shown whenever a question waits, even if the provider was changed meanwhile: the run still needs it. */}
       {asking && (
         // The question waiting for an answer sits by the composer, which answers it; a choice answers it in one click.
-        <div className="question-card" role="group" aria-labelledby="ai-question-text">
+        <div className="question-card" role="group" aria-labelledby="ai-question-text" data-run-id={asking.runId} data-message-id={asking.messageId} data-question-id={asking.question.id}>
           <div className="question-text" id="ai-question-text">
             {asking.question.text}
           </div>
@@ -1208,7 +1210,7 @@ function UserMessage({ m }: { m: ChatMessage }) {
   const images = Array.isArray(m.images) ? m.images.filter((i) => typeof i?.assetId === 'string' && typeof i.name === 'string') : [];
   const ask = m.context?.mode === 'ask';
   return (
-    <div className="msg-user">
+    <div className="msg-user" data-message-id={m.id}>
       {typeof m.text === 'string' ? m.text : ''}
       {images.length > 0 && <ImageChips images={images} label="Attached images" />}
       {(target || ask) && <span className="ctx">{[ask ? 'Question · read only' : '', target].filter(Boolean).join(' · ')}</span>}
@@ -1311,7 +1313,7 @@ function AssistantMessage({
   // The model this turn went to, as fixed when it started; old transcripts and turns that never reached one show none.
   const recipient = turnRecipient(m);
   return (
-    <div className="msg-ai" aria-busy={chatBusy(live, waitingHere)}>
+    <div className="msg-ai" aria-busy={chatBusy(live, waitingHere)} data-message-id={m.id} data-run-id={m.runId}>
       {!r && taken.length > 0 && <Steps items={taken} waiting={waitingHere} recent={4} />}
       {!r && m.text && (
         <div className="text">

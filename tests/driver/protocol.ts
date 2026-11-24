@@ -34,6 +34,11 @@
  * run. Before any input they check that a person could do it now (visible, enabled, not under a modal, not covered by
  * something else at the point), waiting at most `waitMs`; a target that never becomes actionable is NOT_ACTIONABLE
  * with `details.dispatched: 'none'`, and nothing was sent. An outdated screenshot point is STALE_OBSERVATION.
+ *
+ * The assistant (`assistant.*`) is talked to only through those same actions on the chat panel. Around them, a
+ * scripted session sets what its model answers (`assistant.script`, `assistant.release`: fixtures), and reads each run
+ * by its own IDs (`assistant.observe`, `assistant.wait`): a cursor over everything the assistant did, in order, and a
+ * wait that ends when a named run finishes or needs the author, which another run's events can never end.
  */
 
 export const PROTOCOL_VERSION = 1;
@@ -249,8 +254,13 @@ export interface Capability {
 export interface StartArgs {
   /** The state the app opens in: the Welcome screen (default) or a named, reproducible project fixture. */
   fixture?: FixtureName;
-  /** The AI provider the app is set up with: a scripted local server that costs nothing (default), or none. */
-  provider?: 'scripted' | 'none';
+  /**
+   * The AI provider the app is set up with: a scripted local server that costs nothing (default), none, or a real
+   * provider (`configured`, with `live`), which also needs SITEORIGIN_DRIVER_LIVE=1 in the driver's own environment.
+   */
+  provider?: 'scripted' | 'none' | 'configured';
+  /** With `provider: "configured"`: which provider, and how far the assistant may go (see tests/driver/assistant.ts). */
+  live?: { provider: 'openai' | 'anthropic' | 'local'; model?: string; baseURL?: string; maxTurns?: number; timeoutMs?: number };
   /** When the session's artifacts outlive it. Default: when the session ended in failure. */
   keepArtifacts?: KeepArtifacts;
   /** A folder the caller owns, to hold this session's artifacts in a new child folder. Never deleted. */
@@ -445,4 +455,42 @@ export interface ActionResult {
   selected?: { label: string; value: string };
   /** How long it waited for the target to become actionable. */
   waitedMs: number;
+}
+
+// ---------------------------------------------------------------------------
+// The assistant (issue #495)
+// ---------------------------------------------------------------------------
+
+/**
+ * What `assistant.script` accepts: a named scenario with its params, or steps. Each step answers one model request: a
+ * tool call ({ tool, args?, status? }) or a provider error ({ error: { status, message? } }), optionally held at a
+ * `gate` until `assistant.release` or slowed by `delayMs`. In args, `{ "$context": path }` is read from the editor
+ * context the request carries and `{ "$result": path }` from its latest tool result.
+ */
+export interface ScriptArgs {
+  scenario?: string;
+  params?: Record<string, unknown>;
+  steps?: unknown[];
+  /** Add to the steps waiting (default) or replace them. */
+  mode?: 'append' | 'replace';
+}
+
+/** What `assistant.observe` accepts. */
+export interface AssistantObserveArgs {
+  /** A cursor (an earlier `next`): only what happened after it. Default 0: everything kept. */
+  after?: number;
+  /** The most entries to return (default 200, at most 1000). */
+  limit?: number;
+  /** Only this run's entries (and only it in `runs`). */
+  runId?: string;
+  /** Only this conversation's entries and runs. */
+  conversationId?: string;
+}
+
+/** What `assistant.wait` accepts. The request's `timeoutMs` bounds it (default 30 s). */
+export interface AssistantWaitArgs {
+  /** The run to wait for, from a run.started entry. Required: no other run's events count. */
+  runId: string;
+  /** A cursor taken before the author last acted: a question asked at or before it does not end the wait. */
+  after?: number;
 }

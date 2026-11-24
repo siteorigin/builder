@@ -17,6 +17,7 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { afterAll, describe, expect, it } from 'vitest';
 import { checkAnswer } from '../../src/main/headless-desktop.ts';
 import { parseAction } from '../driver/act.ts';
+import { parseObserveArgs as parseAssistantObserveArgs, parseScript, parseWaitArgs as parseAssistantWaitArgs } from '../driver/assistant.ts';
 import { MAX_MESSAGE, MCP_PATH, MCP_VERSIONS, McpServer, SERVER_NAME, codexConfig, listTools, readLines, thisNode, toolName, toolResult } from '../driver/mcp.ts';
 import type { HostConnection } from '../driver/mcp.ts';
 import { WAIT_LIMITS, parseSnapshotArgs, parseLocateArgs, parseWaitArgs, waitFor } from '../driver/observe.ts';
@@ -64,7 +65,7 @@ describe('tool discovery', () => {
     expect(tools.map((t) => t.name)).toEqual(Object.keys(OPERATIONS).map((op) => op.replace('.', '_')));
     expect(new Set(tools.map((t) => t.name)).size).toBe(tools.length);
     for (const t of tools) expect(t.name).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
-    expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['session_start', 'session_close', 'ui_snapshot', 'ui_click', 'ui_waitFor', 'evidence_read', 'desktop_setAnswers', 'wait_for', 'project_summary', 'exports_inspect', 'evidence_log', 'evidence_save']));
+    expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['session_start', 'session_close', 'ui_snapshot', 'ui_click', 'ui_waitFor', 'evidence_read', 'desktop_setAnswers', 'wait_for', 'project_summary', 'exports_inspect', 'evidence_log', 'evidence_save', 'assistant_script', 'assistant_release', 'assistant_observe', 'assistant_wait']));
   });
 
   it('says what kind each is, so a fixture is never mistaken for something a person did', () => {
@@ -76,7 +77,7 @@ describe('tool discovery', () => {
       expect(t.annotations.openWorldHint).toBe(t.annotations.readOnlyHint ? false : undefined);
     }
     expect(tools.find((t) => t.name === 'desktop_setAnswers')!.description).toContain('not something a user did');
-    expect(tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.title)).toEqual(['session.describe', 'window.info', 'menu.list', 'desktop.events', 'files.list', 'ui.locate', 'ui.waitFor', 'evidence.read', 'wait.for', 'project.summary', 'exports.inspect', 'evidence.log']);
+    expect(tools.filter((t) => t.annotations.readOnlyHint).map((t) => t.title)).toEqual(['session.describe', 'window.info', 'menu.list', 'desktop.events', 'files.list', 'ui.locate', 'ui.waitFor', 'evidence.read', 'wait.for', 'project.summary', 'exports.inspect', 'evidence.log', 'assistant.observe', 'assistant.wait']);
   });
 
   it('gives every tool an object schema with the request options, and none of the options a contained session refuses', () => {
@@ -89,7 +90,7 @@ describe('tool discovery', () => {
       expect(() => ajv.compile(s), t.name).not.toThrow();
     }
     const start = tools.find((t) => t.name === 'session_start')!.inputSchema as { properties: Record<string, unknown> };
-    expect(Object.keys(start.properties).sort()).toEqual(['fixture', 'keepArtifacts', 'provider', 'timeoutMs']);
+    expect(Object.keys(start.properties).sort()).toEqual(['fixture', 'keepArtifacts', 'live', 'provider', 'timeoutMs']);
   });
 
   // Each sample is one the schema and the driver's own parser agree on: accepted by both, or refused by both. (Rules
@@ -108,8 +109,28 @@ describe('tool discovery', () => {
   const SAMPLES: Record<string, { parse: (a: Record<string, unknown>) => unknown; good: Record<string, unknown>[]; bad: Record<string, unknown>[] }> = {
     'session.start': {
       parse: (a) => parseStartArgs(a),
-      good: [{}, { fixture: 'business-v1', provider: 'none', keepArtifacts: 'never' }, { fixture: 'welcome', provider: 'scripted', keepArtifacts: 'on-failure', artifactsDir: '/tmp/x', headed: false }],
-      bad: [{ fixture: 'nope' }, { fixture: 'constructor' }, { provider: 'live' }, { keepArtifacts: 'sometimes' }, { headed: 'yes' }, { window: 1 }]
+      good: [
+        {},
+        { fixture: 'business-v1', provider: 'none', keepArtifacts: 'never' },
+        { fixture: 'welcome', provider: 'scripted', keepArtifacts: 'on-failure', artifactsDir: '/tmp/x', headed: false },
+        { provider: 'configured', live: { provider: 'openai', model: 'gpt-x', maxTurns: 5, timeoutMs: 900_000 } },
+        { provider: 'configured', live: { provider: 'local', baseURL: 'http://127.0.0.1:11434/v1', timeoutMs: 1000 } }
+      ],
+      bad: [
+        { fixture: 'nope' },
+        { fixture: 'constructor' },
+        { provider: 'live' },
+        { keepArtifacts: 'sometimes' },
+        { headed: 'yes' },
+        { window: 1 },
+        { provider: 'configured', live: { provider: 'gemini' } },
+        { provider: 'configured', live: { provider: 'openai', maxTurns: 6 } },
+        { provider: 'configured', live: { provider: 'openai', maxTurns: 0 } },
+        { provider: 'configured', live: { provider: 'anthropic', timeoutMs: 999 } },
+        { provider: 'configured', live: { provider: 'openai', model: '   ' } },
+        { provider: 'configured', live: { provider: 'openai', key: 'sk-x' } },
+        { provider: 'configured', live: { provider: 'local', baseURL: 'ftp://host' } }
+      ]
     },
     'session.close': { parse: (a) => parseCloseArgs(a), good: [{}, { keepArtifacts: 'always', failed: true }, { keepArtifacts: 'on-failure' }, { keepArtifacts: 'never' }], bad: [{ failed: 'yes' }, { keepArtifacts: 'later' }, { force: true }] },
     'ui.snapshot': {
@@ -175,6 +196,37 @@ describe('tool discovery', () => {
       parse: (a) => parseInspectArgs(a),
       good: [{ path: 'exports/site' }, { path: 'exports/site', file: 'index.html', find: 'Harbour', read: true }],
       bad: [{}, { path: '' }, { path: 'exports/site', find: '' }, { path: 'exports/site', read: 'yes' }, { path: 'exports/site', depth: 1 }]
+    },
+    'assistant.script': {
+      parse: (a) => parseScript(a),
+      good: [
+        { scenario: 'answer', params: { text: 'Hello' } },
+        { scenario: 'interview', params: { questions: [{ question: 'Which?', choices: ['A', 'B'] }], then: 'Done' }, mode: 'replace' },
+        { steps: [{ tool: 'finish', args: { message: 'Hi' }, status: 'Answering', gate: 'g.1-a', delayMs: 0 }], mode: 'append' },
+        { steps: [{ error: { status: 409, message: 'No' }, delayMs: 60_000 }, { tool: 'read_page', args: { pageId: { $context: 'pageId' } } }] }
+      ],
+      bad: [
+        { scenario: 'nope' },
+        { steps: [] },
+        { steps: [{ tool: '1x' }] },
+        { steps: [{ tool: 'finish', delayMs: 60_001 }] },
+        { steps: [{ tool: 'finish', gate: 'a b' }] },
+        { steps: [{ tool: 'finish', args: 'x' }] },
+        { steps: [{ error: { status: 200 } }] },
+        { steps: [{ tool: 'finish', error: { status: 409 } }] },
+        { scenario: 'answer', params: { text: 'x' }, mode: 'sometimes' },
+        { scenario: 'answer', params: { text: 'x' }, verbose: true }
+      ]
+    },
+    'assistant.observe': {
+      parse: (a) => parseAssistantObserveArgs(a),
+      good: [{}, { after: 0, limit: 1000, runId: 'run-1', conversationId: 'c-1' }, { limit: 1 }],
+      bad: [{ limit: 0 }, { limit: 1001 }, { after: -1 }, { after: 1.5 }, { runId: '' }, { conversationId: 'x'.repeat(201) }, { verbose: true }]
+    },
+    'assistant.wait': {
+      parse: (a) => parseAssistantWaitArgs(a),
+      good: [{ runId: 'run-1' }, { runId: 'run-1', after: 3 }],
+      bad: [{}, { runId: '' }, { runId: 'x'.repeat(201) }, { runId: 'run-1', after: -1 }, { runId: 'run-1', waitMs: 5 }]
     },
     'desktop.setAnswers': {
       parse: answers,

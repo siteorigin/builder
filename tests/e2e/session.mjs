@@ -109,6 +109,10 @@ try {
       'exports.inspect:observe',
       'evidence.log:observe',
       'evidence.save:observe',
+      'assistant.script:fixture',
+      'assistant.release:fixture',
+      'assistant.observe:observe',
+      'assistant.wait:observe',
       'session.close:session'
     ]
   );

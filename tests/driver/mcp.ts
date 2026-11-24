@@ -76,7 +76,7 @@ const KINDS: Record<OpKind, string> = {
 };
 
 /** Observations that leave nothing behind: a snapshot can save screenshots and makes earlier screenshot points stale. */
-const READ_ONLY = new Set<string>(['session.describe', 'window.info', 'menu.list', 'desktop.events', 'files.list', 'ui.locate', 'ui.waitFor', 'evidence.read', 'wait.for', 'project.summary', 'exports.inspect', 'evidence.log']);
+const READ_ONLY = new Set<string>(['session.describe', 'window.info', 'menu.list', 'desktop.events', 'files.list', 'ui.locate', 'ui.waitFor', 'evidence.read', 'wait.for', 'project.summary', 'exports.inspect', 'evidence.log', 'assistant.observe', 'assistant.wait']);
 
 export interface McpTool {
   name: string;

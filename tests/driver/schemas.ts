@@ -1,6 +1,6 @@
 /**
  * The arguments each driver operation takes, as JSON Schema (2020-12): what a client may send in a request's `args`.
- * They describe the driver's own parsers (session.ts, observe.ts, act.ts, desktop.ts), which stay the authority: a
+ * They describe the driver's own parsers (session.ts, observe.ts, act.ts, desktop.ts, assistant.ts), which stay the authority: a
  * request is checked there, in the same order for every client, whatever a schema says. The MCP server (mcp.ts)
  * advertises them as its tools' input schemas.
  *
@@ -9,6 +9,7 @@
  * client and model function-calling API accepts; alternatives live inside properties, and the rules between fields
  * (a ref alone, or a role) are in the descriptions.
  */
+import { LIVE_LIMITS, SCENARIOS } from './assistant.ts';
 import type { OpName } from './operations.ts';
 import { CONDITIONS } from './outcomes.ts';
 import { MAX_TIMEOUT_MS } from './protocol.ts';
@@ -72,10 +73,49 @@ const ANSWER = object(
   'One chooser\'s answer: exactly one of cancel, paths (open), path (save) or button (message).'
 );
 
+const LIVE = object(
+  {
+    provider: { type: 'string', enum: ['openai', 'anthropic', 'local'], description: 'Which provider; openai and anthropic take their key from the driver\'s environment (OPENAI_API_KEY, ANTHROPIC_API_KEY).' },
+    model: { type: 'string', minLength: 1, maxLength: 200, pattern: '\\S', description: 'The model to ask (default: the app\'s default for the provider).' },
+    baseURL: { type: 'string', pattern: '^https?://', description: 'local only, and required there: the server\'s http(s) address, with no credentials, query or fragment.' },
+    maxTurns: { type: 'integer', minimum: 1, maximum: LIVE_LIMITS.turns.max, description: `The most requests the assistant may start in the session (default ${LIVE_LIMITS.turns.default}).` },
+    timeoutMs: { type: 'integer', minimum: 1000, maximum: LIVE_LIMITS.timeoutMs.max, description: `How long the assistant may work, from the session being ready (default ${LIVE_LIMITS.timeoutMs.default}).` }
+  },
+  ['provider'],
+  'With provider "configured" only, and required with it: the real provider and how far the assistant may go.'
+);
+const GATE = { type: 'string', pattern: '^[\\w.-]{1,64}$', description: 'Hold this step\'s reply until assistant.release names this gate.' };
+const DELAY_MS = { type: 'integer', minimum: 0, maximum: 60_000, description: 'Wait this long before replying.' };
+const STEP = {
+  description: 'One model request\'s answer: a tool call, or a provider error.',
+  anyOf: [
+    object(
+      {
+        tool: { type: 'string', pattern: '^[A-Za-z][A-Za-z0-9_.]{0,63}$', description: 'The tool the model calls, such as "finish" or "request_clarification".' },
+        args: { type: 'object', description: 'Its arguments. { "$context": path } reads the editor context the request carries, { "$result": path } its latest tool result.' },
+        status: { type: 'string', description: 'The status line the run shows.' },
+        gate: GATE,
+        delayMs: DELAY_MS
+      },
+      ['tool']
+    ),
+    object(
+      { error: object({ status: { type: 'integer', minimum: 400, maximum: 599 }, message: { type: 'string' } }, ['status'], 'The provider refuses the request with this HTTP status.'), gate: GATE, delayMs: DELAY_MS },
+      ['error']
+    )
+  ]
+};
+const RUN_ID = { type: 'string', minLength: 1, maxLength: 200, description: 'A run\'s ID, from a run.started entry of assistant.observe.' };
+
 export const INPUT_SCHEMAS: Record<OpName, JsonSchema> = {
   'session.start': object({
     fixture: { type: 'string', enum: ['welcome', 'business-v1'], description: 'The state the app opens in: the Welcome screen (default) or a named, reproducible project.' },
-    provider: { type: 'string', enum: ['scripted', 'none'], description: 'The AI provider: a scripted local server that costs nothing (default), or none.' },
+    provider: {
+      type: 'string',
+      enum: ['scripted', 'none', 'configured'],
+      description: 'The AI provider: a scripted local server that costs nothing (default), none, or a real provider ("configured", named in "live"), which also needs SITEORIGIN_DRIVER_LIVE=1 in the driver\'s own environment.'
+    },
+    live: LIVE,
     keepArtifacts: { ...KEEP, description: 'When the session\'s artifacts outlive it (default "on-failure").' },
     artifactsDir: { type: 'string', minLength: 1, description: 'An absolute folder the caller owns, to hold this session\'s artifacts in a new child folder.' },
     headed: { type: 'boolean', description: 'Show the window, for a person debugging a script.' }
@@ -186,6 +226,28 @@ export const INPUT_SCHEMAS: Record<OpName, JsonSchema> = {
   ),
   'evidence.log': object({ after: { type: 'integer', minimum: 0, description: 'A cursor: the seq of the last entry already read (default 0).' }, limit: { type: 'integer', minimum: 1, maximum: 200, description: 'The most entries to return (default 100).' } }),
   'evidence.save': object({ screenshot: { type: 'boolean', description: 'Include screenshots with the latest observation (default true; withheld while a credential is known).' } }),
+  'assistant.script': object(
+    {
+      scenario: { type: 'string', enum: Object.keys(SCENARIOS), description: Object.entries(SCENARIOS).map(([k, v]) => `${k}: ${v.summary}`).join(' ') },
+      params: { type: 'object', description: 'The scenario\'s params (with "scenario" only).' },
+      steps: { type: 'array', minItems: 1, maxItems: 100, items: STEP, description: 'The steps themselves, one per model request (instead of "scenario").' },
+      mode: { type: 'string', enum: ['append', 'replace'], description: 'Add to the steps waiting (default) or replace them.' }
+    },
+    [],
+    'Exactly one of "scenario" (with its "params") or "steps".'
+  ),
+  'assistant.release': object({ gate: { type: 'string', minLength: 1, description: 'The gate a scripted step is held at.' } }, ['gate']),
+  'assistant.observe': object({
+    after: { type: 'integer', minimum: 0, description: 'A cursor (an earlier reply\'s "next"): only what happened after it (default 0).' },
+    limit: { type: 'integer', minimum: 1, maximum: 1000, description: 'The most entries to return (default 200).' },
+    runId: { ...RUN_ID, description: 'Only this run\'s entries.' },
+    conversationId: { type: 'string', minLength: 1, maxLength: 200, description: 'Only this conversation\'s entries and runs.' }
+  }),
+  'assistant.wait': object(
+    { runId: { ...RUN_ID, description: 'The run to wait for: no other run\'s events count.' }, after: { type: 'integer', minimum: 0, description: 'A cursor taken before the author last acted: a question asked at or before it is not a new one.' } },
+    ['runId'],
+    'The request\'s timeoutMs bounds the wait.'
+  ),
   'session.close': object({ keepArtifacts: { ...KEEP, description: 'Overrides the session\'s keepArtifacts for this close.' }, failed: { type: 'boolean', description: 'Marks the run as failed, for "on-failure".' } })
 };
 

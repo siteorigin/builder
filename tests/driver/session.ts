@@ -24,6 +24,8 @@ import { _electron as electron } from 'playwright';
 import type { ElectronApplication, ElementHandle, Page } from 'playwright';
 import { MockOpenAIServer } from '../unit/mock-openai-server.ts';
 import { parseAction, runAction } from './act.ts';
+import { AssistantTracker, Script, journalInMain, liveSettings, liveSetup, parseLive, writeLiveKey, parseObserveArgs, parseScript, parseWaitArgs as parseAssistantWaitArgs, readChat, rendered, settledState, shownTurn } from './assistant.ts';
+import type { JournalCall, LiveSetup, RawRecord, RunView, ShownChat } from './assistant.ts';
 import { desktopInMain, inMain, invokeMenuInMain, listSessionFolder, menuTreeInMain, resolveAnswer, stageImport } from './desktop.ts';
 import type { Area } from './desktop.ts';
 import { CLASS_OF, CLIP, Journal, LogKeeper, REPLAY_KIND, REPLAY_VERSION, clipJson, hideDeep, machineRoots, pathHider, scrubAll, scrubText } from './evidence.ts';
@@ -544,7 +546,7 @@ export interface Description {
     paths: SessionPaths | null;
     fixture: FixtureName | null;
     project: string | null;
-    provider: { kind: 'scripted'; baseURL: string } | { kind: 'none' } | null;
+    provider: { kind: 'scripted'; baseURL: string } | { kind: 'none' } | { kind: 'configured'; provider: string; model: string | null; maxTurns: number; timeoutMs: number } | null;
     headless: boolean;
     keepArtifacts: KeepArtifacts;
     /** The app's main process, and every process the session owns now (it first, then what it started). */
@@ -564,7 +566,7 @@ const KEEP: KeepArtifacts[] = ['always', 'on-failure', 'never'];
 export function parseStartArgs(args: Record<string, unknown> | undefined, contained = false): StartArgs {
   const a = args ?? {};
   const out: StartArgs = {};
-  const known = new Set(['fixture', 'provider', 'keepArtifacts', 'artifactsDir', 'headed']);
+  const known = new Set(['fixture', 'provider', 'live', 'keepArtifacts', 'artifactsDir', 'headed']);
   for (const key of Object.keys(a)) if (!known.has(key)) throw new DriverError('BAD_REQUEST', `session.start does not take "${key}".`);
   for (const key of ['headed', 'artifactsDir'])
     if (contained && a[key] !== undefined) throw new DriverError('BAD_REQUEST', `session.start does not take "${key}" here: this session keeps its window hidden and its artifacts inside the session.`);
@@ -573,9 +575,11 @@ export function parseStartArgs(args: Record<string, unknown> | undefined, contai
     out.fixture = a.fixture as FixtureName;
   }
   if (a.provider !== undefined) {
-    if (a.provider !== 'scripted' && a.provider !== 'none') throw new DriverError('BAD_REQUEST', '"provider" is "scripted" or "none".');
+    if (a.provider !== 'scripted' && a.provider !== 'none' && a.provider !== 'configured') throw new DriverError('BAD_REQUEST', '"provider" is "scripted", "none" or "configured".');
     out.provider = a.provider;
   }
+  if ((a.provider === 'configured') !== (a.live !== undefined)) throw new DriverError('BAD_REQUEST', 'A configured provider is named in "live", and "live" goes only with provider "configured".');
+  if (a.live !== undefined) out.live = parseLive(a.live);
   if (a.keepArtifacts !== undefined) {
     if (!KEEP.includes(a.keepArtifacts as KeepArtifacts)) throw new DriverError('BAD_REQUEST', `"keepArtifacts" is one of ${KEEP.join(', ')}.`);
     out.keepArtifacts = a.keepArtifacts as KeepArtifacts;
@@ -681,6 +685,15 @@ export class Session {
   paths: SessionPaths | null = null;
   pid: number | null = null;
   mock: MockOpenAIServer | null = null;
+  /** What the scripted model answers (assistant.script). */
+  script: Script | null = null;
+  /** The assistant's runs, read from the app's journal of its events (assistant.observe, assistant.wait). */
+  readonly assistant = new AssistantTracker();
+  /** A real provider's setup, when the session was started with one (its key never leaves this object). */
+  private live: LiveSetup | null = null;
+  /** Why a live session's assistant may do no more: its time ran out. */
+  private liveSpent: string | null = null;
+  private liveTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly options: SessionOptions;
   private readonly appRoot: string;
@@ -968,6 +981,22 @@ export class Session {
         if (a.screenshot !== undefined && typeof a.screenshot !== 'boolean') throw new DriverError('BAD_REQUEST', '"screenshot" is true or false.');
         return this.saveReplay(signal, a.screenshot !== false);
       }
+      case 'assistant.script': {
+        const script = this.scripted();
+        const { steps, mode, scenario } = parseScript(request.args);
+        return { ...(scenario ? { scenario } : {}), added: steps.length, ...script.add(steps, mode) };
+      }
+      case 'assistant.release': {
+        const script = this.scripted();
+        const a = request.args ?? {};
+        for (const k of Object.keys(a)) if (k !== 'gate') throw new DriverError('BAD_REQUEST', `assistant.release does not take "${k}".`);
+        if (typeof a.gate !== 'string' || !a.gate) throw new DriverError('BAD_REQUEST', '"gate" names a gate a step was held at.');
+        return { ...script.release(a.gate), script: script.state() };
+      }
+      case 'assistant.observe':
+        return this.scrubbed(await this.observeAssistant(parseObserveArgs(request.args)));
+      case 'assistant.wait':
+        return this.scrubbed(await this.waitAssistant(parseAssistantWaitArgs(request.args), signal, deadline));
       default:
         throw new DriverError('UNKNOWN_OP', `There is no operation "${request.op}".`);
     }
@@ -1027,6 +1056,90 @@ export class Session {
     }
     if (this.state !== 'ready') throw closed();
     return { ...out, ...image };
+  }
+
+  // -- the assistant (#495) ------------------------------------------------------
+
+  private scripted(): Script {
+    if (!this.script) throw new DriverError('OP_FAILED', `Only a scripted session has a script; this one's provider is ${this.args.provider ?? 'scripted'}.`, { details: { reason: 'not-scripted' } });
+    return this.script;
+  }
+
+  /** Nothing the session knows as a credential goes back, wherever the assistant or the page quoted it. */
+  private scrubbed<T>(value: T): T {
+    return this.secrets.size ? scrubDeep(value, [...this.secrets]) : value;
+  }
+
+  /** Bring the tracker up to date with the app's journal of the assistant's events. */
+  private async pull() {
+    for (let i = 0; i < 100; i++) {
+      const page = (await inMain(this.app!, journalInMain, { op: 'read', after: this.assistant.cursor, limit: 1000 } as JournalCall)) as { records: RawRecord[]; next: number; latest: number; missed: number };
+      this.assistant.ingest(page.records, page.missed);
+      if (!page.records.length || page.next >= page.latest) return;
+    }
+  }
+
+  /** What the chat panel shows now, or null with no editor window to read. */
+  private async shownChat(): Promise<ShownChat | null> {
+    const b = this.bound;
+    if (!b || b.closed || this.appExited) return null;
+    return b.page.evaluate(readChat).catch(() => null);
+  }
+
+  /** A live session's limits and what is left of them. */
+  private async budget() {
+    if (!this.live) return undefined;
+    const turns = (await inMain(this.app!, journalInMain, { op: 'turns' } as JournalCall).catch(() => null)) as { used: number; limit: number | null } | null;
+    return { maxTurns: this.live.maxTurns, turnsUsed: turns?.used ?? null, timeoutMs: this.live.timeoutMs, ...(this.liveSpent ? { spent: this.liveSpent } : {}) };
+  }
+
+  private async observeAssistant(a: { after?: number; limit?: number; runId?: string; conversationId?: string }) {
+    await this.pull();
+    const read = this.assistant.read(a);
+    const after = a.after ?? 0;
+    // The runs this page is about: those that moved since the cursor, and any still going.
+    const runs = a.runId ? [this.assistant.runView(a.runId)].filter((r): r is RunView => !!r) : this.assistant.runViews(a.conversationId).filter((r) => r.lastSeq > after || r.state !== 'terminal');
+    const shown = await this.shownChat();
+    const budget = await this.budget();
+    return { ...read, runs, shown, ...(this.script ? { script: this.script.state() } : {}), ...(budget ? { budget } : {}) };
+  }
+
+  private async waitAssistant(a: { runId: string; after?: number }, signal: AbortSignal, deadline: number) {
+    const POLL = 100;
+    let run: RunView | null;
+    let settled: ReturnType<typeof settledState>;
+    for (;;) {
+      if (signal.aborted) throw new DriverError('TIMEOUT', 'assistant.wait was stopped.');
+      await this.pull();
+      run = this.assistant.runView(a.runId);
+      if (!run) throw new DriverError('TARGET_NOT_FOUND', `No run "${a.runId}" has been seen in this session.`, { details: { runId: a.runId, hint: 'Take a runId from a run.started entry of assistant.observe.' } });
+      settled = settledState(run, a.after);
+      if (settled) break;
+      // Ends itself just before the request's deadline, so the reply can say where the run stood.
+      if (Date.now() + POLL + 750 > deadline)
+        throw new DriverError('TIMEOUT', `Run ${a.runId} neither finished nor asked the author anything in time (it is ${run.state}${run.status ? `, ${run.status}` : ''}).`, {
+          details: { phase: 'assistant.wait', sessionState: this.state, runId: a.runId, state: run.state, status: run.status, lastSeq: run.lastSeq, next: this.assistant.cursor }
+        });
+      await new Promise((r) => setTimeout(r, POLL));
+    }
+    // The journal leads the panel by a moment: when the panel shows the run's conversation, wait (briefly) until it
+    // shows the run where it stands, so the author's next action finds it there.
+    let shown = await this.shownChat();
+    const until = Math.min(deadline - 500, Date.now() + 5000);
+    while (shown?.visible && shown.conversationId === run.conversationId && !rendered(shown, run, settled.reason) && Date.now() < until && !signal.aborted) {
+      await new Promise((r) => setTimeout(r, POLL));
+      shown = await this.shownChat();
+    }
+    const turn = shown ? shownTurn(shown, run) : null;
+    const budget = await this.budget();
+    return {
+      reason: settled.reason,
+      run,
+      shown: turn,
+      ...(settled.reason === 'input' && shown?.question?.runId === run.runId ? { question: shown.question } : {}),
+      next: this.assistant.cursor,
+      ...(budget ? { budget } : {})
+    };
   }
 
   private observer(page: Page, signal: AbortSignal): ObserveEnv {
@@ -1750,7 +1863,11 @@ export class Session {
    */
   async start(args: StartArgs = {}, { timeoutMs = DEFAULT_STARTUP_MS }: { timeoutMs?: number } = {}): Promise<Description> {
     if (this.state !== 'new') throw new DriverError(this.state === 'closing' || this.state === 'closed' ? 'CLOSED' : 'ALREADY_STARTED', 'This session was already started; each session starts once.');
-    this.args = parseStartArgs(args as Record<string, unknown>, this.options.contained);
+    const parsed = parseStartArgs(args as Record<string, unknown>, this.options.contained);
+    // Refused before anything is made: a live session needs the host's own say-so and key.
+    this.live = parsed.live ? liveSetup(parsed.live, process.env) : null;
+    if (this.live?.key) this.secrets.add(this.live.key);
+    this.args = parsed;
     this.state = 'starting';
     let phase: StartPhase = 'build';
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1815,7 +1932,14 @@ export class Session {
     this.logTimer.unref();
     await reach('root');
     await reach('provider');
-    if ((this.args.provider ?? 'scripted') === 'scripted') this.mock = await new MockOpenAIServer().start();
+    if ((this.args.provider ?? 'scripted') === 'scripted') {
+      this.mock = await new MockOpenAIServer().start();
+      const script = (this.script = new Script());
+      // What a test queued on the server itself comes first; then the session's script answers.
+      this.mock.respond = (req) => script.next(req);
+    }
+    // A live session's key goes into the profile it made, readable only by this account, before the app starts.
+    if (this.live) await writeLiveKey(this.paths.profile, this.live);
     // Nothing is launched once the session is closing; a launch already under way is ended as its process appears.
     left();
     at('app.spawned');
@@ -1833,8 +1957,12 @@ export class Session {
         this.proc = child;
         this.pid = child.pid!;
         void identify(child.pid!).then((e) => e && this.seen.set(e.pid, e));
-        child.stdout?.on('data', (d) => this.appLog.write(d));
-        child.stderr?.on('data', (d) => this.appLog.write(d));
+        // A live session's app talks to a real provider: what it prints is not kept, in case it quotes the key.
+        if (this.live) this.appLog.write('The app\'s output is not kept in a session with a configured provider.\n');
+        else {
+          child.stdout?.on('data', (d) => this.appLog.write(d));
+          child.stderr?.on('data', (d) => this.appLog.write(d));
+        }
         if (this.closeRequested) void killTree(child.pid!).catch(() => undefined);
         else void Promise.resolve(this.options.hooks?.phase?.('app.spawned', this)).catch(() => undefined);
       }
@@ -1858,10 +1986,35 @@ export class Session {
     await page.waitForSelector('.welcome', { timeout: left() });
     await reach('welcome');
     if (this.mock) await this.useScriptedProvider(page, this.mock.baseURL, left);
+    if (this.live) await this.useLiveProvider(page, this.live, left);
     await reach('provider.settings');
     const fixture = this.args.fixture ?? 'welcome';
     if (fixture !== 'welcome') await this.createFixture(page, fixture, left, reach);
+    // A live session's time runs from here: then its assistant is stopped and may start nothing more.
+    if (this.live) {
+      const live = this.live;
+      this.liveTimer = setTimeout(() => void this.spendLive(`its ${live.timeoutMs / 1000}s ran out`), live.timeoutMs);
+    }
     await reach('ready');
+  }
+
+  /** Set the app up with the configured provider, and cap the requests its assistant may start. */
+  private async useLiveProvider(page: Page, live: LiveSetup, left: () => number) {
+    await inMain(this.app!, journalInMain, { op: 'limitTurns', max: live.maxTurns } as JournalCall);
+    await page.evaluate((patch) => (globalThis as any).builder.app.setSettings(patch), liveSettings(live));
+    await page.reload({ timeout: left() });
+    await page.waitForSelector('.welcome', { timeout: left() });
+    const ai = (await page.evaluate(() => (globalThis as any).builder.app.getSettings().then((s: any) => s.ai))) as { provider: string };
+    if (ai.provider !== live.provider) throw new DriverError('LAUNCH_FAILED', `The app did not take the configured provider (it uses ${ai.provider}).`, { details: { phase: 'provider.settings' } });
+  }
+
+  /** A live session's assistant may do no more: no new request starts, and the one running is stopped. */
+  private async spendLive(reason: string) {
+    if (this.liveSpent || !this.app || this.appExited) return;
+    this.liveSpent = reason;
+    await bounded(inMain(this.app, journalInMain, { op: 'limitTurns', max: 0 } as JournalCall).catch(() => undefined), 5000, undefined);
+    const page = this.bound && !this.bound.closed ? this.bound.page : null;
+    if (page) await bounded(page.evaluate(() => Promise.all([(globalThis as any).builder.ai.stop(), (globalThis as any).builder.ai.cancelFix()])).catch(() => undefined), 10_000, undefined);
   }
 
   private async waitForWindow(timeoutMs: number): Promise<Page> {
@@ -1983,7 +2136,13 @@ export class Session {
 
   async describe(): Promise<Description> {
     const processes = (await this.ownedNow().catch((): ProcessEntry[] => [])).map((e) => e.pid);
-    const provider = this.mock ? { kind: 'scripted' as const, baseURL: this.mock.baseURL } : this.state === 'new' ? null : { kind: 'none' as const };
+    const provider = this.mock
+      ? { kind: 'scripted' as const, baseURL: this.mock.baseURL }
+      : this.live
+        ? { kind: 'configured' as const, provider: this.live.provider, model: this.live.model ?? null, maxTurns: this.live.maxTurns, timeoutMs: this.live.timeoutMs }
+        : this.state === 'new'
+          ? null
+          : { kind: 'none' as const };
     return {
       protocol: PROTOCOL_VERSION,
       session: {
@@ -2031,6 +2190,7 @@ export class Session {
 
   private async teardown(args: CloseArgs): Promise<CloseResult> {
     const wasStarted = this.state !== 'new';
+    if (this.liveTimer) clearTimeout(this.liveTimer);
     this.closeRequested = true;
     this.state = 'closing';
     this.keeping = this.keepsArtifacts(args);
@@ -2099,6 +2259,9 @@ export class Session {
     const survivors = await sweep(true);
     if (survivors.length) problems.push(`processes ${survivors.map((e) => e.pid).join(', ')} did not end`);
     const processes = [...this.seen.keys()];
+    // Held replies go before the server stops, so nothing waits on a gate after the session.
+    this.script?.close();
+    if (this.liveTimer) clearTimeout(this.liveTimer);
     await this.mock?.stop().catch(() => undefined);
     // The app's output, once it can write no more: kept with the artifacts, or with a run folder that stays as evidence.
     if (this.logTimer) clearInterval(this.logTimer);
