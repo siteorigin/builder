@@ -195,7 +195,7 @@ describe('tool discovery', () => {
   });
 
   it('prints a Codex configuration that runs this server from this checkout with this Node', () => {
-    const toml = codexConfig('/opt/node/bin/node', '/work/builder');
+    const toml = codexConfig('/opt/node/bin/node', '/work/builder', 'darwin');
     expect(toml).toContain('[mcp_servers.siteorigin_builder]');
     expect(toml).toContain('command = "/opt/node/bin/node"');
     expect(toml).toContain(`args = [${JSON.stringify(MCP_PATH)}]`);
@@ -571,6 +571,64 @@ describe('session hosts, when things go wrong', () => {
     expect(hosts.map((x) => x.calls.map((c) => c.op))).toEqual([['session.start'], ['ui.snapshot'], ['session.start']]);
   });
 
+  it('drops a request that reuses an id still being answered, and answers the first', async () => {
+    let finish!: () => void;
+    const host = new FakeHost((op) => (op === 'ui.click' ? new Promise<Reply>((r) => (finish = () => r(success(op)))) : success(op)));
+    const h = harness(async () => host);
+    await h.init();
+    h.send({ jsonrpc: '2.0', id: 'dup', method: 'tools/call', params: { name: 'ui_click', arguments: { target: { ref: 'a1b2c3:1' } } } });
+    await until(() => host.calls.length === 1);
+    h.send({ jsonrpc: '2.0', id: 'dup', method: 'tools/call', params: { name: 'session_close', arguments: {} } });
+    h.send({ jsonrpc: '2.0', id: 'dup', method: 'ping' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.out.filter((m) => m.id === 'dup')).toEqual([]);
+    finish();
+    await h.answer('dup');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.out.filter((m) => m.id === 'dup').map((m) => m.result.structuredContent.op)).toEqual(['ui.click']);
+    expect(host.calls.map((c) => c.op), 'the reuse never reached the host').toEqual(['ui.click']);
+  });
+
+  it('tells the next call a host is gone even when the call it died under still got its answer', async () => {
+    let finish!: () => void;
+    const hosts: FakeHost[] = [];
+    const h = harness(async () => {
+      const host = new FakeHost((op) => (op === 'ui.click' ? new Promise<Reply>((r) => (finish = () => r(success(op)))) : success(op)));
+      hosts.push(host);
+      return host;
+    });
+    await h.init();
+    const click = h.call('ui_click', { target: { ref: 'a1b2c3:1' } });
+    await until(() => hosts[0]?.calls.length === 1);
+    hosts[0].exitNow();
+    await new Promise((r) => setTimeout(r, 10));
+    finish();
+    expect((await click).result.isError, 'its last answer was already written').toBeUndefined();
+    const told = (await h.call('ui_snapshot', {})).result;
+    expect([told.structuredContent.error?.code, told.structuredContent.error?.details.outcome]).toEqual(['HOST_LOST', 'not-sent']);
+    expect(hosts).toHaveLength(1);
+  });
+
+  it('expects the end of a host whose session was closed, even when its exit is seen before the answer', async () => {
+    let finish!: () => void;
+    const hosts: FakeHost[] = [];
+    const h = harness(async () => {
+      const host = new FakeHost((op) => (op === 'session.close' ? new Promise<Reply>((r) => (finish = () => r(success(op)))) : success(op)));
+      hosts.push(host);
+      return host;
+    });
+    await h.init();
+    await h.call('session_start', {});
+    const close = h.call('session_close', {});
+    await until(() => hosts[0].calls.length === 2);
+    hosts[0].exitNow();
+    await new Promise((r) => setTimeout(r, 10));
+    finish();
+    expect((await close).result.isError).toBeUndefined();
+    expect((await h.call('session_describe', {})).result.isError, 'no loss to report').toBeUndefined();
+    expect(hosts.map((x) => x.calls.map((c) => c.op))).toEqual([['session.start', 'session.close'], ['session.describe']]);
+  });
+
   it('ends once, whoever asks, and answers nothing that arrives after', async () => {
     const host = new FakeHost();
     const h = harness(async () => host);
@@ -798,12 +856,17 @@ describe('ui.waitFor', () => {
 
   it('does not call something absent while a preview the search covers is still loading', async () => {
     let n = 0;
-    const loadingPreview = () => new DriverError('TARGET_NOT_FOUND', 'none', { details: { preview: 'loading' } });
-    const readyPreview = () => new DriverError('TARGET_NOT_FOUND', 'none', { details: { preview: 'ready' } });
+    // locate says when a preview on its way left part of the search undone (incomplete), on every "not found".
+    const loadingPreview = () => new DriverError('TARGET_NOT_FOUND', 'none', { details: { preview: 'loading', incomplete: true } });
+    const readyPreview = () => new DriverError('TARGET_NOT_FOUND', 'none', { details: { preview: 'ready', incomplete: false } });
     expect(await run(async () => Promise.reject(++n < 3 ? loadingPreview() : readyPreview()), { role: 'heading', name: 'Welcome', state: 'absent' })).toMatchObject({ state: 'absent', checks: 3 });
     n = 0;
-    expect(await run(async () => (n++, Promise.reject(loadingPreview())), { role: 'dialog', scope: 'editor', state: 'absent' }), 'the editor alone is searched whatever the preview does').toMatchObject({ state: 'absent', checks: 1 });
-    const absentPreview = new DriverError('TARGET_NOT_FOUND', 'none', { details: { preview: 'absent' } });
+    const noRegion = () => new DriverError('TARGET_NOT_FOUND', 'There is no region "x" to search.', { details: { preview: 'loading', incomplete: true } });
+    expect(await run(async () => Promise.reject(++n < 2 ? noRegion() : readyPreview()), { role: 'heading', region: 'x', state: 'absent' }), 'a region the loading preview may hold is waited for').toMatchObject({ state: 'absent', checks: 2 });
+    n = 0;
+    const editorOnly = new DriverError('TARGET_NOT_FOUND', 'none', { details: { preview: 'loading', incomplete: false } });
+    expect(await run(async () => (n++, Promise.reject(editorOnly)), { role: 'dialog', within: 'a1b2c3:9', state: 'absent' }), 'a search the preview takes no part in is settled while it loads').toMatchObject({ state: 'absent', checks: 1 });
+    const absentPreview = new DriverError('TARGET_NOT_FOUND', 'none', { details: { preview: 'absent', incomplete: false } });
     expect(await run(async () => Promise.reject(absentPreview), { role: 'heading', state: 'absent' })).toMatchObject({ state: 'absent', checks: 1 });
   });
 
@@ -832,12 +895,15 @@ describe('ui.waitFor', () => {
 
   it('ends before the request\'s deadline with TIMEOUT, saying what it last saw, and the session goes on', async () => {
     const began = Date.now();
-    const e = await run(async () => Promise.reject(notFound()), { role: 'dialog', name: 'Never' }, WAIT_LIMITS.marginMs + 150).catch((x: DriverError) => x);
+    // locate's own message quotes the search, as it may: the wait's answer passes on only its code.
+    const quoting = () => new DriverError('TARGET_NOT_FOUND', 'Nothing is dialog "Never".');
+    const e = await run(async () => Promise.reject(quoting()), { role: 'dialog', name: 'Never' }, WAIT_LIMITS.marginMs + 150).catch((x: DriverError) => x);
     expect(e).toBeInstanceOf(DriverError);
     expect((e as DriverError).code).toBe('TIMEOUT');
     expect((e as DriverError).message, 'never the search itself, which can hold a credential').not.toContain('Never');
     expect((e as DriverError).message).toMatch(/^Nothing fitting the search appeared in time \(\d+ looks\)\.$/);
     expect((e as DriverError).details).toMatchObject({ phase: 'ui.waitFor', sessionState: 'ready', state: 'present', last: { code: 'TARGET_NOT_FOUND' } });
+    expect(JSON.stringify((e as DriverError).details)).not.toContain('Never');
     expect(Date.now() - began, 'it answers before the request\'s own deadline').toBeLessThan(WAIT_LIMITS.marginMs + 150);
     expect(Date.now() - began, 'having used what it had').toBeGreaterThanOrEqual(140);
   });

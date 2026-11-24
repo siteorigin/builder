@@ -225,9 +225,15 @@ async function framePlain(page: Page): Promise<Set<string>> {
 }
 
 /** The credential values in every frame of the window: the editor's, the preview's and any other (failures skipped). */
-export async function frameSecrets(page: Page, { strict = false }: { strict?: boolean } = {}): Promise<string[]> {
+export async function frameSecrets(page: Page, { strict = false, found }: { strict?: boolean; found?: (values: string[]) => void } = {}): Promise<string[]> {
   // Strict: a frame that cannot be read fails the whole read, for a caller that must not take "unknown" as "none".
-  const read = await Promise.all(page.frames().map((f) => (strict ? f.evaluate(secretsIn, SECRET_INPUTS) : f.evaluate(secretsIn, SECRET_INPUTS).catch((): string[] => []))));
+  // Each frame's values go to `found` as they are read, so one frame failing cannot take another's credentials with it.
+  const read = await Promise.all(
+    page.frames().map((f) => {
+      const values = f.evaluate(secretsIn, SECRET_INPUTS).then((v) => (found?.(v), v));
+      return strict ? values : values.catch((): string[] => []);
+    })
+  );
   return read.flat();
 }
 
@@ -783,7 +789,7 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   const withheld = { editor: null, preview: null, withheld: 'A credential is known in this session, and screenshots could show it.' };
   // Anything that cannot be read counts as a credential.
   const clear = async () => {
-    const known = await Promise.all([frameSecrets(page, { strict: true }), env.storedSecrets?.(true) ?? Promise.resolve([])]).catch(() => null);
+    const known = await Promise.all([frameSecrets(page, { strict: true, found: (v) => env.remember?.(v) }), env.storedSecrets?.(true) ?? Promise.resolve([])]).catch(() => null);
     return !!known && !known.flat().length && !env.remembered?.().length;
   };
   if (obs.secrets.length || obs.echoes || !(await clear())) return withheld;
@@ -955,8 +961,8 @@ export async function waitFor(locate: (args: LocateArgs) => Promise<Located>, ar
   let last: DriverError | null = null;
   // A preview still loading cannot be searched yet; one that is not shown at all has nothing in it.
   const loading = (e: DriverError) => e.code === 'STALE_REF' && e.details?.reason === 'loading' && e.details?.preview !== 'absent';
-  // "Not found" settles absence only where the whole search could look: not while a preview it covers is loading.
-  const settled = (e: DriverError) => e.code === 'TARGET_NOT_FOUND' && (args.search.scope === 'editor' || e.details?.preview !== 'loading');
+  // "Not found" settles absence only when the whole search was done: not while a preview it covers is on its way.
+  const settled = (e: DriverError) => e.code === 'TARGET_NOT_FOUND' && e.details?.incomplete !== true;
   for (;;) {
     aborted(o.signal);
     checks++;
@@ -982,7 +988,8 @@ export async function waitFor(locate: (args: LocateArgs) => Promise<Located>, ar
     if (left <= 0) {
       // Not the search itself: a name searched for can be a credential the page shows, which observations scrub.
       throw new DriverError('TIMEOUT', args.state === 'present' ? `Nothing fitting the search appeared in time (${checks} looks).` : `What the search found was still there when the wait ran out (${checks} looks).`, {
-        details: { phase: 'ui.waitFor', sessionState: 'ready', state: args.state, waitedMs: now() - began, checks, ...(last ? { last: { code: last.code, message: last.message } } : {}) }
+        // The last look's code, not its message, which can quote the search.
+        details: { phase: 'ui.waitFor', sessionState: 'ready', state: args.state, waitedMs: now() - began, checks, ...(last ? { last: { code: last.code } } : {}) }
       });
     }
     // The last look comes at the end of the budget, however little of an interval is left.
@@ -1017,23 +1024,25 @@ async function locateIn(env: ObserveEnv, args: LocateArgs, seen: string[]): Prom
     inside = new Set(walk(node.children));
   }
   const query = { role: args.role, ...(args.name !== undefined ? { name: args.name } : {}), ...(args.exact === false ? { exact: false } : {}), ...(args.region ? { region: args.region } : {}), ...(args.within ? { within: args.within } : {}), scope: args.scope ?? 'all' };
+  // Part of the search could not be done: a preview it covers is on its way (one not shown has nothing in it).
+  const incomplete = scopes.includes('preview') && !(obs.previewState === 'ready' && obs.docs.preview && obs.preview) && obs.previewState !== 'absent';
   const searchable = scopes.filter((scope) => {
     if (scope === 'editor') return true;
     if (obs.previewState === 'ready' && obs.docs.preview && obs.preview) return true;
     if (args.scope === 'preview' || args.within)
       throw new DriverError('TARGET_NOT_FOUND', `The preview is ${obs.previewState === 'absent' ? 'not shown' : 'still loading'}: nothing in it can be found yet.`, {
-        details: { query, preview: obs.previewState, hint: 'Wait for context.preview.state to be "ready" (ui.snapshot), then locate again.' }
+        details: { query, preview: obs.previewState, incomplete, hint: 'Wait for context.preview.state to be "ready" (ui.snapshot), then locate again.' }
       });
     return false;
   });
   if (args.region && !searchable.some((scope) => regionNodes(scope === 'editor' ? obs.editor : obs.preview!, args.region!).length))
-    throw new DriverError('TARGET_NOT_FOUND', `There is no region "${args.region}" to search.`, { details: { query, preview: obs.previewState, hint: 'Take a ui.snapshot to see the regions there are.' } });
+    throw new DriverError('TARGET_NOT_FOUND', `There is no region "${args.region}" to search.`, { details: { query, preview: obs.previewState, incomplete, hint: 'Take a ui.snapshot to see the regions there are.' } });
   const all = await matchesIn(env, obs, searchable, args);
   aborted(env.signal);
   if (all === 'too-many') throw new DriverError('OP_FAILED', `More than ${MATCH_LIMIT} elements in one scope are ${args.role}s: too many to place.`, { details: { query, hint: 'Take a ui.snapshot and drill in with "within" instead.' } });
   if (all === 'incomplete') throw new DriverError('OP_FAILED', 'Not every match could be placed in the observation (the page changed, or a match is outside the accessibility tree); locate again.', { retryable: true, details: { query, hint: REFRESH_HINT } });
   const found = all.filter((n) => (!args.region || regionMatches(n.regions, args.region)) && (!inside || inside.has(n)));
-  if (!found.length) throw new DriverError('TARGET_NOT_FOUND', `Nothing is ${args.role}${args.name ? ` "${args.name}"` : ''}${args.region ? ` in "${args.region}"` : ''}${args.within ? ' within that ref' : ''}.`, { details: { query, preview: obs.previewState, hint: 'Take a ui.snapshot to see what there is.' } });
+  if (!found.length) throw new DriverError('TARGET_NOT_FOUND', `Nothing is ${args.role}${args.name ? ` "${args.name}"` : ''}${args.region ? ` in "${args.region}"` : ''}${args.within ? ' within that ref' : ''}.`, { details: { query, preview: obs.previewState, incomplete, hint: 'Take a ui.snapshot to see what there is.' } });
   if (found.length > 1) {
     const shown = found.slice(0, LIMITS.candidates);
     await minter.read(shown);

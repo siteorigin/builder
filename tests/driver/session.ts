@@ -882,8 +882,10 @@ export class Session {
         const args = parseSnapshotArgs(request.args);
         await this.settled();
         const result = await uiSnapshot(this.observer(this.windowFor(request), signal), args, ++this.observations);
-        // Nothing is published by a capture that ran out of time, or that finished while the session closed.
-        if (!signal.aborted && this.state === 'ready') this.keepEvidence(result.screenshots);
+        // Nothing is published by a capture that ran out of time, or that finished while the session closed: no id is
+        // handed out that evidence.read would not know.
+        if (result.screenshots && (result.screenshots.editor || result.screenshots.preview) && this.state !== 'ready') throw new DriverError('CLOSED', 'The session closed while the screenshots were taken.');
+        if (!signal.aborted) this.keepEvidence(result.screenshots);
         return result;
       }
       case 'ui.locate': {
@@ -979,16 +981,26 @@ export class Session {
       });
     const out: Evidence = { id: a.id, surface: found.surface, mimeType: 'image/png', width: found.width, height: found.height, path: found.path };
     const page = this.bound && !this.bound.closed ? this.bound.page : null;
+    // A credential seen here is remembered, frame by frame as each is read, as one an observation sees is: later replies
+    // scrub it too, even when another frame could not be read. Saved keys are read whatever the frames do.
+    const remember = (values: string[]) => values.forEach((x) => x && this.secrets.add(x));
     const clear = async () => {
-      // A credential seen here is remembered, as one an observation sees is: later replies scrub it too.
-      const shown = page ? await frameSecrets(page, { strict: true }) : [];
-      for (const x of shown) if (x) this.secrets.add(x);
-      return !this.secrets.size && !(await this.storedSecrets(true)).length && !shown.length;
+      const [shown, stored] = await Promise.all([page ? frameSecrets(page, { strict: true, found: remember }) : Promise.resolve([]), this.storedSecrets(true)]);
+      return !this.secrets.size && !stored.length && !shown.length;
     };
-    if (!(await bounded(clear().catch(() => false), 3000, false))) return { ...out, withheld: 'A credential is known in this session, and the image could show it.' };
-    const image = await readSavedImage(this.paths!.artifacts, found.path, a.id, found);
-    // A close that began meanwhile has the last word.
-    if (this.state !== 'ready') throw new DriverError('CLOSED', 'The session closed while the screenshot was read.');
+    const withheld = !(await bounded(clear().catch(() => false), 3000, false));
+    // A close that began meanwhile has the last word, whatever the read found.
+    const closed = () => new DriverError('CLOSED', 'The session closed while the screenshot was read.');
+    if (this.state !== 'ready') throw closed();
+    if (withheld) return { ...out, withheld: 'A credential is known in this session, and the image could show it.' };
+    let image: Awaited<ReturnType<typeof readSavedImage>>;
+    try {
+      image = await readSavedImage(this.paths!.artifacts, found.path, a.id, found);
+    } catch (e) {
+      if (this.state !== 'ready') throw closed();
+      throw e;
+    }
+    if (this.state !== 'ready') throw closed();
     return { ...out, ...image };
   }
 

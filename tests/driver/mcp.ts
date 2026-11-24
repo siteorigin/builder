@@ -237,8 +237,10 @@ type Message = { jsonrpc: '2.0'; id?: Id; result?: unknown; error?: { code: numb
 
 interface Link {
   ready: Promise<HostConnection>;
-  /** Calls sent to it and not yet answered: they report its loss themselves. */
-  pending: number;
+  /** A session.close ran on it: its end is expected. */
+  closed: boolean;
+  /** A call has already reported it lost. */
+  reported: boolean;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -262,8 +264,10 @@ export class McpServer {
   private ending: Promise<void> | null = null;
   /** Tool calls not yet answered, by request id, and whether the client cancelled them. */
   private readonly calls = new Map<string, { cancelled: boolean }>();
-  /** A host that exited by itself while nothing was waiting on it: the next call (but a start) is told, once. */
-  private lost: string | null = null;
+  /** Request ids still being answered: a client reusing one would make the answers ambiguous. */
+  private readonly live = new Set<string>();
+  /** A host that ended by itself, not yet reported by any call: the next call (but a start) is told, once. */
+  private lost: { link: Link; message: string } | null = null;
 
   constructor(opts: ServerOptions) {
     this.opts = opts;
@@ -320,7 +324,18 @@ export class McpServer {
     }
     if (!isId(msg.id)) return fail(null, INVALID_REQUEST, 'A request\'s "id" is a string or an integer.');
     if (msg.params !== undefined && !isRecord(msg.params)) return fail(msg.id, INVALID_PARAMS, '"params" is an object.');
-    return this.request(msg.id, msg.method, msg.params ?? {});
+    // An id still in use is dropped, not answered: any answer would carry the same id as the first request's.
+    const key = idKey(msg.id);
+    if (this.live.has(key)) {
+      this.log(`request id ${JSON.stringify(msg.id)} is still in use; the request reusing it was dropped`);
+      return null;
+    }
+    this.live.add(key);
+    try {
+      return await this.request(msg.id, msg.method, msg.params ?? {});
+    } finally {
+      this.live.delete(key);
+    }
   }
 
   private notification(method: string, params: unknown) {
@@ -363,7 +378,7 @@ export class McpServer {
     });
   }
 
-  private async callTool(id: Id, params: Record<string, unknown>): Promise<Message> {
+  private async callTool(id: Id, params: Record<string, unknown>): Promise<Message | null> {
     const name = params.name;
     if (typeof name !== 'string' || !name) return fail(id, INVALID_PARAMS, '"name" is the tool to call.');
     const op = TOOL_OPS.get(name);
@@ -394,22 +409,29 @@ export class McpServer {
   /** The host the next call goes to, started if there is none. */
   private acquire(): Link {
     if (!this.link) {
-      const link: Link = { ready: this.opts.connect(), pending: 0 };
+      const link: Link = { ready: this.opts.connect(), closed: false, reported: false };
       this.link = link;
       this.links.add(link);
       link.ready.then(
         (host) =>
           void host.exited?.then((exit) => {
             this.links.delete(link);
-            // A host that ends by itself takes its session with it: the next call starts afresh, and is told.
-            if (this.link !== link || this.ending) return;
-            this.link = null;
-            if (!link.pending) this.lost = `The session host exited by itself (${describeExit(exit)}); its session is gone.`;
+            if (this.ending) return;
+            if (this.link === link) this.link = null;
+            // A host that ends by itself takes its session with it: the next call starts afresh, and is told, unless a
+            // call on it says so first (or its session was closed, and its end expected).
+            if (!link.closed && !link.reported) this.lost = { link, message: `The session host exited by itself (${describeExit(exit)}); its session is gone.` };
           }),
         () => this.links.delete(link)
       );
     }
     return this.link;
+  }
+
+  /** A call has said this host is gone (or its end was expected): nobody else needs telling. */
+  private reported(link: Link) {
+    link.reported = true;
+    if (this.lost?.link === link) this.lost = null;
   }
 
   /** Calls after this one start a new host. */
@@ -424,7 +446,8 @@ export class McpServer {
     if (this.lost) {
       const lost = this.lost;
       this.lost = null;
-      if (op !== 'session.start') return hostLost(op, lost, 'not-sent', began);
+      lost.link.reported = true;
+      if (op !== 'session.start') return hostLost(op, lost.message, 'not-sent', began);
     }
     const link = this.acquire();
     let host: HostConnection;
@@ -438,19 +461,22 @@ export class McpServer {
     if (this.ending) return hostLost(op, closing, 'not-sent', began);
     if (call.cancelled) return hostLost(op, 'The client cancelled this call before it was sent.', 'not-sent', began);
     let reply: Reply;
-    link.pending++;
     try {
       reply = await host.request(op, args, options);
     } catch (e) {
-      // The host can no longer be talked to: told its client has gone, it closes its session and ends the app.
+      // The host can no longer be talked to: told its client has gone, it closes its session and ends the app. This call
+      // reports the loss, so the next is not told again.
+      this.reported(link);
       this.retire(link);
       void host.disconnect().catch(() => undefined);
       return hostLost(op, e instanceof Error ? e.message : String(e), 'unknown', began);
-    } finally {
-      link.pending--;
     }
     // A close that ran ends its host (host.ts), however it went; one refused before it ran leaves the session as it was.
-    if (op === 'session.close' && (reply.ok || !REFUSED_CODES.has(reply.error.code))) this.retire(link);
+    if (op === 'session.close' && (reply.ok || !REFUSED_CODES.has(reply.error.code))) {
+      link.closed = true;
+      this.reported(link);
+      this.retire(link);
+    }
     return toolResult(reply);
   }
 
