@@ -286,7 +286,7 @@ ${PINNED_SPLIT}:has(> ${ends('__grid')}):not(:has(> ${ends('__intro')})) { grid-
   .so-tablist:not(#so-print) { display: none !important; }
   /* Pricing's billing switch (in any copy of it, a section with billing prices) is left out too: each price prints
      with its own billing note. Any other group of buttons prints, since its labels may say what the page does not. */
-  section:has([class*='__annual-price-row']) .so-choice-group:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }
+  section:has(:is([class*='__monthly-price-row'], [class*='__annual-price-row'])) .so-choice-group:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }
   [role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before {
     content: attr(data-tab-label); display: block; grid-column: 1 / -1; flex-basis: 100%;
     margin-block-end: 0.5em; font-weight: 600;

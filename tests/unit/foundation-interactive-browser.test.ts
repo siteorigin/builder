@@ -285,6 +285,10 @@ describe.skipIf(!browserInstalled)('Foundation’s tabbed showcase and billing s
   it('prints every tab’s panel under its label and the plans without the switch', async () => {
     const { page, problems } = await open();
     try {
+      // As the page loads, on the monthly prices.
+      await page.emulateMedia({ media: 'print' });
+      expect(await page.evaluate(`getComputedStyle(document.querySelector('#app [role="group"]')).display`)).toBe('none');
+      await page.emulateMedia({ media: 'screen' });
       await page.locator('#app').getByRole('group', { name: 'Billing period' }).getByRole('button', { name: 'Annual' }).click();
       await page.emulateMedia({ media: 'print' });
       const printed = (await page.evaluate(`({

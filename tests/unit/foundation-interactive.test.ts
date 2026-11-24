@@ -312,7 +312,7 @@ describe('print', () => {
     expect(print).toContain('.so-tablist:not(#so-print) { display: none !important; }');
     // Only the billing switch of Foundation's pricing, in any copy of it: other groups of buttons print.
     expect(css).not.toContain(CHOICE_GROUP_CLASS);
-    expect(print).toContain(`section:has([class*='__annual-price-row']) .${CHOICE_GROUP_CLASS}:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }`);
+    expect(print).toContain(`section:has(:is([class*='__monthly-price-row'], [class*='__annual-price-row'])) .${CHOICE_GROUP_CLASS}:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }`);
     expect(print.match(new RegExp(`\\.${CHOICE_GROUP_CLASS}\\b`, 'g'))).toHaveLength(1);
     expect(print).toContain("[role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before");
   });
