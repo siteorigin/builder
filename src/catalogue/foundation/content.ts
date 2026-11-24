@@ -208,6 +208,8 @@ export const gallery = managed({
     heading: P.str('Heading', 'Recent projects'),
     headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', ''),
+    // A new gallery starts empty: the author chooses its pictures from Assets (see lib/gallery-picks), rather than
+    // replacing invented ones.
     images: P.list(
       'Images',
       'Image',
@@ -221,14 +223,7 @@ export const gallery = managed({
         ]),
         link: P.link('Link')
       },
-      [
-        { image: { assetId: null, alt: '' }, caption: 'Garden room, Ashford' },
-        { image: { assetId: null, alt: '' }, caption: 'Kitchen, Millbrook' },
-        { image: { assetId: null, alt: '' }, caption: 'Studio, Harbour Lane' },
-        { image: { assetId: null, alt: '' }, caption: 'Living room, Westfield' },
-        { image: { assetId: null, alt: '' }, caption: 'Library, Old Mill' },
-        { image: { assetId: null, alt: '' }, caption: 'Courtyard, Elm Street' }
-      ],
+      [],
       { titleField: 'caption', max: 24 }
     )
   },
@@ -242,7 +237,8 @@ export const gallery = managed({
   build: (b) =>
     sectionShell(b, [
       headingBlock(b),
-      b.el('grid', 'ul', { name: 'Grid', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.lg') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
+      // An empty gallery leaves no empty <ul> behind.
+      b.el('grid', 'ul', { name: 'Grid', collapseEmpty: true, styles: { base: { layout: 'grid', columns: 1, gap: tok('space.lg') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
         b.repeat('photos', 'images', [
           b.el('photo', 'li', { name: 'Photo' }, [
             // A working action wraps the whole figure, image and caption, in one link: to the full-size image (which

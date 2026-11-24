@@ -1,6 +1,6 @@
 import type { FieldLocation } from '@shared/api';
 import type { ListItem, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
-import { groupFields, listRowTitle } from '@shared/fields';
+import { groupFields, listItemImage, listRowTitle } from '@shared/fields';
 import { effectiveItem } from '@shared/page-teasers';
 import { formServiceSetup } from '@catalogue/foundation/form';
 import { displayName } from './tree';
@@ -74,7 +74,10 @@ export function locateField(state: ProjectState, target: FieldTarget, currentPag
   const items = (Array.isArray(value) ? value : []).filter((it): it is ListItem => !!it && typeof it === 'object');
   const itemFields = fieldsOf(schema.fields);
   // A row is named as the Inspector shows it: a page list's card by its page's title while it has none of its own.
-  const rowTitle = (it: ListItem, i: number) => listRowTitle(schema, effectiveItem(state, schema, it), i);
+  const rowTitle = (it: ListItem, i: number) => {
+    const shown = effectiveItem(state, schema, it);
+    return listRowTitle(schema, shown, i, listItemImage(schema, shown, state.assets.assets)?.name);
+  };
   const listed = `Items: ${items.map((it, i) => `${it.id} (${rowTitle(it, i)})`).join(', ') || 'none'}. Item fields: ${keys(itemFields)}.`;
   if (target.itemId === undefined || target.field === undefined) return { ok: false, message: `${schema.label} is a list: open one field of one ${schema.itemLabel.toLowerCase()}.`, hint: `Give itemId and field. ${listed}` };
   const index = items.findIndex((it) => it.id === target.itemId);

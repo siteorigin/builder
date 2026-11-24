@@ -46,10 +46,22 @@ function shorten(label: string, group: string): string | undefined {
 }
 
 /**
- * The title a list row shows in the Inspector: its title field, else its first text, else "Item 3". A page list's
- * card is passed as it shows (`effectiveItem`), so one with no title of its own is named by its page's.
+ * The title a list row shows in the Inspector: its title field, else its first text, else the name of the image it
+ * shows (`imageName`, see listItemImage), else "Item 3". A page list's card is passed as it shows (`effectiveItem`),
+ * so one with no title of its own is named by its page's.
  */
-export function listRowTitle(schema: Pick<ListProp, 'titleField' | 'itemLabel'>, item: ListItem, index: number): string {
+export function listRowTitle(schema: Pick<ListProp, 'titleField' | 'itemLabel'>, item: ListItem, index: number, imageName?: string): string {
   const t = schema.titleField ? item[schema.titleField] : Object.values(item).find((v) => typeof v === 'string' && v && v !== item.id);
-  return (typeof t === 'string' && t.trim()) || `${schema.itemLabel} ${index + 1}`;
+  return (typeof t === 'string' && t.trim()) || imageName?.trim() || `${schema.itemLabel} ${index + 1}`;
+}
+
+/** The library image a list item shows: the first of its image fields that holds an image still in `assets`. */
+export function listItemImage<A extends { kind: string }>(schema: Pick<ListProp, 'fields'>, item: ListItem, assets: Record<string, A>): A | undefined {
+  for (const [k, f] of Object.entries(schema.fields)) {
+    if (f.type !== 'image') continue;
+    const id = (item[k] as { assetId?: unknown } | null | undefined)?.assetId;
+    const asset = typeof id === 'string' && Object.hasOwn(assets, id) ? assets[id] : undefined;
+    if (asset?.kind === 'image') return asset;
+  }
+  return undefined;
 }
