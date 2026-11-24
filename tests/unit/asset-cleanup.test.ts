@@ -46,6 +46,8 @@ const face = (id: string, family: string): AssetRecord => ({
   font: { family, weight: '400', style: 'normal' }
 });
 const remove = (assetId: string): EditOperation => ({ type: 'asset.remove', assetId });
+/** A font file removed with the author's choice for its family's uses. */
+const removeFont = (assetId: string, fontUses: Extract<EditOperation, { type: 'asset.remove' }>['fontUses']): EditOperation => ({ type: 'asset.remove', assetId, fontUses });
 const ids = (n: number) => Array.from({ length: n }, (_, i) => `img${String(i).padStart(2, '0')}`);
 
 /** An image node inside a new section at the top of a page. */
@@ -159,7 +161,7 @@ describe('removing many assets in one batch', () => {
     rejects(() => applyOperations(s, [remove('img10'), { type: 'page.duplicate', pageId: aboutId }, remove('img01')]), /^Operation 3 \(asset\.remove\): This image is used 2 times\. /);
   });
 
-  it('keeps a font family protected until its last face goes, whatever case the faces name it in', () => {
+  it('keeps every face of a family in use until the author chooses for its uses, whatever case the faces name it in', () => {
     const base = site().s;
     const s = applyOperations(base, [
       { type: 'asset.add', asset: face('f1', 'Brand Sans') },
@@ -167,11 +169,15 @@ describe('removing many assets in one batch', () => {
       { type: 'asset.add', asset: face('f3', 'Other') },
       { type: 'token.set', tokenId: 'font.display', value: fonts.importedFontStack('Brand Sans') }
     ]).state;
-    // One face can go while the other still provides the family; the last one cannot.
-    expect(applyOperations(s, [remove('img10'), remove('f1'), remove('f3')]).state.assets.assets.f2).toBeDefined();
-    rejects(() => applyOperations(s, [remove('img10'), remove('f1'), remove('f2')]), /^Operation 3 \(asset\.remove\): This font is used 1 time\. /);
+    // Even with another face left, a face of the family in use goes only with a choice; an unused family's goes freely.
+    rejects(() => applyOperations(s, [remove('img10'), remove('f3'), remove('f1')]), /^Operation 3 \(asset\.remove\): This font is used 1 time\. /);
+    const kept = applyOperations(s, [remove('img10'), removeFont('f1', 'keep'), remove('f3')]).state;
+    expect(kept.assets.assets.f2).toBeDefined();
+    expect(kept.assets.assets.f1 ?? kept.assets.assets.f3).toBeUndefined();
+    // The last one cannot be kept on no files.
+    rejects(() => applyOperations(s, [remove('img10'), removeFont('f1', 'keep'), removeFont('f2', 'keep')]), /^Operation 3 \(asset\.remove\): This font is used 1 time, and it is the last file of brand sans\./);
     // Once the style stops naming the family, both faces can go.
-    const done = applyOperations(s, [remove('f1'), { type: 'token.set', tokenId: 'font.display', value: 'system-ui, sans-serif' }, remove('f2'), remove('img10')]).state;
+    const done = applyOperations(s, [{ type: 'token.set', tokenId: 'font.display', value: 'system-ui, sans-serif' }, remove('f1'), remove('f2'), remove('img10')]).state;
     expect(done.assets.assets.f1 ?? done.assets.assets.f2).toBeUndefined();
   });
 
@@ -193,6 +199,8 @@ describe('removing many assets in one batch', () => {
     s.assets.assets.broken = { ...face('broken', 'Brand Sans'), file: 'static/assets/broken.exe' };
     rejects(() => applyOperations(s, [remove('img10'), remove('f1')]), /^Operation 2 \(asset\.remove\): This font is used 1 time\. /);
     rejects(() => applyOperations(s, [remove('img10'), remove('broken'), remove('f1')]), /^Operation 3 \(asset\.remove\): This font is used 1 time\. /);
+    // Nor as a file the family could be kept on.
+    rejects(() => applyOperations(s, [removeFont('f1', 'keep')]), /last file of Brand Sans/);
   });
 
   it('counts again after a font goes, whose record may be filed under another name', () => {
@@ -203,8 +211,10 @@ describe('removing many assets in one batch', () => {
     base.assets.assets.miskeyed = face('target', 'Brand Sans');
     const s = applyOperations(base, [{ type: 'token.set', tokenId: 'font.display', value: fonts.importedFontStack('Brand Sans') }]).state;
     expect(assetUsages(s).target).toBe(1);
+    // The mis-keyed record is the family's only file, never another of its own.
+    rejects(() => applyOperations(s, [removeFont('miskeyed', 'keep')]), /last file of Brand Sans/);
     scans.mockClear();
-    const r = applyOperations(s, [remove('img10'), remove('miskeyed'), remove('target'), remove('img11')]).state;
+    const r = applyOperations(s, [remove('img10'), removeFont('miskeyed', 'fallback'), remove('target'), remove('img11')]).state;
     expect(r.assets.assets.target ?? r.assets.assets.miskeyed).toBeUndefined();
     expect(scans).toHaveBeenCalledTimes(2);
   });

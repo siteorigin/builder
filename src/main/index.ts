@@ -305,6 +305,7 @@ function registerIpc() {
   const pathList = (paths: unknown) => (Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : undefined);
   handle('project:reviewImport', (paths?: unknown, only?: unknown) => controller.reviewImport(pathList(paths), kindOf(only)));
   handle('project:importAssets', (paths?: unknown, only?: unknown, choices?: unknown) => controller.importAssets(pathList(paths), kindOf(only), importChoices(choices)));
+  handle('project:fontFile', (assetId: unknown, opening: unknown) => (typeof assetId === 'string' && typeof opening === 'string' ? controller.fontFile(assetId, opening) : null));
   handle('project:webCopyPlan', (assetId: unknown) => (typeof assetId === 'string' ? controller.webCopyPlan(assetId) : null));
   handle('project:makeWebCopy', (assetId: unknown, opts: unknown) => {
     const o = (opts ?? {}) as { replace?: unknown; opening?: unknown };

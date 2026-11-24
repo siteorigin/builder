@@ -5,6 +5,7 @@ import type { LocalProviderSettings } from './local';
 import type { ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
 import type { ComponentThumb } from './component-thumbs';
 import type { ThemePack } from '@catalogue/pack';
+import type { FontCoverage } from './font-scripts';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
@@ -525,6 +526,13 @@ export interface ImportReview {
 }
 
 /** What the author confirmed in an import review. */
+/** An imported font file, for the editor's samples. */
+export interface FontFileData {
+  bytes: Uint8Array;
+  /** What it covers, from its character map; null when that can't be read. */
+  coverage: FontCoverage | null;
+}
+
 export interface ImportChoices {
   /** The opening of the project the files were reviewed in (its snapshot's workspaceKey); any other refuses the import. */
   opening: string;
@@ -620,6 +628,11 @@ export interface BuilderApi {
      * done differently from what was asked (a copy that would be no smaller), without anything having failed.
      */
     importAssets(paths?: string[], only?: 'image' | 'font' | 'document', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }>;
+    /**
+     * An imported font file's bytes and the alphabets it covers, for samples drawn in the file itself. Null once the
+     * project (`opening`, its workspace key) has closed, or when the file can't be read.
+     */
+    fontFile(assetId: string, opening: string): Promise<FontFileData | null>;
     /** What a web-sized copy of a large library image would be, or null when none can be made from it. */
     webCopyPlan(assetId: string): Promise<{ format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number } | null>;
     /**

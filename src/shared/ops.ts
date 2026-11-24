@@ -511,7 +511,16 @@ export const OPERATION_SCHEMAS = {
     })
   }),
   'asset.update': z.object({ type: z.literal('asset.update'), assetId: z.string(), name: z.string().max(120).optional(), description: limited(TEXT_LIMITS.assetDescription).optional(), altSuggestion: limited(TEXT_LIMITS.altSuggestion).optional(), font: FONT_FACE.optional() }),
-  'asset.remove': z.object({ type: z.literal('asset.remove'), assetId: z.string() }),
+  'asset.remove': z.object({
+    type: z.literal('asset.remove'),
+    assetId: z.string(),
+    fontUses: z
+      .union([z.literal('keep'), z.literal('fallback'), z.object({ replaceWith: z.string().min(1).max(200) })])
+      .optional()
+      .describe(
+        'Editor only, for a font file whose family the site uses, after the author has seen what changes: keep the family on its other files; fall back, taking the family out of every style (each falls back to its next font); or put another font stack in place of the family.'
+      )
+  }),
   'asset.replace': z.object({
     type: z.literal('asset.replace'),
     assetId: z.string(),

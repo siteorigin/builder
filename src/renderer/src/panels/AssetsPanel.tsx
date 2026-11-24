@@ -6,7 +6,8 @@ import type { AltReview, AssetRecord, OwnerRef, ProjectState } from '@shared/typ
 import { api, applyOps, attachToChat, commitOps, getState, inspectorFocusRequest, setState, toast, undoAction, undoAvailable, useStore, type UndoTarget } from '../store';
 import { Field, DraftInput, Segmented, Spinner, Tabs } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
-import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
+import { isValidFontAsset } from '@shared/fonts';
+import { FontList } from './FontFiles';
 import { inSeries, sortAssets } from '@shared/asset-order';
 import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
 import { Picture, Thumb } from '../components/AssetPicture';
@@ -49,96 +50,8 @@ function damage(a: AssetRecord, gone: MissingAssetFiles | undefined): 'all' | 'o
   return (a.variants?.length ?? 0) <= gone.variants.length ? 'all' : 'original';
 }
 
-const WEIGHTS: Array<[string, string]> = [
-  ['100', 'Thin'], ['200', 'Extra light'], ['300', 'Light'], ['400', 'Regular'], ['500', 'Medium'], ['600', 'Semibold'], ['700', 'Bold'], ['800', 'Extra bold'], ['900', 'Black']
-];
-/** "Bold italic", "Variable (100–900)". */
-function faceLabel(a: AssetRecord): string {
-  const w = a.font?.weight ?? '400';
-  const weight = w.includes(' ') ? `Variable (${w.replace(' ', '–')})` : (WEIGHTS.find(([v]) => v === w)?.[1] ?? w);
-  return a.font?.style === 'italic' ? `${weight} italic` : weight;
-}
-const fontLabel = (a: AssetRecord) => `${a.font?.family ?? a.name} ${a.font?.weight ?? ''} ${a.font?.style ?? ''}`;
-
-/** Imported web fonts: each file is one face (weight and style) of a family that Site styles can use. */
-function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string, number> }) {
-  const faceOf = (a: AssetRecord) => ({ family: a.font?.family ?? a.name, weight: a.font?.weight ?? '400', style: a.font?.style ?? ('normal' as const) });
-  const update = (a: AssetRecord, patch: Partial<NonNullable<AssetRecord['font']>>, label: string) => void applyOps([{ type: 'asset.update', assetId: a.id, font: { ...faceOf(a), ...patch } }], label);
-  /** A family is renamed as a whole, so its files stay together and the styles using it follow. */
-  const renameFamily = (a: AssetRecord, family: string) =>
-    void applyOps(
-      fonts.filter((x) => sameFontFamily(x, a)).map((x) => ({ type: 'asset.update' as const, assetId: x.id, font: { ...faceOf(x), family } })),
-      `Rename font family to ${family}`
-    );
-  const remove = async (a: AssetRecord) => {
-    const next = fonts[fonts.indexOf(a) + 1] ?? fonts[fonts.indexOf(a) - 1];
-    const r = await commitOps([{ type: 'asset.remove', assetId: a.id }], `Remove ${a.name}`);
-    if (r) {
-      toast(`Removed ${a.name}.`, 'info', undoAction(r));
-      // Focus moves to the next font's Remove (when it can be used), else to Add fonts, never to the page.
-      requestAnimationFrame(() => ((next && document.querySelector<HTMLElement>(`[data-font="${next.id}"] .font-remove:not(:disabled)`)) || document.querySelector<HTMLElement>('.asset-add'))?.focus());
-    }
-  };
-  return (
-    <section className="font-list" aria-label="Fonts">
-      <p className="font-list-note">
-        Imported fonts are part of your site. Choose one for headings or body text in{' '}
-        <button className="link-btn" onClick={() => openSiteStyles()}>
-          Site styles
-        </button>
-        .
-      </p>
-      <ul>
-        {fonts.map((a) => {
-          const used = usage[a.id] ?? 0;
-          const variable = !!a.font?.weight.includes(' ');
-          // Another file of the same family keeps the styles using it working, so this one can go.
-          const locked = !!used && fonts.filter((x) => sameFontFamily(x, a)).length === 1;
-          return (
-            <li key={a.id} className="font-face" data-font={a.id}>
-              <div className="font-face-head">
-                <b title={a.name}>{a.font?.family ?? a.name}</b>
-                <span className="font-face-meta">
-                  {faceLabel(a)} · {formatBytes(a.bytes)} · {used ? 'In use' : 'Not used'}
-                </span>
-              </div>
-              <div className="font-face-edit">
-                <span className="font-face-label" aria-hidden="true">
-                  Family name, shared by its files
-                </span>
-                <DraftInput
-                  className="input sm"
-                  value={a.font?.family ?? ''}
-                  ariaLabel={`Font family name for ${a.name}`}
-                  onCommit={(v) => {
-                    const family = v.replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 60);
-                    if (!family) return false;
-                    if (family !== a.font?.family) renameFamily(a, family);
-                  }}
-                />
-                <select className="select sm" value={variable ? a.font!.weight : a.font?.weight ?? '400'} disabled={variable} aria-label={`Weight of ${a.name}`} title={variable ? 'A variable font covers a range of weights.' : undefined} onChange={(e) => update(a, { weight: e.target.value }, `Set ${a.name} weight`)}>
-                  {variable && <option value={a.font!.weight}>Variable</option>}
-                  {WEIGHTS.map(([v, l]) => (
-                    <option key={v} value={v}>
-                      {v} {l}
-                    </option>
-                  ))}
-                </select>
-                <select className="select sm" value={a.font?.style ?? 'normal'} aria-label={`Style of ${a.name}`} onChange={(e) => update(a, { style: e.target.value as 'normal' | 'italic' }, `Set ${a.name} style`)}>
-                  <option value="normal">Upright</option>
-                  <option value="italic">Italic</option>
-                </select>
-                <button className="btn btn-sm btn-ghost font-remove" disabled={locked} title={locked ? 'In use by your site styles. Choose another font there first.' : `Remove ${a.name}`} aria-label={`Remove ${a.name}`} onClick={() => void remove(a)}>
-                  <Trash2 />
-                </button>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}
+/** Fonts sort by family, weight and style, and then file: two files of one face (say, two alphabets) sit together. */
+const fontLabel = (a: AssetRecord) => `${a.font?.family ?? a.name} ${a.font?.weight ?? ''} ${a.font?.style ?? ''} ${a.file}`;
 
 /**
  * Downloadable documents: each one's name, the file visitors download, where the site links to it, and what can be

@@ -734,7 +734,10 @@ export interface AssetRecord {
   altSuggestion?: string;
   /** For a font: the family it provides and the weight (or variable range, "100 900") and style of this file. */
   font?: FontFace;
-  /** For a document: the name of the file it came from ("Exhibitor guide.pdf"), which visitors' downloads keep. */
+  /**
+   * For a document: the name of the file it came from ("Exhibitor guide.pdf"), which visitors' downloads keep. For a
+   * font: the name of the file it was imported from, shown to tell its files apart.
+   */
   originalName?: string;
   createdAt: string;
 }

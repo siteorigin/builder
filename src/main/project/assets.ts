@@ -519,7 +519,8 @@ export async function importAsset(
     bytes: stored.bytes,
     hash: stored.hash,
     kind,
-    ...(kind === 'document' ? { originalName: basename(sourcePath).slice(0, 255) } : {}),
+    // A document's downloads keep the name; a font's tells apart files whose stored names lose it ("简体.woff2").
+    ...(kind === 'document' || kind === 'font' ? { originalName: basename(sourcePath).slice(0, 255) } : {}),
     createdAt: opts.createdAt ?? new Date().toISOString(),
     ...(stored.width !== undefined ? { width: stored.width, height: stored.height } : {}),
     ...(stored.variants ? { variants: stored.variants } : {}),

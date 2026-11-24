@@ -1,6 +1,7 @@
 import { propBindingSchema, withProp } from '@shared/bindings';
 import type {
   AltReview,
+  AssetRecord,
   ComponentDefinition,
   GraphNode,
   ImageValue,
@@ -37,7 +38,7 @@ import { collectionCreate, collectionRemove, collectionUpdate, entryCreate, entr
 import { isListBlock, toRichText } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { teaserFields } from '@shared/page-teasers';
-import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily } from '@shared/fonts';
+import { dropFontFamily, familyUses, fontAssetUsages, isValidFontAsset, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily, stackLeadsWith, withoutFamily } from '@shared/fonts';
 import { documentFormat, isDocumentMime } from '@shared/document-files';
 import { catalogueComponent, getTheme, listThemes, themeLockEntry } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
@@ -346,9 +347,13 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'asset.remove': {
       const removing = own(state.assets.assets, op.assetId);
       if (!removing) fail(`Asset "${op.assetId}" does not exist.`);
-      // One face of a family can go while another still provides the family its styles name.
-      const otherFace = removing!.kind === 'font' && Object.values(state.assets.assets).some((x) => x?.id !== op.assetId && sameFontFamily(x, removing!));
-      const uses = otherFace ? 0 : (batchAssetUsages(state, ctx)[op.assetId] ?? 0);
+      if (removing!.kind === 'font' && isValidFontAsset(removing!)) {
+        removeUsedFontFace(state, op.assetId, removing!, op.fontUses);
+        delete state.assets.assets[op.assetId];
+        if (ctx.assetUses) ctx.assetUses.counts = undefined;
+        return {};
+      }
+      const uses = batchAssetUsages(state, ctx)[op.assetId] ?? 0;
       const times = `${uses} time${uses === 1 ? '' : 's'}`;
       if (uses && removing!.kind === 'document') fail(`This document is linked ${times}. Point those links somewhere else first, or give the document a new file instead.`);
       if (uses) fail(`This ${removing!.kind === 'font' ? 'font' : 'image'} is used ${times}. Replace or remove those uses first.`);
@@ -571,9 +576,45 @@ export function assetUsages(state: ProjectState): Record<string, number> {
   for (const p of Object.values(state.pages)) if (p.seo.socialImage) out[p.seo.socialImage] = (out[p.seo.socialImage] ?? 0) + 1;
   for (const e of collectionEntries(state)) if (typeof e.featuredImage === 'string' && e.featuredImage) out[e.featuredImage] = (out[e.featuredImage] ?? 0) + 1;
   // An imported font is in use while a token or style names its family.
-  for (const [id, n] of Object.entries(fontAssetUsages(state))) out[id] = (out[id] ?? 0) + n;
+  for (const [id, n] of Object.entries(fontAssetUsages(state, themeFontTokens(state)))) out[id] = (out[id] ?? 0) + n;
   return out;
 }
+
+/**
+ * Settle the uses of a font file's family before the file goes. Any file of a family the site uses changes how
+ * some text is drawn (a lone italic left to draw upright text, a Cyrillic file whose letters fall back), so it only
+ * goes with the author's choice for those uses, made after seeing what changes: keep the family on its other
+ * files, fall back (the family leaves every style), or put another font in its place.
+ */
+function removeUsedFontFace(state: ProjectState, assetId: string, removing: AssetRecord, choice: Extract<EditOperation, { type: 'asset.remove' }>['fontUses']) {
+  const family = removing.font!.family;
+  const fontTokens = themeFontTokens(state);
+  const uses = familyUses(state, family, fontTokens).length;
+  if (!uses) return;
+  const times = `${uses} time${uses === 1 ? '' : 's'}`;
+  const others = Object.entries(state.assets.assets).some(([k, x]) => k !== assetId && sameFontFamily(x, removing));
+  if (!choice)
+    fail(
+      `This font is used ${times}. ${others ? `Text drawn with this file of ${family} would be drawn with another of its files, or a fallback font. ` : ''}Replace or remove those uses first, or remove the file in Assets, which shows what changes.`
+    );
+  if (choice === 'keep') {
+    if (!others) fail(`This font is used ${times}, and it is the last file of ${family}. Choose another font for its uses, or let them fall back.`);
+    return;
+  }
+  if (choice === 'fallback') return dropFontFamily(state, family, null, fontTokens);
+  const stack = choice!.replaceWith;
+  if (!/^[\p{L}\p{N}_\s'",.-]+$/u.test(stack) || !isSafeCssValue(stack) || stack.split(',').some((part) => !part.trim())) fail('Font stacks may contain names, quotes, commas and hyphens only.');
+  const font = resolveFontStack(state, stack);
+  if ('error' in font) fail(font.error);
+  if (stackLeadsWith(font.stack, family)) fail(`Choose a font other than ${family} to put in its place.`);
+  // A font that lists this family as a backup (a theme's own copy of it) keeps the rest of its stack.
+  const rest = withoutFamily(font.stack, family);
+  if (!rest) fail(`Choose a font other than ${family} to put in its place.`);
+  dropFontFamily(state, family, rest, fontTokens);
+}
+
+/** The theme's font tokens, which may be named other than font.*: a site's choice in one is a use of its family. */
+const themeFontTokens = (state: ProjectState) => new Set(getTheme(state.site.themeId).tokens.filter((t) => t.group === 'font').map((t) => t.id));
 
 /** assetUsages, kept for the rest of a run of removals when the batch holds the counts (ApplyContext.assetUses). */
 function batchAssetUsages(state: ProjectState, ctx: ApplyContext): Record<string, number> {

@@ -1,10 +1,10 @@
 import { app, BrowserWindow, dialog, shell, type OpenDialogOptions } from 'electron';
 import { watch, type FSWatcher } from 'node:fs';
-import { existsSync, mkdtempSync, promises as fs } from 'node:fs';
+import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CreateProjectOptions, ExportFormat, ExportResult, FileText, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
+import type { CreateProjectOptions, ExportFormat, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -23,6 +23,8 @@ import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EX
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
+import { fontCoverage } from './project/media';
+import { isValidFontAsset } from '@shared/fonts';
 import { photoMetadata } from './project/photo-metadata';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools } from './runtime/manager';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
@@ -160,6 +162,9 @@ export async function readManifestSummary(dir: string): Promise<{ ok: true; name
 
 /** How long the preview server gets to notice files just written before a component is photographed. */
 const THUMB_SETTLE_MS = 400;
+
+/** Real web fonts are far smaller; a font file is read whole for the editor's samples. */
+const MAX_FONT_FILE = 32 * 1024 * 1024;
 
 export class Controller {
   session: ProjectSession | null = null;
@@ -1516,6 +1521,35 @@ export class Controller {
       }
       return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
     }));
+  }
+
+  /**
+   * An imported font file's bytes, for the editor to draw its samples in the file itself, and the alphabets it covers.
+   * Null when the project has moved on (`opening`), the record is not a sound font, or the file can't be read.
+   */
+  async fontFile(assetId: string, opening: string): Promise<FontFileData | null> {
+    const s = this.session;
+    if (!s || opening !== this.workspaceKey) return null;
+    const a = s.state.assets.assets[assetId];
+    if (!a || a.id !== assetId || !isValidFontAsset(a)) return null;
+    try {
+      // Only a file really inside the project, wherever a link in its path leads, and no larger than it was checked.
+      const [root, path] = await Promise.all([fs.realpath(s.dir), fs.realpath(join(s.dir, a.file))]);
+      const rel = relative(root, path);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
+      // Opened without waiting, so a pipe at the path can never hold the read up; it is no file and is refused.
+      const fh = await fs.open(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+      try {
+        const st = await fh.stat();
+        if (!st.isFile() || st.size > MAX_FONT_FILE) return null;
+        const bytes = await fh.readFile();
+        return { bytes, coverage: await fontCoverage(bytes) };
+      } finally {
+        await fh.close();
+      }
+    } catch {
+      return null;
+    }
   }
 
   /** What a web-sized copy of a large library image would be, or null when none can be made from it. */

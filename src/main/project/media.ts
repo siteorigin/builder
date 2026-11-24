@@ -5,6 +5,7 @@
  */
 import { promisify } from 'node:util';
 import { brotliDecompress, inflate } from 'node:zlib';
+import { fontCoverageOf, type FontCoverage } from '@shared/font-scripts';
 
 const inflateAsync = promisify(inflate);
 const brotliDecompressAsync = promisify(brotliDecompress);
@@ -375,12 +376,15 @@ const MAX_META_TABLE = 2 * 1024 * 1024;
 /** What a WOFF2 stream may expand to. It holds the whole font, and real web fonts are far smaller. */
 const MAX_WOFF2_OUTPUT = 64 * 1024 * 1024;
 
+/** Tables read when they are there and sound, and skipped otherwise. */
+const OPTIONAL_TABLES = new Set(['cmap']);
+
 /** A message the import dialog can show. Anything else thrown while parsing means the file is damaged. */
 class FontFileError extends Error {}
 
 /** The sfnt tables a font's metadata comes from, out of a WOFF or WOFF2 file. */
 async function fontTables(buf: Buffer): Promise<Map<string, Buffer>> {
-  const want = new Set(['name', 'OS/2', 'fvar']);
+  const want = new Set(['name', 'OS/2', 'fvar', 'cmap']);
   const tables = new Map<string, Buffer>();
   const sig = buf.toString('ascii', 0, 4);
   if (sig === 'wOFF') {
@@ -390,14 +394,20 @@ async function fontTables(buf: Buffer): Promise<Map<string, Buffer>> {
       const e = 44 + k * 20;
       const tag = buf.toString('ascii', e, e + 4);
       if (!want.has(tag)) continue;
-      if (tables.has(tag)) throw new FontFileError('it is damaged');
       const offset = buf.readUInt32BE(e + 4);
       const comp = buf.readUInt32BE(e + 8);
       const orig = buf.readUInt32BE(e + 12);
+      // The character map only adds what a file covers: a font is never refused over it.
+      if (OPTIONAL_TABLES.has(tag) && (tables.has(tag) || orig > MAX_META_TABLE || comp > orig || offset + comp > buf.length)) continue;
+      if (tables.has(tag)) throw new FontFileError('it is damaged');
       if (orig > MAX_META_TABLE || comp > orig || offset + comp > buf.length) throw new FontFileError('it is damaged');
       const raw = buf.subarray(offset, offset + comp);
-      const table = comp < orig ? await inflateAsync(raw, { maxOutputLength: orig }) : raw;
-      if (table.length !== orig) throw new FontFileError('it is damaged');
+      const inflated = comp < orig ? inflateAsync(raw, { maxOutputLength: orig }) : Promise.resolve(raw);
+      const table = OPTIONAL_TABLES.has(tag) ? await inflated.catch(() => null) : await inflated;
+      if (!table || table.length !== orig) {
+        if (OPTIONAL_TABLES.has(tag)) continue;
+        throw new FontFileError('it is damaged');
+      }
       tables.set(tag, table);
     }
     return tables;
@@ -437,7 +447,7 @@ async function fontTables(buf: Buffer): Promise<Map<string, Buffer>> {
   let at = 0;
   for (const t of dir) {
     if (at + t.length > data.length) throw new FontFileError('it is damaged');
-    if (want.has(t.tag)) {
+    if (want.has(t.tag) && !(OPTIONAL_TABLES.has(t.tag) && (tables.has(t.tag) || t.length > MAX_META_TABLE))) {
       if (tables.has(t.tag) || t.length > MAX_META_TABLE) throw new FontFileError('it is damaged');
       tables.set(t.tag, data.subarray(at, at + t.length));
     }
@@ -507,4 +517,105 @@ async function readFontInfo(buf: Buffer): Promise<FontInfo> {
     }
   }
   return { family: family.replace(/[^\p{L}\p{N} _-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Custom font', weight, style: italic ? 'italic' : 'normal' };
+}
+
+/**
+ * The alphabets a WOFF or WOFF2 font covers and a few characters to show it in, from its character map. Null when it
+ * has none that can be read: coverage is only ever shown, never a reason to refuse a font.
+ */
+export async function fontCoverage(buf: Buffer): Promise<FontCoverage | null> {
+  try {
+    const cmap = (await fontTables(buf)).get('cmap');
+    const has = cmap ? cmapLookup(cmap) : null;
+    return has ? fontCoverageOf(has) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The Unicode subtables of a character map that are read. */
+const MAX_SUBTABLES = 4;
+
+/**
+ * Whether a font's character map (`cmap`) gives a code point a glyph, from its Unicode subtables in format 4 (the
+ * Basic Multilingual Plane) or 12 (every plane). Null when it has neither, or they are malformed.
+ */
+export function cmapLookup(cmap: Buffer): ((codePoint: number) => boolean) | null {
+  const lookups: Array<(cp: number) => boolean> = [];
+  try {
+    const count = cmap.readUInt16BE(2);
+    const seen = new Set<number>();
+    for (let k = 0; k < count; k++) {
+      const platform = cmap.readUInt16BE(4 + k * 8);
+      const encoding = cmap.readUInt16BE(6 + k * 8);
+      const at = cmap.readUInt32BE(8 + k * 8);
+      // Unicode (0), or Windows Unicode BMP (3, 1) and full repertoire (3, 10); several records may share a subtable.
+      if (!(platform === 0 || (platform === 3 && (encoding === 1 || encoding === 10))) || seen.has(at)) continue;
+      // Real fonts have a few; each one read is asked about every character a sample looks for.
+      if (seen.size === MAX_SUBTABLES) break;
+      seen.add(at);
+      const format = cmap.readUInt16BE(at);
+      if (format === 4) lookups.push(format4(cmap, at));
+      else if (format === 12) lookups.push(format12(cmap, at));
+    }
+  } catch {
+    return null;
+  }
+  if (!lookups.length) return null;
+  return (cp) => lookups.some((has) => has(cp));
+}
+
+/** Segments ending at `endCode[i]`, each mapping by a delta or through the glyph ID array, read within the subtable. */
+function format4(t: Buffer, at: number): (cp: number) => boolean {
+  const segs = t.readUInt16BE(at + 6) / 2;
+  const ends = at + 14;
+  const starts = ends + segs * 2 + 2;
+  const deltas = starts + segs * 2;
+  const offsets = deltas + segs * 2;
+  if (offsets + segs * 2 > t.length) throw new RangeError('cmap format 4 is cut short');
+  // Its length is 16 bits, which a large subtable wraps: one too short for its own arrays is read to the table's end.
+  const declared = at + t.readUInt16BE(at + 2);
+  const end = declared >= offsets + segs * 2 ? Math.min(t.length, declared) : t.length;
+  return (cp) => {
+    if (cp > 0xffff) return false;
+    // The first segment ending at or after the code point (end codes rise).
+    let lo = 0;
+    let hi = segs;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (t.readUInt16BE(ends + mid * 2) < cp) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo === segs) return false;
+    const start = t.readUInt16BE(starts + lo * 2);
+    if (start > cp) return false;
+    const delta = t.readUInt16BE(deltas + lo * 2);
+    const offsetAt = offsets + lo * 2;
+    const offset = t.readUInt16BE(offsetAt);
+    if (!offset) return ((cp + delta) & 0xffff) !== 0;
+    const glyphAt = offsetAt + offset + (cp - start) * 2;
+    if (glyphAt + 2 > end) return false;
+    const glyph = t.readUInt16BE(glyphAt);
+    return glyph !== 0 && ((glyph + delta) & 0xffff) !== 0;
+  };
+}
+
+/** Groups of consecutive code points mapped to consecutive glyphs, read within the subtable. */
+function format12(t: Buffer, at: number): (cp: number) => boolean {
+  const groups = t.readUInt32BE(at + 12);
+  if (at + 16 + groups * 12 > Math.min(t.length, at + t.readUInt32BE(at + 4))) throw new RangeError('cmap format 12 is cut short');
+  return (cp) => {
+    // The last group starting at or before the code point (start codes rise).
+    let lo = 0;
+    let hi = groups;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (t.readUInt32BE(at + 16 + mid * 12) <= cp) lo = mid + 1;
+      else hi = mid;
+    }
+    if (!lo) return false;
+    const e = at + 16 + (lo - 1) * 12;
+    const start = t.readUInt32BE(e);
+    return cp <= t.readUInt32BE(e + 4) && t.readUInt32BE(e + 8) + (cp - start) !== 0;
+  };
 }

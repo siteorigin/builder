@@ -17,6 +17,7 @@ import { DraftInput, Field, Section, openSection, type DraftHandle, type DraftPr
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
 import { FontSelect, familyName } from './FontSelect';
+import { usePreviewStack } from '../lib/editor-fonts';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
 import type { ForegroundSuggestion } from '@shared/contrast';
 import { NOT_FOUND_LIMITS, clipText, notFoundDefaults } from '@shared/not-found';
@@ -491,6 +492,8 @@ export function SiteStyles() {
   // Layout groups whose sizes are shown as CSS, switched from the group's heading.
   const [cssGroups, setCssGroups] = useState<Set<string>>(() => new Set());
   const say = useCallback((text: string) => setSaid((prev) => (prev === text ? `${text} ` : text)), []);
+  // Samples are drawn in the project's imported files themselves, which the editor loads under names of its own.
+  const shownStack = usePreviewStack();
   if (!snap) return null;
   const st = snap.state;
   // The image menus list images in the order Assets does.
@@ -769,7 +772,7 @@ export function SiteStyles() {
     const selectId = `${uid}-font-${t.id}`;
     return (
       <div className={`ss-font${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row data-token-id={t.id}>
-        <span className="ss-font-sample" style={{ fontFamily: stack }} aria-hidden="true">
+        <span className="ss-font-sample" style={{ fontFamily: shownStack(stack) }} aria-hidden="true">
           Aa
         </span>
         <div className="ss-font-body">
@@ -836,7 +839,7 @@ export function SiteStyles() {
                 id={nameId}
                 className="ss-specimen"
                 style={{
-                  fontFamily: stack,
+                  fontFamily: shownStack(stack),
                   fontWeight: v.weight,
                   // A compressed scale: big styles stay bigger than small ones without filling the dock.
                   fontSize: Math.round(Math.min(30, 12 + (max - 12) * 0.28)),
@@ -1094,7 +1097,7 @@ export function SiteStyles() {
         <div className="ss-theme ss-theme-meta">
           <div className="ss-theme-id">
             <div className="ss-look" style={{ background: hex('color.background') || undefined, color: hex('color.text') || undefined }} aria-hidden="true">
-              <span className="ss-look-type" style={{ fontFamily: displayStack }}>
+              <span className="ss-look-type" style={{ fontFamily: shownStack(displayStack) }}>
                 Aa
               </span>
               <span className="ss-look-button" style={{ background: hex('color.brand') || undefined }} />

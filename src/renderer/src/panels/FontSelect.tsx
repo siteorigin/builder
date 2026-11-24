@@ -29,6 +29,7 @@ export function FontSelect({
   stack,
   follows,
   label,
+  exclude,
   onChoose
 }: {
   id?: string;
@@ -39,9 +40,13 @@ export function FontSelect({
   follows?: string | null;
   /** An accessible name, when no <label> points at `id`. */
   label?: string;
+  /** An imported family to leave out (one being removed). */
+  exclude?: string;
   onChoose: (stack: string) => unknown;
 }) {
-  const imported = projectFontFamilies(state).map((f) => ({ label: f.family, value: importedFontStack(f.family) }));
+  const imported = projectFontFamilies(state)
+    .filter((f) => f.family.toLowerCase() !== exclude?.toLowerCase())
+    .map((f) => ({ label: f.family, value: importedFontStack(f.family) }));
   const builtIn = [...installedFonts(state).map((f) => ({ label: `${f.name} (${f.category})`, value: f.stack })), ...SYSTEM_FONT_CHOICES];
   const all = [...imported, ...builtIn];
   // An equivalent stack (same first family) shows as that font; the stored value stays until a new choice.
@@ -68,7 +73,7 @@ export function FontSelect({
         else if (v && v !== FOLLOWING) onChoose(v);
       }}
     >
-      {follows ? <option value={FOLLOWING}>Same as {follows}</option> : !selected && <option value="">Custom: {familyName(stack)}</option>}
+      {follows ? <option value={FOLLOWING}>Same as {follows}</option> : !selected && <option value="">{stack ? `Custom: ${familyName(stack)}` : 'Choose a font…'}</option>}
       {imported.length > 0 && (
         <optgroup label="Imported fonts">
           {imported.map((f) => (
