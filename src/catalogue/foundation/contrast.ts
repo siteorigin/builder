@@ -5,7 +5,10 @@ import type { ContrastPair } from '@shared/contrast';
  * a primary button is Text on brand on Brand (Brand (strong) on hover); a light button, used on brand
  * panels, reverses them and hovers to a mix of the two; brand-coloured links and text buttons sit straight
  * on the page, cards and alternate sections; text sits on the same three; dark sections set Text on dark
- * sections and the accent on Dark sections.
+ * sections and the accent on Dark sections. The keyboard focus outline is drawn in the focus colour on the three
+ * light grounds; on dark and brand ones it takes their text colour instead, as do links, text buttons and check
+ * marks there, and a primary button there reverses: Dark sections on Text on dark sections, hovering to a mix of
+ * the two. Its fill lands on the section, not the page, hence the varying ground.
  */
 const grounds: Array<[token: string, label: string]> = [
   ['color.background', 'the page'],
@@ -21,6 +24,9 @@ export const FOUNDATION_CONTRAST_PAIRS: ContrastPair[] = [
   ...grounds.map(([bg, label]): ContrastPair => ({ id: `brand-text-${bg.slice(6)}`, use: `Brand-colored links on ${label}`, fg: 'color.brand', bg, state: 'rest', group: 'brand-text', fixable: false })),
   ...grounds.map(([bg, label]): ContrastPair => ({ id: `text-${bg.slice(6)}`, use: `Text on ${label}`, fg: 'color.text', bg, state: 'rest', group: 'text' })),
   ...grounds.map(([bg, label]): ContrastPair => ({ id: `muted-${bg.slice(6)}`, use: `Muted text on ${label}`, fg: 'color.muted', bg, state: 'rest', group: 'muted' })),
+  ...grounds.map(([bg, label]): ContrastPair => ({ id: `focus-${bg.slice(6)}`, use: `Keyboard focus outline on ${label}`, fg: 'color.focus', bg, state: 'rest', group: 'focus', fixable: false, min: 3 })),
   { id: 'dark-text', use: 'Text in dark sections', fg: 'color.on-inverse', bg: 'color.inverse', state: 'rest', group: 'dark-text' },
+  { id: 'dark-button', use: 'Button text in dark sections', fg: 'color.inverse', bg: 'color.on-inverse', state: 'rest', group: 'dark-button', fixable: false, varyingGround: true },
+  { id: 'dark-button-hover', use: 'Button text in dark sections on hover', fg: 'color.inverse', bg: { mix: ['color.on-inverse', 88, 'color.inverse'] }, state: 'hover', group: 'dark-button', fixable: false, varyingGround: true },
   { id: 'dark-accent', use: 'Accent labels in dark sections', fg: 'color.accent', bg: 'color.inverse', state: 'rest', group: 'dark-accent', fixable: false }
 ];
