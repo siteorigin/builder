@@ -85,6 +85,9 @@ describe('finding a conversation', () => {
     const lig = matchConversation({ title: 'Our o\uFB03ce', prompts: [] }, 'f')!;
     expect(lig.end).toBeGreaterThan(lig.start);
     expect('Our o\uFB03ce'.slice(lig.start, lig.end)).toBe('\uFB03');
+    // Part of a ligature carrying an accent takes the accent too.
+    const ligAccent = matchConversation({ title: 'o\uFB03\u0301', prompts: [] }, 'f')!;
+    expect('o\uFB03\u0301'.slice(ligAccent.start, ligAccent.end)).toBe('\uFB03\u0301');
     expect(matchConversation({ title: 'ΚΑΦΕΣ', prompts: [] }, 'καφες')).not.toBeNull();
     // Only what the author asked is searched: a reply's words find nothing.
     expect(matchConversation({ title: 'Homepage', prompts: ['Write a brief'] }, 'terracotta')).toBeNull();
@@ -485,6 +488,40 @@ describe('managing conversations (#235)', () => {
     }
     expect((await env.orch.loadConversations()).active.title).toBe('Final name');
     expect(env.stored(open).title).toBe('Final name');
+  });
+
+  it('a save queued before a rename keeps the name even after switching away, and a rename while a request runs is saved first', async () => {
+    const env = await setup();
+    const open = await env.ask('Write an About page');
+    // Rename queued; a request ends and queues its save; the author starts a new conversation before either runs.
+    let release = hold(env.orch);
+    const renamed = env.orch.renameConversation(open, 'About page');
+    expect((await env.orch.send('And a footer', env.ctx, open)).ok).toBe(true);
+    await until(() => !env.orch.busy, 'the request to finish');
+    await env.orch.newConversation();
+    release();
+    await renamed;
+    await env.orch.loadConversations();
+    expect(env.stored(open)).toMatchObject({ title: 'About page', named: true });
+    expect(env.stored(open).messages).toHaveLength(4);
+
+    // Back in it: a rename asked for just before a request starts is written to the saved file when its turn
+    // comes, before it is answered, and never with the running request's messages.
+    await env.orch.openConversation(open);
+    release = hold(env.orch);
+    const renaming = env.orch.renameConversation(open, 'About and footer');
+    env.adapter.hold = true;
+    expect((await env.orch.send('And a contact form', env.ctx, open)).ok).toBe(true);
+    await until(() => env.adapter.waiting, 'the request to stream');
+    release();
+    await renaming;
+    expect(env.stored(open)).toMatchObject({ title: 'About and footer', named: true });
+    expect(env.stored(open).messages).toHaveLength(4);
+    env.adapter.release();
+    await until(() => !env.orch.busy, 'the request to finish');
+    await env.orch.loadConversations();
+    expect(env.stored(open)).toMatchObject({ title: 'About and footer', named: true });
+    expect(env.stored(open).messages).toHaveLength(6);
   });
 
   it('a first request that reads “New conversation” stays the title after the next one', async () => {

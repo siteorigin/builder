@@ -81,7 +81,12 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
     );
     setBusy(null);
     if (!stillOpen()) return;
-    if (!r.ok) return setError(r.message || 'That conversation could not be opened.');
+    if (!r.ok) {
+      setError(r.message || 'That conversation could not be opened.');
+      // Its Open button was disabled while loading: focus goes back to it, or to the search field.
+      const index = rows.findIndex((row) => row.c.id === c.id);
+      return focusRow(index < 0 ? rows.length : index);
+    }
     onOpened(r.conv);
   };
 

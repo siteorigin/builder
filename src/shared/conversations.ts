@@ -94,11 +94,14 @@ function fold(text: string): { folded: string; from: number[]; to: number[] } {
   const from: number[] = [];
   const to: number[] = [];
   let i = 0;
+  // How many folded units the last character that kept any made: a mark after it belongs to all of them.
+  let last = 0;
   for (const ch of text) {
     const f = ch.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/ς/g, 'σ');
     for (let k = 0; k < f.length; k++) (from.push(i), to.push(i + ch.length));
     // A mark that folds away (a decomposed accent) belongs to the letter before it, so a match takes it along.
-    if (!f && to.length) to[to.length - 1] = i + ch.length;
+    if (!f) for (let k = to.length - last; k < to.length; k++) to[k] = i + ch.length;
+    else last = f.length;
     folded += f;
     i += ch.length;
   }
