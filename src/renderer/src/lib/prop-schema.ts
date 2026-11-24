@@ -34,8 +34,8 @@ export const TYPES: Array<[PropType, string]> = [
   ['list', 'List'],
   ['table', 'Table']
 ];
-/** A list item's fields are single values: no lists or tables inside one. */
-const ITEM_TYPES = TYPES.filter(([t]) => t !== 'list' && t !== 'table');
+/** A list item's fields are single values: no lists or tables inside one, but several choices can be. */
+const ITEM_TYPES: Array<[PropType, string]> = [...TYPES.filter(([t]) => t !== 'list' && t !== 'table'), ['choices', 'Multiple choice']];
 /** The most item fields a list can have. */
 export const MAX_ITEM_FIELDS = 20;
 
@@ -185,7 +185,8 @@ function listSettings(row: SchemaRow): Record<string, unknown> {
     return f?.name.trim();
   };
   const out: Record<string, unknown> = {};
-  if (row.schema.titleField !== undefined) out.titleField = now(row.schema.titleField);
+  // Any type of field can title an item, so the title follows its field through a retype too.
+  if (row.schema.titleField !== undefined) out.titleField = fields.find((x) => x.orig === row.schema.titleField)?.name.trim();
   if (row.schema.pageTeaser && typeof row.schema.pageTeaser === 'object') {
     const teaser: Record<string, unknown> = {};
     // The link and title must stay: one that is gone keeps its old name, for schemaProblems to explain.

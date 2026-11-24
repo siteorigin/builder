@@ -138,6 +138,8 @@ describe('list item fields', () => {
     const retyped = setItemField(row, 1, retype(row.fields![1], 'boolean'));
     expect(retyped.fields![1].schema).toEqual({ type: 'boolean', label: 'Count' });
     expect(saved(retyped).default).toEqual([{ id: 'i_one', title: 'First', count: false }]);
+    // Any field can title an item, so the title follows its field through a retype.
+    expect(saved(setItemField(row, 0, retype(row.fields![0], 'icon'))).titleField).toBe('title');
     const removed = removeItemField(row, 0);
     expect(removed.fields!.map((f) => f.name)).toEqual(['count']);
     expect(saved(removed).titleField).toBeUndefined();
@@ -206,7 +208,10 @@ describe('schema problems', () => {
   });
 
   it('shows a stored type the editor does not offer, so it is not mistaken for another', () => {
-    expect(typeOptions('choices', true)[0]).toEqual(['choices', 'Multiple choice']);
+    // An item field can be several choices; a property shows it only when it already is one.
+    expect(typeOptions('string', true)).toContainEqual(['choices', 'Multiple choice']);
+    expect(typeOptions('string', false).map(([t]) => t)).not.toContain('choices');
+    expect(typeOptions('choices', false)[0]).toEqual(['choices', 'Multiple choice']);
     expect(typeOptions('string', true).map(([t]) => t)).not.toContain('list');
     expect(typeOptions('list', false).map(([t]) => t)).toContain('table');
   });

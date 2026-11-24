@@ -5,7 +5,6 @@ import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { DraftInput, Field } from '../components/ui';
 import {
   MAX_ITEM_FIELDS,
-  TYPES,
   addItemField,
   itemFieldNote,
   optionsText,
@@ -31,6 +30,17 @@ export { hiddenEdits, propertiesFromRows, renamesFromRows, rowsFromProperties, s
 
 /** Told whether a text setting holds typed text it has not committed yet, so Save is ready before the field is left. */
 const TypingContext = createContext<(typing: boolean) => void>(() => {});
+
+/** The editor's open rows and its Undo, for a list's item fields: they open, close and undo like the properties. */
+interface RowsApi {
+  isOpen: (key: string) => boolean;
+  toggle: (key: string) => void;
+  open: (key: string) => void;
+  /** Replace a property, offering Undo with `undo` as what it says when the change threw something away. */
+  change: (next: SchemaRow, undo?: string) => void;
+}
+const RowsContext = createContext<RowsApi | null>(null);
+const typeLabel = (type: unknown) => typeOptions(type as PropType, true).find(([v]) => v === type)?.[1] ?? typeOptions(type as PropType, false).find(([v]) => v === type)?.[1] ?? 'a new type';
 
 /** The nearest valid code name to what was typed: "Hero Title" becomes heroTitle. */
 function camelSuggestion(name: string): string | null {
@@ -183,7 +193,7 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
           className="select sm"
           value={type}
           aria-label={named('type')}
-          onChange={(e) => onRetype(retype(row, e.target.value as PropType), holdsSettings(s))}
+          onChange={(e) => onRetype(retype(row, e.target.value as PropType), holdsSettings(s) || !!row.fields)}
         >
           {/* A type this editor does not offer (several choices, set in code) is still shown as what it is. */}
           {typeOptions(type, !!list).map(([v, l]) => (
@@ -230,7 +240,7 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
           </>
         )}
         {type === 'number' && (
-          <div className="schema-grid-3">
+          <div className="schema-grid-4">
             <Field label="Default" error={drafts.default?.message}>
               <DraftInput className="input sm" value={shown('default', s.default === undefined ? '' : String(s.default))} onLive={live(shown('default', s.default === undefined ? '' : String(s.default)))} onCommit={commitNumber('default', 'Default')} ariaLabel={named('default')} />
             </Field>
@@ -239,6 +249,9 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
             </Field>
             <Field label="Maximum" error={drafts.max?.message ?? rangeError}>
               <DraftInput className="input sm" value={shown('max', s.max === undefined ? '' : String(s.max))} onLive={live(shown('max', s.max === undefined ? '' : String(s.max)))} onCommit={commitNumber('max', 'Maximum')} ariaLabel={named('maximum')} />
+            </Field>
+            <Field label="Step" error={drafts.step?.message}>
+              <DraftInput className="input sm" value={shown('step', s.step === undefined ? '' : String(s.step))} onLive={live(shown('step', s.step === undefined ? '' : String(s.step)))} onCommit={commitNumber('step', 'Step')} ariaLabel={named('step')} />
             </Field>
           </div>
         )}
@@ -316,19 +329,14 @@ function RowEditor({ row, open, problem, readOnly, onToggle, onChange, onRetype,
 
 /** A list's item fields, edited as rows of their own: name, label, type and the settings that type takes. */
 function ItemFields({ row, onChange, readOnly }: { row: SchemaRow; onChange: (r: SchemaRow) => void; readOnly?: boolean }) {
+  const rows = useContext(RowsContext)!;
   const fields = row.fields ?? [];
   const own = row.name || 'New property';
-  const [open, setOpen] = useState<Set<string>>(() => new Set());
   const problems = nameProblems(fields);
-  const toggle = (key: string) =>
-    setOpen((o) => {
-      const next = new Set(o);
-      if (!next.delete(key)) next.add(key);
-      return next;
-    });
+  const named = (f: SchemaRow) => String(f.schema.label || f.name);
   const add = () => {
     const next = addItemField(row);
-    setOpen((o) => new Set(o).add(next.fields!.at(-1)!.key));
+    rows.open(next.fields!.at(-1)!.key);
     onChange(next);
   };
   return (
@@ -346,13 +354,13 @@ function ItemFields({ row, onChange, readOnly }: { row: SchemaRow; onChange: (r:
           key={f.key}
           row={f}
           list={own}
-          open={open.has(f.key)}
+          open={rows.isOpen(f.key)}
           problem={problems.get(f.key)}
           readOnly={readOnly}
-          onToggle={() => toggle(f.key)}
+          onToggle={() => rows.toggle(f.key)}
           onChange={(next) => onChange(setItemField(row, i, next))}
-          onRetype={(next) => onChange(setItemField(row, i, next))}
-          onRemove={fields.length > 1 ? () => onChange(removeItemField(row, i)) : undefined}
+          onRetype={(next, lost) => rows.change(setItemField(row, i, next), lost ? `Changed the field “${named(next)}” of “${String(row.schema.label || own)}” to ${typeLabel(next.schema.type)}. Its earlier settings were cleared.` : undefined)}
+          onRemove={fields.length > 1 ? () => rows.change(removeItemField(row, i), `Removed the field “${named(f)}” from “${String(row.schema.label || own)}”.`) : undefined}
         />
       ))}
     </div>
@@ -407,9 +415,13 @@ export function PropSchemaEditor({ rows, onChange, readOnly, onTyping }: { rows:
     const first = rows.find((r) => problems.has(r.key) || rowProblemCount(r));
     if (!first) return;
     pendingFocus.current = `[data-row-key="${first.key}"] [aria-invalid="true"]`;
+    // A problem in an item field's settings is inside that field too, so it opens as well.
+    const fieldNames = nameProblems(first.fields ?? []);
+    const field = first.fields?.find((f) => !fieldNames.has(f.key) && settingProblems(f).length);
     setOpen((o) => {
       const next = new Set(o);
       if (!problems.has(first.key)) next.add(first.key);
+      if (field) next.add(field.key);
       return next;
     });
   };
@@ -438,8 +450,18 @@ export function PropSchemaEditor({ rows, onChange, readOnly, onTyping }: { rows:
   };
   const retyped = (i: number, next: SchemaRow, lost: boolean) => {
     const after = rows.map((x, j) => (j === i ? next : x));
-    if (lost) setUndo({ message: `Changed “${String(next.schema.label || next.name)}” to ${TYPES.find(([v]) => v === next.schema.type)?.[1] ?? 'a new type'}. Its earlier settings were cleared.`, before: rows, after, key: next.key });
+    if (lost) setUndo({ message: `Changed “${String(next.schema.label || next.name)}” to ${typeLabel(next.schema.type)}. Its earlier settings were cleared.`, before: rows, after, key: next.key });
     onChange(after);
+  };
+  const rowsApi: RowsApi = {
+    isOpen: (key) => open.has(key),
+    toggle,
+    open: (key) => setOpen((o) => new Set(o).add(key)),
+    change: (next, message) => {
+      const after = rows.map((x) => (x.key === next.key ? next : x));
+      if (message) setUndo({ message, before: rows, after, key: next.key });
+      onChange(after);
+    }
   };
   const restore = () => {
     if (!undoable) return;
@@ -454,6 +476,7 @@ export function PropSchemaEditor({ rows, onChange, readOnly, onTyping }: { rows:
   );
   return (
     <TypingContext.Provider value={typing}>
+    <RowsContext.Provider value={rowsApi}>
     {/* Leaving a field commits it (or, after Escape, abandons it), so its typing is over either way. */}
     <div className="schema-editor" ref={root} onFocus={(e) => (e.target as HTMLElement).closest('.schema-row') && clearOfHead(e.target as HTMLElement)} onBlur={() => typing(false)}>
       <div className="schema-head">
@@ -508,6 +531,7 @@ export function PropSchemaEditor({ rows, onChange, readOnly, onTyping }: { rows:
         </div>
       )}
     </div>
+    </RowsContext.Provider>
     </TypingContext.Provider>
   );
 }
