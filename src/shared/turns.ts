@@ -62,8 +62,13 @@ const KEPT_CLAIMS = [' The changes so far are checked and kept, and you can undo
  * the app's own sentences saying its changes are kept and it can be continued. The assistant's words stay.
  */
 export function summaryNow(turn: TurnState): string {
-  if (!turn.result.incomplete || !turn.result.canUndo || canCarryOn(turn)) return turn.result.summary;
-  return KEPT_CLAIMS.reduce((s, claim) => s.replace(claim, ''), turn.result.summary);
+  const said = turn.result.summary;
+  // A transcript is read back from disk: a summary that is not text is none.
+  if (typeof said !== 'string') return '';
+  if (!turn.result.incomplete || !turn.result.canUndo || canCarryOn(turn)) return said;
+  // The app ended the summary with them; the same words anywhere else (a page title, say) are left alone.
+  const claim = KEPT_CLAIMS.find((c) => said.endsWith(c));
+  return claim ? said.slice(0, -claim.length) : said;
 }
 
 /**

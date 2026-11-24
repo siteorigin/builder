@@ -312,5 +312,10 @@ describe('where an AI turn stands, read from History (issue 276)', () => {
     expect(at(missing, [])).toBe('This request is not finished yet. The page Reader requests was not built.');
     // A finished turn says what it said, whatever its standing.
     expect(summaryNow(turnState(turn('a2', 'r2', { summary: 'The changes made so far are checked and kept.' }), steps([{ runId: 'r2', applied: false }]))!)).toBe('The changes made so far are checked and kept.');
+    // Only the app's own ending goes: the same words inside a page title stay where they are.
+    const titled = 'This request is not finished yet. The page " The changes made so far are checked and kept. Press Continue, or reply "continue", to finish it." was not built.';
+    expect(at(titled, [])).toBe(titled);
+    // A summary read back from disk that is not text is none.
+    expect(summaryNow(turnState(turn('a3', 'r3', { summary: undefined as unknown as string, incomplete: true }), steps([]))!)).toBe('');
   });
 });
