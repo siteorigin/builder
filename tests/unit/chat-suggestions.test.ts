@@ -66,7 +66,7 @@ describe('starters for the page being edited', () => {
     const list = starters(state, second);
     expect(list).toEqual([
       // The open page is "お問い合わせ", whose intro holds only its title.
-      { kind: 'page', text: 'Build out the “お問い合わせ” page: it is mostly empty, so add the sections and content it needs' },
+      { kind: 'page', text: 'Build out the mostly empty “お問い合わせ” page with the sections it needs' },
       // Home is another page, and says so.
       { kind: 'cross-page', text: 'On another page, “Home”: build out its content, it is mostly empty' },
       // お問い合わせ is the contact page, so Contact is not offered again; the next missing page is.
@@ -91,7 +91,7 @@ describe('starters for the page being edited', () => {
     expect(starters(state, second)[0].text).toBe('Place the “Old pier” image on the “お問い合わせ” page, where it fits best');
     // Everything is in use and described: the placed image can be improved.
     delete state.assets.assets.a_old;
-    expect(starters(state, second)[0].text).toBe('Improve how the “Harbor light” image looks and reads on the “お問い合わせ” page');
+    expect(starters(state, second)[0].text).toBe('Improve the placement and alt text of the “Harbor light” image on the “お問い合わせ” page');
     // An image field with nothing in it takes the newest unused image from the library.
     state.assets.assets.a_new = asset('a_new', 'Sea wall', { createdAt: '2026-11-23T10:00:00.000Z' });
     hero.props.image = { assetId: null, alt: '' };
@@ -118,19 +118,19 @@ describe('starters for the page being edited', () => {
 
   it('tells a mostly empty page from one with content, and an empty page from both', () => {
     const { state, second } = lighthouse();
-    expect(starters(state, second)[0].text).toMatch(/^Build out the “お問い合わせ” page/);
+    expect(starters(state, second)[0].text).toMatch(/^Build out the mostly empty “お問い合わせ” page/);
     // A page with nothing on it is started.
     state.pages[second].rootIds = [];
     expect(starters(state, second)[0].text).toBe('Start the “お問い合わせ” page: add an introduction and the sections it needs');
     // A page with real content is improved rather than built out, with its own copy counted from component properties.
     const rich = createStarterState('business', 'Studio', false);
     const home = rich.site.homePageId;
-    expect(texts(starters(rich, home))).toContain('Rewrite the opening of the “Home” page to sound warmer and more confident');
+    expect(texts(starters(rich, home))).toContain('Make the opening of the “Home” page warmer and more confident');
     // Its hero has an empty image, which no library image fills.
     expect(starters(rich, home)[0].text).toBe('Suggest what kind of photo suits the empty image on the “Home” page');
     // A Home with a title and one line is still mostly empty; Blank's Home starts with nothing on it.
     const welcome = blankWithWelcome('Test');
-    expect(starters(welcome, welcome.site.homePageId)[0].text).toMatch(/^Build out the “Home” page/);
+    expect(starters(welcome, welcome.site.homePageId)[0].text).toMatch(/^Build out the mostly empty “Home” page/);
     const blank = createStarterState('blank', 'Test', false);
     expect(starters(blank, blank.site.homePageId)[0].text).toMatch(/^Start the “Home” page/);
     // A long piece of copy in one text node is content, however few nodes it is in.
@@ -138,7 +138,7 @@ describe('starters for the page being edited', () => {
     const text: GraphNode = { id: 'n_long', kind: 'text', tag: 'p', text: 'Lighthouse keepers wrote their days down in logbooks. '.repeat(8) };
     long.state.pages[long.second].nodes.n_long = text;
     long.state.pages[long.second].rootIds.push('n_long');
-    expect(starters(long.state, long.second)[0].text).toMatch(/^Rewrite the opening of the “お問い合わせ” page/);
+    expect(starters(long.state, long.second)[0].text).toMatch(/^Make the opening of the “お問い合わせ” page/);
   });
 
   it('offers another page only when it exists, by its current title, and marks it as another page', () => {
@@ -161,7 +161,7 @@ describe('starters for the page being edited', () => {
     state.pages[second].title = 'The “Big”\n"Day"  out and then a very long title that goes on past any sensible length for a button';
     const [first] = texts(starters(state, second));
     expect(first).not.toMatch(/\n/);
-    expect(first).toMatch(/^Build out the “The 'Big' 'Day' out and then a very long title that goes on…” page: /);
+    expect(first).toMatch(/^Build out the mostly empty “The 'Big' 'Day' out and then a very long title that goes on…” page with /);
     state.pages[second].title = 'Home ';
     expect(texts(starters(state, second))[0]).toContain(`“Home” (${state.pages[second].route})`);
   });
@@ -169,11 +169,11 @@ describe('starters for the page being edited', () => {
   it('follows the page the message goes to: Home when the page is left out, and Home when the viewed page is gone', () => {
     const { state, home, second } = lighthouse();
     const off = starters(state, second, { context: { page: false, selection: true } });
-    expect(texts(off)[0]).toMatch(/^Build out the “Home” page/);
+    expect(texts(off)[0]).toMatch(/^Build out the mostly empty “Home” page/);
     // With the page left out, nothing says which page "another" is, so no other page is offered.
     expect(off.map((s) => s.kind)).not.toContain('cross-page');
     const gone = starters(state, 'pg_deleted');
-    expect(texts(gone)[0]).toMatch(/^Build out the “Home” page/);
+    expect(texts(gone)[0]).toMatch(/^Build out the mostly empty “Home” page/);
     expect(texts(starters(state, null))[0]).toMatch(/“Home”/);
     expect(texts(gone).join('\n')).toContain('On another page, “お問い合わせ”');
     expect(home).toBeTruthy();
@@ -297,7 +297,7 @@ describe('starters for a selection', () => {
   it('writes for text that is empty and rewrites text that is not', () => {
     const { state, home } = lighthouse();
     const heading = Object.values(state.pages[home].nodes).find((n) => n.kind === 'text' && n.tag === 'h1')!;
-    expect(texts(picked(state, onPage(home, heading.id)))[0]).toBe('Rewrite the Heading 1 to sound warmer and more confident');
+    expect(texts(picked(state, onPage(home, heading.id)))[0]).toBe('Make the Heading 1 warmer and more confident');
     (heading as { text: string }).text = '  ';
     expect(texts(picked(state, onPage(home, heading.id)))[0]).toBe('Write the text for the Heading 1');
   });
@@ -336,7 +336,7 @@ describe('starters for a selection', () => {
     expect(texts(picked(state, link({ type: 'page', target: second })))[0]).toBe('Reword the Button so it clearly leads to the “お問い合わせ” page');
     expect(texts(picked(state, link({ type: 'none', target: '' })))[0]).toBe('Link the Button to the “お問い合わせ” page and word it to match');
     // A link to an address outside the site has no page to name.
-    expect(texts(picked(state, link({ type: 'url', target: 'https://example.com' })))[0]).toBe('Rewrite the Button to sound warmer and more confident');
+    expect(texts(picked(state, link({ type: 'url', target: 'https://example.com' })))[0]).toBe('Make the Button warmer and more confident');
   });
 
   it('names where a shared or component element lives, and only suggests copy for a section that has some', () => {
@@ -372,18 +372,18 @@ describe('what the page holds, counted the way the page shows it', () => {
     };
     // The component has no copy of its own, and none is placed in it: the page is mostly empty.
     place();
-    expect(starters(state, second)[0].text).toMatch(/^Build out the “お問い合わせ” page/);
+    expect(starters(state, second)[0].text).toMatch(/^Build out the mostly empty “お問い合わせ” page/);
     // Copy written into the component is on every page it is placed on.
     def.tree!.nodes.n_lit = { id: 'n_lit', kind: 'text', tag: 'p', text: copy };
     inner.children.push('n_lit');
-    expect(starters(state, second)[0].text).toMatch(/^Rewrite the opening of the “お問い合わせ” page/);
+    expect(starters(state, second)[0].text).toMatch(/^Make the opening of the “お問い合わせ” page/);
     // Copy that shows only when a condition holds, or once per item of a list, is not known to be on the page.
     def.tree!.nodes.n_lit = { id: 'n_lit', kind: 'text', tag: 'p', text: copy, when: { $prop: 'shown' } };
-    expect(starters(state, second)[0].text).toMatch(/^Build out the “お問い合わせ” page/);
+    expect(starters(state, second)[0].text).toMatch(/^Build out the mostly empty “お問い合わせ” page/);
     def.tree!.nodes.n_lit = { id: 'n_lit', kind: 'text', tag: 'p', text: copy };
     def.tree!.nodes.n_rep = { id: 'n_rep', kind: 'repeat', list: { $prop: 'items' }, children: ['n_lit'] };
     inner.children = inner.children.filter((c) => c !== 'n_lit').concat('n_rep');
-    expect(starters(state, second)[0].text).toMatch(/^Build out the “お問い合わせ” page/);
+    expect(starters(state, second)[0].text).toMatch(/^Build out the mostly empty “お問い合わせ” page/);
   });
 
   it('counts a list item as the list shows it: a field the item leaves out is the list default, and four short pieces are not a mostly empty page', () => {
@@ -395,7 +395,7 @@ describe('what the page holds, counted the way the page shows it', () => {
     state.pages[second].nodes[strip.id] = strip;
     state.pages[second].rootIds.push(strip.id);
     // Heading plus three names the list inherits: four pieces of copy, so the page is not mostly empty.
-    expect(starters(state, second)[0].text).toMatch(/^Rewrite the opening/);
+    expect(starters(state, second)[0].text).toMatch(/^Make the opening/);
     delete state.pages[second].nodes[strip.id];
     state.pages[second].rootIds = [];
     const feature = makeInstance(state.components[installComponent(state, 'features.grid')], { eyebrow: '', heading: 'Ways', lead: '', items: [] });
@@ -426,7 +426,7 @@ describe('what the page holds, counted the way the page shows it', () => {
     state.pages[second].nodes.n_bad = { id: 'n_bad', kind: 'text', tag: 'p', text: [{ type: 'p', spans: [null] }] } as unknown as GraphNode;
     state.pages[second].rootIds.push('n_bad');
     expect(() => starters(state, second)).not.toThrow();
-    expect(starters(state, second)[0].text).toMatch(/^Build out the “お問い合わせ” page/);
+    expect(starters(state, second)[0].text).toMatch(/^Build out the mostly empty “お問い合わせ” page/);
     // Whatever else is wrong, the chat still opens.
     (state.site as { pageOrder: unknown }).pageOrder = null;
     expect(starters(state, second, { assetUsage: {} })).toEqual([]);
@@ -470,7 +470,7 @@ describe('the image starter picks a real target', () => {
     addHero(deco.state, deco.second, { assetId: 'a_photo', alt: '', decorative: true });
     expect(starters(deco.state, deco.second).map((s) => s.kind)).toEqual(['page', 'cross-page', 'create-page']);
     // The hero's copy fills the page, and its decorative image needs no description: the copy is what is left to work on.
-    expect(starters(deco.state, deco.second)[0].text).toBe('Rewrite the opening of the “お問い合わせ” page to sound warmer and more confident');
+    expect(starters(deco.state, deco.second)[0].text).toBe('Make the opening of the “お問い合わせ” page warmer and more confident');
   });
 });
 
@@ -483,7 +483,7 @@ describe('other pages and missing pages, more closely', () => {
     third.pages[thirdId].nodes.n_long = { id: 'n_long', kind: 'text', tag: 'p', text: copy.repeat(4) };
     third.pages[thirdId].rootIds.push('n_long');
     // Home is first in the order, but is not what is offered while a different page can be.
-    expect(texts(starters(third, second))).toContain('On another page, “Keepers”: rewrite the opening section to sound warmer and more confident');
+    expect(texts(starters(third, second))).toContain('On another page, “Keepers”: make the opening shorter and easier to scan');
     expect(texts(starters(third, home))).toContain('On another page, “お問い合わせ”: build out its content, it is mostly empty');
     // With only Home besides the open page, Home is offered.
     expect(starters(state, second)[1].text).toMatch(/^On another page, “Home”/);
@@ -552,20 +552,20 @@ describe('selection starters follow the component the element belongs to', () =>
   it('reads a bound text from the placement, else the component default, and a repeated item from its own field', () => {
     const { state, second } = lighthouse();
     const hero = part(state, second, 'hero.split', { heading: 'Hello' }, 'heading');
-    expect(ask(state, second, hero.ref)[0]).toBe('Rewrite the Heading to sound warmer and more confident');
+    expect(ask(state, second, hero.ref)[0]).toBe('Make the Heading warmer and more confident');
     hero.inst.props.heading = '';
     expect(ask(state, second, hero.ref)).toEqual(['Write the text for the Heading', 'Suggest three ways to write the Heading']);
     delete hero.inst.props.heading;
     // Unset, the page shows the component's own sample heading.
-    expect(ask(state, second, hero.ref)[0]).toBe('Rewrite the Heading to sound warmer and more confident');
+    expect(ask(state, second, hero.ref)[0]).toBe('Make the Heading warmer and more confident');
     // A repeated card: its own title decides, not the list's first item.
     const blank = { link: { type: 'none', target: '' }, linkLabel: '', description: '', icon: 'compass' };
     const grid = part(state, second, 'features.grid', { items: [{ ...blank, title: 'Planning' }, { ...blank, title: '' }] }, 'cardTitle');
     const [a, b] = (grid.inst.props.items as Array<{ id: string }>).map((i) => i.id);
     expect(ask(state, second, { ...grid.ref, itemPath: [b] })[0]).toBe('Write the text for the Card title');
-    expect(ask(state, second, { ...grid.ref, itemPath: [a] })[0]).toBe('Rewrite the Card title to sound warmer and more confident');
+    expect(ask(state, second, { ...grid.ref, itemPath: [a] })[0]).toBe('Make the Card title warmer and more confident');
     // An item that is not in the list leaves the value unknown, which is not taken for empty.
-    expect(ask(state, second, { ...grid.ref, itemPath: ['i_gone'] })[0]).toBe('Rewrite the Card title to sound warmer and more confident');
+    expect(ask(state, second, { ...grid.ref, itemPath: ['i_gone'] })[0]).toBe('Make the Card title warmer and more confident');
   });
 
   it('reads a repeated image from its own item: decorative or empty, with and without other images to offer', () => {
@@ -591,14 +591,14 @@ describe('selection starters follow the component the element belongs to', () =>
     };
     const asks = (target: LinkNode['link']) => texts(starters(third.state, home, { selection: link(target) }));
     expect(asks({ type: 'page', target: keepers })[0]).toBe('Reword the Button so it clearly leads to the “Keepers” page');
-    expect(asks({ type: 'page', target: 'pg_deleted' })).toEqual(['Rewrite the Button to sound warmer and more confident', 'Make the Button shorter and easier to scan']);
-    expect(asks({ type: 'url', target: 'https://example.com' })).toEqual(['Rewrite the Button to sound warmer and more confident', 'Make the Button shorter and easier to scan']);
+    expect(asks({ type: 'page', target: 'pg_deleted' })).toEqual(['Make the Button warmer and more confident', 'Make the Button shorter and easier to scan']);
+    expect(asks({ type: 'url', target: 'https://example.com' })).toEqual(['Make the Button warmer and more confident', 'Make the Button shorter and easier to scan']);
     // An unlinked button is offered the first other page; with no other page there is nothing to link it to.
     expect(asks({ type: 'none', target: '' })[0]).toBe('Link the Button to the “お問い合わせ” page and word it to match');
     const only = createStarterState('blank', 'Test', false);
     only.pages[only.site.homePageId].nodes.n_link = { id: 'n_link', kind: 'link', label: 'Go', link: { type: 'none', target: '' }, appearance: 'primary' };
     only.pages[only.site.homePageId].rootIds.push('n_link');
-    expect(texts(starters(only, only.site.homePageId, { selection: { owner: { kind: 'page', id: only.site.homePageId }, instancePath: [], nodeId: 'n_link' } }))).toEqual(['Rewrite the Button to sound warmer and more confident', 'Make the Button shorter and easier to scan']);
+    expect(texts(starters(only, only.site.homePageId, { selection: { owner: { kind: 'page', id: only.site.homePageId }, instancePath: [], nodeId: 'n_link' } }))).toEqual(['Make the Button warmer and more confident', 'Make the Button shorter and easier to scan']);
     void second;
   });
 
@@ -619,6 +619,6 @@ describe('selection starters follow the component the element belongs to', () =>
     expect(ask(state, second, on('n_box'))).toEqual(['Add a heading, some text and a button to the Section', 'Suggest a better layout for the Section']);
     state.pages[second].nodes.n_text = { id: 'n_text', kind: 'text', tag: 'p', text: 'Words' };
     state.pages[second].rootIds.push('n_text');
-    expect(ask(state, second, on('n_text'))).toEqual(['Rewrite the Text to sound warmer and more confident', 'Make the Text shorter and easier to scan', 'Suggest three other ways to write the Text']);
+    expect(ask(state, second, on('n_text'))).toEqual(['Make the Text warmer and more confident', 'Make the Text shorter and easier to scan', 'Suggest three other ways to write the Text']);
   });
 });

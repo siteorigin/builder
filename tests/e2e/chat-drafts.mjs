@@ -18,7 +18,7 @@ await win.reload();
 await win.waitForSelector('.welcome');
 
 const message = () => win.getByRole('textbox', { name: 'Message' });
-const suggestions = () => win.getByRole('group', { name: 'Each fills the box below, ready to edit.' });
+const suggestions = () => win.getByRole('group', { name: 'Pick one to fill the box' });
 const sendButton = () => win.locator('.send-btn');
 const chatTitle = () => win.locator('.chat-title');
 const openAiTab = async () => {
@@ -137,7 +137,7 @@ await win.getByRole('menuitemradio', { name: /^お問い合わせ/ }).click();
 await eventually(async () => assert.match(await win.locator('.toolbar .project-title').innerText(), /お問い合わせ/, 'the second page is open'));
 // The open page comes first, Home is labelled as another page, and お問い合わせ is the contact page, so About is the page offered.
 const forSecond = [
-  'Build out the “お問い合わせ” page: it is mostly empty, so add the sections and content it needs',
+  'Build out the mostly empty “お問い合わせ” page with the sections it needs',
   'On another page, “Home”: add an introduction and the sections it needs',
   create('About', 'who is behind the site, what it stands for and a call to action')
 ];
@@ -145,10 +145,17 @@ await eventually(async () => assert.deepEqual(await starterTexts(), forSecond));
 // Renaming the open page renames its starters.
 await win.evaluate((id) => window.builder.project.apply({ operations: [{ type: 'page.update', pageId: id, title: 'Say hello' }] }, { label: 'Rename page' }), (await win.evaluate(() => window.builder.project.snapshot())).state.site.pageOrder[1]);
 await eventually(async () => assert.deepEqual(await starterTexts(), [forSecond[0].replace('お問い合わせ', 'Say hello'), ...forSecond.slice(1)]));
+// A starter about another page widens what the AI may change for its own draft, and clearing the draft gives the
+// page scope back.
+const scopeChip = () => win.locator('.composer .scope-chip');
+const scopeBefore = await scopeChip().getAttribute('aria-label');
+assert.match(scopeBefore, /^What the AI may change: (?!Whole site)/, 'the page scope comes first');
 await suggestions().locator('.suggestion', { hasText: 'On another page' }).click();
 await composerIs(forSecond[1]);
+await eventually(async () => assert.match(await scopeChip().getAttribute('aria-label'), /^What the AI may change: Whole site/));
 await message().fill('');
 await suggestions().waitFor();
+await eventually(async () => assert.equal(await scopeChip().getAttribute('aria-label'), scopeBefore));
 await type('Lantern light');
 await win.evaluate(() => window.builder.projects.close());
 await win.waitForSelector('.welcome');

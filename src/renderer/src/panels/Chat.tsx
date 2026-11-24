@@ -28,6 +28,9 @@ function Md({ text }: { text: string }) {
   );
 }
 
+/** Said when a starter widens what the AI may change, so the change of scope is heard as well as seen. */
+const WIDENED_SAY = 'What the AI may change is now the whole site, for this message.';
+
 /** What the run strip says for each phase of a run. */
 const PHASE: Record<string, string> = {
   preparing: 'Getting started',
@@ -339,6 +342,52 @@ export function Chat() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runStatus, activeRunId, conversation]);
 
+  // A starter that needs more than this page widens the scope for its own draft only, kept per conversation: the
+  // scope is Whole site while that draft is in front of the author (again after coming back to it), and the earlier
+  // choice returns once the draft is cleared or sent (a sent message keeps the scope it was sent with) or another
+  // conversation is shown. Picking a scope by hand ends it, so a choice the author made is never undone.
+  const starterWidened = useRef(new Map<string, ChatEditScope>());
+  const widenedHere = useRef<string | null>(null);
+  const setScope = (to: ChatEditScope) => setState({ chatContextEnabled: { ...getState().chatContextEnabled, scope: to } });
+  /** A draft moved to another conversation takes its widened scope along. */
+  const moveWidened = (from: string, to: string) => {
+    const scope = starterWidened.current.get(from);
+    if (scope === undefined) return;
+    starterWidened.current.delete(from);
+    starterWidened.current.set(to, scope);
+  };
+  useEffect(() => {
+    const id = conversation?.id ?? null;
+    const left = widenedHere.current;
+    if (left && left !== id) {
+      widenedHere.current = null;
+      const from = starterWidened.current.get(left);
+      if (from !== undefined && getState().chatContextEnabled.scope === 'site') setScope(from);
+    }
+    const from = id ? starterWidened.current.get(id) : undefined;
+    if (!id || from === undefined) return;
+    if (!draft.trim()) {
+      starterWidened.current.delete(id);
+      if (widenedHere.current === id) {
+        widenedHere.current = null;
+        if (getState().chatContextEnabled.scope === 'site') setScope(from);
+      }
+      // Cleared, so the next widening is announced again.
+      setAnnounce((said) => (said === WIDENED_SAY ? '' : said));
+      return;
+    }
+    if (widenedHere.current !== id) {
+      const now = getState().chatContextEnabled.scope;
+      if (now !== 'site') starterWidened.current.set(id, now);
+      widenedHere.current = id;
+      setScope('site');
+      // Coming back to the draft widens again, so it is said again.
+      setAnnounce('');
+      requestAnimationFrame(() => setAnnounce(WIDENED_SAY));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, conversation?.id]);
+
   if (!snap) return null;
   const st = snap.state;
   // What the next message is about: the page, or the component edited everywhere, and the element within it.
@@ -450,7 +499,13 @@ export function Chat() {
       el,
       [
         { heading: askMode ? 'Your question is about' : 'What the AI may change' },
-        ...scopeOptions.map((o) => ({ label: o.label, description: o.description, ariaLabel: o.title, icon: o.icon, checked: o.value === scopeNow?.value, onSelect: () => (setState({ chatContextEnabled: { ...ctxOn, scope: o.value } }), focusComposer()) }))
+        ...scopeOptions.map((o) => ({ label: o.label, description: o.description, ariaLabel: o.title, icon: o.icon, checked: o.value === scopeNow?.value, onSelect: () => {
+          if (conversation) starterWidened.current.delete(conversation.id);
+          widenedHere.current = null;
+          setAnnounce((said) => (said === WIDENED_SAY ? '' : said));
+          setState({ chatContextEnabled: { ...ctxOn, scope: o.value } });
+          focusComposer();
+        } }))
       ],
       askMode ? 'Your question is about' : 'What the AI may change',
       { focusLast, above: true }
@@ -631,7 +686,7 @@ export function Chat() {
         ...(unsent.length
           ? [
               { heading: 'Not sent yet' },
-              ...unsent.map((d) => ({ label: d.text.trim().split('\n')[0].slice(0, 60) || `Message with ${d.images === 1 ? '1 image' : `${d.images} images`}`, hint: d.images ? `Draft · ${d.images === 1 ? '1 image' : `${d.images} images`}` : 'Draft', onSelect: () => show(api.ai.newConversation(), (c) => ({ chatDrafts: moveDraft(getState().chatDrafts, d.id, c.id), chatImages: moveImages(getState().chatImages, d.id, c.id) })) }))
+              ...unsent.map((d) => ({ label: d.text.trim().split('\n')[0].slice(0, 60) || `Message with ${d.images === 1 ? '1 image' : `${d.images} images`}`, hint: d.images ? `Draft · ${d.images === 1 ? '1 image' : `${d.images} images`}` : 'Draft', onSelect: () => show(api.ai.newConversation(), (c) => (moveWidened(d.id, c.id), { chatDrafts: moveDraft(getState().chatDrafts, d.id, c.id), chatImages: moveImages(getState().chatImages, d.id, c.id) })) }))
             ]
           : []),
         ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: day(c.createdAt), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
@@ -650,9 +705,19 @@ export function Chat() {
     freshing.current = true;
     const from = conversation.id;
     const opened = api.ai.newConversation().finally(() => (freshing.current = false));
-    show(opened, (c) => ({ chatDrafts: moveDraft(getState().chatDrafts, from, c.id), chatImages: moveImages(getState().chatImages, from, c.id) }));
+    show(opened, (c) => (moveWidened(from, c.id), { chatDrafts: moveDraft(getState().chatDrafts, from, c.id), chatImages: moveImages(getState().chatImages, from, c.id) }));
   };
 
+
+  // What leaves this computer with a message. A server that is not this computer already says where content goes,
+  // in its own warning above the box, so the note does not say it twice.
+  const attachedImages = 'Attached images go by name and ID only.';
+  const privacy =
+    provider?.id === 'local' && configured
+      ? provider.warning
+        ? attachedImages
+        : `Page text and structure go to your local model, on this computer. ${attachedImages}`
+      : `Page text and structure go to ${configured && provider ? provider.label : 'the provider you choose'}. ${attachedImages}`;
 
   return (
     <div className="chat">
@@ -696,23 +761,19 @@ export function Chat() {
         }}
       >
         {msgs.length === 0 && (
-          <div className="chat-empty">
-            <div className="spark">
-              <Sparkles size={20} />
+          // Quiet on purpose: it sits beside the user's own site. A ready panel anchors it to the composer the starters
+          // fill; setting up or recovering, nothing is below it, so it sits at the top.
+          <div className={`chat-empty${!configured || notReady ? ' top' : ''}`}>
+            {/* A local model that failed its check leads with the problem, not with what the panel could do. */}
+            {!notReady && (
+            <div className="chat-empty-head">
+              <h3>
+                <Sparkles aria-hidden="true" />
+                {askMode && configured ? 'Ask how your site works' : 'Describe a change to your site'}
+              </h3>
+              <p>{askMode && configured ? 'It answers without changing anything.' : 'You can undo anything it changes, like your own edits.'}</p>
             </div>
-            <div className="col" style={{ gap: 4 }}>
-              {askMode && configured ? (
-                <>
-                  <h3>Ask how your site works</h3>
-                  <p>The AI reads the site and answers without changing anything. It can point you to the field to change, and you can keep editing meanwhile.</p>
-                </>
-              ) : (
-                <>
-                  <h3>Ask AI to edit your site</h3>
-                  <p>It uses the same editing tools you do and checks its work. You can undo its changes like your own.</p>
-                </>
-              )}
-            </div>
+            )}
             {!configured ? (
               <button className="btn btn-primary" onClick={openSettings}>
                 <KeyRound /> Connect an AI provider
@@ -736,14 +797,22 @@ export function Chat() {
                 <div className="suggestions" role="group" aria-labelledby="chat-starters-label">
                   {/* Says what a starter does, since many chats send one at a click: here it only fills the box. */}
                   <p className="suggestions-label" id="chat-starters-label">
-                    Each fills the box below, ready to edit.
+                    Pick one to fill the box
                   </p>
-                  {suggestions.map((s) => (
+                  {suggestions.slice(0, 3).map((s) => (
                     <button
                       key={s.text}
                       className="suggestion"
                       data-kind={s.kind}
                       onClick={() => {
+                        // A starter about another page, a new page or the whole site needs more than this page, so it
+                        // widens the chip to Whole site, where the change shows before anything is sent.
+                        if (!askMode && !component && s.kind !== 'page' && s.kind !== 'selection' && chosen !== 'site') {
+                          starterWidened.current.set(conversation.id, ctxOn.scope);
+                          widenedHere.current = conversation.id;
+                          setState({ chatContextEnabled: { ...ctxOn, scope: 'site' } });
+                          setAnnounce(WIDENED_SAY);
+                        }
                         setChatDraft(conversation.id, s.text);
                         requestAnimationFrame(() => {
                           sizeToFit(taRef.current);
@@ -757,11 +826,7 @@ export function Chat() {
                 </div>
               )
             )}
-            <p className="chat-privacy">
-              {provider?.id === 'local' && configured
-                ? (provider.warning ?? 'Page text and structure stay on this computer.')
-                : `Page text and structure are sent to ${configured && provider ? provider.label : 'the provider you choose'}. Images you attach from Assets go by name and ID; the pictures stay here.`}
-            </p>
+            {!configured && <p className="chat-privacy">{privacy}</p>}
           </div>
         )}
         {msgs.map((m, i) =>
@@ -1110,7 +1175,10 @@ export function Chat() {
             )}
           </div>
         </div>
-      ) : (
+      ) : null}
+      {/* What leaves the computer, said once under the box before the first message. */}
+      {configured && msgs.length === 0 && <p className="chat-privacy chat-footnote">{privacy}</p>}
+      {!configured && !asking && (
         msgs.length > 0 && (
           <div className="chat-connect">
             <span>Connect an AI provider to continue this conversation.</span>

@@ -203,15 +203,15 @@ function imageStarter(state: ProjectState, usage: Record<string, number>, page: 
   }
   if (unused[0]) return `Place the ${quoted(unused[0].name)} image on the ${on} page, where it fits best`;
   const placed = content.images.flatMap((s) => (s.asset && !s.decorative ? [s.asset] : [])).sort(newestFirst)[0];
-  return placed ? `Improve how the ${quoted(placed.name)} image looks and reads on the ${on} page` : null;
+  return placed ? `Improve the placement and alt text of the ${quoted(placed.name)} image on the ${on} page` : null;
 }
 
 /** The one starter about the page's own copy. */
 function contentStarter(state: ProjectState, page: PageDoc, content: Content): string {
   const on = pageName(state, page);
   if (!page.rootIds.length) return `Start the ${on} page: add an introduction and the sections it needs`;
-  if (isSparse(content)) return `Build out the ${on} page: it is mostly empty, so add the sections and content it needs`;
-  return `Rewrite the opening of the ${on} page to sound warmer and more confident`;
+  if (isSparse(content)) return `Build out the mostly empty ${on} page with the sections it needs`;
+  return `Make the opening of the ${on} page warmer and more confident`;
 }
 
 /** What to do on a page that is not the one being edited, marked as such so it cannot be taken for the open page. */
@@ -219,7 +219,7 @@ function otherPageStarter(state: ProjectState, page: PageDoc): string {
   const on = pageName(state, page);
   if (!page.rootIds.length) return `On another page, ${on}: add an introduction and the sections it needs`;
   if (isSparse(pageContent(state, page))) return `On another page, ${on}: build out its content, it is mostly empty`;
-  return `On another page, ${on}: rewrite the opening section to sound warmer and more confident`;
+  return `On another page, ${on}: make the opening shorter and easier to scan`;
 }
 
 // ---------------------------------------------------------------------------
@@ -357,7 +357,7 @@ function selectionStarters(input: SuggestionInput, ref: ElementRef): ChatSuggest
   if (n.kind === 'text') {
     const t = resolved(r, ref, n.text);
     if (t.known && !plainOf(t.value).trim()) out.push(`Write the text for ${the}${where}`, `Suggest three ways to write ${the}${where}`);
-    else out.push(`Rewrite ${the}${where} to sound warmer and more confident`, `Make ${the}${where} shorter and easier to scan`, `Suggest three other ways to write ${the}${where}`);
+    else out.push(`Make ${the}${where} warmer and more confident`, `Make ${the}${where} shorter and easier to scan`, `Suggest three other ways to write ${the}${where}`);
   } else if (n.kind === 'link') {
     const link = resolved(r, ref, n.link);
     const target = link.known && link.value && typeof link.value === 'object' ? (link.value as { type?: string; target?: string }) : null;
@@ -365,7 +365,7 @@ function selectionStarters(input: SuggestionInput, ref: ElementRef): ChatSuggest
     const other = state.site.pageOrder.map((id) => own(state.pages, id)).find((p): p is PageDoc => !!p && p.id !== (ref.owner.kind === 'page' ? ref.owner.id : ''));
     if (dest) out.push(`Reword ${the}${where} so it clearly leads to the ${pageName(state, dest)} page`);
     else if (target && (target.type === 'none' || !target.target) && other) out.push(`Link ${the}${where} to the ${pageName(state, other)} page and word it to match`);
-    out.push(`Rewrite ${the}${where} to sound warmer and more confident`, `Make ${the}${where} shorter and easier to scan`);
+    out.push(`Make ${the}${where} warmer and more confident`, `Make ${the}${where} shorter and easier to scan`);
   } else if (n.kind === 'image') {
     const v = resolved(r, ref, n.image);
     const slot = v.known ? slotOf(state, v.value) : null;
