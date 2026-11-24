@@ -176,6 +176,28 @@ export function partStyleControls(def: Pick<ComponentDefinition, 'parts' | 'tree
   return [...list.slice(0, at + 1), 'objectPosition', ...list.slice(at + 1)];
 }
 
+/** What a code component's part offers when it names no controls of its own. */
+const CODE_PART_CONTROLS = ['paddingBlock', 'background', 'color', 'border', 'radius', 'shadow', 'opacity', 'hidden'];
+
+/**
+ * The style controls the inspector offers on one part of a placement: undefined offers every property, null means
+ * the part takes no style changes there. A managed section's root always offers Hidden, so a section can be hidden
+ * at some sizes whatever else its design lets change; so does each part of a code component that places the
+ * override classes it is given (`codeStyled`). A managed section's other parts offer their own list.
+ */
+export function placementStyleControls(def: Pick<ComponentDefinition, 'kind' | 'parts' | 'tree'>, partId: string, codeStyled: boolean): string[] | undefined | null {
+  if (partId !== 'root' && !Object.hasOwn(def.parts, partId)) return null;
+  if (def.kind === 'code' && !codeStyled) return null;
+  const list = partStyleControls(def, partId);
+  if (def.kind === 'managed' && partId !== 'root') return list;
+  return list ? [...new Set([...list, 'hidden'])] : def.kind === 'code' ? CODE_PART_CONTROLS : undefined;
+}
+
+/** The property IDs a control list offers: an empty or missing list offers every one. */
+export function offeredStyleProps(list: string[] | undefined): string[] {
+  return list?.length ? list : STYLE_PROPS.map((p) => p.id);
+}
+
 export const STYLE_GROUP_LABELS: Record<StylePropDef['group'], string> = {
   layout: 'Layout',
   spacing: 'Spacing',

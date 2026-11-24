@@ -33,7 +33,7 @@ import { isBinding } from '@shared/types';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
 import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
-import { partStyleControls, styleSetFor } from '@shared/styles';
+import { partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens, isDraftPage } from '@generator/index';
@@ -480,8 +480,6 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   // A code component takes style changes only when it places the classes it is given.
   const codeStyled = def.kind === 'code' && codeTakesOverrides(def);
   const styledPart = def.kind === 'code' && def.parts[codePart] ? codePart : 'root';
-  // Hiding a section at some sizes is always offered, whatever else its design lets change.
-  const withHidden = (controls: string[] | undefined) => (controls ? [...new Set([...controls, 'hidden'])] : codeStyled ? ['paddingBlock', 'background', 'color', 'border', 'radius', 'shadow', 'opacity', 'hidden'] : undefined);
   // Making a code component unique copies its source into the project, which is only editable in developer mode.
   const canMakeUnique = def.kind === 'managed' || dev;
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
@@ -649,7 +647,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             styles={node.overrides?.root}
             inherited={designStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants)}
             wideColumns
-            allowed={withHidden(partStyleControls(def, 'root'))}
+            allowed={placementStyleControls(def, 'root', codeStyled) ?? undefined}
             tokens={tokens}
             image={rootImage}
             onSet={onStyle('root')}
@@ -676,7 +674,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             styles={node.overrides?.[styledPart]}
             inherited={undefined}
             wideColumns
-            allowed={withHidden(partStyleControls(def, styledPart))}
+            allowed={placementStyleControls(def, styledPart, codeStyled) ?? undefined}
             tokens={tokens}
             onSet={onStyle(styledPart)}
             onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: styledPart, scope: sc }], 'Reset overrides')}
