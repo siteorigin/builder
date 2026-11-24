@@ -38,8 +38,8 @@ describe('action requests', () => {
     expect(parseAction('ui.scroll', { target: { ref: REF }, deltaX: -40 })).toMatchObject({ deltaX: -40, deltaY: 0 });
     // The ends of each range are in it.
     expect(parseAction('ui.click', { target: { ref: REF }, waitMs: 10_000 }).waitMs).toBe(10_000);
-    expect(parseAction('ui.drag', { from: { ref: REF }, by: { x: 1, y: 0 }, steps: 1 }).steps).toBe(1);
-    expect(parseAction('ui.drag', { from: { ref: REF }, by: { x: 1, y: 0 }, steps: 100 }).steps).toBe(100);
+    expect(parseAction('ui.drag', { from: { ref: REF }, by: { x: 1, y: 0 }, steps: 1 })).toMatchObject({ steps: 1 });
+    expect(parseAction('ui.drag', { from: { ref: REF }, by: { x: 1, y: 0 }, steps: 100 })).toMatchObject({ steps: 100 });
     expect(parseAction('ui.drag', { from: POINT, to: { ...POINT, surface: 'preview' }, steps: 3 })).toMatchObject({ to: { surface: 'preview' }, by: null, steps: 3 });
   });
 
