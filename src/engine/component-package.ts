@@ -548,5 +548,5 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     if (installed !== def.id) fail(`${quoted(def.name)} could not be installed from the theme.`);
   }
   for (const def of landed) state.components[def.id] = def;
-  return { definitionId: ids.get(pkg.rootId), definitionIds: defs.map((d) => ids.get(d.id)), tokenIds: created };
+  return { definitionId: ids.get(pkg.rootId), definitionIds: pkg.definitions.map((d) => ids.get(d.id)), tokenIds: created };
 }

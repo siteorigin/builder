@@ -119,7 +119,7 @@ const definition = z
     componentId: z.string().max(160),
     kind: z.enum(['managed', 'code']),
     owner: z.enum(['theme', 'project']),
-    name: z.string().trim().min(1).max(80),
+    name: z.string().min(1).max(80).refine((n) => n.trim().length > 0, 'a component needs a name'),
     description: z.string().max(1000).optional(),
     properties: z.record(z.string(), z.object({ type: z.string() }).loose()),
     parts: z.record(z.string(), z.object({ nodeId: z.string() }).loose()).optional(),
@@ -142,7 +142,7 @@ const packageSchema = z.object({
       z.object({
         id: TOKEN_ID,
         group: z.enum(['color', 'font', 'text', 'space', 'container', 'radius', 'shadow', 'border']),
-        label: z.string().trim().min(1).max(80),
+        label: z.string().min(1).max(80).refine((n) => n.trim().length > 0, 'a style needs a name'),
         description: z.string().max(200).optional(),
         custom: z.boolean(),
         value: z.unknown(),
@@ -199,7 +199,9 @@ export function decodeComponentPackage(text: string): ComponentPackage {
     const issue = parsed.error.issues[0];
     refuse(`part of it is damaged (${issue.path.join('.') || 'the file'}: ${issue.message}).`);
   }
-  const pkg = parsed.data! as unknown as ComponentPackage;
+  // The file's own objects, as checked: a parse would reorder their keys, and a theme component is recognised by its
+  // exact content.
+  const pkg = raw as ComponentPackage;
   const unique = (ids: string[], what: string) => {
     const seen = new Set<string>();
     for (const id of ids) {
