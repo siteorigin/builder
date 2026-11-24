@@ -97,9 +97,9 @@ export function ImageChips({ images, onRemove, label, among }: { images: ChatIma
 }
 
 /**
- * The pictures a waiting question offers. Each is chosen with one button, and a separate Preview button shows it
- * larger first; previewing (and closing the preview, Escape included) never answers. The pictures come from the
- * local preview: nothing is sent anywhere.
+ * The pictures a waiting question offers. The picture itself opens a larger preview, and a labelled Choose button
+ * answers with it in one click, so looking at a photo can never answer by accident; previewing (and closing the
+ * preview, Escape included) never answers. The pictures come from the local preview: nothing is sent anywhere.
  */
 export function ImageChoices({ images, onChoose }: { images: ChatImageRef[]; onChoose: (img: ChatImageRef) => void }) {
   const [preview, setPreview] = useState<string | null>(null);
@@ -133,23 +133,28 @@ function ImageChoice({ img, onChoose, onPreview }: { img: ChatImageRef & { label
   const detail = [sizeOf(live), live?.description?.trim()].filter(Boolean).join(' · ');
   return (
     <li className={`image-choice${live ? '' : ' missing'}`} data-asset-id={img.assetId}>
+      <button type="button" className="image-choice-preview" disabled={!live || !devUrl} aria-label={`Preview ${img.label}`} title={!live ? `${img.name} is no longer in Assets` : devUrl ? 'Preview larger' : 'The picture appears once the site preview is running'} onClick={onPreview}>
+        <Thumb key={fileState} a={live} devUrl={devUrl} />
+        {live && devUrl && (
+          <span className="image-choice-zoom" aria-hidden="true">
+            <Expand />
+          </span>
+        )}
+      </button>
+      <span className="image-choice-name">
+        <span className="ellipsis">{img.name}</span>
+        {img.sharedName && <span className="image-chip-id">{img.assetId}</span>}
+        {!live && <span className="image-chip-id">Not in Assets</span>}
+      </span>
       <button
         type="button"
-        className="image-choice-pick"
+        className="btn btn-sm image-choice-pick"
         disabled={!live}
         aria-label={live ? `Choose ${img.label}${detail ? `, ${detail}` : ''}` : `${img.label} is no longer in Assets`}
-        title={live ? `Choose ${img.name}` : `${img.name} is no longer in Assets`}
+        title={live ? `Answer with ${img.name}` : `${img.name} is no longer in Assets`}
         onClick={(e) => e.detail <= 1 && onChoose()}
       >
-        <Thumb key={fileState} a={live} devUrl={devUrl} />
-        <span className="image-choice-name">
-          <span className="ellipsis">{img.name}</span>
-          {img.sharedName && <span className="image-chip-id">{img.assetId}</span>}
-          {!live && <span className="image-chip-id">Not in Assets</span>}
-        </span>
-      </button>
-      <button type="button" className="icon-btn sm image-choice-preview" disabled={!live || !devUrl} aria-label={`Preview ${img.label}`} title={devUrl ? 'Preview larger' : 'The picture appears once the site preview is running'} onClick={onPreview}>
-        <Expand />
+        <Check /> Choose
       </button>
     </li>
   );
