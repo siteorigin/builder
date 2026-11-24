@@ -1338,9 +1338,10 @@ function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRan
   const raw = item ? boxStyle(item, 'columnSpan', range) : undefined;
   const spanValue = typeof raw === 'string' ? raw.trim() : raw;
   const span = (tracks: number[]): number => {
-    // Shares that add up to less than one leave the rest of the grid empty: each takes its share of the whole.
-    const total = Math.max(1, tracks.reduce((a, b) => a + b, 0));
-    if (spanValue === 'full') return 1;
+    // Shares are read against their own total, even below one: gaps and implicit columns other items add can
+    // widen a share past its part of the whole, so this stays the upper estimate.
+    const total = tracks.reduce((a, b) => a + b, 0);
+    if (!(total > 0) || spanValue === 'full') return 1;
     const count = typeof spanValue === 'number' || typeof spanValue === 'string' ? Number(spanValue) : NaN;
     const k = Math.max(1, Math.floor(count) || 1);
     // Spanning past the last column adds implicit ones, which can stretch into whatever the shares leave.

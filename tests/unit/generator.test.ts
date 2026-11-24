@@ -517,9 +517,10 @@ describe('SEO and performance', () => {
     wrap.styles = { base: { columnSpan: ' full ' } };
     expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw');
     wrap.styles = {};
-    // Shares adding up to less than one each take their share of the whole grid.
+    // Shares adding up to less than one are read against their own total, an upper estimate whatever gaps and
+    // implicit columns do with the rest.
     gridNode.styles = { base: { layout: 'grid', gridTemplate: '.25fr .25fr' } };
-    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 300px, (min-width: 768px) 25vw, 100vw']);
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 50vw, 100vw']);
     // Spanning past them adds a column that can stretch over the rest: the whole width.
     wrap.styles = { base: { columnSpan: '3' } };
     expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw');
