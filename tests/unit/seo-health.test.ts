@@ -8,7 +8,7 @@ import type { ProjectState } from '@shared/types';
 import type { SeoFinding } from '@shared/seo';
 import { SEO_PILLARS } from '@shared/seo';
 import { runSeoAudit } from '@engine/seo-audit';
-import { auditForHealth, seoCountsText, seoFilterCounts, seoPillarGroups, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES } from '../../src/renderer/src/lib/seo-health';
+import { auditForHealth, seoCountsText, seoFilterCounts, seoPillarGroups, seoPreflight, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES } from '../../src/renderer/src/lib/seo-health';
 import { copy, run, seoSite } from './fixtures/seo-site';
 
 /** A finding with only what these helpers read. */
@@ -101,7 +101,7 @@ describe('the readiness summary', () => {
     expect(seoReadiness(runSeoAudit(untidy()))).toEqual({
       tone: 'warn',
       headline: '4 warnings',
-      detail: 'Technical, Agentic readiness, Content & links and Social & performance need attention; 1 of 5 areas are ready.'
+      detail: 'Technical, Agentic readiness, Content & links and Social & performance need attention; 1 of 5 areas is ready.'
     });
     expect(seoReadiness([f('technical', 'warning'), f('content', 'info')])).toEqual({ tone: 'warn', headline: '1 warning and 1 note', detail: 'Technical needs attention; 4 of 5 areas are ready.' });
   });
@@ -113,5 +113,47 @@ describe('the readiness summary', () => {
   it('counts problems, warnings and notes as Project health names them', () => {
     expect(seoCountsText([f('technical', 'error'), f('technical', 'warning'), f('content', 'warning'), f('content', 'info')])).toBe('1 problem, 2 warnings and 1 note');
     expect(seoCountsText([])).toBe('');
+  });
+});
+
+describe('the export preflight', () => {
+  it('shows the problems and warnings, never the notes, and stops nothing', () => {
+    const findings = runSeoAudit(untidy());
+    const pre = seoPreflight(findings);
+    expect(pre.total).toBe(4);
+    expect(pre.examples.map((x) => x.code)).toEqual(['SEO_BASE_URL_MISSING', 'ALT_MISSING', 'SEO_DESCRIPTION_MISSING', 'SEO_SOCIAL_IMAGE_MISSING']);
+    expect(pre.more).toBe(0);
+    expect(pre.notes).toBe(0);
+    expect(seoPreflight([f('content', 'info'), f('social', 'info')])).toEqual({ total: 0, examples: [], more: 0, notes: 2 });
+  });
+
+  it('names a problem a future rule finds before any warning, whatever its pillar', () => {
+    const crawlers = f('agentic', 'error', 'SEO_CRAWLERS_BLOCKED');
+    const pre = seoPreflight([f('technical', 'warning', 'SEO_BASE_URL_MISSING'), crawlers, f('content', 'info')]);
+    expect(pre.examples[0]).toBe(crawlers);
+    expect(pre.total).toBe(2);
+    expect(pre.notes).toBe(1);
+  });
+
+  it('shows one of each kind before a second of any, and counts the rest', () => {
+    const many = Array.from({ length: 6 }, (_, i) => ({ ...f('content', 'warning', 'SEO_DESCRIPTION_MISSING'), owner: { kind: 'page' as const, id: `pg_${i}` } }));
+    const picture = f('agentic', 'warning', 'ALT_MISSING');
+    const url = f('technical', 'warning', 'SEO_BASE_URL_MISSING');
+    // In the audit's order: technical, agentic, content.
+    const pre = seoPreflight([url, picture, ...many]);
+    expect(pre.examples).toEqual([url, picture, many[0], many[1]]);
+    expect(pre.more).toBe(4);
+    expect(pre.total).toBe(8);
+    // Kinds past the limit are still counted.
+    const kinds = ['A', 'B', 'C', 'D', 'E'].map((c) => f('content', 'warning', c));
+    expect(seoPreflight(kinds)).toMatchObject({ examples: kinds.slice(0, 4), more: 1 });
+  });
+
+  it('keeps the audit’s order among what it shows', () => {
+    const a = f('technical', 'warning', 'A');
+    const b1 = { ...f('content', 'warning', 'B'), owner: { kind: 'page' as const, id: 'one' } };
+    const b2 = { ...f('content', 'warning', 'B'), owner: { kind: 'page' as const, id: 'two' } };
+    const c = f('social', 'warning', 'C');
+    expect(seoPreflight([a, b1, b2, c]).examples).toEqual([a, b1, b2, c]);
   });
 });

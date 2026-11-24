@@ -92,6 +92,23 @@ export function seoReadiness(findings: readonly SeoFinding[]): { tone: 'warn' | 
   return {
     tone: 'warn',
     headline: seoCountsText(findings),
-    detail: `${namesText(attention.map((p) => SEO_PILLAR_NAMES[p]))} ${attention.length === 1 ? 'needs' : 'need'} attention; ${ready === 0 ? 'no area is' : `${ready} of ${SEO_PILLARS.length} areas are`} ready.`
+    detail: `${namesText(attention.map((p) => SEO_PILLAR_NAMES[p]))} ${attention.length === 1 ? 'needs' : 'need'} attention; ${ready === 0 ? 'no area is' : `${ready} of ${SEO_PILLARS.length} areas ${ready === 1 ? 'is' : 'are'}`} ready.`
   };
+}
+
+/** How many findings the export dialog shows before it counts the rest. */
+export const PREFLIGHT_EXAMPLES = 4;
+
+/**
+ * The findings worth seeing before a website export: every problem and warning (a suggestion waits for Project
+ * health), problems first, each severity in the audit's order. Up to `limit` are shown, one of each kind first, so many
+ * pages without a description never hide a picture without one; the rest are counted. None of them stops the export.
+ */
+export function seoPreflight(findings: readonly SeoFinding[], limit = PREFLIGHT_EXAMPLES): { total: number; examples: SeoFinding[]; more: number; notes: number } {
+  const due = [...findings.filter((f) => f.severity === 'error'), ...findings.filter((f) => f.severity === 'warning')];
+  const picked = new Set<SeoFinding>();
+  const codes = new Set<string>();
+  for (const f of due) if (picked.size < limit && !codes.has(f.code)) (codes.add(f.code), picked.add(f));
+  for (const f of due) if (picked.size < limit) picked.add(f);
+  return { total: due.length, examples: due.filter((f) => picked.has(f)), more: due.length - picked.size, notes: findings.length - due.length };
 }

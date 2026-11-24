@@ -1632,6 +1632,12 @@ iframe { color-scheme: light dark; }
 .export-samples-places li .btn { margin-right: -6px; }
 .export-samples-kept { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 0 2px; font-size: 12.5px; color: var(--text-2); }
 .export-review + .export-samples-kept { padding: 0 12px; }
+/* The SEO and agentic preflight: what keeps the website from being found or shared, with the way to all of it. */
+.export-seo-more { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 8px 12px 9px 34px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-2); }
+.export-review-list[hidden] + .export-seo-more { border-top: 0; }
+.export-seo-ready { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 0 2px; font-size: 12.5px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+.export-seo-ready > svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--green); }
+.export-seo-ready strong { font-weight: 600; color: var(--text); }
 .export-samples-kept > svg { width: 14px; height: 14px; flex: none; margin-top: 4px; color: var(--green); }
 /* A secondary way back, so neutral: accent stays for selection, focus and the primary action. */
 .export-samples-kept .link-btn { min-height: 24px; color: var(--text-2); }
@@ -4060,6 +4066,18 @@ button.asset-use:hover svg.go { color: var(--text); }
 .health-terms { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0; line-height: 1.45; }
 .health-terms dt { grid-column: 1; font-weight: 600; color: var(--text); }
 .health-terms dd { grid-column: 2; margin: 0; }
+/* Search & AI readiness: its own summary, its filters, then its findings under each pillar's name. */
+.seo-readiness-summary.ok > svg { color: var(--green); }
+.seo-readiness-summary.warn > svg { color: var(--amber); }
+.seo-readiness-summary strong { font-weight: 600; color: var(--text); }
+.seo-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 8px; font-size: 12px; color: var(--text-2); }
+.seo-filters label { font-weight: 600; color: var(--text); }
+.seo-filters .select { width: auto; max-width: 100%; }
+.seo-filters .select + label { margin-left: 6px; }
+.seo-showing { margin-left: auto; font-variant-numeric: tabular-nums; }
+.seo-showing:empty { display: none; }
+.seo-pillar-count { margin-left: auto; font-weight: 500; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.seo-readiness .health-row .health-hint { color: var(--text-2); }
 .health-copy { display: flex; align-items: center; gap: 8px; }
 .health-inline-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 1px; }
 .health-inline-actions .btn svg { width: 13px; height: 13px; }

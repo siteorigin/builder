@@ -1,6 +1,9 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { Archive, ArrowDown, Check, ChevronRight, CircleAlert, CircleCheck, Component, Copy, Ellipsis, FileDiff, FileText, FolderOpen, GitCompareArrows, Info, Lock, RefreshCw, Stethoscope, TriangleAlert, Wrench, X } from 'lucide-react';
-import type { Diagnostic, FileText as FileContent, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type ReactNode } from 'react';
+import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck, Component, Copy, Ellipsis, FileDiff, FileText, FolderOpen, GitCompareArrows, Info, Link2, Lock, Network, RefreshCw, Share2, Stethoscope, TriangleAlert, Wrench, X } from 'lucide-react';
+import type { Diagnostic, EditorDestination, FileText as FileContent, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
+import type { SeoFinding, SeoPillar } from '@shared/seo';
+import { SEO_PILLARS } from '@shared/seo';
+import { diagnosticKey } from '@engine/validate';
 import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
@@ -9,6 +12,7 @@ import { destinationForDiagnostic, destinationLabel } from '../lib/destinations'
 import { openEditorDestination } from '../lib/open-destination';
 import { Modal, Spinner, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
+import { auditForHealth, needsFixing, seoCountsText, seoFilterCounts, seoPillarGroups, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES, type SeoAuditResult, type SeoPillarFilter, type SeoSeverityFilter } from '../lib/seo-health';
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 /** "2 problems and 1 warning", or whichever of them there are. */
@@ -426,11 +430,166 @@ function ErrorDetails({ text }: { text: string }) {
   );
 }
 
+const PILLAR_ICONS: Record<SeoPillar, ReactNode> = {
+  technical: <Wrench aria-hidden="true" />,
+  entity: <Network aria-hidden="true" />,
+  agentic: <Bot aria-hidden="true" />,
+  content: <Link2 aria-hidden="true" />,
+  social: <Share2 aria-hidden="true" />
+};
+const SEVERITY_NAMES: Record<SeoSeverityFilter, string> = { all: 'All', error: 'Problems', warning: 'Warnings', info: 'Notes' };
+
+/**
+ * What keeps the website from being found, shared and read by search engines, link previews and AI agents (the SEO
+ * audit), apart from the project's own checks above: counted on its own, so the status bar's count stays the project's.
+ * Its findings are grouped by pillar and filtered by pillar and severity; each that one place fixes leads there.
+ */
+function SeoReadiness({ audit, focusOnOpen }: { audit: SeoAuditResult; focusOnOpen: boolean }) {
+  const headId = useId();
+  const pillarId = useId();
+  const severityId = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const pillarRef = useRef<HTMLSelectElement>(null);
+  // Chosen afresh each time the dialog opens, and kept while findings come and go.
+  const [pillar, setPillar] = useState<SeoPillarFilter>('all');
+  const [severity, setSeverity] = useState<SeoSeverityFilter>('all');
+  const findings = audit.ok ? audit.findings : [];
+  // The control in this section that last had focus: a row's action goes with its finding once that is fixed.
+  const lastFocused = useRef<HTMLElement | null>(null);
+  const keys = findings.map(diagnosticKey).join('\n');
+  const opened = useRef(false);
+  useEffect(() => {
+    // Not on opening: the dialog chooses where focus starts.
+    if (!opened.current) return void (opened.current = true);
+    const active = document.activeElement;
+    if ((!active || active === document.body) && lastFocused.current && !lastFocused.current.isConnected) headingRef.current?.focus();
+  }, [keys]);
+  const onFocus = (e: FocusEvent<HTMLElement>) => void (lastFocused.current = e.target);
+  // Focus that moved elsewhere in the dialog is not this section's to bring back; focus lost with a removed row is.
+  const onBlur = (e: FocusEvent<HTMLElement>) => {
+    if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) lastFocused.current = null;
+  };
+  const counts = seoFilterCounts(findings, pillar, severity);
+  const groups = seoPillarGroups(findings, pillar, severity);
+  const shown = groups.reduce((n, g) => n + g.findings.length, 0);
+  const readiness = seoReadiness(findings);
+  const filtered = pillar !== 'all' || severity !== 'all';
+  const clear = () => {
+    setPillar('all');
+    setSeverity('all');
+    pillarRef.current?.focus();
+  };
+  const tone = !audit.ok || readiness.tone === 'ok' ? 'quiet' : readiness.tone;
+  return (
+    <section className={`health-group seo-readiness ${tone}`} aria-labelledby={headId} data-group="seo" data-testid="health-seo" onFocus={onFocus} onBlur={onBlur}>
+      <h3 id={headId} ref={headingRef} tabIndex={-1} data-autofocus={focusOnOpen || undefined}>
+        Search &amp; AI readiness {findings.length > 0 && <span className="health-count">{findings.length}</span>}
+      </h3>
+      {!audit.ok ? (
+        <p className="health-note seo-readiness-summary">
+          <Info aria-hidden="true" />
+          <span>Search &amp; AI readiness couldn’t be checked: {audit.message}</span>
+        </p>
+      ) : (
+        <p className={`health-note seo-readiness-summary ${readiness.tone}`}>
+          {readiness.tone === 'ok' ? <CircleCheck aria-hidden="true" /> : readiness.tone === 'warn' ? <TriangleAlert aria-hidden="true" /> : <Info aria-hidden="true" />}
+          <span>
+            <strong>{readiness.headline}.</strong> {readiness.detail}
+          </span>
+        </p>
+      )}
+      {findings.length > 0 && (
+        <div className="seo-filters">
+          <label htmlFor={pillarId}>Pillar</label>
+          <select id={pillarId} ref={pillarRef} className="select sm" value={pillar} onChange={(e) => setPillar(e.target.value as SeoPillarFilter)}>
+            <option value="all">All pillars ({counts.pillars.all})</option>
+            {SEO_PILLARS.map((p) => (
+              <option key={p} value={p}>
+                {SEO_PILLAR_NAMES[p]} ({counts.pillars[p]})
+              </option>
+            ))}
+          </select>
+          <label htmlFor={severityId}>Severity</label>
+          <select id={severityId} className="select sm" value={severity} onChange={(e) => setSeverity(e.target.value as SeoSeverityFilter)}>
+            {[...new Set([...seoSeverityChoices(findings), severity])].map((s) => (
+              <option key={s} value={s}>
+                {SEVERITY_NAMES[s]} ({counts.severities[s]})
+              </option>
+            ))}
+          </select>
+          <span className="seo-showing" role="status">
+            {filtered ? `Showing ${shown} of ${findings.length}` : ''}
+          </span>
+        </div>
+      )}
+      {groups.length > 0 ? (
+        <ul className="health-list">
+          {groups.map((g) => (
+            <li key={g.pillar} className="health-place" data-pillar={g.pillar}>
+              <h4>
+                {PILLAR_ICONS[g.pillar]}
+                {g.name}
+                <span className="seo-pillar-count">{g.findings.length}</span>
+              </h4>
+              <ul>
+                {g.findings.map((f) => (
+                  <SeoRow key={diagnosticKey(f)} finding={f} />
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        findings.length > 0 && (
+          <p className="health-note seo-empty">
+            <span>
+              No {severity === 'all' ? 'findings' : SEVERITY_NAMES[severity].toLowerCase()}
+              {pillar === 'all' ? '' : ` in ${SEO_PILLAR_NAMES[pillar]}`}.{' '}
+              <button type="button" className="link-btn" onClick={clear}>
+                Clear filters
+              </button>
+            </span>
+          </p>
+        )
+      )}
+    </section>
+  );
+}
+
+/** One finding: what it is, why it matters, and the way to where it is fixed when one place fixes it. */
+function SeoRow({ finding: f }: { finding: SeoFinding }) {
+  const dest = f.destination;
+  return (
+    <HealthRow
+      tone={f.severity === 'error' ? 'danger' : f.severity === 'warning' ? 'warn' : 'quiet'}
+      icon={f.severity === 'error' ? <CircleAlert /> : f.severity === 'warning' ? <TriangleAlert /> : <Info />}
+      actions={
+        dest ? (
+          <button className="btn btn-sm" onClick={() => openEditorDestination(dest)}>
+            {destinationLabel(dest)}
+          </button>
+        ) : undefined
+      }
+    >
+      <span className="sr-only">{f.severity === 'error' ? 'Problem: ' : f.severity === 'warning' ? 'Warning: ' : 'Note: '}</span>
+      {f.message}
+      <span className="health-hint">{f.explanation}</span>
+    </HealthRow>
+  );
+}
+
 export function HealthModal() {
   const snap = useStore((s) => s.snapshot);
   const runtime = useStore((s) => s.runtime);
   const pageIssue = useStore((s) => s.previewIssue);
   const frameReady = useStore((s) => s.frameReady);
+  // Opened at Search & AI readiness (from the export dialog's preflight): its heading takes focus, not the summary.
+  const atSeo = useStore((s) => s.modal?.kind === 'health' && s.modal.section === 'seo');
+  // The SEO audit reads the project as it is now, while the dialog is open.
+  const projectState = snap?.state;
+  const seoAudit = useMemo(() => (projectState ? auditForHealth(projectState) : null), [projectState]);
+  // An audit finding that is also one of the project's own (an entry's picture without a description) leads to the same place.
+  const seoDestinations = useMemo(() => new Map<string, EditorDestination>(seoAudit?.ok ? seoAudit.findings.flatMap((f) => (f.destination ? [[diagnosticKey(f), f.destination] as const] : [])) : []), [seoAudit]);
   const [busy, setBusy] = useState<string | null>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
   const recoveryNote = useId();
@@ -570,6 +729,10 @@ export function HealthModal() {
   const kept = snap.themeUpdates?.kept ?? [];
   const saved = snap.savedCopies ?? [];
   const tone = problems ? 'danger' : warnings.length ? 'warn' : starting ? 'busy' : 'ok';
+  const seoFindings = seoAudit?.ok ? seoAudit.findings : [];
+  const seoDue = seoFindings.filter(needsFixing);
+  // With nothing else to fix, what the SEO audit asks for is said too: the project checking out is not the website being ready.
+  const seoLine = seoDue.length ? ` Search & AI readiness has ${seoCountsText(seoDue)} worth fixing before you publish.` : '';
   const headline = problems
     ? `${plural(problems, 'problem')}${warnings.length ? ` and ${plural(warnings.length, 'warning')}` : ''}`
     : warnings.length
@@ -588,10 +751,12 @@ export function HealthModal() {
       : starting
         ? 'The preview is still starting. This list updates once it’s running.'
         : phase === 'unavailable'
-          ? `Nothing in the project needs fixing, but the preview can’t run here: ${runtime.state === 'unavailable' ? runtime.message : ''}`
+          ? `Nothing in the project needs fixing, but the preview can’t run here: ${runtime.state === 'unavailable' ? runtime.message : ''}${seoLine}`
           : phase === 'stopped'
-            ? 'Nothing in the project needs fixing. The preview is paused; it starts again when you edit a page.'
-            : updates.length || saved.length
+            ? `Nothing in the project needs fixing. The preview is paused; it starts again when you edit a page.${seoLine}`
+            : seoLine
+              ? `Every page, component and style in this project checks out.${seoLine}`
+              : updates.length || saved.length
           ? `Nothing needs fixing. Everything below is optional${notes.length ? ', or for your information' : ''}.`
           : notes.length
             ? `Nothing needs fixing. ${notes.length === 1 ? 'A note below is' : 'The notes below are'} for your information.`
@@ -601,6 +766,7 @@ export function HealthModal() {
     { key: 'problems', label: 'Problems', count: problems, tone: 'danger' },
     { key: 'warnings', label: 'Warnings', count: warnings.length, tone: 'warn' },
     { key: 'notes', label: 'Notes', count: notes.length, tone: 'quiet' },
+    { key: 'seo', label: 'Search & AI', count: seoFindings.length, tone: seoDue.length ? 'warn' : 'quiet' },
     { key: 'updates', label: 'Updates', count: updates.length, tone: 'quiet' },
     { key: 'saved', label: 'Saved copies', count: saved.length, tone: 'quiet' }
   ].filter((j) => j.count > 0);
@@ -617,7 +783,7 @@ export function HealthModal() {
     // A page's heading outline is reviewed (and fixed) in its outline, beside the page.
     const outlinePage = d.code.startsWith('HEADING_') && d.owner?.kind === 'page' ? d.owner.id : null;
     // A form's settings or a site setting: opened where it is fixed, as an export's notes do.
-    const dest = asset || outlinePage ? null : destinationForDiagnostic(st, d);
+    const dest = asset || outlinePage ? null : (destinationForDiagnostic(st, d) ?? seoDestinations.get(diagnosticKey(d)) ?? null);
     const target = asset || outlinePage || dest ? null : diagnosticTarget(st, d);
     const lead = rest === undefined ? assetLead(st, d) : null;
     return (
@@ -693,7 +859,7 @@ export function HealthModal() {
       title="Project health"
       icon={<Stethoscope />}
       onClose={() => close()}
-      wide={problems + warnings.length + notes.length + updates.length + saved.length > 0}
+      wide={problems + warnings.length + notes.length + updates.length + saved.length + seoFindings.length > 0}
       footer={
         <button className="btn" onClick={() => close()}>
           Close
@@ -701,7 +867,7 @@ export function HealthModal() {
       }
     >
       <div className="health-body" ref={bodyRef}>
-        <div ref={summaryRef} className={`health-summary ${tone}`} tabIndex={-1} data-autofocus>
+        <div ref={summaryRef} className={`health-summary ${tone}`} tabIndex={-1} data-autofocus={!atSeo || undefined}>
           <span className="health-badge" aria-hidden="true">
             {tone === 'danger' ? <CircleAlert /> : tone === 'warn' ? <TriangleAlert /> : tone === 'busy' ? <Spinner decorative /> : <CircleCheck />}
           </span>
@@ -713,7 +879,7 @@ export function HealthModal() {
                 {status && ` ${status}`}
               </span>
             </p>
-            {jumps.length > 1 && (
+            {(jumps.length > 1 || jumps[0]?.key === 'seo') && (
               <div className="health-jumps" role="group" aria-label="Go to">
                 {jumps.map((j) => (
                   <button key={j.key} className={`health-jump ${j.tone}`} onClick={() => jumpTo(j.key)}>
@@ -799,6 +965,7 @@ export function HealthModal() {
             {diagnosticRows(notes, 'n')}
           </HealthGroup>
         )}
+        {seoAudit && <SeoReadiness audit={seoAudit} focusOnOpen={atSeo} />}
         {updates.length > 0 && (
           <HealthGroup title="Updates" count={updates.length} tone="quiet" anchor="updates">
             <HealthRow
