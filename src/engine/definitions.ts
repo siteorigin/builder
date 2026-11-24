@@ -172,10 +172,11 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
     }
     return placedDefaultItems(owner, node, schema.default);
   };
-  // A computed list showed the site's pages whatever a placement held for it, so what it held is not content to keep.
+  // A computed list showed the site's pages whatever a placement held for it: an empty list held there is not content.
   const fromFeed = prev?.type === 'list' && !!prev.feed;
+  const placeholder = (v: unknown) => fromFeed && !isBinding(v) && (!Array.isArray(v) || !v.length);
   for (const { node, label, owner } of instancesOf(state, def.id)) {
-    if (!Object.hasOwn(node.props, name) || (startsList && fromFeed && !isBinding(node.props[name]))) {
+    if (!Object.hasOwn(node.props, name) || (startsList && placeholder(node.props[name]))) {
       if (startsList) node.props[name] = ownItems(owner, node);
       continue;
     }

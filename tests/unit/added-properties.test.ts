@@ -228,6 +228,12 @@ describe('a list property added to a placed component', () => {
       const later = applyOperations(s0, [set(textId as string, 'value', 'new@example.com'), set(linkId as string, 'link', was)]);
       expect(later.results[0].followed).toBeUndefined();
     }
+    // The definition's defaults have changed since (and one is damaged): the old default's ID still names the copy.
+    s0.components[id].properties.items.default = [null, ...defaults.map((d) => ({ ...d, id: `${d.id}-new` }))] as never;
+    const renamed = applyOperations(s0, [set(defaults[at].id as string, 'link', was), set(defaults[at].id as string, 'value', 'new@example.com')]);
+    expect(renamed.results[1].followed).toBeUndefined();
+    expect(items0(renamed.state, node.id)[at].link).toEqual(was);
+    expect(applyOperations(s0, [set(copy.id, 'value', 'new@example.com')]).results[0].followed).toEqual(['link']);
   });
 
   it('settles a copied form field’s key when its name is cleared by the ID the definition gives it', () => {
@@ -268,8 +274,13 @@ describe('a list property added to a placed component', () => {
     // Once it stores items, every placement gets the defaults, even one that held an empty list the feed ignored.
     const held = a;
     placement(feed, held).props.news = [];
-    const stored = applyOperations(feed, [{ type: 'component.setPropSchema', definitionId: p.noteId, prop: 'news', schema: { type: 'list', label: 'News', itemLabel: 'Story', min: 1, fields: { title: { type: 'string', label: 'Title' } }, default: [{ title: 'First' }] } }]).state;
+    // A second placement holds rows of its own (written outside the editor): they are kept.
+    const r = applyOperations(feed, [{ type: 'node.insert', owner: pageOwner(feed), definitionId: p.noteId }]);
+    const kept = r.results[0].nodeId as string;
+    placement(r.state, kept).props.news = [{ id: 'i_mine', title: 'Mine' }];
+    const stored = applyOperations(r.state, [{ type: 'component.setPropSchema', definitionId: p.noteId, prop: 'news', schema: { type: 'list', label: 'News', itemLabel: 'Story', min: 1, fields: { title: { type: 'string', label: 'Title' } }, default: [{ title: 'First' }] } }]).state;
     expect((placement(stored, held).props.news as ListItem[]).map((i) => i.title)).toEqual(['First']);
+    expect(placement(stored, kept).props.news).toEqual([{ id: 'i_mine', title: 'Mine' }]);
     // A placement whose list came later another way (a document written elsewhere) still edits from the defaults.
     const added = applyOperations(p.s, [{ type: 'component.setPropSchema', definitionId: p.noteId, prop: 'links', schema: links }]).state;
     delete placement(added, a).props.links;

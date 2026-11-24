@@ -61,10 +61,10 @@ export function placedDefaultItems(owner: OwnerRef, node: InstanceNode, items: u
 
 /** Where an item is in a placement's own list: by its own ID, or by the ID of the default item it was copied from. */
 export function placedItemIndex(list: readonly ListItem[], owner: OwnerRef, nodeId: string, itemId: string): number {
-  const at = list.findIndex((it) => it.id === itemId);
+  const at = list.findIndex((it) => it?.id === itemId);
   if (at >= 0) return at;
   const copy = placedItemId(owner, nodeId, itemId);
-  return list.findIndex((it) => it.id === copy);
+  return list.findIndex((it) => it?.id === copy);
 }
 
 export function defaultProps(def: ComponentDefinition): Record<string, unknown> {

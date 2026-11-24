@@ -1673,11 +1673,14 @@ function explicitItemFields(ops: EditOperation[]): Set<string> {
  */
 function followItemLinks(state: ProjectState, def: ComponentDefinition, op: Op<'instance.setProp'>, before: ListItem, next: ListItem, sent: Record<string, unknown>, ctx: ApplyContext): string[] {
   const moved: string[] = [];
+  const pairs = itemLinkPairs(def, op.prop);
+  if (!pairs.length) return moved;
   // The batch may name the item by its own ID or by the ID of the default it was copied from (see placedItemIndex).
   const schema = def.properties[op.prop];
-  const defaults = schema?.type === 'list' && Array.isArray(schema.default) ? (schema.default as ListItem[]) : [];
-  const names = [before.id, ...defaults.filter((d) => placedItemId(op.owner, op.nodeId, d.id) === before.id).map((d) => d.id)];
-  for (const { text, link } of itemLinkPairs(def, op.prop)) {
+  const defaults = schema?.type === 'list' && Array.isArray(schema.default) ? (schema.default as unknown[]) : [];
+  const copiedFrom = defaults.flatMap((d) => (d && typeof d === 'object' && typeof (d as ListItem).id === 'string' && placedItemId(op.owner, op.nodeId, (d as ListItem).id) === before.id ? [(d as ListItem).id] : []));
+  const names = [before.id, ...(op.itemId ? [op.itemId] : []), ...copiedFrom];
+  for (const { text, link } of pairs) {
     const explicit = names.some((id) => ctx.explicitItemFields?.has(itemFieldKey(op.owner, op.nodeId, op.prop, id, link)));
     if (!Object.hasOwn(sent, text) || Object.hasOwn(sent, link) || explicit) continue;
     // Lines that are each a number are a list, even once a one-line field joins them.
