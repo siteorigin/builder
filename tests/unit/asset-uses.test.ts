@@ -10,6 +10,7 @@ import type { EditOperation } from '@shared/ops';
 import type { AltReview, AssetRecord, ImageNode, ImageUseTarget, ImageValue, InstanceNode, ListItem, OwnerRef, ProjectState } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { imageUseRows } from '../../src/renderer/src/lib/asset-uses';
+import { useKey } from '@engine/image-uses';
 import { altChecks } from '../../src/renderer/src/lib/alt-review';
 
 /**
@@ -77,7 +78,7 @@ function studio() {
   const workImageId = r.results[0].nodeId as string;
   r = applyOperations(r.state, [{ type: 'node.setContent', owner: work, nodeId: workImageId, field: 'image', value: portrait('') }]);
   const s = r.state;
-  const target = (owner: OwnerRef, nodeId: string, path: string[]): ImageUseTarget => ({ kind: 'node', owner, nodeId, path });
+  const target = (owner: OwnerRef, nodeId: string, path: string[]): NodeUse => ({ kind: 'node', owner, nodeId, path });
   return {
     state: s,
     home,
@@ -103,11 +104,12 @@ function studio() {
   };
 }
 
+type NodeUse = Extract<ImageUseTarget, { kind: 'node' }>;
 const replaceIn = (uses: ImageUseTarget[]): EditOperation => ({ type: 'asset.replace', assetId: 'a_person1', withAssetId: 'a_publicity', uses });
 
 describe('the uses of an image, one row each', () => {
   it('names each gallery and team row and the field Show opens, in page order', () => {
-    const { state, home, work, about, heroId, galleryId, teamId, workImageId } = studio();
+    const { state, home, work, about, heroId, galleryId, teamId, workImageId, uses } = studio();
     const rows = imageUseRows(state, 'a_person1');
     expect(rows.map(({ icon, where, what, at, field, alt }) => ({ icon, where, what, at, field, alt }))).toEqual([
       { icon: 'page', where: 'Home', what: 'Split hero', at: { owner: home, nodeId: heroId }, field: { prop: 'image' }, alt: PORTRAIT },
@@ -116,8 +118,12 @@ describe('the uses of an image, one row each', () => {
       { icon: 'page', where: 'Work', what: 'Image', at: { owner: work, nodeId: workImageId }, field: undefined, alt: '' },
       { icon: 'page', where: 'About', what: 'Team · Person 1: Hannah Wells', at: { owner: about, nodeId: teamId }, field: { prop: 'people', itemId: 'p1', field: 'portrait' }, alt: '  Hannah Wells, founder  ' }
     ]);
+    expect(rows.map((r) => r.target)).toEqual([uses.hero, uses.g1, uses.g2, uses.work, uses.team]);
+    expect(rows.map((r) => r.key)).toEqual(rows.map((r) => useKey(r.target!)));
     expect(new Set(rows.map((r) => r.key)).size).toBe(5);
-    expect(rows.every((r) => r.target)).toBe(true);
+    // The same path in another element, or on another page, is another use.
+    expect(useKey({ ...uses.g1, nodeId: heroId })).not.toBe(useKey(uses.g1));
+    expect(useKey({ ...uses.g1, owner: about })).not.toBe(useKey(uses.g1));
   });
 
   it('keeps a row’s key and target while it moves or is renamed, and its label follows', () => {
@@ -135,12 +141,15 @@ describe('the uses of an image, one row each', () => {
   it('lists a page’s sharing image and the site’s own as uses of their own', () => {
     const { state } = studio();
     const s = structuredClone(state);
+    const workId = s.site.pageOrder.find((id) => s.pages[id].title === 'Work')!;
     s.pages[s.site.homePageId].seo.socialImage = 'a_person1';
+    s.pages[workId].seo.socialImage = 'a_person1';
     s.site.favicon = 'a_person1';
     s.site.socialImage = 'a_person1';
-    const rows = imageUseRows(s, 'a_person1').slice(-3);
+    const rows = imageUseRows(s, 'a_person1').slice(-4);
     expect(rows.map(({ icon, where, what, setting, target }) => ({ icon, where, what, setting, target }))).toEqual([
       { icon: 'page', where: 'Home', what: 'Sharing image', setting: { pageId: s.site.homePageId }, target: { kind: 'pageSharing', pageId: s.site.homePageId } },
+      { icon: 'page', where: 'Work', what: 'Sharing image', setting: { pageId: workId }, target: { kind: 'pageSharing', pageId: workId } },
       { icon: 'site', where: 'Site', what: 'Browser tab icon', setting: 'site', target: { kind: 'site', field: 'favicon' } },
       { icon: 'site', where: 'Site', what: 'Sharing image', setting: 'site', target: { kind: 'site', field: 'socialImage' } }
     ]);
@@ -156,6 +165,9 @@ describe('the uses of an image, one row each', () => {
       ['Gallery · Image 2: At work', null, undefined]
     ]);
     expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+    // Replace everywhere still reaches them.
+    const all = applyOperations(s, [{ type: 'asset.replace', assetId: 'a_person1', withAssetId: 'a_publicity' }]).state;
+    expect(((all.pages[home.id].nodes[galleryId] as InstanceNode).props.images as ListItem[]).map((i) => (i.image as ImageValue).assetId)).toEqual(['a_publicity', 'a_publicity', 'a_other']);
   });
 });
 
@@ -172,9 +184,9 @@ describe('replacing an image in the places chosen', () => {
     // The deliberate exception: untouched, spaces and all.
     expect(after.team).toEqual(before.team);
     expect(after.team).toEqual({ assetId: 'a_person1', alt: '  Hannah Wells, founder  ' });
-    expect((r.results[0].altReview as AltReview[]).map((x) => [x.reason, x.alt])).toEqual([
-      ['custom', 'Hannah sketching at her desk'],
-      ['missing', '']
+    expect((r.results[0].altReview as AltReview[]).map(({ reason, alt, path }) => [reason, alt, path])).toEqual([
+      ['custom', 'Hannah sketching at her desk', ['props', 'images', 'g2', 'image']],
+      ['missing', '', ['image']]
     ]);
     // Portrait 1 is still in use, in the one place left.
     expect(imageUseRows(r.state, 'a_person1').map((x) => x.what)).toEqual(['Team · Person 1: Hannah Wells']);
@@ -185,7 +197,7 @@ describe('replacing an image in the places chosen', () => {
     const before = read(state);
     const after = read(applyOperations(state, [replaceIn([uses.work, uses.g2, uses.hero])]).state);
     expect(after.rows[0]).toEqual(before.rows[0]);
-    expect(after.rows[1].assetId).toBe('a_publicity');
+    expect(after.rows[1]).toEqual({ assetId: 'a_publicity', alt: 'Hannah sketching at her desk' });
     expect([after.hero.assetId, after.work.assetId, after.team.assetId]).toEqual(['a_publicity', 'a_publicity', 'a_person1']);
   });
 
@@ -198,8 +210,12 @@ describe('replacing an image in the places chosen', () => {
     s.site.socialImage = 'a_person1';
     const r = applyOperations(s, [replaceIn([uses.hero, { kind: 'site', field: 'favicon' }])]).state;
     expect([r.site.favicon, r.site.socialImage, r.pages[homeId].seo.socialImage]).toEqual(['a_publicity', 'a_person1', 'a_person1']);
+    const workId = s.site.pageOrder.find((id) => s.pages[id].title === 'Work')!;
+    s.pages[workId].seo.socialImage = 'a_person1';
     const r2 = applyOperations(s, [replaceIn([{ kind: 'pageSharing', pageId: homeId }])]).state;
-    expect([r2.site.favicon, r2.site.socialImage, r2.pages[homeId].seo.socialImage]).toEqual(['a_person1', 'a_person1', 'a_publicity']);
+    expect([r2.site.favicon, r2.site.socialImage, r2.pages[homeId].seo.socialImage, r2.pages[workId].seo.socialImage]).toEqual(['a_person1', 'a_person1', 'a_publicity', 'a_person1']);
+    const r3 = applyOperations(s, [replaceIn([{ kind: 'site', field: 'socialImage' }])]).state;
+    expect([r3.site.favicon, r3.site.socialImage, r3.pages[homeId].seo.socialImage]).toEqual(['a_person1', 'a_publicity', 'a_person1']);
   });
 
   it('replaces nothing when a chosen place no longer shows the image, or is named twice', () => {
@@ -221,10 +237,24 @@ describe('replacing an image in the places chosen', () => {
     const s = structuredClone(state);
     ((s.pages[home.id].nodes[galleryId] as InstanceNode).props.images as ListItem[])[1].id = 'g1';
     expect(() => applyOperations(s, [replaceIn([uses.g1])])).toThrow(/no longer shows the image/);
-    // Listed apart, and only Replace everywhere changes them.
+    // Listed apart, each by its own row, and only Replace everywhere changes them.
     const rows = imageUseRows(s, 'a_person1').filter((r) => r.what.startsWith('Gallery'));
-    expect(rows.map((r) => r.target)).toEqual([null, null]);
+    expect(rows.map((r) => [r.what, r.target, r.field])).toEqual([
+      ['Gallery · Image 1: Studio front', null, undefined],
+      ['Gallery · Image 2: At work', null, undefined]
+    ]);
     expect(new Set(rows.map((r) => r.key)).size).toBe(2);
+  });
+
+  it('never takes a row for another that shares its ID and shows a different image', () => {
+    const { state, home, galleryId, uses, read } = studio();
+    const s = structuredClone(state);
+    // Samples (another image) now has At work's ID: At work is named by its position, and only that row is listed.
+    ((s.pages[home.id].nodes[galleryId] as InstanceNode).props.images as ListItem[])[2].id = 'g2';
+    const row = imageUseRows(s, 'a_person1').find((r) => r.what.includes('At work'))!;
+    expect([row.what, row.target, row.field]).toEqual(['Gallery · Image 2: At work', null, undefined]);
+    expect(() => applyOperations(s, [replaceIn([uses.g2])])).toThrow(/no longer shows the image/);
+    expect(read(applyOperations(s, [replaceIn([uses.g1])]).state).rows.map((i) => i.assetId)).toEqual(['a_publicity', 'a_person1', 'a_other']);
   });
 
   it('refuses places for a document, which changes wherever it is linked', () => {
@@ -251,6 +281,8 @@ describe('the AI and replacing in some places', () => {
     const ops = [replaceIn([uses.hero, uses.g1, uses.g2])];
     const r = applyOperations(state, ops);
     expect(describeOps(ops, state, r.state, r.results)[0].label).toBe('Replaced “Portrait 1” with “Publicity 1” in 3 chosen places; check the alt text in one place');
+    const two = [replaceIn([uses.hero, uses.g1])];
+    expect(describeOps(two, state, applyOperations(state, two).state, applyOperations(state, two).results)[0].label).toBe('Replaced “Portrait 1” with “Publicity 1” in 2 chosen places');
     const one = [replaceIn([uses.hero])];
     expect(describeOps(one, state, applyOperations(state, one).state, applyOperations(state, one).results)[0].label).toBe('Replaced “Portrait 1” with “Publicity 1” in one chosen place');
   });
@@ -259,6 +291,7 @@ describe('the AI and replacing in some places', () => {
     const apply = toolDefinitions().find((t) => t.name === 'apply_operations');
     expect(JSON.stringify(apply)).toContain('asset.replace');
     expect(JSON.stringify(apply)).not.toContain('pageSharing');
+    expect(JSON.stringify(apply)).not.toContain('"uses"');
     const { state, uses } = studio();
     let applied = false;
     const host = { state: () => state, revision: () => 0, apply: async () => ((applied = true), { ok: true, revision: 1 }) } as unknown as ToolHost;
@@ -281,6 +314,7 @@ describe('replacing in some places in the editor', () => {
     const applied = await session.apply({ operations: [replaceIn([uses.hero, uses.g1, uses.g2, uses.work])] }, { label: 'Replace Portrait 1 in 4 places', source: 'user' });
     expect(applied.ok).toBe(true);
     const after = read(session.state);
+    expect([after.hero, ...after.rows.slice(0, 2), after.work].map((v) => v.assetId)).toEqual(['a_publicity', 'a_publicity', 'a_publicity', 'a_publicity']);
     expect(after.team).toEqual(before.team);
     expect((await session.undo()).ok).toBe(true);
     expect(read(session.state)).toEqual(before);
@@ -297,6 +331,7 @@ describe('replacing in some places in the editor', () => {
     const before = read(session.state);
     const applied = await session.apply({ operations: [replaceIn([uses.hero, uses.g2])] }, { label: 'Replace', source: 'user' });
     expect(applied.ok).toBe(false);
+    expect(applied.error?.message).toMatch(/no longer shows the image/);
     expect(read(session.state)).toEqual(before);
   });
 });

@@ -4,7 +4,8 @@ import { allTrees } from './tree';
 /**
  * One use of a library image: an image value (`value`, at `place`), or a setting that names the image by ID (a page's
  * sharing image, the site's tab icon or sharing image). `target` names it for a replacement in some places; a value
- * reached through a list item with no ID has none, and changes only with every other use.
+ * reached through a list item with no ID, or one whose ID another item of its list shares, has none, and changes only
+ * with every other use.
  */
 export type ImageUse = { target: ImageUseTarget | null } & ({ place: ValuePlace; value: ImageValue } | { place?: undefined; value?: undefined });
 
@@ -36,9 +37,17 @@ function targetOf(place: ValuePlace): ImageUseTarget | null {
  */
 export function imageUses(state: ProjectState, assetId: string): ImageUse[] {
   const out: ImageUse[] = [];
+  const idOf = (x: unknown) => (x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string' ? (x as { id: string }).id : undefined);
   const walk = (v: unknown, at: { owner: OwnerRef; nodeId: string } | { definitionId: string }, path: Array<string | number>) => {
-    if (Array.isArray(v)) v.forEach((x, i) => walk(x, at, [...path, x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string' ? (x as { id: string }).id : i]));
-    else if (v && typeof v === 'object') {
+    if (Array.isArray(v)) {
+      // A list item is reached by its ID only when no other item of the list has it; otherwise by position, so it
+      // is never mistaken for the other one.
+      const ids = v.map(idOf);
+      v.forEach((x, i) => {
+        const id = ids[i];
+        walk(x, at, [...path, id !== undefined && ids.indexOf(id) === ids.lastIndexOf(id) ? id : i]);
+      });
+    } else if (v && typeof v === 'object') {
       if ((v as { assetId?: unknown }).assetId === assetId) {
         const place: ValuePlace = { ...at, path };
         out.push({ place, value: v as ImageValue, target: targetOf(place) });

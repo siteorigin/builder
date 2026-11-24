@@ -675,19 +675,31 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     await importFiles(undefined, 'document');
   };
 
-  /** Show another image in every place this one is used, or only in the places chosen (`only`), as one step. */
-  const replaceWith = async (withId: string, only?: ImageUseRow[]) => {
+  /**
+   * Show another image in every place this one is used, or only in the places chosen (`only`) as the project was at
+   * `revision`, the one their preview showed: a project changed since is refused, to choose again. One step either way.
+   */
+  const replaceWith = async (withId: string, only?: { uses: ImageUseRow[]; revision: number }) => {
     // A second choice while the first is on its way replaces nothing more.
-    if (!sel || withId === sel.id || replacingNow.current || only?.length === 0) return;
-    const n = only?.length ?? (places.length || usage[sel.id] || 0);
+    if (!sel || withId === sel.id || replacingNow.current || only?.uses.length === 0) return;
+    const n = only?.uses.length ?? (places.length || usage[sel.id] || 0);
     const target = getState().snapshot?.state.assets.assets[withId];
-    const uses = only?.flatMap((u) => (u.target ? [u.target] : []));
+    const uses = only?.uses.flatMap((u) => (u.target ? [u.target] : []));
+    const session = replaceSession.current;
     replacingNow.current = true;
-    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId, ...(uses ? { uses } : {}) }], only ? `Replace ${nameOf(sel)} in ${plural(n, 'place', 'places')}` : `Replace ${nameOf(sel)}`).finally(() => (replacingNow.current = false));
+    const r = await commitOps(
+      [{ type: 'asset.replace', assetId: sel.id, withAssetId: withId, ...(uses ? { uses } : {}) }],
+      only ? `Replace ${nameOf(sel)} in ${plural(n, 'place', 'places')}` : `Replace ${nameOf(sel)}`,
+      undefined,
+      only?.revision
+    ).finally(() => (replacingNow.current = false));
     if (r) {
-      replaceSession.current++;
-      setReplacing(false);
-      setChoosing(null);
+      // The picker it was chosen in closes; one opened again since stays as it is.
+      if (replaceSession.current === session) {
+        replaceSession.current++;
+        setReplacing(false);
+        setChoosing(null);
+      }
       // Uses with a description of their own, or none now, are listed with this image for the author to check.
       const review = (r.results?.[0]?.altReview ?? []) as AltReview[];
       const check = review.length > 0 && !!r.entryId && selectedNow.current === sel.id;
@@ -734,7 +746,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   /** Escape leaves the details (or the replace picker), unless it is reverting a field or clearing a search. */
   const onEscape = (fn: () => void) => (e: React.KeyboardEvent) => {
     const t = e.target as HTMLInputElement;
-    if (e.key !== 'Escape' || t.matches('textarea, input:not([type="search"])') || (t.matches('input') && t.value)) return;
+    if (e.key !== 'Escape' || t.matches('textarea, input:not([type="search"]):not([type="checkbox"])') || (t.matches('input:not([type="checkbox"])') && t.value)) return;
     e.stopPropagation();
     fn();
   };
@@ -892,7 +904,14 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const chosen = choosing ? places.filter((u) => u.target && choosing.chosen.includes(u.key)) : [];
     const pick = choosing?.pick ? (snap.state.assets.assets[choosing.pick] ?? null) : null;
     const choosable = places.filter((u) => u.target).length;
-    const onPick = (a: AssetRecord) => (choosing ? setChoosing((c) => c && { ...c, pick: a.id }) : void replaceWith(a.id));
+    const onPick = (a: AssetRecord) => {
+      if (!choosing) return void replaceWith(a.id);
+      // Picked here, it wins over a replacement still being imported.
+      replaceSession.current++;
+      setChoosing((c) => c && { ...c, pick: a.id });
+    };
+    // Ticked places that no longer show this image (removed, or given another since): said, and left out.
+    const lost = choosing ? choosing.chosen.filter((k) => !places.some((u) => u.key === k && u.target)).length : 0;
     const startChoosing = () => {
       replaceSession.current++;
       setChoosing({ chosen: places.flatMap((u) => (u.target ? [u.key] : [])), pick: null });
@@ -951,6 +970,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               })}
             </ul>
             <p className="asset-choose-sum" role="status">
+              {lost > 0 && `${lost === 1 ? 'A place you ticked no longer shows' : `${lost} places you ticked no longer show`} ${nameOf(sel)}. `}
               {!chosen.length
                 ? 'Tick at least one place.'
                 : pick
@@ -958,7 +978,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                   : `Pick the image to show in ${plural(chosen.length, 'place', 'places')}.`}
             </p>
             <div className="asset-choose-actions">
-              <button className="btn btn-sm btn-primary" disabled={!pick || !chosen.length} onClick={() => pick && void replaceWith(pick.id, chosen)}>
+              <button className="btn btn-sm btn-primary" disabled={!pick || !chosen.length} onClick={() => pick && void replaceWith(pick.id, { uses: chosen, revision: snap.revision })}>
                 <Replace /> {chosen.length ? `Replace in ${plural(chosen.length, 'place', 'places')}` : 'Replace'}
               </button>
               <button className="btn btn-sm btn-ghost" onClick={stopChoosing}>
@@ -979,10 +999,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               // Applied only while the picker is still open for this image, and only for the one file chosen, come in
               // cleanly. Choosing places, it is picked for them, to replace there once the author says so.
               if (r.chosen === 1 && r.ids.length === 1 && !r.failed) {
-                if (choosing) setChoosing((c) => c && { ...c, pick: r.ids[0] });
-                else void replaceWith(r.ids[0]);
-              }
-              else {
+                if (choosing) {
+                  // A file the library already had as this very image is no replacement for it.
+                  if (r.ids[0] !== sel.id) setChoosing((c) => c && { ...c, pick: r.ids[0] });
+                } else void replaceWith(r.ids[0]);
+              } else {
                 const next = r.ids.find((id) => id !== sel.id);
                 if (!next) return;
                 setPickQ('');

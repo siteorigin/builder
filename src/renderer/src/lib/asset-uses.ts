@@ -86,17 +86,11 @@ export interface ImageUseRow extends Omit<PlaceLabel, 'icon'> {
   decorative?: boolean;
 }
 
-/**
- * Every use of an image, one row each, in the order a replacement changes them. Rows that two list items sharing an
- * ID would name alike have no target either: a replacement could not tell them apart.
- */
+/** Every use of an image, one row each, in the order a replacement changes them. */
 export function imageUseRows(state: ProjectState, assetId: string): ImageUseRow[] {
   const trees = new Map(allTrees(state).map((t) => [`${t.owner.kind}/${t.owner.id}`, t]));
-  const uses = imageUses(state, assetId);
-  const named = new Map<string, number>();
-  for (const u of uses) if (u.target) named.set(useKey(u.target), (named.get(useKey(u.target)) ?? 0) + 1);
-  return uses.map((u, i): ImageUseRow => {
-    const t = u.target && named.get(useKey(u.target)) === 1 ? u.target : null;
+  return imageUses(state, assetId).map((u, i): ImageUseRow => {
+    const t = u.target;
     const key = t ? useKey(t) : `unnamed:${i}`;
     if (!u.place) {
       if (t?.kind === 'pageSharing') return { key, target: t, icon: 'page', where: state.pages[t.pageId].title, what: 'Sharing image', setting: { pageId: t.pageId } };
