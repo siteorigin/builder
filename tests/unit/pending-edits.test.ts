@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { CANVAS_DRAFT, CODE_DRAFT, PAGE_ADD_DRAFT, afterSettle, draftCount, isSettling, reportRefused, resetPendingForTests, savesInFlight, setCanvasCommit, setDraft, settle, trackApply, type ApplyOutcome } from '../../src/renderer/src/lib/pending';
+import { CANVAS_DRAFT, CODE_DRAFT, PAGE_ADD_DRAFT, afterSettle, draftCount, isSettling, reportRefused, resetPendingForTests, retainRefused, savesInFlight, setCanvasCommit, setDraft, settle, trackApply, type ApplyOutcome } from '../../src/renderer/src/lib/pending';
 import { announcementText, saveStatusAnnouncement } from '../../src/renderer/src/lib/announce';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -123,6 +123,33 @@ describe('settling pending edits', () => {
     const second = await settle({ blur: () => reportRefused('What you typed in Title can’t be saved.', 'title', gone), wait });
     second.finish();
     expect(second.refused).toBeNull();
+  });
+
+  it('names a field still keeping text it refused before the settle began, and returns there', async () => {
+    const url = { focus: () => undefined, isConnected: true };
+    // Left earlier: the field kept the refused text as a draft, with its reason beside it.
+    setDraft('url', true);
+    retainRefused('url', 'What you typed in Public URL can’t be saved.', url);
+    const first = await settle({ blur: () => undefined, wait });
+    first.finish();
+    expect(first.problems).toEqual(['What you typed in Public URL can’t be saved.']);
+    expect(first.refused).toBe(url);
+    // Corrected or discarded: an open draft is only an unsaved one, and nothing is returned to.
+    retainRefused('url', null);
+    const second = await settle({ blur: () => undefined, wait });
+    second.finish();
+    expect(second.problems).toEqual(['A change you were typing has not been saved.']);
+    expect(second.refused).toBeNull();
+  });
+
+  it('does not report a kept refusal twice when the field is left again during the settle', async () => {
+    const url = { focus: () => undefined, isConnected: true };
+    setDraft('url', true);
+    retainRefused('url', 'What you typed in Public URL can’t be saved.', url);
+    const { problems, refused, finish } = await settle({ blur: () => reportRefused('What you typed in Public URL can’t be saved.', 'url', url), wait });
+    finish();
+    expect(problems).toEqual(['What you typed in Public URL can’t be saved.']);
+    expect(refused).toBe(url);
   });
 
   it('reports unsaved code and a field typed in while it waited, but not a refusal twice', async () => {
