@@ -1043,7 +1043,14 @@ const SHOW: UiStateSchema = {
  */
 function optionalTabsDef(
   s: ProjectState,
-  shape: { gateFirst?: boolean; wrapperGate?: Condition; bareThird?: boolean; crowdedThird?: boolean; panelExtra?: (b: Parameters<ComponentSpec['build']>[0]) => string[] } = {}
+  shape: {
+    gateFirst?: boolean;
+    wrapperGate?: Condition;
+    bareThird?: boolean;
+    crowdedThird?: boolean;
+    panelExtra?: (b: Parameters<ComponentSpec['build']>[0]) => string[];
+    extra?: (b: Parameters<ComponentSpec['build']>[0]) => string[];
+  } = {}
 ) {
   const gate = (n: 1 | 2 | 3 | 4) => ({ $prop: 'tabs', field: `label${n}` });
   return addDef(s, {
@@ -1076,7 +1083,8 @@ function optionalTabsDef(
             })
           )
         ),
-        b.el('panels', 'div', { styles: { layout: 'stack' } }, [panel(1), panel(2), shape.bareThird ? panel(3) : wrapped(3), wrapped(4)])
+        b.el('panels', 'div', { styles: { layout: 'stack' } }, [panel(1), panel(2), shape.bareThird ? panel(3) : wrapped(3), wrapped(4)]),
+        ...(shape.extra?.(b) ?? [])
       ]);
     }
   });
@@ -1108,7 +1116,7 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
     }
     for (const panel of panels) expect(tabs.some((t) => attrOf(t, 'id') === attrOf(panel, 'aria-labelledby'))).toBe(true);
     // The first tab is chosen in each, the one in the tab order.
-    expect(tabs.map((t) => attrOf(t, 'tabindex'))).toEqual(['0', '-1', '-1', '0', '-1', '-1']);
+    expect(tabs.map((t) => [attrOf(t, 'aria-selected'), attrOf(t, 'tabindex')])).toEqual([...Array(2)].flatMap(() => [['true', '0'], ['false', '-1'], ['false', '-1']]));
     // A tab left out takes its panel with it: neither the words nor an empty wrapper stay behind.
     expect(html.split('Panel 3 words')).toHaveLength(2);
     expect(html.split('Panel 4 words')).toHaveLength(2);
@@ -1128,13 +1136,50 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
     expect(source).toContain('const so_state_show_shown = $derived((so_state_show === "t3" && !(has(tabs?.["label3"]))) || (so_state_show === "t4" && !(has(tabs?.["label4"]))) ? "t1" : so_state_show);');
     // What the tabs and panels show reads the tab shown; only the buttons change the state itself.
     expect(source).toContain('aria-selected={so_state_show_shown === "t1"}');
+    expect(source).toContain('!(so_state_show_shown === "t4") && "so-state-off"');
     expect(source).toContain('onclick={() => (so_state_show = "t3")}');
-    expect(source).not.toMatch(/aria-selected=\{so_state_show ===/);
+    expect(source).not.toMatch(/(aria-selected=\{|!\()so_state_show ===/);
     // A design without optional tabs reads its state directly, as before.
     const t = fresh();
     const plain = tabsDef(t);
     place(t, plain);
     expect(generateProject(t).get(defFile(plain))).not.toContain('_shown');
+  });
+
+  it('steps Next and Previous through the tabs a placement has, never onto one it leaves out', () => {
+    const s = fresh();
+    const def = optionalTabsDef(s, { extra: (b) => [b.link('next', NONE, 'Next', 'text', { stateAction: { state: 'show', op: 'next', wrap: true } })] });
+    place(s, def);
+    const source = generateProject(s).get(defFile(def))!;
+    expect(source).toContain('onclick={() => (so_state_show = stepState(["t1", "t2", ...(has(tabs?.["label3"]) ? ["t3"] : []), ...(has(tabs?.["label4"]) ? ["t4"] : [])], so_state_show_shown, 1, true))}');
+    expect(compileWarnings(s, [def])).toEqual([]);
+  });
+
+  it('keeps its tab list beside another row of the same buttons whose optional tab has no panel of its own', async () => {
+    const s = fresh();
+    const def = optionalTabsDef(s, {
+      extra: (b) => [
+        b.el('shortcuts', 'div', {}, ([1, 2, 3, 4] as const).map((n) => b.link(`short-${n}`, NONE, `Go ${n}`, 'text', { stateAction: { state: 'show', op: 'set', value: `t${n}` }, ...(n === 4 ? { when: prop('heading') } : {}) })))
+      ]
+    });
+    place(s, def);
+    const html = await renderHome(s);
+    const [list] = tagsWith(html, 'role', 'tablist');
+    expect(attrOf(list, 'class')).toContain(nodeClass(def, 'list'));
+    expect(tagsWith(html, 'role', 'tab')).toHaveLength(3);
+    // The shortcuts say whether they are pressed; one shown on a condition keeps them out of a group.
+    expect(tagsWith(html, 'role', 'group')).toEqual([]);
+    expect(tagsWith(html, 'aria-pressed')).toHaveLength(4);
+  });
+
+  it('checks a placement’s reachable options as it renders them: content for a tab it leaves out is never shown', () => {
+    const plan = apply(fresh(), [{ type: 'page.create', pageId: 'pg_draft001', title: 'Soon', route: '/soon/' }, { type: 'page.update', pageId: 'pg_draft001', draft: true }]);
+    // Beside the panels, shown only while the third tab is chosen.
+    const def = optionalTabsDef(plan, { extra: (b) => [b.link('soon', { type: 'page', target: 'pg_draft001' }, 'Coming soon', 'link', { when: eq(uiState('show'), 't3') })] });
+    place(plan, def);
+    expect(publicationPlan(plan).draftLinks).toEqual([]);
+    place(plan, def, { tabs: { label1: 'One tab', label2: 'Two tab', label3: 'Three tab', label4: 'Four tab' } });
+    expect(publicationPlan(plan).draftLinks.map((l) => l.label)).toEqual(['Coming soon']);
   });
 
   it('keeps to pressed buttons where an optional tab does not have the shape: a starting tab, another condition, a panel not wrapped alone', async () => {
@@ -1170,7 +1215,7 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
     expect(publicationPlan(plan).draftLinks.map((l) => l.label)).toEqual(['Coming soon']);
   });
 
-  it('groups a choice’s buttons gathered in a plain container, named as a tab list is, and leaves the group out of print', async () => {
+  it('groups a choice’s buttons gathered in a plain container, named as a tab list is, each named by its option while blank', async () => {
     const s = fresh();
     const def = addDef(s, {
       componentId: 'test.switch',
@@ -1194,16 +1239,52 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
     const groups = tagsWith(html, 'role', 'group');
     expect(groups.map((g) => attrOf(g, 'aria-label'))).toEqual(['Billing', 'Billing period']);
     for (const g of groups) expect(attrOf(g, 'class')!.split(' ')).toContain(CHOICE_GROUP_CLASS);
-    expect(tagsWith(html, 'aria-pressed').map((t) => attrOf(t, 'aria-pressed'))).toEqual(['false', 'true', 'false', 'true']);
+    const pressed = tagsWith(html, 'aria-pressed');
+    expect(pressed.map((t) => attrOf(t, 'aria-pressed'))).toEqual(['false', 'true', 'false', 'true']);
+    expect(pressed.map((t) => html.slice(html.indexOf(t) + t.length).split('<')[0])).toEqual(['Monthly', 'Annual', 'Monthly', 'Annual']);
     expect(html.split('$100 a year')).toHaveLength(3);
     expect(html).not.toContain('$10 a month');
     expect(compileWarnings(s, [def])).toEqual([]);
-    const css = generateProject(s).get('src/lib/siteorigin/styles/components.css')!;
-    expect(css).toMatch(new RegExp(`@media print \\{\\s*\\.${CHOICE_GROUP_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
-    // Beside other content, or under the design's root itself, the buttons stay ungrouped.
+    // A group's labels may say what the page does not say again, so print keeps it.
+    expect(generateProject(s).get('src/lib/siteorigin/styles/components.css')).not.toContain(CHOICE_GROUP_CLASS);
+    // A button whose label is blank is named by the option it chooses.
+    const blank = fresh();
+    const unnamed = addDef(blank, {
+      componentId: 'test.blank',
+      name: 'Blank switch',
+      properties: { monthly: P.str('Monthly', '') },
+      parts: {},
+      state: structuredClone({ billing: BILLING }),
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.el('switch', 'div', {}, [
+            b.link('monthly-btn', NONE, prop('monthly'), 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'monthly' } }),
+            b.link('annual-btn', NONE, '  ', 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'annual' } })
+          ])
+        ])
+    });
+    place(blank, unnamed);
+    const named = await renderHome(blank);
+    expect(tagsWith(named, 'aria-pressed').map((t) => named.slice(named.indexOf(t) + t.length).split('<')[0])).toEqual(['Monthly', 'Annual']);
+    // Beside other content, or as the design's root itself, the buttons stay ungrouped.
     const { def: mixed } = billingDef(s);
     place(s, mixed);
-    expect(tagsWith(await renderHome(s), 'role', 'group')).toHaveLength(2);
+    const rootOnly = addDef(s, {
+      componentId: 'test.root-switch',
+      name: 'Root switch',
+      properties: {},
+      parts: {},
+      state: structuredClone({ billing: BILLING }),
+      build: (b) =>
+        b.el('root', 'div', {}, [
+          b.link('m', NONE, 'Monthly', 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'monthly' } }),
+          b.link('a', NONE, 'Annual', 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'annual' } })
+        ])
+    });
+    place(s, rootOnly);
+    const all = await renderHome(s);
+    expect(tagsWith(all, 'role', 'group')).toHaveLength(2);
+    expect(tagsWith(all, 'aria-pressed')).toHaveLength(8);
   });
 });
 

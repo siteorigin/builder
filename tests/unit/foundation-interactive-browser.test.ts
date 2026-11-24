@@ -210,7 +210,10 @@ describe.skipIf(!browserInstalled)('Foundation’s tabbed showcase and billing s
         await page.keyboard.press(key);
         await expect.poll(async () => selected((await tabsOf(page)).tabs)).toEqual([to]);
         expect(await focused(page)).toBe(to);
-        expect((await tabsOf(page)).shown).toEqual([heading]);
+        const now = await tabsOf(page);
+        expect(now.shown).toEqual([heading]);
+        // Only the chosen tab is in the tab order.
+        expect(now.tabs.filter((t) => t[2] === '0').map((t) => t[0])).toEqual([to]);
       }
       // Tab leaves the row for the panel showing.
       await page.keyboard.press('Tab');
@@ -244,6 +247,17 @@ describe.skipIf(!browserInstalled)('Foundation’s tabbed showcase and billing s
     }
   });
 
+  it('wraps the tab row from a tablet up', async () => {
+    const { page, problems } = await open(834);
+    try {
+      await page.waitForFunction('document.querySelectorAll("#app [role=tab]").length === 4');
+      expect(await page.evaluate(`getComputedStyle(document.querySelector('#app [role="tablist"]')).flexWrap`)).toBe('wrap');
+      expect(problems).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
   it('keeps the tab row on one line on a phone, scrolling it sideways, never widening the page', async () => {
     const { page, problems } = await open(390);
     try {
@@ -252,9 +266,10 @@ describe.skipIf(!browserInstalled)('Foundation’s tabbed showcase and billing s
         page.evaluate(`(() => {
           const list = document.querySelector('#app [role="tablist"]');
           const tops = new Set([...list.children].map((t) => Math.round(t.getBoundingClientRect().top)));
-          return { lines: tops.size, scrolls: list.scrollWidth > list.clientWidth, scrollLeft: list.scrollLeft, page: document.documentElement.scrollWidth <= innerWidth };
-        })()`) as Promise<{ lines: number; scrolls: boolean; scrollLeft: number; page: boolean }>;
-      expect(await row()).toMatchObject({ lines: 1, scrolls: true, scrollLeft: 0, page: true });
+          return { lines: tops.size, scrolls: list.scrollWidth > list.clientWidth, overflow: getComputedStyle(list).overflowX, scrollLeft: list.scrollLeft, page: document.documentElement.scrollWidth <= innerWidth };
+        })()`) as Promise<{ lines: number; scrolls: boolean; overflow: string; scrollLeft: number; page: boolean }>;
+      // A row a finger can scroll, never one that clips.
+      expect(await row()).toMatchObject({ lines: 1, scrolls: true, overflow: 'auto', scrollLeft: 0, page: true });
       // The last tab, reached from the keyboard, is scrolled into view.
       await page.locator('#app').getByRole('tab', { name: 'Design' }).focus();
       await page.keyboard.press('End');

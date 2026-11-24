@@ -20,7 +20,7 @@ import { applyOperations } from '@engine/apply';
 import { blocksSaving, validateState } from '@engine/validate';
 import { CHOICE_GROUP_CLASS, STATE_OFF_CLASS, defFile, generateProject, nodeClass } from '@generator/index';
 import { newMacroMemory, runUpsert, upsertToolSchema } from '@agent/macros';
-import type { ToolHost } from '@agent/tools';
+import { executeTool, type ToolHost } from '@agent/tools';
 
 const SHOWCASE = 'tabs.showcase';
 const BILLING = 'pricing.toggle';
@@ -94,11 +94,21 @@ describe('where the sections are offered', () => {
     expect(searchCatalogue('foundation', 'pricing').map((e) => e.componentId)).toEqual(expect.arrayContaining(['pricing.plans', BILLING]));
   });
 
+  it('offers both through search_components, as the assistant asks for them', async () => {
+    const s = fresh();
+    const host = { state: () => s, revision: () => 1 } as unknown as ToolHost;
+    const found = async (query: string) => JSON.stringify((await executeTool('search_components', JSON.stringify({ query }), host, 'c1')).content);
+    expect(await found('tabbed showcase')).toContain(SHOWCASE);
+    expect(await found('monthly annual billing')).toContain(BILLING);
+  });
+
   it('types both in upsert_page_with_sections, and builds a page from them', async () => {
     const schema = upsertToolSchema(fresh()) as { properties: { sections: { items: { oneOf: Array<{ properties: { componentId: { enum: string[] }; props: { properties: Record<string, unknown> } } }> } } } };
     const branch = (id: string) => schema.properties.sections.items.oneOf.find((b) => b.properties.componentId.enum[0] === id)!.properties.props.properties;
     expect(Object.keys(branch(SHOWCASE))).toEqual(['eyebrow', 'heading', 'headingLevel', 'lead', 'tab1', 'tab2', 'tab3', 'tab4', 'tab5', 'tab6']);
     expect(Object.keys(branch(BILLING))).toEqual(['eyebrow', 'heading', 'headingLevel', 'lead', 'monthlyLabel', 'annualLabel', 'switchLabel', 'plans']);
+    // Each tab is an object of its own fields, its icon one of the offered names or "" for none.
+    expect(branch(SHOWCASE).tab4).toMatchObject({ type: 'object', properties: { label: { type: 'string' }, icon: { enum: expect.arrayContaining(['', 'compass']) }, copy: { type: 'string' } } });
     let state = fresh();
     const host = {
       state: () => state,
@@ -182,7 +192,7 @@ describe('Tabbed showcase', () => {
     const { state } = inserted(SHOWCASE, six);
     let html = await renderHome(state);
     expect(tagsWith(html, 'role', 'tab').map((t) => textAfter(html, t))).toEqual(['Stage 1', 'Stage 2', 'Stage 3', 'Stage 4', 'Stage 5', 'Stage 6']);
-    expect(tagsWith(html, 'role', 'tabpanel')).toHaveLength(6);
+    expect(tagsWith(html, 'role', 'tabpanel').map((p) => html.slice(html.indexOf(p)).match(/<h3[^>]*>([^<]*)</)?.[1])).toEqual([1, 2, 3, 4, 5, 6].map((n) => `Stage ${n} heading`));
     // Clearing a label leaves its tab out with its panel, whichever it is; the first two always stay.
     const two = inserted(SHOWCASE, { tab3: { label: '' } }).state;
     html = await renderHome(two);
@@ -209,6 +219,8 @@ describe('Tabbed showcase', () => {
     const def = catalogueComponent('foundation', SHOWCASE)!;
     const inverse = def.variantAxes!.tone.options.inverse.styles!;
     for (const id of ['root', 'eyebrow', 'lead', 'copy-1', 'copy-2', 'copy-3', 'copy-4', 'copy-5', 'copy-6']) expect(inverse[id], id).toBeTruthy();
+    for (const id of ['lead', 'copy-1', 'copy-6']) expect(inverse[id].base).toMatchObject({ color: { token: 'color.on-inverse' } });
+    expect(inverse.root.base).toMatchObject({ background: { token: 'color.inverse' }, color: { token: 'color.on-inverse' } });
     for (const tone of ['muted', 'inverse']) {
       const { state, def: placed } = inserted(SHOWCASE, undefined, fresh());
       const r = apply(state, [{ type: 'instance.setVariant', owner: owner(state), nodeId: home(state).rootIds[0], axis: 'tone', variant: tone }]).state;
@@ -240,6 +252,21 @@ describe('Pricing with billing switch', () => {
     // Its own name for the switch, in the site's language.
     const named = await renderHome(inserted(BILLING, { switchLabel: 'Période de facturation' }).state);
     expect(attrOf(tagsWith(named, 'role', 'group')[0], 'aria-label')).toBe('Période de facturation');
+    // A button whose label is cleared is still named, by its period.
+    const blank = await renderHome(inserted(BILLING, { monthlyLabel: ' ' }).state);
+    expect(textAfter(blank, tagsWith(blank, 'aria-pressed')[0])).toBe('Monthly');
+  });
+
+  it('never shows a price a plan does not have', async () => {
+    const { state, node } = inserted(BILLING, { plans: [{ name: 'Day pass', monthlyPrice: '$15', monthlyNote: 'per visit', annualNote: '' }] });
+    expect((node.props.plans as Array<Record<string, unknown>>)[0]).toMatchObject({ monthlyPrice: '$15', annualPrice: '' });
+    const html = await renderHome(state);
+    expect(html).toContain('>$15<');
+    expect(html).not.toContain('$0');
+    // With neither a price nor a note for the period, the row leaves nothing behind.
+    const def = catalogueComponent('foundation', BILLING)!;
+    expect(def.tree!.nodes['annual-price-row']).toMatchObject({ collapseEmpty: true });
+    expect(def.tree!.nodes['annual-price'].when).toEqual({ $item: 'annualPrice' });
   });
 
   it('switches every plan’s price and billing note together from the state, with no script of its own', () => {
@@ -259,14 +286,31 @@ describe('Pricing with billing switch', () => {
   });
 });
 
+describe('a copy of the showcase', () => {
+  it('keeps its schema through the schema edits a copy takes, its icon’s None included', () => {
+    const { state, def } = inserted(SHOWCASE);
+    const forked = applyOperations(state, [{ type: 'component.fork', definitionId: def.id }]);
+    const copy = forked.results[0].definitionId as string;
+    const schema = forked.state.components[copy].properties.tab1;
+    const again = applyOperations(forked.state, [{ type: 'component.setPropSchema', definitionId: copy, prop: 'tab1', schema: structuredClone(schema) as unknown as Record<string, unknown> }]);
+    expect((again.state.components[copy].properties.tab1 as { fields: Record<string, { options?: Array<{ value: string }> }> }).fields.icon.options![0]).toEqual({ value: '', label: 'None' });
+    expect(validateState(again.state).filter(blocksSaving)).toEqual([]);
+    // An empty choice needs a name to be offered by.
+    const unnamed = { ...schema, fields: { ...(schema as { fields: Record<string, unknown> }).fields, icon: { type: 'enum', label: 'Tab icon', options: ['', 'compass'] } } };
+    expect(() => applyOperations(forked.state, [{ type: 'component.setPropSchema', definitionId: copy, prop: 'tab1', schema: unnamed }])).toThrow(/an empty one \(""\) needs a label/);
+  });
+});
+
 describe('print', () => {
   it('prints every present tab’s panel under its label without the tab row, and the plans without the switch', () => {
     const { state } = inserted(BILLING, undefined, inserted(SHOWCASE).state);
     const css = generateProject(state).get('src/lib/siteorigin/styles/components.css')!;
     expect(css).toMatch(new RegExp(`@media not print \\{\\s*\\.${STATE_OFF_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
-    expect(css).toMatch(new RegExp(`@media print \\{\\s*\\.${CHOICE_GROUP_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
     const print = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media print'));
     expect(print).toContain('.so-tablist:not(#so-print) { display: none !important; }');
+    // Only the billing switch of Foundation's pricing, in any copy of it: other groups of buttons print.
+    expect(css).not.toContain(CHOICE_GROUP_CLASS);
+    expect(print).toContain(`.${CHOICE_GROUP_CLASS}:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }`);
     expect(print).toContain("[role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before");
   });
 });

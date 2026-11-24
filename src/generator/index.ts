@@ -1033,7 +1033,10 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
 
 /** The class a panel kept in the page takes while its component's state hides it (see stateWidgets). */
 export const STATE_OFF_CLASS = 'so-state-off';
-/** The class of a group of a choice's buttons (see stateWidgets), which print leaves out as it does a row of tabs. */
+/**
+ * The class of a group of a choice's buttons (see stateWidgets). Its labels may say something the page does not say
+ * again, so print keeps it; a theme leaves out of print the groups of its own designs that repeat nothing.
+ */
 export const CHOICE_GROUP_CLASS = 'so-choice-group';
 /** The class an item of a list takes while its category filter hides it (see FilterGen). */
 export const FILTER_OFF_CLASS = 'so-filter-off';
@@ -1113,12 +1116,8 @@ export function generateComponentsCss(state: ProjectState): string {
   const parts: string[] = ['/* Component definition styles. Generated from siteorigin/components. */'];
   // A tab's panel while another tab is chosen, or a closed disclosure's content, stays in the page hidden on screen
   // only, so printing shows it with its own layout. An id no element has (#so-print) outweighs a placement's styles.
-  // A group of a choice's buttons (a billing period's) only works on screen; printed, what it chose shows without it.
   if (sortedDefs(state).some((def) => def.kind === 'managed' && stateLocals(def).size))
-    parts.push(
-      `/* Content a component's state hides on screen. */\n@media not print {\n\t.${STATE_OFF_CLASS}:not(#so-print) { display: none !important; }\n}`,
-      `/* A group of buttons choosing what a component shows, left out of print. */\n@media print {\n\t.${CHOICE_GROUP_CLASS}:not(#so-print) { display: none !important; }\n}`
-    );
+    parts.push(`/* Content a component's state hides on screen. */\n@media not print {\n\t.${STATE_OFF_CLASS}:not(#so-print) { display: none !important; }\n}`);
   if (sortedDefs(state).some(hasOverlays)) parts.push(OVERLAY_CSS);
   // Items a list's category filter hides stay in the page, hidden on screen only, so printing shows them all; the
   // row of category buttons is left out of print.
@@ -1420,14 +1419,23 @@ function stateActionHandler(ctx: EmitCtx, nodeId: string, action: StateAction | 
       change = `${s.local} = ${item}.id`;
       break;
     }
-    default:
+    default: {
       if (s.item) {
         useImport(ctx, '{ stepItem }', `${RUNTIME_DIR}/util.js`);
         change = `${s.local} = stepItem(${itemListExpr(ctx, s)}, ${s.item}, ${action.op === 'next' ? 1 : -1}, ${action.wrap === true})`;
         break;
       }
       useImport(ctx, '{ stepState }', `${RUNTIME_DIR}/util.js`);
-      change = `${s.local} = stepState(${js(s.values)}, ${stateRead(ctx, action.state)}, ${action.op === 'next' ? 1 : -1}, ${action.wrap === true})`;
+      // A choice with optional tabs steps through the options whose tabs are there.
+      const gates = ctx.widgets?.gates.get(action.state);
+      const options = gates
+        ? `[${s.values.map((v) => {
+            const g = gates.find((x) => x.value === v);
+            return g ? `...(${conditionExpr(ctx, g.gate, false)} ? [${js(v)}] : [])` : js(v);
+          }).join(', ')}]`
+        : js(s.values);
+      change = `${s.local} = stepState(${options}, ${stateRead(ctx, action.state)}, ${action.op === 'next' ? 1 : -1}, ${action.wrap === true})`;
+    }
   }
   return opens ? `(event) => {\n${pad(ctx)}\t${opens.opener} = event.currentTarget;\n${pad(ctx)}\t${change};\n${pad(ctx)}}` : `() => (${change})`;
 }
@@ -1699,16 +1707,21 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
         const values = list.children.map((c) => (setters.some((b) => b.id === c) ? setValue(c) : undefined));
         return s.values.every((v) => values.includes(v));
       });
-      const list = lists.length === 1 ? (tree.nodes[lists[0]] as GraphNode & { kind: 'element' }) : null;
-      const tabOf = (v: string) => tree.nodes[list!.children.find((c) => setValue(c) === v)!];
-      const panels = list
-        ? s.values.map((v) => {
-            const gate = tabOf(v).when;
+      // Each candidate's panels, one per option: an optional tab's is the one wrapped on its own condition. Only a
+      // candidate whose every panel is found is a tab list, and only one may be: another row of the same buttons
+      // (whose optional tabs have no panels of their own) leaves the list that has them alone.
+      const resolved = lists
+        .map((id) => {
+          const list = tree.nodes[id] as GraphNode & { kind: 'element' };
+          const panels = s.values.map((v) => {
+            const gate = tree.nodes[list.children.find((c) => setValue(c) === v)!].when;
             return guarded.filter(({ n, g }) => g.state === name && g.shows === v && (gate ? optionalPanel(n, gate) : panelHost(n, 'div'))).map(({ n }) => n.id);
-          })
-        : [];
-      const ids = new Set(panels.flat());
-      if (list && panels.every((p) => p.length === 1) && !insidePanel(list.id, ids)) {
+          });
+          return { list, panels };
+        })
+        .filter(({ list, panels }) => panels.every((p) => p.length === 1) && !insidePanel(list.id, new Set(panels.flat())));
+      if (resolved.length === 1) {
+        const { list, panels } = resolved[0];
         out.lists.set(list.id, name);
         const gates: Array<{ value: string; gate: Condition }> = [];
         for (const c of list.children) {
@@ -1755,6 +1768,19 @@ export function keptPanels(state: ProjectState, def: ComponentDefinition, memo: 
   const widgets = stateWidgets(ctx);
   memo.brokenCards = ctx.brokenCards;
   return new Set([...widgets.panels.keys(), ...widgets.overlays.keys()]);
+}
+
+/**
+ * The options of a design's choices that only an optional tab sets, by state, with the property condition the tab
+ * shows on (see stateWidgets): a placement where that condition fails can never show the option.
+ */
+export function optionalTabGates(state: ProjectState, def: ComponentDefinition, memo: { brokenCards?: Set<string> } = {}): ReadonlyMap<string, ReadonlyArray<{ value: string; gate: Condition }>> {
+  const states = def.kind === 'managed' && def.tree ? stateLocals(def) : new Map<string, UiStateLocal>();
+  if (!states.size) return new Map();
+  const ctx: EmitCtx = { state, file: defFile(def), imports: new Map(), instrument: false, def, tree: def.tree!, ctxExpr: '', items: [], rctx: { state }, indent: 0, locals: propLocals(def), states, brokenCards: memo.brokenCards };
+  const gates = stateWidgets(ctx).gates;
+  memo.brokenCards = ctx.brokenCards;
+  return gates;
 }
 
 /** Whether an element always renders as \`tag\` (no property chooses its tag). */
@@ -1856,18 +1882,20 @@ function stateElementAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' | '
     labelledBy = ` aria-labelledby={has(${bindExpr(ctx, own)}) ? undefined : ${by}}`;
   }
   // Printed, every panel shows at once, under its tab's label (the tab list itself is left out).
-  return `${id} role="tabpanel"${labelledBy} tabindex="0" data-tab-label={${tabLabel(ctx, panel.tab)}}`;
+  return `${id} role="tabpanel"${labelledBy} tabindex="0" data-tab-label={${choiceLabel(ctx, panel.tab)}}`;
 }
 
 /**
- * What a tab says: its label, or while that is blank, the label of the option it chooses, so no tab (and no printed
- * panel) goes unnamed.
+ * What a button that chooses one option of a choice says (a tab, or a pressed button such as a billing period's): its
+ * label, or while that is blank, the label of the option it chooses, so no such button (and no printed panel) goes
+ * unnamed.
  */
-function tabLabel(ctx: EmitCtx, tabId: string): string {
-  const tab = ctx.tree.nodes[tabId] as LinkNode;
-  const role = ctx.widgets?.buttons.get(tabId);
-  const s = role?.role === 'tab' ? ctx.states?.get(role.state) : undefined;
-  const option = s?.schema.type === 'enum' ? s.schema.options.find((o) => o.value === role!.value)?.label : undefined;
+function choiceLabel(ctx: EmitCtx, buttonId: string): string {
+  const tab = ctx.tree.nodes[buttonId] as LinkNode;
+  const role = ctx.widgets?.buttons.get(buttonId);
+  const chooses = role?.role === 'tab' || (role?.role === 'pressed' && typeof role.value === 'string') ? role : undefined;
+  const s = chooses ? ctx.states?.get(chooses.state) : undefined;
+  const option = chooses && s?.schema.type === 'enum' ? s.schema.options.find((o) => o.value === chooses.value)?.label : undefined;
   if (option === undefined) return bindExpr(ctx, tab.label);
   if (!isBinding(tab.label)) return js(String(tab.label ?? '').trim() ? tab.label : option);
   useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
@@ -2798,7 +2826,7 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
     case 'link': {
       useImport(ctx, 'SoLink', `${RUNTIME_DIR}/Link.svelte`);
       const link = isBinding(node.link) ? bindExpr(ctx, node.link) : js(resolveLink(node.link as LinkValue, ctx.rctx));
-      const label = ctx.widgets?.buttons.get(node.id)?.role === 'tab' ? `(${tabLabel(ctx, node.id)})` : bindExpr(ctx, node.label);
+      const label = ctx.widgets?.buttons.has(node.id) ? `(${choiceLabel(ctx, node.id)})` : bindExpr(ctx, node.label);
       const appearance = bindExpr(ctx, node.appearance);
       const name = nameAttr(ctx, 'aria-label', node.ariaLabel);
       // A button that changes UI state is a real button wherever it has nowhere to go (see the Link helper).

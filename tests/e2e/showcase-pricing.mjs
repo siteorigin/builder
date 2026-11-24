@@ -1,6 +1,6 @@
 // The Tabbed showcase and Pricing with billing switch sections (#380) against the real app and its exported website.
-// Both are inserted from Insert (Content, Conversion), the showcase given a fourth tab and the canvas left on the first
-// tab while its tabs are clicked in Edit. The exported site is then used at a 1280px desktop and a 390px phone: the
+// Both are inserted from Insert (Content, Conversion), the showcase given a fourth tab, which the canvas shows with the
+// first tab chosen and only its panel showing. The exported site is then used at a 1280px desktop and a 390px phone: the
 // showcase switched by pointer and keyboard, its tab row scrolling sideways on the phone; the billing switch changing
 // every plan's price by pointer and keyboard; printed with every tab's panel and without the controls; read without
 // JavaScript, which shows the first tab and the monthly prices. The website is opened in a headless browser.

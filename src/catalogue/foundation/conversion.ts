@@ -72,10 +72,13 @@ export const pricing = managed({
     ])
 });
 
-/** A plan card's price and its billing note for one period, shown while the billing switch chooses that period. */
+/**
+ * A plan card's price and its billing note for one period, shown while the billing switch chooses that period. A plan
+ * without a price for the period shows none (never a made-up one), and nothing at all without a note either.
+ */
 function periodPrice(b: TreeBuilder, period: 'monthly' | 'annual') {
-  return b.el(`${period}-price-row`, 'p', { name: period === 'monthly' ? 'Monthly price' : 'Annual price', when: eq(uiState('billing'), period), styles: { layout: 'row', align: 'baseline', gap: tok('space.xs'), wrap: true } }, [
-    b.text(`${period}-price`, 'span', item(`${period}Price`), { name: 'Price', styles: { textStyle: tok('text.stat') } }),
+  return b.el(`${period}-price-row`, 'p', { name: period === 'monthly' ? 'Monthly price' : 'Annual price', when: eq(uiState('billing'), period), collapseEmpty: true, styles: { layout: 'row', align: 'baseline', gap: tok('space.xs'), wrap: true } }, [
+    b.text(`${period}-price`, 'span', item(`${period}Price`), { name: 'Price', when: item(`${period}Price`), styles: { textStyle: tok('text.stat') } }),
     b.text(`${period}-note`, 'span', item(`${period}Note`), { name: 'Billing note', when: item(`${period}Note`), styles: { ...mutedStyles, textStyle: tok('text.small') } })
   ]);
 }
@@ -106,9 +109,9 @@ export const pricingToggle = managed({
         name: P.str('Name', 'Plan'),
         description: P.text('Description', ''),
         badge: P.str('Badge', ''),
-        monthlyPrice: P.str('Monthly price', '$0'),
+        monthlyPrice: P.str('Monthly price', ''),
         monthlyNote: P.str('Monthly billing note', 'per month'),
-        annualPrice: P.str('Annual price', '$0'),
+        annualPrice: P.str('Annual price', ''),
         annualNote: P.str('Annual billing note', 'per year'),
         features: P.rich('Features', ['A feature'], { plainAs: 'check' }),
         actionLabel: P.str('Action label', 'Get started'),
