@@ -13,6 +13,7 @@ import { generateProject } from '@generator/index';
 import { componentStructure, STRUCTURE_CHARS } from '@agent/context';
 import { executeTool, searchProjectComponents, serializeResult } from '@agent/tools';
 import { ProjectSession } from '../../src/main/project/session';
+import { componentRequest, componentRequestContext, newComponentPlace, startBlankOps } from '../../src/renderer/src/lib/new-component';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -213,5 +214,43 @@ describe('search_components finds project components (#172)', () => {
     expect(names('pricing comparison', 1)).toHaveLength(1);
     expect(names('photo')).toEqual(['Team member']);
     expect(names('zzz')).toEqual([]);
+  });
+});
+
+describe('the Create component dialog (#172)', () => {
+  it('places a blank component where the next section goes, or at the end of the page a design was opened from', () => {
+    const st = createStarterState('business', 'Test Studio', false);
+    const home = st.site.homePageId;
+    expect(newComponentPlace(st, { pageId: home, definitionMode: null }, 1)).toEqual({ pageId: home, index: 1 });
+    expect(newComponentPlace(st, { pageId: home, definitionMode: null })).toEqual({ pageId: home });
+    // Editing a design everywhere: never inside it, which would change every placement of it.
+    const other = st.site.pageOrder.find((id) => id !== home)!;
+    expect(newComponentPlace(st, { pageId: home, definitionMode: { returnPageId: other } }, 2)).toEqual({ pageId: other });
+    expect(newComponentPlace(st, { pageId: 'pg_gone', definitionMode: null }, 0)).toBeNull();
+    expect(newComponentPlace(st, { pageId: null, definitionMode: null })).toBeNull();
+  });
+
+  it('starts blank as one change that makes the component and its placement, which the editor opens by the IDs it named', () => {
+    const st = createStarterState('business', 'Test Studio', false);
+    const home = st.site.homePageId;
+    const plan = startBlankOps({ pageId: home, index: 1 }, ' Price tag ', '  ');
+    const r = applyOperations(st, plan.ops);
+    expect(r.results[0].definitionId).toBe(plan.definitionId);
+    expect(r.state.components[plan.definitionId]).toMatchObject({ name: 'Price tag', description: 'Project component.' });
+    expect(r.state.pages[home].rootIds[1]).toBe(plan.nodeId);
+    expect((r.state.pages[home].nodes[plan.nodeId] as InstanceNode).definitionId).toBe(plan.definitionId);
+    // Two starts never share an ID, even under one name.
+    expect(startBlankOps({ pageId: home }, 'Price tag', '').definitionId).not.toBe(plan.definitionId);
+  });
+
+  it('asks the AI in the author\'s words, about the whole site, marked as a new component', () => {
+    expect(componentRequest(' Price tag ', 'One plan and its price.')).toBe('Create a component called "Price tag": One plan and its price.');
+    expect(componentRequest('Price tag', '')).toBe('Create a component called "Price tag".');
+    expect(componentRequest('', 'A quote with a photo')).toBe('Create a component: A quote with a photo');
+    expect(componentRequest('The "best" card', '')).toBe('Create a component called "The ”best” card".');
+    const st = createStarterState('business', 'Test Studio', false);
+    const other = st.site.pageOrder.find((id) => id !== st.site.homePageId)!;
+    expect(componentRequestContext(st, { pageId: other }, 1024)).toEqual({ pageId: other, pageTitle: st.pages[other].title, selection: null, selectionLabel: null, viewport: 1024, mode: 'edit', task: 'component' });
+    expect(componentRequestContext(st, null, 1280).pageId).toBe(st.site.homePageId);
   });
 });

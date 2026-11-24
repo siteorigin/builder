@@ -143,6 +143,7 @@ export function CommandMenu() {
       ...pageChoices(st).map((p) => ({ id: `page:${p.id}`, verb: 'Go to ', label: `Go to ${p.title}`, detail: p.address, group: 'Page', icon: p.home ? <House /> : <FileText />, run: () => selectPage(p.id) })),
       ...catalogueEntries(st.site.themeId).map((e) => ({ id: `ins:${e.componentId}`, verb: 'Insert ', label: `Insert ${e.name}`, group: 'Insert', icon: <LucideIcon name={e.icon} />, run: () => void insert({ componentId: e.componentId }, e.name) })),
       { id: 'newpage', label: 'Add page…', keywords: 'new create', action: 'Add a page', group: 'Page', icon: <Plus />, run: () => (setState({ leftTab: 'pages' }), setTimeout(() => window.dispatchEvent(new Event('builder-add-page')), 0)) },
+      { id: 'newcomponent', label: 'Create component…', keywords: 'new component reusable design build ai', action: 'Start a new component, blank or built by AI', group: 'Insert', icon: <Component />, run: () => setState({ modal: { kind: 'new-component' } }) },
       { id: 'ai', kbd: '⌘J', label: 'Ask AI…', action: 'Open the AI chat', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
       { id: 'styles', label: 'Site styles', keywords: 'colors colours fonts typography spacing theme', action: 'Open site styles', group: 'View', icon: <Palette />, run: () => openSiteStyles() },
       { id: 'find', kbd: '⇧⌘F', label: 'Find and replace…', keywords: 'search words site content', action: 'Open Find and replace', group: 'Edit', icon: <Replace />, run: () => setState({ modal: { kind: 'find' } }) },

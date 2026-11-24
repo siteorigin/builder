@@ -867,7 +867,7 @@ export function InsertPanel() {
   const [active, setActive] = useState(0);
   // What the destination line describes: the item under the pointer, else the one with keyboard focus (by key), else
   // the group scrolled to the top of the list. 'new' is the New code component action, which opens an editor instead
-  // of inserting anywhere.
+  // of inserting anywhere, and 'new-component' is Create component, which opens its dialog.
   const [pointed, setPointed] = useState<string | null>(null);
   const [focused, setFocused] = useState<string | null>(null);
   const [scrolled, setScrolled] = useState<Kind | null>(null);
@@ -1515,7 +1515,7 @@ export function InsertPanel() {
   // What the strip says next: the item about to be added and where it goes, else where the next one goes.
   // Under a confirmation there is room for one short line, so it names only the place: the tile in view says what.
   const aim = query ? (current?.key ?? null) : (pointed ?? focused);
-  const aimItem = aim && aim !== 'new' ? byKey.get(aim) : undefined;
+  const aimItem = aim && aim !== 'new' && aim !== 'new-component' ? byKey.get(aim) : undefined;
   const next = !!added;
   const fallback: Kind = next ? added.kind : query ? 'section' : (scrolled ?? topKind);
   // The next one of what was just added goes where that item now goes, from the new selection.
@@ -1525,6 +1525,8 @@ export function InsertPanel() {
   const line: Line =
     aim === 'new'
       ? { verb: 'Opens the code editor to write a new component' }
+      : aim === 'new-component'
+        ? { verb: 'Starts a new component, blank or built by AI' }
       : next && nextTo
         ? { verb: `Next: ${nextTo.lead.replace(/^in a new section /, 'new section ')}`, target: placeText(nextTo), full: `The next one goes ${nextTo.lead} ${placeText(nextTo)}` }
         : aimItem && aimTo
@@ -1538,6 +1540,14 @@ export function InsertPanel() {
   const peekItem = peek && byKey.get(peek.key);
   const panelRect = peekItem ? bodyRef.current?.closest('.side-panel')?.getBoundingClientRect() : undefined;
 
+  const newComponent = (
+    <button className="insert-tile new" data-kind="new" data-key="new-component" onClick={() => setState({ modal: { kind: 'new-component' } })} {...hover('new-component')}>
+      <span className="ico">
+        <Plus />
+      </span>
+      <strong>Create component</strong>
+    </button>
+  );
   const newCode = dev && (
     <button className="insert-tile new" data-kind="new" data-key="new" onClick={() => setState({ modal: { kind: 'new-code' } })} {...hover('new')}>
       <span className="ico">
@@ -1614,47 +1624,47 @@ export function InsertPanel() {
           <span className="txt">
             <strong>Reuse what you design</strong>
             <span>
-              Right-click a group on the page and choose <b>Create component</b>. It appears here, ready to add to any page.
+              Start one below, or right-click a group on the page and choose <b>Create component</b>. It appears here, ready to add to any page.
             </span>
           </span>
         </div>
       )}
       <TileGrid
-          items={shownMine}
-          labelledBy={`${id}-yours`}
-          className="compact list managed"
-          cols={1}
-          extra={[showAll, newCode, importTile].filter(Boolean) as ReactNode[]}
-          render={(it) => (
-            <button
-              className={`insert-tile project${it.depth ? ' sub' : ''}${it.variant ? ' option' : ''}${justAdded(it) ? ' just-added' : ''}`}
-              title={it.variant ? `${it.name}: ${it.variant.option}` : [it.name, it.copyOf ? `copy of ${it.copyOf}` : it.themeCopy ? `copy of the theme's ${it.themeCopy}` : '', it.description].filter(Boolean).join(' — ')}
-              {...tileProps(it)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                menu.open(e.clientX, e.clientY, manage(it), `Manage ${it.name}`, e.currentTarget);
-              }}
-            >
-              {!!it.depth && !it.variant && <CornerDownRight className="insert-lib-branch" aria-hidden="true" />}
-              {libraryPic(it)}
-              <span className="txt">
-                <strong>{it.variant ? it.variant.option : it.name}</strong>
-                <small className="insert-lib-meta">{libraryMeta(it)}</small>
-                {showVariants && it.defaults && !it.variant && <small className="insert-defaults">Default: {it.defaults}</small>}
-                <span className="sr-only">, {libraryWho(it)}</span>
-              </span>
-              {badge(it)}
-              {description(it)}
+        items={shownMine}
+        labelledBy={`${id}-yours`}
+        className="compact list managed"
+        cols={1}
+        extra={[showAll, newComponent, newCode, importTile].filter(Boolean) as ReactNode[]}
+        render={(it) => (
+          <button
+            className={`insert-tile project${it.depth ? ' sub' : ''}${it.variant ? ' option' : ''}${justAdded(it) ? ' just-added' : ''}`}
+            title={it.variant ? `${it.name}: ${it.variant.option}` : [it.name, it.copyOf ? `copy of ${it.copyOf}` : it.themeCopy ? `copy of the theme's ${it.themeCopy}` : '', it.description].filter(Boolean).join(' — ')}
+            {...tileProps(it)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              menu.open(e.clientX, e.clientY, manage(it), `Manage ${it.name}`, e.currentTarget);
+            }}
+          >
+            {!!it.depth && !it.variant && <CornerDownRight className="insert-lib-branch" aria-hidden="true" />}
+            {libraryPic(it)}
+            <span className="txt">
+              <strong>{it.variant ? it.variant.option : it.name}</strong>
+              <small className="insert-lib-meta">{libraryMeta(it)}</small>
+              {showVariants && it.defaults && !it.variant && <small className="insert-defaults">Default: {it.defaults}</small>}
+              <span className="sr-only">, {libraryWho(it)}</span>
+            </span>
+            {badge(it)}
+            {description(it)}
+          </button>
+        )}
+        aside={(it) =>
+          it.variant ? null : (
+            <button className="icon-btn insert-manage" aria-haspopup="menu" aria-expanded="false" aria-label={`Manage ${it.name}`} title="Rename, edit, see where it is used, or delete" onClick={(e) => menu.openAt(e.currentTarget, manage(it), `Manage ${it.name}`)}>
+              <Ellipsis />
             </button>
-          )}
-          aside={(it) =>
-            it.variant ? null : (
-              <button className="icon-btn insert-manage" aria-haspopup="menu" aria-expanded="false" aria-label={`Manage ${it.name}`} title="Rename, edit, see where it is used, or delete" onClick={(e) => menu.openAt(e.currentTarget, manage(it), `Manage ${it.name}`)}>
-                <Ellipsis />
-              </button>
-            )
-          }
-        />
+          )
+        }
+      />
     </section>
   );
 

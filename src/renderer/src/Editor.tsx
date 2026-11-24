@@ -18,7 +18,7 @@ import { ExportModal } from './panels/ExportModal';
 import { CommandMenu } from './panels/CommandMenu';
 import { FindReplaceModal } from './panels/FindReplace';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
-import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, RenameComponentModal, SetHomeModal } from './panels/Dialogs';
+import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal } from './panels/Dialogs';
 import { ImportReviewModal } from './panels/ImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
@@ -633,6 +633,7 @@ export function Editor() {
       {modal?.kind === 'source' && <SourceModal definitionId={modal.definitionId} />}
       {modal?.kind === 'page-source' && <PageSourceModal pageId={modal.pageId} />}
       {modal?.kind === 'new-code' && <NewCodeComponentModal />}
+      {modal?.kind === 'new-component' && <NewComponentModal />}
       {modal?.kind === 'create-component' && <CreateComponentModal target={modal.ref} />}
       {modal?.kind === 'make-unique' && <MakeUniqueModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
       {modal?.kind === 'rename-component' && <RenameComponentModal definitionId={modal.definitionId} />}

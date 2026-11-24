@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AiEvent, AppSettings, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
@@ -17,7 +17,7 @@ export const api = window.builder;
 
 export type LeftTab = 'pages' | 'layers' | 'insert' | 'assets';
 export type RightTab = 'inspect' | 'chat' | 'styles';
-export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions' } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'paste-style'; ref: ElementRef; opening: string };
+export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions' } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'paste-style'; ref: ElementRef; opening: string };
 
 export interface Rect {
   x: number;
@@ -193,6 +193,8 @@ export interface State {
   chatDrafts: ChatDrafts;
   /** Library images attached to those unsent messages, by asset ID (see lib/chatDrafts). */
   chatImages: ChatImages;
+  /** A request another part of the editor asked the chat to send (Create component's Build with AI), once it can. */
+  chatRequest: { text: string; context: ChatContext; workspaceKey: string } | null;
   /** What the next message is about: the open page (or Home), and how far an edit may reach (see chatTarget.editScope). */
   chatContextEnabled: { page: boolean; scope: ChatEditScope };
   /** What the next message is: a change for the AI to make, or a read-only question. */
@@ -275,6 +277,7 @@ export const useStore = create<State>((set) => ({
   runMode: null,
   chatDrafts: {},
   chatImages: {},
+  chatRequest: null,
   chatContextEnabled: { page: true, scope: 'selection' },
   chatMode: 'edit',
   keptSamples: [],
