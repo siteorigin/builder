@@ -157,6 +157,12 @@ export const menuItem = async (app, ...path) => findMenuNode(await menuTree(app)
  */
 export async function chooseMenu(app, ...paths) {
   const window = await app.evaluate(({ BrowserWindow }) => {
+    // The app knows its editor window from the moment it is made, whatever address its page has (a dev server's too).
+    const known = globalThis[Symbol.for('siteorigin.desktopFixtures')]?.editor;
+    if (known !== null && known !== undefined) {
+      const w = BrowserWindow.fromId(known);
+      return w && !w.isDestroyed() ? known : null;
+    }
     const editor = BrowserWindow.getAllWindows().find((w) => {
       try {
         const u = new URL(w.webContents.getURL());

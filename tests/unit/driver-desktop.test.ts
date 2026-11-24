@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createDesktopFixtures, DESKTOP_FIXTURES } from '../../src/main/headless-desktop';
-import { findMenuNode, invokeMenuInMain, listSessionFolder, menuTreeInMain, resolveAnswer, resolveSessionPath, stageImport } from '../driver/desktop.ts';
+import { findMenuNode, inMain, invokeMenuInMain, listSessionFolder, menuTreeInMain, resolveAnswer, resolveSessionPath, stageImport } from '../driver/desktop.ts';
 import type { Area } from '../driver/desktop.ts';
 import type { Failure, Reply, Success } from '../driver/protocol.ts';
 import { REPO_ROOT, Session } from '../driver/session.ts';
@@ -186,6 +186,20 @@ describe('the application menu', () => {
       invokeMenuInMain(electron, { paths: [['File', 'New Project…']], window: null, request: null });
     });
     expect(clicks.map((c) => c.label)).toEqual(['New Project…']);
+  });
+});
+
+describe('failures from the main process', () => {
+  const failing = (message: string) => ({ evaluate: async () => Promise.reject(new Error(message)) }) as any;
+  it('read the reason an *InMain function gave, behind Playwright’s prefixes only', async () => {
+    await expect(inMain(failing('electronApplication.evaluate: Error: [disabled] File > Export… is disabled.'), () => null, undefined)).rejects.toMatchObject({ code: 'OP_FAILED', retryable: false, message: 'File > Export… is disabled.', details: { reason: 'disabled' } });
+    await expect(inMain(failing('Error: [window-open] An editor window is open.'), () => null, undefined)).rejects.toMatchObject({ code: 'OP_FAILED', retryable: true });
+    await expect(inMain(failing('[window-closed] Editor window 3 is gone.'), () => null, undefined)).rejects.toMatchObject({ code: 'WINDOW_CLOSED', retryable: true });
+  });
+
+  it('pass anything else on as it was, a bracket inside it notwithstanding', async () => {
+    const odd = 'electronApplication.evaluate: Error: Could not read "[window-open] notes.txt"';
+    await expect(inMain(failing(odd), () => null, undefined)).rejects.toThrow(odd);
   });
 });
 

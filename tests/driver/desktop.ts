@@ -165,8 +165,9 @@ export async function inMain<A, R>(app: ElectronApplication, fn: (electron: any,
     return (await app.evaluate(fn as any, arg)) as Awaited<R>;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    // The reason an *InMain function throws starts its own message (Playwright puts "Error: " before it).
-    const m = /(?:^|Error: )\[([a-z-]+)\] ([^\n]*)/.exec(message);
+    // The reason an *InMain function throws starts its own message; Playwright only puts prefixes such as
+    // "electronApplication.evaluate: Error: " before it. A bracket anywhere else is part of some other failure.
+    const m = /^(?:\S+: )*\[([a-z-]+)\] ([^\n]*)/.exec(message);
     if (!m) throw e;
     if (m[1] === 'window-closed') throw new DriverError('WINDOW_CLOSED', m[2], { retryable: true });
     // An editor window that has just opened is bound by the session a moment later: asking again then works.
