@@ -2207,7 +2207,7 @@ function backgroundOf(image, read) {
   // Each stop's colour and where it starts and ends, fixed up as the browser does (a stop placed before the one
   // ahead of it moves up to it), so a hard edge is told from a blend. Positions in other units are not compared.
   const length = (v) => {
-    const m2 = /^(-?[\d.]+)(%|px)$/.exec(v || '');
+    const m2 = /^(-?[\d.]+)(%|px|deg|turn|rad|grad)$/.exec(v || '');
     return m2 ? { n: Number(m2[1]), unit: m2[2] } : null;
   };
   const stops = [];
@@ -2374,6 +2374,8 @@ function layerCache(read) {
     if (s.display === 'contents') layer = { bg: NONE, image: { kind: 'none' }, opacity: 1, overlays: [] };
     else {
       layer = { bg: read(s.backgroundColor) || NONE, image: backgroundOf(s.backgroundImage, read), opacity: clamp(Number(s.opacity), 0, 1), overlays: [] };
+      // A background painted only inside the content box (or only on the glyphs) does not cover what is under the box.
+      layer.covers = layer.bg.a >= 1 && /^(border-box|padding-box)$/.test(s.backgroundClip || 'border-box');
       const r = boxRect(el);
       for (const which of ['::before', '::after']) {
         const p = getComputedStyle(el, which);
@@ -2426,7 +2428,7 @@ function textContrast(el, read, layerOf, pictures) {
   // The innermost opaque surface hides everything painted under it, unless it, or a box around it, is faded: then
   // what is under the faded box shows through.
   let cover = -1;
-  for (let i = layers.length - 1; i >= 0 && cover < 0; i--) if (layers[i].bg.a >= 1) cover = i;
+  for (let i = layers.length - 1; i >= 0 && cover < 0; i--) if (layers[i].covers) cover = i;
   // A box faded at or around the cover lets what is under that box show through, down to the next opaque surface
   // beneath it (which a fade further out can open in turn); what is inside the faded box under the cover stays hidden.
   const visible = new Set();
@@ -2435,7 +2437,7 @@ function textContrast(el, read, layerOf, pictures) {
     for (let j = start; j >= 0 && fadedAt < 0; j--) if (layers[j].opacity < 1) fadedAt = j;
     if (fadedAt <= 0) break;
     let below = fadedAt - 1;
-    while (below > 0 && layers[below].bg.a < 1) below--;
+    while (below > 0 && !layers[below].covers) below--;
     for (let i = below; i < fadedAt; i++) visible.add(i);
     start = below;
   }
@@ -2456,7 +2458,7 @@ function textContrast(el, read, layerOf, pictures) {
     let hidden = false;
     for (let i = shared + 1; i < layers.length && !hidden; i++) {
       if (layers[i].opacity < 1) break;
-      hidden = layers[i].bg.a >= 1;
+      hidden = !!layers[i].covers;
     }
     if (!hidden) return { unknown: 'image' };
   }

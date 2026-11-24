@@ -60,11 +60,17 @@ describe('inspection references', () => {
   it('names the placement for its definition root, and for a node on the page itself', () => {
     const s = fresh();
     const grid = placementOf(s, 'foundation.features.grid');
-    const page = { kind: 'page', id: s.site.homePageId };
+    const page = { kind: 'page' as const, id: s.site.homePageId };
     expect(inspectionRef(s, { ctx: ctxOf(s, grid.id), node: 'root', items: '' })).toEqual({ owner: page, nodeId: grid.id });
     expect(inspectionRef(s, { ctx: ctxOf(s), node: grid.id, items: '' })).toEqual({ owner: page, nodeId: grid.id });
-    // Markup inside it that the editor does not know element by element (a code component's) is the placement's.
-    expect(inspectionRef(s, { ctx: ctxOf(s), node: grid.id, items: '', inside: true })).toEqual({ owner: page, nodeId: grid.id, match: 'placement' });
+    // Markup inside a design's root that the editor does not address on its own is the root part's.
+    expect(inspectionRef(s, { ctx: ctxOf(s), node: grid.id, items: '', inside: true })).toEqual({ owner: page, nodeId: grid.id, match: 'nearest-part' });
+    // Inside a code component, whose markup the editor does not know element by element, it is the placement's.
+    const created = applyOperations(s, [{ type: 'component.createCode', name: 'Note', source: '<p>x</p>\n', properties: {} }]);
+    const definitionId = created.results[0].definitionId as string;
+    const placed = applyOperations(created.state, [{ type: 'node.insert', owner: page, definitionId }]);
+    const code = placed.results[0].nodeId as string;
+    expect(inspectionRef(placed.state, { ctx: ctxOf(placed.state), node: code, items: '', inside: true })).toEqual({ owner: page, nodeId: code, match: 'placement' });
   });
 
   it('reads item IDs escaped as the preview writes them', () => {
@@ -143,6 +149,8 @@ describe('inspection references', () => {
     expect(inspectionRef(s, { ctx: ctxOf(s, banner.id), node: root, items: '' })).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: banner.id });
     def.parts = Object.fromEntries(Object.entries(def.parts).map(([id, part]) => [id === 'root' ? 'frame' : id, part]));
     expect(inspectionRef(s, { ctx: ctxOf(s, banner.id), node: root, items: '' })).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: banner.id, partId: 'frame' });
+    // Markup inside that root the editor does not address on its own is the root part's too.
+    expect(inspectionRef(s, { ctx: ctxOf(s, banner.id), node: root, items: '', inside: true })).toEqual({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: banner.id, partId: 'frame', match: 'nearest-part' });
   });
 
   it('names the node holding markup the editor does not address on its own, and says so', () => {

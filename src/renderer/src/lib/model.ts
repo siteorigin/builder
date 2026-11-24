@@ -181,13 +181,14 @@ export function inspectionRef(state: ProjectState, d: InspectionDesc): Inspectio
   const ownerTree = treeFor(state, ref.owner);
   if (!ref.instancePath.length) {
     const node = ownerTree && own(ownerTree.nodes, ref.nodeId);
-    // Markup inside a code component is the placement's as a whole; inside another node (a link in rich text), that
-    // node's.
-    if (d.inside) return { owner: ref.owner, nodeId: ref.nodeId, match: node?.kind === 'instance' ? 'placement' : 'container' };
     // A placement's root takes its styles through the part declared on it, which need not be called "root".
     const def = node?.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
     const rootPart = def?.kind === 'managed' && def.tree ? partIdFor(def, def.tree.rootIds[0]) : undefined;
-    return { owner: ref.owner, nodeId: ref.nodeId, ...(rootPart && rootPart !== 'root' ? { partId: rootPart } : {}) };
+    const alias = rootPart && rootPart !== 'root' ? { partId: rootPart } : {};
+    // Markup inside a code component is the placement's as a whole; inside a design's root, that root part's; inside
+    // another node (a link in rich text), that node's.
+    if (d.inside) return { owner: ref.owner, nodeId: ref.nodeId, ...alias, match: node?.kind !== 'instance' ? 'container' : def?.kind === 'managed' ? 'nearest-part' : 'placement' };
+    return { owner: ref.owner, nodeId: ref.nodeId, ...alias };
   }
   const placementId = ref.instancePath[0];
   const placement = ownerTree && own(ownerTree.nodes, placementId);

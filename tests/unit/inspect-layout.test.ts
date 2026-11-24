@@ -228,13 +228,17 @@ describe('layout inspection readability checks', () => {
       <div style="background:linear-gradient(90deg, red 0%, 50%, #009000 50%)"><p ${so('hinted')} style="color:#000">Black on two colours meeting at a hint</p></div>
       <div style="background:linear-gradient(90deg, #000 50%, #fff 50%)"><p ${so('greyEdge')} style="color:#757575">Grey on black and white halves</p></div>
       <style>.mbar{position:relative;height:100px}.mbar::before{content:'';position:absolute;left:0;top:100px;margin-top:-100px;width:300px;height:50px;background:#000}</style>
-      <div class="mbar"><p ${so('pulledBar')} style="position:relative;color:#000;margin:0">Black on a bar pulled up by its margin</p></div>`);
+      <div class="mbar"><p ${so('pulledBar')} style="position:relative;color:#000;margin:0">Black on a bar pulled up by its margin</p></div>
+      <div style="background:conic-gradient(red 0deg 180deg, #009000 180deg 360deg)"><p ${so('conic')} style="color:#fff">White on two halves of a turn</p></div>
+      <section style="background:#fff url('${photo}')"><div style="background:#000;background-clip:content-box;padding:20px"><p ${so('clipped')} style="color:#fff;margin:0">White in a panel painted only inside its padding</p></div></section>`);
     // Nothing is painted between stops that meet at an edge (however the edge is written), and a dip between the
     // quarter points is still found.
-    expect(of(more, 'contrast-unverified').map((i) => [i.desc?.node, i.reason]).sort()).toEqual([['dipText', 'gradient'], ['pulledBar', 'overlay']]);
+    // A background painted only inside the content box is not trusted to cover the photo under its box.
+    expect(of(more, 'contrast-unverified').map((i) => [i.desc?.node, i.reason]).sort()).toEqual([['clipped', 'image'], ['dipText', 'gradient'], ['pulledBar', 'overlay']]);
     // Faded with its photo, a card still hides it; faded on a panel, the panel does. Either way the text is measured
     // (black at half strength on white fails).
-    expect(of(more, 'low-contrast').map((i) => i.desc?.node).sort()).toEqual(['groupText', 'twoCovers']);
+    // White fails on both halves of the turn, which meet at an edge with nothing between them.
+    expect(of(more, 'low-contrast').map((i) => i.desc?.node).sort()).toEqual(['conic', 'groupText', 'twoCovers']);
     const unverified = Object.fromEntries(of(r, 'contrast-unverified').map((i) => [i.desc?.node, i.reason]));
     expect(unverified).toEqual({ blackText: 'gradient', whiteText: 'gradient', stackedText: 'layers', fadedText: 'image', photoLink: 'image', barText: 'overlay' });
     const pale = of(r, 'low-contrast');
