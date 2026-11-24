@@ -5,7 +5,8 @@ import { applyOperations } from '@engine/apply';
 import { styleToCss, VIEWPORT_PRESETS } from '@shared/styles';
 import { designStyles } from '@shared/variants';
 import { generateComponentsCss, generateSiteCss, nodeClass, overrideClass, variantClass } from '@generator/index';
-import { styleUnder } from '../../src/renderer/src/lib/style-source';
+import { readStyleNumber, refinementShown, styleReached, styleUnder } from '../../src/renderer/src/lib/style-source';
+import { STYLE_PROP_MAP } from '@shared/styles';
 
 // The Inspector's inherited style values are checked against the stylesheet the site really gets: the generated
 // CSS is evaluated for one element at each preview width (selector classes, specificity, media queries and source
@@ -383,5 +384,59 @@ describe('a placement’s own grid for all sizes', () => {
     expect(styleUnder({ prop: 'columns', scope: 'phone', styles: inst.overrides?.grid, inherited, wideColumns: true })).toEqual({ value: 1, from: 'all-sizes' });
     const rules = parseCss(`${generateComponentsCss(s)}\n${generateSiteCss(s)}`);
     expect(computed(rules, element(def, 'grid', [overrideClass(inst.id, 'grid')]), WIDTH.phone, 'grid-template-columns')).toBe(cssOf('columns', 1));
+  });
+});
+
+describe('motion rows in the inspector (#351)', () => {
+  const shown = (prop: string, styles: ResponsiveStyles | undefined, inherited: ResponsiveStyles | undefined, allowed?: string[], scope: ResponsiveScope = 'base') =>
+    refinementShown(prop, (p) => styleReached({ prop: p, scope, styles, inherited }), (p) => !allowed || allowed.includes(p));
+
+  it('shows an origin once a scale or rotation is in effect, from the design or another size', () => {
+    expect(shown('transformOrigin', undefined, undefined)).toBe(false);
+    expect(shown('transformOrigin', { base: { rotate: -2 } }, undefined)).toBe(true);
+    expect(shown('transformOrigin', undefined, { tablet: { scale: 1.05 } }, undefined, 'tablet')).toBe(true);
+    expect(shown('transformOrigin', undefined, { tablet: { scale: 1.05 } }, undefined, 'phone')).toBe(false);
+    // Under All sizes a rotation set for one size counts: an origin set for all sizes applies to it there.
+    expect(shown('transformOrigin', { tablet: { rotate: 4 } }, undefined)).toBe(true);
+    expect(shown('transformOrigin', undefined, { base: { transformOrigin: 'top left' } })).toBe(true);
+    // Offered on its own, with nothing here to scale or rotate it, it is the control.
+    expect(shown('transformOrigin', undefined, undefined, ['transformOrigin'])).toBe(true);
+  });
+
+  it('shows a duration and easing once a preset other than none is in effect', () => {
+    for (const prop of ['transitionDuration', 'transitionEasing']) {
+      expect(shown(prop, undefined, undefined), prop).toBe(false);
+      expect(shown(prop, { base: { transition: 'none' } }, undefined), prop).toBe(false);
+      expect(shown(prop, { base: { transition: 'colors' } }, undefined), prop).toBe(true);
+      expect(shown(prop, undefined, { base: { transition: 'shadow' } }), prop).toBe(true);
+      expect(shown(prop, undefined, { base: { [prop]: prop === 'transitionDuration' ? 0 : 'linear' } }), prop).toBe(true);
+      // A preset set only for phones is still refined from All sizes, but not from another size.
+      expect(shown(prop, { phone: { transition: 'shadow' } }, undefined), prop).toBe(true);
+      expect(shown(prop, { base: { transition: 'none' }, phone: { transition: 'shadow' } }, undefined), prop).toBe(true);
+      expect(shown(prop, { phone: { transition: 'shadow' } }, undefined, undefined, 'tablet'), prop).toBe(false);
+      expect(shown(prop, undefined, undefined, [prop]), prop).toBe(true);
+    }
+    expect(shown('scale', undefined, undefined)).toBeUndefined();
+  });
+
+  it('reads a typed number with its own unit, and a percentage only where the value runs 0 to 1', () => {
+    expect(readStyleNumber(STYLE_PROP_MAP.rotate, '-2.5deg')).toBe(-2.5);
+    expect(readStyleNumber(STYLE_PROP_MAP.rotate, ' 45 ')).toBe(45);
+    expect(readStyleNumber(STYLE_PROP_MAP.transitionDuration, '250ms')).toBe(250);
+    expect(readStyleNumber(STYLE_PROP_MAP.transitionDuration, '250 MS')).toBe(250);
+    expect(readStyleNumber(STYLE_PROP_MAP.opacity, '50%')).toBe(0.5);
+    // A percentage is not degrees or milliseconds, and another unit is not this one.
+    expect(readStyleNumber(STYLE_PROP_MAP.rotate, '20%')).toBeNull();
+    expect(readStyleNumber(STYLE_PROP_MAP.transitionDuration, '0.3s')).toBeNull();
+    expect(readStyleNumber(STYLE_PROP_MAP.scale, '0x2')).toBeNull();
+    expect(readStyleNumber(STYLE_PROP_MAP.scale, '1e1')).toBeNull();
+    expect(readStyleNumber(STYLE_PROP_MAP.scale, '.5')).toBe(0.5);
+    expect(readStyleNumber(STYLE_PROP_MAP.rotate, '1.')).toBe(1);
+    expect(readStyleNumber(STYLE_PROP_MAP.rotate, '9'.repeat(400))).toBeNull();
+    // Older fields read what they always read.
+    expect(readStyleNumber(STYLE_PROP_MAP.opacity, '1.')).toBe(1);
+    expect(readStyleNumber(STYLE_PROP_MAP.zIndex, '1e1')).toBe(10);
+    expect(readStyleNumber(STYLE_PROP_MAP.zIndex, '9'.repeat(400))).toBeNull();
+    expect(readStyleNumber(STYLE_PROP_MAP.zIndex, ' ')).toBeNull();
   });
 });

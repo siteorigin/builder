@@ -259,6 +259,7 @@ Shared component definition editing always uses an explicit **Edit definition** 
 | Size | Fill, fit content, fixed size, min/max width, aspect ratio and image fit. |
 | Typography | Text style token, font family/weight, size, line height, letter spacing and alignment. |
 | Appearance | Foreground/background tokens or explicit values, border, radius, shadow and opacity. |
+| Transform and motion | Bounded shift on each axis, scale, rotation and its origin, and a transition preset with duration and easing. Transitions stay subject to the theme's reduced-motion rule. |
 | Visibility | Visible or hidden at a defined responsive scope. |
 | Semantics | Heading level, accessible label, image purpose, anchor ID and link behavior. |
 | Component | Exposed properties, declared variant, edit definition, make unique and reset overrides. |
@@ -280,7 +281,7 @@ The supported visual layout model is document flow with containers, stacks and g
 
 Reject cycles, invalid slot contents and cross-definition moves that would change scope unexpectedly. Provide equivalent move actions for keyboard users. Hidden nodes remain editable through the layer tree.
 
-Absolute positioning, arbitrary transforms, custom animation and complex CSS remain available through custom code, but do not receive a general visual manipulation system in this release.
+Absolute positioning, transforms beyond the typed shift, scale and rotate controls, custom animation and complex CSS remain available through custom code, but do not receive a general visual manipulation system in this release.
 
 ### 5.5 Scope of an edit
 

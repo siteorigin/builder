@@ -270,8 +270,14 @@ describe('where Image focus is offered', () => {
     expect(componentDetail(hero).parts.media.styleControls).toContain('objectPosition');
     const host = { state: () => s, revision: () => 1 } as unknown as ToolHost;
     const read = await executeTool('read_project', '{}', host, 'c1');
-    const focus = (read.content as { styleProperties: string[] }).styleProperties.find((p) => p.startsWith('objectPosition'));
+    const listed = (read.content as { styleProperties: string[] }).styleProperties;
+    const focus = listed.find((p) => p.startsWith('objectPosition'));
     expect(focus).toContain('"X% Y%"');
+    // Transforms and transitions say their range and unit (#351).
+    expect(listed).toEqual(expect.arrayContaining(['rotate (-360 to 360 deg)', 'scale (0 to 3)', 'transitionDuration (whole number 0 to 3000 ms)']));
+    expect(listed.find((p) => p.startsWith('translateY '))).toContain('500px, 32rem or em, or 100%');
+    expect(listed.find((p) => p.startsWith('transition '))).toContain('[none|colors|shadow|transform|opacity|common]');
+    expect(listed.find((p) => p.startsWith('opacity'))).toBe('opacity');
     const inst = instanceOf(s, 'Home', 'hero.split');
     const tools = selectionTools(s, selectionTarget({ owner: ownerOf(s, 'Home'), instancePath: [inst.id], nodeId: 'media', partId: 'media' }));
     const style = tools?.find((t) => t.name === 'style_selected_element');

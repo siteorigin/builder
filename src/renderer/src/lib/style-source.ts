@@ -62,3 +62,37 @@ export function styleUnder({ prop, scope, styles, inherited, designSizesWin, wid
 export function styleEffective(input: StyleSourceInput): StyleValue | undefined {
   return input.styles?.[input.scope]?.[input.prop] ?? styleUnder(input).value;
 }
+
+/** The values a property ends up with at each size an edit at this scope reaches: under All sizes, every size. */
+export function styleReached(input: StyleSourceInput): StyleValue[] {
+  const scopes: ResponsiveScope[] = input.scope === 'base' ? ['base', 'phone', 'tablet', 'desktop'] : [input.scope];
+  return scopes.map((scope) => styleEffective({ ...input, scope })).filter((v): v is StyleValue => v !== undefined);
+}
+
+/**
+ * Whether a row that refines another control has something to refine yet: an origin needs a scale or rotation, a
+ * duration or easing a transition preset other than none, at some size the edit reaches (`valuesOf` gives a
+ * property's value at each). A row with a value there, or whose control is not on offer here, always shows.
+ * Undefined for every other property.
+ */
+export function refinementShown(prop: string, valuesOf: (prop: string) => StyleValue[], offered: (prop: string) => boolean): boolean | undefined {
+  const any = (p: string) => valuesOf(p).length > 0;
+  if (prop === 'transformOrigin') return any(prop) || any('scale') || any('rotate') || (!offered('scale') && !offered('rotate'));
+  if (prop === 'transitionDuration' || prop === 'transitionEasing') return any(prop) || valuesOf('transition').some((v) => v !== 'none') || !offered('transition');
+  return undefined;
+}
+
+/**
+ * A number typed into a style field, or null when it is not one: a percentage on a 0 to 1 value (50% is 0.5), or
+ * the number written with the property's own unit ("250ms", "-2deg"). Transforms and timings take plain decimals;
+ * older fields read anything JavaScript reads as a finite number, as they always have.
+ */
+export function readStyleNumber(def: { max?: number; unit?: string; group?: string }, text: string): number | null {
+  const t = text.trim();
+  const percent = def.max === 1 && t.endsWith('%');
+  const bare = (percent ? t.slice(0, -1) : def.unit && t.toLowerCase().endsWith(def.unit) ? t.slice(0, -def.unit.length) : t).trim();
+  if (!bare || (def.group === 'motion' && !/^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(bare))) return null;
+  const n = Number(bare);
+  if (!Number.isFinite(n)) return null;
+  return percent ? n / 100 : n;
+}
