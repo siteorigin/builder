@@ -164,14 +164,20 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   for (const p of source.posts) if (p.oldPath && !p.draft) oldClaims.set(lower(p.oldPath), (oldClaims.get(lower(p.oldPath)) ?? 0) + 1);
 
   const byKey = new Map(source.posts.map((p) => [p.key, p]));
+  // Every post's text first: one cut to fit arrives as a draft, which the posts linking to it are told.
+  const texts = source.posts.map((p) => {
+    const notes: string[] = [];
+    return { ...planBody(p, media, missing, entryIds, notes), notes };
+  });
+  const arrivesDraft = new Map(source.posts.map((p, i) => [p.key, p.draft || texts[i].cut]));
   const posts: PlannedPost[] = source.posts.map((p, i) => {
     const notes = [...p.notes];
     // A published post linking to one that arrives as a draft: the website can't be exported until one of them changes.
-    if (!p.draft) {
+    if (!arrivesDraft.get(p.key)) {
       const linked = new Set(p.body.flatMap((b) => spanRuns(b).flat()).flatMap((s) => (s.link?.type === 'entry' && s.link.target.startsWith(POST_LINK_PREFIX) ? [s.link.target.slice(POST_LINK_PREFIX.length)] : [])));
       for (const key of linked) {
         const target = byKey.get(key);
-        if (target?.draft) notes.push(`It links to “${target.title}”, which arrives as a draft: publish that post, or change the link, before the website is exported.`);
+        if (target && arrivesDraft.get(key)) notes.push(`It links to “${clip(target.title, 200).text}”, which arrives as a draft: publish that post, or change the link, before the website is exported.`);
       }
     }
     const { slug, wanted } = slugs[i];
@@ -183,7 +189,8 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     const authorClip = p.author ? clip(p.author, 80) : undefined;
     if (authorClip?.cut) notes.push('Its author’s name was shortened to 80 characters.');
     const author = authorClip?.text;
-    const { blocks: body, cut } = planBody(p, media, missing, entryIds, notes);
+    const { blocks: body, cut } = texts[i];
+    notes.push(...texts[i].notes);
     // Only the pictures the entry shows are imported.
     for (const b of body) if (isImageBlock(b)) used.add(b.assetId);
     // Text that had to be cut is never published unread: the author checks it first.

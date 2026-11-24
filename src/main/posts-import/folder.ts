@@ -50,7 +50,12 @@ async function findPosts(root: string): Promise<{ found: Found[]; over: number }
   return { found, over };
 }
 
-const text = (v: FrontValue | undefined): string | undefined => (typeof v === 'string' ? v.trim() || undefined : Array.isArray(v) ? v[0]?.trim() || undefined : undefined);
+/** The longest title, name or label read: the plan shortens what it keeps, and says so. */
+const FIELD_CHARS = 1000;
+const text = (v: FrontValue | undefined): string | undefined => {
+  const t = typeof v === 'string' ? v.trim() : Array.isArray(v) ? v[0]?.trim() : undefined;
+  return t ? t.slice(0, FIELD_CHARS) : undefined;
+};
 
 /** A date as frontmatter writes one (`2019-03-01`, `2019-03-01T10:00:00Z`, `2019-03-01 10:00`), as a calendar day. */
 function day(v: FrontValue | undefined): string | null {
@@ -63,7 +68,7 @@ function termList(v: FrontValue | undefined, spaces: boolean): SourceTerm[] {
   const raw = Array.isArray(v) ? v : typeof v === 'string' ? (v.includes(',') ? v.split(',') : spaces ? v.split(/\s+/) : [v]) : [];
   const out: SourceTerm[] = [];
   for (const r of raw) {
-    const label = r.trim();
+    const label = r.trim().slice(0, FIELD_CHARS);
     if (label && !out.some((t) => t.label.toLowerCase() === label.toLowerCase())) out.push({ label });
   }
   return out;
@@ -151,7 +156,13 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
     notes.push(...reportNotes(report));
     const date = day(fm.data.date) ?? day(fm.data.pubdate) ?? day(fm.data.publishdate) ?? day(fm.data.published_at) ?? day(fm.data.published) ?? dated;
     const { draft, reason } = unread ? { draft: true, reason: 'its text could not be read' } : draftOf(fm.data, fm.unreadable);
-    const excerpt = text(fm.data.description) ?? text(fm.data.excerpt) ?? text(fm.data.summary);
+    const summary = text(fm.data.description) ?? text(fm.data.excerpt) ?? text(fm.data.summary);
+    let excerpt: string | undefined;
+    try {
+      excerpt = summary ? htmlToPlain(markdownToHtml(summary)) : undefined;
+    } catch {
+      notes.push('Its excerpt could not be read, so it was left out.');
+    }
     const picture = text(fm.data.image) ?? text(fm.data.featured_image) ?? text(fm.data.featuredimage) ?? text(fm.data.cover) ?? text(fm.data.thumbnail) ?? text(fm.data.hero) ?? text(fm.data.banner);
     const author = text(fm.data.author);
     posts.push({
@@ -163,7 +174,7 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
       draft: draft || !date,
       ...(reason ? { draftReason: reason } : !date && !draft ? { draftReason: 'it has no publication date' } : {}),
       ...(author ? { author } : {}),
-      ...(excerpt ? { excerpt: htmlToPlain(markdownToHtml(excerpt)) } : {}),
+      ...(excerpt ? { excerpt } : {}),
       categories: termList(fm.data.categories ?? fm.data.category, true),
       tags: termList(fm.data.tags ?? fm.data.tag ?? fm.data.keywords, false),
       body: blocks,

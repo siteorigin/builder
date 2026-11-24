@@ -34,8 +34,13 @@ function unquoteDouble(s: string): string {
 
 /** One scalar as written after `key:` or `key =`: quoted text, or plain text with any trailing comment removed. */
 function scalar(raw: string): string | boolean | null {
-  // A standard tag (`!!bool true`, `!!str 2019`) says how to read what follows; the value is read as written.
-  const v = raw.trim().replace(/^!!(?:bool|str|timestamp|int)\s+/, '');
+  // A standard tag says how to read what follows: `!!str true` is the word, never true; `!!bool true` is true.
+  const tag = /^!!(bool|str|timestamp|int)\s+/.exec(raw.trim());
+  const v = tag ? raw.trim().slice(tag[0].length) : raw.trim();
+  if (tag?.[1] === 'str') {
+    const t = scalar(v);
+    return typeof t === 'boolean' ? v.replace(/\s+#.*$/, '').trim() : t;
+  }
   if (!v) return '';
   if (v[0] === '"') {
     const m = /^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/.exec(v);
@@ -73,35 +78,44 @@ function flowList(raw: string): string[] | null {
 
 type Read = { data: Record<string, FrontValue>; problems: string[]; unreadable: string[] };
 
-function readYaml(lines: string[], first: number): Read {
+/** The setting a line that could not be read seems to name: never taken from it, and never guessed either. */
+const namedIn = (line: string) => /^\s*(?:-\s+)?["']?([A-Za-z_][\w-]*)/.exec(line)?.[1]?.toLowerCase();
+
+function readYaml(raw: string[], first: number): Read {
   const data: Record<string, FrontValue> = {};
   const problems: string[] = [];
-  const unreadable: string[] = [];
+  const unreadable = new Set<string>();
+  // Settings indented as a whole are read from their own margin.
+  const margin = raw.reduce((m, l) => (l.trim() && !/^\s*#/.test(l) ? Math.min(m, /^ */.exec(l)![0].length) : m), 1000);
+  const lines = raw.map((l) => (l.slice(0, margin).trim() ? l : l.slice(margin)));
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line.trim() || /^\s*#/.test(line) || /^\s/.test(line)) continue;
     const m = /^([A-Za-z_][\w-]*|"[^"]+"|'[^']+')\s*:(?:\s+(.*))?$/.exec(line.replace(/\s+$/, ''));
     if (!m) {
       problems.push(`line ${first + i}: “${line.slice(0, 40)}” is not a setting`);
+      const k = namedIn(line);
+      if (k) unreadable.add(k);
       continue;
     }
     const key = m[1].replace(/^["']|["']$/g, '').toLowerCase();
-    if (Object.hasOwn(data, key) || unreadable.includes(key)) {
+    if (Object.hasOwn(data, key) || unreadable.has(key)) {
       problems.push(`line ${first + i}: ${key} is given twice`);
-      unreadable.push(key);
+      unreadable.add(key);
       continue;
     }
     const raw = m[2] ?? '';
     // An indented block after an empty value: a list of items, a block of text, or nested settings (not read).
     const block: string[] = [];
-    while (i + 1 < lines.length && (/^\s/.test(lines[i + 1]) || !lines[i + 1].trim() || /^- /.test(lines[i + 1]))) block.push(lines[++i]);
+    // Only an empty value or a block marker (| or >) has lines of its own after it; any other line is read for itself.
+    if (!raw.trim() || /^[|>][+-]?$/.test(raw.trim())) while (i + 1 < lines.length && (/^\s/.test(lines[i + 1]) || !lines[i + 1].trim() || /^- /.test(lines[i + 1]))) block.push(lines[++i]);
     while (block.length && !block[block.length - 1].trim()) block.pop();
     if (!raw.trim() && block.length) {
       if (block.every((l) => !l.trim() || /^\s*- /.test(l) || /^\s*-$/.test(l))) {
         const items = block.filter((l) => l.trim()).map((l) => scalar(l.replace(/^\s*-\s?/, '')));
         if (items.every((x) => typeof x === 'string')) data[key] = (items as string[]).filter(Boolean);
-        else (problems.push(`line ${first + i}: ${key} holds a list that could not be read`), unreadable.push(key));
-      } else unreadable.push(key);
+        else (problems.push(`line ${first + i}: ${key} holds a list that could not be read`), unreadable.add(key));
+      } else unreadable.add(key);
       // Nested settings: passed over, and named, so a setting the import reads is never taken from beside them.
       continue;
     }
@@ -114,48 +128,50 @@ function readYaml(lines: string[], first: number): Read {
     const list = raw.trim().startsWith('[') ? flowList(raw) : undefined;
     if (list !== undefined) {
       if (list) data[key] = list;
-      else (problems.push(`line ${first + i}: ${key} holds a list that could not be read`), unreadable.push(key));
+      else (problems.push(`line ${first + i}: ${key} holds a list that could not be read`), unreadable.add(key));
       continue;
     }
     const v = scalar(raw);
-    if (v === null) (problems.push(`line ${first + i}: ${key} holds a value that could not be read`), unreadable.push(key));
+    if (v === null) (problems.push(`line ${first + i}: ${key} holds a value that could not be read`), unreadable.add(key));
     else data[key] = v;
   }
-  return { data, problems, unreadable };
+  return { data, problems, unreadable: [...unreadable] };
 }
 
 function readToml(lines: string[], first: number): Read {
   const data: Record<string, FrontValue> = {};
   const problems: string[] = [];
-  const unreadable: string[] = [];
+  const unreadable = new Set<string>();
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line || line.startsWith('#')) continue;
     // A table: everything after it belongs to it, not to the post's own settings.
     if (line.startsWith('[')) break;
-    const m = /^([A-Za-z_][\w-]*|"[^"]+")\s*=\s*(.*)$/.exec(line);
+    const m = /^([A-Za-z_][\w-]*|"[^"]+"|'[^']+')\s*=\s*(.*)$/.exec(line);
     if (!m) {
       problems.push(`line ${first + i}: “${line.slice(0, 40)}” is not a setting`);
+      const k = namedIn(line);
+      if (k) unreadable.add(k);
       continue;
     }
-    const key = m[1].replace(/^"|"$/g, '').toLowerCase();
-    if (Object.hasOwn(data, key) || unreadable.includes(key)) {
+    const key = m[1].replace(/^["']|["']$/g, '').toLowerCase();
+    if (Object.hasOwn(data, key) || unreadable.has(key)) {
       problems.push(`line ${first + i}: ${key} is given twice`);
-      unreadable.push(key);
+      unreadable.add(key);
       continue;
     }
     const raw = m[2];
     if (raw.trim().startsWith('[')) {
       const list = flowList(raw);
       if (list) data[key] = list;
-      else (problems.push(`line ${first + i}: ${key} holds a list that could not be read`), unreadable.push(key));
+      else (problems.push(`line ${first + i}: ${key} holds a list that could not be read`), unreadable.add(key));
       continue;
     }
     const v = /^(true|false)\b/.test(raw.trim()) ? raw.trim().startsWith('true') : scalar(raw);
-    if (v === null) (problems.push(`line ${first + i}: ${key} holds a value that could not be read`), unreadable.push(key));
+    if (v === null) (problems.push(`line ${first + i}: ${key} holds a value that could not be read`), unreadable.add(key));
     else data[key] = v;
   }
-  return { data, problems, unreadable };
+  return { data, problems, unreadable: [...unreadable] };
 }
 
 /** A Markdown file's frontmatter, read, and its body. A file without frontmatter is all body. */
@@ -176,7 +192,7 @@ export function readFrontmatter(text: string): Frontmatter {
 // ---------------------------------------------------------------------------
 
 /** A link destination as Markdown means it: its character references read once, as CommonMark reads them. */
-const destination = (s: string) => decodeEntities(s);
+const destination = (s: string) => decodeEntities(s, true);
 
 const escapeHtml = (s: string) => s.replace(/&(?!#?[A-Za-z0-9]{1,32};)/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -193,14 +209,13 @@ const MAX_HTML = 8 * 1024 * 1024;
 const BLOCK_TAGS = /^<\/?(?:address|article|aside|blockquote|details|div|dl|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|iframe|main|nav|ol|p|pre|script|section|style|table|ul|video|audio|object|embed|center|noscript)(?:[\s/>]|$)/i;
 
 /** One run of inline Markdown as HTML. Raw HTML in it is passed on for the HTML reader to clean. */
-export function inlineHtml(input: string, refs: Refs, depth = 0): string {
+export function inlineHtml(input: string, refs: Refs, depth = 0, budget = { left: MAX_HTML }): string {
   // The characters that mark kept runs below are never the post's own.
   const text = input.replace(/[\u0001\u0002]/g, '');
   const kept: string[] = [];
-  let size = 0;
+  // What references and marks add is counted against the post's whole budget, as it is made.
   const keep = (html: string) => {
-    size += html.length;
-    if (size > MAX_HTML) throw new Error('its text is too long to read.');
+    if ((budget.left -= html.length) < 0) throw new Error('its text is too long to read.');
     return `\u0001${kept.push(html) - 1}\u0002`;
   };
   // Where each "[" is balanced by its "]", found in one pass (an escaped bracket is neither).
@@ -248,7 +263,7 @@ export function inlineHtml(input: string, refs: Refs, depth = 0): string {
         continue;
       }
       // Never past the next "<", so a run of unfinished tags is read once.
-      const tag = /^(?:<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^\s"'<>/=]+(?:\s*=\s*(?:"[^"<]{0,1000}"|'[^'<]{0,1000}'|[^\s"'=<>`]+))?)*\s*\/?>|<!--[^<]{0,4000}?-->)/.exec(text.slice(i, i + 4096));
+      const tag = /^(?:<\/?[A-Za-z][A-Za-z0-9-]*(?:\s+[^\s"'<>/=]+(?:\s*=\s*(?:"[^"<]{0,1000}"|'[^'<]{0,1000}'|[^\s"'=<>`]+))?)*\s*\/?>|<!--[\s\S]{0,4000}?-->)/.exec(text.slice(i, i + 4096));
       if (tag) {
         out += keep(tag[0]);
         i += tag[0].length;
@@ -259,8 +274,8 @@ export function inlineHtml(input: string, refs: Refs, depth = 0): string {
       const link = readLink(text, c === '!' ? i + 1 : i, refs, closes);
       if (link) {
         const href = escapeAttr(destination(link.href));
-        if (c === '!') out += keep(`<img src="${href}" alt="${escapeAttr(decodeEntities(link.label.replace(/[*_`\\]/g, '')))}">`);
-        else out += keep(`<a href="${href}">${depth < 4 ? inlineHtml(link.label, refs, depth + 1) : escapeHtml(link.label)}</a>`);
+        if (c === '!') out += keep(`<img src="${href}" alt="${escapeAttr(decodeEntities(link.label.replace(/[*_`\\]/g, ''), true))}">`);
+        else out += keep(`<a href="${href}">${depth < 4 ? inlineHtml(link.label, refs, depth + 1, budget) : escapeHtml(link.label)}</a>`);
         i = link.end;
         continue;
       }
@@ -332,15 +347,11 @@ export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), bu
     }
   }
   const out: string[] = [];
-  const push = out.push.bind(out);
-  // Every block counts against what one post's Markdown may become.
-  out.push = (...html: string[]) => {
-    for (const h of html) if ((budget.left -= h.length) < 0) throw new Error('its text is too long to read.');
-    return push(...html);
-  };
+  // Only references grow the HTML past the Markdown it is made from: each inline run counts what it adds.
+  const inline = (t: string) => inlineHtml(t, refs, 0, budget);
   let para: string[] = [];
   const endPara = () => {
-    if (para.length) out.push(`<p>${inlineHtml(para.join('\n'), refs)}</p>`);
+    if (para.length) out.push(`<p>${inline(para.join('\n'))}</p>`);
     para = [];
   };
   const listItem = (line: string) => /^( {0,3})([-*+]|\d{1,9}[.)])( +|$)(.*)$/.exec(line);
@@ -365,14 +376,14 @@ export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), bu
     const heading = /^ {0,3}(#{1,6})(?:\s+(.*?))?(?:\s+#+)?\s*$/.exec(line);
     if (heading) {
       endPara();
-      out.push(`<h${heading[1].length}>${inlineHtml(heading[2] ?? '', refs)}</h${heading[1].length}>`);
+      out.push(`<h${heading[1].length}>${inline(heading[2] ?? '')}</h${heading[1].length}>`);
       i++;
       continue;
     }
     // A line of = or - under a paragraph makes it a heading.
     if (para.length && /^ {0,3}(=+|-+)\s*$/.test(line)) {
       const level = line.trim()[0] === '=' ? 1 : 2;
-      out.push(`<h${level}>${inlineHtml(para.join('\n'), refs)}</h${level}>`);
+      out.push(`<h${level}>${inline(para.join('\n'))}</h${level}>`);
       para = [];
       i++;
       continue;
@@ -441,7 +452,7 @@ export function markdownToHtml(md: string, depth = 0, refs: Refs = new Map(), bu
       const rows: string[] = [line];
       i += 2;
       while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(lines[i++]);
-      const cells = (r: string) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => `<td>${inlineHtml(c.trim(), refs)}</td>`).join('');
+      const cells = (r: string) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => `<td>${inline(c.trim())}</td>`).join('');
       out.push(`<table>${rows.map((r) => `<tr>${cells(r)}</tr>`).join('')}</table>`);
       continue;
     }

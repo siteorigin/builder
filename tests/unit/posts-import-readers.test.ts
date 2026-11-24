@@ -135,6 +135,14 @@ describe('the HTML reader', () => {
     expect(report.tables).toBe(1);
   });
 
+  it('finds captions and preformatted text wherever the post’s letters change length in lower case', () => {
+    expect(htmlToRichText('İstanbul\n\n[caption]<img src="c.jpg" alt="C"> Cap[/caption]', opts({ autop: true, shortcodes: true }))).toEqual([
+      { type: 'p', spans: [{ text: 'İstanbul' }] },
+      { type: 'image', assetId: 'm:c.jpg', alt: 'C', caption: 'Cap' }
+    ]);
+    expect(autop('İ <prefix>x</prefix>\n\n<pre>a  b\nc</pre>')).toContain('<pre>a  b\nc</pre>');
+  });
+
   it('wpautop leaves block markup and preformatted text alone', () => {
     expect(autop('<h2>Title</h2>\nText')).toBe('<h2>Title</h2>\n<p>Text</p>\n');
     expect(autop('Intro\n\n<pre>a  b\nc</pre>')).toContain('<pre>a  b\nc</pre>');
@@ -145,6 +153,7 @@ describe('the HTML reader', () => {
     htmlToRichText('[foo a="b" c="d'.repeat(20_000), opts({ autop: true, shortcodes: true }));
     htmlToRichText('<'.repeat(200_000) + '<p><div'.repeat(20_000), opts({ autop: true, shortcodes: true }));
     htmlToRichText('[caption]x'.repeat(20_000) + '<pre>x'.repeat(20_000), opts({ autop: true, shortcodes: true }));
+    htmlToRichText('[embed '.repeat(40_000), opts({ autop: true, shortcodes: true }));
     expect(performance.now() - t0).toBeLessThan(3000);
   });
 

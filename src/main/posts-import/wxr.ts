@@ -16,6 +16,9 @@ import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, POST_LINK_PREFIX, type ParsedSource
 import { reportNotes } from './notes';
 
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
+/** The longest title, name or label read: the plan shortens what it keeps, and says so. */
+const FIELD_CHARS = 1000;
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export function wordpressDay(...dates: string[]): string | null {
@@ -152,8 +155,9 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
       const onSite = url.protocol === 'relative:' || (!!siteOrigin && url.origin === siteOrigin);
       if (!onSite) return /^https?:$/.test(url.protocol) ? linkFromTarget(url.href, pages, newTab) : null;
       const tab = newTab ? { newTab: true } : {};
+      // A post by its ID when the link names one: never the post at the path it happens to be read from.
       const p = url.searchParams.get('p');
-      const post = (p && byId.get(p)) || byPath.get(sitePath(url.pathname).toLowerCase());
+      const post = p !== null ? byId.get(p) : url.search ? undefined : byPath.get(sitePath(url.pathname).toLowerCase());
       if (post) return { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab };
       // A page of the project at the same address, its section kept; never for an address with a query (`/?p=88`),
       // which named something other than the page at its path.
@@ -176,7 +180,7 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
       posts.push(failedPost(item, key, (e as Error).message));
       continue;
     }
-    const title = htmlToPlain(childText(item, 'title')) || 'Untitled post';
+    const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
     const thumb = metaValue(item, '_thumbnail_id');
     const thumbId = thumb ? childText(thumb, 'wp:meta_value').trim() : '';
     const thumbUrl = thumbId ? attachments.get(thumbId) : undefined;
@@ -197,13 +201,13 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
       key,
       from: title,
       title,
-      slug: decodeSlug(childText(item, 'wp:post_name').trim()),
+      slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)),
       date,
       draft: status.draft || !date,
       ...(status.reason ? { draftReason: status.reason } : !date && !status.draft ? { draftReason: 'it has no publication date' } : {}),
-      ...(login ? { author: authors.get(login) || login } : {}),
+      ...(login ? { author: (authors.get(login) || login).slice(0, FIELD_CHARS) } : {}),
       ...(() => {
-        const excerpt = htmlToPlain(childText(item, 'excerpt:encoded'));
+        const excerpt = htmlToPlain(childText(item, 'excerpt:encoded').slice(0, 20 * FIELD_CHARS));
         return excerpt ? { excerpt } : {};
       })(),
       categories: terms(item, 'category'),
@@ -228,8 +232,8 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
 
 /** A post whose text could not be read: imported with its details and no text, the reason in its notes. */
 function failedPost(item: XmlElement, key: string, why: string): SourcePost {
-  const title = htmlToPlain(childText(item, 'title')) || 'Untitled post';
-  return { key, from: title, title, slug: decodeSlug(childText(item, 'wp:post_name').trim()), date: null, draft: true, draftReason: 'its text could not be read', categories: [], tags: [], body: [], notes: [`Its text could not be read: ${why}`] };
+  const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
+  return { key, from: title, title, slug: decodeSlug(childText(item, 'wp:post_name').trim().slice(0, 400)), date: null, draft: true, draftReason: 'its text could not be read', categories: [], tags: [], body: [], notes: [`Its text could not be read: ${why}`] };
 }
 
 function decodeSlug(s: string): string {
@@ -245,7 +249,7 @@ function terms(item: XmlElement, domain: string): SourceTerm[] {
   const out: SourceTerm[] = [];
   for (const c of childElements(item, 'category')) {
     if (c.attrs.domain !== domain) continue;
-    const label = htmlToPlain(textOf(c));
+    const label = htmlToPlain(textOf(c).slice(0, FIELD_CHARS));
     const slug = decodeSlug(c.attrs.nicename ?? '');
     if (!label || (domain === 'category' && slug === 'uncategorized')) continue;
     if (!out.some((t) => t.label.toLowerCase() === label.toLowerCase())) out.push({ label, ...(slug ? { slug } : {}) });

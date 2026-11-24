@@ -615,3 +615,70 @@ describe('the import reader process: what it asks and how it stops', () => {
     expect(killed).toBe(2);
   });
 });
+
+describe('second review: drafts, sizes and links read as written', () => {
+  it('never publishes a post whose settings are indented, quoted or tagged as text', async () => {
+    const source = await readMarkdownFolder(
+      mdFolder({
+        'indented.md': '---\n  title: Indented\n  date: 2020-01-01\n  published: false\n---\nText',
+        'quoted.md': "+++\ntitle = 'Quoted'\ndate = 2020-01-01\n'draft' = true\n+++\nText",
+        'text.md': '---\ntitle: Text\ndate: 2020-01-01\npublished: !!str true\n---\nText',
+        'odd.md': '---\ntitle: Odd\ndate: 2020-01-01\n- draft: false\n---\nText'
+      }),
+      {}
+    );
+    expect(source.posts.map((p) => [p.title, p.draft])).toEqual([
+      ['Indented', true],
+      ['Odd', true],
+      ['Quoted', true],
+      ['Text', true]
+    ]);
+  });
+
+  it('reads many settings it passes over in one pass', () => {
+    const t0 = performance.now();
+    readFrontmatter(`---\n${Array.from({ length: 30_000 }, (_, i) => `k${i}:\n  a: 1`).join('\n')}\n---\n`);
+    expect(performance.now() - t0).toBeLessThan(3000);
+  });
+
+  it('keeps what an export names within what a post holds', async () => {
+    const source = await readWordPress(wxr([item(1, { title: 'T'.repeat(50_000), 'wp:post_name': 's'.repeat(200_000), 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, 'Text')]), {});
+    expect([source.posts[0].title.length, source.posts[0].slug.length]).toEqual([1000, 400]);
+    const t0 = performance.now();
+    const plan = planPostImport(site(), source, '2026-11-24');
+    expect(performance.now() - t0).toBeLessThan(2000);
+    expect(plan.posts[0].notes).toContain('Its title was shortened to 200 characters.');
+  });
+
+  it('never links a ?p= address to the post it is read from', async () => {
+    const source = await readWordPress(wxr([item(5, { title: 'Here', link: 'https://old.example/post/', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, '<p><a href="?p=88">gone</a></p>')]), {});
+    expect(source.posts[0].body[0]).toMatchObject({ spans: [{ text: 'gone', link: { type: 'url', target: 'https://old.example/post/?p=88' } }] });
+  });
+
+  it('keeps a Markdown comment hidden and an address’s query as written', () => {
+    expect(htmlToRichTextFromMarkdown('before <!-- <em>note</em> --> after')).toEqual([{ type: 'p', spans: [{ text: 'before after' }] }]);
+    expect(htmlToRichTextFromMarkdown('[go](https://example.org/?a=1&copy=2)')[0]).toMatchObject({ spans: [{ link: { target: 'https://example.org/?a=1&copy=2' } }] });
+  });
+
+  it('counts what a table’s references add against the post’s budget', () => {
+    const long = `https://example.org/${'a'.repeat(2000)}`;
+    expect(() => markdownToHtml(`| A |\n|---|\n${'| [x][r] |\n'.repeat(10_000)}\n[r]: ${long}`)).toThrow('its text is too long to read.');
+  });
+
+  it('tells a post that it links to one cut to fit, which arrives as a draft', () => {
+    const src2: ParsedSource = {
+      kind: 'markdown',
+      label: 'posts',
+      root: '/x',
+      realRoot: '/x',
+      media: [],
+      skipped: [],
+      posts: [
+        { key: 'a', from: 'a', title: 'A', slug: 'a', date: '2020-01-01', draft: false, categories: [], tags: [], notes: [], body: [{ type: 'p', spans: [{ text: 'See B', link: { type: 'entry', target: 'post:b' } }] }] },
+        { key: 'b', from: 'b', title: 'B', slug: 'b', date: '2020-01-01', draft: false, categories: [], tags: [], notes: [], body: [{ type: 'p', spans: [{ text: 'x'.repeat(100_001) }] }] }
+      ]
+    };
+    const plan = planPostImport(site(), src2, '2026-11-24');
+    expect(plan.posts[0].notes).toContain('It links to “B”, which arrives as a draft: publish that post, or change the link, before the website is exported.');
+  });
+});

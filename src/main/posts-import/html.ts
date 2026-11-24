@@ -68,8 +68,11 @@ const NAMED: Record<string, number> = {
   euro: 8364, trade: 8482, larr: 8592, uarr: 8593, rarr: 8594, darr: 8595, harr: 8596, minus: 8722, infin: 8734, ne: 8800, le: 8804, ge: 8805, hearts: 9829
 };
 
-/** Text with its character references read; a name HTML does not have stays as written. */
-export function decodeEntities(s: string): string {
+/**
+ * Text with its character references read; a name HTML does not have stays as written. `strict` reads a name only
+ * with its semicolon, as an address needs (`?a=1&copy=2` keeps its `&copy`).
+ */
+export function decodeEntities(s: string, strict = false): string {
   if (!s.includes('&')) return s;
   return s.replace(/&(#[xX][0-9a-fA-F]{1,8}|#[0-9]{1,10}|[A-Za-z][A-Za-z0-9]{1,31});?/g, (whole, ref: string) => {
     if (ref[0] === '#') {
@@ -77,7 +80,7 @@ export function decodeEntities(s: string): string {
       return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : '�';
     }
     // A name only counts with its semicolon, except the oldest few that browsers read without one.
-    if (!whole.endsWith(';') && !['amp', 'lt', 'gt', 'quot', 'nbsp', 'copy', 'reg'].includes(ref)) return whole;
+    if (!whole.endsWith(';') && (strict || !['amp', 'lt', 'gt', 'quot', 'nbsp', 'copy', 'reg'].includes(ref))) return whole;
     return Object.hasOwn(NAMED, ref) ? String.fromCodePoint(NAMED[ref]) : whole;
   });
 }
@@ -104,7 +107,7 @@ export function autop(html: string): string {
   if (!html.trim()) return '';
   // Preformatted text keeps its own lines.
   const kept: string[] = [];
-  let text = eachPair(html, '<pre', '</pre>', (m) => (/^<pre[\s>]/i.test(m) ? `<pre data-kept="${kept.push(m) - 1}"></pre>` : m));
+  let text = eachPair(html, /<pre[\s>]/, /<\/pre>/, (m) => `<pre data-kept="${kept.push(m) - 1}"></pre>`);
   // A line break inside a tag is a space.
   text = text.replace(/<[^<>]*>/g, (m) => m.replace(/\n/g, ' '));
   text = text.replace(/\r\n?/g, '\n').replace(/[ \t]+/g, ' ');
@@ -127,17 +130,22 @@ export function autop(html: string): string {
  * Each `open … close` pair in `text` (ignoring case) replaced by `fn` of the whole pair, in one forward scan: an
  * `open` with no `close` after it ends the scan, since none after it can have one either.
  */
-function eachPair(text: string, open: string, close: string, fn: (whole: string) => string): string {
-  const lower = text.toLowerCase();
+function eachPair(text: string, open: RegExp, close: RegExp, fn: (whole: string) => string): string {
+  // Found in the text itself, ignoring case: never in a lowercased copy, whose lengths can differ ("İ").
+  const o = new RegExp(open.source, 'gi');
+  const c = new RegExp(close.source, 'gi');
   let out = '';
   let i = 0;
   for (;;) {
-    const a = lower.indexOf(open, i);
-    if (a < 0) break;
-    const b = lower.indexOf(close, a + open.length);
-    if (b < 0) break;
-    out += text.slice(i, a) + fn(text.slice(a, b + close.length));
-    i = b + close.length;
+    o.lastIndex = i;
+    const a = o.exec(text);
+    if (!a) break;
+    c.lastIndex = a.index + a[0].length;
+    const b = c.exec(text);
+    if (!b) break;
+    const end = b.index + b[0].length;
+    out += text.slice(i, a.index) + fn(text.slice(a.index, end));
+    i = end;
   }
   return out + text.slice(i);
 }
@@ -158,7 +166,7 @@ export function readShortcodes(html: string, report: HtmlReport): string {
   const note = (n: string) => {
     if (!report.shortcodes.includes(n) && report.shortcodes.length < 20) report.shortcodes.push(n);
   };
-  let text = eachPair(html, '[caption', '[/caption]', (whole) => {
+  let text = eachPair(html, /\[caption\b/, /\[\/caption\]/, (whole) => {
     const parts = /^\[caption\b([^\]]*)\]([\s\S]*)\[\/caption\]$/i.exec(whole);
     if (!parts) return whole;
     const [, attrs, inner] = parts;
@@ -167,7 +175,7 @@ export function readShortcodes(html: string, report: HtmlReport): string {
     const caption = pic[2].trim() || (/\bcaption=("|')([\s\S]*?)\1/i.exec(attrs)?.[2] ?? '');
     return `<figure>${pic[1]}${caption ? `<figcaption>${caption}</figcaption>` : ''}</figure>`;
   });
-  text = text.replace(/\[embed\b[^\]]*\]\s*(https?:\/\/[^\s[\]<>"]+)\s*\[\/embed\]/gi, (_m, url: string) => {
+  text = text.replace(/\[embed\b[^\][]{0,2000}\]\s*(https?:\/\/[^\s[\]<>"]+)\s*\[\/embed\]/gi, (_m, url: string) => {
     report.embedLinks++;
     return `<p><a href="${url}">${url}</a></p>`;
   });
