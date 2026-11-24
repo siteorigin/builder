@@ -285,7 +285,7 @@ describe('page languages in the website', () => {
     expect(files.get(SERVER_HOOK_FILE)).not.toMatch(/LANGUAGES|lang/);
     expect([...files.keys()].filter((p) => /language/.test(p))).toEqual([]);
     expect(files.get('src/app.html')).toBe(
-      '<!doctype html>\n<html lang="en">\n\t<head>\n\t\t<meta charset="utf-8" />\n\t\t<meta name="viewport" content="width=device-width, initial-scale=1" />\n\t\t%sveltekit.head%\n\t</head>\n\t<body data-sveltekit-preload-data="hover">\n\t\t<div style="display: contents">%sveltekit.body%</div>\n\t</body>\n</html>\n'
+      '<!doctype html>\n<html lang="en" dir="ltr">\n\t<head>\n\t\t<meta charset="utf-8" />\n\t\t<meta name="viewport" content="width=device-width, initial-scale=1" />\n\t\t%sveltekit.head%\n\t</head>\n\t<body data-sveltekit-preload-data="hover">\n\t\t<div style="display: contents">%sveltekit.body%</div>\n\t</body>\n</html>\n'
     );
     expect(files.get('src/routes/+layout.svelte')).not.toMatch(/pageLanguages|documentElement/);
     for (const [path, content] of files) {
@@ -315,12 +315,13 @@ describe('page languages in the website', () => {
       expect(files.get('src/app.html')).toBe(generateAppHtml(fresh()));
       const render = await loadHook(files);
       const html = files.get('src/app.html')!.replace('%sveltekit.head%', '<title>x</title>').replace('%sveltekit.body%', '<p>&lt;html lang="en"&gt;</p>');
-      expect(render('/fr/a-propos', [html])[0]).toBe(html.replace('<html lang="en">', '<html lang="fr">'));
-      expect(render('/de/ueber-uns', [html])[0]).toBe(html.replace('<html lang="en">', '<html lang="de">'));
+      // French and German run left to right, as the site does: only lang changes.
+      expect(render('/fr/a-propos', [html])[0]).toBe(html.replace('<html lang="en" dir="ltr">', '<html lang="fr" dir="ltr">'));
+      expect(render('/de/ueber-uns', [html])[0]).toBe(html.replace('<html lang="en" dir="ltr">', '<html lang="de" dir="ltr">'));
       for (const id of ['/about', '/', null]) expect(render(id, [html])[0]).toBe(html);
       // Only the document's own opening tag changes: a later chunk is left as it is.
-      const [first, later] = render('/fr/a-propos', [html.slice(0, 40), '<html lang="en"> as text']);
-      expect(first).toContain('<html lang="fr">');
+      const [first, later] = render('/fr/a-propos', [html.slice(0, 60), '<html lang="en"> as text']);
+      expect(first).toContain('<html lang="fr" dir="ltr">');
       expect(later).toBe('<html lang="en"> as text');
       // A template of the project's own: other attributes, single quotes, no lang at all, or a comment first.
       expect(render('/fr/a-propos', ["<!doctype html>\n<html class='site' lang='en' data-x>"])[0]).toBe("<!doctype html>\n<html class='site' lang=\"fr\" data-x>");
@@ -347,7 +348,11 @@ describe('page languages in the website', () => {
       // The layout keeps <html lang> in step on client-side navigation, for every page in another language.
       const layout = files.get('src/routes/+layout.svelte')!;
       expect(layoutTable(layout)).toEqual({ '/de/ueber-uns': 'de', '/fr/a-propos': 'fr' });
-      expect(layout).toContain('document.documentElement.lang = id && Object.hasOwn(pageLanguages, id) ? pageLanguages[id] : "en";');
+      expect(layout).toContain('const language = $derived(page.route.id && Object.hasOwn(pageLanguages, page.route.id) ? pageLanguages[page.route.id] : "en");');
+      expect(layout).toContain('document.documentElement.lang = language;');
+      // No page runs the other way, and every one runs the site's way.
+      expect(layout).toContain('const pageDirections = {};');
+      expect(layout).toContain('document.documentElement.dir = id && Object.hasOwn(pageDirections, id) ? pageDirections[id] : "ltr";');
       expect(() => compile(layout, { generate: 'server', filename: 'src/routes/+layout.svelte', runes: true })).not.toThrow();
       expect(() => compile(layout, { generate: 'client', filename: 'src/routes/+layout.svelte', runes: true })).not.toThrow();
     }
@@ -540,12 +545,15 @@ describe('page languages in the website', () => {
     const { s, fr } = bilingual();
     expect(declaredLanguage('<!doctype html><html class="x" lang=\'fr-CA\'>')).toBe('fr-CA');
     expect(declaredLanguage('<html xml:lang="fr">')).toBeNull();
-    expect(pageLanguageWarning(s, s.pages[fr], '<!doctype html><html lang="FR">')).toBeNull();
+    expect(pageLanguageWarning(s, s.pages[fr], '<!doctype html><html lang="FR" dir="ltr">')).toBeNull();
     expect(pageLanguageWarning(s, s.pages[fr], '<!doctype html><html lang="en">')).toMatch(/“À propos” \(\/fr\/a-propos\/\) was built as “en”, not “fr”/);
     expect(pageLanguageWarning(s, s.pages[fr], '<!doctype html><html>')).toMatch(/built without a language, not “fr”/);
     // A page in the site language is checked too.
     expect(pageLanguageWarning(s, byTitle(s, 'About'), '<!doctype html><html lang="fr">')).toMatch(/“About” \(\/about\/\) was built as “fr”, not “en”/);
-    expect(pageLanguageWarning(s, byTitle(s, 'About'), '<!doctype html><html lang="en">')).toBeNull();
+    expect(pageLanguageWarning(s, byTitle(s, 'About'), '<!doctype html><html lang="en" dir="ltr">')).toBeNull();
+    // The way it runs as well: a page in its language but without dir runs left to right whatever its language.
+    expect(pageLanguageWarning(s, s.pages[fr], '<!doctype html><html lang="fr">')).toMatch(/“À propos” \(\/fr\/a-propos\/\) was built without a direction, not left to right/);
+    expect(pageLanguageWarning(s, s.pages[fr], '<!doctype html><html lang="fr" dir="rtl">')).toMatch(/was built to run right to left, not left to right/);
     // A document without the tag, after many comments, is turned down at once rather than retried every way.
     const comments = '<!-- a -->'.repeat(2000) + '<body>';
     const started = performance.now();

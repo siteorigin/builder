@@ -18,6 +18,8 @@ const TABLE_SOURCE = `<script>
 	 * row headings on, the first column names its row the same way. A table wider than the screen scrolls
 	 * sideways inside its own focusable region, so the page itself never does.
 	 */
+	import { visitorText } from '../runtime/visitor-text.js';
+
 	let {
 		eyebrow = '',
 		heading = '',
@@ -37,7 +39,8 @@ const TABLE_SOURCE = `<script>
 	// The scrolling region is named by the caption, else the heading, so it is never an unnamed stop.
 	const captionText = $derived(text(caption).trim());
 	const headingText = $derived(text(heading).trim());
-	const regionLabel = $derived(captionText ? undefined : headingText || 'Table');
+	const words = visitorText();
+	const regionLabel = $derived(captionText ? undefined : headingText || words().tableRegion);
 </script>
 
 <section class={['so-table', 'so-table--' + variant, className]}>

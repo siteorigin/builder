@@ -55,8 +55,9 @@ import { usedPackFonts } from '@catalogue/fonts';
 import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, validateRoute } from '@shared/routes';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
-import { HTML_ATTR, HTML_START, isLanguageCode, pageLanguage, sameLanguage, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
+import { HTML_ATTR, HTML_START, isLanguageCode, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
+import { visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { asParagraphList, isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
@@ -2233,9 +2234,10 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const favicon = state.site.favicon && state.assets.assets[state.site.favicon];
   const iconHref = favicon ? favicon.file.replace(/^static\//, '') : DEFAULT_FAVICON;
   const iconType = favicon ? favicon.mime : 'image/svg+xml';
-  // A site in more than one language keeps <html lang> right as visitors move between its pages.
+  // A site in more than one language keeps <html lang> and dir right as visitors move between its pages, and what
+  // the site says on its own in the language of the page they are on.
   const languages = languagesByRoute(state).length
-    ? `\n\tconst pageLanguages = ${routeLanguagesJs(state, '\t')};\n\t$effect(() => {\n\t\tconst id = page.route.id;\n\t\tdocument.documentElement.lang = id && Object.hasOwn(pageLanguages, id) ? pageLanguages[id] : ${js(siteLanguage(state.site))};\n\t});`
+    ? `\n\tconst pageLanguages = ${routeLanguagesJs(state, '\t')};\n\tconst pageDirections = ${routeDirectionsJs(state, '\t')};\n\tconst language = $derived(page.route.id && Object.hasOwn(pageLanguages, page.route.id) ? pageLanguages[page.route.id] : ${js(siteLanguage(state.site))});\n\tspeak(() => language);\n\t$effect(() => {\n\t\tconst id = page.route.id;\n\t\tdocument.documentElement.lang = language;\n\t\tdocument.documentElement.dir = id && Object.hasOwn(pageDirections, id) ? pageDirections[id] : ${js(siteDirection(state.site))};\n\t});`
     : '';
   // Until the bridge is running, no form on the page can be sent: the editor never sends a message from the site on
   // the author's behalf (issue #193). The hold is in place before any form's own code, and the bridge removes it.
@@ -2257,9 +2259,11 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import { page } from '$app/state';
 	import { asset } from '$app/paths';
 	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';${appearImport}
+	import { ${languages ? 'speak, ' : ''}visitorText } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
 	let { children } = $props();
+	const text = visitorText();
 	// A message typed into a form and not sent comes back when the visitor returns with Back.
 	keepDrafts();${appearStart}
 	// Each page chooses the shared header and footer on its own.
@@ -2274,7 +2278,7 @@ ${imports}${languages}${devBridge}
 	<meta property="og:site_name" content={${js(state.site.name)}} />
 </svelte:head>
 
-<a class="so-skip-link" href="#main">Skip to content</a>
+<a class="so-skip-link" href="#main">{text().skipLink}</a>
 {#if showHeader}
 ${header}
 {/if}
@@ -2296,7 +2300,7 @@ export const trailingSlash = 'always';
 export function generateAppHtml(state: ProjectState): string {
   const lang = siteLanguage(state.site);
   return `<!doctype html>
-<html lang="${lang}">
+<html lang="${lang}" dir="${siteDirection(state.site)}">
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -2332,6 +2336,93 @@ function routeLanguagesJs(state: ProjectState, indent = ''): string {
 
 /** routeLanguages as a file depends on it: on the list alone, not on every page that goes into it. */
 const languagesByRoute = (state: ProjectState) => derived(state, 'routeLanguages', routeLanguages);
+
+/**
+ * Route IDs of the pages whose text runs the other way from the site's, with their direction, sorted by route: pages
+ * in a language written the other way. Each is also a page in another language than the site's (routeLanguages).
+ */
+export function routeDirections(state: ProjectState): Array<[string, string]> {
+  const site = siteDirection(state.site);
+  const out: Array<[string, string]> = [];
+  for (const id of state.site.pageOrder) {
+    const page = state.pages[id];
+    if (!page) continue;
+    const dir = pageDirection(state.site, page);
+    if (dir !== site) out.push([routeId(page.route), dir]);
+  }
+  return out.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** The directions of pages whose text runs the other way from the site's, by route ID, as a script expression. */
+function routeDirectionsJs(state: ProjectState, indent = ''): string {
+  return JSON.stringify(Object.fromEntries(derived(state, 'routeDirections', routeDirections)), null, '\t').replace(/\n/g, '\n' + indent);
+}
+
+/** The file of what the site says on its own (generateVisitorTextJs). */
+export const VISITOR_TEXT_FILE = 'visitor-text.js';
+
+/**
+ * What the site says on its own (the skip link, the menu button, a form's progress) in every language its pages are
+ * in, with the way components get the wording for the page they are on. The site's layout tells the components
+ * below it which language that is (speak); a component shown without the layout, as in the editor's preview of one
+ * component, speaks the site's language.
+ */
+export function generateVisitorTextJs(state: ProjectState): string {
+  const site = siteLanguage(state.site);
+  const codes = [...new Set([site, ...languagesByRoute(state).map(([, language]) => language)].map(visitorTextLanguage))].sort();
+  const text = Object.fromEntries(codes.map((code) => [code, visitorTextFor(state.site, code)]));
+  return `// Generated by SiteOrigin Builder from siteorigin/site.json and siteorigin/pages/*.json. What the site says on its
+// own, around its content, in each language its pages are in. Site styles > Visitor text changes the wording.
+import { getContext, setContext } from 'svelte';
+
+/** The site's language, which pages without a language of their own are in. */
+const SITE = ${js(visitorTextLanguage(site))};
+
+/** The wording in each language, by lower-case language code. */
+const TEXT = ${JSON.stringify(text, null, '\t')};
+
+const LANGUAGE = 'siteorigin:visitor-language';
+
+/** Makes the components below the caller speak the language \`language()\` gives. The site's layout calls it. */
+export function speak(language) {
+	setContext(LANGUAGE, language);
+}
+
+/**
+ * The wording for the page a component is on, as a function to call wherever the wording is used, so it follows the
+ * visitor from page to page. Like getContext, visitorText() itself is called while the component starts.
+ */
+export function visitorText() {
+	const language = getContext(LANGUAGE);
+	return () => {
+		const code = String(language?.() ?? SITE).toLowerCase();
+		return Object.hasOwn(TEXT, code) ? TEXT[code] : TEXT[SITE];
+	};
+}
+
+/** Wording with each {name} in it replaced by that value. What goes in is never read for names itself. */
+export function fill(text, values) {
+	return text.replace(/\\{(\\w+)\\}/g, (whole, name) => (Object.hasOwn(values, name) ? String(values[name]) : whole));
+}
+
+/**
+ * Wording filled in as fill() does, in pieces: its own words, and each value with the name it filled, so markup can
+ * set a value apart (in a <bdi>, to keep its own direction).
+ */
+export function fillParts(text, values) {
+	const parts = [];
+	let at = 0;
+	for (const match of text.matchAll(/\\{(\\w+)\\}/g)) {
+		if (!Object.hasOwn(values, match[1])) continue;
+		if (match.index > at) parts.push({ text: text.slice(at, match.index) });
+		parts.push({ text: String(values[match[1]]), name: match[1] });
+		at = match.index + match[0].length;
+	}
+	if (at < text.length) parts.push({ text: text.slice(at) });
+	return parts;
+}
+`;
+}
 
 /**
  * The versions of a published page in each language it has, itself among them, in page order: what its
@@ -2431,8 +2522,10 @@ export function generateRedirect(state: ProjectState, from: string, page: PageDo
 	// ${from} is an old address of a page, kept working for old links and bookmarks.
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
+	import { visitorText } from ${js(relImport(redirectFile(from), `${RUNTIME_DIR}/${VISITOR_TEXT_FILE}`))};
 
 	const to = resolve(${js(page.route)});
+	const text = visitorText();
 	// Runs while the HTML is read, before anything renders.
 	const go = '<' + 'script>location.replace(' + JSON.stringify(to).replace(/</g, '\\\\u003c') + ' + location.search + location.hash);</' + 'script>';
 	// Reached by a link inside the running site instead, the script above never runs: go from here.
@@ -2445,7 +2538,7 @@ export function generateRedirect(state: ProjectState, from: string, page: PageDo
 	<meta name="robots" content="noindex" />${canonical}
 </svelte:head>
 
-<p><a href={to}>This page has moved. Continue to its new address.</a></p>
+<p><a href={to}>{text().redirect}</a></p>
 `
   );
 }
@@ -2594,23 +2687,36 @@ export function handle({ event, resolve }) {
 `;
   return `// Generated by SiteOrigin Builder from siteorigin/site.json and siteorigin/pages/*.json. Makes 404.html, the
 // not-found page, work at any missing address, and gives each page's <html lang> the language the page is written
-// in: pages not listed in LANGUAGES are in the site's language, which src/app.html names.
+// in, and its dir the way that language runs: pages not listed in LANGUAGES are in the site's language, and pages not
+// listed in DIRECTIONS run the site's way, both of which src/app.html names.
 ${imports}
 ${sections}
 /** Pages written in another language than the site's, by route, with that language. */
 const LANGUAGES = ${routeLanguagesJs(state)};
 
+/** Pages whose text runs the other way from the site's (each also in LANGUAGES), by route, with their direction. */
+const DIRECTIONS = ${routeDirectionsJs(state)};
+
 // The document's opening <html> tag, after any doctype and comments, and each of its attributes.
 const START = new RegExp(${js(HTML_START.source)}, 'i');
 const ATTR = new RegExp(${js(HTML_ATTR.source)}, 'g');
 
-/** The start of a page with the lang of its opening <html> tag replaced, or added when it has none. */
-function withLanguage(html, lang) {
+/** The start of a page with these attributes of its opening <html> tag replaced, or added where it has none. */
+function withLanguage(html, values) {
 	// Only the start of the document is read, however long the page.
 	const start = html.slice(0, 65536).replace(START, (_, before, tag, attrs, end) => {
-		let found = false;
-		const own = attrs.replace(ATTR, (attr, space, name) => (name.toLowerCase() === 'lang' ? ((found = true), \`\${space}lang="\${lang}"\`) : attr));
-		return \`\${before}<\${tag}\${found ? own : \`\${own} lang="\${lang}"\`}\${end}\`;
+		const found = new Set();
+		const own = attrs.replace(ATTR, (attr, space, name) => {
+			const key = name.toLowerCase();
+			if (!Object.hasOwn(values, key)) return attr;
+			found.add(key);
+			return \`\${space}\${key}="\${values[key]}"\`;
+		});
+		const added = Object.keys(values)
+			.filter((key) => !found.has(key))
+			.map((key) => \` \${key}="\${values[key]}"\`)
+			.join('');
+		return \`\${before}<\${tag}\${own}\${added}\${end}\`;
 	});
 	return start + html.slice(65536);
 }
@@ -2620,13 +2726,14 @@ export function handle({ event, resolve }) {
 	const notFound = building && id === ${js(NOT_FOUND_ROUTE)};
 	const lang = id && Object.hasOwn(LANGUAGES, id) ? LANGUAGES[id] : null;
 	if (!notFound && !lang) return resolve(event);
+	const root = lang ? (Object.hasOwn(DIRECTIONS, id) ? { lang, dir: DIRECTIONS[id] } : { lang }) : null;
 	const path = notFound ? event.url.pathname : '';
 	const base = path.endsWith(${js(NOT_FOUND_ROUTE)}) ? path.slice(0, -${NOT_FOUND_ROUTE.length}) : '';
 	let first = true;
 	return resolve(event, {
 		transformPageChunk: ({ html }) => {
 			// The opening <html> tag comes first: only the first chunk can hold it.
-			const page = lang && first ? withLanguage(html, lang) : html;
+			const page = root && first ? withLanguage(html, root) : html;
 			first = false;
 			return notFound ? publishNotFound(page, base, SECTIONS) : page;
 		}
@@ -2676,6 +2783,8 @@ type FileMaker = (key: string, make: (state: ProjectState) => string) => string;
 function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, file: FileMaker): void {
   const theme = getTheme(state.site.themeId);
   const mode = opts.instrument ? '#dev' : '#clean';
+  // What the site says on its own, ahead of every helper and component that imports it.
+  files.set(`${RUNTIME_DIR}/${VISITOR_TEXT_FILE}`, file('visitor-text.js', generateVisitorTextJs));
   files.set(`${RUNTIME_DIR}/Link.svelte`, linkSvelte(!!opts.instrument));
   files.set(`${RUNTIME_DIR}/Image.svelte`, IMAGE_SVELTE);
   files.set(`${RUNTIME_DIR}/Action.svelte`, ACTION_SVELTE);

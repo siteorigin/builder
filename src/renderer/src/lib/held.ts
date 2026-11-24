@@ -48,7 +48,7 @@ const PAGE_FIELDS: Record<string, string[]> = {
   // Turning an article back into a page clears all of it: any change to the article meanwhile is a conflict.
   article: ['article']
 };
-const SITE_FIELDS = ['name', 'language', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel'];
+const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel'];
 
 function treeOf(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
   if (owner.kind === 'page') return has(state.pages, owner.id);

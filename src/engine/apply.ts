@@ -27,6 +27,7 @@ import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
 import { planRouteMove, routeFolder, type RouteMove } from '@shared/page-tree';
+import { VISITOR_TEXT_KEYS, ownVisitorText, visitorTextLanguage, type VisitorTextKey } from '@shared/visitor-text';
 import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
 import { checkPublicUrl } from '@shared/public-url';
@@ -2128,6 +2129,11 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (problem) fail(problem);
     s.language = op.language;
   }
+  // Automatic is no choice at all: the language decides.
+  if (op.direction !== undefined) {
+    if (op.direction === 'auto') delete s.direction;
+    else s.direction = op.direction;
+  }
   if (op.description !== undefined) s.description = op.description;
   if (op.baseUrl !== undefined) {
     // Checked and stored the way browsers and the site build read it, so every generated link agrees with it.
@@ -2147,7 +2153,30 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   if (op.notFoundHeading !== undefined) s.notFoundHeading = op.notFoundHeading.trim() || undefined;
   if (op.notFoundMessage !== undefined) s.notFoundMessage = op.notFoundMessage.trim() || undefined;
   if (op.notFoundLinkLabel !== undefined) s.notFoundLinkLabel = op.notFoundLinkLabel.trim() || undefined;
+  if (op.visitorText) setVisitorText(s, op.visitorText.language, op.visitorText.text);
   return {};
+}
+
+/**
+ * Sets the author's wording for pieces of visitor text in one language. Empty wording restores the built-in one, and
+ * a language left with none of its own is dropped, as is the whole map once it is empty.
+ */
+function setVisitorText(site: ProjectState['site'], language: string, text: Partial<Record<VisitorTextKey, string>>): void {
+  if (!isLanguageCode(language)) fail(LANGUAGE_CODE_ERROR);
+  const code = visitorTextLanguage(language);
+  const all = site.visitorText && typeof site.visitorText === 'object' && !Array.isArray(site.visitorText) ? { ...site.visitorText } : {};
+  const before = Object.hasOwn(all, code) ? all[code] : undefined;
+  const own: Record<string, string> = before && typeof before === 'object' && !Array.isArray(before) ? { ...before } : {};
+  for (const key of VISITOR_TEXT_KEYS) {
+    if (!Object.hasOwn(text, key) || text[key] === undefined) continue;
+    const value = ownVisitorText(text[key]);
+    if (value) own[key] = value;
+    else delete own[key];
+  }
+  if (Object.keys(own).length) all[code] = own;
+  else delete all[code];
+  if (Object.keys(all).length) site.visitorText = all;
+  else delete site.visitorText;
 }
 
 // ---------------------------------------------------------------------------

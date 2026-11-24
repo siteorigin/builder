@@ -7,7 +7,7 @@ import { existsSync, lstatSync, promises as fs, readdirSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import type { AssetRecord, PageDoc, ProjectState } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
-import { declaredLanguage, pageLanguage, sameLanguage } from '@shared/languages';
+import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameLanguage } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
@@ -797,8 +797,14 @@ export function publicUrlWarning(state: ProjectState): string | null {
 export function pageLanguageWarning(state: ProjectState, page: PageDoc, html: string): string | null {
   const expected = pageLanguage(state.site, page);
   const found = declaredLanguage(html);
-  if (found && sameLanguage(found, expected)) return null;
-  return `“${page.title}” (${page.route}) was built ${found ? `as “${found}”` : 'without a language'}, not “${expected}”: the project’s own src/app.html or server hook may be setting it.`;
+  if (!found || !sameLanguage(found, expected))
+    return `“${page.title}” (${page.route}) was built ${found ? `as “${found}”` : 'without a language'}, not “${expected}”: the project’s own src/app.html or server hook may be setting it.`;
+  // The way its text runs, which browsers otherwise take as left to right.
+  const dir = pageDirection(state.site, page);
+  const foundDir = declaredDirection(html)?.toLowerCase() ?? null;
+  if (foundDir === dir) return null;
+  const as = (d: string | null) => (d === 'rtl' ? 'right to left' : d === 'ltr' ? 'left to right' : d ? `“${d}”` : 'without a direction');
+  return `“${page.title}” (${page.route}) was built ${foundDir ? `to run ${as(foundDir)}` : 'without a direction'}, not ${as(dir)}: the project’s own src/app.html or server hook may be setting it.`;
 }
 
 /** Warnings for a source export whose links would stop the exported project from building. */

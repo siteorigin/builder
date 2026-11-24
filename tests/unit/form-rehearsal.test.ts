@@ -12,7 +12,7 @@ import { build, type Rolldown } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
-import { defFile, generateProject } from '@generator/index';
+import { RUNTIME_DIR, defFile, generateProject } from '@generator/index';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
@@ -41,14 +41,15 @@ function site() {
 }
 
 /** The exported contact form, compiled for the browser with Svelte's runtime; `window.mountForm(props)` places one. */
-async function bundleForm(source: string): Promise<string> {
+async function bundleForm(source: string, visitorText: string): Promise<string> {
   const modules: Record<string, string> = {
     '\0entry': `import { flushSync, mount } from 'svelte'; import Form from '\0form';
 window.mountForm = (props) => {
 	mount(Form, { target: document.getElementById('app').appendChild(document.createElement('div')), props });
 	flushSync();
 };`,
-    '\0form': compile(source, { filename: 'ContactForm.svelte', generate: 'client', css: 'injected', runes: true }).js.code
+    '\0form': compile(source, { filename: 'ContactForm.svelte', generate: 'client', css: 'injected', runes: true }).js.code,
+    '../runtime/visitor-text.js': visitorText
   };
   const out = (await build({
     configFile: false,
@@ -109,7 +110,7 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
   beforeAll(async () => {
     const { files, dev, formFile } = site();
     hold = holdFrom(dev.get('src/routes/+layout.svelte')!);
-    const [bundled, launched] = await Promise.allSettled([bundleForm(files.get(formFile)!), chromium.launch({ headless: true, executablePath: chromium.executablePath() })]);
+    const [bundled, launched] = await Promise.allSettled([bundleForm(files.get(formFile)!, files.get(`${RUNTIME_DIR}/visitor-text.js`)!), chromium.launch({ headless: true, executablePath: chromium.executablePath() })]);
     if (launched.status === 'fulfilled') browser = launched.value;
     if (bundled.status === 'rejected') throw bundled.reason;
     if (launched.status === 'rejected') throw launched.reason;

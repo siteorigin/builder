@@ -19,6 +19,35 @@ export function pageLanguage(site: Pick<SiteDoc, 'language'>, page: Pick<PageDoc
   return isLanguageCode(page.language) ? page.language : siteLanguage(site);
 }
 
+/** Which way text runs: left to right, or right to left. */
+export type TextDirection = 'ltr' | 'rtl';
+
+/** Languages written right to left in their usual script (Hebrew and Yiddish also under their old codes). */
+const RTL_LANGUAGES = new Set(['ar', 'arc', 'azb', 'bal', 'bqi', 'ckb', 'dv', 'fa', 'glk', 'he', 'iw', 'ji', 'khw', 'ks', 'lrc', 'mzn', 'nqo', 'pnb', 'prs', 'ps', 'sd', 'sdh', 'skr', 'syr', 'ug', 'ur', 'yi']);
+/** Scripts written right to left. A code that names its script ("az-Arab", "ku-Latn") goes the script's way. */
+const RTL_SCRIPTS = new Set(['adlm', 'arab', 'aran', 'hebr', 'mand', 'mend', 'nkoo', 'rohg', 'samr', 'syrc', 'thaa', 'yezi']);
+
+/** The way a language is written: right to left for Arabic, Hebrew and the like, left to right otherwise. */
+export function languageDirection(code: string): TextDirection {
+  const [primary = '', ...rest] = code.toLowerCase().split('-');
+  const script = rest.find((s) => /^[a-z]{4}$/.test(s));
+  return (script ? RTL_SCRIPTS.has(script) : RTL_LANGUAGES.has(primary)) ? 'rtl' : 'ltr';
+}
+
+/** The way the site's language runs: the site's own choice when it makes one, otherwise its language's way. */
+export function siteDirection(site: Pick<SiteDoc, 'language' | 'direction'>): TextDirection {
+  return site.direction === 'ltr' || site.direction === 'rtl' ? site.direction : languageDirection(siteLanguage(site));
+}
+
+/**
+ * The way a page's text runs. A page in the site's language follows the site, its choice included; a page in
+ * another language runs the way that language is written.
+ */
+export function pageDirection(site: Pick<SiteDoc, 'language' | 'direction'>, page: Pick<PageDoc, 'language'>): TextDirection {
+  const language = pageLanguage(site, page);
+  return sameLanguage(language, siteLanguage(site)) ? siteDirection(site) : languageDirection(language);
+}
+
 /** Language codes are case-insensitive: "en-AU" and "en-au" name the same language. */
 export function sameLanguage(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
@@ -107,13 +136,19 @@ export const HTML_START = /^((?:\s|<!--(?:(?!-->)[\s\S])*-->|<!doctype[^>]*>)*)<
 /** One attribute of a tag: the white space before it, its name, and its value as written (with any quotes). */
 export const HTML_ATTR = /(\s+)([^\s"'>/=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
 
-/** The lang an HTML document's opening <html> tag declares, or null when it declares none. */
-export function declaredLanguage(html: string): string | null {
+/** An attribute an HTML document's opening <html> tag declares, or null when it declares none. */
+function rootAttribute(html: string, attribute: string): string | null {
   // The opening tag is near the start; a page's whole body is never searched.
   const attrs = html.slice(0, 65536).match(HTML_START)?.[3] ?? '';
-  for (const [, , name, value] of attrs.matchAll(HTML_ATTR)) if (name.toLowerCase() === 'lang') return value === undefined ? '' : value.replace(/^["']|["']$/g, '');
+  for (const [, , name, value] of attrs.matchAll(HTML_ATTR)) if (name.toLowerCase() === attribute) return value === undefined ? '' : value.replace(/^["']|["']$/g, '');
   return null;
 }
+
+/** The lang an HTML document's opening <html> tag declares, or null when it declares none. */
+export const declaredLanguage = (html: string): string | null => rootAttribute(html, 'lang');
+
+/** The dir an HTML document's opening <html> tag declares, or null when it declares none. */
+export const declaredDirection = (html: string): string | null => rootAttribute(html, 'dir');
 
 /**
  * The first page a change of the site's language would put in the language of one of its translations: a page that

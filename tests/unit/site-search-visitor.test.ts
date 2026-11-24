@@ -68,6 +68,7 @@ window.mountSearch = (props) => {
     '\0search': compile(files.get(searchFile)!, { filename: 'SiteSearch.svelte', generate: 'client', css: 'injected', runes: true }).js.code,
     '\0helper': files.get(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`)!,
     '\0index': files.get(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`)!,
+    '../runtime/visitor-text.js': files.get(`${RUNTIME_DIR}/visitor-text.js`)!,
     '$app/state': compileModule(STATE_STUB, { filename: 'state.svelte.js', generate: 'client' }).js.code,
     '$app/paths': PATHS_STUB
   };

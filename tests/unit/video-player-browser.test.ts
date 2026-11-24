@@ -11,6 +11,8 @@ import { chromium, type Browser, type Frame, type Page } from 'playwright';
 import { build, type Rolldown } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, videoPlayerSvelte } from '@generator/video';
+import { generateVisitorTextJs } from '@generator/index';
+import { createStarterState } from '@catalogue/starters';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
@@ -40,7 +42,10 @@ async function bundle(): Promise<string> {
     [`clean/${VIDEO_PLAYER_FILE}`, videoPlayerSvelte(false)],
     [`clean/${VIDEO_HELPER_FILE}`, VIDEO_JS],
     [`dev/${VIDEO_PLAYER_FILE}`, videoPlayerSvelte(true)],
-    [`dev/${VIDEO_HELPER_FILE}`, VIDEO_JS]
+    [`dev/${VIDEO_HELPER_FILE}`, VIDEO_JS],
+    // The player's own words, as a site in English has them.
+    ['clean/visitor-text.js', generateVisitorTextJs(createStarterState('business', 'Test Studio', false))],
+    ['dev/visitor-text.js', generateVisitorTextJs(createStarterState('business', 'Test Studio', false))]
   ]);
   const entry = [
     "import { mount } from 'svelte';",

@@ -57,6 +57,8 @@ const FORM_SOURCE = `<script>
 	 * data-keep-draft and data-draft-field let the site's layout keep a message the visitor has not sent with
 	 * its place in the tab's history (src/lib/siteorigin/runtime/drafts.js), so Back brings it back.
 	 */
+	import { visitorText } from '../runtime/visitor-text.js';
+
 	let {
 		eyebrow = '',
 		heading = '',
@@ -75,6 +77,8 @@ const FORM_SOURCE = `<script>
 
 	const uid = $props.id();
 	let status = $state('idle');
+	// What the form says of its own progress, in the language of the page.
+	const text = visitorText();
 
 	const HONEYPOT = { endpoint: '_gotcha', web3forms: 'botcheck', netlify: 'bot-field' };
 ${RESERVED_SOURCE}
@@ -256,14 +260,14 @@ ${FIELD_NAME_SOURCE}
 			</div>
 			<div class="so-form__actions">
 				<button class="so-btn so-btn--primary" type="submit" disabled={!ready || status === 'sending'}>
-					{status === 'sending' ? 'Sending…' : submitLabel}
+					{status === 'sending' ? text().formSending : submitLabel}
 				</button>
 			</div>
 		</form>
 		<!-- Live regions stay in the page, outside the busy form, so their changes are announced. -->
 		<div class="so-form__messages">
 			<p class="so-form__status" role="status">
-				{#if !connected}This form is not connected to a form service yet, so it cannot be sent.{:else if ambiguous}Two fields of this form have the same name, so it cannot be sent.{:else if unchoosable}A question in this form has no answers to choose from yet, so it cannot be sent.{:else if status === 'sending'}Sending your message…{:else if status === 'sent'}{successMessage}{/if}
+				{#if !connected}{text().formNotConnected}{:else if ambiguous}{text().formDuplicateNames}{:else if unchoosable}{text().formNoChoices}{:else if status === 'sending'}{text().formSendingStatus}{:else if status === 'sent'}{successMessage}{/if}
 			</p>
 			<p class="so-form__status so-form__status--error" role="alert">
 				{#if status === 'error'}{errorMessage}{/if}
@@ -412,8 +416,9 @@ ${FIELD_NAME_SOURCE}
 		color-scheme: dark;
 	}
 	.so-form__trap {
+		/* Off the start edge: off the end, a right-to-left page would scroll to it. */
 		position: absolute;
-		left: -10000px;
+		inset-inline-start: -10000px;
 		width: 1px;
 		height: 1px;
 		overflow: hidden;

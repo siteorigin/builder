@@ -621,6 +621,8 @@ export interface SiteDoc {
   schemaVersion: number;
   name: string;
   language: string;
+  /** Which way the site's text runs. Absent: the way its language is written (right to left for Arabic or Hebrew). */
+  direction?: 'ltr' | 'rtl';
   description: string;
   baseUrl?: string;
   favicon?: string | null;
@@ -639,6 +641,12 @@ export interface SiteDoc {
   notFoundHeading?: string;
   notFoundMessage?: string;
   notFoundLinkLabel?: string;
+  /**
+   * The author's wording for what the site says on its own (the skip link, the menu button, a form's progress), by
+   * lower-case language code and then by piece (src/shared/visitor-text.ts). Anything left out uses the built-in
+   * wording for the language.
+   */
+  visitorText?: Record<string, Record<string, string>>;
 }
 
 /** An old address that sends visitors on to a page, by ID, so it follows that page's later route changes. */

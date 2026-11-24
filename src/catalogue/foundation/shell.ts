@@ -17,6 +17,7 @@ const HEADER_SOURCE = `<script>
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import SoImage from '../runtime/Image.svelte';
+	import { visitorText } from '../runtime/visitor-text.js';
 
 	let {
 		siteName = 'Studio',
@@ -34,6 +35,8 @@ const HEADER_SOURCE = `<script>
 		class: className = ''
 	} = $props();
 
+	// The menu button's and the navigation's names, in the language of the page.
+	const text = visitorText();
 	// The item ID of the link whose submenu is open; one at a time.
 	let openSub = $state(null);
 	let header = $state();
@@ -289,7 +292,7 @@ const HEADER_SOURCE = `<script>
 	{/if}
 	<div class="so-header__inner">
 		<!-- Without the visible name, the link is still named for screen readers. -->
-		<a class="so-header__brand" href={resolve('/')} aria-label={nameShown || logoAlt ? undefined : name || 'Home'}>
+		<a class="so-header__brand" href={resolve('/')} aria-label={nameShown || logoAlt ? undefined : name || text().home}>
 			{#if logo?.src}
 				<SoImage image={nameShown ? { ...logo, decorative: true } : logo} class="so-header__logo" sizes={logoSizes} eager />
 			{/if}
@@ -302,7 +305,7 @@ const HEADER_SOURCE = `<script>
 		     or closing it folds any open submenu away. -->
 		<details class="so-header__menu" bind:this={menu} ontoggle={() => (openSub = null)}>
 			<summary bind:this={toggle} class="so-header__toggle" aria-controls="so-site-nav">
-				<span class="so-visually-hidden">Menu</span>
+				<span class="so-visually-hidden">{text().menuOpen}</span>
 				<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
 					<path class="so-header__icon-open" d="M4 7h16M4 12h16M4 17h16" />
 					<path class="so-header__icon-close" d="M6 6l12 12M18 6L6 18" />
@@ -311,7 +314,7 @@ const HEADER_SOURCE = `<script>
 		</details>
 
 		<!-- A link with others under it keeps going to its own page; the button beside it shows and hides them. -->
-		<nav id="so-site-nav" class="so-header__nav" aria-label="Main">
+		<nav id="so-site-nav" class="so-header__nav" aria-label={text().mainNav}>
 			<ul class="so-header__list">
 				{#each groups as { item, children } (item.id)}
 					{#if children.length}
@@ -471,7 +474,7 @@ const HEADER_SOURCE = `<script>
 	.so-header__menu {
 		display: none;
 		flex: none;
-		margin-right: -10px;
+		margin-inline-end: -10px;
 	}
 	.so-header__toggle {
 		display: flex;
@@ -533,8 +536,7 @@ const HEADER_SOURCE = `<script>
 	.so-header__group--current > a::after {
 		content: '';
 		position: absolute;
-		left: 0;
-		right: 0;
+		inset-inline: 0;
 		bottom: -6px;
 		height: 2px;
 		border-radius: 2px;
@@ -631,8 +633,7 @@ const HEADER_SOURCE = `<script>
 		.so-header__nav {
 			position: absolute;
 			top: 100%;
-			left: 0;
-			right: 0;
+			inset-inline: 0;
 			display: none;
 			flex-direction: column;
 			flex-wrap: nowrap;

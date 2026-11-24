@@ -111,6 +111,7 @@ window.unmountForms = () => {
     '\0form': compiled(files.get(formFile)!, 'ContactForm.svelte'),
     '\0layout': compiled(`<script>\n\timport { keepDrafts } from '\\0drafts';\n\tkeepDrafts();\n</script>\n`, 'Layout.svelte'),
     '\0drafts': files.get(`${RUNTIME_DIR}/drafts.js`)!,
+    '../runtime/visitor-text.js': files.get(`${RUNTIME_DIR}/visitor-text.js`)!,
     '$app/navigation': NAVIGATION_STUB,
     '$app/state': STATE_STUB
   };
@@ -444,8 +445,12 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       // The exported component rendered on the server, as a page reaches a visitor whose JavaScript is off.
       mkdirSync(resolve('.tmp'), { recursive: true });
       dir = mkdtempSync(join(resolve('.tmp'), 'contact-form-ssr-'));
-      writeFileSync(join(dir, 'form.js'), compile(exportedFormSource(), { filename: 'ContactForm.svelte', generate: 'server', runes: true }).js.code);
-      serverForm = (await import(/* @vite-ignore */ join(dir, 'form.js'))).default;
+      // Beside the runtime it imports, as in the exported site.
+      mkdirSync(join(dir, 'components'));
+      mkdirSync(join(dir, 'runtime'));
+      writeFileSync(join(dir, 'runtime', 'visitor-text.js'), exportedSite().files.get(`${RUNTIME_DIR}/visitor-text.js`)!);
+      writeFileSync(join(dir, 'components', 'form.js'), compile(exportedFormSource(), { filename: 'ContactForm.svelte', generate: 'server', runes: true }).js.code);
+      serverForm = (await import(/* @vite-ignore */ join(dir, 'components', 'form.js'))).default;
     });
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
