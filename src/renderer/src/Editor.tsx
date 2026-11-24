@@ -24,6 +24,7 @@ import { PasteStyleModal } from './panels/StylePaste';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openSiteStyles, planLayers } from './lib/actions';
 import { copySelection, pasteCopy } from './lib/clipboard';
+import { clipKeyIsEditors } from './lib/clip-keys';
 import { focusedSurface } from './lib/history';
 import { visitorStepKey } from '@shared/preview-keys';
 import { useTransitionAnnouncement } from './lib/announce';
@@ -90,12 +91,14 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     void duplicateLayers();
     return true;
   }
-  // Copy and paste sections and elements, also between pages. Selected text keeps the ordinary copy.
-  // Only while editing a page, with no dialog or menu open: a key forwarded from the preview frame skips the
-  // editor's own focus checks, and Preview mode keeps the site's own copy and paste.
-  if (mod && !shift && (key.toLowerCase() === 'c' || key.toLowerCase() === 'v') && !textSelected() && s.mode === 'edit' && !s.definitionMode && !s.modal && !openDialogs.length && !openMenus.count) {
-    if (key.toLowerCase() === 'c') return copySelection();
-    return pasteCopy();
+  // Copy and paste sections and elements, also between pages. Only while editing, with no dialog or menu open: a key
+  // forwarded from the preview frame skips the editor's own focus checks, and Preview mode keeps the site's own copy and
+  // paste. Selected text keeps the ordinary copy, and a copy is taken from a page, never from inside a component edited
+  // everywhere. A paste goes where the author is editing (a page, or the component edited everywhere), whatever text
+  // is selected: the editor's own fields never get here (see Editor's key handler).
+  if (mod && !shift && s.mode === 'edit' && !s.modal && !openDialogs.length && !openMenus.count) {
+    if (key.toLowerCase() === 'c' && !textSelected() && !s.definitionMode) return copySelection();
+    if (key.toLowerCase() === 'v') return pasteCopy();
   }
   if (mod && key.toLowerCase() === 'j') {
     askAiAbout(s.selection);
@@ -395,12 +398,9 @@ export function Editor() {
         const t = e.target as HTMLElement;
         if (t !== document.body && !t.closest('[role="tree"], .canvas, .ov-chip')) return;
       }
-      // Copy and paste act on the canvas selection from the canvas, Layers, the Pages list (pick a page, then
-      // paste) and the selection's own Inspector heading, never from an unrelated control.
-      if (mod && ['c', 'v'].includes(e.key.toLowerCase())) {
-        const t = e.target as HTMLElement;
-        if (t !== document.body && !t.closest('[role="tree"], .canvas, .ov-chip, .pages-list, .insp-head')) return;
-      }
+      // Copy and paste of sections and elements: Copy only from the page, Layers and the selection's own controls, Paste
+      // from any control that takes no typing (lib/clip-keys).
+      if (mod && ['c', 'v'].includes(e.key.toLowerCase()) && !clipKeyIsEditors(e.key.toLowerCase() === 'c' ? 'copy' : 'paste', e.target as HTMLElement, document.body)) return;
       if (handleShortcut(e.key, mod, e.shiftKey)) e.preventDefault();
     };
     // A project being opened from here takes no second Open or New project until it has answered: its reply (a

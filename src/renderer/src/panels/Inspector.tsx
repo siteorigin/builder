@@ -59,6 +59,8 @@ import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
 import { EntranceField, StaggerSwitch, appearSummary } from './EntranceControls';
 import { useStyleCopyItems } from './StylePaste';
+import { useCopyPasteItems, type CopyPasteActions } from './CopyPaste';
+import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, createComponentTarget, definitionView, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, groupCount, liveGroup, planLayers, selectPage, setMode, structuralTarget } from '../lib/actions';
@@ -720,6 +722,13 @@ function PartsButton({ title, parts }: { title: string; parts: Array<{ label: st
   );
 }
 
+/** What the Copy and Paste of the Inspector's actions do: Copy takes content from a page (the layers selected together
+ *  with it, as planned when the menu was built), Paste goes after or inside the selection, on a page or in a component
+ *  edited everywhere. */
+function clipboardActions(owner: OwnerRef, plan: ReturnType<typeof planLayers>): CopyPasteActions {
+  return { copy: plan && owner.kind === 'page' ? asPlanned(plan, async (p) => void copySelection(p)) : null, paste: () => void pasteFromMenu() };
+}
+
 /** Ask AI, plus a menu of everything else that can be done to the selection. */
 function SelectionActions({ title, selection, items, group, ask = true }: { title: string; selection: ElementRef; items: MenuItem[]; group?: string; ask?: boolean }) {
   const menu = useMenu();
@@ -763,6 +772,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const [codePart, setCodePart] = useState('root');
   const reveal = useFieldReveal(selection);
   const styleItems = useStyleCopyItems(selection);
+  const clipboard = useCopyPasteItems(clipboardActions(owner, plan));
   const def = state.components[node.definitionId];
   if (!def) return null;
   const title = node.name ?? def.name;
@@ -825,6 +835,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
     shell
       ? []
       : [
+          ...clipboard,
           // With layers selected together in Layers, these act on all of them, as their shortcuts do, and say so.
           { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: asPlanned(plan, duplicateLayers) },
           { label: plan?.several ? `Delete ${groupCount(plan.group)}` : 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: asPlanned(plan, deleteLayers) }
@@ -1521,6 +1532,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
   // A button with an anchor may be where another link goes: removing it would take that target away.
   const removable = !!t && owner.kind !== 'shell' && !node.anchor;
   const styleItems = useStyleCopyItems(selection);
+  const clipboard = useCopyPasteItems(clipboardActions(owner, plan));
   const structural = !!t && owner.kind !== 'shell';
   // Not while other layers are selected with this one: the menu's other commands act on them all.
   const create = plan?.several ? null : createComponentTarget({ state, readOnly }, selection);
@@ -1530,6 +1542,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
     [...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }, { separator: true }] : []), ...styleItems],
     structural
       ? [
+          ...clipboard,
           // With layers selected together in Layers, these act on all of them, as their shortcuts do, and say so.
           { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: asPlanned(plan, duplicateLayers) },
           { label: plan?.several ? `Delete ${groupCount(plan.group)}` : 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: asPlanned(plan, deleteLayers) }

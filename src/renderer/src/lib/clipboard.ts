@@ -6,7 +6,7 @@
  * Paste there says why nothing was pasted.
  */
 import { api, applyOps, getState, setState, toast } from '../store';
-import { focusInLayers, focusSelectedRow, groupName, insertionPoint, planLayers, type InsertAt, type LayersPlan } from './actions';
+import { currentOwner, focusInLayers, focusSelectedRow, groupName, insertionPoint, planLayers, type InsertAt, type LayersPlan } from './actions';
 import { layerRef } from './layer-set';
 import { refLabel } from './model';
 
@@ -23,13 +23,36 @@ let copied: Copied | null = null;
  *  nothing. Its project folder tells another project from the same one opened again. */
 let left: { dir: string; label: string; count: number } | null = null;
 
+/** The latest copy not refused: what a Paste would use (one still being taken counts). */
+function latest(): Copied | null {
+  let kept = copied;
+  while (kept?.refused) kept = kept.previous;
+  return kept;
+}
+
+/** Tell the menus that offer Paste (and say what it pastes) whether there is something to paste now. */
+function publish() {
+  const kept = latest();
+  const next = kept ? { opening: kept.opening, label: kept.label, count: kept.count } : null;
+  const now = getState().copyNote;
+  if (now?.opening === next?.opening && now?.label === next?.label && now?.count === next?.count) return;
+  setState({ copyNote: next });
+}
+
+/** What a Paste would paste here, for a menu: the latest copy made in the project open now. Null when there is none, or
+ *  it was made before the project was closed and opened again. */
+export function copiedHere(s = getState()): { label: string; count: number } | null {
+  const note = s.copyNote;
+  return note && note.opening === s.snapshot?.workspaceKey ? note : null;
+}
+
 /** Each project holds its own copies, so they are forgotten when the project closes; a Paste in the next one says why
  *  nothing was pasted, naming the latest copy not refused in front of the author (one still being taken counts). */
 export function forgetCopy() {
-  let kept = copied;
-  while (kept?.refused) kept = kept.previous;
+  const kept = latest();
   if (kept) left = { dir: kept.dir, label: kept.label, count: kept.count };
   copied = null;
+  publish();
 }
 
 /** The opening of the project shown now, or null while none is (or one is closing). */
@@ -55,6 +78,7 @@ export function copySelection(plan: LayersPlan | null = planLayers()): boolean {
   const failed = (message?: string) => {
     if (sameProject()) {
       entry.refused = true;
+      publish();
       toast(message ?? `${label} could not be copied.`, 'error');
     }
     return null;
@@ -85,17 +109,20 @@ export function copySelection(plan: LayersPlan | null = planLayers()): boolean {
     )
   };
   copied = entry;
+  publish();
   return true;
 }
 
 /** Paste the latest copy of this project's, if there is one. One made in another project, or before this one was
- *  closed and opened again, is never pasted: the key is taken, nothing changes, and the author is told why. */
-export function pasteCopy(): boolean {
+ *  closed and opened again, is never pasted: the key is taken, nothing changes, and the author is told why.
+ *  `follow`: keyboard focus goes on to the pasted layers (asked for from Layers; by default, when it is in Layers now). */
+export function pasteCopy(follow = focusInLayers()): boolean {
   const opening = openingNow();
   if (!opening) return false;
   if (copied && copied.opening !== opening) forgetCopy();
-  if (copied) {
-    void pasteCopied(copied, opening);
+  // A copy that was refused is not one to paste (it has said so); a refused latest one falls back to the copy before it.
+  if (copied && latest()) {
+    void pasteCopied(copied, opening, follow);
     return true;
   }
   if (!left) return false;
@@ -109,13 +136,20 @@ export function pasteCopy(): boolean {
   return true;
 }
 
+/** Paste chosen from a menu: as ⌘V does, though the menu may have been open while the copy went away or the editor
+ *  left Edit mode, and says so. `follow`: the menu belongs to Layers, so focus goes on to the pasted layers. */
+export function pasteFromMenu(follow = false) {
+  if (getState().mode !== 'edit') return void toast('Paste works while editing a page, not in Preview.', 'info');
+  if (!pasteCopy(follow)) toast('Nothing is copied. Copy a section or element first.', 'info');
+}
+
 /**
  * Paste the latest copy that worked, as it was when copied, with new IDs, and select it: after the selection, or
  * after the last of the layers selected together (elements in their list, never into one of them), or at the end of
  * the page. The place is taken when ⌘V is pressed, even if the copy is still being taken; the copies are selected
  * only while the author is still where they pressed it.
  */
-async function pasteCopied(latest: Copied, opening: string) {
+async function pasteCopied(latest: Copied, opening: string, follow: boolean) {
   const s = getState();
   const plan = planLayers(s);
   const group = plan?.several ? plan.group : null;
@@ -124,22 +158,26 @@ async function pasteCopied(latest: Copied, opening: string) {
     section: insertionPoint('section', last),
     element: group && group.parentId !== null ? { owner: group.owner, parentId: group.parentId, slot: group.slot, index: group.indexes[group.indexes.length - 1] + 1 } : insertionPoint('element', last)
   };
-  const follow = focusInLayers();
   let entry: Copied | null = latest;
   let clipboardId: string | null = null;
   while (entry && !(clipboardId = await entry.clipboardId)) entry = entry.previous;
   // A copy that failed has said so; a project closed in the meantime (even if opened again) took its copies with it.
   if (!entry || !clipboardId || openingNow() !== opening || entry.opening !== opening) return;
-  const at = places[entry.section ? 'section' : 'element'];
-  if (!at) return;
+  // A component edited everywhere has no sections: what was copied goes where an element does, into the selected
+  // container, else into the component's own root.
+  const at = places[entry.section && !s.definitionMode ? 'section' : 'element'];
+  // A component edited everywhere whose root holds nothing to put content in (a paragraph) has nowhere to paste.
+  if (!at) return void toast(`Nothing was pasted. This component’s design has no container to hold ${entry.label}.`, 'info');
   // Beside layers selected together, the place is a position in their list as the project was at the keypress: a
   // change landing meanwhile makes it refuse rather than land somewhere else.
-  const beside = at === places.element && !!group && group.parentId !== null && !entry.section;
+  const beside = at === places.element && !!group && group.parentId !== null;
   const r = await applyOps([{ type: 'node.paste', clipboardId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${entry.label}`, undefined, beside ? s.snapshot?.revision : undefined);
   const id = r?.[0]?.nodeId as string | undefined;
   const ids = Array.isArray(r?.[0]?.nodeIds) ? (r[0].nodeIds as string[]) : id ? [id] : [];
   const here = getState();
-  if (!ids.length || here.snapshot?.workspaceKey !== opening || here.pageId !== at.owner.id || here.definitionMode || here.selection !== s.selection || here.layerSet !== s.layerSet) return;
+  // Selected only while the author is still where they pressed it: the same page, or the same component edited everywhere.
+  const now = currentOwner();
+  if (!ids.length || here.snapshot?.workspaceKey !== opening || now?.kind !== at.owner.kind || now.id !== at.owner.id || here.mode !== 'edit' || here.selection !== s.selection || here.layerSet !== s.layerSet) return;
   const pick = (i: number) => ids[Math.min(i, ids.length - 1)];
   // Several pasted together stay selected together, as they were when copied.
   setState({ selection: layerRef(at.owner, pick(entry.primary)), layerSet: ids.length > 1 ? { owner: at.owner, ids, anchor: pick(entry.anchor) } : null, rightTab: 'inspect' });

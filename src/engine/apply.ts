@@ -60,6 +60,7 @@ import { formDefaults, settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import {
   componentRemove,
+  codeImports,
   dependentsOf,
   directDependencies,
   dropPartOverrides,
@@ -1221,6 +1222,8 @@ function dependsOn(state: ProjectState, defId: string, targetId: string, seen = 
   if (seen.has(defId)) return false;
   seen.add(defId);
   const def = state.components[defId];
+  // Code that imports another component's file renders it, whatever it declares.
+  if (def?.kind === 'code') for (const other of Object.values(state.components)) if (codeImports(state, def, other.id) && (other.id === targetId || dependsOn(state, other.id, targetId, seen))) return true;
   // Code converted from a managed component still imports what that design used.
   const tree = def?.tree ?? (def?.provenance?.forkedFrom ? state.components[def.provenance.forkedFrom]?.tree : undefined);
   if (!tree) return false;
@@ -1403,8 +1406,9 @@ export function captureClipboard(state: ProjectState, pageId: string, nodeIds: s
  */
 function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | undefined): OpResult {
   if (!clip) fail('Nothing copied is available to paste. Copy it again.');
-  // The editor pastes onto pages only; content placed inside a definition follows other rules.
-  if (op.toOwner.kind !== 'page') fail('Paste onto a page.');
+  // The editor pastes onto a page, or inside a component it is editing everywhere (placeCopy checks that: inside its root,
+  // never the component itself). The shared header and footer are not pasted into.
+  if (op.toOwner.kind === 'shell') fail('Paste onto a page, or inside a component. The shared header and footer take no pasted content.');
   const gone = (what: string) => fail(`Nothing was pasted: the copy ${what}, which has been removed since it was copied.`);
   for (const [id, c] of Object.entries(clip.components)) {
     const def = own(state.components, id);
@@ -1434,12 +1438,12 @@ function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | 
     for (const t of styleTokens(n)) if (!tokens.has(t)) gone(`uses the site style "${t}"`);
   }
   // Several copied together go in their order, from the place asked for (or each at the end).
-  const nodeIds = tree.rootIds.map((root, i) => placeCopy(state, tree, root, { ...op, index: op.index === undefined ? undefined : op.index + i }).nodeId as string);
+  const nodeIds = tree.rootIds.map((root, i) => placeCopy(state, tree, root, { ...op, index: op.index === undefined ? undefined : op.index + i, dropAnchors: op.toOwner.kind === 'component' }).nodeId as string);
   return { nodeId: nodeIds[0], nodeIds };
 }
 
 /** Place a copy of `from`'s subtree at `op`'s destination, with new IDs; shared by copy and paste. */
-function placeCopy(state: ProjectState, from: NodeTree, nodeId: string, op: { toOwner: OwnerRef; parentId?: string | null; slot?: string; index?: number }): OpResult {
+function placeCopy(state: ProjectState, from: NodeTree, nodeId: string, op: { toOwner: OwnerRef; parentId?: string | null; slot?: string; index?: number; dropAnchors?: boolean }): OpResult {
   const to = editableTree(state, op.toOwner);
   for (const id of subtreeIds(from, nodeId)) {
     const n = from.nodes[id];
@@ -1458,7 +1462,8 @@ function placeCopy(state: ProjectState, from: NodeTree, nodeId: string, op: { to
   const nid = copySubtree(from, to, nodeId, state);
   for (const id of subtreeIds(to, nid)) {
     const n = to.nodes[id];
-    if (n.anchor && taken.has(n.anchor)) delete n.anchor;
+    // A pasted copy in a component (placed many times) keeps no page-unique anchor: each placement would repeat it.
+    if (n.anchor && (taken.has(n.anchor) || op.dropAnchors)) delete n.anchor;
     else if (n.anchor) taken.add(n.anchor);
   }
   list.splice(op.index === undefined ? list.length : Math.min(op.index, list.length), 0, nid);
