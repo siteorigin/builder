@@ -307,12 +307,17 @@ function registerIpc() {
   handle('projects:create', (opts) => controller.create(opts));
   handle('projects:cancelCreate', () => controller.cancelCreate());
   handle('projects:websiteTools', () => controller.websiteTools());
+  // The missing recent entry a chosen project may take over (#217): a folder path, or nothing.
+  const replacing = (opts: unknown) => {
+    const r = (opts as { replaces?: unknown } | null | undefined)?.replaces;
+    return typeof r === 'string' && r ? r : undefined;
+  };
   handle('projects:open', (dir?: unknown, opts?: unknown) => {
     if (dir != null && typeof dir !== 'string') return { ok: false, message: 'Could not open the project: no folder or file was named.' };
-    return controller.open(dir ?? undefined, { folder: (opts as { folder?: unknown } | null | undefined)?.folder === true });
+    return controller.open(dir ?? undefined, { folder: (opts as { folder?: unknown } | null | undefined)?.folder === true, replaces: replacing(opts) });
   });
   handle('projects:cancelOpen', () => controller.cancelUnpacking());
-  handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
+  handle('projects:trustAndOpen', (dir: string, opts?: unknown) => controller.trustAndOpen(dir, { replaces: replacing(opts) }));
   handle('projects:close', () => controller.closeProject());
   handle('projects:duplicate', (opts?: unknown) => {
     const o = (opts ?? {}) as { name?: unknown; parentDir?: unknown; opening?: unknown };

@@ -1,6 +1,6 @@
 import { app } from 'electron';
 import { existsSync, promises as fs } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { AppSettings, LocalCheck, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
 import { PROVIDER_LABELS } from '@shared/turn-model';
 import { atomicWrite } from './project/fsutil';
@@ -138,11 +138,35 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
   return s.settings;
 }
 
-export async function addRecent(dir: string, name: string) {
+const MAX_RECENTS = 20;
+const listedFolderGone = (dir: string) => !existsSync(join(dir, 'siteorigin.project.json'));
+
+/**
+ * Whether a project just opened is the one a recent entry listed (#217). An entry remembers its project's ID; one
+ * listed before IDs were kept is matched by its name and its folder's name together, since a folder that has gone can
+ * no longer be asked for its ID.
+ */
+function sameProject(old: RecentProject, opened: RecentProject): boolean {
+  if (old.projectId) return old.projectId === opened.projectId;
+  return old.name === opened.name && basename(old.dir) === basename(opened.dir);
+}
+
+/**
+ * Lists a project folder as the one opened last. `replaces` is the missing entry the author chose this folder for
+ * (Find folder… on its card, #217): it is dropped when this is the same project and its old folder is still not
+ * there, in the same save, so the list never shows both. Any other project leaves that entry as it was, never
+ * pushed off the end of the list by this opening.
+ */
+export async function addRecent(dir: string, name: string, projectId: string, replaces?: string) {
   const s = await loadSettings();
+  const entry: RecentProject = { dir, name, openedAt: new Date().toISOString(), projectId };
   // An older entry may name the same folder through a link.
   const real = canonicalDir(dir);
-  s.recents = [{ dir, name, openedAt: new Date().toISOString() }, ...s.recents.filter((r) => r.dir !== dir && canonicalDir(r.dir) !== real)].slice(0, 20);
+  let rest = s.recents.filter((r) => r.dir !== dir && canonicalDir(r.dir) !== real);
+  const old = replaces === undefined ? undefined : rest.find((r) => r.dir === replaces);
+  if (old && listedFolderGone(old.dir) && sameProject(old, entry)) rest = rest.filter((r) => r !== old);
+  else if (old && rest.indexOf(old) >= MAX_RECENTS - 1) rest = [...rest.filter((r) => r !== old).slice(0, MAX_RECENTS - 2), old];
+  s.recents = [entry, ...rest].slice(0, MAX_RECENTS);
   await saveSettings();
 }
 
@@ -167,7 +191,7 @@ export async function renameRecent(dir: string, name: string) {
 
 export async function recents(): Promise<RecentProject[]> {
   const s = await loadSettings();
-  return s.recents.map((r) => ({ ...r, missing: !existsSync(join(r.dir, 'siteorigin.project.json')) }));
+  return s.recents.map((r) => ({ ...r, missing: listedFolderGone(r.dir) }));
 }
 
 export async function removeRecent(dir: string) {

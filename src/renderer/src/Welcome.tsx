@@ -87,7 +87,8 @@ export function Welcome() {
   const [recents, setRecents] = useState<RecentProject[] | null>(null);
   const refusedPacks = useStore((st) => st.packs.refused);
   const [creating, setCreating] = useState(false);
-  const [trust, setTrust] = useState<{ dir: string; name: string } | null>(null);
+  // A project to trust before it opens, with the missing entry it was chosen for (Find folder…), if any.
+  const [trust, setTrust] = useState<{ dir: string; name: string; replaces?: string } | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const filterInput = useRef<HTMLInputElement>(null);
@@ -96,9 +97,6 @@ export function Welcome() {
   // Set when a filter is cleared, so the status line can say the whole list is back.
   const [cleared, setCleared] = useState(false);
   const openingRef = useRef(false);
-  // The missing entry a found project takes over, once it has really opened (a trust prompt can still be cancelled).
-  const replacing = useRef<string | undefined>(undefined);
-  const knownBefore = useRef<Set<string>>(new Set());
   // What started an open: it is disabled meanwhile, so focus comes back to it when nothing else has taken over.
   const returnFocus = useRef<HTMLElement | null>(null);
   // The card to move to once a removed one has gone ('' when none are left: the first-run button).
@@ -138,21 +136,6 @@ export function Welcome() {
     (card ?? filterInput.current ?? document.querySelector<HTMLElement>('.empty-state .btn'))?.focus();
   }, [recents]);
 
-  /**
-   * A project found in a new place takes over its old entry, but only when it is recognisably the same project (its
-   * folder name, or a name no other recent shares): choosing some other folder must not cost the shortcut, and nor
-   * must choosing another copy that was already on the list. The newest recent is the one just opened.
-   */
-  const forgetMissing = async (dir: string, known: Set<string>) => {
-    const list = await api.projects.recents();
-    const old = list.find((x) => x.dir === dir && x.missing);
-    const found = list[0];
-    if (!old || !found || found === old || found.missing || known.has(found.dir)) return;
-    const folderName = (d: string) => d.split(/[\\/]/).filter(Boolean).pop();
-    const sameName = found.name === old.name && !list.some((x) => x !== found && x !== old && x.name === old.name);
-    if (sameName || folderName(found.dir) === folderName(old.dir)) await api.projects.removeRecent(dir);
-  };
-
   const open = async (dir?: string, opts?: { folder?: boolean; replaces?: string }) => {
     // One open at a time: a second request must not clear the busy state of the first, or race it in the main process.
     // The disabled buttons show it; this also stops the Open project menu command, which no button state reaches.
@@ -160,13 +143,11 @@ export function Welcome() {
     openingRef.current = true;
     returnFocus.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     setOpening(dir ?? opts?.replaces ?? (opts?.folder ? 'folder-dialog' : 'dialog'));
-    // The projects already listed before the picker opens: choosing one of them is not finding the missing one.
-    knownBefore.current = new Set((recents ?? []).filter((x) => x.dir !== opts?.replaces).map((x) => x.dir));
     try {
-      const r = await api.projects.open(dir, opts?.folder ? { folder: true } : undefined);
-      if (opts?.replaces && r.ok) await forgetMissing(opts.replaces, knownBefore.current).catch(() => undefined);
-      replacing.current = r.needsTrust ? opts?.replaces : undefined;
-      if (r.needsTrust) setTrust(r.needsTrust);
+      // A missing entry's Find folder…: the main process drops the entry once the same project has opened (#217),
+      // after the trust prompt when there is one, so a cancel or another project keeps it.
+      const r = await api.projects.open(dir, opts);
+      if (r.needsTrust) setTrust({ ...r.needsTrust, replaces: opts?.replaces });
       else if (!r.ok && r.message) toast(r.message, 'error');
     } catch (e) {
       // Whatever went wrong, the author sees it and can choose another project straight away.
@@ -374,7 +355,7 @@ export function Welcome() {
                   const where = labels.get(r.dir) ?? r.dir;
                   return (
                     <li key={r.dir} className={`recent-item${r.missing ? ' missing' : ''}${isLatest ? ' latest' : ''}`}>
-                      {/* A missing project's card finds it: the picker opens, and the same project found elsewhere takes over this entry. */}
+                      {/* A missing project's card finds it: the picker opens, and the same project found elsewhere takes over this entry (#217). */}
                       <button className="recent-card" disabled={!!opening} aria-busy={busy || undefined} title={`${r.name}\n${r.dir}`} onClick={() => void (r.missing ? open(undefined, { folder: true, replaces: r.dir }) : open(r.dir))}>
                         <div className="recent-thumb" aria-hidden="true">
                           {busy ? <Spinner decorative /> : initials(r.name)}
@@ -443,13 +424,7 @@ export function Welcome() {
       </main>
       {creating && <NewProjectModal onClose={() => setCreating(false)} />}
       {trust && (
-        <TrustProjectModal
-          project={trust}
-          onClose={() => setTrust(null)}
-          onOpened={() => {
-            if (replacing.current) void forgetMissing(replacing.current, knownBefore.current).catch(() => undefined);
-          }}
-        />
+        <TrustProjectModal project={trust} onClose={() => setTrust(null)} />
       )}
       {modal?.kind === 'settings' && <SettingsModal />}
     </div>

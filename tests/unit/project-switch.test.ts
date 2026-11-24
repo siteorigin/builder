@@ -543,7 +543,7 @@ describe('the recent-projects entry of a renamed site (#31)', () => {
     await openCurrent(c, other);
     await openCurrent(c, kloof);
     // Kept second, so a rename that moved it to the front would show.
-    await addRecent(other, 'other');
+    await addRecent(other, 'other', 'pother');
     // The settings cache outlives each test: only this test's own projects are looked at.
     const mine = async () => (await recents()).filter((r) => r.dir === kloof || r.dir === other);
     const before = await mine();
@@ -590,7 +590,7 @@ describe('the recent-projects entry of a renamed site (#31)', () => {
     await openCurrent(c, kloof);
     expect((await c.apply({ operations: [{ type: 'site.update', name: 'New Kloof Studio' }] }, { label: 'Rename site' })).ok).toBe(true);
     // A name the list missed (a write that failed, say) is put right as the project is left.
-    await addRecent(kloof, 'Kloof Light Studio');
+    await addRecent(kloof, 'Kloof Light Studio', 'pkloof');
     expect((await c.create({ ...orchid(parent), attempt: 'attempt-1' })).ok).toBe(true);
     const list = (await recents()).filter((r) => r.dir === kloof || r.dir.startsWith(parent));
     expect(list.map((r) => r.name)).toEqual(['Orchid Garden', 'New Kloof Studio']);
