@@ -2157,46 +2157,93 @@ iframe { color-scheme: light dark; }
 .menu[aria-label='Conversations'] .menu-item .hint { flex: none; }
 
 /* ---------- Command menu & code ---------- */
-.cmdk { position: fixed; top: 14vh; left: 50%; translate: -50% 0; width: min(580px, calc(100vw - 40px)); border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); overflow: hidden; animation: pop-in 140ms ease-out; z-index: 1001; }
-.cmdk-search { position: relative; border-bottom: 1px solid var(--border); }
-.cmdk-search:focus-within { box-shadow: inset 0 -1px 0 var(--focus); }
-.cmdk-search > svg { position: absolute; left: 14px; top: 17px; width: 16px; height: 16px; color: var(--text-3); }
-.cmdk input { width: 100%; height: 50px; padding: 0 18px 0 39px; border: 0; background: transparent; font-size: 15px; outline: none; user-select: text; }
-.cmdk input:focus-visible { outline: none; }
-.cmdk-empty { padding: 12px 16px 6px 39px; min-width: 0; }
-.cmdk-empty strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; color: var(--text); }
-.cmdk-empty span { display: block; margin-top: 2px; font-size: 12px; color: var(--text-2); }
-.cmdk-empty:has(+ .cmdk-list:empty) { padding-bottom: 14px; }
+.cmdk { position: fixed; top: 14vh; left: 50%; translate: -50% 0; width: min(600px, calc(100vw - 40px)); border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); overflow: hidden; animation: pop-in 140ms ease-out; z-index: 1001; }
+/* The search field is a real field with the house focus ring; the dialog's gutter keeps the ring clear of its edge.
+ * Field, rows and footer share one 10px edge, one icon column at 20px and one text column at 46px. */
+.cmdk-search { position: relative; padding: 10px; border-bottom: 1px solid var(--border); }
+.cmdk-search > svg { position: absolute; left: 20px; top: 22px; width: 16px; height: 16px; color: var(--text-3); pointer-events: none; }
+.cmdk input { width: 100%; height: 40px; padding: 0 38px 0 35px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); font-size: 15px; user-select: text; }
+.cmdk input::placeholder { color: var(--text-3); }
+.cmdk-clear { position: absolute; right: 16px; top: 18px; color: var(--text-3); }
+.cmdk-clear svg { width: 14px; height: 14px; color: inherit; }
+.cmdk-clear:hover { color: var(--text); }
+/* Under the search: no matches, or too short a search. Aligned with the row text, with the row icon's column for its glyph. */
+.cmdk-empty { display: flex; gap: 10px; align-items: flex-start; padding: 14px 20px 8px; min-width: 0; }
+.cmdk-empty > svg { flex: none; width: 16px; height: 16px; margin-top: 2px; color: var(--text-3); }
+.cmdk-empty > div { min-width: 0; }
+.cmdk-empty strong { display: flex; min-width: 0; font-size: 13px; line-height: 20px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.cmdk-empty-query { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cmdk-empty span:not(.cmdk-empty-query) { display: block; margin-top: 1px; font-size: 12px; line-height: 17px; color: var(--text-2); }
+.cmdk-empty:has(+ .cmdk-list:empty) { padding-bottom: 16px; }
+.cmdk-note { padding: 12px 20px 8px 46px; font-size: 12px; line-height: 17px; color: var(--text-2); }
 .cmdk-list:empty { display: none; }
 /* The bottom margin, cancelled by the first row, makes a stuck heading leave with its group's last row instead of outliving it. */
-.cmdk-group-label { position: sticky; top: 0; z-index: 1; height: 28px; margin-bottom: 28px; padding: 8px 8px 4px 33px; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--text-3); background: var(--panel); }
-.cmdk-group-label + .menu-item { margin-top: -28px; }
-.cmdk-list [role='group'] + [role='group'] { margin-top: 4px; }
-.cmdk-more { padding: 8px 8px 4px 33px; font-size: 12px; color: var(--text-3); }
+.cmdk-group-label { position: sticky; top: 0; z-index: 1; height: 30px; margin-bottom: 30px; container-type: scroll-state; }
+.cmdk-group-label > span { position: relative; display: block; height: 30px; padding: 9px 8px 5px 36px; font-size: 12px; line-height: 16px; font-weight: 600; color: var(--text-3); background: var(--panel); }
+/* Stuck over scrolled rows, a heading draws a hairline and lets the row passing under it fade out, so no sliver of a
+ * half-hidden row reads as broken text beneath it. */
+.cmdk-group-label > span::after { content: ''; position: absolute; inset: 100% 0 auto; height: 6px; background: linear-gradient(var(--panel), transparent); opacity: 0; pointer-events: none; }
+@container scroll-state(stuck: top) {
+  .cmdk-group-label > span { box-shadow: 0 1px 0 var(--border); }
+  .cmdk-group-label > span::after { opacity: 1; }
+}
+.cmdk-group-label + .menu-item { margin-top: -30px; }
+.cmdk-list [role='group'] + [role='group'] { margin-top: 6px; }
+.cmdk-more { padding: 8px 8px 4px 36px; font-size: 12px; color: var(--text-3); }
+.cmdk-hint { padding: 8px 20px 0 46px; border-top: 1px solid var(--border); background: var(--panel-2); font-size: 12px; line-height: 16px; color: var(--text-2); }
+.cmdk-hint ~ .cmdk-foot { border-top: 0; }
+.cmdk .menu-item { height: 32px; gap: 10px; padding: 0 10px; }
+/* The row Enter runs is the menu's focus: the house 2px inset focus outline on the selected fill, as other menus draw it.
+ * An outline, not a shadow, so it survives forced colours. */
+.cmdk .menu-item.focused { box-shadow: none; outline: 2px solid var(--focus); outline-offset: -2px; }
 /* One highlight only: the row Enter will run. A resting pointer does not paint a second one. */
 .cmdk .menu-item:hover:not(.focused) { background: transparent; }
 .cmdk .menu-item:hover:not(.focused) svg { color: var(--text-2); }
 .cmdk .menu-item:hover:not(.focused) .hint { color: var(--text-3); }
-.cmdk .menu-item[aria-disabled='true'] { color: var(--text-3); }
-.cmdk .menu-item.focused[aria-disabled='true'] { color: var(--text-2); }
-.cmdk .menu-item[aria-disabled='true'] svg { color: var(--text-3); }
-.cmdk .menu-item.focused[aria-disabled='true'] svg { color: var(--text-2); }
+/* Unavailable commands stay listed with their reason, drawn in the house unavailable state; highlighted, they take a
+ * neutral fill and ring, never the blue that means Enter will run it. */
+.cmdk .menu-item[aria-disabled='true'], .cmdk .menu-item[aria-disabled='true'] svg { color: var(--disabled-ink); }
+.cmdk .menu-item[aria-disabled='true'] .hint { color: var(--text-3); }
+.cmdk .menu-item.focused[aria-disabled='true'] { background: var(--disabled-fill); outline: 1px solid var(--border-control); outline-offset: -1px; }
 .cmdk .menu-item .grow { flex: 1 1 auto; }
 .cmdk .menu-item mark { background: none; color: inherit; font-weight: 600; }
-.cmdk .menu-item.cmdk-two { height: auto; min-height: 44px; padding-block: 5px; }
-.cmdk-two .cmdk-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Matched words in the quieter lines step up a tone (full ink on the highlighted row), so the reason a row matched shows in both themes. */
+.cmdk :is(.cmdk-place, .hint) mark { color: var(--text-2); }
+.cmdk .menu-item.focused :is(.cmdk-place, .hint) mark { color: var(--text); }
+.cmdk .menu-item.cmdk-two { height: auto; min-height: 46px; padding-block: 6px; }
+.cmdk-two .cmdk-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 18px; }
+.cmdk-label.cmdk-trail { display: flex; min-width: 0; }
 .cmdk-place { display: flex; min-width: 0; font-size: 12px; line-height: 16px; color: var(--text-3); }
+.cmdk-place > .cmdk-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The page name gives way first; the section and field, and a clashing page's address, keep their ends within a cap. */
 .cmdk-trail-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cmdk-trail-tail { flex: none; max-width: calc(100% - 3em); overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.cmdk-trail-address { flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.cmdk-trail-sep { flex: none; white-space: pre; }
+.cmdk-trail-tail { flex: none; max-width: 65%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.cmdk-trail-address ~ .cmdk-trail-tail { max-width: 46%; }
 .cmdk .menu-item.focused .cmdk-place { color: var(--text-2); }
 /* A long address keeps its end, the part that tells it from its neighbours. */
 .cmdk .menu-item .cmdk-address { flex: 0 1 auto; min-width: 0; max-width: 52%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cmdk .menu-item .cmdk-where { display: flex; flex: 0 1 auto; min-width: 0; max-width: 46%; }
+.cmdk .menu-item .cmdk-place.cmdk-address { display: block; max-width: none; text-align: left; }
+.cmdk .menu-item .cmdk-current { flex: none; }
+.cmdk .menu-item .cmdk-current::after { content: 'Current page'; }
 .cmdk .menu-item .kbd { flex: none; padding: 0; border: 0; font-size: 12px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; color: var(--text-3); }
 .cmdk .menu-item.focused .kbd { color: var(--text-2); }
-.cmdk-foot { display: flex; align-items: center; gap: 16px; padding: 8px 14px; border-top: 1px solid var(--border); background: var(--panel-2); font-size: 12px; color: var(--text-3); }
-.cmdk-foot kbd { margin-right: 5px; font: inherit; color: var(--text-2); }
-.cmdk-list { max-height: min(432px, calc(86vh - 120px)); overflow: hidden auto; padding: 0 6px 6px; scroll-padding: 32px 0 6px; scrollbar-width: thin; scrollbar-color: var(--border-control) transparent; }
+/* Rows that open up more of the list, rather than act. */
+.cmdk .menu-item.cmdk-more-row { color: var(--text-2); }
+/* Enter's action leads the footer in full ink; the keys that move and close sit quietly at the end. */
+.cmdk-foot { display: flex; align-items: center; gap: 16px; min-height: 38px; padding: 0 20px; border-top: 1px solid var(--border); background: var(--panel-2); font-size: 12px; color: var(--text-3); }
+.cmdk-foot > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.cmdk-foot-enter { min-width: 0; color: var(--text); font-weight: 500; }
+.cmdk-foot > .cmdk-foot-keys { margin-left: auto; gap: 14px; }
+.cmdk-foot-keys > span { display: inline-flex; align-items: center; gap: 4px; }
+.cmdk-foot-keys > span .kbd + .kbd { margin-left: -1px; }
+.cmdk-foot .kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; background: var(--raised); color: var(--text-2); font-size: 11px; line-height: 1; font-weight: 500; }
+.cmdk-list { max-height: min(494px, calc(86vh - 140px)); overflow: hidden auto; padding: 0 1px 8px 10px; scroll-padding: 36px 0 6px; scrollbar-gutter: stable; }
+/* The scrollbar has its own gutter, so rows keep the same right edge as the field whether the list scrolls or not. */
+.cmdk-list::-webkit-scrollbar { width: 9px; }
+.cmdk-list::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 99px; background: var(--border-control) content-box; }
+@media (prefers-reduced-motion: reduce) { .cmdk { animation: none; } }
 .code-view { margin: 0; padding: 14px 16px; height: 60vh; overflow: auto; background: var(--panel-2); border-radius: var(--r-md); border: 1px solid var(--border); font-family: var(--mono); font-size: 12px; line-height: 1.6; white-space: pre; tab-size: 2; user-select: text; color: var(--text); }
 textarea.code-view { width: 100%; resize: none; outline: none; }
 

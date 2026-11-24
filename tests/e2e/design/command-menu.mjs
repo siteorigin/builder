@@ -78,9 +78,9 @@ async function menuClip() {
 /**
  * Capture a state. `query` must be in the field, `expects` must each be in a visible row, exactly one row must be
  * highlighted (none when `count` is 0), and with `count` there must be exactly that many rows. `note` must be shown in the menu. `hover`
- * re-hovers a row after each theme switch, and that row must take the highlight.
+ * re-hovers a row after each theme switch, and that row must take the highlight. `active` must be in the highlighted row.
  */
-async function shot(state, { query = '', expects = [], count = null, note = null, themes = BOTH, full = false, hover = null } = {}) {
+async function shot(state, { query = '', expects = [], count = null, note = null, themes = BOTH, full = false, hover = null, active = null } = {}) {
   for (const theme of themes) {
     await setTheme(theme);
     if (hover) await hover.hover();
@@ -96,6 +96,7 @@ async function shot(state, { query = '', expects = [], count = null, note = null
     for (const text of expects) if (!(await optionRows.filter({ hasText: text }).first().isVisible())) throw new Error(`state "${state}" (${theme}): no visible row has "${text}"`);
     if (note && !(await menu.getByText(note).first().isVisible())) throw new Error(`state "${state}" (${theme}): "${note}" is not shown`);
     if (hover && (await hover.getAttribute('aria-selected')) !== 'true') throw new Error(`state "${state}" (${theme}): the hovered row is not highlighted`);
+    if (active && !(await activeRow.innerText()).includes(active)) throw new Error(`state "${state}" (${theme}): the highlighted row is "${await activeRow.innerText()}", expected it to have "${active}"`);
     const path = join(OUT, `${state}--${theme}.png`);
     await win.screenshot({ path, ...(full ? {} : { clip: await menuClip() }) });
     written.push(path);
@@ -135,12 +136,28 @@ await pause(1500);
   await pause(1200);
 }
 
-// Rest: just opened, nothing typed, the first row highlighted.
+// Rest: just opened, nothing typed, the first row highlighted. A few pages (not the open one), a few things to insert,
+// each with a row that shows the rest, then the commands.
 await openMenu();
-await shot('rest', { expects: ['Go to Home'] });
+await shot('rest', { expects: ['Go to About', 'more pages', 'more to insert'] });
 
 // The whole window, so the menu's weight and position over the editor can be judged.
-await shot('context', { expects: ['Go to Home'], full: true });
+await shot('context', { expects: ['Go to About'], full: true });
+
+// The rest list opened up from the keyboard: the highlight lands on the first page it revealed.
+await openMenu();
+{
+  const rows = await optionRows.allInnerTexts();
+  const more = rows.findIndex((t) => /more pages/.test(t));
+  if (more < 0) throw new Error('rest: no "more pages" row');
+  for (let i = 0; i < more; i++) await win.keyboard.press('ArrowDown');
+  const next = (await optionRows.nth(more).innerText()).trim();
+  await win.keyboard.press('Enter');
+  await pause(300);
+  const after = (await activeRow.innerText()).trim();
+  if (after === next || /more pages/.test(after)) throw new Error(`pages-expanded: the highlight stayed on "${after}"`);
+  await shot('pages-expanded', { themes: LIGHT });
+}
 
 // Keyboard: arrowed well down the list, so the highlight has scrolled the list.
 await openMenu();
@@ -160,7 +177,11 @@ await shot('hover', { query: 'page', themes: LIGHT, hover: optionRows.nth(3) });
 
 // Same-title pages told apart by their address.
 await openMenu('portfolio');
-await shot('pages-same-title', { query: 'portfolio', expects: ['/portfolio-archive/'] });
+await shot('pages-same-title', { query: 'portfolio', expects: ['/portfolio-archive/'], active: '/portfolio/' });
+
+// A word from a page's address: the page leads, ahead of a section of the same name on another page.
+await openMenu('faq');
+await shot('address-word', { query: 'faq', active: 'Frequently asked questions', themes: LIGHT });
 
 // A page found by its exact address: only that page.
 await openMenu('/faq/');
@@ -172,11 +193,15 @@ await shot('long-title', { query: 'residential', expects: ['/services/residentia
 
 // Mixed results: sections on the site, words in its content, pages, inserts and the search-everything row.
 await openMenu('contact');
-await shot('mixed', { query: 'contact', expects: ['Search all site content'] });
+await shot('mixed', { query: 'contact', expects: ['Search all site content'], active: 'Contact' });
 
 // Commands with shortcuts.
 await openMenu('project');
-await shot('shortcuts', { query: 'project', expects: ['New project', 'Close project'] });
+await shot('shortcuts', { query: 'project', expects: ['New project', 'Close project'], active: 'Project health' });
+
+// A command that cannot run now: listed with its reason, highlighted without the blue that means Enter runs it.
+await openMenu('redo');
+await shot('unavailable', { query: 'redo', expects: ['Nothing to redo'] });
 
 // Nothing matches anywhere: the menu says so and offers nothing to press.
 await openMenu('zzqxv');
@@ -184,7 +209,15 @@ await shot('empty', { query: 'zzqxv', count: 0, note: 'No matches' });
 
 // Too short to search the content: the way to search it is the one thing left.
 await openMenu('ξ');
-await shot('one-character', { query: 'ξ', expects: ['Search all site content'], count: 1, note: 'two characters', themes: LIGHT });
+await shot('one-character', { query: 'ξ', expects: ['Search all site content'], count: 1, note: 'another character', themes: LIGHT });
+
+// One character that finds pages and commands: the note that site words were skipped stays in view over the footer.
+await openMenu('p');
+await shot('one-character-results', { query: 'p', note: 'another character', themes: LIGHT });
+
+// An abbreviation of a command's whole name leads with that command.
+await openMenu('proj health');
+await shot('abbreviation', { query: 'proj health', active: 'Project health', themes: LIGHT });
 
 // A long query with nothing to find.
 {
