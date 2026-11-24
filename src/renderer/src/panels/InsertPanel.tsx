@@ -11,6 +11,7 @@ import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, selectPage, type InsertSpec, type Where } from '../lib/actions';
 import { elementWhere, nodeLabel, sectionWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, searchItems } from '../lib/insert-search';
+import { beginInsertDrag } from '../lib/insert-drag';
 import { ownerLabel, treeFor } from '../lib/model';
 import { gridKeys, openMenus, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 import { pageShowing, partName } from '@shared/page-shell';
@@ -578,6 +579,9 @@ const peekable = (kind?: string) => kind === 'section' || kind === 'component';
 
 const KIND_SUBJECT: Record<Kind, string> = { section: 'Sections go', element: 'Elements go', component: 'Components go' };
 
+/** How far, in pixels, a pressed tile moves before it is dragged rather than clicked. */
+const DRAG_START = 5;
+
 /** How the confirmation stays up after an insert, unless the selection moves on first. */
 const ADDED_MS = 6000;
 
@@ -892,6 +896,8 @@ export function InsertPanel() {
   const [holdFocus, setHoldFocus] = useState(false);
   const hold = holdPointer || holdFocus;
   const adding = useRef(false);
+  /** The press that began on a tile became a drag onto the canvas: the click it ends with adds nothing. */
+  const dragged = useRef(false);
   const stripRef = useRef<HTMLDivElement>(null);
   const [typing, setTyping] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -1356,11 +1362,48 @@ export function InsertPanel() {
         {[it.description, it.variant && it.usage ? `The component: ${usageText(it.usage)}` : usageText(it.usage)].filter(Boolean).join(' ')}
       </span>
     ) : null;
+  // A tile or result pressed and moved a few pixels is dragged onto the canvas, which shows where it would land; the
+  // click that ends a drag adds nothing more. A click, Enter or Space still adds it where the strip says.
+  const dragFrom = (it: Item) => ({
+    onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
+      dragged.current = false;
+      if (e.button !== 0 || !e.isPrimary || e.pointerType === 'touch') return;
+      const from = { x: e.clientX, y: e.clientY, pointer: e.pointerId };
+      const stop = () => {
+        window.removeEventListener('pointermove', move, true);
+        window.removeEventListener('pointerup', stop, true);
+        window.removeEventListener('pointercancel', stop, true);
+        window.removeEventListener('blur', stop);
+      };
+      const move = (ev: PointerEvent) => {
+        if (ev.pointerId !== from.pointer || Math.hypot(ev.clientX - from.x, ev.clientY - from.y) < DRAG_START) return;
+        stop();
+        // One insert at a time, as for a click.
+        if (adding.current || !beginInsertDrag({ spec: it.spec, name: fullName(it) }, { x: ev.clientX, y: ev.clientY })) return;
+        dragged.current = true;
+        window.getSelection()?.removeAllRanges();
+        clearTimeout(peekTimer.current);
+        setPeek(null);
+      };
+      window.addEventListener('pointermove', move, true);
+      window.addEventListener('pointerup', stop, true);
+      window.addEventListener('pointercancel', stop, true);
+      window.addEventListener('blur', stop);
+    },
+    onDragStart: (e: React.DragEvent<HTMLElement>) => e.preventDefault()
+  });
+  /** Whether a click ends a drag (a keyboard's click never does). */
+  const endsDrag = (e: React.MouseEvent<HTMLElement>) => {
+    const was = dragged.current && e.detail > 0;
+    dragged.current = false;
+    return was;
+  };
   const tileProps = (it: Item) => ({
     'data-kind': it.kind,
     'data-key': it.key,
     'aria-describedby': describedBy(it),
-    onClick: () => void add(it),
+    onClick: (e: React.MouseEvent<HTMLElement>) => !endsDrag(e) && void add(it),
+    ...dragFrom(it),
     ...hover(it.key, peekable(it.kind))
   });
   const justAdded = (it: Item) => added?.key === it.key;
@@ -1724,9 +1767,10 @@ export function InsertPanel() {
                       : undefined
                   }
                   onMouseMove={() => (i !== active ? setActive(i) : !peek && peekResult())}
-                  onClick={() => {
+                  {...dragFrom(it)}
+                  onClick={(e) => {
                     searchRef.current?.focus({ preventScroll: true });
-                    void add(it);
+                    if (!endsDrag(e)) void add(it);
                   }}
                 >
                   {it.kind === 'section' ? (

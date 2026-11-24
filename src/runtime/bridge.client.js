@@ -3290,8 +3290,16 @@ window.addEventListener('message', async (e) => {
       break;
     case 'measure': {
       const descs = Array.isArray(m.payload.descs) ? m.payload.descs.slice(0, 200) : [];
-      // Each box with its CSS order, which can lay siblings out in another order than the document's.
-      send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => { const el = findAll(d)[0]; const r = el && rectOf(el); return r ? { ...r, order: layoutOrder(el) } : null; }) });
+      // Each box with its CSS order, which can lay siblings out in another order than the document's, and whether more
+      // than one copy of it shows (content a component repeats): the box is only the first copy's.
+      send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => {
+        const all = findAll(d);
+        const el = all[0];
+        const r = el && rectOf(el);
+        if (!r) return null;
+        const shown = all.filter((c) => { const b = rectOf(c); return !!b && (b.width > 0 || b.height > 0); }).length;
+        return shown > 1 ? { ...r, order: layoutOrder(el), many: true } : { ...r, order: layoutOrder(el) };
+      }) });
       break;
     }
     case 'measureSpace': {

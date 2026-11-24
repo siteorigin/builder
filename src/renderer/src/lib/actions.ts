@@ -13,7 +13,7 @@ import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
 import type { InsertSpec } from './insert-search';
-import { elementWhere, insertOps, insertRole, insideComponent, nodeBefore, placeFor, type InsertAt, type InsertRole, type Where } from './insert-at';
+import { elementWhere, insertOps, insertRole, insideComponent, nodeBefore, nodeLabel, placeFor, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
@@ -356,16 +356,13 @@ export function insertPlan(spec: InsertSpec, snapshot: ProjectSnapshot | null = 
   return { role, at: insertionPoint(role, getState().selection, snapshot, spec.definitionId) };
 }
 
-/** Insert `spec` where its tile says, or at `to` (a drop on the canvas, planned on `revision`), as one change, and
- *  select it. Returns the new node's ID, or null when nothing was inserted. */
-export async function insert(spec: InsertSpec, label: string, to?: { at: InsertAt; role: InsertRole; revision: number }): Promise<string | null> {
-  const plan = to ?? insertPlan(spec);
-  if (!plan.at) return null;
-  const at = plan.at;
-  const r = await applyOps(insertOps(at, spec, plan.role), `Insert ${label}`, undefined, to?.revision);
+/** Insert `spec` where its tile says (see insertPlan), as one change, and select it. */
+export async function insert(spec: InsertSpec, label: string) {
+  const { role, at } = insertPlan(spec);
+  if (!at) return;
+  const r = await applyOps(insertOps(at, spec, role), `Insert ${label}`);
   const id = r?.at(-1)?.nodeId as string | undefined;
   if (id) setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
-  return id ?? null;
 }
 
 /** Where Place on page puts a library image (`key` tells two placements apart), or why it can't be placed now. */

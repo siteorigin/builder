@@ -73,10 +73,10 @@ export function spaceSizes(v: unknown, expected: number): Array<number | null> |
 
 /** Measured boxes in request order, where a missing (hidden) element is null; null for a malformed list. Each
  *  box has its element's CSS order (0 unless an Order style moves it among its siblings). */
-export function measuredRects(v: unknown, expected: number): Array<(FrameRect & { order: number }) | null> | null {
+export function measuredRects(v: unknown, expected: number): Array<(FrameRect & { order: number; many?: true }) | null> | null {
   if (!Array.isArray(v) || v.length !== expected) return null;
-  // Array.from visits holes too (map would skip them and leave them empty).
-  return Array.from(v, (r) => (isRect(r) ? { x: r.x, y: r.y, width: r.width, height: r.height, order: orderOf((r as { order?: unknown }).order) } : null));
+  // Array.from visits holes too (map would skip them and leave them empty). `many`: more than one copy shows.
+  return Array.from(v, (r) => (isRect(r) ? { x: r.x, y: r.y, width: r.width, height: r.height, order: orderOf((r as { order?: unknown }).order), ...((r as { many?: unknown }).many === true ? { many: true as const } : {}) } : null));
 }
 const orderOf = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) ? v : 0);
 

@@ -1,16 +1,21 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Check, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
-import { applyOps } from '../store';
+import { applyOps, commitOps, undoAction } from '../store';
+import { applyOperations } from '@engine/apply';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { treeFor } from '../lib/model';
-import type { ElementRef, ProjectState } from '@shared/types';
+import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, rectList, spaceSizes, spacingOf, type FrameSpacing } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
+import { insertOps, insertRole, whereFor, type InsertAt } from '../lib/insert-at';
+import { dropListSpecs, dropTarget, incomingOrder, measuredLists, measureIds, type DropList, type Measured } from '../lib/insert-drop';
+import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
 import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
 import { inlineLinkProblem } from '../lib/link-problems';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
@@ -182,6 +187,10 @@ export function Canvas() {
   /** While dragging to reorder: the insertion line in page pixels (null where the drop would change nothing) and
    *  the name of what is moving. */
   const [reorder, setReorder] = useState<{ line: Rect | null; name: string } | null>(null);
+  /** While a tile from Insert is dragged: where the pointer is, and what dropping there does (in page pixels, the gap's
+   *  line and the outline of the container it goes into; `refused` says why it can't go there). */
+  const [insertDrop, setInsertDrop] = useState<{ name: string; x: number; y: number; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null } | null>(null);
+  const insertDrag = useRef<{ end: (commit: boolean) => void } | null>(null);
   const url = runtime.state === 'ready' ? runtime.url : null;
   const origin = url ? new URL(url).origin : null;
   const state = snapshot?.state;
@@ -1137,6 +1146,166 @@ export function Canvas() {
       }, 1500);
     });
 
+  /**
+   * Drag a new section or element from Insert onto the page. The lists on the page that can take it are measured once;
+   * the pointer then picks a list and a gap in it (lib/insert-drop), shown by a line and the outline of the container,
+   * and the release inserts it there as one change, planned on the project as the drag found it. A place the project
+   * would refuse, or that no position reaches, is shown as refused and says why on release. Escape, leaving the window,
+   * or releasing off the page cancels. Returns false when the canvas can't take a drag now.
+   */
+  function startInsertDrag(drag: InsertDrag, start: { x: number; y: number }): boolean {
+    const s = getState();
+    const snap = s.snapshot;
+    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || resizeDrag.current) return false;
+    const st = snap.state;
+    const owner: OwnerRef = { kind: 'page', id: s.pageId };
+    const opening = snap.workspaceKey;
+    const revision = snap.revision;
+    const role = insertRole(st, drag.spec);
+    const own = incomingOrder(st, drag.spec);
+    const specs = dropListSpecs(st, owner);
+    if (!specs.length) return false;
+    let lists: DropList[] | null = null;
+    let point = start;
+    let done = false;
+    // Where a release would put it now: the place, or why it can't go there, and whether the pointer is on the page.
+    let aim: { at: InsertAt | null; refused: string | null; over: boolean } = { at: null, refused: null, over: false };
+    // Whether the project takes it in a list, tried once on a copy (a slot that takes only some things, a full one).
+    const checked = new Map<string, string | null>();
+    const refusal = (at: InsertAt) => {
+      const key = JSON.stringify([at.parentId, at.slot ?? null]);
+      if (!checked.has(key)) {
+        let why: string | null = null;
+        try {
+          applyOperations(st, insertOps(at, drag.spec, role));
+        } catch (e) {
+          why = e instanceof Error ? e.message : String(e);
+        }
+        checked.set(key, why);
+      }
+      return checked.get(key) ?? null;
+    };
+    const show = () => {
+      const wrap = wrapRef.current?.getBoundingClientRect();
+      const view = canvasRef.current?.querySelector('.canvas-scroll')?.getBoundingClientRect();
+      const inBox = (b: DOMRect | undefined) => !!b && point.x >= b.left && point.x <= b.right && point.y >= b.top && point.y <= b.bottom;
+      const over = inBox(wrap) && inBox(view);
+      aim = { at: null, refused: null, over };
+      let line: Rect | null = null;
+      let outline: Rect | null = null;
+      let label = over ? `Placing ${drag.name}` : `Drag ${drag.name} onto the page`;
+      if (over && lists && wrap) {
+        const z = currentZoom();
+        const t = dropTarget(lists, role, (point.x - wrap.left) / z, (point.y - wrap.top) / z, INSERT_EDGE / z, own);
+        if (t) {
+          const at: InsertAt = { owner, parentId: t.list.parentId, ...(t.list.slot ? { slot: t.list.slot } : {}), ...(t.index !== null ? { index: t.index } : {}) };
+          const refused = t.refused ?? (t.index === null ? null : refusal(at));
+          aim = { at: refused || t.index === null ? null : at, refused, over };
+          outline = t.list.box;
+          line = refused ? null : t.line;
+          const w = refused ? null : whereFor(st, at, role);
+          label = refused ? `Can’t place ${drag.name} here` : w ? `${drag.name} ${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}` : label;
+        }
+      }
+      setInsertDrop({ name: drag.name, x: point.x, y: point.y, over, line, outline, label, refused: aim.refused });
+    };
+    const drop = async (at: InsertAt) => {
+      if (getState().snapshot?.workspaceKey !== opening) return;
+      const w = whereFor(st, at, role);
+      const r = await commitOps(insertOps(at, drag.spec, role), `Insert ${drag.name}`, undefined, revision);
+      if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
+      const id = r.results?.at(-1)?.nodeId as string | undefined;
+      const now = getState();
+      // Selected while the author is still on the page it went on.
+      if (id && now.pageId === owner.id && now.mode === 'edit' && !now.definitionMode) setState({ selection: { owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
+      toast(`Added ${drag.name}${w ? ` ${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}` : ''}.`, 'info', undoAction(r));
+    };
+    const requests: string[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const end = (commit: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      for (const id of requests) measureWaiters.current.delete(id);
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('pointercancel', cancel, true);
+      window.removeEventListener('blur', cancel);
+      window.removeEventListener('keydown', key, true);
+      document.documentElement.classList.remove('insert-dragging');
+      insertDrag.current = null;
+      setDragging(false);
+      setInsertDrop(null);
+      if (!commit || !aim.over) return;
+      if (aim.refused) return void toast(`${drag.name} wasn’t added: ${aim.refused}`, 'info');
+      if (aim.at) void drop(aim.at);
+    };
+    const move = (ev: PointerEvent) => {
+      point = { x: ev.clientX, y: ev.clientY };
+      show();
+    };
+    const up = (ev: PointerEvent) => {
+      point = { x: ev.clientX, y: ev.clientY };
+      show();
+      end(true);
+    };
+    const cancel = () => end(false);
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      end(false);
+    };
+    // Release and cancel are heard from the start, before the page is measured.
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', up, true);
+    window.addEventListener('pointercancel', cancel, true);
+    window.addEventListener('blur', cancel);
+    window.addEventListener('keydown', key, true);
+    document.documentElement.classList.add('insert-dragging');
+    insertDrag.current = { end };
+    setDragging(true);
+    show();
+    // Measured in batches the page answers (it reads at most 200 at a time); a node it can't show measures as nothing.
+    const ids = measureIds(specs);
+    const measured = new Map<string, Measured | null>();
+    const batches: string[][] = [];
+    for (let i = 0; i < ids.length; i += 200) batches.push(ids.slice(i, i + 200));
+    void Promise.all(
+      batches.map(
+        (batch) =>
+          new Promise<void>((resolve) => {
+            const requestId = Math.random().toString(36).slice(2);
+            requests.push(requestId);
+            measureWaiters.current.set(requestId, (raw) => {
+              measureWaiters.current.delete(requestId);
+              const rects = measuredRects(raw, batch.length);
+              batch.forEach((id, i) => measured.set(id, rects?.[i] ?? null));
+              resolve();
+            });
+            post('measure', { requestId, descs: batch.map((id) => descFor({ owner, instancePath: [], nodeId: id }) ?? { ctx: '', node: '', items: '' }) });
+          })
+      )
+    ).then(() => {
+      if (done) return;
+      lists = measuredLists(specs, measured);
+      show();
+    });
+    timer = setTimeout(() => {
+      if (lists || done) return;
+      end(false);
+      toast(`The page didn’t answer, so ${drag.name} can’t be dragged onto it now. Click its tile to add it instead.`, 'info');
+    }, 3000);
+    return true;
+  }
+  useEffect(() => {
+    setInsertDropTarget(startInsertDrag);
+    return () => setInsertDropTarget(null);
+  });
+  // A drag in progress ends with the canvas, and with the page or project it was planned on.
+  useEffect(() => () => insertDrag.current?.end(false), []);
+  useEffect(() => insertDrag.current?.end(false), [pageId, mode, session, snapshot?.workspaceKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Drag-to-resize viewport. The frame stays centered, so both edges follow the pointer, within the widths the
   // toolbar's width field accepts. The handle captures the pointer (as the panel splitters do), so the drag always
   // hears its release; the width is remembered once, for the opening it was made in. One drag at a time: a second
@@ -1356,7 +1525,7 @@ export function Canvas() {
   };
 
   return (
-    <main ref={canvasRef} tabIndex={-1} className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${resizing ? ' resizing' : ''}`} aria-label="Website preview">
+    <main ref={canvasRef} tabIndex={-1} className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${insertDrop ? ' placing' : ''}${resizing ? ' resizing' : ''}`} aria-label="Website preview">
       {runtimeCard && <div className="canvas-state">{runtimeCard}</div>}
       {/* Said in the strip above the page (see frame-status below), and here for screen readers. */}
       <p className="sr-only" role="status">
@@ -1531,12 +1700,20 @@ export function Canvas() {
               </span>
             </span>
             {/* A chip parked in the strip (the shared header selected) takes the strip; Layers keeps its own Add sections. */}
-            {emptyPage && emptyTop !== null && !staleFrame && !emptyFits && !resizing && !reorder && !(placement === 'strip' && firstSel) && (
+            {emptyPage && emptyTop !== null && !staleFrame && !emptyFits && !resizing && !reorder && !insertDrop && !(placement === 'strip' && firstSel) && (
               <div className="frame-status empty" ref={stripLeft} style={{ maxWidth: stripRoom }}>
                 <span>This page has no sections yet</span>
                 <button className="link-btn" onClick={addSections}>
                   <Plus /> Add a section
                 </button>
+              </div>
+            )}
+            {insertDrop && (
+              <div className={`ov-moving ov-placing${insertDrop.refused ? ' refused' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} title={insertDrop.refused ?? undefined} data-testid="insert-drop-label">
+                <Plus />
+                <span className="what">{insertDrop.label}</span>
+                <span className="sep">·</span>
+                <span className="hint">Esc to cancel</span>
               </div>
             )}
             {reorder && firstSel && (
@@ -1621,6 +1798,12 @@ export function Canvas() {
                     const d = dropBox(reorder.line);
                     return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" />;
                   })()}
+                {insertDrop?.outline && <div className={`ov-box ov-drop-target${insertDrop.refused ? ' refused' : ''}`} style={toBox(insertDrop.outline)} data-testid="insert-drop-target" />}
+                {insertDrop?.line &&
+                  (() => {
+                    const d = dropBox(insertDrop.line);
+                    return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" data-testid="insert-drop-line" />;
+                  })()}
               </div>
               {emptyPage && emptyTop !== null && !staleFrame && emptyFits && (
                 <div className="canvas-empty" style={{ top: emptyTop * z + 24 }}>
@@ -1671,6 +1854,15 @@ export function Canvas() {
         )}
       </div>
       {menu.node}
+      {/* What a drag from Insert carries, beside the pointer wherever it is in the window. */}
+      {insertDrop &&
+        createPortal(
+          <div className={`insert-ghost${insertDrop.refused ? ' refused' : ''}`} style={{ left: insertDrop.x + 14, top: insertDrop.y + 12 }} aria-hidden="true">
+            <Plus />
+            <span>{insertDrop.name}</span>
+          </div>,
+          document.body
+        )}
     </main>
   );
 }
@@ -1730,6 +1922,8 @@ function itemOf(state: ProjectState, ref: ElementRef): { n: number; count: numbe
 }
 
 const CHIP_H = 28;
+/** Near a container's top or bottom edge, in screen pixels, a dragged element goes beside it rather than into it. */
+const INSERT_EDGE = 10;
 const CHIP_GAP = 4;
 
 /**

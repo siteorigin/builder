@@ -4388,3 +4388,13 @@ button.asset-use:hover svg.go { color: var(--text); }
 /* Shown instead of the editor when no theme pack could be loaded. */
 .fatal { max-width: 560px; margin: 15vh auto; padding: 0 16px; font-size: 14px; line-height: 1.5; color: var(--text); }
 .fatal ul { margin: 12px 0 0; padding-left: 18px; color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+
+/* A tile dragged from Insert onto the page (#52): the container it goes into, outlined, and what it carries beside the pointer. */
+.ov-drop-target { outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 6%, transparent); }
+.ov-drop-target.refused { outline-color: var(--red); background: var(--red-soft); }
+.ov-moving.ov-placing.refused { background: var(--red); }
+.insert-ghost { position: fixed; z-index: 1000; display: inline-flex; align-items: center; gap: 6px; max-width: 240px; height: 26px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 4px 10px -2px rgb(16 24 40 / 0.35); }
+.insert-ghost span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.insert-ghost svg { flex: none; width: 14px; height: 14px; }
+.insert-ghost.refused { background: var(--red); }
+html.insert-dragging, html.insert-dragging * { cursor: grabbing !important; user-select: none; }
