@@ -1527,6 +1527,47 @@ describe('context budget', () => {
       expect(at(moved, 'c5')).toMatch(/^\[Superseded inspect_component def_card at rev 3\./);
     });
 
+    it('collapses an SEO audit another audit of the same scope replaced, and one the project moved past, keeping its counts (#593)', () => {
+      const audit = (rev: number, scope: object, total: number, counts: object, links: object) => JSON.stringify({ revision: rev, scope, total, counts, byPillar: {}, findings: [{ code: 'SEO_TITLE_LENGTH', message: pad }], links });
+      const site = (rev: number) => audit(rev, {}, 5, { error: 0, warning: 3, info: 2 }, { pages: 4, orphans: 1, rows: [] });
+      const services = (rev: number) => audit(rev, { pageId: 'pg_s' }, 1, { error: 0, warning: 1, info: 0 }, { pageId: 'pg_s', incoming: 0, outgoing: 0, orphan: true, from: [] });
+      const items = (): CanonicalItem[] => [
+        ...read('a1', {}, site(3), 'audit_seo'),
+        // One page by its route, then by its ID: the same page.
+        ...read('a2', { pageId: '/services/' }, services(3), 'audit_seo'),
+        ...read('a3', { pageId: 'pg_s' }, services(3), 'audit_seo'),
+        // One pillar, and a later part, each show what the whole first part did not.
+        ...read('a4', { pillar: 'content' }, audit(3, { pillar: 'content' }, 2, { error: 0, warning: 1, info: 1 }, { pages: 4, orphans: 1, rows: [] }), 'audit_seo'),
+        ...read('a5', { offset: 40 }, site(3), 'audit_seo'),
+        ...read('a6', {}, site(3), 'audit_seo'),
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      const current = items();
+      const kept = structuredClone(current);
+      const r = applyContextBudget(current, optsWith(10000, { revision: 3 }));
+      expect(r.tombstoned).toBe(2);
+      expect(at(current, 'a1')).toBe('[Superseded audit_seo site at rev 3. 5 findings (0 errors, 3 warnings, 2 info), 1 orphan page. Audit again for details.]');
+      expect(at(current, 'a2')).toBe('[Superseded audit_seo pg_s at rev 3. 1 finding (0 errors, 1 warning, 0 info), 1 orphan page. Audit again for details.]');
+      for (const id of ['a3', 'a4', 'a5', 'a6']) expect(at(current, id), id).toBe(at(kept, id));
+      // Once the project moved on, every audit made before says what is no longer certain.
+      const moved = items();
+      applyContextBudget(moved, optsWith(2000, { revision: 4 }));
+      expect(at(moved, 'a4')).toBe('[Superseded audit_seo site content at rev 3. 2 findings (0 errors, 1 warning, 1 info), 1 orphan page. Audit again for details.]');
+      expect(at(moved, 'a5')).toBe('[Superseded audit_seo site from offset 40 at rev 3. 5 findings (0 errors, 3 warnings, 2 info), 1 orphan page. Audit again for details.]');
+      expect(at(moved, 'a6')).toMatch(/^\[Superseded audit_seo site at rev 3\./);
+      // At the same revision, a tight window keeps audits nothing replaced: what they say is still true.
+      const still = items();
+      applyContextBudget(still, optsWith(2000, { revision: 3 }));
+      for (const id of ['a3', 'a4', 'a5', 'a6']) expect(at(still, id), id).toBe(at(kept, id));
+      // A refused audit is no read.
+      const refused: CanonicalItem[] = [...read('e1', { pageId: '/nowhere/' }, JSON.stringify({ error: 'INVALID_ARGUMENT', message: pad }), 'audit_seo'), ...read('e2', { pageId: '/nowhere/' }, JSON.stringify({ error: 'INVALID_ARGUMENT', message: pad }), 'audit_seo'), ...filler('f1'), ...filler('f2')];
+      (refused[1] as Extract<CanonicalItem, { kind: 'tool_result' }>).isError = true;
+      (refused[3] as Extract<CanonicalItem, { kind: 'tool_result' }>).isError = true;
+      applyContextBudget(refused, optsWith(2000, { revision: 4 }));
+      expect(at(refused, 'e1')).not.toContain('Superseded');
+    });
+
     it('records the revision a layout check was made at', async () => {
       const { session, adapter, run } = await setup([() => [call('i1', 'inspect_layout', { pageId: '/', viewport: 'phone' })], () => finish()]);
       await run('Check the home page on phones');

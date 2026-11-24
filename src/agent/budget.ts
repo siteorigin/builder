@@ -187,9 +187,10 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
     const scope = [body?.scope?.pageId ?? args.pageId ?? 'site', body?.scope?.pillar ?? args.pillar].filter(Boolean).join(' ');
     const offset = Number(args.offset ?? 0);
     // What it found, so the model knows what it saw without the findings themselves.
-    const counts = body?.counts && typeof body.counts === 'object' ? ` ${Number(body.total ?? 0)} findings (${Number(body.counts.error ?? 0)} errors, ${Number(body.counts.warning ?? 0)} warnings, ${Number(body.counts.info ?? 0)} info)` : '';
+    const n = (v: unknown, one: string, many = `${one}s`) => `${Number(v ?? 0)} ${Number(v ?? 0) === 1 ? one : many}`;
+    const counts = body?.counts && typeof body.counts === 'object' ? ` ${n(body.total, 'finding')} (${n(body.counts.error, 'error')}, ${n(body.counts.warning, 'warning')}, ${n(body.counts.info, 'info', 'info')})` : '';
     const orphans = Number(body?.links?.orphans ?? (body?.links?.orphan ? 1 : 0));
-    return `${TOMBSTONE}audit_seo ${scope}${offset ? ` from offset ${offset}` : ''}${rev}.${counts}${counts && orphans ? `, ${orphans} orphan page${orphans === 1 ? '' : 's'}` : ''}${counts ? '.' : ''} Audit again for details.]`;
+    return `${TOMBSTONE}audit_seo ${scope}${offset ? ` from offset ${offset}` : ''}${rev}.${counts}${counts && orphans ? `, ${n(orphans, 'orphan page')}` : ''}${counts ? '.' : ''} Audit again for details.]`;
   }
   const pages = Array.isArray(body?.pages) ? body!.pages : [];
   const list = pages.slice(0, 12).map((p: Record<string, unknown>) => `${p.id} ${p.route ?? ''}`.trim()).join(', ');

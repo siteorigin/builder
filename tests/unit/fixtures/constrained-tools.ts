@@ -31,6 +31,8 @@ export function constrainedToolSets(starter: StarterId = 'business'): ToolSet[] 
     };
     run('site', {});
     run('site component', { componentRequest: true });
+    // A run limited to one page, with its page tool and the few operations a small model gets for it.
+    run('page', { page: { route: '/' } });
     // A new component asked for from Create component (#172), with the tool that builds it whole (#359).
     run('component', { task: 'component' });
     run('selection', { selection: selectionTarget(whole) });
