@@ -20,7 +20,8 @@ const apply = (operations, label) =>
     return r.results;
   }, [operations, label]);
 const undo = () => win.evaluate(() => window.builder.project.undo());
-const historyLength = async () => (await win.evaluate(async () => (await window.builder.project.snapshot()).history.entries.filter((e) => e.applied).length));
+/** The newest change History holds (it trims old ones by size, so they are not counted). */
+const newest = () => win.evaluate(async () => (await window.builder.project.snapshot()).history.entries.filter((e) => e.applied).at(-1) ?? null);
 const panel = win.locator('.side-panel-view:not([hidden])');
 const strip = panel.locator('.insert-where-next');
 const projectTile = (name) => panel.locator('.insert-tile.project', { has: win.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
@@ -32,6 +33,45 @@ const dropTarget = win.locator('[data-testid="insert-drop-target"]');
 const openInsert = async () => {
   if (!(await panel.locator('.insert-group[data-kind="element"]').isVisible())) await win.getByRole('button', { name: 'Insert', exact: true }).click();
   await panel.locator('.insert-group[data-kind="element"]').waitFor();
+};
+
+/**
+ * A point of an element in the page, in the window, brought into the canvas's view first. The preview is scaled to
+ * fit, which Playwright's own boxes for elements in the frame leave out, so the point is the frame's box on screen
+ * plus the element's place in the page, scaled.
+ */
+const pointIn = async (locator, fx, fy) => {
+  const view = await win.locator('.canvas-scroll').boundingBox();
+  const place = async () => {
+    const f = await win.locator('.frame-box iframe').boundingBox();
+    const r = await locator.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { x: b.x, y: b.y, width: b.width, height: b.height, vw: window.innerWidth };
+    });
+    const k = f.width / r.vw;
+    return { x: f.x + (r.x + r.width * fx) * k, y: f.y + (r.y + r.height * fy) * k };
+  };
+  let at = await place();
+  if (at.y < view.y + 20 || at.y > view.y + view.height - 20) {
+    await win.locator('.canvas-scroll').evaluate((el, dy) => el.scrollBy(0, dy), at.y - (view.y + view.height / 2));
+    await win.waitForTimeout(150);
+    at = await place();
+  }
+  return at;
+};
+/** Select what a chip calls `name` by clicking an element in the page where it shows (see pointIn): each click steps
+ *  one level in, from the section. */
+const selectIn = async (locator, name) => {
+  for (let i = 0; i < 5; i++) {
+    const at = await pointIn(locator, 0.5, 0.5);
+    await win.mouse.click(at.x, at.y);
+    try {
+      return await eventually(async () => assert.match((await win.locator('.ov-chip .label').allInnerTexts()).join(' '), name), 1500);
+    } catch {
+      await win.waitForTimeout(400);
+    }
+  }
+  assert.fail(`${name} is selected; the chip says ${(await win.locator('.ov-chip .label').allInnerTexts()).join(' ')}`);
 };
 
 step('Artist profiles: two sections, the first holding a grid with one Exhibitor card');
@@ -61,12 +101,12 @@ assert.equal((await snapshot()).components[cardDef].insertAs, 'element', 'a card
 await frame.locator('p', { hasText: 'Hall A, stand 12' }).first().waitFor();
 
 step('with the card selected, its tile names the grid before the click, and inserts a second card there');
-await frame.locator('p', { hasText: 'Hall A, stand 12' }).first().click();
+await selectIn(frame.locator('p', { hasText: 'Hall A, stand 12' }).first(), /Exhibitor card/);
 await openInsert();
 await projectTile('Exhibitor card').hover();
 await eventually(async () => assert.match(await strip.getAttribute('title'), /^Exhibitor card goes after Exhibitor card in Grid$/, 'the strip names the grid the card goes into'));
 const rootsBefore = (await home()).rootIds;
-const before = await historyLength();
+const before = await newest();
 await projectTile('Exhibitor card').click();
 await eventually(async () => {
   const page = await home();
@@ -75,7 +115,8 @@ await eventually(async () => {
   assert.equal(page.nodes[page.nodes[grid].children[1]].definitionId, cardDef, 'the second is a placement of the card');
   assert.deepEqual(page.rootIds, rootsBefore, 'nothing new at the top of the page');
 });
-assert.equal(await historyLength(), before + 1, 'one change');
+assert.notEqual((await newest()).id, before?.id);
+assert.equal((await newest()).label, 'Insert Exhibitor card', 'one change');
 await panel.locator('.insert-where-done', { hasText: 'Exhibitor card' }).waitFor();
 await win.screenshot({ path: join(SHOTS, 'insert-destination-card.png') });
 await undo();
@@ -84,9 +125,11 @@ await eventually(async () => assert.deepEqual((await home()).nodes[grid].childre
 step('a component made from a whole section still goes after the section holding the selection');
 const [{ nodeId: band, definitionId: bandDef }] = await apply([{ type: 'component.createFromNode', owner, nodeId: second, name: 'Closing band' }], 'Create Closing band');
 assert.equal((await snapshot()).components[bandDef].insertAs, 'section');
-await frame.locator('p', { hasText: 'Hall A, stand 12' }).first().click();
+await selectIn(frame.locator('p', { hasText: 'Hall A, stand 12' }).first(), /Exhibitor card/);
 await openInsert();
-await projectTile('Closing band').hover();
+// Away from the tiles, the strip follows the one with keyboard focus.
+await win.mouse.move(5, 500);
+await projectTile('Closing band').focus();
 await eventually(async () => assert.match(await strip.getAttribute('title'), /^Closing band goes after Section/, 'the strip says it goes after the section'));
 await projectTile('Closing band').click();
 await eventually(async () => {
@@ -100,18 +143,6 @@ await eventually(async () => {
 await undo();
 await eventually(async () => assert.deepEqual((await home()).rootIds, [first, band]));
 
-/** Bring a point of an element in the page into the canvas's view, and give its place in the window. */
-const pointIn = async (locator, fx, fy) => {
-  const view = await win.locator('.canvas-scroll').boundingBox();
-  let b = await locator.boundingBox();
-  const y = b.y + b.height * fy;
-  if (y < view.y + 20 || y > view.y + view.height - 20) {
-    await win.locator('.canvas-scroll').evaluate((el, dy) => el.scrollBy(0, dy), y - (view.y + view.height / 2));
-    await win.waitForTimeout(150);
-    b = await locator.boundingBox();
-  }
-  return { x: b.x + b.width * fx, y: b.y + b.height * fy };
-};
 /** Press on a tile and move it a little, so it is dragged rather than clicked. */
 const pickUp = async (tile) => {
   await tile.scrollIntoViewIfNeeded();
@@ -136,7 +167,7 @@ for (const [where, locator, fy, index, label] of [
   ['after', bandBox, 0.85, 2, /Gallery after Closing band/]
 ]) {
   const roots = (await home()).rootIds;
-  const changes = await historyLength();
+  const changes = await newest();
   await dragTo(sectionTile('Gallery'), locator, 0.5, fy);
   await eventually(async () => assert.match(await dropLabel.innerText(), label, `the label says where Gallery goes (${where})`));
   assert.ok(await dropLine.isVisible(), `a line shows the gap (${where})`);
@@ -148,7 +179,8 @@ for (const [where, locator, fy, index, label] of [
     assert.deepEqual(page.rootIds.filter((_, i) => i !== index), roots, `the other sections keep their order (${where})`);
     assert.equal((await snapshot()).components[page.nodes[page.rootIds[index]].definitionId]?.name, 'Gallery', `Gallery is ${where} the sections`);
   });
-  assert.equal(await historyLength(), changes + 1, `one change (${where})`);
+  assert.notEqual((await newest()).id, changes?.id);
+  assert.equal((await newest()).label, 'Insert Gallery', `one change (${where})`);
   assert.equal(await dropLabel.count(), 0, 'the drop indicator goes away');
   await undo();
   await eventually(async () => assert.deepEqual((await home()).rootIds, roots, `one Undo takes it away (${where})`));
@@ -159,7 +191,7 @@ const [{ nodeId: card2 }] = await apply([{ type: 'node.insert', owner, parentId:
 const secondCard = frame.locator(`[data-so-ctx$="|${card2}"]`).first();
 await secondCard.waitFor();
 {
-  const changes = await historyLength();
+  const changes = await newest();
   await dragTo(basicTile('Paragraph'), secondCard, 0.15, 0.5);
   await eventually(async () => assert.match(await dropLabel.innerText(), /Paragraph after Exhibitor card in Grid/, 'the label names the grid'));
   assert.ok(await dropTarget.isVisible(), 'the grid is outlined');
@@ -171,7 +203,8 @@ await secondCard.waitFor();
     assert.equal(kids.length, 3, 'the paragraph is in the grid');
     assert.deepEqual([kids[0], kids[2]], [card, card2], 'between the two cards');
   });
-  assert.equal(await historyLength(), changes + 1, 'one change');
+  assert.notEqual((await newest()).id, changes?.id);
+  assert.equal((await newest()).label, 'Insert Paragraph', 'one change');
   await undo();
   await eventually(async () => assert.deepEqual((await home()).nodes[grid].children, [card, card2], 'one Undo takes it away'));
 }
@@ -190,7 +223,7 @@ const shownLast = frame.locator('p', { hasText: 'Shown second' }).first();
 await shownLast.waitFor();
 {
   const page = await home();
-  const changes = await historyLength();
+  const changes = await newest();
   await dragTo(basicTile('Paragraph'), shownLast, 0.9, 0.5);
   await eventually(async () => assert.match(await dropLabel.innerText(), /Can’t place Paragraph here/, 'the label refuses the spot'));
   assert.equal(await dropLine.count(), 0, 'no line shows there');
@@ -199,7 +232,7 @@ await shownLast.waitFor();
   await win.mouse.up();
   await win.locator('.toast', { hasText: 'Paragraph wasn’t added' }).waitFor();
   assert.deepEqual(await home(), page, 'nothing is added');
-  assert.equal(await historyLength(), changes, 'and nothing is recorded');
+  assert.equal((await newest())?.id, changes?.id, 'and nothing is recorded');
   assert.deepEqual(page.nodes[row].children, [one, two]);
 }
 
@@ -213,7 +246,7 @@ step('Escape cancels a drag; a tile still inserts from the keyboard afterwards')
   await win.mouse.up();
   await win.waitForTimeout(300);
   assert.deepEqual(await home(), page, 'Escape adds nothing');
-  await frame.locator('p', { hasText: 'Shown first' }).first().click();
+  await selectIn(frame.locator('p', { hasText: 'Shown first' }).first(), /^Text$/);
   await openInsert();
   await basicTile('Heading').focus();
   await win.keyboard.press('Enter');
