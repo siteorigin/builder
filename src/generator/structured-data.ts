@@ -90,9 +90,13 @@ export function searchPageUrl(state: ProjectState, resolver: SeoResolver): strin
   return fallback;
 }
 
+/** The search page each resolver's project has, worked out once for all the documents it resolves. */
+const searchPages = new WeakMap<SeoResolver, string | null>();
+
 /** The website says how to search it, on the page that runs the search. */
 const siteSearch: GraphContributor = ({ state, resolver, ids }) => {
-  const at = searchPageUrl(state, resolver);
+  if (!searchPages.has(resolver)) searchPages.set(resolver, searchPageUrl(state, resolver));
+  const at = searchPages.get(resolver)!;
   if (!at) return null;
   return {
     extend: [
@@ -107,9 +111,35 @@ const siteSearch: GraphContributor = ({ state, resolver, ids }) => {
 /** What the generated website says about its documents, beyond the graph's own entities. */
 export const SITE_CONTRIBUTORS: readonly GraphContributor[] = [homeAbout, revised, pageContent, siteSearch];
 
+/**
+ * The resolver of each project state a generator run is working from, while one is (`inGenerationRun`): every page's
+ * graph reads the same documents (its breadcrumb trail, the search page), so they are resolved once per run, not once
+ * per page. A state never changes while it is generated from; between runs it may (edited in place), so nothing is
+ * kept once the run ends.
+ */
+let runResolvers: WeakMap<ProjectState, SeoResolver> | null = null;
+
+/** Runs `generate` as one generator run, sharing what every document's structured data reads. */
+export function inGenerationRun<T>(generate: () => T): T {
+  if (runResolvers) return generate();
+  runResolvers = new WeakMap();
+  try {
+    return generate();
+  } finally {
+    runResolvers = null;
+  }
+}
+
+function resolverFor(state: ProjectState): SeoResolver {
+  if (!runResolvers) return createSeoResolver(state);
+  let resolver = runResolvers.get(state);
+  if (!resolver) runResolvers.set(state, (resolver = createSeoResolver(state)));
+  return resolver;
+}
+
 /** The connected graph a generated page or entry carries, or null when it carries none (seo-graph.ts says when). */
 export function documentGraph(state: ProjectState, subject: SeoSubject): SeoGraph | null {
-  return buildSeoGraph(state, createSeoResolver(state), subject, SITE_CONTRIBUTORS);
+  return buildSeoGraph(state, resolverFor(state), subject, SITE_CONTRIBUTORS);
 }
 
 /**

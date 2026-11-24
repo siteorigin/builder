@@ -370,6 +370,11 @@ describe('structured data in the exported website', () => {
     expect(before.get('src/routes/+page.svelte')).not.toContain('#localbusiness');
     // And back: undoing the change gives the website it had.
     expect([...generateProject(state, {}, cache)]).toEqual([...before]);
+    // What one run worked out is never kept for the next: a project edited in place between runs is read afresh.
+    const edited = copy(state);
+    expect(generateProject(edited).get('src/routes/+page.svelte')).toContain('#organization');
+    edited.site.identity = { kind: 'Person' };
+    expect(generateProject(edited).get('src/routes/+page.svelte')).toContain('#person');
     // An instrumented (editor) run agrees with a fresh one too.
     const dev = new GenerationCache();
     generateProject(state, { instrument: true }, dev);

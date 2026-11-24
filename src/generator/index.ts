@@ -96,7 +96,7 @@ import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { notFoundSectionRoutes } from './checks';
-import { graphScript } from './structured-data';
+import { graphScript, inGenerationRun } from './structured-data';
 import { siteTwitterHandle } from '@shared/site-identity';
 
 export interface GenerateOptions {
@@ -3798,6 +3798,11 @@ export function generateLibrary(state: ProjectState, opts: GenerateOptions = {})
  * is the same bytes either way.
  */
 export function generateProject(state: ProjectState, opts: GenerateOptions = {}, cache?: GenerationCache): FileMap {
+  // Every page's and entry's structured data reads the same documents: the run works them out once (structured-data.ts).
+  return inGenerationRun(() => generateFiles(state, opts, cache));
+}
+
+function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: GenerationCache): FileMap {
   const files: FileMap = new Map();
   const run = cache?.run(state, !!opts.instrument);
   // Content that differs between the clean and instrumented output is kept apart by its key; the rest is shared.
