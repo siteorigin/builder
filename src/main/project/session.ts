@@ -330,9 +330,9 @@ interface GeneratedManifest {
 const isCollectionOperation = (o: EditOperation) => o.type.startsWith('collection.') || o.type.startsWith('entry.');
 
 /**
- * A collection change checked against files it does not write: a removal guards the links other entries and pages
- * hold, and a new address must be free of every page's and entry's. One changed outside the app since it was read
- * makes that check stale, so the change waits for it (see `wholeProject`).
+ * A change checked against files it does not write: a collection removal guards the links other entries and pages
+ * hold, a new address must be free of every page's and entry's, and a component rebuild must suit every placement. One
+ * changed outside the app since it was read makes that check stale, so the change waits for it (see `wholeProject`).
  */
 function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
   switch (o.type) {
@@ -350,6 +350,9 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
       return true;
     case 'collection.update':
       return o.route !== undefined;
+    // A rebuild is checked against every placement of the component, in files it may leave as they are.
+    case 'component.upsert':
+      return o.definitionId !== undefined;
     case 'entry.update':
       return o.slug !== undefined;
     default:

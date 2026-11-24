@@ -6,23 +6,26 @@
  * code the single-step edits use, and refuses (leaving everything as it was) where a placement holds what the new
  * contract can no longer take.
  */
-import type { ComponentDefinition, ElementNode, GraphNode, LinkNode, LinkValue, NodeTree, PartDef, ProjectState, SlotDef, StyleValue, TextNode, VariantAxis } from '@shared/types';
+import type { Binding, ComponentDefinition, ElementNode, GraphNode, InstanceNode, LinkNode, LinkValue, ListProp, NodeTree, ObjectProp, PartDef, ProjectState, PropSchema, SlotDef, StyleValue, TextNode, VariantAxis } from '@shared/types';
 import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isAppearPreset, isBinding, isStateRef, parseStyleScopeKey } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { slugify } from '@shared/routes';
 import { isArticleDate } from '@shared/articles';
-import { repeatedPartList } from '@shared/item-styles';
+import { placementItems, repeatedPartList } from '@shared/item-styles';
+import { richTextToPlain, toRichText } from '@shared/richtext';
+import { findVariant } from '@shared/variants';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { isCarouselTrack } from '@generator/card-links';
+import { ICONS } from '@catalogue/foundation/icons';
 import { EngineError, RESERVED_ANCHORS, enclosingRepeatProp, fail, instancesOf } from './tree';
 import { clone } from './install';
 import { normalizeImage, normalizeLink, normalizeRichText } from './values';
 import { tagKindProblem } from './semantic-tags';
 import { slotDeclProblem } from './slots';
-import { acceptedTypes, bindingProblem, bindingSites, boundSchema, enclosingList, isProtoKey, normalizeProperties, stateUsers, type BindingSite } from './schema';
+import { acceptedTypes, bindingProblem, bindingSites, boundSchema, enclosingList, isProtoKey, normalizeProperties, stateRefProblem, stateUsers, type BindingSite } from './schema';
 import { dropPartOverrides, removeSlot, removeVariant, replaceProperties, setSlot } from './definitions';
-import { hiddenSlotContent } from './theme-updates';
+import { shownSlots } from './theme-updates';
 
 type OpResult = Record<string, unknown>;
 type UpsertOp = Op<'component.upsert'>;
@@ -37,12 +40,13 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
 /** Part, slot and axis names, as the single-step edits take them. */
 const NAME_RE = /^[a-z][a-zA-Z0-9]{0,39}$/;
 const OPTION_RE = /^[a-z][a-z0-9-]{0,39}$/;
-const ICON_RE = /^[a-z0-9-]{1,40}$/;
 const ANCHOR_RE = /^[A-Za-z][\w-]{0,60}$/;
 const APPEARANCES = ['primary', 'secondary', 'text', 'light', 'link', 'plain'];
 const quoted = (s: string) => `"${s}"`;
 
-export function componentUpsert(state: ProjectState, op: UpsertOp, helpers: UpsertHelpers): OpResult {
+export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: UpsertHelpers): OpResult {
+  // The project keeps nothing of the caller's own objects.
+  const op = clone(given);
   if (op.definitionId !== undefined && op.newDefinitionId !== undefined) fail('Give definitionId to rebuild a component, or newDefinitionId to create one, not both.');
   const was = op.definitionId !== undefined ? rebuildTarget(state, op.definitionId) : undefined;
   const name = op.name.trim();
@@ -59,14 +63,22 @@ export function componentUpsert(state: ProjectState, op: UpsertOp, helpers: Upse
 
   const id = was?.id ?? candidate.id;
   const before = was ? clone(was) : undefined;
+  // The filled slots each placement shows now, worked out before its values move.
+  const shownBefore = new Map(was ? instancesOf(state, id).map(({ node }) => [node, shownSlots(was, node)] as const) : []);
   if (was) {
     // Options and slots the new contract leaves out go first, as their own removals would: a placement that chooses an
     // option keeps the default instead, and content in a removed slot, or a component around it that can still choose
     // the option, refuses the rebuild.
     const keptAxes = variantAxes ?? {};
     for (const [axis, a] of Object.entries(was.variantAxes ?? {}))
-      for (const option of Object.keys(a.options)) if (!own(own(keptAxes, axis)?.options, option)) removeVariant(state, { type: 'component.removeVariant', definitionId: id, variant: option, axis });
+      for (const option of Object.keys(a.options)) {
+        if (own(own(keptAxes, axis)?.options, option)) continue;
+        // An option saved under an ID no variant can have is ignored already: only placements that name it forget it.
+        if ('error' in findVariant(was, option, axis)) forgetOption(state, id, axis, option);
+        else removeVariant(state, { type: 'component.removeVariant', definitionId: id, variant: option, axis });
+      }
     for (const slot of Object.keys(was.slots ?? {})) if (!own(slots, slot)) removeSlot(state, { type: 'component.removeSlot', definitionId: id, slot });
+    keepFieldContent(state, was, properties);
   } else state.components[id] = { ...candidate, properties: {}, slots: undefined };
   const def = state.components[id];
   Object.assign(def, metadata(op, name));
@@ -76,8 +88,9 @@ export function componentUpsert(state: ProjectState, op: UpsertOp, helpers: Upse
   if (variantAxes) def.variantAxes = variantAxes;
   else delete def.variantAxes;
   delete def.slots;
-  // Every placement's values move to the new schema: kept where they still fit, refused where they no longer do.
-  replaceProperties(state, def, op.properties);
+  // Every placement's values move to the new schema: kept where they still fit, refused where they no longer do. The
+  // design's bindings were checked against it above.
+  replaceProperties(state, def, op.properties, [], { bindingsChecked: true });
   // Each slot is declared as setSlot declares it, which refuses one that no longer takes what a placement put there.
   for (const [slot, d] of Object.entries(slots ?? {}))
     setSlot(state, { type: 'component.setSlot', definitionId: id, slot, label: d.label, description: d.description ?? null, categories: d.categories ?? null, primitives: d.primitives ?? null, max: d.max ?? null });
@@ -85,8 +98,50 @@ export function componentUpsert(state: ProjectState, op: UpsertOp, helpers: Upse
   for (const n of op.nodes) if (n.styles) applyStyles(state, id, n.id, n.styles, helpers);
   for (const [axis, a] of Object.entries(op.variantAxes ?? {}))
     for (const [option, o] of Object.entries(a.options)) for (const [nodeId, styles] of Object.entries(o.styles ?? {})) applyStyles(state, id, nodeId, styles, helpers, { variant: option, axis });
-  if (before) settlePlacements(state, before, def);
+  if (before) settlePlacements(state, before, def, shownBefore);
   return { definitionId: id, rootNodeId: rootId };
+}
+
+/** Placements that choose an option the component no longer has show the axis's default instead. */
+function forgetOption(state: ProjectState, defId: string, axis: string, option: string) {
+  for (const { node } of instancesOf(state, defId)) {
+    if (node.variants?.[axis] !== option) continue;
+    delete node.variants[axis];
+    if (!Object.keys(node.variants).length) delete node.variants;
+  }
+}
+
+/** A field type a value can move to keeping what it says, as a property's own type change allows. */
+const LOSSLESS: Record<string, readonly string[]> = { string: ['richtext', 'enum', 'number'], richtext: ['string'], enum: ['string'], number: ['string'] };
+
+/**
+ * A list's or an object's field that changes type keeps each placement's value only where the change is lossless (and
+ * the value then fits, as normalizing it checks); a value still at the old field's default starts at the new one.
+ * Anything else refuses the rebuild, rather than emptying content a placement holds. A field the new schema leaves out
+ * goes with its values, as a removed property does.
+ */
+function keepFieldContent(state: ProjectState, was: ComponentDefinition, next: Record<string, PropSchema>) {
+  const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v) && !isBinding(v);
+  for (const [name, now] of Object.entries(next)) {
+    const prev = own(was.properties, name);
+    if (!prev || prev.type !== now.type || (now.type !== 'list' && now.type !== 'object') || (now.type === 'list' && (now.feed || (prev as ListProp).feed))) continue;
+    const prevFields = (prev as ListProp | ObjectProp).fields;
+    for (const [field, schema] of Object.entries(now.fields)) {
+      const old = own(prevFields, field);
+      if (!old || old.type === schema.type) continue;
+      for (const { node, label } of instancesOf(state, was.id)) {
+        const v = own(node.props, name);
+        const holders = now.type === 'list' ? (Array.isArray(v) ? v.filter(record) : []) : record(v) ? [v] : [];
+        for (const holder of holders) {
+          if (!Object.hasOwn(holder, field) || isBinding(holder[field])) continue;
+          if (JSON.stringify(holder[field]) === JSON.stringify(old.default)) holder[field] = clone(schema.default);
+          else if (!LOSSLESS[old.type]?.includes(schema.type))
+            fail(`${label}: "${old.label}" in "${prev.label}" holds content that a ${schema.type} field cannot keep. Give the new field a name of its own to start it over.`);
+          else if (old.type === 'richtext') holder[field] = richTextToPlain(toRichText(holder[field]));
+        }
+      }
+    }
+  }
 }
 
 /** The component a rebuild replaces: a managed design of the project's own, in a form the description can say whole. */
@@ -179,6 +234,14 @@ function designTree(state: ProjectState, specs: DesignNode[]): NodeTree {
   }
   const lost = specs.find((s) => !reached.has(s.id));
   if (lost) fail(`"${lost.id}" is inside itself, through the nodes around it, so it is never shown.`);
+  // Each item of a list is shown once: a repeat never repeats the list of the nearest repeat around it.
+  for (const s of specs) {
+    if (s.kind !== 'repeat') continue;
+    let at = parentOf.get(s.id);
+    while (at !== undefined && byId.get(at)!.kind !== 'repeat') at = parentOf.get(at);
+    const outer = at === undefined ? undefined : byId.get(at);
+    if (outer?.kind === 'repeat' && outer.list === s.list) fail(`"${s.id}" repeats "${s.list}" inside "${outer.id}", a repeat of the same list.`);
+  }
   const anchors = new Set<string>();
   const nodes: Record<string, GraphNode> = {};
   for (const s of specs) {
@@ -207,17 +270,31 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
     if (RESERVED_ANCHORS.has(a)) refuse(`"${a}" is used by the site itself. Choose another anchor.`);
     if (a) base.anchor = a;
   }
-  const text = (v: unknown, max = 200) => (isBinding(v) ? clone(v) : String(v ?? '').trim().slice(0, max));
+  // A value that names a property or item field ("$prop", "$item") is a binding, and only a well-formed one is kept.
+  const bound = (v: unknown): v is Binding => {
+    if (!v || typeof v !== 'object' || Array.isArray(v) || !Object.keys(v).some((k) => k.startsWith('$'))) return false;
+    const r = v as Record<string, unknown>;
+    const keys = Object.keys(r).sort().join(',');
+    const ok = (keys === '$prop' || keys === '$prop,field') && typeof r.$prop === 'string' && (r.field === undefined || typeof r.field === 'string');
+    if (!ok && !(keys === '$item' && typeof r.$item === 'string')) refuse('a binding is {"$prop": name}, {"$prop": name, "field": objectField} or {"$item": field}.');
+    return true;
+  };
+  const text = (v: unknown, max = 200) => (bound(v) ? clone(v) : String(v ?? '').trim().slice(0, max));
   const oneOf = (v: unknown, values: readonly string[], what: string) => {
-    if (isBinding(v)) return clone(v);
+    if (bound(v)) return clone(v);
     if (typeof v !== 'string' || !values.includes(v)) refuse(`${what} must be ${values.join(', ')}.`);
     return v as string;
   };
-  const link = (v: unknown) => (isBinding(v) ? clone(v) : normalizeLink(v, state, label));
+  const link = (v: unknown) => (bound(v) ? clone(v) : normalizeLink(v, state, label));
+  // An unknown name would render a stand-in icon, so a literal one is refused as an icon property's value is.
+  const icon = (v: string) => {
+    if (!Object.hasOwn(ICONS, v)) refuse(`"${v.slice(0, 40)}" is not an available icon. Use one of: ${Object.keys(ICONS).join(', ')}.`);
+    return v;
+  };
   switch (s.kind) {
     case 'element': {
       const n = { ...base, kind: 'element', tag: 'div', children: [...(s.children ?? [])] } as ElementNode;
-      if (s.tag !== undefined) n.tag = tagged(n, s.tag, refuse) as ElementNode['tag'];
+      if (s.tag !== undefined) n.tag = (bound(s.tag) ? clone(s.tag) : tagged(n, s.tag, refuse)) as ElementNode['tag'];
       if (s.link !== undefined) {
         const l = link(s.link);
         // A container with no destination is no card.
@@ -226,7 +303,7 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
       if (s.action !== undefined) n.action = oneOf(s.action, ELEMENT_ACTIONS, 'What a click does') as ElementNode['action'];
       if (s.ariaLabel !== undefined && text(s.ariaLabel)) n.ariaLabel = text(s.ariaLabel) as ElementNode['ariaLabel'];
       if (s.collapseEmpty) n.collapseEmpty = true;
-      if (s.appear !== undefined && s.appear !== 'none') {
+      if (s.appear !== undefined && s.appear !== 'none' && s.appear !== '') {
         if (!isAppearPreset(s.appear)) refuse('an entrance is fade, lift, scale-subtle or none.');
         n.appear = s.appear as ElementNode['appear'];
       }
@@ -242,38 +319,38 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
       if (rich) {
         n.rich = true;
         if (s.tag !== undefined && s.tag !== 'div') refuse('rich text keeps its paragraph structure, so it takes no tag.');
-        n.text = isBinding(s.text) ? clone(s.text) : normalizeRichText(s.text, state, label);
+        n.text = bound(s.text) ? clone(s.text) : normalizeRichText(s.text, state, label);
         if (s.datetime !== undefined) refuse('rich text cannot state a date; only plain text can.');
         return n;
       }
-      if (s.tag !== undefined) n.tag = tagged(n, s.tag, refuse) as TextNode['tag'];
-      if (!isBinding(s.text) && typeof s.text !== 'string') refuse('plain text is one string. Make it rich text (rich: true) for paragraphs and lists.');
-      n.text = isBinding(s.text) ? clone(s.text) : (s.text as string);
+      if (s.tag !== undefined) n.tag = (bound(s.tag) ? clone(s.tag) : tagged(n, s.tag, refuse)) as TextNode['tag'];
+      const plain = s.text;
+      if (bound(plain)) n.text = clone(plain);
+      else if (typeof plain === 'string') n.text = plain;
+      else refuse('plain text is one string. Make it rich text (rich: true) for paragraphs and lists.');
       if (s.datetime !== undefined) {
-        const d = isBinding(s.datetime) ? s.datetime : s.datetime.trim();
-        if (!isBinding(d) && d && !isArticleDate(d)) refuse('a date is written YYYY-MM-DD.');
-        if (isBinding(d) || d) n.datetime = isBinding(d) ? clone(d) : d;
+        const d = s.datetime;
+        if (bound(d)) n.datetime = clone(d);
+        else if (d.trim() && !isArticleDate(d.trim())) refuse('a date is written YYYY-MM-DD.');
+        else if (d.trim()) n.datetime = d.trim();
       }
       return n;
     }
     case 'image': {
-      const n: GraphNode = { ...base, kind: 'image', image: isBinding(s.image) ? clone(s.image) : normalizeImage(s.image, state, label) } as GraphNode;
+      const n: GraphNode = { ...base, kind: 'image', image: bound(s.image) ? clone(s.image) : normalizeImage(s.image, state, label) } as GraphNode;
       if (s.fallbackAlt !== undefined && text(s.fallbackAlt, 300)) (n as { fallbackAlt?: unknown }).fallbackAlt = text(s.fallbackAlt, 300);
       return n;
     }
     case 'link': {
-      const n = { ...base, kind: 'link', link: link(s.link) as LinkValue, label: isBinding(s.label) ? clone(s.label) : String(s.label), appearance: s.appearance === undefined ? 'primary' : oneOf(s.appearance, APPEARANCES, 'A button\'s appearance') } as LinkNode;
-      if (s.icon !== undefined) {
-        if (!isBinding(s.icon) && s.icon.trim() && !ICON_RE.test(s.icon.trim())) refuse(`"${s.icon}" is not an icon name.`);
-        if (isBinding(s.icon) || s.icon.trim()) n.icon = isBinding(s.icon) ? clone(s.icon) : s.icon.trim();
-      }
+      const n = { ...base, kind: 'link', link: link(s.link) as LinkValue, label: bound(s.label) ? clone(s.label) : String(s.label), appearance: s.appearance === undefined ? 'primary' : oneOf(s.appearance, APPEARANCES, 'A button\'s appearance') } as LinkNode;
+      // A button without an icon leaves it out.
+      if (s.icon !== undefined && (bound(s.icon) || s.icon.trim())) n.icon = bound(s.icon) ? clone(s.icon) : icon(s.icon.trim());
       if (s.iconPosition !== undefined) n.iconPosition = oneOf(s.iconPosition, ICON_POSITIONS, 'The icon\'s side') as LinkNode['iconPosition'];
       if (s.ariaLabel !== undefined && text(s.ariaLabel)) n.ariaLabel = text(s.ariaLabel) as LinkNode['ariaLabel'];
       return n;
     }
     case 'icon': {
-      if (!isBinding(s.icon) && !ICON_RE.test(s.icon)) refuse(`"${s.icon}" is not an icon name.`);
-      const n = { ...base, kind: 'icon', icon: isBinding(s.icon) ? clone(s.icon) : s.icon } as GraphNode;
+      const n = { ...base, kind: 'icon', icon: bound(s.icon) ? clone(s.icon) : icon(s.icon) } as GraphNode;
       if (s.ariaLabel !== undefined && text(s.ariaLabel)) (n as { ariaLabel?: unknown }).ariaLabel = text(s.ariaLabel);
       return n;
     }
@@ -286,9 +363,8 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
   }
 }
 
-/** A literal tag of the node's kind, or the choice it is bound to (checked with the other bindings). */
+/** A literal tag of the node's kind. */
 function tagged(node: GraphNode, tag: unknown, refuse: (message: string) => never): unknown {
-  if (isBinding(tag)) return clone(tag);
   const problem = tagKindProblem(node, tag);
   if (problem) refuse(problem);
   return tag;
@@ -390,7 +466,13 @@ function checkBindings(state: ProjectState, def: ComponentDefinition, sites: Bin
   for (const site of sites) {
     const { node, field, binding: b } = site;
     const at = `${where}${describeNode(node)}`;
-    if (isStateRef(b)) fail(`${at} reads UI state, which component.upsert cannot describe yet.`);
+    if (isStateRef(b)) {
+      // A component around this one may read its own UI state there; a design built whole never does yet.
+      if (!where) fail(`${at} reads UI state, which component.upsert cannot describe yet.`);
+      const problem = stateRefProblem(state, def, site, b);
+      if (problem) fail(`${at} ${problem}`);
+      continue;
+    }
     const schema = boundSchema(def, node.id, b);
     if (!schema) {
       if ('$prop' in b) {
@@ -401,6 +483,8 @@ function checkBindings(state: ProjectState, def: ComponentDefinition, sites: Bin
       fail(enclosingList(def, node.id) ? `${at} shows the item field "${b.$item}", which the list it repeats does not have.` : `${at} shows the item field "${b.$item}" outside any repeat.`);
     }
     const nested = field === 'prop' && node.kind === 'instance' ? own(state.components[node.definitionId]?.properties, site.prop!) : undefined;
+    // A computed list is filled from the site's pages where it is placed; items handed to it would be ignored.
+    if (nested?.type === 'list' && nested.feed) fail(`${at} passes "${'$prop' in b ? b.$prop : b.$item}" to "${nested.label}", which fills itself from the site's pages and cannot take a property.`);
     const ok = acceptedTypes(node, field, nested);
     if (ok && !ok.includes(schema.type)) fail(`${at} cannot show a ${schema.type} as its ${field === 'prop' ? quoted(site.prop!) : field}: it needs a ${ok.join(' or ')}.`);
     if (field === 'list' && '$prop' in b && enclosingRepeatProp(def, node.id) === b.$prop) fail(`${at} repeats "${b.$prop}" inside a repeat of the same list.`);
@@ -436,16 +520,26 @@ function applyStyles(state: ProjectState, defId: string, nodeId: string, raw: Re
  * longer has go, and single-item styles go where their part no longer repeats over the same list; filled slots the new
  * design would hide refuse the rebuild, and so do components that place this one and pass it what it no longer takes.
  */
-function settlePlacements(state: ProjectState, was: ComponentDefinition, def: ComponentDefinition) {
+function settlePlacements(state: ProjectState, was: ComponentDefinition, def: ComponentDefinition, shownBefore: ReadonlyMap<InstanceNode, Set<string>>) {
   for (const partId of Object.keys(was.parts)) if (!Object.hasOwn(def.parts, partId)) dropPartOverrides(state, def.id, partId);
   for (const { node, label, owner } of instancesOf(state, def.id)) {
     for (const [partId, entry] of Object.entries(node.itemOverrides ?? {})) {
-      if (!entry || typeof entry !== 'object' || typeof entry.list !== 'string') continue;
-      if (entry.list !== repeatedPartList(def, partId)) delete node.itemOverrides![partId];
+      if (!entry || typeof entry !== 'object' || typeof entry.list !== 'string' || !entry.items || typeof entry.items !== 'object') continue;
+      if (entry.list !== repeatedPartList(def, partId)) {
+        delete node.itemOverrides![partId];
+        continue;
+      }
+      // Styles of an item the placement no longer shows (a default item the new defaults leave out) go with it.
+      const shown = new Set(placementItems(def, node, entry.list).map((i) => i.id));
+      for (const itemId of Object.keys(entry.items)) if (!shown.has(itemId)) delete entry.items[itemId];
+      if (!Object.keys(entry.items).length) delete node.itemOverrides![partId];
     }
     if (node.itemOverrides && !Object.keys(node.itemOverrides).length) delete node.itemOverrides;
-    const hidden = hiddenSlotContent(was, def, node, label);
-    if (hidden.length) fail(`${hidden[0]} Move that content out first, or show the slot outside the list.`);
+    // Content a placement shows now must still show: a slot the new design puts inside a list it holds no items of
+    // would hide it.
+    const shown = shownSlots(def, node);
+    const hidden = Object.entries(node.slots ?? {}).find(([slot, ids]) => Array.isArray(ids) && ids.length && shownBefore.get(node)?.has(slot) && !shown.has(slot));
+    if (hidden) fail(`${label}: ${def.name} would no longer show the content in its "${hidden[0]}" slot. Move that content out first, or show the slot outside the list.`);
     const around = owner.kind === 'component' ? own(state.components, owner.id) : undefined;
     if (around) checkBindings(state, around, bindingSites(around).filter((s) => s.node === node), `"${around.name}" places "${def.name}" as `);
   }

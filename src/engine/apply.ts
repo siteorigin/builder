@@ -3159,7 +3159,10 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     const problem = batchTagProblem(state, draft, retagged.map(({ owner }) => owner));
     // Named by the edit that retagged the node out of place (or built the design it is in), when one did; else it is
     // where the batch leaves it.
-    const by = problem ? retagged.findLast((r) => (r.nodeId === undefined || r.nodeId === problem.nodeId) && r.owner.kind === problem.owner.kind && r.owner.id === problem.owner.id) : undefined;
+    const sameOwner = (o: unknown) => !!o && typeof o === 'object' && (o as OwnerRef).kind === problem?.owner.kind && (o as OwnerRef).id === problem?.owner.id;
+    // A design built whole is named only while no later operation of the batch edits it.
+    const editedAfter = (i: number) => ops.slice(i + 1).some((o) => sameOwner((o as { owner?: unknown }).owner) || sameOwner((o as { toOwner?: unknown }).toOwner));
+    const by = problem ? retagged.findLast((r) => (r.nodeId === undefined ? !editedAfter(r.i) : r.nodeId === problem.nodeId) && sameOwner(r.owner)) : undefined;
     if (problem) throw new EngineError('INVALID_ARGUMENT', ops.length > 1 && by ? `Operation ${by.i + 1} (${by.type}): ${problem.message}` : problem.message);
   }
   // A theme update changes no project component, not even this derived field.

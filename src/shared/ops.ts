@@ -95,7 +95,7 @@ const DESIGN_NODE_BASE = {
   styles: designStyles.optional(),
   when: designCondition.optional(),
   unless: designCondition.optional().describe('Hidden while the property or item field is set, or while the comparison holds.'),
-  anchor: z.string().max(61).optional()
+  anchor: z.string().max(62).optional()
 };
 const DESIGN_CHILDREN = z.array(DESIGN_NODE_ID).max(200).optional().describe('IDs of the nodes inside it, in order.');
 const DESIGN_NODE = z.discriminatedUnion('kind', [

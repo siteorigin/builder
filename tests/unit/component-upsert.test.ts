@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { compile } from 'svelte/compiler';
 import type { ElementNode, InstanceNode, LinkNode, ListItem, ProjectState, RepeatNode, TextNode } from '@shared/types';
 import { validateOperation, type EditOperation, type Op } from '@shared/ops';
 import { projectDefinitionId } from '@shared/component-ids';
+import { styleSetFor } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
@@ -118,6 +119,8 @@ describe('component.upsert: building a managed component in one operation (#358)
     expect(Object.keys(def.tree!.nodes).sort()).toEqual(['badge', 'card', 'cta', 'footnote', 'header', 'intro', 'list', 'name', 'notes', 'plans', 'price', 'root', 'title'].sort());
     expect(def.tree!.nodes.title).toMatchObject({ kind: 'text', tag: { $prop: 'level' }, text: { $prop: 'heading' }, styles: { base: { textStyle: { token: 'text.h2' } } } });
     expect(def.tree!.nodes.badge).toMatchObject({ when: { ref: { $item: 'featured' }, eq: true } });
+    expect(def.tree!.nodes.price).toMatchObject({ unless: { ref: { $item: 'price' }, eq: '' } });
+    expect(def.tree!.nodes.intro).toMatchObject({ kind: 'text', rich: true, tag: 'div', when: { $prop: 'intro' } });
     expect((def.tree!.nodes.plans as RepeatNode).list).toEqual({ $prop: 'plans' });
     expect(def.tree!.nodes.card.styles).toEqual({ base: { paddingBlock: { token: 'space.lg' } }, 'base:hover': { background: { token: 'color.surface-alt' } } });
     expect((def.tree!.nodes.footnote as ElementNode).collapseEmpty).toBe(true);
@@ -125,7 +128,8 @@ describe('component.upsert: building a managed component in one operation (#358)
     expect(Object.keys(def.parts)).toEqual(['root', 'card', 'title', 'cta']);
     expect(def.parts.root).toMatchObject({ nodeId: 'root', label: 'Root' });
     expect(def.parts.title.styleControls).toEqual(['textStyle', 'color']);
-    expect(def.parts.card.styleControls?.length).toBeGreaterThan(0);
+    expect(def.parts.card.styleControls).toEqual(styleSetFor({ kind: 'element' }));
+    expect(def.parts.cta.styleControls).toEqual(styleSetFor({ kind: 'link' }));
     expect(def.slots).toEqual({ notes: { label: 'Notes', description: 'Small print under the plans.', primitives: ['text', 'link'], max: 2 } });
     expect(def.variantAxes!.tone).toMatchObject({ label: 'Tone', default: 'light' });
     expect(def.variantAxes!.tone.options.dark.styles).toEqual({ root: { base: { background: { token: 'color.inverse' }, color: { token: 'color.on-inverse' } } } });
@@ -135,6 +139,7 @@ describe('component.upsert: building a managed component in one operation (#358)
     const placed = s.state.pages[home.id].nodes[r.results![1].nodeId as string] as InstanceNode;
     expect(placed).toMatchObject({ kind: 'instance', definitionId, variants: { tone: 'dark' } });
     expect((placed.props.plans as ListItem[]).map((p) => p.name)).toEqual(['Basic', 'Pro']);
+    expect((placed.props.plans as ListItem[]).map((p) => p.id)).not.toContain('basic');
 
     expect(errors(s.state)).toEqual([]);
     compiles(s.state, definitionId);
@@ -157,7 +162,10 @@ describe('component.upsert: building a managed component in one operation (#358)
     const deep = { ...op, nodes: [...op.nodes.map((n) => (n.id === 'footnote' ? { ...n, children: ['notes', 'level0'] } : n)), ...nodes] };
     expect(validateOperation(deep)).toMatchObject({ ok: true });
     const st = applyOperations(createStarterState('blank', 'Expo', false), [deep as EditOperation]).state;
-    expect(Object.keys(Object.values(st.components).find((d) => d.name === 'Pricing table')!.tree!.nodes)).toHaveLength(13 + depth);
+    const tree = Object.values(st.components).find((d) => d.name === 'Pricing table')!.tree!;
+    expect(Object.keys(tree.nodes)).toHaveLength(13 + depth);
+    expect((tree.nodes.footnote as ElementNode).children).toEqual(['notes', 'level0']);
+    for (let i = 0; i < depth - 1; i++) expect((tree.nodes[`level${i}`] as ElementNode).children).toEqual([`level${i + 1}`]);
     // Object-prototype names are never node IDs.
     expect(validateOperation({ ...op, nodes: [...op.nodes, { kind: 'divider', id: 'constructor' }] }).ok).toBe(false);
     expect(() => applyOperations(createStarterState('blank', 'Expo', false), [{ ...op, nodes: [{ kind: 'element', id: 'toString', children: [] }] } as EditOperation])).toThrow(/cannot be a node ID/);
@@ -200,16 +208,40 @@ describe('component.upsert: building a managed component in one operation (#358)
       [withNodes((n) => (node(n, 'title').tag = 'h9', n)), /"title": Text’s tag must be one of/],
       [withNodes((n) => (node(n, 'title').tag = { $prop: 'heading' }, n)), /cannot show a string as its tag/],
       // A list item outside its list, judged once the whole design is in place.
-      [withNodes((n) => (node(n, 'footnote').tag = 'li', n)), /is a list item, so it goes directly inside a list/]
+      [withNodes((n) => (node(n, 'footnote').tag = 'li', n)), /is a list item, so it goes directly inside a list/],
+      // A repeat of the same list inside it, however deep.
+      [
+        withNodes((n) => {
+          node(n, 'card').children = ['badge', 'name', 'price', 'cta', 'deep0'];
+          const chain = Array.from({ length: 60 }, (_, i) => ({ kind: 'element' as const, id: `deep${i}`, children: [i < 59 ? `deep${i + 1}` : 'again'] }));
+          return [...n, ...chain, { kind: 'repeat', id: 'again', list: 'plans', children: [] }];
+        }),
+        /"again" repeats "plans" inside "plans", a repeat of the same list/
+      ],
+      // A literal that looks like a binding but is not one.
+      [withNodes((n) => [...n.map((x) => (x.id === 'header' ? { ...x, children: ['title', 'intro', 'pic'] } : x)), { kind: 'image', id: 'pic', image: { $state: 'photo' } as never }]), /"pic": a binding is/],
+      [withNodes((n) => [...n.map((x) => (x.id === 'header' ? { ...x, children: ['title', 'intro', 'pic'] } : x)), { kind: 'image', id: 'pic', image: { $prop: ['heading'] } as never }]), /"pic": a binding is/],
+      [withNodes((n) => [...n.map((x) => (x.id === 'header' ? { ...x, children: ['title', 'intro', 'mark'] } : x)), { kind: 'icon', id: 'mark', icon: 'not-an-icon' }]), /"not-an-icon" is not an available icon/]
     ];
     for (const [bad, why] of refused) {
-      expect(validateOperation(bad)).toMatchObject({ ok: true });
+      expect(validateOperation(bad), String(why)).toMatchObject({ ok: true });
       const r = await s.apply({ operations: [bad] }, { label: 'Build' });
       expect(r.ok, String(why)).toBe(false);
       expect(r.error?.message).toMatch(why);
     }
     expect(s.state).toEqual(before);
     expect(s.historyInfo().entries.length).toBe(entries);
+    // The engine itself refuses a list item outside its list, naming the operation that built the design...
+    const li = withNodes((n) => (node(n, 'footnote').tag = 'li', n));
+    expect(() => applyOperations(before, [li, { type: 'page.create', title: 'Later' }])).toThrow(/^Operation 1 \(component\.upsert\): A container is a list item/);
+    // ...but not one that a later operation of the batch moved out of place.
+    const fine = applyOperations(before, [pricing()]);
+    const id = fine.results[0].definitionId as string;
+    const extra = pricing({ definitionId: id });
+    extra.nodes = [...extra.nodes.map((n) => (n.id === 'root' ? { ...n, children: ['header', 'list', 'footnote', 'facts'] } : n)), { kind: 'element', id: 'facts', tag: 'ul', children: ['fact'] }, { kind: 'element', id: 'fact', tag: 'li', children: [] }];
+    expect(() => applyOperations(fine.state, [extra])).not.toThrow();
+    const moved = [extra, { type: 'node.move', owner: { kind: 'component', id }, nodeId: 'fact', parentId: 'root', index: 0 }] as EditOperation[];
+    expect(() => applyOperations(fine.state, moved)).toThrow(/^A container is a list item/);
   });
 
   it('rebuilds a placed component, keeping placement values, list items, variant choices and part styles across pages, in one undoable step', async () => {
@@ -225,6 +257,7 @@ describe('component.upsert: building a managed component in one operation (#358)
       },
       { label: 'Place' }
     );
+    expect(made.ok && placed.ok).toBe(true);
     const a = placed.results![0].nodeId as string;
     const b = placed.results![1].nodeId as string;
     await s.apply(
@@ -293,6 +326,10 @@ describe('component.upsert: building a managed component in one operation (#358)
     const pb = s.state.pages[other.id].nodes[b] as InstanceNode;
     // Values the new schema still has stay; a new property shows its default; list items keep their IDs and fields.
     expect(pa.props.heading).toBe('Our plans');
+    expect(pa.props.subtitle).toBeUndefined();
+    expect(def.properties.subtitle.default).toBe('Cancel any time.');
+    // A part on another element offers what that element's kind takes.
+    expect(def.parts.title).toEqual({ nodeId: 'heading2', label: 'Heading', styleControls: styleSetFor({ kind: 'text' }) });
     expect(pb.props.heading).toBe('Prices');
     expect(pa.props.plans).toEqual([
       { id: 'p1', name: 'Solo', price: '$5', featured: false, cta: { type: 'none', target: '' }, note: '' },
@@ -321,7 +358,7 @@ describe('component.upsert: building a managed component in one operation (#358)
     expect(s.state.pages).toEqual(rebuilt.pages);
   });
 
-  it('drops single-item styles whose part no longer repeats over the same list', () => {
+  it('drops single-item styles whose part no longer repeats over the same list, or whose item is gone', () => {
     let st = createStarterState('blank', 'Expo', false);
     const home = { kind: 'page' as const, id: st.site.homePageId };
     const made = applyOperations(st, [pricing()]);
@@ -333,7 +370,8 @@ describe('component.upsert: building a managed component in one operation (#358)
       { type: 'node.setStyle', owner: home, nodeId, partId: 'card', itemId: 'x1', scope: 'base', property: 'background', value: { token: 'color.surface-alt' } },
       { type: 'node.setStyle', owner: home, nodeId, partId: 'card', scope: 'base', property: 'radius', value: { token: 'radius.md' } }
     ]).state;
-    // The card now repeats over "offers", whose items reuse the same IDs: the styles set for a plan never reach an offer.
+    expect((st.pages[home.id].nodes[nodeId] as InstanceNode).itemOverrides).toEqual({ card: { list: 'plans', items: { x1: { base: { background: { token: 'color.surface-alt' } } } } } });
+    // The card now repeats over "offers": the styles set for one plan are no item's of that list.
     const next = pricing({ definitionId: id });
     next.properties = { ...next.properties, offers: next.properties.plans };
     next.nodes = next.nodes.map((n) => (n.id === 'plans' ? { ...n, list: 'offers' } : n));
@@ -342,6 +380,20 @@ describe('component.upsert: building a managed component in one operation (#358)
     expect(inst.itemOverrides).toBeUndefined();
     expect(inst.overrides).toEqual({ card: { base: { radius: { token: 'radius.md' } } } });
     expect((inst.props.offers as ListItem[]).length).toBe(2);
+
+    // A part kept on the same element keeps the controls it offered.
+    const same = applyOperations(st, [pricing({ definitionId: id, parts: { ...pricing().parts, title: { nodeId: 'title', label: 'Heading' } } })]).state;
+    expect(same.components[id].parts.title.styleControls).toEqual(['textStyle', 'color']);
+
+    // A placement showing the default plans (saved before placements had their own): the styles of a default plan go
+    // when the new defaults leave it out, and stay while they keep it.
+    const older = structuredClone(st);
+    delete (older.pages[home.id].nodes[nodeId] as InstanceNode).props.plans;
+    const styled = applyOperations(older, [{ type: 'node.setStyle', owner: home, nodeId, partId: 'card', itemId: 'pro', scope: 'base', property: 'background', value: { token: 'color.surface-alt' } }]).state;
+    const fewer = pricing({ definitionId: id });
+    (fewer.properties.plans as { default: unknown[] }).default = [{ id: 'basic', name: 'Basic', price: '$9' }];
+    expect((applyOperations(styled, [fewer]).state.pages[home.id].nodes[nodeId] as InstanceNode).itemOverrides).toBeUndefined();
+    expect((applyOperations(styled, [pricing({ definitionId: id })]).state.pages[home.id].nodes[nodeId] as InstanceNode).itemOverrides?.card.items.pro).toBeDefined();
   });
 
   it('refuses a rebuild a placement anywhere cannot take, leaving every page as it was', async () => {
@@ -358,7 +410,7 @@ describe('component.upsert: building a managed component in one operation (#358)
       { label: 'Place' }
     );
     const placedOther = Object.values(s.state.pages[other.id].nodes).find((n) => n.kind === 'instance' && n.definitionId === id) as InstanceNode;
-    await s.apply({ operations: [{ type: 'node.insert', owner: other, parentId: placedOther.id, slot: 'notes', primitive: 'paragraph', text: 'Small print.' }] }, { label: 'Note' });
+    expect((await s.apply({ operations: [{ type: 'node.insert', owner: other, parentId: placedOther.id, slot: 'notes', primitive: 'paragraph', text: 'Small print.' }] }, { label: 'Note' })).ok).toBe(true);
     const before = structuredClone(s.state);
     const entries = s.historyInfo().entries.length;
 
@@ -437,6 +489,21 @@ describe('component.upsert: building a managed component in one operation (#358)
     const nested = applyOperations(made.state, [{ type: 'node.insert', owner: { kind: 'component', id: definitionId }, parentId: rootNodeId, componentId: 'content.text' }]).state;
     expect(() => applyOperations(nested, [pricing({ definitionId })])).toThrow(/places other components/);
     expect(() => applyOperations(st, [pricing({ definitionId, newDefinitionId: projectDefinitionId('X') })])).toThrow(/not both/);
+    // A design whose buttons change its UI state, or whose elements read it.
+    const own = applyOperations(st, [pricing()]);
+    const ownId = own.results[0].definitionId as string;
+    // A managed design of the shared header or footer.
+    const shell = structuredClone(own.state);
+    shell.components[ownId].category = 'shell';
+    expect(() => applyOperations(shell, [pricing({ definitionId: ownId })])).toThrow(/shared header or footer/);
+    const withState = applyOperations(own.state, [
+      { type: 'component.setState', definitionId: ownId, state: 'open', schema: { type: 'boolean' } },
+      { type: 'node.setBinding', owner: { kind: 'component', id: ownId }, nodeId: 'intro', field: 'when', binding: { $state: 'open' } }
+    ]).state;
+    expect(() => applyOperations(withState, [pricing({ definitionId: ownId })])).toThrow(/UI state its design reads or its buttons change \(open\)/);
+    // Declared but unused, the state stays as it is.
+    const declared = applyOperations(own.state, [{ type: 'component.setState', definitionId: ownId, state: 'open', schema: { type: 'boolean' } }]).state;
+    expect(applyOperations(declared, [pricing({ definitionId: ownId })]).state.components[ownId].state).toEqual(declared.components[ownId].state);
   });
 
   it('is never offered to the assistant as a raw operation, and is refused if sent anyway', async () => {
@@ -451,6 +518,124 @@ describe('component.upsert: building a managed component in one operation (#358)
     expect(out.ok).toBe(false);
     expect(JSON.stringify(out.content)).toMatch(/component.upsert is not available here/);
     expect(applied).toBe(0);
+  });
+
+  it('keeps list and object field content through a lossless type change, and refuses one that would empty it', () => {
+    let st = createStarterState('blank', 'Expo', false);
+    const home = { kind: 'page' as const, id: st.site.homePageId };
+    const made = applyOperations(st, [pricing()]);
+    const id = made.results[0].definitionId as string;
+    const placed = applyOperations(made.state, [
+      { type: 'node.insert', owner: home, parentId: null, definitionId: id, props: { plans: [{ id: 'a', name: 'Solo', cta: { type: 'url', target: 'https://example.org/solo' } }, { id: 'b', name: 'Team' }] } }
+    ]);
+    st = placed.state;
+    const nodeId = placed.results[0].nodeId as string;
+    const retype = (field: string, schema: Record<string, unknown>) => {
+      const op = pricing({ definitionId: id });
+      const plans = op.properties.plans as { fields: Record<string, unknown>; default: Array<Record<string, unknown>> };
+      plans.fields[field] = schema;
+      for (const d of plans.default) delete d[field];
+      if (field === 'cta') op.nodes = op.nodes.map((n) => (n.id === 'cta' ? { ...n, link: { type: 'none', target: '' } } : n));
+      if (field === 'name') op.nodes = op.nodes.map((n) => (n.id === 'name' ? { ...n, rich: true, tag: undefined } : n));
+      return op;
+    };
+    // Plain text to rich text keeps every word.
+    const rich = applyOperations(st, [retype('name', { type: 'richtext', label: 'Name', default: ['Plan'] })]).state;
+    const items = (rich.pages[home.id].nodes[nodeId] as InstanceNode).props.plans as ListItem[];
+    expect(items.map((i) => i.id)).toEqual(['a', 'b']);
+    expect(JSON.stringify(items[0].name)).toMatch(/Solo/);
+    // A link that becomes an image would lose its destination; an item still at the old default just starts over.
+    expect(() => applyOperations(st, [retype('cta', { type: 'image', label: 'Picture', default: { assetId: null, alt: '' } })])).toThrow(/"Button link" in "Plans" holds content that a image field cannot keep/);
+    const fresh = applyOperations(made.state, [{ type: 'node.insert', owner: home, parentId: null, definitionId: id }]);
+    const pictured = applyOperations(fresh.state, [retype('cta', { type: 'image', label: 'Picture', default: { assetId: null, alt: '' } })]).state;
+    for (const it of (pictured.pages[home.id].nodes[fresh.results[0].nodeId as string] as InstanceNode).props.plans as ListItem[]) expect(it.cta).toEqual({ assetId: null, alt: '' });
+  });
+
+  it('refuses a rebuild that hides a filled slot a placement shows now, judged by its values before they move', () => {
+    let st = createStarterState('blank', 'Expo', false);
+    const home = { kind: 'page' as const, id: st.site.homePageId };
+    const rowsOf = (name: string) => ({ type: 'list', label: name, itemLabel: 'Row', fields: { text: { type: 'string', label: 'Text', default: '' } }, default: [] });
+    const inRows = (list: string) => {
+      const op = pricing();
+      op.properties = { ...op.properties, [list]: rowsOf(list) };
+      op.nodes = [
+        ...op.nodes.map((n) => (n.id === 'footnote' ? { ...n, children: ['rows'] } : n)),
+        { kind: 'repeat', id: 'rows', list, children: ['row'] },
+        { kind: 'element', id: 'row', children: ['notes'] }
+      ];
+      return op;
+    };
+    const made = applyOperations(st, [inRows('oldRows')]);
+    const id = made.results[0].definitionId as string;
+    const placed = applyOperations(made.state, [{ type: 'node.insert', owner: home, parentId: null, definitionId: id, props: { oldRows: [{ id: 'r1', text: 'One' }] } }]);
+    const nodeId = placed.results[0].nodeId as string;
+    st = applyOperations(placed.state, [{ type: 'node.insert', owner: home, parentId: nodeId, slot: 'notes', primitive: 'paragraph', text: 'Small print.' }]).state;
+    expect(() => applyOperations(st, [{ ...inRows('newRows'), definitionId: id }])).toThrow(/would no longer show the content in its "notes" slot/);
+    // Under the list it already shows, it stays.
+    expect(() => applyOperations(st, [{ ...inRows('oldRows'), definitionId: id }])).not.toThrow();
+  });
+
+  it('waits for an outside edit to a page the rebuild only reads', async () => {
+    const { s, other } = await session();
+    const made = await s.apply({ operations: [pricing()] }, { label: 'Build' });
+    const id = made.results![0].definitionId as string;
+    expect((await s.apply({ operations: [{ type: 'node.insert', owner: other, parentId: null, definitionId: id }] }, { label: 'Place' })).ok).toBe(true);
+    const file = `siteorigin/pages/${other.id}.json`;
+    const path = join(dirs.at(-1)!, file);
+    writeFileSync(path, readFileSync(path, 'utf8').replace('"Pricing"', '"Pricing (edited)"'));
+    // Only the heading text changes, so the rebuild writes no page; it still read them all.
+    const next = pricing({ definitionId: id });
+    next.properties = { ...next.properties, heading: { type: 'string', label: 'Heading', default: 'Our plans' } };
+    const r = await s.apply({ operations: [next] }, { label: 'Rebuild' });
+    expect(r.error).toMatchObject({ code: 'CONFLICT' });
+    expect(r.error!.message).toMatch(new RegExp(`^${file} was changed outside SiteOrigin Builder`));
+  });
+
+  it('checks what components placing this one pass it, and leaves their own UI state reads alone', () => {
+    let st = createStarterState('blank', 'Expo', false);
+    const base = pricing();
+    base.properties = {
+      ...base.properties,
+      cta: { type: 'object', label: 'Call to action', fields: { label: { type: 'string', label: 'Label', default: 'Go' }, link: { type: 'link', label: 'Link', default: { type: 'none', target: '' } } } },
+      extras: { type: 'list', label: 'Extras', itemLabel: 'Extra', fields: { title: { type: 'string', label: 'Title', default: '' } }, default: [] }
+    };
+    const inner = applyOperations(st, [base]);
+    const id = inner.results[0].definitionId as string;
+    const outer = applyOperations(inner.state, [{ type: 'component.create', name: 'Wrapper' }]);
+    const { definitionId: wrapper, rootNodeId } = outer.results[0] as { definitionId: string; rootNodeId: string };
+    const owner = { kind: 'component' as const, id: wrapper };
+    const placed = applyOperations(outer.state, [{ type: 'node.insert', owner, parentId: rootNodeId, definitionId: id }]);
+    const nodeId = placed.results[0].nodeId as string;
+    st = applyOperations(placed.state, [
+      { type: 'component.setPropSchema', definitionId: wrapper, prop: 'action', schema: base.properties.cta as Record<string, unknown> },
+      { type: 'component.setPropSchema', definitionId: wrapper, prop: 'rows', schema: base.properties.extras as Record<string, unknown> },
+      { type: 'node.setBinding', owner, nodeId, field: 'prop', prop: 'cta', binding: { $prop: 'action' } },
+      { type: 'node.setBinding', owner, nodeId, field: 'prop', prop: 'extras', binding: { $prop: 'rows' } },
+      { type: 'component.setState', definitionId: wrapper, state: 'open', schema: { type: 'boolean' } },
+      { type: 'node.setBinding', owner, nodeId, field: 'when', binding: { $state: 'open' } }
+    ]).state;
+    // Rebuilt as it is, it goes through: the wrapper's own UI state read is the wrapper's.
+    expect(() => applyOperations(st, [{ ...base, definitionId: id }])).not.toThrow();
+    // An object whose fields change no longer takes what the wrapper passes it.
+    const reshaped = { ...base, definitionId: id, properties: { ...base.properties, cta: { ...(base.properties.cta as object), fields: { label: { type: 'string', label: 'Label', default: 'Go' } } } } };
+    expect(() => applyOperations(st, [reshaped])).toThrow(/"Wrapper" places "Pricing table" as .*whose fields differ/);
+    // A list that now fills itself from the site's pages takes nothing passed to it.
+    const fed = { ...base, definitionId: id, properties: { ...base.properties, extras: { type: 'list', label: 'Extras', itemLabel: 'Extra', feed: 'articles', fields: { title: { type: 'string', label: 'Title', default: '' } } } } };
+    expect(() => applyOperations(st, [fed])).toThrow(/fills itself from the site's pages and cannot take a property/);
+  });
+
+  it('forgets an option saved under an ID no variant can have', () => {
+    const st = createStarterState('blank', 'Expo', false);
+    const home = { kind: 'page' as const, id: st.site.homePageId };
+    const made = applyOperations(st, [pricing()]);
+    const id = made.results[0].definitionId as string;
+    const placed = applyOperations(made.state, [{ type: 'node.insert', owner: home, parentId: null, definitionId: id }]);
+    const legacy = structuredClone(placed.state);
+    legacy.components[id].variantAxes!.tone.options['old option'] = { label: 'Old' };
+    (legacy.pages[home.id].nodes[placed.results[0].nodeId as string] as InstanceNode).variants = { tone: 'old option' };
+    const after = applyOperations(legacy, [pricing({ definitionId: id })]).state;
+    expect(Object.keys(after.components[id].variantAxes!.tone.options)).toEqual(['light', 'dark']);
+    expect((after.pages[home.id].nodes[placed.results[0].nodeId as string] as InstanceNode).variants).toBeUndefined();
   });
 
   it('keeps a button label, link and the text kinds as the single-step edits store them', () => {
@@ -480,6 +665,10 @@ describe('component.upsert: building a managed component in one operation (#358)
     expect(Array.isArray((n.body as TextNode).text)).toBe(true);
     expect(n.go as LinkNode).toMatchObject({ link: { type: 'page', target: home }, label: 'Visit', appearance: 'primary', icon: 'arrow-right', iconPosition: 'end' });
     expect(n.line).toMatchObject({ anchor: 'rule' });
+    expect(n.mark).toMatchObject({ kind: 'icon', icon: 'sparkles', ariaLabel: 'Sparkle' });
+    expect(n.pic).toMatchObject({ kind: 'image', image: { assetId: null, alt: '' }, fallbackAlt: 'A photo' });
+    expect((n.body as TextNode).text).toHaveLength(2);
+    expect(JSON.stringify((n.body as TextNode).text)).toMatch(/bold/);
     expect(errors(after.state)).toEqual([]);
     compiles(after.state, def.id);
   });

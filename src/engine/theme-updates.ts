@@ -143,7 +143,7 @@ function pinnedByProject(state: ProjectState): Map<string, ComponentDefinition> 
  * The slots `next` shows for one placement: those reachable from its roots without passing through a repeat whose list
  * is empty for that placement (its own value, or the new default it would inherit), which renders nothing inside it.
  */
-function shownSlots(next: ComponentDefinition, node: InstanceNode): Set<string> {
+export function shownSlots(next: ComponentDefinition, node: InstanceNode): Set<string> {
   const out = new Set<string>();
   const seen = new Set<string>();
   const walk = (id: string) => {
