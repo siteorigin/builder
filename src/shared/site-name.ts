@@ -1,0 +1,161 @@
+/**
+ * The site's name where the shared header and footer show it (#31). A brand label that says the site's name follows
+ * it when the site is renamed, and so does the footer's copyright line while the holder it names right after the ©
+ * and year is the site. A label or line that says something else is the author's own, and a rename keeps it.
+ *
+ * What a placement shows says whether it follows, so the editor can say so beside the field, and the engine applies
+ * the rule to every rename alike, made by hand or by the AI. The one case the text cannot tell is the author's own
+ * label that a rename makes equal to the site's name (a masthead the site is then named after): the placement keeps
+ * that label through later renames (`InstanceNode.keepsText`) until the author edits it.
+ */
+import type { ComponentDefinition, InstanceNode, ProjectState } from './types';
+import type { ShellPart } from './page-shell';
+
+/** The property a shared header or footer shows the site's name in. */
+export const BRAND_PROP = 'siteName';
+/** The footer property that holds its copyright line. */
+export const COPYRIGHT_PROP = 'copyright';
+/** The properties that follow the site's name. */
+const BRAND_TEXT = [BRAND_PROP, COPYRIGHT_PROP] as const;
+
+/** A property that holds plain text in this design. */
+const textProp = (def: ComponentDefinition, prop: string) => Object.hasOwn(def.properties, prop) && def.properties[prop].type === 'string';
+
+/** The text a placement shows for a property: its own, or the design's default (as the site build reads it). */
+function shown(def: ComponentDefinition, node: InstanceNode, prop: string): string | undefined {
+  const own = Object.hasOwn(node.props, prop) ? node.props[prop] : undefined;
+  const v = own ?? def.properties[prop].default;
+  return typeof v === 'string' ? v : undefined;
+}
+
+/** The most text a property holds (the engine's limit for text without one of its own). */
+const maxLength = (def: ComponentDefinition, prop: string): number => {
+  const schema = def.properties[prop];
+  return (schema.type === 'string' && schema.maxLength) || 2000;
+};
+
+/** The brand label a placement shows. */
+export const brandLabel = (p: { node: InstanceNode; def: ComponentDefinition }): string => (shown(p.def, p.node, BRAND_PROP) ?? '').trim();
+
+/** A header showing its logo alone shows no name (the shared header's "Show site name" turned off). */
+function nameHidden(def: ComponentDefinition, node: InstanceNode): boolean {
+  const value = (prop: string) => (Object.hasOwn(node.props, prop) ? node.props[prop] : undefined) ?? (Object.hasOwn(def.properties, prop) ? def.properties[prop].default : undefined);
+  return value('showSiteName') === false && !!(value('logo') as { assetId?: unknown } | null | undefined)?.assetId;
+}
+
+/** A site name as the site keeps it: one line, without spaces around it. */
+export const siteNameText = (name: string): string => name.replace(/\s*[\r\n]+\s*/g, ' ').trim();
+
+/** The shared header and footer themselves: each one's top-level placement whose design shows the site's name. */
+export function brandPlacements(state: ProjectState): Array<{ part: ShellPart; node: InstanceNode; def: ComponentDefinition }> {
+  const out: Array<{ part: ShellPart; node: InstanceNode; def: ComponentDefinition }> = [];
+  for (const part of ['header', 'footer'] as const) {
+    const tree = state.site.shell[part];
+    for (const id of tree?.rootIds ?? []) {
+      const node = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
+      if (node?.kind !== 'instance') continue;
+      const def = Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
+      if (def && textProp(def, BRAND_PROP)) out.push({ part, node, def });
+    }
+  }
+  return out;
+}
+
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The copyright line with `next` in place of `previous`, when the line gives `previous` as its holder: right after
+ * the © and the year (or years), and ending there or at a full stop. Null for any other line, such as one naming
+ * "Acme, Inc." or "Acme Photography" for a site called Acme.
+ */
+export function renamedCopyright(line: string, previous: string, next: string): string | null {
+  if (!previous) return null;
+  const m = line.match(new RegExp(`^(©\\s*\\d{4}(?:\\s*[-–—]\\s*\\d{4})?\\s+)${escape(previous)}(?=$|\\.(?:\\s|$))`));
+  return m ? `${m[1]}${next}${line.slice(m[0].length)}` : null;
+}
+
+/** Whether a property's text says the site's name `name`: the whole brand label, or the copyright line's holder. */
+function says(prop: string, text: string, name: string): boolean {
+  return prop === BRAND_PROP ? text.trim() === name : renamedCopyright(text, name, name) !== null;
+}
+
+/** The brand properties a placement keeps through renames (see InstanceNode.keepsText). */
+const kept = (node: InstanceNode): string[] => (Array.isArray(node.keepsText) ? node.keepsText.filter((p): p is string => typeof p === 'string') : []);
+
+function setKept(node: InstanceNode, props: Iterable<string>) {
+  const list = [...props];
+  if (list.length) node.keepsText = list;
+  else delete node.keepsText;
+}
+
+/** An edit of a property makes its text the author's choice again: it follows the site's name if it says it. */
+export function releaseKept(node: InstanceNode, prop: string): void {
+  if (kept(node).includes(prop)) setKept(node, kept(node).filter((p) => p !== prop));
+}
+
+/**
+ * Whether a placement's property follows the site's name: `true` or `false` for the brand label and the copyright
+ * line of the shared header or footer, `undefined` for any other property or placement.
+ */
+export function followsSiteName(state: ProjectState, node: InstanceNode, prop: string): boolean | undefined {
+  const placed = brandPlacements(state).find((p) => p.node === node);
+  if (!placed || !(BRAND_TEXT as readonly string[]).includes(prop) || !textProp(placed.def, prop)) return undefined;
+  const text = shown(placed.def, node, prop);
+  return text !== undefined && !kept(node).includes(prop) && says(prop, text, state.site.name);
+}
+
+/**
+ * Carries a rename from `previous` to `next` into the shared header and footer: each brand label that says the old
+ * name, and each copyright line that gives it as its holder, now says the new one. Everything else is kept, and an
+ * author's label the new name happens to match is marked to stay as it is.
+ *
+ * Returns why the rename cannot be carried, changing nothing, when a following text would grow past what its
+ * property holds: the author shortens the name, or gives that placement its own text first.
+ */
+export function carrySiteName(state: ProjectState, previous: string, next: string): string | null {
+  if (previous === next) return null;
+  const changes: Array<() => void> = [];
+  for (const { part, node, def } of brandPlacements(state)) {
+    const keep = new Set(kept(node));
+    for (const prop of BRAND_TEXT) {
+      if (!textProp(def, prop)) continue;
+      const text = shown(def, node, prop);
+      // Kept until now: it keeps its text, which differs from the site's name from here on.
+      const wasKept = keep.delete(prop);
+      if (text === undefined) continue;
+      if (!wasKept && says(prop, text, previous)) {
+        const renamed = prop === BRAND_PROP ? next : renamedCopyright(text, previous, next)!;
+        const max = maxLength(def, prop);
+        if (renamed.length > max) return `The ${part}'s ${def.properties[prop].label.toLowerCase()} follows the site name and holds at most ${max} characters. Use a shorter name, or give the ${part} its own text first.`;
+        changes.push(() => (node.props[prop] = renamed));
+      } else if (says(prop, text, next)) keep.add(prop);
+    }
+    changes.push(() => setKept(node, keep));
+  }
+  for (const change of changes) change();
+  return null;
+}
+
+/** What a brand field says about the site's name: whether it follows it, and so changes with a rename. */
+export function followNote(state: ProjectState, node: InstanceNode, prop: string): { follows: boolean; text: string } | undefined {
+  const follows = followsSiteName(state, node, prop);
+  if (follows === undefined) return undefined;
+  if (prop === BRAND_PROP) return { follows, text: follows ? 'Follows the site name: renaming the site changes it too.' : 'Its own name: renaming the site leaves it as it is.' };
+  return { follows, text: follows ? 'Names the site, so renaming the site changes it too.' : 'Its own wording: renaming the site leaves it as it is.' };
+}
+
+/**
+ * What the site's name field says about where else the name shows: the shared header and footer that follow it, and
+ * each one that keeps a name of its own. Undefined when neither shows a name.
+ */
+export function siteNameNote(state: ProjectState): string | undefined {
+  const placed = brandPlacements(state).filter((p) => !nameHidden(p.def, p.node));
+  if (!placed.length) return undefined;
+  const following = placed.filter((p) => followsSiteName(state, p.node, BRAND_PROP));
+  const own = placed.filter((p) => !following.includes(p));
+  const parts = (list: typeof placed) => [...new Set(list.map((p) => p.part))].join(' and ');
+  const out: string[] = [];
+  if (following.length) out.push(`The ${parts(following)} ${following.length === 1 ? 'shows' : 'show'} it too.`);
+  for (const p of own) out.push(`The ${p.part} keeps its own name: “${brandLabel(p)}”`);
+  return out.join(' ');
+}

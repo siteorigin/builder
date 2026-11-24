@@ -3,7 +3,8 @@ import { ArrowRight, CircleAlert, Folder, FolderOpen, Plus, Search, Settings, X 
 import type { RecentProject } from '@shared/api';
 import { api, errorText, setState, toast, useStore } from './store';
 import { openDialogs, Spinner } from './components/ui';
-import { NewProjectModal, shortPath, TrustProjectModal } from './components/ProjectDialogs';
+import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
+import { shortPath, whereLabels } from './lib/recent-places';
 import { SettingsModal } from './panels/SettingsModal';
 import { AppMark, MARK_COLORS } from './components/AppMark';
 
@@ -544,31 +545,6 @@ function pathBreaks(path: string) {
 }
 
 const countOf = (n: number) => (n === 1 ? '1 project' : `${n} projects`);
-
-/**
- * What each card says about where its project lives: home folders as "~", unless that would make two same-named
- * projects look alike (two people's ~/Websites), when the real path is shown instead.
- */
-function whereLabels(all: RecentProject[]) {
-  const out = new Map<string, string>();
-  for (const r of all) {
-    const group = all.filter((x) => x.name === r.name);
-    if (group.length === 1) {
-      out.set(r.dir, shortPath(r.missing ? r.dir : whereLabel(r, all)));
-      continue;
-    }
-    // Same-named projects each show their own folder, so no two read alike; "~" only while it still keeps them apart.
-    const short = group.map((x) => shortPath(x.dir));
-    out.set(r.dir, new Set(short).size === short.length ? shortPath(r.dir) : r.dir);
-  }
-  return out;
-}
-
-/** The folder a project is in, or its own folder when that is all that tells two same-named projects apart. */
-function whereLabel(r: RecentProject, all: RecentProject[]) {
-  const parent = (d: string) => d.replace(/[\\/][^\\/]+$/, '');
-  return all.some((x) => x !== r && x.name === r.name && parent(x.dir) === parent(r.dir)) ? r.dir : parent(r.dir);
-}
 
 function initials(name: string) {
   // Words only, so "Tide & Timber" is TT rather than T&.

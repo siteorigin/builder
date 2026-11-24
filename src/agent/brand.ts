@@ -13,6 +13,7 @@ import { getTheme } from '@catalogue/index';
 import { TYPE_SCALE_CHOICES, scaleRoles, typeScaleOps } from '@shared/type-scale';
 import { normalizeLink } from '@engine/values';
 import { contactInText } from '@shared/contact-links';
+import { BRAND_PROP, COPYRIGHT_PROP, brandLabel, brandPlacements, followsSiteName, siteNameText } from '@shared/site-name';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -33,7 +34,7 @@ export const BRAND_ARGS = z.object({
 export type BrandArgs = z.infer<typeof BRAND_ARGS>;
 
 export const BRAND_DESCRIPTION =
-  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once). Send only what changes. Fonts must be installed; an error lists the choices.';
+  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once). Send only what changes. Fonts must be installed; an error lists the choices.';
 
 export const BRAND_BRIEF = 'Set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors, installed fonts, and the type scale (every heading and text size at once). Send only what changes.';
 
@@ -144,12 +145,6 @@ function resolvedColor(tokens: Map<string, { value: unknown }>, id: string): str
   return typeof v === 'string' ? v : '';
 }
 
-/** Follows the site name only in the standard "© 2026 Name..." line; a custom line is left alone. */
-function renamedCopyright(line: string, previous: string, next: string): string | null {
-  const m = line.match(/^(©\s*\d{4}(?:\s*[-–]\s*\d{4})?\s+)(.*)$/);
-  return m && m[2].startsWith(previous) ? `${m[1]}${next}${m[2].slice(previous.length)}` : null;
-}
-
 export async function runBrand(args: BrandArgs, host: ToolHost, callId: string): Promise<ToolOutcome> {
   const state = host.state();
   const issues: FieldIssue[] = [];
@@ -210,27 +205,29 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   const phone = contactLink('contactPhone', args.contactPhone, 'tel');
   if (issues.length) return fieldError(issues, 'Nothing was applied. Send the call again with these fields fixed.');
 
+  const setProp = (shell: 'header' | 'footer', node: InstanceNode, prop: string, value: unknown) => {
+    if (Object.hasOwn(state.components[node.definitionId]?.properties ?? {}, prop) && node.props[prop] !== value) ops.push({ type: 'instance.setProp', owner: { kind: 'shell', id: shell }, nodeId: node.id, prop, value });
+  };
+  // A line asked for goes in every footer that holds one. With a rename, the line is cleared first (an empty line names
+  // no site, so the rename never grows a line about to be replaced) and set after it, so it wins as it was asked for.
+  const footers = state.site.shell.footer.rootIds.map((id) => state.site.shell.footer.nodes[id]).filter((n): n is InstanceNode => n?.kind === 'instance' && state.components[n.definitionId]?.properties[COPYRIGHT_PROP]?.type === 'string');
+  const copyright = (value: string): EditOperation[] => footers.filter((n) => args.siteName !== undefined || n.props[COPYRIGHT_PROP] !== value).map((n) => ({ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: n.id, prop: COPYRIGHT_PROP, value }));
+  if (args.copyright !== undefined && args.siteName !== undefined) ops.push(...copyright(''));
   if (args.siteName !== undefined || args.description !== undefined || (args.tagline !== undefined && !state.site.description)) {
     const description = args.description ?? (!state.site.description ? args.tagline : undefined);
     ops.push({ type: 'site.update', ...(args.siteName !== undefined ? { name: args.siteName } : {}), ...(description !== undefined ? { description } : {}) });
   }
+  if (args.copyright !== undefined) ops.push(...copyright(args.copyright));
 
-  const setProp = (shell: 'header' | 'footer', node: InstanceNode, prop: string, value: unknown) => {
-    if (Object.hasOwn(state.components[node.definitionId]?.properties ?? {}, prop) && node.props[prop] !== value) ops.push({ type: 'instance.setProp', owner: { kind: 'shell', id: shell }, nodeId: node.id, prop, value });
-  };
-  const header = shellInstance(state, 'header');
+  // The rename itself carries the name into the header and footer that showed the old one (shared/site-name.ts);
+  // a label of the author's own stays, and the reply says where, so the model can mention it.
   const footer = shellInstance(state, 'footer');
-  if (header && args.siteName !== undefined) setProp('header', header, 'siteName', args.siteName);
+  if (args.siteName !== undefined && siteNameText(args.siteName) !== state.site.name) {
+    for (const p of brandPlacements(state))
+      if (followsSiteName(state, p.node, BRAND_PROP) === false) warnings.push(`The ${p.part} keeps its own name, “${brandLabel(p)}”, so it still shows that. Set its siteName with instance.setProp if it should change too.`);
+  }
   if (footer) {
-    if (args.siteName !== undefined) setProp('footer', footer, 'siteName', args.siteName);
     if (args.tagline !== undefined) setProp('footer', footer, 'tagline', args.tagline);
-    const previous = typeof footer.props.siteName === 'string' ? footer.props.siteName : '';
-    const line = typeof footer.props.copyright === 'string' ? footer.props.copyright : '';
-    if (args.copyright !== undefined) setProp('footer', footer, 'copyright', args.copyright);
-    else if (args.siteName !== undefined && previous) {
-      const renamed = renamedCopyright(line, previous, args.siteName);
-      if (renamed) setProp('footer', footer, 'copyright', renamed);
-    }
 
     const schema = state.components[footer.definitionId]?.properties.contact;
     if (schema?.type === 'list') {

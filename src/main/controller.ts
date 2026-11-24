@@ -34,7 +34,7 @@ import { ComponentThumbs, writeThumb, type CaptureResult } from './runtime/compo
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
-import { addRecent, isTrusted, loadSettings, trust, untrust } from './settings';
+import { addRecent, isTrusted, loadSettings, renameRecent, trust, untrust } from './settings';
 import { newId } from '@shared/ids';
 import { packageFileName, type ComponentPackage } from '@shared/component-package';
 import { importedCode, planComponentPackage } from '@engine/component-package';
@@ -502,7 +502,8 @@ export class Controller {
       attached = true;
       await this.attach(staged, {}, toolsMissing);
       // The project is open and working: a recent-projects list that cannot be saved must not undo it.
-      await addRecent(dir, name).catch(() => undefined);
+      // Under the name it has by now: the editor shows it from the moment it is attached, and may have renamed it.
+      await addRecent(dir, staged.state.site.name).catch(() => undefined);
       progress({ step: 'done', message: 'Ready' });
       return { ok: true };
     } catch (e) {
@@ -808,7 +809,13 @@ export class Controller {
       if (!this.stage) void this.dev?.stop();
       void this.startRuntime().catch(() => undefined);
     });
+    // The Recent projects entry follows a rename as soon as it is made, and an undo of one, or one made outside.
+    let listedName = session.state.site.name;
     session.on('changed', (ev) => {
+      if (!session.readOnly && session.state.site.name !== listedName) {
+        listedName = session.state.site.name;
+        void renameRecent(session.dir, listedName).catch(() => undefined);
+      }
       this.filesChangedAt = Date.now();
       if (this.stage) this.syncStage(session);
       else this.dev?.notifyRevision(ev.revision);
@@ -1229,6 +1236,9 @@ export class Controller {
       await this.runtimeQueue;
       await this.stopPreview();
       await s.close();
+      // Its entry in Recent projects leaves with the name it has now, whichever way it was left: back to Welcome or
+      // for another project. A list that cannot be saved never stops the close.
+      if (!s.readOnly) await renameRecent(s.dir, s.state.site.name).catch(() => undefined);
     } finally {
       // The next project loads its own workspace state, or starts empty.
       this.localState = {};

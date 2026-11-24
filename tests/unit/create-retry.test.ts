@@ -20,6 +20,9 @@ vi.mock('../../src/main/settings', () => ({
     settings.recents++;
     if (settings.recentsFail) throw new Error('EACCES: permission denied, open settings.json');
   },
+  renameRecent: async () => {
+    if (settings.recentsFail) throw new Error('EACCES: permission denied, open settings.json');
+  },
   isTrusted: async () => true,
   trust: async () => undefined,
   loadSettings: async () => ({ settings: { developerMode: false } })

@@ -15,6 +15,7 @@ import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, instancesOf } from './tree';
 import { clone, placedDefaultItems, placedItemId } from './install';
 import { normalizeProp } from './values';
+import { releaseKept } from '@shared/site-name';
 import {
   MAX_UI_STATES,
   STATE_FIELDS,
@@ -258,7 +259,10 @@ function removeProp(state: ProjectState, def: ComponentDefinition, name: string,
   const sites = bindingsChecked ? [] : bindingSites(def).filter((s) => '$prop' in s.binding && s.binding.$prop === name);
   if (sites.length) fail(`"${name}" is still shown by ${sites.map((s) => describeNode(s.node)).join(', ')}. Unbind or remove those elements first.`);
   delete def.properties[name];
-  for (const { node } of instancesOf(state, def.id)) delete node.props[name];
+  for (const { node } of instancesOf(state, def.id)) {
+    delete node.props[name];
+    releaseKept(node, name);
+  }
 }
 
 /**
@@ -367,7 +371,14 @@ function moveProps(state: ProjectState, def: ComponentDefinition, renames: PropR
     for (const [to, v] of held) rec[to] = v;
   };
   move(def.properties as Record<string, unknown>);
-  for (const { node } of instancesOf(state, def.id)) move(node.props);
+  for (const { node } of instancesOf(state, def.id)) {
+    move(node.props);
+    // A brand text kept through renames is the old property's: the one now under its name starts afresh.
+    for (const r of renames) {
+      releaseKept(node, r.from);
+      releaseKept(node, r.to);
+    }
+  }
   for (const ex of def.examples ?? []) if (ex.props) move(ex.props);
 }
 

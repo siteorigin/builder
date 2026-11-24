@@ -14,10 +14,6 @@ import { Field, Modal, Spinner, SwitchRow } from './ui';
  * cannot be made or opened, leaves the author where they were (#80).
  */
 
-export function shortPath(dir: string) {
-  return dir.replace(/^\/Users\/[^/]+/, '~').replace(/^[A-Z]:\\Users\\[^\\]+/i, '~');
-}
-
 /** npm's own output is for the log. Lines written for people start with a capital and don't name it. */
 const isPlainDetail = (d?: string) => !!d && /^[A-Z]/.test(d) && !/\bnpm\b/i.test(d);
 

@@ -1700,6 +1700,41 @@ describe('review regressions', () => {
     expect(shellProps(session.state, 'footer').copyright).toBe('All of Test Studio, always.');
   });
 
+  it('keeps a header name the author wrote, says so, and keeps a copyright line asked for as it is (#31)', async () => {
+    const { session, adapter, run } = await setup([() => [call('b', 'update_site_brand', { siteName: 'Acme', copyright: `© ${new Date().getFullYear()} Test Studio. All rights reserved.` })], () => finish()], {}, 'business', (s) => {
+      (s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode).props.siteName = 'TS Journal';
+      delete (s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode).props.siteName;
+    });
+    await run('Rename the site to Acme, keeping the copyright line');
+    expect(session.state.site.name).toBe('Acme');
+    expect(shellProps(session.state, 'header').siteName).toBe('TS Journal');
+    // The footer showed the design's own name ("Studio"), not the site's, so it keeps that, and the reply says so.
+    expect(shellProps(session.state, 'footer').siteName).toBeUndefined();
+    expect(shellProps(session.state, 'footer').copyright).toBe(`© ${new Date().getFullYear()} Test Studio. All rights reserved.`);
+    const reply = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content) as { warnings?: string[] };
+    expect(reply.warnings?.join(' ')).toContain('The header keeps its own name, “TS Journal”');
+    expect(reply.warnings?.join(' ')).toContain('The footer keeps its own name, “Studio”');
+  });
+
+  it('puts an asked-for copyright line in every footer, even where the rename could not have grown the old line', async () => {
+    // The line asked for names the old site, as the line there does: the rename would grow either past the limit.
+    const line = `© ${new Date().getFullYear()} Test Studio. Photos by Ana Lee.`;
+    const { session, run } = await setup([() => [call('b', 'update_site_brand', { siteName: 'Acme Studio Group', copyright: line })], () => finish()], {}, 'business', (s) => {
+      const tree = s.site.shell.footer;
+      const first = tree.nodes[tree.rootIds[0]] as InstanceNode;
+      // The footer's line holds at most 40 characters: "© year Acme Studio Group. All rights reserved." would not fit.
+      const def = s.components[first.definitionId];
+      def.properties.copyright = { ...def.properties.copyright, maxLength: 40 } as typeof def.properties.copyright;
+      const second = { ...structuredClone(first), id: 'n_second_footer' };
+      tree.nodes[second.id] = second;
+      tree.rootIds.push(second.id);
+    });
+    await run('Rename the site to Acme Studio Group, keeping the copyright line about Test Studio');
+    expect(session.state.site.name).toBe('Acme Studio Group');
+    const tree = session.state.site.shell.footer;
+    expect(tree.rootIds.map((id) => (tree.nodes[id] as InstanceNode).props.copyright)).toEqual([line, line]);
+  });
+
   it('nudges for a page that was rejected and never retried, even with no other change', async () => {
     const { adapter, run } = await setup([
       () => [call('a', 'upsert_page_with_sections', { slug: 'gone', sections: [{ componentId: 'nope' }] })],

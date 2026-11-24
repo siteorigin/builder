@@ -132,10 +132,13 @@ describe('canonical conflicts (spec 18.5)', () => {
     const again = await reopen(dir);
     expect(again.conflicts.map((c) => c.path)).toEqual([SITE]);
     expect(again.state.site.description).not.toBe('Edited in another editor');
-    // Put the file back by hand: the conflict settles on the next reload.
+    // Put the file back by hand: the conflict settles on the next reload. The AI's rename also reached the shared
+    // header and footer, which site.json holds, so they go back too.
     const site = read(dir, SITE);
+    expect(JSON.stringify(site.shell)).toContain('AI name');
     site.description = again.state.site.description;
     site.name = again.state.site.name;
+    site.shell = again.state.site.shell;
     write(dir, SITE, site);
     await again.reloadFromDisk();
     expect(again.conflicts).toEqual([]);

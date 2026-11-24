@@ -482,6 +482,13 @@ export interface InstanceNode extends NodeBase {
   /** Content placed into the definition's declared slots. */
   slots?: Record<string, string[]>;
   /**
+   * For the shared header or footer: brand properties (its site name, its copyright line) that keep their text when
+   * the site is renamed, although that text says the site's name. The author wrote it before the site took the same
+   * name (see shared/site-name.ts). Editing the property gives it up. An editor that drops it only lets the text
+   * follow the next rename, so it needs no new document version.
+   */
+  keepsText?: string[];
+  /**
    * How the section enters when it first scrolls into view, on its component's root element. Absent: the design's own
    * choice for its root; `none`: no entrance here, whatever the design chooses. Managed components only.
    */

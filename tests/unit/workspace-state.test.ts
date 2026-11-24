@@ -18,6 +18,7 @@ vi.mock('electron', () => ({
 const hooks = vi.hoisted(() => ({ whileSettingsLoad: null as null | (() => Promise<unknown>) }));
 vi.mock('../../src/main/settings', () => ({
   addRecent: async () => undefined,
+  renameRecent: async () => undefined,
   isTrusted: async () => true,
   trust: async () => undefined,
   loadSettings: async () => {

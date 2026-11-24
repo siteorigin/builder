@@ -55,6 +55,7 @@ import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags'
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
+import { carrySiteName, releaseKept, siteNameText } from '@shared/site-name';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, storedAlt } from './values';
 import { editTable } from './table';
@@ -1986,6 +1987,7 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
     return {};
   }
   node.props[op.prop] = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`, node.props[op.prop]);
+  releaseKept(node, op.prop);
   return {};
 }
 
@@ -2246,7 +2248,15 @@ function tokenReplace(state: ProjectState, fromId: string, toId: string): OpResu
 
 function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   const s = state.site;
-  if (op.name !== undefined) s.name = op.name.trim();
+  if (op.name !== undefined) {
+    // One line, as the header, the footer and the browser title show it.
+    const name = siteNameText(op.name);
+    if (!name) fail('The site needs a name.');
+    // The shared header and footer that showed the old name show the new one; a label of the author's own stays.
+    const problem = carrySiteName(state, s.name, name);
+    if (problem) fail(problem);
+    s.name = name;
+  }
   if (op.language !== undefined) {
     const problem = siteLanguageProblem(state, op.language);
     if (problem) fail(problem);
