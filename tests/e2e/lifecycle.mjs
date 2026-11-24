@@ -238,8 +238,9 @@ assert.equal(await openDir(), realpathSync(dirA), 'the repaired project opens fr
 step('the toolbar mark, pressed from the keyboard or clicked, saves the focused field and lands on Welcome (#517)');
 heading = await heroHeading();
 await typeDraft(heading, 'Kept through All projects');
+assert.equal(await mark.evaluate((el) => el.tabIndex), 0, 'the mark is in the tab order');
 await mark.focus();
-await win.keyboard.press('Enter');
+await win.keyboard.press('Space');
 await win.waitForSelector('.welcome');
 assert.equal(savedHeading(dirA), 'Kept through All projects', 'the typed heading is on disk');
 await openProject(dirA);
