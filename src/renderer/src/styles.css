@@ -1263,9 +1263,66 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 
 .composer textarea:focus-visible { box-shadow: none; }
 .md code { font-family: var(--mono); font-size: 12px; padding: 1px 4px; border-radius: var(--r-xs); background: var(--active); }
-.code-editor { border-radius: var(--r-md); border: 1px solid var(--border); overflow: hidden; user-select: text; }
+/* The source dialogs: a fixed frame where the code takes the free height, so problems and actions stay on screen. */
+.modal:has(> .modal-body > .code-dialog) { width: min(1040px, calc(100vw - 48px)); height: calc(89vh - 32px); }
+.modal:has(> .modal-body > .code-dialog) > .modal-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 14px; }
+.modal:has(> .modal-body > .code-dialog) > .modal-head { align-items: flex-start; }
+.modal:has(> .modal-body > .code-dialog) > .modal-head > svg { margin-top: 1px; color: var(--text-2); }
+.code-dialog { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.code-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.code-panel[hidden] { display: none; }
+.code-panel > .code-view { flex: 1; height: auto; min-height: 0; }
+.code-props { flex: 1; min-height: 0; overflow: auto; }
+.code-loading { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--text-2); }
+.code-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.code-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.code-title-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-title-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; font-weight: 400; color: var(--text-2); user-select: text; }
+.code-chip { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 20px; padding: 0 7px; border-radius: var(--r-xs); background: var(--active); color: var(--text-2); font-size: 12px; font-weight: 500; }
+.code-chip svg { width: 12px; height: 12px; }
+.code-dot { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-2); }
+.code-dot.off { visibility: hidden; }
+.code-dialog > :not(.tabs) + .tabs { margin-top: 2px; }
+.code-frame { display: flex; flex-direction: column; min-height: 0; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--panel-2); overflow: hidden; }
+.code-frame.focused { outline: 2px solid var(--focus); outline-offset: -1px; }
+.code-editor { flex: 1; min-height: 0; overflow: hidden; user-select: text; }
+/* The current-line tint never stacks on selected text, which would take it below 4.5:1. */
+.code-frame.selecting .cm-activeLine { background-color: transparent !important; }
+.code-status { display: flex; align-items: center; gap: 12px; flex: none; height: 28px; padding: 0 10px 0 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.code-status-item { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 6px; border: 0; border-radius: var(--r-xs); background: none; color: inherit; font-size: 12px; }
+.code-status-item svg { width: 13px; height: 13px; flex: none; }
+.code-status-item .spinner { width: 11px; height: 11px; border-width: 1.5px; border-top-color: var(--text-2); }
+.code-status-problems { min-width: 0; overflow: hidden; }
+.code-status-count { flex: none; font-weight: 600; }
+.code-status-go { flex: none; color: var(--text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); }
+.code-status-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+.code-status-problems.error, .code-status-problems.warning { color: var(--text); }
+.code-status-problems:hover { background: var(--active); }
+.code-status-problems.error svg { color: var(--red); }
+.code-status-problems.warning svg { color: var(--amber); }
+.code-status-hint { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-3); }
+.code-status-hint.active { flex: none; color: var(--text); font-weight: 500; }
+.code-status-item.unavailable svg { color: var(--amber); }
+.code-loading .spinner { border-top-color: var(--text-2); }
+.code-status-pos { flex: none; font-variant-numeric: tabular-nums; }
+.code-problems { flex: none; display: flex; flex-direction: column; gap: 4px; max-height: 30%; min-height: 0; overflow: auto; padding: 8px 10px; border-radius: var(--r-sm); background: var(--red-soft); color: var(--text); }
+.code-problems-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.code-problems-head svg { width: 14px; height: 14px; flex: none; color: var(--red); }
+.code-problems-list { margin: 0; padding: 0; list-style: none; }
+.code-problem { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 3px 6px 3px 20px; border: 0; border-radius: var(--r-xs); background: none; color: var(--text); font-size: 12px; line-height: 1.45; text-align: left; }
+button.code-problem:hover { background: var(--active); }
+.code-problem-line { flex: none; font-family: var(--mono); font-weight: 600; color: var(--text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); }
+.code-problems-advice { margin: 0; padding-left: 20px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.code-foot-note { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-2); }
+.code-foot-note > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-foot-note svg { width: 14px; height: 14px; flex: none; color: var(--green); }
+.code-foot-note.saved { color: var(--text); }
+.code-save { min-width: 104px; }
 :root { --cm-tag: #b02a6d; --cm-attr: #8a5a0c; --cm-str: #1d7347; --cm-kw: #5b46c9; --cm-num: #a94b17; --cm-fn: #2f62c9; }
 @media (prefers-color-scheme: dark) { :root { --cm-tag: #ff7ab8; --cm-attr: #f0c068; --cm-str: #6ad49a; --cm-kw: #a796ff; --cm-num: #ffa070; --cm-fn: #82aaff; } }
+/* Selected code keeps every syntax colour above 4.5:1. */
+.code-frame { --code-selection: rgb(23 102 192 / 0.08); }
+@media (prefers-color-scheme: dark) { .code-frame { --code-selection: rgb(124 190 255 / 0.08); } }
 .ov-drop { position: absolute; background: var(--select); border-radius: 2px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); pointer-events: none; }
 
 /* ---------- Tabs (dialog-level view switchers) ---------- */
