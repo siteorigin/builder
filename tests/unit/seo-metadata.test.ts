@@ -33,7 +33,7 @@ describe('createSeoResolver', () => {
     expect(meta).toMatchObject({ title: `${s.pages[about].title} · Riverside Studio`, description: 'Pottery by the river.', language: 'en', noindex: false, searchHidden: false, imageSource: 'none', image: undefined });
     // No public URL: no address to list it at, though search engines may still list it where they find it.
     expect(meta).toMatchObject({ url: null, canonical: null, imageUrl: null });
-    expect(meta.visibility).toEqual({ website: true, indexable: true, sitemap: false, siteSearch: true, jsonLd: false, news: false });
+    expect(meta.visibility).toEqual({ website: true, indexable: true, sitemap: false, siteSearch: true, llms: true, jsonLd: false, news: false });
     expect(resolver.resolve({ kind: 'entry', collectionId: 'posts', entryId: 'en_any' })).toBeNull();
     expect(resolver.resolve({ kind: 'page', pageId: 'pg_gone' })).toBeNull();
     // The Inspector's preview reads the same page without failing.
@@ -46,7 +46,7 @@ describe('createSeoResolver', () => {
     const meta = page(s, services);
     expect(meta.draft).toBe(true);
     expect(meta.title).toBe('Classes and commissions · Riverside Studio');
-    expect(meta.visibility).toEqual({ website: false, indexable: false, sitemap: false, siteSearch: false, jsonLd: false, news: false });
+    expect(meta.visibility).toEqual({ website: false, indexable: false, sitemap: false, siteSearch: false, llms: false, jsonLd: false, news: false });
     expect(createSeoResolver(s).published().map((d) => d.subject)).not.toContainEqual({ kind: 'page', pageId: services });
     // The generated outputs agree, and keep the pages that are published.
     expect(sitemapUrls(s)).not.toContain('https://example.com/studio/services/');
@@ -63,7 +63,7 @@ describe('createSeoResolver', () => {
     const { state, services } = seoSite();
     const s = run(state, { type: 'page.update', pageId: services, noindex: true });
     expect(page(s, services)).toMatchObject({ noindex: true, searchHidden: false });
-    expect(page(s, services).visibility).toEqual({ website: true, indexable: false, sitemap: false, siteSearch: true, jsonLd: false, news: false });
+    expect(page(s, services).visibility).toEqual({ website: true, indexable: false, sitemap: false, siteSearch: true, llms: false, jsonLd: false, news: false });
     expect(sitemapUrls(s)).not.toContain('https://example.com/studio/services/');
     expect(buildSearchIndex(s).map((e) => e.route)).toContain('/services/');
     // The page is published, asking search engines not to list it.
@@ -79,9 +79,9 @@ describe('createSeoResolver', () => {
     const s = copy(state);
     s.collections.posts.entries.en_spring.seo = { searchHidden: true };
     expect(post(s)).toMatchObject({ draft: false, searchHidden: true, noindex: false, route: '/blog/spring-pottery-classes/', url: 'https://example.com/studio/blog/spring-pottery-classes/' });
-    expect(post(s).visibility).toEqual({ website: true, indexable: true, sitemap: true, siteSearch: false, jsonLd: true, news: false });
+    expect(post(s).visibility).toEqual({ website: true, indexable: true, sitemap: true, siteSearch: false, llms: true, jsonLd: true, news: false });
     // Without the switch it belongs in site search; with or without it, the website has its page and the sitemap lists it.
-    expect(post(state).visibility).toEqual({ website: true, indexable: true, sitemap: true, siteSearch: true, jsonLd: true, news: false });
+    expect(post(state).visibility).toEqual({ website: true, indexable: true, sitemap: true, siteSearch: true, llms: true, jsonLd: true, news: false });
     for (const x of [state, s]) {
       expect(sitemapUrls(x)).toContain('https://example.com/studio/blog/spring-pottery-classes/');
       expect(generateProject(x).has('src/routes/blog/spring-pottery-classes/+page.svelte')).toBe(true);
@@ -92,7 +92,7 @@ describe('createSeoResolver', () => {
     expect(post(truthy).visibility.siteSearch).toBe(false);
     // A draft entry is on no output; one with a damaged draft flag is a draft, as the website judges it.
     const draft = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: true });
-    expect(post(draft).visibility).toEqual({ website: false, indexable: false, sitemap: false, siteSearch: false, jsonLd: false, news: false });
+    expect(post(draft).visibility).toEqual({ website: false, indexable: false, sitemap: false, siteSearch: false, llms: false, jsonLd: false, news: false });
     const damaged = copy(state);
     (damaged.collections.posts.entries.en_spring as { draft: unknown }).draft = 'no';
     expect(post(damaged).visibility.website).toBe(false);

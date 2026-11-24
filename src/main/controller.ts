@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, shell, type OpenDialogOptions } from 'electron';
+import { markdownMirrorRoute } from '@shared/llms';
 import { watch, type FSWatcher } from 'node:fs';
 import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -18,7 +19,7 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { builtPhotosMessage, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
+import { isPlainFile, builtPhotosMessage, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, pictureMime, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -2159,6 +2160,8 @@ export class Controller {
     if (s.readOnly) return { ok: false, message: s.readOnly.reason, warnings: [] };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish before exporting.', warnings: [] };
     if (s.conflicts.length) return { ok: false, message: 'Resolve file conflicts before exporting.', warnings: [] };
+    // The generated files may still say what the project said before (a page since made a draft, in llms-full.txt).
+    if (s.saveUnfinished) return { ok: false, message: 'A save did not finish, so the project’s files may be out of date. Close and reopen the project, then export again.', warnings: [] };
     return null;
   }
 
@@ -2234,8 +2237,12 @@ export class Controller {
       // The forms the published site shows that visitors cannot send, each leading to its settings.
       notes.push(...websiteFormNotes(snap.state));
       warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
-      for (const { file, route, draft } of withheldStaticFiles(folder, snap.state))
-        warn(`${file} is served at ${route}, the address of the draft ${draft}, so a build of the exported project publishes it there. Remove or move the file before building.`);
+      for (const { file, route, draft, markdown } of withheldStaticFiles(folder, snap.state))
+        warn(
+          markdown
+            ? `${file} is served at ${route} as the Markdown copy of the draft ${draft}, so a build of the exported project publishes it there. Remove or move the file before building.`
+            : `${file} is served at ${route}, the address of the draft ${draft}, so a build of the exported project publishes it there. Remove or move the file before building.`
+        );
       const kept = locationKeptNote(await locatedPhotos(folder, snap.state));
       if (kept) warn(kept);
       warn(...missingSourceWarnings(snap.state, await findMissingAssetFiles(folder, snap.state.assets.assets)));
@@ -2406,9 +2413,13 @@ export class Controller {
     // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
     // static/, say, would publish the address the author kept back.
     // An archive page the website has at such an address is its own (route/index.html); any other file there is not.
-    for (const { route, draft, archived } of withheldRoutes(state, live))
+    for (const { route, draft, archived } of withheldRoutes(state, live)) {
       if ((!archived && existsSync(join(out, route, 'index.html'))) || existsSync(join(out, `${route.replace(/\/$/, '')}.html`)))
         return { ok: false, message: `The website has a page at ${route}, which leads to the draft ${draft}. Remove the file that puts it there, then export again.`, warnings: warnings() };
+      // The website never writes a Markdown copy at such an address (an archive page has none): one there is a file of the draft's.
+      if (isPlainFile(join(out, markdownMirrorRoute(route))))
+        return { ok: false, message: `The website has a Markdown copy of the draft ${draft} at ${markdownMirrorRoute(route)}. Remove the file that puts it there, then export again.`, warnings: warnings() };
+    }
     // The not-found page, which hosts show at any address the site does not have.
     const notFound = await readNotFoundPage(out);
     const notFoundStop = notFoundPageProblem(notFound);

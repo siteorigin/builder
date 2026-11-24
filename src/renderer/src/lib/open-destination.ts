@@ -8,14 +8,15 @@ import { openComponentStudio, openLayout, openPost, openSiteStyles, selectPage, 
 import { formDestinationField } from './destinations';
 import { treeFor } from './model';
 
-/** The control each Site details field is reached by (see SiteStyles): a site image's card, by its first button. */
-const SITE_FIELDS: Record<Extract<EditorDestination, { kind: 'site' }>['field'], string> = {
-  baseUrl: '#site-public-url',
-  favicon: '#site-favicon button',
-  socialImage: '#site-social-image button',
-  identity: '#site-identity-kind',
-  logo: '#site-identity-logo button',
-  sameAs: '#site-identity-profiles'
+/** The section of Site styles each site field is in, and the control it is reached by (see SiteStyles): a site image's card, by its first button. */
+const SITE_FIELDS: Record<Extract<EditorDestination, { kind: 'site' }>['field'], { section: string; focus: string }> = {
+  baseUrl: { section: 'site-settings', focus: '#site-public-url' },
+  favicon: { section: 'site-settings', focus: '#site-favicon button' },
+  socialImage: { section: 'site-settings', focus: '#site-social-image button' },
+  identity: { section: 'site-settings', focus: '#site-identity-kind' },
+  logo: { section: 'site-settings', focus: '#site-identity-logo button' },
+  sameAs: { section: 'site-settings', focus: '#site-identity-profiles' },
+  llmsTxt: { section: 'site-agents', focus: '#site-llms-txt' }
 };
 
 /** The control each Search & sharing field of a page is reached by (see the page Inspector). */
@@ -30,7 +31,7 @@ const PAGE_SEO_FIELDS: Record<Extract<EditorDestination, { kind: 'pageSeo' }>['f
  * Take the author to where a Project health finding, an SEO finding or an export note is fixed, closing the dialog that named it.
  * A contact form is selected where it is (its page, a page showing the shared header or footer, its collection's
  * layout, or its component in Component Studio) with Content open and the setting it needs focused; a site setting
- * opens Site styles with Site details expanded and its field focused. A form that has gone since is said, and nothing
+ * opens Site styles with its section expanded and its field focused. A form that has gone since is said, and nothing
  * moves.
  */
 export function openEditorDestination(dest: EditorDestination) {
@@ -40,8 +41,9 @@ export function openEditorDestination(dest: EditorDestination) {
   if (dest.kind === 'site') {
     setState({ modal: null });
     openSiteStyles();
-    // Site styles shows once the dock has switched to it: Site details then opens, scrolls to the field and focuses it.
-    requestAnimationFrame(() => openSection('site-settings', { focus: SITE_FIELDS[dest.field] }));
+    // Site styles shows once the dock has switched to it: the field's section then opens, scrolls to the field and focuses it.
+    const { section, focus } = SITE_FIELDS[dest.field];
+    requestAnimationFrame(() => openSection(section, { focus }));
     return;
   }
   if (dest.kind === 'pageSeo') {

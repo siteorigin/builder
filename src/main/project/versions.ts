@@ -21,10 +21,12 @@ export function isVersionMedia(path: string): boolean {
   return parts.length >= 2 && parts[0] === 'static' && parts.slice(1).every((p) => p !== '' && p !== '.' && p !== '..' && !/[\\\0]/.test(p));
 }
 /**
- * Public files a version never holds: those the generator writes from the documents (robots.txt, the sitemap), whose
- * owner would change if a restore put a copy back, and private files no export carries (as src/main/export.ts).
+ * Public files a version never holds: those the generator writes from the documents (robots.txt, the sitemap, the
+ * llms.txt files), whose owner would change if a restore put a copy back, and private files no export carries (as
+ * src/main/export.ts). The Markdown copies of pages are at addresses of their own; the session leaves them out as it
+ * does every file its generated manifest claims.
  */
-const GENERATED_STATIC = new Set(['static/robots.txt', 'static/sitemap.xml']);
+const GENERATED_STATIC = new Set(['static/robots.txt', 'static/sitemap.xml', 'static/llms.txt', 'static/llms-full.txt']);
 const PRIVATE_NAME = /^(\.env(\..*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa.*|id_ed25519.*|id_ecdsa.*|id_dsa.*|.*\.(pem|key|p12|pfx|ppk|keystore|jks|asc|gpg))$/i;
 export function heldAsMedia(path: string): boolean {
   return isVersionMedia(path) && !GENERATED_STATIC.has(path) && !PRIVATE_NAME.test(path.slice(path.lastIndexOf('/') + 1));

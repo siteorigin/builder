@@ -97,7 +97,7 @@ export function shown(v: unknown, state: ProjectState): boolean {
   return !!v;
 }
 
-interface Visit {
+export interface Visit {
   /**
    * Walk what a visitor can reach by changing a component's UI state too (a tab not chosen at first, a closed
    * disclosure), not only what shows at first.
@@ -138,6 +138,18 @@ interface Visit {
   enter?: (n: GraphNode) => void;
   /** After everything inside a page-level node has been visited. */
   leave?: (n: GraphNode) => void;
+  /** After everything inside any node `node` was called for has been visited: page and component nodes alike, in pairs. */
+  done?: (n: GraphNode, scope: Scope, reportId: string) => void;
+  /**
+   * A node to leave out with everything inside it, decided before it is visited (`node` is not called for it), so
+   * nothing in it counts as shown: a slot it holds is still walked where it is shown next.
+   */
+  prune?: (n: GraphNode, scope: Scope, reportId: string, def: ComponentDefinition | undefined) => boolean;
+  /**
+   * Which documents the walk may show of others: the rows of a computed list (news, posts) and the cards of a page
+   * list whose link fails it are left out where the list is filled, before any design hands the list on.
+   */
+  listed?: (link: unknown) => boolean;
 }
 
 /** Where the walk is: the tree being read and, inside a component, the placement that put it there. */
@@ -166,7 +178,15 @@ interface Frame {
 }
 
 /** Each property's effective value for a placement: its own (evaluated where it is placed) or the default. */
-export function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope, pageId?: string, entry?: { collectionId: string; entryId: string }): Record<string, unknown> {
+export function effectiveProps(
+  state: ProjectState,
+  def: ComponentDefinition,
+  n: GraphNode & { kind: 'instance' },
+  scope: Scope,
+  pageId?: string,
+  entry?: { collectionId: string; entryId: string },
+  listed?: (link: unknown) => boolean
+): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   for (const [name, schema] of Object.entries(def.properties)) {
     const own = Object.hasOwn(n.props, name);
@@ -174,7 +194,8 @@ export function effectiveProps(state: ProjectState, def: ComponentDefinition, n:
     // generator writes it: it is never bound or stored. An entry feed shows what the placement's own values chose.
     if (schema.type === 'list' && schema.feed) {
       // Shaped as the list's own items, as the generator writes them: its ID and declared fields only.
-      props[name] = feedRows(state, schema, { pageId, entry, query: entryQuery(def.properties, n.props) }).map((row) => ({
+      const rows = feedRows(state, schema, { pageId, entry, query: entryQuery(def.properties, n.props) });
+      props[name] = (listed ? rows.filter((row) => listed(row.pageLink)) : rows).map((row) => ({
         ...Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, Object.hasOwn(row, k) ? row[k] : f.default])),
         id: row.id
       }));
@@ -183,8 +204,12 @@ export function effectiveProps(state: ProjectState, def: ComponentDefinition, n:
     const value = own ? evaluate(n.props[name], scope) : schema.default;
     // A page list's own (or default) items show the linked pages' values, which the generator fills in where the list
     // is placed. A list bound from the design around this one arrives as that design was given it.
-    const filled = schema.type === 'list' && schema.pageTeaser && !(own && isBinding(n.props[name])) && Array.isArray(value);
-    props[name] = filled ? (value as unknown[]).map((it) => (it && typeof it === 'object' ? effectiveItem(state, schema, it as Record<string, unknown>) : it)) : value;
+    const teaser = schema.type === 'list' && Array.isArray(value) ? schema.pageTeaser : undefined;
+    const filled = !!teaser && !(own && isBinding(n.props[name]));
+    // A card whose page the walk may not show is left out, before its fields are filled from that page, whether the
+    // list is the placement's own or handed in by the design around it.
+    const items = teaser && listed ? (value as unknown[]).filter((it) => !it || typeof it !== 'object' || listed((it as Record<string, unknown>)[teaser.link])) : value;
+    props[name] = filled ? (items as unknown[]).map((it) => (it && typeof it === 'object' ? effectiveItem(state, schema as Extract<PropSchema, { type: 'list' }>, it as Record<string, unknown>) : it)) : items;
     // An object's field it has no value for shows the property's own default for it (or the field's), as the
     // generator fills it in.
     if (schema.type === 'object' && value && typeof value === 'object' && !Array.isArray(value)) {
@@ -275,7 +300,7 @@ function childRenders(state: ProjectState, frame: Frame, n: GraphNode & { kind: 
   return !kids.length || kids.some((k) => nodeRenders(state, frame, k, seen));
 }
 
-function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
+export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
   let frames = 0;
   // A page's placements, and the designs inside them, work computed lists out for that page; the shared header and
   // footer for none.
@@ -304,6 +329,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
     // A kept panel its state hides is walked as hidden content, and so is everything inside it.
     if (!shows && !frame.scope.keptHidden) frame = { ...frame, scope: { ...frame.scope, keptHidden: true } };
     if (frame.def && n.kind === 'element' && n.collapseEmpty && !childRenders(state, frame, n, new Set())) return;
+    if (visit.prune?.(n, frame.scope, frame.reportId ?? n.id, frame.def)) return;
     const inner = new Set(path).add(key);
     const reportId = frame.reportId ?? n.id;
     const page = !frame.def;
@@ -371,7 +397,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         const def = state.components[n.definitionId];
         if (!def || frame.defs.has(def.id)) break;
         // Designs placed from a page get that page's rows handed down (`so_pages`), as the generator writes them.
-        const props = effectiveProps(state, def, n, frame.scope, pageId, entry);
+        const props = effectiveProps(state, def, n, frame.scope, pageId, entry, visit.listed);
         if (def.kind === 'managed' && def.tree) {
           const trail = `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`;
           // A component inside a design reads the placement's own fields only through the bindings it is given.
@@ -406,6 +432,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
     }
     // An instance hands its id to the definition's root, which reports it there.
     if (ownId && n.kind !== 'instance' && n.kind !== 'repeat' && n.kind !== 'slot') visit.id?.(ownId, reportId);
+    visit.done?.(n, frame.scope, reportId);
     if (page) visit.leave?.(n);
   };
   const top: Frame = { tree, scope: { props: {} }, n: 0, defs: new Set() };
@@ -469,7 +496,7 @@ const hiddenEverySize = (sets: Array<Set<Size>>) => SIZES.every((z) => sets.some
  * the page or inside another design is read the same way; whether that design hides the placement itself is not
  * known here.
  */
-function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope): Array<Set<Size>> {
+function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope, variants = true): Array<Set<Size>> {
   if (!def.tree) return [];
   const inst = scope.instance;
   const itemId = typeof scope.item?.id === 'string' ? scope.item.id : undefined;
@@ -479,9 +506,19 @@ function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope):
     seen.add(id);
     const part = Object.entries(def.parts).find(([, p]) => p.nodeId === id)?.[0];
     const own = part && inst ? [inst.overrides?.[part], itemId ? itemStylesOf(def, inst, part, itemId) : undefined] : [];
-    out.push(hiddenSizes([def.tree.nodes[id]?.styles, ...selectedVariantStyles(def, scope.chosen ?? inst?.variants, id), ...own]));
+    out.push(hiddenSizes([def.tree.nodes[id]?.styles, ...(variants ? selectedVariantStyles(def, scope.chosen ?? inst?.variants, id) : []), ...own]));
   }
   return out;
+}
+
+/**
+ * Whether a design's node is surely hidden at every size, by itself or one of its ancestors in the design: hidden
+ * both as its own styles and its placement's say and with its variant options read too. Where variants decide it
+ * either way (their rules and bound choices are read only roughly here), the part is kept, in doubt, rather than
+ * visible words lost.
+ */
+export function hiddenInDesignEverywhere(def: ComponentDefinition, nodeId: string, scope: Scope): boolean {
+  return hiddenEverySize(hiddenInDesign(def, nodeId, scope, false)) && hiddenEverySize(hiddenInDesign(def, nodeId, scope));
 }
 
 /**
@@ -809,7 +846,7 @@ export interface RenderedContent {
  * properties). A copied contact form is not: the project keeps its answers' submission keys only for the theme's own
  * form (`namesFormFields`), so a copy's fields are left to the inspector.
  */
-function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
+export function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
   if (def.owner === 'theme')
     return def.componentId === 'shell.header' || def.componentId === 'data.table' || def.componentId === 'media.video' || (def.componentId === 'contact.form' && namesFormFields(def)) ? def.componentId : undefined;
   // Back through every copy (a copy of a copy) to where it started.

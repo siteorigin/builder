@@ -2,8 +2,9 @@
  * Export helpers: copying a clean snapshot of a project, checking it, and making the exported source ready
  * to hand over. Nothing here depends on Electron, so it is unit tested directly.
  */
+import { markdownMirrorRoute } from '@shared/llms';
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, promises as fs, readdirSync } from 'node:fs';
+import { existsSync, lstatSync, promises as fs, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import type { AssetRecord, NodeTree, PageDoc, ProjectState } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
@@ -593,12 +594,25 @@ export function publishedChanged(state: ProjectState, shown: string[] | undefine
  * Files of the project's own in static/ that a static host serves at a draft's address, or at an old address that
  * leads to one: a build of an exported project would publish them there. Each with the address and the draft.
  */
-export function withheldStaticFiles(dir: string, state: ProjectState): Array<{ file: string; route: string; draft: string }> {
+/** Whether a file (not a folder) is at a path. */
+export function isPlainFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function withheldStaticFiles(dir: string, state: ProjectState): Array<{ file: string; route: string; draft: string; markdown?: true }> {
   const live = publishedState(state);
   if (live === state) return [];
-  const out: Array<{ file: string; route: string; draft: string }> = [];
-  for (const { route, draft } of withheldRoutes(state, live))
+  const out: Array<{ file: string; route: string; draft: string; markdown?: true }> = [];
+  for (const { route, draft } of withheldRoutes(state, live)) {
     for (const file of [`static${route}index.html`, `static${route.replace(/\/$/, '')}.html`]) if (existsSync(join(dir, file))) out.push({ file, route, draft });
+    // A Markdown copy of the page there (left from before it was a draft, say) publishes its words for AI agents.
+    const copy = `static${markdownMirrorRoute(route)}`;
+    if (isPlainFile(join(dir, copy))) out.push({ file: copy, route: markdownMirrorRoute(route), draft, markdown: true });
+  }
   return out;
 }
 
