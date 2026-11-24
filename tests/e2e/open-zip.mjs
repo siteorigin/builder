@@ -1,14 +1,14 @@
 // Opening an editable project ZIP (#263): a Business project with its sample images is exported as a ZIP file, and a
 // recipient opens that ZIP file from Welcome's Open project. They choose where the working copy goes, trust it, and
 // edit it with its pages and media intact. Opening the same ZIP file again makes a second copy beside the first
-// without touching it; cancelling while it unpacks leaves nothing behind; a website ZIP is explained instead. Native
-// dialogs are stood in for in the main process, so nothing appears on screen.
+// without touching it; cancelling while it unpacks leaves nothing behind; a website ZIP is explained instead. The
+// app's chooser fixtures answer its native choosers, so nothing appears on screen.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+import { answerChoosers, chooseMenu, choosersShown, createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('open-zip');
 const { app, win, errors } = await launch(WORK);
@@ -19,33 +19,15 @@ mkdirSync(exportsDir, { recursive: true });
 mkdirSync(recipient, { recursive: true });
 const zip = join(exportsDir, 'harbour-lane-studio-source.zip');
 
-/** The native pickers answer with these paths, in order; a dialog nobody expected fails the script. */
-const answerPickers = (paths) =>
-  app.evaluate(({ dialog }, queue) => {
-    const left = [...queue];
-    dialog.showOpenDialog = async (_w, opts) => {
-      if (!left.length) throw new Error(`Unexpected picker: ${opts?.title}`);
-      return { canceled: false, filePaths: [left.shift()] };
-    };
-  }, paths);
+/** The next native pickers answer with these paths, in order: the ZIP file, then where its copy goes. A picker nobody
+ *  answered is closed and recorded, which the end of the script checks for. */
+const answerPickers = (paths) => answerChoosers(app, paths.map((p) => ({ dialog: 'open', paths: [p] })));
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 const sha = (f) => createHash('sha256').update(readFileSync(f)).digest('hex');
 /** Every library file of a project, with its hash. */
 const library = (dir, snap) => Object.fromEntries(Object.values(snap.state.assets.assets).map((a) => [a.file, sha(join(dir, a.file))]));
-/** Choose File > Open Project… in the native menu, as the menu bar or its shortcut does. */
-const openProjectCommand = () =>
-  app.evaluate(({ Menu }) => {
-    const find = (items) => {
-      for (const i of items) {
-        if (i.label === 'Open Project…') return i;
-        const f = i.submenu && find(i.submenu.items);
-        if (f) return f;
-      }
-    };
-    const item = find(Menu.getApplicationMenu().items);
-    if (!item) throw new Error('No Open Project… menu item');
-    item.click();
-  });
+/** Choose File > Open Project… in the native menu, through its own handler, as the menu bar or its shortcut does. */
+const openProjectCommand = () => chooseMenu(app, ['File', 'Open Project…']);
 
 step('the sender exports the editable project as a ZIP file');
 await createProject(win, { name, parentDir: join(WORK, 'sender'), starter: 'business', sampleImages: true });
@@ -53,7 +35,7 @@ const sent = await snapshot();
 const sentPages = sent.state.site.pageOrder.map((id) => sent.state.pages[id].route);
 const sentLibrary = library(sent.dir, sent);
 assert.ok(Object.keys(sentLibrary).length >= 3, `the Business starter brings its sample images (${Object.keys(sentLibrary).length})`);
-await app.evaluate(({ dialog }, file) => void (dialog.showSaveDialog = async () => ({ canceled: false, filePath: file })), zip);
+await answerChoosers(app, [{ dialog: 'save', path: zip }]);
 const exported = await withTimeout(win.evaluate(() => window.builder.project.exportSource('zip')), 120000, 'Source ZIP export');
 assert.equal(exported.ok, true, `source ZIP export succeeds: ${exported.message}`);
 const zipHash = sha(zip);
@@ -151,6 +133,11 @@ if (zipTool.status === 0) {
   assert.deepEqual(readdirSync(recipient).sort(), ['harbour-lane-studio', 'harbour-lane-studio-2'], 'nothing is unpacked');
 } else console.log('(no zip command here: skipping the website ZIP)');
 
+assert.deepEqual(
+  (await choosersShown(app)).filter((c) => c.outcome !== 'chosen').map((c) => `${c.title}: ${c.outcome}`),
+  [],
+  'every picker shown was one the script answered'
+);
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();
 cleanup();

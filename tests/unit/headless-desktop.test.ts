@@ -342,6 +342,8 @@ describe('the record', () => {
     const rest = fixtures.events(first.next);
     expect(rest.entries.map((e: DesktopEvent) => e.type)).toEqual(['chooser']);
     expect(fixtures.events(rest.next)).toMatchObject({ entries: [], next: rest.next });
+    // A cursor ahead of what has happened is brought back to the last event, so nothing after it is missed.
+    expect(fixtures.events(rest.next + 50).next).toBe(fixtures.seq);
   });
 
   it('is bounded: the oldest go, and it says how many', async () => {

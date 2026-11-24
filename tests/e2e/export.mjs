@@ -1,5 +1,5 @@
 // Export integrity (spec I07, I09): export the static site and the source project through the real
-// controller (native save dialogs stubbed), then scan both for editor state, credentials, editor markup,
+// controller (each native chooser answered by the app's chooser fixtures), then scan both for editor state, credentials, editor markup,
 // deleted images and library images kept for later (only the editable project carries those). With --build, the exported source is also installed and built with plain
 // `npm ci && npm run build`, as on a clean machine (slow, and needs the npm registry).
 import assert from 'node:assert/strict';
@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, delimiter, join, sep } from 'node:path';
-import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+import { answerChoosers, choosersShown, createProject, desktopCursor, desktopIntents, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 // ---------------------------------------------------------------------------
 // A phone photo's metadata, written and read back by hand (little-endian EXIF and an XMP packet)
@@ -325,12 +325,11 @@ const sourceOut = join(exportsDir, 'harbour-lane-studio-source');
 const staticOut = join(exportsDir, 'harbour-lane-studio-site-2');
 const sourceZip = join(exportsDir, 'source.zip');
 const staticZip = join(exportsDir, 'site.zip');
-// Stand in for the native dialogs: folder pickers answer with the parent, save dialogs with the next ZIP.
-await app.evaluate(({ dialog }, { parent, zips }) => {
-  const queue = [...zips];
-  dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [parent] });
-  dialog.showSaveDialog = async () => ({ canceled: false, filePath: queue.shift() });
-}, { parent: exportsDir, zips: [sourceZip, staticZip] });
+// Each export's native chooser is answered before it: a folder export's picker with the exports folder (the export
+// makes its own new folder inside), a ZIP export's save dialog with the file.
+const exportsMark = await desktopCursor(app);
+const intoFolder = () => answerChoosers(app, [{ dialog: 'open', selection: 'folder', paths: [exportsDir] }]);
+const asZip = (file) => answerChoosers(app, [{ dialog: 'save', path: file }]);
 // Issue 212: each website proof carries its own visible title, so two successive previews can be told apart.
 const pageIds = Object.fromEntries(Object.values(after.pages).map((p) => [p.route, p.id]));
 assert.ok(pageIds['/'] && pageIds['/about/'], 'the starter has a home page and an About page');
@@ -343,9 +342,11 @@ const titleProof = async (label) => {
   assert.equal(r.ok, true, `the proof is retitled ${label}: ${r.error?.message}`);
 };
 await titleProof('Client proof 1');
+await intoFolder();
 const src = await withTimeout(win.evaluate(() => window.builder.project.exportSource()), 120000, 'Source export');
 assert.equal(src.ok, true, `source export succeeds: ${src.message}`);
 assert.equal(src.path, sourceOut);
+await intoFolder();
 const stat = await withTimeout(win.evaluate(() => window.builder.project.exportStatic()), 300000, 'Static export');
 assert.equal(stat.ok, true, `static export succeeds: ${stat.message} ${stat.warnings?.join(' ')}`);
 assert.equal(stat.path, staticOut, 'an existing folder is never replaced: the export takes the next free name');
@@ -599,9 +600,11 @@ for (const [label, size] of [['desktop', { width: 1280, height: 900 }], ['phone'
 }
 
 step('ZIP exports');
+await asZip(sourceZip);
 const srcZip = await withTimeout(win.evaluate(() => window.builder.project.exportSource('zip')), 120000, 'Source ZIP export');
 assert.equal(srcZip.ok, true, `source ZIP export succeeds: ${srcZip.message}`);
 assert.equal(srcZip.path, sourceZip);
+await asZip(staticZip);
 const statZip = await withTimeout(win.evaluate(() => window.builder.project.exportStatic('zip')), 300000, 'Static ZIP export');
 assert.equal(statZip.ok, true, `static ZIP export succeeds: ${statZip.message}`);
 assert.equal(statZip.path, staticZip);
@@ -611,6 +614,7 @@ assert.ok(statZip.warnings.some((w) => w.includes('set the 404 error document to
 
 step('issue 212: a second website proof keeps the first one serving its own files');
 await titleProof('Client proof 2');
+await intoFolder();
 const stat2 = await withTimeout(win.evaluate(() => window.builder.project.exportStatic()), 300000, 'Second static export');
 assert.equal(stat2.ok, true, `the second static export succeeds: ${stat2.message} ${stat2.warnings?.join(' ')}`);
 const staticOut2 = join(exportsDir, 'harbour-lane-studio-site-3');
@@ -648,11 +652,8 @@ assert.deepEqual(
 );
 assert.deepEqual(recent.map((e) => e.previewUrl), [stat2.previewUrl, undefined, undefined, stat.previewUrl, undefined], 'each website folder keeps its own preview');
 assert.ok(recent[0].revision > recent[3].revision, 'the proofs name the revisions they were made from');
-// Finder must not open during tests: Show in folder records what it would reveal instead.
-await app.evaluate(({ shell }) => {
-  globalThis.revealed = [];
-  shell.showItemInFolder = (p) => void globalThis.revealed.push(p);
-});
+// Finder never opens during tests: the app records what Show in folder asked to reveal instead.
+let revealMark = await desktopCursor(app);
 const modal = win.locator('.modal');
 const history = modal.getByRole('region', { name: 'Recent exports' });
 const closeDialog = async () => {
@@ -677,9 +678,10 @@ for (let open = 0; open < 2; open++) {
     if (open) continue;
     await item.getByRole('button', { name: 'Show in folder' }).click();
     const shown = await eventually(async () => {
-      const r = await app.evaluate(() => globalThis.revealed.splice(0));
+      const r = (await desktopIntents(app, revealMark)).filter((e) => e.kind === 'reveal');
       assert.equal(r.length, 1, 'Show in folder reveals one item');
-      return r[0];
+      revealMark = r[0].seq;
+      return r[0].target;
     });
     assert.equal(shown, realpathSync(e.path), `row ${i} reveals its own export`);
   }
@@ -688,6 +690,7 @@ for (let open = 0; open < 2; open++) {
 
 step('issue 212: an export made in the dialog joins the list at once');
 await win.getByRole('button', { name: 'Export', exact: true }).click();
+await intoFolder();
 await modal.getByRole('button', { name: /Editable project, for a developer/ }).click();
 await modal.getByRole('status').filter({ hasText: 'Source project exported.' }).waitFor({ timeout: 120000 });
 const sourceOut2 = join(exportsDir, 'harbour-lane-studio-source-2');
@@ -698,6 +701,7 @@ await closeDialog();
 step('issue 55: keyboard focus stays in the dialog while exporting and lands on the result');
 await win.getByRole('button', { name: 'Export', exact: true }).click();
 const siteButton = modal.getByRole('button', { name: /Website files, ready to upload/ });
+await intoFolder();
 await siteButton.focus();
 await win.keyboard.press('Enter');
 await modal.getByText('Building your website and checking every page…').waitFor();
@@ -771,7 +775,14 @@ assert.ok(JSON.stringify(finalState.pages[finalState.site.homePageId].nodes[home
 step('issue 66: a proof published in a sub-folder shows the custom not-found page at a nested missing address');
 const studio = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'site.update', baseUrl: 'https://example.com/studio', notFoundHeading: 'Nothing lives here', notFoundLinkLabel: 'Back to the studio' }] }, { label: 'Publish under /studio' }));
 assert.equal(studio.ok, true, `the site moves under /studio: ${studio.error?.message}`);
+await intoFolder();
 const studioStat = await withTimeout(win.evaluate(() => window.builder.project.exportStatic()), 300000, 'Static export under /studio');
+// Every export's chooser took the answer set for it: none was left unanswered or answered with another's.
+assert.deepEqual(
+  (await choosersShown(app, exportsMark)).filter((c) => c.outcome !== 'chosen').map((c) => `${c.title}: ${c.outcome} (${c.reason})`),
+  [],
+  'every export chooser was answered'
+);
 assert.equal(studioStat.ok, true, `the export under /studio succeeds: ${studioStat.message} ${studioStat.warnings?.join(' ')}`);
 assert.match(studioStat.previewUrl ?? '', /\/studio\/$/, 'the proof is served under /studio');
 step('#393: the sitemap under /studio lists each published post with the day it last changed, and no draft');
