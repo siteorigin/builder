@@ -161,11 +161,13 @@ await pause(300);
   await pause(200);
 }
 
-// Many pages: long titles, nested routes, and the current page far down the list.
+// A long site, built the way an owner builds one: sections with their pages under them, two drafts, two dated
+// articles, legal pages at the end, and one page whose section is elsewhere in the order.
 {
-  const extra = [
+  const outline = [
     ['Our team', '/about/team/'],
-    ['Careers', '/about/careers/'],
+    ['Careers', '/about/careers/', { draft: true }],
+    ['Services', '/services/'],
     ['Residential interior design & renovation', '/services/residential-interior-design/'],
     ['Commercial fit-outs', '/services/commercial/'],
     ['Colour consultations', '/services/colour/'],
@@ -173,16 +175,29 @@ await pause(300);
     ['Kōwhai Street apartment', '/portfolio/kowhai-street-apartment/'],
     ['Harbourside café refit', '/portfolio/harbourside-cafe/'],
     ['Journal', '/journal/'],
+    ['Choosing paint for a north-facing room', '/journal/north-facing-paint/', { article: '2026-10-02' }],
+    ['We’re opening a Wellington studio', '/journal/wellington-studio/', { article: '2026-11-18', draft: true }]
+  ];
+  const tail = [
     ['Frequently asked questions', '/faq/'],
     ['Privacy policy', '/privacy/'],
-    ['Terms of service', '/terms/']
+    ['Terms of service', '/terms/'],
+    ['Gift vouchers', '/services/gift-vouchers/']
   ];
-  let after;
-  for (const [title, route] of extra) {
-    const r = await apply([{ type: 'page.create', title, route, ...(after ? { afterPageId: after } : {}), starter: 'intro' }], `Add ${title}`);
+  const create = async (title, route, opts = {}, afterPageId) => {
+    const op = { type: 'page.create', title, route, starter: opts.article ? 'article' : 'intro', ...(opts.article ? { articleDate: opts.article } : {}), ...(afterPageId ? { afterPageId } : {}) };
+    const r = await apply([op], `Add ${title}`);
     if (!r?.ok) throw new Error(`could not add page ${title}: ${JSON.stringify(r?.error)}`);
-    after = r.results?.[0]?.pageId;
-  }
+    const id = r.results?.[0]?.pageId;
+    if (opts.draft) {
+      const d = await apply([{ type: 'page.update', pageId: id, draft: true }], `Draft ${title}`);
+      if (!d?.ok) throw new Error(`could not make ${title} a draft: ${JSON.stringify(d?.error)}`);
+    }
+    return id;
+  };
+  let after = await win.locator('.side-panel [data-page]', { hasText: 'About' }).first().getAttribute('data-page');
+  for (const [title, route, opts] of outline) after = await create(title, route, opts, after);
+  for (const [title, route, opts] of tail) await create(title, route, opts);
   await pause(800);
   await row('Kōwhai Street apartment').click();
   await pause(1200);
@@ -191,6 +206,85 @@ await pause(300);
   await row('Kōwhai Street apartment').scrollIntoViewIfNeeded();
   await shot('many', '[data-page]:has-text("Terms of service")', BOTH);
   await shot('context', '.editor', LIGHT, { full: true });
+
+  // Keyboard focus on a row whose title is cut short: its whole title and address show in a card under it.
+  await row('Kōwhai Street apartment').focus();
+  for (let i = 0; i < 4; i++) await win.keyboard.press('ArrowUp');
+  await pause(300);
+  await shot('peek', '.pages-peek', LIGHT, { keepPointer: true });
+  await win.keyboard.press('Escape');
+  await pause(200);
+  if (await win.locator('.pages-peek').count()) throw new Error('Escape did not hide the peek card');
+
+  // A draft page's options: Publish instead of Keep as draft, no Make home page.
+  await row('Careers').scrollIntoViewIfNeeded();
+  await row('Careers').click({ button: 'right' });
+  await pause(300);
+  await shot('menu-draft', '.menu', LIGHT, { keepPointer: true });
+  await win.keyboard.press('Escape');
+  await pause(200);
+
+  // A section page's options: it moves with its pages, within the top-level order.
+  await row('Services').scrollIntoViewIfNeeded();
+  await row('Services').click({ button: 'right' });
+  await pause(300);
+  await shot('menu-section', '.menu', LIGHT, { keepPointer: true });
+  await win.keyboard.press('Escape');
+  await pause(200);
+
+  // A page listed away from its section: its menu offers to put it back under that section.
+  await row('Gift vouchers').scrollIntoViewIfNeeded();
+  await row('Gift vouchers').click({ button: 'right' });
+  await pause(300);
+  await shot('menu-away', '.menu', LIGHT, { keepPointer: true });
+  await win.keyboard.press('Escape');
+  await pause(200);
+
+  // The end of the long list, scrolled to the bottom.
+  await row('Gift vouchers').scrollIntoViewIfNeeded();
+  await pause(200);
+  await shot('many-end', '[data-page]:has-text("Gift vouchers")', LIGHT);
+
+  // Finding a page on a long site: words anywhere in the title or address, accents ignored.
+  const find = panel.locator('.pages-find input');
+  await find.click();
+  await win.keyboard.type('kowhai');
+  await pause(300);
+  await shot('find', '.pages-list mark', LIGHT);
+  await find.fill('gallery');
+  await pause(300);
+  await shot('find-none', '.pages-empty', LIGHT);
+  await win.keyboard.press('Escape');
+  await pause(200);
+  if (await find.inputValue()) throw new Error('Escape did not clear the find field');
+
+  // Adding a page inside a section, from the section page's menu.
+  await row('Services').scrollIntoViewIfNeeded();
+  await row('Services').click({ button: 'right' });
+  await win.getByRole('menuitem', { name: 'Add page inside' }).click();
+  await pause(300);
+  await win.keyboard.type('Kitchen design');
+  await pause(300);
+  await shot('add-inside', '.pages-add-form select', BOTH);
+  await win.keyboard.press('Escape');
+  await pause(300);
+
+  // The same site at the narrowest sidebar (200px): the resizer dragged 60px to the left, then back.
+  const handle = win.locator('.side-panel .resizer');
+  const resize = async (dx) => {
+    const b = await handle.boundingBox();
+    await win.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await win.mouse.down();
+    await win.mouse.move(b.x + b.width / 2 + dx, b.y + b.height / 2, { steps: 6 });
+    await win.mouse.up();
+    await win.evaluate(() => document.activeElement instanceof HTMLElement && document.activeElement.blur());
+    await pause(300);
+  };
+  if (!(await handle.boundingBox())) throw new Error('no sidebar resizer for the narrow capture');
+  await resize(-60);
+  await row('Kōwhai Street apartment').scrollIntoViewIfNeeded();
+  await shot('many-narrow', '[data-page]:has-text("Kōwhai Street apartment")', LIGHT);
+  await resize(60);
 }
 
 // Delete confirmation for a page other links point to.
