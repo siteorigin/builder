@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import type { ComponentDefinition, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue } from '@shared/types';
 import { isBinding } from '@shared/types';
+import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
 import { partStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
@@ -1365,12 +1366,16 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
 
 function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
+  const assetSort = useStore((s) => s.assetSort);
   const dev = useStore((s) => !!s.settings?.developerMode);
   const [titleError, setTitleError] = useState<string | null>(null);
   if (!page) return null;
   const upd = (patch: Record<string, unknown>, label = 'Update page settings') => void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], label);
   const isHome = page.id === state.site.homePageId;
   const draft = isDraftPage(state, page);
+  // The sharing image menu lists images in the order Assets does, with the ID of any that share a name.
+  const images = sortAssets(Object.values(state.assets.assets).filter((a) => a.kind === 'image'), assetSort);
+  const imageLabels = assetLabels(images);
   return (
     <div className="panel-body insp">
       <Header title={page.title} kind={`${isHome ? 'Home page' : draft ? 'Draft page' : 'Page'} · ${isHome ? '/' : page.route}`} icon={isHome ? <House /> : <FileText />}>
@@ -1424,13 +1429,11 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         <Field label="Sharing image" hint="Shown when the page is shared, and on this page’s card in page lists. None uses the site’s sharing image when shared.">
           <select className="select" value={page.seo.socialImage ?? ''} onChange={(e) => upd({ socialImage: e.target.value || null }, 'Change sharing image')}>
             <option value="">None</option>
-            {Object.values(state.assets.assets)
-              .filter((a) => a.kind === 'image')
-              .map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
+            {images.map((a) => (
+              <option key={a.id} value={a.id}>
+                {imageLabels.get(a.id)?.label}
+              </option>
+            ))}
           </select>
         </Field>
         <SwitchRow

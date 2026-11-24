@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { AiEvent, AppSettings, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ResponsiveScope } from '@shared/types';
+import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
@@ -146,7 +147,20 @@ interface State {
   /** Typed edits made while the AI was working (see HeldEdit). */
   heldEdits: HeldEdit[];
   aiOutcome: AiOutcome | null;
+  /** How library images are listed, in Assets and in every image picker (see setAssetSort). */
+  assetSort: AssetSort;
   setState: (p: Partial<State>) => void;
+}
+
+/** The image order is this person's choice on this computer, kept across projects and restarts. */
+const ASSET_SORT_KEY = 'siteorigin.assetSort';
+function savedAssetSort(): AssetSort {
+  try {
+    const v = globalThis.localStorage?.getItem(ASSET_SORT_KEY);
+    return isAssetSort(v) ? v : 'newest';
+  } catch {
+    return 'newest';
+  }
 }
 
 export const useStore = create<State>((set) => ({
@@ -190,8 +204,19 @@ export const useStore = create<State>((set) => ({
   inspectorFocus: null,
   heldEdits: [],
   aiOutcome: null,
+  assetSort: savedAssetSort(),
   setState: (p) => set(p)
 }));
+
+/** Lists images in this order everywhere at once, and remembers it where storage allows. */
+export function setAssetSort(sort: AssetSort) {
+  useStore.setState({ assetSort: sort });
+  try {
+    globalThis.localStorage?.setItem(ASSET_SORT_KEY, sort);
+  } catch {
+    // Not remembered: the order still holds until the editor closes.
+  }
+}
 
 /**
  * One request to focus a content field, taken by the Inspector of the component named. `opening` is the

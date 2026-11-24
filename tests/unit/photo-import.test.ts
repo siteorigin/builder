@@ -347,6 +347,46 @@ describe('importing a reviewed batch', () => {
     expect(Object.keys(c.session!.state.assets.assets)).toHaveLength(before);
   });
 
+  it('gives every image one import adds the same time, keeps the order the files came in, and leaves an image already here as it was', async () => {
+    const { c } = await openProject();
+    const png = (background: string) => sharp({ create: { width: 40, height: 30, channels: 3, background } }).png().toBuffer();
+    const seven = await png('#111111');
+    const earlier = (await c.importAssets([sourceFile('Swatch 7.png', seven)])).assetIds[0];
+    const earlierAt = c.session!.state.assets.assets[earlier].createdAt;
+    // A clock that moves on every time it is read: each file of the import reads it at a different moment.
+    let tick = 0;
+    const clock = vi.spyOn(Date.prototype, 'toISOString').mockImplementation(() => `2026-11-24T10:00:00.${String(++tick).padStart(3, '0')}Z`);
+    let r: Awaited<ReturnType<typeof c.importAssets>>;
+    let files: string[];
+    try {
+      // Two different pictures with the same file name, from two folders, the swatch already in the library, and one
+      // file given twice.
+      const three = sourceFile('Swatch 3.png', await png('#00aa00'));
+      files = [sourceFile('Swatch 120.png', await png('#aa0000')), sourceFile('Swatch 7.png', seven), three, sourceFile('Swatch 120.png', await png('#0000aa')), three];
+      r = await c.importAssets(files);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(r.ok).toBe(true);
+    const assets = c.session!.state.assets.assets;
+    expect(r.assetIds).toHaveLength(4);
+    expect(r.assetIds[1]).toBe(earlier);
+    expect(r.assetIds.map((id) => assets[id].name)).toEqual(['Swatch 120', 'Swatch 7', 'Swatch 3', 'Swatch 120']);
+    // The two Swatch 120s are the two pictures, in the order their files were given.
+    expect(r.assetIds.map((id) => assets[id].hash)).toEqual(files!.slice(0, 4).map((f) => sha(readFileSync(f))));
+    const added = r.assetIds.filter((id) => id !== earlier);
+    expect(new Set(added.map((id) => assets[id].createdAt)).size).toBe(1);
+    // One time for this import, not one for every import.
+    expect(assets[added[0]].createdAt).toMatch(/^2026-11-24T10:00:00\.\d{3}Z$/);
+    expect(assets[earlier].createdAt).toBe(earlierAt);
+    // Undo takes the import away and Redo brings back the same records, time included.
+    const records = added.map((id) => structuredClone(assets[id]));
+    await c.session!.undo();
+    expect(added.some((id) => id in c.session!.state.assets.assets)).toBe(false);
+    await c.session!.redo();
+    expect(added.map((id) => c.session!.state.assets.assets[id])).toEqual(records);
+  });
+
   it('adds the same photo dropped twice at once as one asset', async () => {
     const { c } = await openProject();
     const photo = await noisy(1200, 900, 'jpeg');

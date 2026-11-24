@@ -7,6 +7,7 @@ import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
 import { allTrees, instancesOf } from '@engine/tree';
 import { api, applyOps, useStore } from '../store';
+import { assetLabels, sortAssets } from '@shared/asset-order';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field, Section, openSection } from '../components/ui';
 import { CustomTokens } from './CustomTokens';
@@ -343,6 +344,7 @@ function ResetDot({ label, theme, onReset }: { label: string; theme: string; onR
 
 export function SiteStyles() {
   const snap = useStore((s) => s.snapshot);
+  const assetSort = useStore((s) => s.assetSort);
   const [dev, setDev] = useState(false);
   useEffect(() => void api.app.info().then((i) => setDev(i.dev)), []);
   const tokens = useMemo(() => (snap ? effectiveTokens(snap.state) : []), [snap?.state.tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -358,6 +360,9 @@ export function SiteStyles() {
   const packsDir = useStore((s) => s.packs.userDir);
   if (!snap) return null;
   const st = snap.state;
+  // The image menus list images in the order Assets does.
+  const images = sortAssets(Object.values(st.assets.assets).filter((a) => a.kind === 'image'), assetSort);
+  const imageLabels = assetLabels(images);
   const theme = getTheme(st.site.themeId);
   const overrides = st.tokens.overrides;
   const byId = (id: string) => tokens.find((t) => t.id === id);
@@ -968,9 +973,9 @@ export function SiteStyles() {
         <Field label="Favicon">
           <select className="select" value={site.favicon ?? ''} onChange={(e) => updSite({ favicon: e.target.value || null })}>
             <option value="">None</option>
-            {Object.values(st.assets.assets).filter((a) => a.kind === 'image').map((a) => (
+            {images.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name}
+                {imageLabels.get(a.id)?.label}
               </option>
             ))}
           </select>
@@ -978,9 +983,9 @@ export function SiteStyles() {
         <Field label="Social sharing image">
           <select className="select" value={site.socialImage ?? ''} onChange={(e) => updSite({ socialImage: e.target.value || null })}>
             <option value="">None</option>
-            {Object.values(st.assets.assets).filter((a) => a.kind === 'image').map((a) => (
+            {images.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name}
+                {imageLabels.get(a.id)?.label}
               </option>
             ))}
           </select>

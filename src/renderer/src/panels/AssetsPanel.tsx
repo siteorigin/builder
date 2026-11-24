@@ -6,6 +6,8 @@ import type { AssetRecord, OwnerRef, ProjectState } from '@shared/types';
 import { api, applyOps, attachToChat, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
 import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
+import { inSeries, sortAssets } from '@shared/asset-order';
+import { AssetOrderControls, useAssetSeries } from '../components/AssetOrder';
 import { Picture, Thumb } from '../components/AssetPicture';
 import { goToShellPart, imagePlacement, openSiteStyles, placeAsset, selectPage } from '../lib/actions';
 import { SHOW_ASSET_EVENT } from '../lib/place';
@@ -403,6 +405,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   useStore((s) => s.pageId);
   useStore((s) => s.mode);
   useStore((s) => s.definitionMode);
+  const assetSort = useStore((s) => s.assetSort);
   const [placing, setPlacing] = useState(false);
   // A second click while the first placement is on its way places nothing more.
   const placingNow = useRef(false);
@@ -429,7 +432,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const missingAssets = snap?.missingAssets;
   const missingOf = useMemo(() => new Map((missingAssets ?? []).map((m) => [m.assetId, m])), [missingAssets]);
   // Images and fonts are listed apart: a font is never shown, picked or replaced as a picture.
-  const assets = useMemo(() => Object.values(assetsDoc ?? {}).filter((a) => a?.kind === 'image').sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [assetsDoc]);
+  const assets = useMemo(() => sortAssets(Object.values(assetsDoc ?? {}).filter((a) => a?.kind === 'image'), assetSort), [assetsDoc, assetSort]);
+  // The series shown while browsing, and while picking a replacement: the picker opens on every series, so a
+  // series chosen to browse never hides the image wanted in its place.
+  const browseSeries = useAssetSeries(assets, opening);
+  const pickSeries = useAssetSeries(assets, opening);
   /** Names more than one image has, compared as the AI chat compares them. */
   const sharedNames = useMemo(() => {
     const seen = new Set<string>();
@@ -503,7 +510,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const unused = assets.filter((a) => !usage[a.id]);
   const query = replacing ? pickQ : q;
   const needle = query.trim().toLowerCase();
-  const matches = (a: AssetRecord) => !needle || `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle);
+  const series = replacing ? pickSeries : browseSeries;
+  const matches = (a: AssetRecord) => (!series.key || inSeries(a, series.key)) && (!needle || `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle));
   const found = assets.filter((a) => matches(a) && !(replacing && a.id === sel?.id));
   const foundUnused = found.filter((a) => !usage[a.id]);
   const mode = unused.length && !replacing ? filter : 'all';
@@ -524,6 +532,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const openReplace = () => {
     replaceSession.current++;
     setPickQ('');
+    pickSeries.choose('');
     setReplacing(true);
   };
   const closeReplace = () => {
@@ -580,9 +589,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     // While choosing a replacement picture, only pictures come in.
     const { ids, added, reviewed } = await importFiles(paths, replacing ? 'image' : undefined);
     if (replacing && replaceSession.current === session) {
-      if (!added.length) return;
+      // A file that was already here is a candidate too: the search and series make way for the first file given.
+      const next = ids.find((id) => id !== sel?.id);
+      if (!next) return;
       setPickQ('');
-      focusTile(added[0]);
+      pickSeries.choose('');
+      focusTile(next);
       return;
     }
     if (reviewed && ids.length && opening && !(await assetArrived(ids[ids.length - 1], opening))) return;
@@ -761,16 +773,31 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         {needle && mode === 'unused' && found.length ? (
           <>No unused images match “{query.trim()}”.</>
         ) : needle ? (
-          <>No images match “{query.trim()}”.</>
+          <>No images {series.key ? `in ${series.label} ` : ''}match “{query.trim()}”.</>
+        ) : series.key && mode === 'unused' ? (
+          <>Every image in {series.label} is in use.</>
+        ) : series.key ? (
+          <>There are no other images in {series.label}.</>
         ) : replacing ? (
           'There are no other images in this project yet. Import one above.'
         ) : (
           'Every image is in use.'
         )}
       </p>
-      {needle && mode === 'unused' && found.length > 0 && (
+      {mode === 'unused' && found.length > 0 && (needle || series.key) && (
         <button className="btn btn-sm" onClick={() => setFilter('all')}>
           Show all {found.length}
+        </button>
+      )}
+      {series.key && (
+        <button
+          className="btn btn-sm"
+          onClick={() => {
+            series.choose('');
+            searchRef.current?.focus();
+          }}
+        >
+          Show all series
         </button>
       )}
       {needle && (
@@ -792,6 +819,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         <Search />
         <input ref={searchRef} className="input" type="search" placeholder="Search images" value={query} onChange={(e) => (replacing ? setPickQ : setQ)(e.target.value)} aria-label="Search images by name or description" />
       </div>
+      <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />
       {!replacing && unused.length > 0 && (
         <Segmented
           full
@@ -805,7 +833,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         />
       )}
       <span className="sr-only" role="status">
-        {needle ? `${plural(shown.length, 'image matches', 'images match')}` : ''}
+        {needle || series.key ? `${plural(shown.length, 'image matches', 'images match')}` : ''}
       </span>
     </div>
   );
@@ -840,9 +868,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               if (replaceSession.current !== session) return;
               // Applied only while the picker is still open for this image, and only for the one file chosen, come in cleanly.
               if (r.chosen === 1 && r.ids.length === 1 && !r.failed) void replaceWith(r.ids[0]);
-              else if (r.added.length) {
+              else {
+                const next = r.ids.find((id) => id !== sel.id);
+                if (!next) return;
                 setPickQ('');
-                focusTile(r.added[0]);
+                pickSeries.choose('');
+                focusTile(next);
               }
             }}
           >
@@ -1078,14 +1109,20 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       <>
         {mode === 'unused' && removable.length > 0 && (
           <div className="asset-cleanup">
-            <p>{needle ? `${plural(removable.length, 'unused image matches', 'unused images match')} your search.` : `${plural(removable.length, 'image isn’t', 'images aren’t')} used anywhere.`}</p>
+            <p>
+              {needle
+                ? `${plural(removable.length, 'unused image matches', 'unused images match')} your search${series.key ? ` in ${series.label}` : ''}.`
+                : series.key
+                  ? `${plural(removable.length, 'image', 'images')} in ${series.label} ${removable.length === 1 ? 'isn’t' : 'aren’t'} used anywhere.`
+                  : `${plural(removable.length, 'image isn’t', 'images aren’t')} used anywhere.`}
+            </p>
             <button className="btn btn-sm btn-danger" onClick={() => void removeMany(removable)}>
-              <Trash2 /> {removable.length === 1 ? 'Remove it' : needle ? `Remove these ${removable.length}` : `Remove all ${removable.length}`}
+              <Trash2 /> {removable.length === 1 ? 'Remove it' : needle || series.key ? `Remove these ${removable.length}` : `Remove all ${removable.length}`}
             </button>
           </div>
         )}
         {shown.length ? grid((a) => setSelected(a.id), 'Images') : noMatches}
-        {!needle && mode === 'all' && <p className="asset-drop-hint">You can also drop image files anywhere on this panel.</p>}
+        {!needle && !series.key && mode === 'all' && <p className="asset-drop-hint">You can also drop image files anywhere on this panel.</p>}
       </>
     );
   }

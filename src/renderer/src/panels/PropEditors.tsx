@@ -1,4 +1,4 @@
-import { createElement, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus, ImageOff, ImagePlus, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChoiceOption, ChoicesProp, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
@@ -16,6 +16,8 @@ const MOVE_PENDING_MS = 3000;
 import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote, type MoveDirection } from '../lib/list-editor';
 import { importAndPlace } from '../lib/place';
 import { AssetImage } from '../components/AssetImage';
+import { AssetOrderControls, useAssetSeries } from '../components/AssetOrder';
+import { assetLabels, inSeries, sortAssets } from '@shared/asset-order';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { pageIds, planSectionPick, sharedPageIds } from '@generator/checks';
 import { contactMismatch } from '@shared/contact-links';
@@ -332,12 +334,22 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
       alive.current = false;
     };
   }, []);
-  const images = Object.values(state.assets.assets).filter((a) => a.kind === 'image');
+  // In the order Assets lists them, and changing the order here changes it there.
+  const assetSort = useStore((s) => s.assetSort);
+  const library = state.assets.assets;
+  const images = useMemo(() => sortAssets(Object.values(library).filter((a) => a.kind === 'image'), assetSort), [library, assetSort]);
+  const labels = useMemo(() => assetLabels(images), [images]);
+  const series = useAssetSeries(images, snapshot?.workspaceKey);
   const needle = q.trim().toLowerCase();
-  const shown = needle ? images.filter((a) => `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle)) : images;
+  const shown = images.filter((a) => (!series.key || inSeries(a, series.key)) && (!needle || `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle)));
+  // The grid's one tab stop: the tile last moved to while it is still shown, else the image chosen, else the first.
+  const [rover, setRover] = useState<string | null>(null);
+  const tabStop = shown.some((a) => a.id === rover) ? rover : shown.some((a) => a.id === v.assetId) ? v.assetId : (shown[0]?.id ?? null);
   const closeBrowser = (focus = true) => {
     setBrowsing(false);
     setQ('');
+    setRover(null);
+    series.choose('');
     if (focus) requestAnimationFrame(() => chooseBtn.current?.focus());
   };
   /**
@@ -412,7 +424,8 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
     const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step !== undefined ? Math.max(0, Math.min(tiles.length - 1, i + step)) : -1;
     if (to < 0) return;
     e.preventDefault();
-    tiles.forEach((t, k) => (t.tabIndex = k === to ? 0 : -1));
+    // The tiles are the images shown, in order.
+    setRover(shown[to]?.id ?? null);
     tiles[to].focus();
   };
   // Until there is an image (or something already set about it), the chooser is the only thing to do.
@@ -458,33 +471,38 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
           aria-label={title ? `Choose ${title.toLowerCase()}` : 'Choose an image'}
         >
           <div className="insp-pick-tools">
-            {images.length > 6 && <input type="search" className="input sm grow" placeholder="Search images" aria-label="Search images" value={q} autoFocus onChange={(e) => setQ(e.target.value)} />}
+            {/* Kept while a search is typed, so it can always be cleared. */}
+            {(images.length > 6 || !!q) && <input type="search" className="input sm grow" placeholder="Search images" aria-label="Search images" value={q} autoFocus onChange={(e) => setQ(e.target.value)} />}
             <button className="btn btn-sm" onClick={() => void importAndPick()} disabled={importing} autoFocus={images.length <= 6}>
               <Plus /> Import…
             </button>
           </div>
+          {/* Kept while a series is chosen, so it can always be cleared. */}
+          {(images.length > 6 || !!series.key) && <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />}
           {shown.length > 0 ? (
             <div className="insp-pick-grid" role="listbox" aria-label="Your images" onKeyDown={gridKeys}>
-              {shown.map((a, i) => (
+              {shown.map((a) => (
                 <button
                   key={a.id}
                   role="option"
                   aria-selected={a.id === v.assetId}
-                  tabIndex={a.id === v.assetId || (i === 0 && !shown.some((x) => x.id === v.assetId)) ? 0 : -1}
+                  tabIndex={a.id === tabStop ? 0 : -1}
                   className={`insp-pick-tile${a.id === v.assetId ? ' current' : ''}`}
-                  title={a.name}
+                  title={labels.get(a.id)?.label}
                   onClick={() => {
                     pick(a.id, a.altSuggestion);
                     closeBrowser();
                   }}
                 >
                   {devUrl ? <AssetImage key={missingKey(snapshot, a.id)} asset={a} devUrl={devUrl} cover alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
-                  <span className="ellipsis">{a.name}</span>
+                  <span className="ellipsis">{labels.get(a.id)?.name}</span>
+                  {/* Another image has this name: its ID, on a line of its own, tells them apart. */}
+                  {labels.get(a.id)?.label !== labels.get(a.id)?.name && <span className="ellipsis insp-pick-id">{a.id}</span>}
                 </button>
               ))}
             </div>
           ) : (
-            <p className="faint insp-note">{images.length ? `No images match “${q.trim()}”.` : 'No images yet. Import one, or drop an image file here.'}</p>
+            <p className="faint insp-note">{images.length ? `No images ${series.key ? `in ${series.label} ` : ''}match “${q.trim()}”.` : 'No images yet. Import one, or drop an image file here.'}</p>
           )}
           {images.length > 0 && <p className="faint insp-note">You can also drop an image file on this card.</p>}
         </div>

@@ -1288,6 +1288,8 @@ export class Controller {
       const backfills = [];
       // Files imported earlier in this batch count as existing too: the same picture dropped twice is one asset.
       const known = Object.values(s.state.assets.assets);
+      // One time for the whole import, so the images it adds are listed together and by name.
+      const createdAt = new Date().toISOString();
       for (const [i, f] of picked.entries()) {
         // A project closed or taken over meanwhile gets nothing more: the rest of the batch is not converted for nothing.
         if (this.session !== s || this.closing) {
@@ -1299,6 +1301,7 @@ export class Controller {
           // Written only while the project is still open and this app's; the decoding and converting are done before.
           const { record, existing, font, note } = await importAsset(s.dir, f, known, this.writeFence(s), {
             decoder: this.photoDecoder,
+            createdAt,
             ...(r ? { webCopy: r.webCopy, fingerprint: r.fingerprint } : {})
           });
           if (note) notes.push(note);
