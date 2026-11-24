@@ -3,6 +3,7 @@
  * property bindings. Every operation keeps instances consistent with the definition it changes.
  */
 import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ProjectState, PropSchema } from '@shared/types';
+import { isArticleDate } from '@shared/articles';
 import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
@@ -363,6 +364,7 @@ const FIELD_KINDS: Record<BindField, GraphNode['kind'][] | null> = {
   icon: ['icon', 'link'],
   iconPosition: ['link'],
   ariaLabel: ['element', 'icon', 'link'],
+  datetime: ['text'],
   tag: ['element', 'text'],
   action: ['element'],
   list: ['repeat'],
@@ -396,6 +398,9 @@ function literalFor(field: BindField, node: GraphNode, schema: PropSchema | unde
       return schema?.type === 'link' ? clone(d) : { type: 'none', target: '' };
     case 'ariaLabel':
       return typeof d === 'string' && d.trim() ? d : undefined;
+    // The date the text stated by default stays its date; anything else leaves the text undated.
+    case 'datetime':
+      return isArticleDate(typeof d === 'string' ? d.trim() : d) ? (d as string).trim() : undefined;
     case 'iconPosition':
       return (ICON_POSITIONS as unknown[]).includes(d) ? d : undefined;
     case 'action':
@@ -428,6 +433,8 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
     if (!op.prop) fail('Name the nested property to bind with "prop".');
     const nd = state.components[(node as InstanceNode).definitionId];
     nested = own(nd?.properties, op.prop) ?? fail(`"${nd?.name ?? 'This component'}" has no property "${op.prop}".`);
+    // A computed list is filled from the site's pages where it is placed; handing it items would replace them.
+    if (op.binding !== null && nested.type === 'list' && nested.feed) fail(`"${nested.label}" of "${nd!.name}" fills itself from the site's pages and cannot be bound to a property.`);
   }
   const nestedDef = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
   const axis = field === 'variant' ? (op.axis ?? fail('Name the variant axis to bind with "axis".')) : undefined;

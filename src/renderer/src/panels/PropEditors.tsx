@@ -1,12 +1,12 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChoiceOption, ChoicesProp, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, setState, toast, useStore, type PendingEdit } from '../store';
 import { isImeComposing } from '../lib/ime';
 import type { ListPlace } from '../lib/reveal';
-import { DraftInput, Field, Switch, SwitchRow } from '../components/ui';
+import { DraftInput, Field, openSection, Switch, SwitchRow } from '../components/ui';
 import { isSettling, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
 import { MAX_CHOICES as MAX_CHOICE_ROWS } from '@engine/values';
@@ -25,6 +25,8 @@ import { contactMismatch } from '@shared/contact-links';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { pagesToAdd, teaserFieldNote } from '../lib/page-teasers';
 import { effectiveItem } from '@shared/page-teasers';
+import { articleRows, feedLimit } from '@shared/articles';
+import { selectPage } from '../lib/actions';
 import { groupFields, listItemImage, listRowTitle, type PropGroup } from '@shared/fields';
 import type { TableEdit } from '@engine/table';
 import { TableEditor } from './TableEditor';
@@ -1031,10 +1033,75 @@ export function PropField({ name, schema, value, onChange, onList, onTable, read
   /** For a list that takes several library images at once (a Gallery): the item field each image goes in. */
   pickImages?: string | null;
 }) {
+  if (schema.type === 'list' && schema.feed) return <ComputedList name={name} schema={schema} state={state} pageId={placedOnPage(place?.ref)} />;
   if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} />;
   if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} />;
   return <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={error} action={action} everywhere={everywhere} />;
   void name;
+}
+
+/** The page a placement's computed lists are worked out for: the page it is on, or none (the shared header and footer). */
+export function placedOnPage(ref: ElementRef | undefined): string | undefined {
+  return ref && ref.owner.kind === 'page' ? ref.owner.id : undefined;
+}
+
+/** Open a page's settings in the inspector, where an article's title, date, byline and excerpt are changed. */
+export function openPageSettings(pageId: string) {
+  selectPage(pageId);
+  setState({ rightTab: 'inspect', dockOpen: true });
+  // Once the page's settings are showing, open its Article section (it may have been collapsed) and bring it into view.
+  setTimeout(() => openSection('page-article'), 120);
+}
+
+/**
+ * A computed list (news, an article's header): what it shows where it is placed, and where each of those things is
+ * changed. It holds nothing of its own to edit.
+ */
+function ComputedList({ name, schema, state, pageId }: { name: string; schema: ListProp; state: ProjectState; pageId?: string }) {
+  const limit = feedLimit(schema);
+  const rows = articleRows(state, schema.feed!, pageId, Number.isFinite(limit) ? limit : undefined);
+  const page = pageId && Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
+  const hintId = useId();
+  if (schema.feed === 'currentPage')
+    return (
+      <div className="field computed-list" data-list={name}>
+        <div className="field-label">{schema.label}</div>
+        <p className="insp-note field-hint" id={hintId}>
+          {page
+            ? `Shows this page’s title${rows[0]?.date ? ', publication date, byline and excerpt' : ''}${rows[0]?.date ? '' : '. Make it a dated article in its page settings to show a date, byline and excerpt too'}.`
+            : 'Shows the title and article details of the page it is on. In the shared header or footer it has no page of its own and shows nothing.'}
+        </p>
+        {page && (
+          <button className="btn btn-sm insp-inline-btn" aria-describedby={hintId} onClick={() => openPageSettings(page.id)}>
+            Edit in page settings
+          </button>
+        )}
+      </div>
+    );
+  return (
+    <div className="field computed-list" data-list={name}>
+      <div className="field-label">
+        {schema.label} <span className="faint">· newest first</span>
+      </div>
+      {rows.length ? (
+        <ol className="computed-rows" aria-label={`${schema.label} shown here`}>
+          {rows.map((r) => (
+            <li key={r.id}>
+              <button className="link-btn" onClick={() => openPageSettings(r.id)} title={`Open ${r.title}’s page settings`}>
+                {r.title}
+              </button>
+              {r.dateLabel && <span className="faint"> · {r.dateLabel}</span>}
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="insp-note muted">No articles to show yet.</p>
+      )}
+      <p className="insp-note field-hint">
+        Filled in from the site’s dated articles{Number.isFinite(limit) ? `, up to ${limit}` : ''}. Add one with Add page → Dated article. Change an article’s title, date, byline or excerpt, or hide it from news lists, in its page settings. Drafts are left out.
+      </p>
+    </div>
+  );
 }
 
 /** Renders grouped fields: a group gets a heading and a quiet frame, a lone field renders as itself. */

@@ -165,7 +165,16 @@ export interface ListProp extends PropBase {
   max?: number;
   /** Items are cards for pages of the site: fields left empty show the linked page's own values (see shared/page-teasers.ts). */
   pageTeaser?: PageTeaser;
+  /**
+   * Items are not stored: they are worked out from the site's pages where the list is placed, each time the site is
+   * generated (see shared/articles.ts). Fields named like a row's (`pageLink`, `title`, `date`, `dateLabel`,
+   * `byline`, `excerpt`) are filled from it; the stored value is ignored.
+   */
+  feed?: ListFeed;
 }
+/** What a computed list holds: the site's dated articles, newest first, or the page it is placed on. */
+export type ListFeed = 'articles' | 'currentPage';
+export const LIST_FEEDS: readonly ListFeed[] = ['articles', 'currentPage'];
 /**
  * Which item fields of a page list follow the linked page. `link` names the item's link field; `title` (a text
  * field) shows the page's title, `description` (a text field) its description and `image` (an image field) its
@@ -261,6 +270,11 @@ export interface TextNode extends NodeBase {
   /** For rich text nodes the value is structured blocks. */
   text: Bindable<string | RichText>;
   rich?: boolean;
+  /**
+   * Plain text only: the date (YYYY-MM-DD) the text states. The text then renders inside a `<time>` element with
+   * this as its machine-readable `datetime`, while it is set.
+   */
+  datetime?: Bindable<string>;
 }
 export interface ImageNode extends NodeBase {
   kind: 'image';
@@ -474,6 +488,23 @@ export interface PageDoc extends NodeTree {
    * version. No two pages of one group are in the same language. The key means nothing beyond that.
    */
   translationGroup?: string;
+  /** Makes the page a dated article, such as a news item or an announcement (see shared/articles.ts). */
+  article?: PageArticle;
+}
+
+/**
+ * What makes a page a dated article. News lists show the site's articles newest first, by `date`, with the page's
+ * title; the page's own Article header shows the same values.
+ */
+export interface PageArticle {
+  /** Publication date, a calendar day written YYYY-MM-DD. It may be in the past (a backdated piece). */
+  date: string;
+  /** Who wrote it, shown as written ("By Ana Ruiz", "Market team"). */
+  byline?: string;
+  /** A short summary for news lists and the article's introduction. */
+  excerpt?: string;
+  /** Left out of news lists, while the page itself stays published. */
+  hidden?: boolean;
 }
 
 export interface SiteDoc {

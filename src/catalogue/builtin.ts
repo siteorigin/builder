@@ -5,7 +5,7 @@
 import type { AuthoredPack } from './pack';
 import { FOUNDATION } from './foundation/pack';
 import { heroCentered, heroSplit, pageIntro } from './foundation/heroes';
-import { container, featuresGrid, gallery, mediaSplit, pageList, stats, textSection } from './foundation/content';
+import { articleHeader, container, featuresGrid, gallery, mediaSplit, newsList, pageList, stats, textSection } from './foundation/content';
 import { logoStrip, team, testimonials } from './foundation/people';
 import { contact, cta, faq, pricing } from './foundation/conversion';
 import { footer, header } from './foundation/shell';
@@ -21,6 +21,7 @@ export const FOUNDATION_PACK: AuthoredPack = FOUNDATION.define([
   heroCentered,
   heroSplit,
   pageIntro,
+  articleHeader,
   logoStrip,
   featuresGrid,
   mediaSplit,
@@ -32,6 +33,7 @@ export const FOUNDATION_PACK: AuthoredPack = FOUNDATION.define([
   dataTable,
   faq,
   pageList,
+  newsList,
   gallery,
   video,
   cta,

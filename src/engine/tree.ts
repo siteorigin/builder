@@ -137,7 +137,8 @@ export function headerMenu(state: ProjectState): { node: InstanceNode; schema: E
     const n = header.nodes[id];
     if (n?.kind !== 'instance') continue;
     const schema = state.components[n.definitionId]?.properties.links;
-    if (schema?.type === 'list' && schema.fields.label?.type === 'string' && schema.fields.link?.type === 'link') return { node: n, schema };
+    // A computed list fills itself from the site's pages: a menu link stored in it would never show.
+    if (schema?.type === 'list' && !schema.feed && schema.fields.label?.type === 'string' && schema.fields.link?.type === 'link') return { node: n, schema };
   }
   return null;
 }

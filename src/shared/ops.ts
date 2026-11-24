@@ -43,6 +43,17 @@ const ASSET_FILE = z.string().regex(new RegExp(`^static/assets/[a-z0-9][a-z0-9-]
 const RELINK_MIME = z.string().regex(new RegExp(`^(image/[a-z0-9.+-]+|${Object.values(DOCUMENT_FORMATS).map((f) => f.mime.replace(/[.+]/g, '\\$&')).join('|')})$`));
 const ASSET_VARIANTS = z.array(z.object({ width: z.number(), file: z.string().regex(/^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png)$/) }));
 
+/** A dated article's details, as page.create and page.update take them (see shared/articles.ts). */
+const ARTICLE_FIELDS = {
+  articleDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .describe('Publication date, YYYY-MM-DD (a past date backdates the piece). Makes the page a dated article: News lists show articles newest first.'),
+  byline: z.string().max(80).optional().describe('Articles only: who wrote it, shown as written ("By Ana Ruiz"). Empty removes it.'),
+  excerpt: z.string().max(320).optional().describe('Articles only: a short summary shown in News lists and under the article\'s title. Empty removes it.')
+};
+
 export const OPERATION_SCHEMAS = {
   'page.create': z.object({
     type: z.literal('page.create'),
@@ -50,8 +61,10 @@ export const OPERATION_SCHEMAS = {
     title: z.string().min(1).max(80),
     route: z.string().optional().describe('Static route such as "/services/". Defaults to a slug of the title.'),
     afterPageId: z.string().optional(),
-    starter: z.enum(['empty', 'intro']).optional().describe('"intro" adds a page introduction section.'),
-    addToNavigation: z.boolean().optional().describe('Also add a link to the new page at the end of the shared header navigation.')
+    starter: z.enum(['empty', 'intro', 'article']).optional().describe('"intro" adds a page introduction section. "article" makes a dated article (news, an announcement): it adds an Article header showing the title, date, byline and excerpt, and a text section for the body.'),
+    addToNavigation: z.boolean().optional().describe('Also add a link to the new page at the end of the shared header navigation.'),
+    ...ARTICLE_FIELDS,
+    newsHidden: z.boolean().optional().describe('Articles only. true keeps the new article out of every News list while the page is published.')
   }),
   'page.update': z.object({
     type: z.literal('page.update'),
@@ -68,7 +81,10 @@ export const OPERATION_SCHEMAS = {
     showFooter: z.boolean().optional().describe('Whether this page shows the site\'s shared footer. Only this page changes; the header setting is separate.'),
     socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.'),
     language: z.string().max(20).optional().describe('Language code such as "fr", when not the site language. "" uses the site language.'),
-    linkTranslationTo: z.string().nullable().optional().describe('Page ID of this page in another language: links them, joining any versions the other has. Each version needs its own language. null unlinks.')
+    linkTranslationTo: z.string().nullable().optional().describe('Page ID of this page in another language: links them, joining any versions the other has. Each version needs its own language. null unlinks.'),
+    ...ARTICLE_FIELDS,
+    article: z.literal(false).optional().describe('false makes a dated article an ordinary page again: its date, byline and excerpt are removed and News lists no longer show it.'),
+    newsHidden: z.boolean().optional().describe('Articles only. true leaves this article out of every News list while the page stays published; false lists it again.')
   }),
   'page.duplicate': z.object({ type: z.literal('page.duplicate'), pageId: z.string(), title: z.string().optional() }),
   'page.reorder': z.object({ type: z.literal('page.reorder'), pageIds: z.array(z.string()) }),
@@ -173,7 +189,9 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('node.setBinding'),
     owner,
     nodeId: z.string(),
-    field: z.enum(['text', 'image', 'fallbackAlt', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'when', 'unless', 'list', 'prop', 'variant']),
+    field: z
+      .enum(['text', 'image', 'fallbackAlt', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'datetime', 'tag', 'action', 'when', 'unless', 'list', 'prop', 'variant'])
+      .describe('"datetime" (plain text only): a YYYY-MM-DD date text property the text states, rendered as a <time> element.'),
     prop: z.string().optional().describe('For field "prop": the nested instance property to bind.'),
     axis: z.string().optional().describe('For field "variant": the nested instance variant axis to bind to an enum property.'),
     binding: binding.nullable().describe('{"$prop": name} or {"$item": field}; null unbinds, keeping the current default.'),

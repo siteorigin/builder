@@ -33,6 +33,7 @@ import { isBinding } from '@shared/types';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
 import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
+import { articleRows, feedLimit, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { cascadeStyles, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
@@ -45,7 +46,7 @@ import type { TableEdit } from '@engine/table';
 import { applyOps, applyWith, commitOps, getState, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
-import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
+import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, placedOnPage, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
@@ -817,9 +818,11 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   // The repeat that encloses the part names its list exactly; a field-name match is only a fallback.
   const listProp = (repeatList && def.properties[repeatList]?.type === 'list' ? repeatList : undefined) ?? contentList;
   const listSchema = listProp ? (def.properties[listProp] as Extract<ComponentDefinition['properties'][string], { type: 'list' }>) : undefined;
+  // A computed list's items are the pages it shows where it is placed (each row's ID is its page's).
+  const feedRows = listSchema?.feed ? (articleRows(state, listSchema.feed, placedOnPage(parent), Number.isFinite(feedLimit(listSchema)) ? feedLimit(listSchema) : undefined) as unknown as Array<Record<string, unknown>>) : undefined;
   // A list the outer design fills in from one of its own properties is not this placement's to list here.
   const ownList = listProp ? (inst.props[listProp] ?? listSchema?.default) : undefined;
-  const listItems = Array.isArray(ownList) ? (ownList as Array<Record<string, unknown>>) : [];
+  const listItems = feedRows ?? (Array.isArray(ownList) ? (ownList as Array<Record<string, unknown>>) : []);
   const itemLabel = listSchema?.itemLabel.toLowerCase() ?? 'item';
   const listLabel = listSchema?.label.toLowerCase() ?? 'items';
   const itemIndex = itemId ? listItems.findIndex((x) => x.id === itemId) : -1;
@@ -882,7 +885,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   const contentReach = !hasContent || !listSchema ? '' : perItem ? (itemId ? `This ${itemLabel} only${itemIndex >= 0 ? ` (${itemIndex + 1} of ${n})` : ''}` : `Each ${itemLabel} has its own`) : `Same in every ${itemLabel}`;
   // The item this part belongs to stays revealed on the page while it is selected: picking an answer inside a question
   // the inspector opened must not close that question under the pointer.
-  const reveal = useRevealedItem(!nested && listProp && itemIndex >= 0 ? { ref: parent, list: listProp } : undefined, itemIndex >= 0 ? (listItems[itemIndex] as ListItem) : undefined, true);
+  const reveal = useRevealedItem(!nested && listProp && !feedRows && itemIndex >= 0 ? { ref: parent, list: listProp } : undefined, itemIndex >= 0 ? (listItems[itemIndex] as ListItem) : undefined, true);
   // A cropped image part chooses its focal point on its own picture (the selected item's, for a repeated one),
   // over the rules the exported site puts under this placement's: the selected variants, then the design.
   const partImage =
@@ -953,6 +956,8 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 </div>
               );
             }
+            // A computed row's fields come from its page: said once, below.
+            if (feedRows) return null;
             if (listProp && listSchema && itemId) {
               const field = listSchema.fields[b.item!];
               const item = listItems.find((x) => x.id === itemId);
@@ -973,8 +978,9 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
           {linkPair && pairedItem && itemId && (
             <ContactMismatch text={pairedItem[linkPair.text]} link={pairedItem[linkPair.link]} onRepair={(link, label, revision) => applyListOp(instOwner, instNodeId, listProp!, { kind: 'repair', itemId, field: linkPair.link, value: link, label, revision }, label)} />
           )}
-          {listSchema && perItem && !itemId && <p className="muted insp-note">Each {itemLabel} has its own text. {everywhere ? (Array.isArray(ownList) ? 'Open the list to edit them.' : `Each placement of ${everywhere.name} fills them in.`) : 'Click one on the page to change it, or open the list to edit them all.'}</p>}
-          {listSchema && Array.isArray(ownList) && (
+          {feedRows && perItem && <ComputedItemNote state={state} pageId={itemId && feedRows.some((r) => r.id === itemId) ? itemId : undefined} listLabel={listLabel} />}
+          {listSchema && !feedRows && perItem && !itemId && <p className="muted insp-note">Each {itemLabel} has its own text. {everywhere ? (Array.isArray(ownList) ? 'Open the list to edit them.' : `Each placement of ${everywhere.name} fills them in.`) : 'Click one on the page to change it, or open the list to edit them all.'}</p>}
+          {listSchema && !feedRows && Array.isArray(ownList) && (
             <button className="btn btn-sm insp-inline-btn" onClick={() => openList(parent, listProp!, itemId ?? (listItems[0]?.id as string | undefined), !!itemId)}>
               <List /> {itemId ? `Show in ${listLabel} list` : `Open ${listLabel} list`}
             </button>
@@ -1573,6 +1579,70 @@ function PageLanguage({ page, state }: { page: PageDoc; state: ProjectState }) {
   );
 }
 
+/** What a part of a computed list shows, and where to change it: the article page it comes from. */
+function ComputedItemNote({ state, pageId, listLabel }: { state: ProjectState; pageId?: string; listLabel: string }) {
+  const page = pageId ? state.pages[pageId] : undefined;
+  if (!page) return <p className="muted insp-note">The {listLabel} come from the site’s pages. Click one on the page to see where it comes from.</p>;
+  return (
+    <>
+      <p className="muted insp-note">
+        From {page.title}’s page settings, and follows them: its title, publication date, byline and excerpt are changed there, and every News list shows the change.
+      </p>
+      <button className="btn btn-sm insp-inline-btn" onClick={() => openPageSettings(page.id)}>
+        Edit {page.title}
+      </button>
+    </>
+  );
+}
+
+/**
+ * Whether a page is a dated article, and its date, byline, excerpt and place in News lists. The title is the page's
+ * own (above), so renaming the page renames the article everywhere it is listed.
+ */
+function ArticleSettings({ page, draft, upd }: { page: PageDoc; draft: boolean; upd: (patch: Record<string, unknown>, label?: string) => void }) {
+  const article = pageArticle(page);
+  return (
+    <Section title="Article" id="page-article" level={LEVEL}>
+      <SwitchRow
+        checked={!!article}
+        onChange={(v) => upd(v ? { articleDate: todayArticleDate() } : { article: false }, v ? 'Make page an article' : 'Make article an ordinary page')}
+        label="Dated article"
+        hint={
+          article
+            ? 'News lists show this page with its date, newest first. Turning this off removes its date, byline and excerpt.'
+            : 'For news and announcements: give the page a publication date, byline and excerpt, and News lists show it automatically.'
+        }
+      />
+      {article && (
+        <>
+          <Field label="Published" hint="News lists show articles newest first. An earlier date backdates it.">
+            {/* A date left incomplete (or cleared) changes nothing: the saved date comes back. */}
+            <DraftInput type="date" value={article.date} onCommit={(v) => (isArticleDate(v) && v !== article.date ? upd({ articleDate: v }, 'Change publication date') : undefined)} />
+          </Field>
+          <Field label="Byline" hint="Who wrote it, shown as written, such as “By Ana Ruiz”. Optional.">
+            <DraftInput maxLength={80} value={typeof article.byline === 'string' ? article.byline : ''} onCommit={(v) => upd({ byline: v }, 'Change byline')} />
+          </Field>
+          <Field label="Excerpt" hint="A sentence or two for News lists and the Article header, under the title.">
+            <DraftInput multiline maxLength={320} value={typeof article.excerpt === 'string' ? article.excerpt : ''} onCommit={(v) => upd({ excerpt: v }, 'Change excerpt')} />
+          </Field>
+          <SwitchRow
+            checked={article.hidden !== true}
+            onChange={(v) => upd({ newsHidden: !v }, v ? 'Show article in news lists' : 'Hide article from news lists')}
+            label="Show in news lists"
+            hint={
+              article.hidden === true
+                ? 'Left out of every News list. The page itself stays published at its address.'
+                : draft
+                  ? 'News lists show it once the page is published.'
+                  : 'Every News list on the site shows it, in date order.'
+            }
+          />
+        </>
+      )}
+    </Section>
+  );
+}
+
 function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
   const assetSort = useStore((s) => s.assetSort);
@@ -1623,6 +1693,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           />
         )}
       </Section>
+      <ArticleSettings page={page} draft={draft} upd={upd} />
       <Section title="Shared header and footer" id="page-shell" level={LEVEL} scope="This page only">
         <SwitchRow checked={showsPart(page, 'header')} onChange={(v) => upd({ showHeader: v }, v ? 'Show shared header on page' : 'Hide shared header on page')} label="Show shared header" />
         <SwitchRow checked={showsPart(page, 'footer')} onChange={(v) => upd({ showFooter: v }, v ? 'Show shared footer on page' : 'Hide shared footer on page')} label="Show shared footer" />

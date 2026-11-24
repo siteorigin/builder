@@ -9,7 +9,7 @@ import { pageShowing } from '@shared/page-shell';
 import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction } from '../store';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { showAsset } from './place';
-import { boundaryOf, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownValue, treeFor } from './model';
+import { boundaryOf, computedAt, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownValue, treeFor } from './model';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
 
@@ -306,6 +306,11 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   const target = inlineField(r.node as GraphNode | undefined);
   if (!target) return;
   if (sameValue(shownValue(snapshot.state, ref, target.value), text)) return;
+  // A news card or article header shows a page's settings: typing over it would change nothing, so it goes back.
+  if (computedAt(snapshot.state, ref, target.value)) {
+    toast('This comes from the article’s page settings. Change its title, date, byline or excerpt there.', 'info');
+    return 'restore';
+  }
   // Erasing a card's text that comes from its page leaves the card as it was (it has no text of its own to clear):
   // the page puts its text back.
   if (typeof text === 'string' && !text.trim() && followsPageAt(snapshot.state, ref, target.value)) {
@@ -339,6 +344,7 @@ export function canInlineEdit(ref: ElementRef): boolean {
   if (!s.snapshot) return false;
   const target = inlineField(resolveRef(s.snapshot.state, ref).node);
   if (!target) return false;
+  if (computedAt(s.snapshot.state, ref, target.value)) return false;
   // A component's own text (editing it everywhere) is its design; a bound field is filled in per placement.
   if (ref.owner.kind === 'component') return !ref.instancePath.length && !isBinding(target.value);
   if (!ref.instancePath.length) return true;

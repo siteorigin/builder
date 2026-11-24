@@ -5,7 +5,8 @@
  */
 import { findVariant, variantOptions } from '@shared/variants';
 import { z } from 'zod';
-import type { ComponentDefinition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, Condition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
+import { conditionHolds, conditionRef } from '@shared/types';
 import { effectiveItem, followsPage, teaserFields } from '@shared/page-teasers';
 import type { EditOperation } from '@shared/ops';
 import { normalizeRoute, validateRoute } from '@shared/routes';
@@ -33,6 +34,27 @@ const DRAFT_DESCRIPTION = 'true keeps the page as a draft: editable and previewe
 const LANGUAGE_DESCRIPTION = 'Language code such as "fr", when not the site language. "" uses the site language. Omit to leave it.';
 const TRANSLATION_DESCRIPTION = 'Slug of the page this one translates, such as "about": links them, joining any versions it has. Each version needs its own language; a page without one uses the site language. "" unlinks. Omit to leave it.';
 
+const ARTICLE_DATE_DESCRIPTION = 'YYYY-MM-DD: makes a dated article, shown in News lists.';
+/** Placed first on a new article unless the call places a header of its own: it shows the page's title and details. */
+const ARTICLE_HEADER = 'content.article';
+const ARTICLE_KEYS = ['articleDate', 'byline', 'excerpt', 'newsHidden'] as const;
+/** Whether a section is an Article header: the theme's, a copy of it, or a design that places one. */
+export function isArticleHeader(state: ProjectState, def: ComponentDefinition, props: Record<string, unknown> = {}, seen: Set<string> = new Set()): boolean {
+  if (def.componentId === ARTICLE_HEADER || def.provenance?.componentId === ARTICLE_HEADER) return true;
+  if (seen.has(def.id)) return false;
+  seen.add(def.id);
+  // A header placed under a condition counts while that condition holds for the props sent (or their defaults).
+  const value = (k: string) => (Object.hasOwn(props, k) ? props[k] : (def.properties[k] as { default?: unknown } | undefined)?.default);
+  const present = (v: unknown) => (typeof v === 'string' ? !!v.trim() : Array.isArray(v) ? v.length > 0 : !!v);
+  const holds = (c: Condition | undefined, want: boolean) => {
+    const ref = c === undefined ? undefined : conditionRef(c);
+    return !ref || !('$prop' in ref) || conditionHolds(c!, value(ref.$prop), present) === want;
+  };
+  return Object.values(def.tree?.nodes ?? {}).some(
+    (n) => n.kind === 'instance' && holds(n.when, true) && holds(n.unless, false) && Object.hasOwn(state.components, n.definitionId) && isArticleHeader(state, state.components[n.definitionId], n.props, seen)
+  );
+}
+
 export const UPSERT_ARGS = z.object({
   slug: z.string().min(1).max(120).describe('Page path such as "services" or "/about/team/". "home" or "/" is the home page.'),
   title: z.string().min(1).max(80).optional().describe('Page title. Defaults to one made from the slug for a new page.'),
@@ -41,6 +63,10 @@ export const UPSERT_ARGS = z.object({
   draft: z.boolean().optional().describe(DRAFT_DESCRIPTION),
   language: z.string().max(20).optional().describe(LANGUAGE_DESCRIPTION),
   translationOf: z.string().max(120).optional().describe(TRANSLATION_DESCRIPTION),
+  articleDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe(ARTICLE_DATE_DESCRIPTION),
+  byline: z.string().max(80).optional().describe('Article byline.'),
+  excerpt: z.string().max(320).optional().describe('Article summary.'),
+  newsHidden: z.boolean().optional().describe('Article only: true leaves it out of News lists.'),
   addToHeaderNav: z.boolean().optional(),
   addToFooterNav: z.boolean().optional(),
   removeOtherSections: z.boolean().optional(),
@@ -143,6 +169,12 @@ export function checkProps(def: ComponentDefinition, props: Record<string, unkno
       issues.push({ field: `${path}.${k}`, message: `"${def.name}" has no property "${k}". Properties: ${Object.keys(def.properties).join(', ')}` });
       continue;
     }
+    if (schema.type === 'list' && schema.feed) {
+      // Filled from the site's pages: an empty list is what it stores anyway, and items are never kept.
+      if (Array.isArray(v) && !v.length) continue;
+      issues.push({ field: `${path}.${k}`, message: `"${k}" fills itself from the site's ${schema.feed === 'articles' ? 'dated articles' : 'page'}. Leave it out; set articleDate, byline and excerpt on the article pages instead.` });
+      continue;
+    }
     if (schema.type === 'link') {
       const r = resolveRouteLink(v, state);
       if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k });
@@ -209,7 +241,8 @@ function shellLinks(state: ProjectState, shell: 'header' | 'footer'): { node: In
     const n = tree.nodes[id];
     if (n?.kind !== 'instance') continue;
     const schema = state.components[n.definitionId]?.properties.links;
-    if (schema?.type === 'list' && schema.fields.label?.type === 'string' && schema.fields.link?.type === 'link')
+    // A computed list fills itself from the site's pages: a link stored in it would never show.
+    if (schema?.type === 'list' && !schema.feed && schema.fields.label?.type === 'string' && schema.fields.link?.type === 'link')
       return { node: n, max: schema.max, items: (n.props.links as ListItem[] | undefined) ?? [] };
   }
   return null;
@@ -566,13 +599,16 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     opSection.push(section);
   };
   // A language and a translation are set together, so a new version can join its translations in its own language.
+  // A dated article's details go as page.update takes them.
+  const article = Object.fromEntries(ARTICLE_KEYS.filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
   const settings = {
     ...(!createOp && args.title && args.title.trim() !== page!.title ? { title: args.title.trim() } : {}),
     ...(args.navLabel !== undefined ? { navLabel: args.navLabel } : {}),
     ...(args.description !== undefined ? { description: args.description } : {}),
     ...(args.draft !== undefined ? { draft: args.draft } : {}),
     ...(args.language !== undefined ? { language: args.language.trim() } : {}),
-    ...(linkTranslationTo !== undefined ? { linkTranslationTo } : {})
+    ...(linkTranslationTo !== undefined ? { linkTranslationTo } : {}),
+    ...article
   };
   if (createOp) push(createOp);
   if (Object.keys(settings).length) push({ type: 'page.update', pageId, ...settings });
@@ -625,6 +661,10 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
       if (c.variant) push({ type: 'instance.setVariant', owner, nodeId: slot.id, variant: c.variant }, slot.section);
     });
   }
+
+  // A new article opens with its header, which shows the page's title, date, byline and excerpt, unless the call
+  // places one (the theme's or a copy of it) itself.
+  if (createOp && args.articleDate !== undefined && catalogueComponent(scratch.site.themeId, ARTICLE_HEADER) && !good.some((c) => isArticleHeader(scratch, c.def, c.props))) push({ type: 'node.insert', owner, index: 0, componentId: ARTICLE_HEADER });
 
   // Everything compiled so far, on a draft: an engine error is reported against its section.
   for (const [i, op] of ops.entries()) {
@@ -745,6 +785,10 @@ export function upsertToolSchema(state: ProjectState): JsonSchema {
       draft: { type: 'boolean', description: DRAFT_DESCRIPTION },
       language: { type: 'string', maxLength: 20, description: LANGUAGE_DESCRIPTION },
       translationOf: { type: 'string', maxLength: 120, description: TRANSLATION_DESCRIPTION },
+      articleDate: { type: 'string', description: ARTICLE_DATE_DESCRIPTION },
+      byline: { type: 'string', maxLength: 80 },
+      excerpt: { type: 'string', maxLength: 320 },
+      newsHidden: { type: 'boolean' },
       addToHeaderNav: { type: 'boolean', description: 'true adds a header link if missing. false or omitted leaves navigation as it is.' },
       addToFooterNav: { type: 'boolean', description: 'true adds a footer link if missing. false or omitted leaves navigation as it is.' },
       removeOtherSections: { type: 'boolean', description: 'Remove existing sections (theme or project components) that are not in this list. Hand-built layout stays.' },

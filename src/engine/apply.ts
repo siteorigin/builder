@@ -23,10 +23,12 @@ import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, tex
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageClash, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
+import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { toRichText } from '@shared/richtext';
 import { findVariant, variantOptions } from '@shared/variants';
 import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily } from '@shared/fonts';
 import { documentFormat, isDocumentMime } from '@shared/document-files';
-import { getTheme, listThemes, themeLockEntry } from '@catalogue/index';
+import { catalogueComponent, getTheme, listThemes, themeLockEntry } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
@@ -391,11 +393,19 @@ function instanceTarget(state: ProjectState, owner: OwnerRef, nodeId: string): {
   return { node, def, tree };
 }
 
+/** A computed list's items are pages of the site: they change with those pages, never one at a time here. */
+function refuseFeed(schema: PropSchema) {
+  if (schema.type !== 'list' || !schema.feed) return;
+  const what = schema.feed === 'articles' ? 'the site’s dated articles, newest first' : 'the page it is on';
+  fail(`${schema.label} shows ${what} and changes with them. Edit the article’s title, date, byline or excerpt in its page settings, or hide it from news lists there.`);
+}
+
 function listTarget(state: ProjectState, owner: OwnerRef, nodeId: string, prop: string) {
   const { node, def } = instanceTarget(state, owner, nodeId);
   const schema = def.properties[prop];
   if (!schema) fail(`"${def.name}" has no property "${prop}".`);
   if (schema.type !== 'list') fail(`"${prop}" is not a list property.`);
+  refuseFeed(schema);
   if (isBinding(node.props[prop])) fail(`${schema.label} comes from the enclosing component's own property; edit its items there.`);
   if (!Array.isArray(node.props[prop])) node.props[prop] = clone(schema.default);
   return { node, def, schema };
@@ -514,6 +524,21 @@ function pageCreate(state: ProjectState, op: Op<'page.create'>): OpResult {
     page.nodes[intro.id] = intro;
     page.rootIds.push(intro.id);
   }
+  if (op.starter === 'article') {
+    // The header shows the page's own title, date, byline and excerpt; the text section below is the body. A theme
+    // without one of them makes the article without it.
+    const has = (id: string) => !!catalogueComponent(state.site.themeId, id);
+    const header = has('content.article') ? makeInstance(state.components[installComponent(state, 'content.article')], { eyebrow: '' }) : null;
+    const body = has('content.text') ? makeInstance(state.components[installComponent(state, 'content.text')], { heading: '', body: toRichText(['Write the article here.']) }) : null;
+    for (const n of [header, body]) {
+      if (!n) continue;
+      page.nodes[n.id] = n;
+      page.rootIds.push(n.id);
+    }
+  }
+  // An article is dated when it is made: the date given, or today for the article starter.
+  const articleDate = op.articleDate ?? (op.starter === 'article' ? todayArticleDate() : undefined);
+  applyArticle(page, { articleDate, byline: op.byline, excerpt: op.excerpt, newsHidden: op.newsHidden });
   state.pages[id] = page;
   const after = op.afterPageId ? state.site.pageOrder.indexOf(op.afterPageId) : -1;
   if (after >= 0) state.site.pageOrder.splice(after + 1, 0, id);
@@ -582,6 +607,7 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
     if (op.socialImage) page.seo.socialImage = op.socialImage;
     else delete page.seo.socialImage;
   }
+  applyArticle(page, op);
   return { route: page.route };
 }
 
@@ -605,6 +631,40 @@ function leaveTranslations(state: ProjectState, page: PageDoc) {
   if (!group) return;
   const rest = translationMembers(state, group);
   if (rest.length === 1) delete rest[0].translationGroup;
+}
+
+type ArticleFields = Pick<Op<'page.update'>, 'articleDate' | 'byline' | 'excerpt' | 'article' | 'newsHidden'>;
+
+/**
+ * An op's article fields on a page. A publication date makes the page a dated article (or redates it); the byline,
+ * excerpt and news-list visibility belong to an article, so a page that is not one takes them only with a date.
+ * `article: false` makes it an ordinary page again and drops what only an article has.
+ */
+function applyArticle(page: PageDoc, op: ArticleFields) {
+  const details = op.byline !== undefined || op.excerpt !== undefined || op.newsHidden !== undefined;
+  if (op.article === false) {
+    if (op.articleDate !== undefined || details) fail('An article cannot be turned into an ordinary page and given article details in the same change.');
+    delete page.article;
+    return;
+  }
+  if (op.articleDate !== undefined) {
+    if (!isArticleDate(op.articleDate)) fail(`"${op.articleDate}" is not a calendar date. Write it as YYYY-MM-DD, such as 2026-11-14.`);
+    // A stored article whose date was unreadable keeps its byline and excerpt when it is given a real date.
+    page.article = { ...(page.article && typeof page.article === 'object' ? page.article : {}), date: op.articleDate };
+  }
+  if (!details) return;
+  const article = pageArticle(page) ?? fail(`"${page.title}" is not an article. Give it a publication date first.`);
+  const text = (v: string | undefined, key: 'byline' | 'excerpt') => {
+    if (v === undefined) return;
+    if (v.trim()) article[key] = v.trim();
+    else delete article[key];
+  };
+  text(op.byline, 'byline');
+  text(op.excerpt, 'excerpt');
+  if (op.newsHidden !== undefined) {
+    if (op.newsHidden) article.hidden = true;
+    else delete article.hidden;
+  }
 }
 
 /** Copy a node subtree from one tree into another, allocating new IDs. Returns the new root ID. */
@@ -1440,6 +1500,7 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
   if (op.itemId) {
     if (schema.type !== 'list') fail(`"${op.prop}" is not a list.`);
+    refuseFeed(schema);
     if (isBinding(node.props[op.prop])) fail(`${schema.label} comes from the enclosing component's own property; edit its items there.`);
     // A placement without its own list shows the definition's items, so an edit to one of them starts from those.
     const own = node.props[op.prop];

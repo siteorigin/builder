@@ -1,8 +1,9 @@
 /**
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
-import type { Binding, ComponentDefinition, Comparison, GraphNode, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
+import type { Binding, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
+import { ARTICLE_ROW_FIELDS } from '@shared/articles';
 import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
 import { fail, findParent } from './tree';
@@ -65,6 +66,20 @@ function pageTeaserSchema(raw: unknown, fields: Record<string, ScalarPropSchema>
     if (f) out[what] = f;
   }
   return out;
+}
+
+/**
+ * A computed list (see shared/articles.ts): which pages it holds, and fields of the right type for the row values
+ * it fills by name. Its items come and go with the site's pages, so it cannot ask for a minimum.
+ */
+function feedSchema(raw: unknown, fields: Record<string, ScalarPropSchema>, min: number | undefined, label: string): ListFeed {
+  if (typeof raw !== 'string' || !(LIST_FEEDS as readonly string[]).includes(raw)) fail(`${label}: feed must be one of ${LIST_FEEDS.map((f) => `"${f}"`).join(', ')}.`);
+  if (min) fail(`${label}: a computed list cannot have a minimum, since its items come from the site's pages.`);
+  for (const [f, type] of Object.entries(ARTICLE_ROW_FIELDS)) {
+    if (Object.hasOwn(fields, f) && fields[f].type !== type) fail(`${label}: the field "${f}" of a computed list must be a ${type} field.`);
+  }
+  if (!Object.keys(fields).some((f) => Object.hasOwn(ARTICLE_ROW_FIELDS, f))) fail(`${label}: a computed list needs at least one field it fills (${Object.keys(ARTICLE_ROW_FIELDS).join(', ')}).`);
+  return raw as ListFeed;
 }
 
 /**
@@ -164,11 +179,19 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
       if (min !== undefined) out.min = min;
       if (max !== undefined) out.max = max;
       if (r.pageTeaser !== undefined) out.pageTeaser = pageTeaserSchema(r.pageTeaser, fields, min, label);
+      if (r.feed !== undefined) {
+        out.feed = feedSchema(r.feed, fields, min, label);
+        if (out.pageTeaser) fail(`${label}: a list is either computed from the site's pages (feed) or a page list (pageTeaser), not both.`);
+        // A computed list stores nothing: whatever default was sent would never show.
+        out.default = [];
+        break;
+      }
       out.default = [];
       break;
     }
   }
   const schema = out as unknown as PropSchema;
+  if (schema.type === 'list' && schema.feed) return schema;
   const value = r.default === undefined ? (schema.type === 'list' && schema.min ? Array.from({ length: schema.min }, () => ({})) : schema.default) : r.default;
   (schema as { default: unknown }).default = normalizeProp(schema, value, state, `${label} default`);
   return schema;
@@ -200,6 +223,7 @@ export type BindField =
   | 'icon'
   | 'iconPosition'
   | 'ariaLabel'
+  | 'datetime'
   | 'tag'
   | 'action'
   | 'when'
@@ -225,6 +249,8 @@ export function acceptedTypes(node: GraphNode, field: BindField, nested?: PropSc
       return ['icon', 'enum', 'string'];
     case 'ariaLabel':
       return ['string', 'enum'];
+    case 'datetime':
+      return ['string'];
     // Each option must be a value the field can take (see `bindingProblem`), so only a choice fits.
     case 'tag':
     case 'variant':
@@ -261,7 +287,7 @@ export function bindingSlots(n: GraphNode): BindingSlot[] {
       out.push(field('tag'), field('link'), field('action'), field('ariaLabel'));
       break;
     case 'text':
-      out.push(field('text'), field('tag'));
+      out.push(field('text'), field('tag'), field('datetime'));
       break;
     case 'image':
       out.push(field('image'), field('fallbackAlt'));
@@ -338,12 +364,14 @@ export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'nod
     }
   }
   // Older fields are type-checked where they are bound; documents saved before these checks keep loading as they did.
-  const fresh = ['tag', 'variant', 'iconPosition', 'ariaLabel', 'action'].includes(field) || (field === 'link' && node.kind === 'element') || (field === 'icon' && node.kind === 'link');
+  const fresh = ['tag', 'variant', 'iconPosition', 'ariaLabel', 'action', 'datetime'].includes(field) || (field === 'link' && node.kind === 'element') || (field === 'icon' && node.kind === 'link');
   const ok = acceptedTypes(node, field, undefined);
   if (!fresh || !ok) return null;
   if (!ok.includes(schema.type)) return `shows a ${schema.type} property as its ${field}, which needs a ${ok.join(' or ')} property.`;
   const options = optionValues(schema);
   switch (field) {
+    case 'datetime':
+      return node.kind === 'text' && node.rich ? 'gives rich text a date; only plain text can state one.' : null;
     case 'tag': {
       if (node.kind === 'text' && node.rich) return 'binds the tag of rich text, which keeps its own paragraph structure.';
       const allowed = node.kind === 'text' ? TEXT_TAG_SET : ELEMENT_TAG_SET;

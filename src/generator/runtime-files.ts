@@ -425,6 +425,15 @@ export function iconsJs(state: ProjectState): string {
 }
 
 export const UTIL_JS = `/** Returns whether a resolved value should be shown. Text of only spaces counts as empty. */
+/** Whether a value is a calendar date written YYYY-MM-DD, as a <time> element's datetime states one. */
+export function isDate(value) {
+	if (typeof value !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}$/.test(value)) return false;
+	const [y, m, d] = value.split('-').map(Number);
+	const t = new Date(0);
+	t.setUTCFullYear(y, m - 1, d);
+	return y > 0 && t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
+
 export function has(value) {
 	if (typeof value === 'string') return value.trim().length > 0;
 	if (Array.isArray(value)) return value.length > 0;

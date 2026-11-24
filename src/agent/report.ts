@@ -2,6 +2,7 @@ import type { ChatChange, ChatCheck } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import type { GraphNode, ImageValue, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
+import { pageArticle } from '@shared/articles';
 import { STYLE_PROPS } from '@shared/styles';
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import { declaredTokens } from '@engine/tokens';
@@ -16,7 +17,7 @@ import { shellPageLinks } from '@generator/checks';
 const PRIMITIVES: Record<string, string> = { richtext: 'rich text', repeat: 'repeated items', slot: 'content area' };
 const CONTENT_FIELDS: Record<string, string> = { text: 'text', link: 'link', label: 'button text', appearance: 'button style', icon: 'icon', tag: 'heading level', anchor: 'anchor' };
 const SITE_FIELDS: Record<string, string> = { name: 'name', language: 'language', description: 'description', baseUrl: 'web address', favicon: 'favicon', socialImage: 'sharing image', notFoundHeading: 'not-found page heading', notFoundMessage: 'not-found page message', notFoundLinkLabel: 'not-found page link' };
-const PAGE_FIELDS: Record<string, string> = { title: 'title', route: 'address', navLabel: 'menu label', seoTitle: 'search title', description: 'description', noindex: 'search visibility', searchHidden: 'site search visibility', draft: 'draft status', showHeader: 'shared header', showFooter: 'shared footer', socialImage: 'sharing image', language: 'language', linkTranslationTo: 'translations' };
+const PAGE_FIELDS: Record<string, string> = { title: 'title', route: 'address', navLabel: 'menu label', seoTitle: 'search title', description: 'description', noindex: 'search visibility', searchHidden: 'site search visibility', draft: 'draft status', showHeader: 'shared header', showFooter: 'shared footer', socialImage: 'sharing image', language: 'language', linkTranslationTo: 'translations', articleDate: 'publication date', byline: 'byline', excerpt: 'excerpt', newsHidden: 'news list visibility', article: 'article status' };
 
 /** A property label as it reads inside a sentence: "Title" becomes "title", "CTA link" stays. */
 const inSentence = (label: string) => (/^[A-Z][a-z]/.test(label) ? label[0].toLowerCase() + label.slice(1) : label);
@@ -412,9 +413,12 @@ export function inspectionChecks(ok: boolean, content: unknown, onPage = ''): Ch
 
 /**
  * The pages an edit can change the look of: the page it is on, or every page for what they share (header,
- * footer, components, site styles and settings, the theme, the image library). A new page changes no other.
+ * footer, components, site styles and settings, the theme, the image library). A new page changes no other, unless
+ * it is an article, which News lists elsewhere show.
  */
-export function pagesTouched(ops: EditOperation[]): Set<string> | 'all' {
+export function pagesTouched(ops: EditOperation[], state?: ProjectState): Set<string> | 'all' {
+  // Whether a page is (or, without the project to tell, may be) an article, which News lists elsewhere show.
+  const article = (pageId: string) => !state || !!pageArticle(Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined);
   const pages = new Set<string>();
   for (const op of ops) {
     if (op.type === 'node.copy' || op.type === 'node.paste') {
@@ -425,15 +429,23 @@ export function pagesTouched(ops: EditOperation[]): Set<string> | 'all' {
       if (op.owner.kind !== 'page') return 'all';
       pages.add(op.owner.id);
     } else if (op.type === 'page.create') {
-      if (op.addToNavigation) return 'all';
+      // A new article joins the News lists on other pages.
+      if (op.addToNavigation || op.starter === 'article' || op.articleDate !== undefined) return 'all';
     } else if (op.type === 'page.setHome') {
       // Header and footer links change destination on every page, and a page can be styled by where its links go.
       return 'all';
     } else if (op.type === 'page.remove' || (op.type === 'page.update' && (op.title !== undefined || op.description !== undefined || op.socialImage !== undefined))) {
       // Page lists elsewhere show a page's title, description and sharing image, and drop its card when it goes.
       return 'all';
+    } else if (op.type === 'page.update' && (['articleDate', 'byline', 'excerpt', 'newsHidden', 'article'] as const).some((k) => op[k] !== undefined)) {
+      // News lists elsewhere show an article's date, byline and excerpt, and only while it is listed.
+      return 'all';
+    } else if ((op.type === 'page.update' && op.draft !== undefined) || op.type === 'page.duplicate') {
+      // Publishing or drafting an article, or copying one, changes the News lists elsewhere.
+      if (article(op.pageId)) return 'all';
+      if (op.type === 'page.update') pages.add(op.pageId);
     } else if (op.type === 'page.update') pages.add(op.pageId);
-    else if (op.type !== 'page.duplicate' && op.type !== 'page.reorder') return 'all';
+    else if (op.type !== 'page.reorder') return 'all';
   }
   return pages;
 }

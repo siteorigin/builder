@@ -9,6 +9,7 @@ import { isImeComposing } from '../lib/ime';
 import { goToShellPart, selectPage } from '../lib/actions';
 import { headerMenu as findHeaderMenu } from '@engine/tree';
 import { isDraftPage } from '@generator/index';
+import { isArticleDate, todayArticleDate } from '@shared/articles';
 
 /**
  * The address a new page with this title gets: its slug (made valid when it is a reserved name), with a
@@ -53,6 +54,11 @@ export function PagesPanel() {
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState('');
   const [addToNav, setAddToNav] = useState(true);
+  // A dated article (news, an announcement) instead of an ordinary page, and its publication date.
+  const [asArticle, setAsArticle] = useState(false);
+  const [articleDate, setArticleDate] = useState(todayArticleDate);
+  // Whether the author chose the menu option themselves: choosing an article then leaves it alone.
+  const navChosen = useRef(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameBox, setRenameBox] = useState<{ top: number; left: number; width: number } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -84,6 +90,8 @@ export function PagesPanel() {
     return () => markDraft('page-rename', false);
   }, [renaming]);
   const openForm = () => {
+    // A new article is dated today, as the day is when the form opens.
+    setArticleDate(todayArticleDate());
     setAdding(true);
     requestAnimationFrame(() => {
       formRef.current?.scrollIntoView({ block: 'nearest' });
@@ -130,7 +138,12 @@ export function PagesPanel() {
   const closeForm = () => {
     setTitle('');
     setAdding(false);
+    setAsArticle(false);
+    if (!navChosen.current) setAddToNav(true);
+    navChosen.current = false;
   };
+  // A half-typed or cleared date is no date: the article waits for a whole one rather than taking another.
+  const dateMissing = asArticle && !isArticleDate(articleDate);
   const cancelAdd = () => {
     if (creating) return;
     closeForm();
@@ -157,13 +170,14 @@ export function PagesPanel() {
   };
   const add = async () => {
     const t = title.trim();
-    if (!t || creating) return;
+    if (!t || creating || dateMissing) return;
     setCreating(true);
     // New pages go where the form was: at the end of the list. The draft stays until the page exists.
     const nav = addToNav && !!headerMenu;
     // Sent against the snapshot the address was previewed on: a project that changed meanwhile previews again
     // rather than taking an address it no longer has free.
-    const r = await applyOps([{ type: 'page.create', title: t, route: newRoute, starter: 'intro', addToNavigation: nav || undefined }], `Add page ${t}`, undefined, snap?.revision);
+    const kind = asArticle ? { starter: 'article' as const, articleDate } : { starter: 'intro' as const };
+    const r = await applyOps([{ type: 'page.create', title: t, route: newRoute, ...kind, addToNavigation: nav || undefined }], asArticle ? `Add article ${t}` : `Add page ${t}`, undefined, snap?.revision);
     setCreating(false);
     const id = r?.[0]?.pageId as string | undefined;
     if (!id) return addInput.current?.focus();
@@ -449,15 +463,45 @@ export function PagesPanel() {
               {title.trim() && newRoute !== newBase && <span className="note"> · {newBase} is taken</span>}
               {title.trim() && newReserved && <span className="note"> · {newReserved} is reserved</span>}
             </div>
+            <label className="pages-add-nav">
+              <input
+                type="checkbox"
+                checked={asArticle}
+                disabled={creating}
+                onChange={(e) => {
+                  setAsArticle(e.target.checked);
+                  // News items rarely belong in the menu (News lists show them), unless the author said otherwise.
+                  if (!navChosen.current) setAddToNav(!e.target.checked);
+                }}
+              />
+              Dated article (news, an announcement)
+            </label>
+            {asArticle && (
+              <label className="pages-add-date">
+                <span className="label">Published</span>
+                <input className="input" type="date" value={articleDate} disabled={creating} onChange={(e) => setArticleDate(e.target.value)} aria-describedby="pages-add-date-note" aria-invalid={dateMissing || undefined} />
+                <span className="note" id="pages-add-date-note">
+                  {dateMissing ? 'Enter the whole publication date.' : 'News lists show articles newest first. The title, date, byline and excerpt can change later in its page settings.'}
+                </span>
+              </label>
+            )}
             {headerMenu && (
               <label className="pages-add-nav">
-                <input type="checkbox" checked={addToNav} disabled={creating} onChange={(e) => setAddToNav(e.target.checked)} />
+                <input
+                  type="checkbox"
+                  checked={addToNav}
+                  disabled={creating}
+                  onChange={(e) => {
+                    navChosen.current = true;
+                    setAddToNav(e.target.checked);
+                  }}
+                />
                 Add to header menu
               </label>
             )}
             <div className="pages-add-actions">
-              <button className="btn btn-sm btn-primary" disabled={!title.trim() || creating} onMouseDown={(e) => e.preventDefault()} onClick={() => void add()}>
-                {creating ? 'Adding page…' : 'Add page'}
+              <button className="btn btn-sm btn-primary" disabled={!title.trim() || creating || dateMissing} onMouseDown={(e) => e.preventDefault()} onClick={() => void add()}>
+                {creating ? (asArticle ? 'Adding article…' : 'Adding page…') : asArticle ? 'Add article' : 'Add page'}
               </button>
               <button className="btn btn-sm btn-ghost" disabled={creating} onMouseDown={(e) => e.preventDefault()} onClick={cancelAdd}>
                 Cancel

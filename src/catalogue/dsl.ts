@@ -87,8 +87,8 @@ export class TreeBuilder {
     );
   }
   /** Plain text. A bound tag takes an enum property whose options are all text tags, such as h1 and h2. */
-  text(id: string, tag: Bindable<TextTag>, text: string | Binding, opts: NodeOpts = {}): string {
-    return this.add({ id, kind: 'text', tag, text }, opts);
+  text(id: string, tag: Bindable<TextTag>, text: string | Binding, opts: NodeOpts & { datetime?: Bindable<string> } = {}): string {
+    return this.add({ id, kind: 'text', tag, text, ...(opts.datetime !== undefined ? { datetime: opts.datetime } : {}) }, opts);
   }
   rich(id: string, text: string[] | Binding, opts: NodeOpts = {}): string {
     return this.add({ id, kind: 'text', tag: 'div', text: isBinding(text) ? text : toRichText(text), rich: true }, opts);

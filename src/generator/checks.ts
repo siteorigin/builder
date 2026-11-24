@@ -10,6 +10,7 @@ import { anchorCapable, anchorsInUse, displayName } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 import { isDraftPage, liveRedirects, resolveLink, takesParagraphs } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
+import { articleRows, feedLimit } from '@shared/articles';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
 import { parseVideoUrl } from '@shared/video';
@@ -40,6 +41,12 @@ interface Scope {
   slots?: string[];
   /** Shown through a code component's slot: counted as shown more than once, though its markup may show it once. */
   codeSlot?: boolean;
+  /** Inside a computed list's item (a News card, an article header): words that come from a page's settings. */
+  computed?: boolean;
+  /** The definition's computed lists, by property: a binding to one is never a field of the placement. */
+  feedProps?: Set<string>;
+  /** The definition's own lists the design around it fills from one of its computed lists. */
+  fedLists?: Set<string>;
 }
 
 function evaluate(v: unknown, scope: Scope): unknown {
@@ -111,10 +118,21 @@ interface Frame {
 }
 
 /** Each property's effective value for a placement: its own (evaluated where it is placed) or the default. */
-function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope): Record<string, unknown> {
+function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope, pageId?: string): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   for (const [name, schema] of Object.entries(def.properties)) {
     const own = Object.hasOwn(n.props, name);
+    // A computed list holds what the site's pages give it where it is placed, as the generator writes it: it is
+    // never bound or stored.
+    if (schema.type === 'list' && schema.feed) {
+      const limit = feedLimit(schema);
+      // Shaped as the list's own items, as the generator writes them: its ID and declared fields only.
+      props[name] = articleRows(state, schema.feed, pageId, Number.isFinite(limit) ? limit : undefined).map((row) => ({
+        ...Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, Object.hasOwn(row, k) ? (row as unknown as Record<string, unknown>)[k] : f.default])),
+        id: row.id
+      }));
+      continue;
+    }
     const value = own ? evaluate(n.props[name], scope) : schema.default;
     // A page list's own (or default) items show the linked pages' values, which the generator fills in where the list
     // is placed. A list bound from the design around this one arrives as that design was given it.
@@ -131,6 +149,9 @@ function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphN
  * report against the page node (the outermost instance for anything inside a component).
  */
 const SO_ID_ATTR = /\bid=\{\s*so_id\b/;
+
+/** Whether a property is a computed list (a News list, an article header). */
+const isFeed = (schema: PropSchema | undefined) => schema?.type === 'list' && !!schema.feed;
 
 /** Whether a `when` or `unless` condition holds in a scope, as the generated `{#if}` decides it. */
 function holds(c: Condition, scope: Scope, state: ProjectState): boolean {
@@ -155,6 +176,10 @@ function childRenders(state: ProjectState, frame: Frame, n: GraphNode & { kind: 
 
 function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
   let frames = 0;
+  // A page's placements, and the designs inside them, work computed lists out for that page; the shared header and
+  // footer for none.
+  const treeId = (tree as Partial<PageDoc>).id;
+  const pageId = typeof treeId === 'string' && 'route' in tree && Object.hasOwn(state.pages, treeId) ? treeId : undefined;
   // A slot a definition renders once per list item shows the same content, in the same frame, each time: it is
   // walked once per frame, which keeps nested placements of such a component from multiplying the walk.
   const slotsWalked = new WeakMap<Frame, Set<string>>();
@@ -190,12 +215,17 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         const items = evaluate(n.list, frame.scope);
         const schema = isBinding(n.list) && '$prop' in n.list ? frame.def.properties[n.list.$prop] : undefined;
         const fields = schema?.type === 'list' ? schema.fields : undefined;
-        const list = schema?.type === 'list' && isBinding(n.list) && '$prop' in n.list ? n.list.$prop : undefined;
+        // A computed list's items are pages, not stored items: nothing shown from them is a field to edit here.
+        const list = schema?.type === 'list' && !schema.feed && isBinding(n.list) && '$prop' in n.list ? n.list.$prop : undefined;
         const repeats = (frame.scope.repeats ?? 0) + 1;
         for (const item of Array.isArray(items) ? (items as Array<Record<string, unknown>>) : []) {
           const occurrence = repeats === 1 && typeof item?.id === 'string' ? item.id : frame.scope.occurrence;
           const path = [...(frame.scope.path ?? []), String(item?.id ?? '')];
-          for (const c of n.children) walk({ ...frame, scope: { ...frame.scope, item, fields, list, repeats, occurrence, path } }, c, inner);
+          // Each list decides for its own items: a computed one (or one a design fills from one) holds pages' rows,
+          // an ordinary list inside such a row holds the placement's own items.
+          const listName = isBinding(n.list) && '$prop' in n.list ? n.list.$prop : undefined;
+          const computed = (schema?.type === 'list' && !!schema.feed) || (!!listName && !!frame.scope.fedLists?.has(listName)) || undefined;
+          for (const c of n.children) walk({ ...frame, scope: { ...frame.scope, item, fields, list, repeats, occurrence, path, computed } }, c, inner);
         }
         break;
       }
@@ -220,18 +250,26 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
       case 'instance': {
         const def = state.components[n.definitionId];
         if (!def || frame.defs.has(def.id)) break;
-        const props = effectiveProps(state, def, n, frame.scope);
+        // Designs placed from a page get that page's rows handed down (`so_pages`), as the generator writes them.
+        const props = effectiveProps(state, def, n, frame.scope, pageId);
         if (def.kind === 'managed' && def.tree) {
           const trail = `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`;
           // A component inside a design reads the placement's own fields only through the bindings it is given.
           const forwarded: Record<string, PlacementField> = {};
+          const fedLists = new Set<string>();
           if (frame.def) for (const [k, v] of Object.entries(n.props)) {
+            // A computed list handed on is still the pages' rows: nothing in it is a field of the placement.
+            if (isBinding(v) && '$prop' in v && isFeed(frame.def.properties[v.$prop])) {
+              fedLists.add(k);
+              continue;
+            }
             const f = placementField(v, frame.scope);
             if (f) forwarded[k] = f;
           }
+          const feedProps = new Set(Object.entries(def.properties).filter(([, p]) => isFeed(p)).map(([k]) => k));
           const carried = { multiple: frame.scope.multiple, slots: frame.scope.slots, codeSlot: frame.scope.codeSlot };
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
-          const child: Frame = { tree: def.tree, def, scope: { props, trail, ...where }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
+          const child: Frame = { tree: def.tree, def, scope: { props, trail, ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
           visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);
@@ -279,6 +317,8 @@ export interface UnlinkedButton {
  */
 function placementField(b: unknown, scope: Scope): PlacementField | undefined {
   if (!isBinding(b)) return undefined;
+  // A computed list is the pages' rows, whatever it is handed to.
+  if ('$prop' in b && scope.feedProps?.has(b.$prop)) return undefined;
   if ('$prop' in b) return scope.placement ? { prop: b.$prop } : scope.forwarded?.[b.$prop];
   const id = scope.item?.id;
   if (!scope.list || typeof id !== 'string' || !id) return undefined;
@@ -387,6 +427,8 @@ export interface RenderedContent {
   /** Stored as rich text (blocks of spans), and whether the links inside it render as links. */
   rich?: boolean;
   richLinks?: boolean;
+  /** Words a computed list shows (a News card, an article header): changed in the page settings they come from. */
+  computed?: boolean;
 }
 
 /**
@@ -465,10 +507,12 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
     const at = `${scope.trail ?? ''}|${defNodeId}|${(scope.path ?? []).join(',')}|${field}`;
     return { ...(f ? { source: { kind: 'prop' as const, ...f } } : { at }), defNodeId, direct, ...(direct && scope.path?.length ? { itemPath: scope.path } : {}) };
   };
+  /** A value read from a computed list's row: an item field inside a News card or article header. */
+  const fromRow = (b: unknown, scope: Scope) => !!scope.computed && isBinding(b) && '$item' in b;
   walkRendered(state, tree, {
     text: (n, scope, reportId, inDef) => {
       const value = evaluate(n.text, scope);
-      push({ nodeId: reportId, kind: 'text', value, ...from(n.text, 'text', scope, n.id, inDef), ...(n.rich ? { rich: true, richLinks: true } : {}) });
+      push({ nodeId: reportId, kind: 'text', value, ...from(n.text, 'text', scope, n.id, inDef), ...(n.rich ? { rich: true, richLinks: true } : {}), ...(fromRow(n.text, scope) ? { computed: true } : {}) });
     },
     link: (n, scope, reportId, inDef) => {
       const link = evaluate(n.link, scope) as LinkValue | undefined;
@@ -476,8 +520,8 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
       const goes = !!resolveLink(link, { state });
       // A styled button with nowhere to go is left out of the site; a plain link still shows its words.
       if (!goes && BUTTONS.has(String(evaluate(n.appearance, scope) ?? ''))) return;
-      push({ nodeId: reportId, kind: 'text', value: label, ...from(n.label, 'label', scope, n.id, inDef) });
-      if (goes && isLinkValue(link)) push({ nodeId: reportId, kind: 'link', value: link, ...from(n.link, 'link', scope, n.id, inDef) });
+      push({ nodeId: reportId, kind: 'text', value: label, ...from(n.label, 'label', scope, n.id, inDef), ...(fromRow(n.label, scope) ? { computed: true } : {}) });
+      if (goes && isLinkValue(link)) push({ nodeId: reportId, kind: 'link', value: link, ...from(n.link, 'link', scope, n.id, inDef), ...(fromRow(n.link, scope) ? { computed: true } : {}) });
     },
     code: (def, props, reportId, placement, n, scope, inDef) => {
       const which = shippedCode(state, def);
@@ -522,7 +566,8 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
         }
         for (const item of Array.isArray(props[key]) ? (props[key] as Array<Record<string, unknown>>) : []) {
           if (!item || typeof item !== 'object') continue;
-          const itemId = typeof item.id === 'string' && item.id ? item.id : undefined;
+          // A computed list's rows are pages, not items of the placement: their words are not its fields.
+          const itemId = typeof item.id === 'string' && item.id && !schema.feed ? item.id : undefined;
           // A form field's setting its type never shows (a checkbox's placeholder) is not on the page.
           const unused = which === 'contact.form' && key === 'fields' && offersFormChoices(def) ? formFieldSettingsHidden(item) : [];
           for (const f of Object.keys(schema.fields)) {

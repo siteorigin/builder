@@ -35,7 +35,13 @@ const PAGE_FIELDS: Record<string, string[]> = {
   showHeader: ['showHeader'],
   showFooter: ['showFooter'],
   socialImage: ['seo', 'socialImage'],
-  language: ['language']
+  language: ['language'],
+  articleDate: ['article', 'date'],
+  byline: ['article', 'byline'],
+  excerpt: ['article', 'excerpt'],
+  newsHidden: ['article', 'hidden'],
+  // Turning an article back into a page clears all of it: any change to the article meanwhile is a conflict.
+  article: ['article']
 };
 const SITE_FIELDS = ['name', 'language', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel'];
 
@@ -77,6 +83,9 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const page = has(state.pages, op.pageId);
       if (!page) return gone('page');
       const keys = Object.keys(PAGE_FIELDS).filter((k) => (op as Record<string, unknown>)[k] !== undefined);
+      // A byline, excerpt or news-list choice belongs to an article: once the page is no longer one, it has gone.
+      // An edit that also dates the page makes it an article itself.
+      if (!page.article && !keys.includes('articleDate') && keys.some((k) => k === 'byline' || k === 'excerpt' || k === 'newsHidden')) return gone('article');
       return found(Object.fromEntries(keys.map((k) => [k, at(page, PAGE_FIELDS[k])])));
     }
     case 'site.update': {

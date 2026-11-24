@@ -53,6 +53,8 @@ export function contractConflicts(state: ProjectState, def: ComponentDefinition,
     if (was.type === 'list' && now.type === 'list') {
       // Which fields follow the linked page is part of what placements' empty fields mean.
       if ((['link', 'title', 'description', 'image'] as const).some((k) => was.pageTeaser?.[k] !== now.pageTeaser?.[k])) conflicts.push(`${def.name}: "${p}" fills different fields from its pages.`);
+      // A computed list's placements store no items; a list that stops (or starts) being computed changes what they show.
+      if (was.feed !== now.feed) conflicts.push(`${def.name}: "${p}" is filled from the site's pages differently.`);
       for (const [f, field] of Object.entries(was.fields)) {
         const nf = own(now.fields, f);
         if (!nf || nf.type !== field.type) conflicts.push(`${def.name}: "${p}" item field "${f}" is not compatible.`);

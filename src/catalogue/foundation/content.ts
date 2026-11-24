@@ -315,6 +315,121 @@ export const pageList = managed({
     ])
 });
 
+/** The fields a computed article row fills (see shared/articles.ts), as a list's item fields. */
+const articleFields = () => ({
+  pageLink: P.link('Article'),
+  title: P.str('Title', ''),
+  date: P.str('Date', ''),
+  dateLabel: P.str('Date as shown', ''),
+  byline: P.str('Byline', ''),
+  excerpt: P.text('Excerpt', '')
+});
+
+const metaStyles = { layout: 'row', wrap: true, gap: tok('space.sm'), textStyle: tok('text.small'), ...mutedStyles } as const;
+
+/**
+ * The site's dated articles, newest first, worked out when the site is generated: an article added, redated,
+ * renamed, hidden from news lists or deleted changes every News list with nothing to edit here. Each card links to
+ * its article by page ID and states its date in a `<time>` element.
+ */
+export const newsList = managed({
+  componentId: 'content.news',
+  name: 'News list',
+  description:
+    "The site's dated articles, newest first, filled in automatically: each card shows an article's title (its link), publication date, byline and excerpt. A new article appears on its own; one kept as a draft or hidden from news lists does not. Use for news, announcements, updates or a blog index.",
+  category: 'content',
+  tags: ['news', 'articles', 'article list', 'posts', 'blog', 'announcements', 'updates', 'latest', 'recent', 'journal', 'press', 'dated'],
+  icon: 'newspaper',
+  properties: {
+    eyebrow: P.str('Eyebrow', ''),
+    heading: P.str('Heading', 'Latest news'),
+    headingLevel: headingLevel('h2'),
+    lead: P.text('Supporting text', ''),
+    items: P.list('Articles', 'Article', articleFields(), [], { titleField: 'title', min: 0, max: 12, feed: 'articles' })
+  },
+  parts: {
+    root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+    heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+    grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gap'] },
+    card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border', 'radius', 'shadow', 'paddingBlock', 'paddingInline', 'gap'] },
+    cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: ['textStyle', 'color'] },
+    cardMeta: { nodeId: 'card-meta', label: 'Date and byline', styleControls: ['textStyle', 'color'] },
+    cardText: { nodeId: 'card-text', label: 'Card excerpt', styleControls: ['textStyle', 'color'] }
+  },
+  variantAxes: {
+    tone: toneAxis(['lead', 'card-meta', 'card-text']),
+    layout: layoutAxis({
+      default: { label: 'Three columns' },
+      'two-columns': { label: 'Two columns', styles: { grid: { desktop: { columns: 2 } } } },
+      'one-column': { label: 'One column', styles: { grid: { tablet: { columns: 1 }, desktop: { columns: 1 } } } }
+    })
+  },
+  build: (b) =>
+    sectionShell(b, [
+      headingBlock(b),
+      // No articles yet leaves no empty <ul> behind.
+      b.el('grid', 'ul', { name: 'Card grid', collapseEmpty: true, styles: { base: { layout: 'grid', columns: 1, gap: tok('space.xl') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
+        b.repeat('cards', 'items', [
+          b.el('card-item', 'li', { name: 'Card item', when: { $item: 'pageLink' } }, [
+            b.el('card', 'article', { name: 'Card', styles: { layout: 'stack', gap: tok('space.sm') } }, [
+              b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain', { name: 'Title', styles: { textStyle: tok('text.h3') } }),
+              b.el('card-meta', 'p', { name: 'Date and byline', styles: metaStyles }, [
+                b.text('card-date', 'span', { $item: 'dateLabel' }, { name: 'Date', datetime: { $item: 'date' }, when: { $item: 'dateLabel' } }),
+                b.text('card-byline', 'span', { $item: 'byline' }, { name: 'Byline', when: { $item: 'byline' } })
+              ]),
+              b.text('card-text', 'p', { $item: 'excerpt' }, { name: 'Excerpt', when: { $item: 'excerpt' }, styles: mutedStyles })
+            ])
+          ])
+        ])
+      ])
+    ])
+});
+
+/**
+ * The top of a dated article: the page's title as its Heading 1, its publication date in a `<time>` element, its
+ * byline and its excerpt, all read from the page's article settings where it is placed, so the article and every
+ * News list always agree. On a page that is not an article it shows the page's title alone.
+ */
+export const articleHeader = managed({
+  componentId: 'content.article',
+  name: 'Article header',
+  description:
+    "The top of a dated article: the page's title, publication date, byline and excerpt, taken from the page's article settings so they always match the News lists. Place it first on a news item or announcement, with a Text section below for the body.",
+  category: 'hero',
+  tags: ['article', 'news', 'news item', 'post', 'blog post', 'announcement', 'article header', 'byline', 'publication date', 'published', 'dated'],
+  icon: 'file-text',
+  properties: {
+    eyebrow: P.str('Eyebrow', ''),
+    article: P.list('Article', 'Article', articleFields(), [], { titleField: 'title', min: 0, max: 1, feed: 'currentPage' })
+  },
+  parts: {
+    root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+    eyebrow: { nodeId: 'eyebrow', label: 'Eyebrow', styleControls: ['textStyle', 'color'] },
+    heading: { nodeId: 'heading', label: 'Title', styleControls: ['textStyle', 'color'] },
+    meta: { nodeId: 'meta', label: 'Date and byline', styleControls: ['textStyle', 'color'] },
+    lead: { nodeId: 'lead', label: 'Excerpt', styleControls: ['textStyle', 'color'] }
+  },
+  variantAxes: { tone: toneAxis(['meta', 'lead'], {}, 'muted') },
+  build: (b) =>
+    sectionShell(
+      b,
+      [
+        b.el('content', 'div', { name: 'Content', styles: { base: { layout: 'stack', gap: tok('space.md'), maxWidth: '780px' } } }, [
+          b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
+          b.repeat('page', 'article', [
+            b.text('heading', 'h1', { $item: 'title' }, { name: 'Title', when: { $item: 'title' }, styles: { textStyle: tok('text.h1') } }),
+            b.el('meta', 'p', { name: 'Date and byline', collapseEmpty: true, styles: metaStyles }, [
+              b.text('date', 'span', { $item: 'dateLabel' }, { name: 'Date', datetime: { $item: 'date' }, when: { $item: 'dateLabel' } }),
+              b.text('byline', 'span', { $item: 'byline' }, { name: 'Byline', when: { $item: 'byline' } })
+            ]),
+            b.text('lead', 'p', { $item: 'excerpt' }, { name: 'Excerpt', when: { $item: 'excerpt' }, styles: { textStyle: tok('text.lead'), ...mutedStyles } })
+          ])
+        ])
+      ],
+      { root: { base: { paddingBlock: 'clamp(3.5rem, 2.5rem + 4vw, 6rem)' } } }
+    )
+});
+
 export const container = managed({
   componentId: 'layout.section',
   name: 'Section',

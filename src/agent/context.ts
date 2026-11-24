@@ -3,7 +3,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, Pa
 import { isBinding } from '@shared/types';
 import { partStyleControls } from '@shared/styles';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
-import { displayName } from '@engine/tree';
+import { displayName, enclosingRepeatProp } from '@engine/tree';
 import { TABLE_LIMITS } from '@engine/table';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
@@ -111,7 +111,7 @@ export function projectSummary(state: ProjectState, revision: number) {
     homePageId: state.site.homePageId,
     pages: state.site.pageOrder.map((id) => {
       const p = state.pages[id];
-      return { id, title: p.title, route: p.route, sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(isDraftPage(state, p) ? { draft: true } : {}), ...pageLanguageSummary(state, p) };
+      return { id, title: p.title, route: p.route, sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(isDraftPage(state, p) ? { draft: true } : {}), ...pageLanguageSummary(state, p), ...(p.article ? { article: p.article } : {}) };
     }),
     shell: {
       header: state.site.shell.header.rootIds.map((id) => compactNode(state, state.site.shell.header, id)),
@@ -194,6 +194,8 @@ export function pageDetail(state: ProjectState, pageId: string) {
     ...(isDraftPage(state, p) ? { draft: true } : {}),
     language: pageLanguage(state.site, p),
     ...(translationPeers(state, p).length ? { translations: translationPeers(state, p).map((t) => ({ id: t.id, title: t.title, route: t.route, language: pageLanguage(state.site, t) })) } : {}),
+    // A dated article: News lists show it by this date, with its byline and excerpt.
+    ...(p.article ? { article: p.article } : {}),
     owner: { kind: 'page', id: p.id },
     sections: p.rootIds.map((id) => compactNode(state, p, id))
   };
@@ -202,7 +204,16 @@ export function pageDetail(state: ProjectState, pageId: string) {
 export function propSchemaSummary(schema: Record<string, PropSchema>) {
   const out: Record<string, unknown> = {};
   for (const [k, s] of Object.entries(schema)) {
-    if (s.type === 'list')
+    if (s.type === 'list' && s.feed)
+      out[k] = {
+        type: 'list',
+        label: s.label,
+        computed:
+          s.feed === 'articles'
+            ? "Filled automatically from the site's published dated articles, newest first. Never send it: make or change articles with page.create/page.update (articleDate, byline, excerpt, newsHidden)."
+            : "Filled automatically from the page it is on: its title, and its articleDate, byline and excerpt. Never send it: change them with page.update."
+      };
+    else if (s.type === 'list')
       out[k] = {
         type: 'list',
         label: s.label,
@@ -247,6 +258,7 @@ const TABLE_SIGNATURE = `table{columns:string[], rows:string[][]} max ${TABLE_LI
 function propSignature(s: PropSchema): string {
   if (s.type === 'enum') return `enum(${s.options.map((o) => o.value).join('|')})`;
   if (s.type === 'table') return TABLE_SIGNATURE;
+  if (s.type === 'list' && s.feed) return `computed from the site's ${s.feed === 'articles' ? 'dated articles' : 'page'}: never send`;
   if (s.type === 'list') return `list<${Object.entries(s.fields).map(([f, fs]) => `${f}:${propSignature(fs)}`).join(', ')}>${s.max ? ` max ${s.max}` : ''}`;
   return s.type;
 }
@@ -316,6 +328,12 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
     else if (defNode.kind === 'image') binding = defNode.image;
     else if (defNode.kind === 'link') binding = { link: defNode.link, label: defNode.label };
   }
+  // A News card or article header shows a page's article details, which change on that page, never here.
+  const repeated = def ? enclosingRepeatProp(def, ref.nodeId) : undefined;
+  const fromRow = (b: unknown) => isBinding(b) && '$item' in b;
+  const shown = defNode?.kind === 'text' ? defNode.text : defNode?.kind === 'link' ? defNode.label : defNode?.kind === 'image' ? defNode.image : undefined;
+  const feed = repeated && fromRow(shown) && def?.properties[repeated]?.type === 'list' ? (def.properties[repeated] as { feed?: string }).feed : undefined;
+  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
   return {
     owner: ref.owner,
     instanceNodeId: instId,
@@ -327,7 +345,9 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
     boundTo: binding,
     ...(inst?.kind === 'instance' ? { currentProps: selectedProps(def, inst.props, state.pages) } : {}),
     ...(itemReach ? { styleReach: itemReach } : {}),
-    note: `Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId; it changes every item.${itemReach ? ' Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.' : ''}`
+    note: feed
+      ? `This shows a page's article details, filled in from that page: change its title, articleDate, byline or excerpt with page.update on pageId ${itemId ?? '(the article)'}, never instance.setProp. Style the part with node.setStyle using partId.`
+      : `Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId; it changes every item.${itemReach ? ' Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.' : ''}`
   };
 }
 
