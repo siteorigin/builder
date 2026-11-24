@@ -1,5 +1,5 @@
 import { createContext, Fragment, useContext, useEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Box, ChevronRight, ClipboardCopy, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
+import { ArrowDown, ArrowUp, Box, ChevronRight, ClipboardCopy, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Split, Square, SquareDashed, Trash2, Type } from 'lucide-react';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
@@ -901,8 +901,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
           </span>
         )}
         {conditions.length > 0 && !renaming && (
-          <span className="layer-cond" title={`${conditions.join('.\n')}.`}>
-            Conditional
+          <span className="layer-flag layer-cond" title={`${conditions.join('.\n')}.`}>
+            <Split aria-hidden="true" />
           </span>
         )}
         {/* A layer above hides this one in this preview: the flag selects it, to show it again there. */}

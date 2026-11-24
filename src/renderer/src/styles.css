@@ -1997,8 +1997,6 @@ button.asset-use:hover svg.go { color: var(--text); }
 /* The sizes a layer hides itself at, when not every size; stronger when the preview shows one of them. */
 .layers-tree .layer-sizes { flex: none; height: 18px; display: inline-flex; align-items: center; padding: 0 5px; border-radius: var(--r-sm); font-size: 10.5px; font-weight: 500; color: var(--text-3); background: var(--hover); }
 .layers-tree .layer-sizes.here { color: var(--text-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
-.layers-tree .layer-cond { flex: none; height: 18px; display: inline-flex; align-items: center; padding: 0 5px; border-radius: var(--r-sm); font-size: 10.5px; font-weight: 500; color: var(--text-3); box-shadow: inset 0 0 0 1px var(--border); }
-.layers-tree .layer-row.selected .layer-cond { color: inherit; }
 .layers-tree .layer-row.selected .layer-sizes { color: inherit; background: var(--raised); }
 /* The layer above that hides this one in the preview: a quiet button that selects it. */
 .layers-tree .layer-hider { color: var(--text-3); }
@@ -2028,7 +2026,7 @@ button.asset-use:hover svg.go { color: var(--text); }
 .layers-tree .layer-row.drop-after::after { bottom: -4.5px; }
 .layers-tree .layer-row:is(.drop-before, .drop-after) { z-index: 2; }
 .layers-tree .layer-row.drop-inside, .editor.defining .layers-tree .layer-row.selected.drop-inside { background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel); outline: 2px dashed var(--layers-drop); outline-offset: -2px; box-shadow: none; }
-.layers-tree .layer-row.drop-inside .actions, .layers-tree .layer-row.drop-inside .layer-badge, .layers-tree .layer-row.drop-inside .layer-flag, .layers-tree .layer-row.drop-inside .layer-sizes, .layers-tree .layer-row.drop-inside .layer-cond { display: none; }
+.layers-tree .layer-row.drop-inside .actions, .layers-tree .layer-row.drop-inside .layer-badge, .layers-tree .layer-row.drop-inside .layer-flag, .layers-tree .layer-row.drop-inside .layer-sizes { display: none; }
 .layers-tree .layer-drop-tag { flex: none; height: 20px; display: inline-flex; align-items: center; padding: 0 7px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; background: var(--layers-drop); color: var(--on-accent); }
 /* A narrow sidebar gives the names the room: a tighter indent, and the Custom badge and options button show
    only on the row being pointed at, selected or focused (the badge's meaning stays in the tooltip and label). */
