@@ -111,8 +111,6 @@ export function Canvas() {
   const frameAt = useRef<string | null>(null);
   /** The frame session whose page has said it is ready at least once. */
   const readySession = useRef<string | null>(null);
-  /** A route asked for again because a page that loaded meanwhile never heard of it: asked again only once. */
-  const askedAgain = useRef<string | null>(null);
   const measureWaiters = useRef(new Map<string, (rects: unknown) => void>());
   /** The element chain under the pointer in the page, so hover can be re-resolved when the selection changes. */
   const hoverChain = useRef<BridgeDesc[] | null>(null);
@@ -183,8 +181,6 @@ export function Canvas() {
   // A new page load (another server, Try again) or closing the editor ends any edit the old page had open.
   useEffect(() => {
     frameAt.current = null;
-    // Nothing has been asked of the new page yet.
-    pendingNav.current = null;
     frameTextFocus.active = false;
     endInlineEdit();
   }, [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -203,12 +199,9 @@ export function Canvas() {
       switch (m.type) {
         case 'ready': {
           const path = String(p.path);
-          const first = readySession.current !== session;
-          // A page loaded in full inside the same frame (a visitor's Back across documents): Preview follows it.
-          const reloaded = !first && s.mode === 'preview';
-          // A page picked while this one loaded, which the page before it (or this one, still starting) may never
-          // have heard about.
-          const asked = frameAt.current === null ? pendingNav.current : null;
+          // A page loaded in full inside the same frame (a visitor's Back across documents) is followed, so the
+          // editor and the frame always agree on the page.
+          const reloaded = readySession.current === session;
           readySession.current = session;
           setReady(true);
           setState({ frameReady: true });
@@ -229,14 +222,7 @@ export function Canvas() {
           sentReveal.current = null;
           syncReveal();
           // A page chosen while the preview was starting wins: the navigate effect opens it next.
-          if (!s.pageId) syncPage(path);
-          // The page picked wins, asked for once more (a page that loads somewhere else again is followed instead).
-          else if (asked && !samePath(path, asked) && askedAgain.current !== asked) {
-            askedAgain.current = asked;
-            setState({ frameReady: false });
-            frameAt.current = null;
-            post('navigate', { path: asked });
-          } else if (reloaded) syncPage(path);
+          if (!s.pageId || reloaded) syncPage(path);
           break;
         }
         case 'history': {
@@ -251,7 +237,6 @@ export function Canvas() {
           const path = String(p.path);
           if (getState().mode !== 'preview' && pendingNav.current && !samePath(path, pendingNav.current)) break;
           pendingNav.current = path;
-          const samePage = samePath(path, frameAt.current);
           // The page the frame is showing, so following it below does not send the frame back there (which would
           // drop a #section the visitor's link went to, and its scroll position).
           frameAt.current = path;
@@ -265,12 +250,9 @@ export function Canvas() {
           // What is outlined may be shown through a different placement on this page.
           syncTrack();
           // What the panel said about the last page's sends is not about this one, and nor is a live test's answer.
-          // Back or Forward between sections of the same page keeps both.
-          if (!samePage) {
-            setLastSend(null);
-            setLiveRequest(null);
-            setFormsView((v) => v + 1);
-          }
+          setLastSend(null);
+          setLiveRequest(null);
+          setFormsView((v) => v + 1);
           // A selection made with the page change (a usage list showing a placement on another page) asked to be
           // scrolled to before this page was there: now it is.
           if (getState().mode !== 'preview') {
@@ -577,7 +559,6 @@ export function Canvas() {
     // Until the page confirms the navigation, it is "opening", not ready.
     setState({ frameReady: false });
     pendingNav.current = page.route;
-    askedAgain.current = null;
     frameAt.current = null;
     post('navigate', { path: page.route });
   }, [pageId, page?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
