@@ -114,13 +114,15 @@ export function copySelection(plan: LayersPlan | null = planLayers()): boolean {
 }
 
 /** Paste the latest copy of this project's, if there is one. One made in another project, or before this one was
- *  closed and opened again, is never pasted: the key is taken, nothing changes, and the author is told why. */
-export function pasteCopy(): boolean {
+ *  closed and opened again, is never pasted: the key is taken, nothing changes, and the author is told why.
+ *  `follow`: keyboard focus goes on to the pasted layers (asked for from Layers; by default, when it is in Layers now). */
+export function pasteCopy(follow = focusInLayers()): boolean {
   const opening = openingNow();
   if (!opening) return false;
   if (copied && copied.opening !== opening) forgetCopy();
-  if (copied) {
-    void pasteCopied(copied, opening);
+  // A copy that was refused is not one to paste (it has said so); a refused latest one falls back to the copy before it.
+  if (copied && latest()) {
+    void pasteCopied(copied, opening, follow);
     return true;
   }
   if (!left) return false;
@@ -134,9 +136,11 @@ export function pasteCopy(): boolean {
   return true;
 }
 
-/** Paste chosen from a menu: as ⌘V does, and a menu that was open while the copy went away says so. */
-export function pasteFromMenu() {
-  if (!pasteCopy()) toast('Nothing is copied. Copy a section or element first.', 'info');
+/** Paste chosen from a menu: as ⌘V does, though the menu may have been open while the copy went away or the editor
+ *  left Edit mode, and says so. `follow`: the menu belongs to Layers, so focus goes on to the pasted layers. */
+export function pasteFromMenu(follow = false) {
+  if (getState().mode !== 'edit') return void toast('Paste works while editing a page, not in Preview.', 'info');
+  if (!pasteCopy(follow)) toast('Nothing is copied. Copy a section or element first.', 'info');
 }
 
 /**
@@ -145,7 +149,7 @@ export function pasteFromMenu() {
  * the page. The place is taken when ⌘V is pressed, even if the copy is still being taken; the copies are selected
  * only while the author is still where they pressed it.
  */
-async function pasteCopied(latest: Copied, opening: string) {
+async function pasteCopied(latest: Copied, opening: string, follow: boolean) {
   const s = getState();
   const plan = planLayers(s);
   const group = plan?.several ? plan.group : null;
@@ -154,7 +158,6 @@ async function pasteCopied(latest: Copied, opening: string) {
     section: insertionPoint('section', last),
     element: group && group.parentId !== null ? { owner: group.owner, parentId: group.parentId, slot: group.slot, index: group.indexes[group.indexes.length - 1] + 1 } : insertionPoint('element', last)
   };
-  const follow = focusInLayers();
   let entry: Copied | null = latest;
   let clipboardId: string | null = null;
   while (entry && !(clipboardId = await entry.clipboardId)) entry = entry.previous;
@@ -164,7 +167,7 @@ async function pasteCopied(latest: Copied, opening: string) {
   // container, else into the component's own root.
   const at = places[entry.section && !s.definitionMode ? 'section' : 'element'];
   // A component edited everywhere whose root holds nothing to put content in (a paragraph) has nowhere to paste.
-  if (!at) return void toast(`Nothing was pasted. ${entry.label} has no place to go here: select a container to paste ${entry.count > 1 ? 'them' : 'it'} into.`, 'info');
+  if (!at) return void toast(`Nothing was pasted. This component’s design has no container to hold ${entry.label}.`, 'info');
   // Beside layers selected together, the place is a position in their list as the project was at the keypress: a
   // change landing meanwhile makes it refuse rather than land somewhere else.
   const beside = at === places.element && !!group && group.parentId !== null;

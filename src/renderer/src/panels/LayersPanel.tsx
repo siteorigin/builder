@@ -9,9 +9,9 @@ import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } f
 import { aiActivity, api, applyOps, commitDraft, getState, markDraft, setState, showLayer, toast, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { askAiAbout, deleteLayers, deleteSelection, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, type LayersPlan } from '../lib/actions';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, type LayersPlan } from '../lib/actions';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
-import { copyPasteItems } from './CopyPaste';
+import { copyPasteItems, PasteHere } from './CopyPaste';
 import { styleCopyItems } from './StylePaste';
 import { clip, contentText, everySizeEdits, eyeAction, hiddenAncestor, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type Size, type VisibilityEdit } from '../lib/layers';
 import { besideOf, cannotGroup, extendTo, inGroup, layerRef, NOT_SIBLINGS, toggle, type Group } from '../lib/layer-set';
@@ -525,7 +525,7 @@ export function LayersPanel() {
       ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : []),
       ...(pages.length ? [{ label: 'Move to page…', icon: <FileInput />, onSelect: () => setTimeout(() => pageMenu(anchorOf(), plan, pages, count, openerOf(el, primary)), 0) }] : []),
       { separator: true },
-      ...copyPasteItems({ copy: g.owner.kind === 'page' ? () => copySelection(plan) && announce(`Copied ${count}`) : null, paste: g.owner.kind === 'shell' ? null : () => void pasteFromMenu() }),
+      ...copyPasteItems({ copy: g.owner.kind === 'page' ? () => copySelection(plan) && announce(`Copied ${count}`) : null, paste: g.owner.kind === 'shell' ? null : asPlanned(plan, async () => pasteFromMenu(true)) }),
       { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => reported(duplicateLayers(plan, true), `Duplicated ${count}`) },
       { separator: true },
       { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => {
@@ -606,6 +606,13 @@ export function LayersPanel() {
     const anchorOf = anchorFor(el);
     const visibility = visibilityItems();
     const styleItems = styleCopyItems(ref);
+    // Paste goes by the selection, which opening this menu made the row it names: if something else has been selected
+    // since (a Duplicate that finished, another menu), it would land beside that, so it says so instead.
+    const pasteAfter = () => {
+      const now = getState();
+      if (!sameRef(now.selection, ref) || now.layerSet) return toast('The selection changed while the menu was open. Choose Paste again.', 'error');
+      pasteFromMenu(true);
+    };
     // Elements and basic elements, and a section together with its content: the same as the canvas and the inspector.
     const create = createComponentTarget(getState().snapshot, ref);
     const items = [
@@ -626,7 +633,7 @@ export function LayersPanel() {
       ...(editable
         ? [
             { separator: true },
-            ...copyPasteItems({ copy: ref.owner.kind === 'page' && !definitionMode ? () => void copySelection(plan) : null, paste: () => void pasteFromMenu() }),
+            ...copyPasteItems({ copy: ref.owner.kind === 'page' && !definitionMode ? () => void copySelection(plan) : null, paste: pasteAfter }),
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: create } }) }] : []),
             { separator: true },
@@ -634,7 +641,7 @@ export function LayersPanel() {
           ]
         : // The component being edited everywhere takes a paste inside itself, though it is not copied or removed here.
           isDefRoot
-          ? [{ separator: true }, ...copyPasteItems({ copy: null, paste: () => void pasteFromMenu() })]
+          ? [{ separator: true }, ...copyPasteItems({ copy: null, paste: pasteAfter })]
           : [])
     ];
     // A row (treeitem) is not a menu button: open at the row and return focus to it, without marking it expanded.
@@ -818,7 +825,8 @@ export function LayersPanel() {
                 className="layers-empty"
                 role="none"
                 // Keys here are the button's, not the tree's; Undo and Redo still reach the editor, as from anywhere in Layers.
-                onKeyDown={(e) => !((e.metaKey || e.ctrlKey) && ['z', 'y'].includes(e.key.toLowerCase())) && e.stopPropagation()}
+                // Paste (⌘V) too: the page may be waiting for its first section from a copy.
+                onKeyDown={(e) => !((e.metaKey || e.ctrlKey) && ['z', 'y', 'v'].includes(e.key.toLowerCase())) && e.stopPropagation()}
               >
                 <p>No page content yet</p>
                 <button
@@ -831,6 +839,7 @@ export function LayersPanel() {
                 >
                   <Plus /> Add sections
                 </button>
+                <PasteHere className="btn btn-sm" follow />
               </div>
             )}
             {showsPart(page, 'footer') && (

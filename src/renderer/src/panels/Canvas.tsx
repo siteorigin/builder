@@ -24,7 +24,7 @@ import { focusInspector } from '../lib/inspector-focus';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
-import { copyPasteItems } from './CopyPaste';
+import { copyPasteItems, PasteHere } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { isShellPart, showsPart } from '@shared/page-shell';
 import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourney, stepTarget, type FrameEntry, type VisitorHistory } from '../lib/preview-history';
@@ -947,7 +947,8 @@ export function Canvas() {
         ...(editable ? [{ label: 'Edit text', icon: <Pencil />, onSelect: editText }] : []),
         ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: live(parent, () => setState({ selection: parent })) }] : []),
         { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys('⌘J'), onSelect: live(ref, () => askAiAbout(ref)) },
-        ...(!t && clipboard.length ? [{ separator: true }, ...clipboard] : []),
+        // A part of a placed section has no place of its own to paste at (nor a Duplicate): only a component's own root, edited everywhere, does.
+        ...(!t && clipboard.length && ref.owner.kind === 'component' && !ref.instancePath.length ? [{ separator: true }, ...clipboard] : []),
         ...(t
           ? [
               ...(reorderable || !locked || create ? [{ separator: true }] : []),
@@ -1516,6 +1517,7 @@ export function Canvas() {
                     <button className="btn btn-primary" onClick={addSections}>
                       <Plus /> Add a section
                     </button>
+                    <PasteHere className="btn" />
                   </div>
                 </div>
               )}

@@ -60,6 +60,7 @@ import { formDefaults, settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import {
   componentRemove,
+  codeNeeds,
   dependentsOf,
   directDependencies,
   dropPartOverrides,
@@ -1221,6 +1222,8 @@ function dependsOn(state: ProjectState, defId: string, targetId: string, seen = 
   if (seen.has(defId)) return false;
   seen.add(defId);
   const def = state.components[defId];
+  // Code that imports another component's file renders it, whatever it declares.
+  if (def?.kind === 'code') for (const other of Object.values(state.components)) if (codeNeeds(state, def, other.id) && (other.id === targetId || dependsOn(state, other.id, targetId, seen))) return true;
   // Code converted from a managed component still imports what that design used.
   const tree = def?.tree ?? (def?.provenance?.forkedFrom ? state.components[def.provenance.forkedFrom]?.tree : undefined);
   if (!tree) return false;
@@ -1459,7 +1462,8 @@ function placeCopy(state: ProjectState, from: NodeTree, nodeId: string, op: { to
   const nid = copySubtree(from, to, nodeId, state);
   for (const id of subtreeIds(to, nid)) {
     const n = to.nodes[id];
-    if (n.anchor && taken.has(n.anchor)) delete n.anchor;
+    // A component is placed many times, so a design holds no page-unique anchor: the copy keeps none.
+    if (n.anchor && (taken.has(n.anchor) || op.toOwner.kind === 'component')) delete n.anchor;
     else if (n.anchor) taken.add(n.anchor);
   }
   list.splice(op.index === undefined ? list.length : Math.min(op.index, list.length), 0, nid);

@@ -207,13 +207,69 @@ describe('Copy and Paste in the menus', () => {
     expect(clipboard.copiedHere()).toBeNull();
   });
 
-  it('says so when Paste is chosen from a menu that was open while the copy went away', async () => {
+  it('falls back to the copy before it when a later one is refused, and to nothing when the only one is', async () => {
+    const gallery = sectionOf('media.gallery');
+    setState({ selection: ref(home(), gallery) });
+    await chooseCopy();
+    // A second copy against a revision the project has moved past is refused: Paste still pastes the Gallery.
+    setState({ selection: ref(home(), sectionOf('testimonials.grid')), snapshot: { ...getState().snapshot!, revision: session.revision - 1 } });
+    clipboard.copySelection();
+    await vi.waitFor(() => expect(lastToast()).toMatchObject({ kind: 'error', text: expect.stringMatching(/changed while copying/) }));
+    expect(clipboard.copiedHere()).toMatchObject({ label: 'Gallery' });
+    expect(items().paste.disabled).toBe(false);
+    refresh(null);
+    actions.selectPage(contactId());
+    const before = session.state.pages[contactId()].rootIds.length;
+    items().paste.onSelect!();
+    await vi.waitFor(() => expect(session.state.pages[contactId()].rootIds).toHaveLength(before + 1));
+    expect(componentIdOf(contactId(), session.state.pages[contactId()].rootIds.at(-1)!)).toBe('media.gallery');
+  });
+
+  it('says so, and writes nothing, when Paste is chosen from a menu that was open while its copy went away', async () => {
     setState({ selection: ref(home(), sectionOf('media.gallery')) });
+    await chooseCopy();
+    // The menu was built with Paste available; then the project's copy is gone (the project closed and opened again).
     const paste = items().paste;
+    expect(paste.disabled).toBe(false);
+    clipboard.forgetCopy();
+    const sent = vi.spyOn(session, 'apply');
     const n = session.state.pages[homeId()].rootIds.length;
     paste.onSelect!();
-    expect(lastToast()).toMatchObject({ kind: 'info', text: expect.stringMatching(/Nothing is copied/) });
+    expect(getState().toasts.filter((t) => /Nothing was pasted|Nothing is copied/.test(t.text))).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(sent).not.toHaveBeenCalled();
     expect(session.state.pages[homeId()].rootIds).toHaveLength(n);
+  });
+
+  it('says so, and writes nothing, when the only copy was refused while the menu was open', async () => {
+    setState({ selection: ref(home(), sectionOf('media.gallery')), snapshot: { ...getState().snapshot!, revision: session.revision - 1 } });
+    clipboard.copySelection();
+    // Pending: Paste is on offer in a menu opened now.
+    const paste = items().paste;
+    expect(paste.disabled).toBe(false);
+    await vi.waitFor(() => expect(lastToast()).toMatchObject({ kind: 'error', text: expect.stringMatching(/changed while copying/) }));
+    refresh(null);
+    const sent = vi.spyOn(session, 'apply');
+    paste.onSelect!();
+    expect(lastToast()).toMatchObject({ kind: 'info', text: expect.stringMatching(/Nothing is copied/) });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(sent).not.toHaveBeenCalled();
+  });
+
+  it('is not offered while only previewing, and a menu left open into Preview pastes nothing', async () => {
+    setState({ selection: ref(home(), sectionOf('media.gallery')) });
+    await chooseCopy();
+    const paste = items().paste;
+    expect(paste.disabled).toBe(false);
+    setState({ mode: 'preview' });
+    expect(items().paste.disabled).toBe(true);
+    const n = session.state.pages[homeId()].rootIds.length;
+    paste.onSelect!();
+    expect(lastToast()).toMatchObject({ kind: 'info', text: expect.stringMatching(/not in Preview/) });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(session.state.pages[homeId()].rootIds).toHaveLength(n);
+    // Copy is only a read: it stays on offer.
+    expect(items().copy.disabled).toBeFalsy();
   });
 
   it('is never offered a copy from another opening of the project', async () => {
@@ -243,25 +299,47 @@ describe('Paste in a component edited everywhere', () => {
     return n.kind === 'element' ? n.children! : Object.values(n.slots ?? {}).flat();
   };
 
-  it('pastes a copied element inside the component’s root, and selects it as the component’s own', async () => {
+  /** The node that holds `id` in the component's design. */
+  const parentOf = (tree: () => { nodes: Record<string, unknown> }, id: string) => Object.keys(tree().nodes).find((p) => childrenOf(tree, p).includes(id) && (tree().nodes[p] as { kind: string }).kind !== 'text');
+
+  it('pastes a copied section inside the component’s root when nothing is selected, and selects it as the component’s own', async () => {
     const edit = await editEverywhere();
-    setState({ selection: ref(home(), sectionOf('stats.row')) });
+    const stats = sectionOf('stats.row');
+    const statsDefinition = (session.state.pages[homeId()].nodes[stats] as InstanceNode).definitionId;
+    setState({ selection: ref(home(), stats) });
     await chooseCopy();
     enter(edit.definitionId);
-    // Nothing selected: the component's root takes it.
     const before = childrenOf(edit.tree, edit.root).length;
     expect(items().paste.disabled).toBe(false);
     items().paste.onSelect!();
     await vi.waitFor(() => expect(childrenOf(edit.tree, edit.root)).toHaveLength(before + 1));
     await pending;
     const id = childrenOf(edit.tree, edit.root).at(-1)!;
-    expect((edit.tree().nodes[id] as InstanceNode).definitionId).toBe((session.state.pages[homeId()].nodes[sectionOf('stats.row')] as InstanceNode).definitionId);
+    expect(id).not.toBe(stats);
+    expect((edit.tree().nodes[id] as InstanceNode).definitionId).toBe(statsDefinition);
     await vi.waitFor(() => expect(getState().selection).toEqual(ref(edit.owner, id)));
     // The page it was copied from is as it was.
-    expect(session.state.pages[homeId()].rootIds).toContain(sectionOf('stats.row'));
+    expect(session.state.pages[homeId()].rootIds).toContain(stats);
     // One Undo takes the paste back.
     await bridge.project.undo();
     expect(childrenOf(edit.tree, edit.root)).toHaveLength(before);
+  });
+
+  it('pastes a copied section inside the container selected in the component, not beside the root’s children', async () => {
+    const edit = await editEverywhere();
+    setState({ selection: ref(home(), sectionOf('stats.row')) });
+    await chooseCopy();
+    enter(edit.definitionId);
+    // "content" is the hero's text column, two levels down from its root.
+    expect(parentOf(edit.tree, 'content')).toBe('grid');
+    setState({ selection: ref(edit.owner, 'content') });
+    const before = childrenOf(edit.tree, 'content').length;
+    items().paste.onSelect!();
+    await vi.waitFor(() => expect(childrenOf(edit.tree, 'content')).toHaveLength(before + 1));
+    await pending;
+    const id = childrenOf(edit.tree, 'content').at(-1)!;
+    expect(parentOf(edit.tree, id)).toBe('content');
+    await vi.waitFor(() => expect(getState().selection).toEqual(ref(edit.owner, id)));
   });
 
   it('pastes where ⌘V was pressed, and leaves the selection to an author who has moved on', async () => {
@@ -269,16 +347,55 @@ describe('Paste in a component edited everywhere', () => {
     setState({ selection: ref(home(), sectionOf('stats.row')) });
     await chooseCopy();
     enter(edit.definitionId);
-    // The root is selected when ⌘V is pressed; by the time the paste lands the author has moved on.
-    setState({ selection: ref(edit.owner, edit.root) });
-    const selected = getState().selection;
-    const before = childrenOf(edit.tree, edit.root).length;
+    // "content" is selected when ⌘V is pressed; by the time the paste lands the author has moved on to another container.
+    setState({ selection: ref(edit.owner, 'content') });
+    const [inContent, inMedia] = [childrenOf(edit.tree, 'content').length, childrenOf(edit.tree, 'media-wrap').length];
     expect(clipboard.pasteCopy()).toBe(true);
-    setState({ selection: null });
+    setState({ selection: ref(edit.owner, 'media-wrap') });
+    await vi.waitFor(() => expect(childrenOf(edit.tree, 'content')).toHaveLength(inContent + 1));
+    await pending;
+    // The paste has been selected or left alone by now.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(childrenOf(edit.tree, 'media-wrap')).toHaveLength(inMedia);
+    expect(getState().selection).toEqual(ref(edit.owner, 'media-wrap'));
+  });
+
+  it('does not select the paste once the author has gone back to the page, though it was made in the component', async () => {
+    const edit = await editEverywhere();
+    setState({ selection: ref(home(), sectionOf('stats.row')) });
+    await chooseCopy();
+    enter(edit.definitionId);
+    const before = childrenOf(edit.tree, edit.root).length;
+    clipboard.pasteFromMenu();
+    // Done editing: back on the page, with nothing selected, before the paste lands.
+    setState({ definitionMode: null, selection: null });
     await vi.waitFor(() => expect(childrenOf(edit.tree, edit.root)).toHaveLength(before + 1));
     await pending;
-    expect(selected).not.toBeNull();
+    await new Promise((r) => setTimeout(r, 50));
     expect(getState().selection).toBeNull();
+  });
+
+  it('says there is nowhere to paste when the component’s design is a single paragraph', async () => {
+    // A component made from one heading: its root takes nothing inside it.
+    const made = await bridge.project.apply(
+      {
+        operations: [
+          { type: 'node.insert', newNodeId: 'n_holder', owner: home(), parentId: null, index: 0, componentId: 'layout.section' },
+          { type: 'node.insert', newNodeId: 'n_title', owner: home(), parentId: 'n_holder', slot: 'content', primitive: 'heading', text: 'Title' },
+          { type: 'component.createFromNode', owner: home(), nodeId: 'n_title', name: 'Just a title' }
+        ]
+      },
+      { label: 'Make a component' }
+    );
+    expect(made.ok).toBe(true);
+    const definitionId = made.results!.at(-1)!.definitionId as string;
+    setState({ selection: ref(home(), sectionOf('media.gallery')) });
+    await chooseCopy();
+    enter(definitionId);
+    const sent = vi.spyOn(session, 'apply');
+    clipboard.pasteFromMenu();
+    await vi.waitFor(() => expect(lastToast()).toMatchObject({ kind: 'info', text: expect.stringMatching(/no container to hold Gallery/) }));
+    expect(sent).not.toHaveBeenCalled();
   });
 
   it('refuses a paste that would make the component contain itself, and says why', async () => {

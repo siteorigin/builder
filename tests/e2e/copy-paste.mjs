@@ -133,6 +133,28 @@ await eventually(async () => assert.equal(await count('Contact', contactFirst), 
 await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.equal(await count('Contact', contactFirst), 1));
 
+step('an empty page offers Paste where its first section would go, and ⌘V works from its buttons');
+assert.ok((await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'page.create', title: 'Blank' }] }, { label: 'Add page' }))).ok);
+await win.locator('.rail [aria-label="Pages"]').click();
+await pageRow('Blank').click();
+await eventually(async () => assert.deepEqual(await sectionsOn('Blank'), [], 'the new page has no sections'));
+// Pointer only: the empty page's card in the editor.
+await win.getByTestId('canvas-empty-page').getByRole('button', { name: /^Paste / }).click();
+await eventually(async () => assert.equal(await count('Blank', contactFirst), 1, 'the copied section is the page’s first'));
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.deepEqual(await sectionsOn('Blank'), []));
+// And the same in Layers, where ⌘V also gets through from the Add sections button it stops other keys at.
+await win.locator('.rail [aria-label="Layers"]').click();
+await win.locator('.layers-empty').getByRole('button', { name: /^Paste / }).click();
+await eventually(async () => assert.equal(await count('Blank', contactFirst), 1, 'Layers’ own button pastes it too'));
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.deepEqual(await sectionsOn('Blank'), []));
+await win.locator('.layers-empty').getByRole('button', { name: /Add sections/ }).focus();
+await win.keyboard.press(`${MOD}+v`);
+await eventually(async () => assert.equal(await count('Blank', contactFirst), 1, '⌘V from the Add sections button pastes it'));
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.deepEqual(await sectionsOn('Blank'), []));
+
 step('Paste is offered inside a component edited everywhere, and the copy lands inside it');
 await win.locator('.rail [aria-label="Pages"]').click();
 await pageRow('Home').click();
@@ -151,7 +173,9 @@ const design = () =>
     const s = await window.builder.project.snapshot();
     const def = Object.values(s.state.components).find((d) => d.owner === 'project' && d.name === 'Services grid');
     const nodes = Object.values(def.tree.nodes);
-    return { id: def.id, size: nodes.length, galleries: nodes.filter((n) => n.kind === 'instance' && s.state.components[n.definitionId]?.name === 'Gallery').length };
+    const gallery = nodes.find((n) => n.kind === 'instance' && s.state.components[n.definitionId]?.name === 'Gallery');
+    const parent = gallery && nodes.find((n) => n.kind === 'element' && n.children.includes(gallery.id));
+    return { id: def.id, size: nodes.length, root: def.tree.rootIds[0], parent: parent?.id, galleries: nodes.filter((n) => n.kind === 'instance' && s.state.components[n.definitionId]?.name === 'Gallery').length };
   });
 const designBefore = await design();
 assert.equal(designBefore.galleries, 0, 'the component starts without a Gallery');
@@ -160,6 +184,7 @@ await eventually(async () => assert.ok((await win.locator('.ov-selected').count(
 await win.keyboard.press(`${MOD}+v`);
 await eventually(async () => assert.equal((await design()).galleries, 1, 'a Gallery is pasted inside the component'));
 assert.ok((await design()).size > designBefore.size, 'its parts are in the component’s design');
+assert.equal((await design()).parent, designBefore.root, 'with nothing picked inside it, it goes in the component’s root');
 assert.equal(await count('Home', 'Gallery'), 1, 'the page it was copied from is unchanged');
 await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.equal((await design()).galleries, 0, 'one Undo takes it out of the component again'));
