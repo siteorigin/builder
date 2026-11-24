@@ -17,6 +17,8 @@ const s0 = await snapshot();
 const [, first, second] = s0.state.site.pageOrder;
 assert.ok((await apply([{ type: 'page.update', pageId: first, title: 'Portfolio', route: '/lookbook/' }], 'Rename')).ok);
 assert.ok((await apply([{ type: 'page.update', pageId: second, title: 'Portfolio', route: '/portfolio-archive/' }], 'Rename')).ok);
+// A page nested under one of them, so an exact address has a longer one containing it.
+assert.ok((await apply([{ type: 'page.create', title: 'Team', route: '/lookbook/team/', starter: 'intro' }], 'Add')).ok);
 
 const openToolbar = async () => {
   await win.locator('.project-title').click();
@@ -41,12 +43,13 @@ await win.locator('[role="menu"]').waitFor({ state: 'detached' });
 step('command menu shows and searches by address');
 await openCmdk('portfolio');
 let opts = await options();
-assert.deepEqual(opts.filter((o) => o.name.startsWith('Go to Portfolio')).map((o) => o.name).sort(), ['Go to Portfolio /lookbook/ Page', 'Go to Portfolio /portfolio-archive/ Page']);
+assert.deepEqual(opts.filter((o) => o.name.startsWith('Go to Portfolio')).map((o) => o.name).sort(), ['Go to Portfolio /lookbook/', 'Go to Portfolio /portfolio-archive/']);
+assert.equal(await win.getByRole('group', { name: 'Pages' }).getByRole('option', { name: /Go to Portfolio/ }).count(), 2, 'both pages are listed under Pages');
 await win.keyboard.press('Escape');
 await win.locator('.cmdk').waitFor({ state: 'detached' });
 await openCmdk('/lookbook/');
 opts = await options();
-assert.deepEqual(opts.map((o) => o.name), ['Go to Portfolio /lookbook/ Page'], 'the address finds exactly that page');
+assert.deepEqual(opts.map((o) => o.name), ['Go to Portfolio /lookbook/'], 'the address finds exactly that page, not the page nested under it');
 
 step('keyboard choice opens the page shown');
 await win.keyboard.press('Enter');
@@ -80,7 +83,13 @@ assert.ok(names.some((n) => /^Lookbook\s*\/looks\/$/.test(n)), `the toolbar show
 await win.keyboard.press('Escape');
 await win.locator('[role="menu"]').waitFor({ state: 'detached' });
 await openCmdk('/looks/');
-assert.deepEqual((await options()).map((o) => o.name), ['Go to Lookbook /looks/ Page']);
+assert.deepEqual((await options()).map((o) => o.name), ['Go to Lookbook /looks/']);
+await win.keyboard.press('Escape');
+await win.locator('.cmdk').waitFor({ state: 'detached' });
+
+step('a partial command name leads with the command, not a search of the content');
+await openCmdk('proj health');
+assert.match((await options())[0].name, /^Project health/, 'Enter runs the command that matched');
 await win.keyboard.press('Escape');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
