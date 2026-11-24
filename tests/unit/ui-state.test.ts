@@ -236,7 +236,7 @@ describe('conditions and variants that read UI state', () => {
     const s = fresh();
     const { def } = plainDef(s);
     const r = apply(s, [
-      { type: 'component.setState', definitionId: def.id, state: 'billing', schema: BILLING as unknown as Record<string, unknown> },
+      { type: 'component.setState', definitionId: def.id, state: 'billing', schema: BILLING },
       { type: 'component.setState', definitionId: def.id, state: 'open', schema: { type: 'boolean' } },
       { type: 'node.setBinding', owner: owner(def), nodeId: 'note', field: 'when', binding: { $state: 'billing' }, eq: 'annual' },
       { type: 'node.setBinding', owner: owner(def), nodeId: 'title', field: 'unless', binding: { $state: 'open' } }
@@ -262,7 +262,7 @@ describe('conditions and variants that read UI state', () => {
     const s = fresh();
     const { def } = plainDef(s);
     let r = apply(s, [
-      { type: 'component.setState', definitionId: def.id, state: 'billing', schema: BILLING as unknown as Record<string, unknown> },
+      { type: 'component.setState', definitionId: def.id, state: 'billing', schema: BILLING },
       { type: 'component.setState', definitionId: def.id, state: 'size', schema: { type: 'enum', options: ['monthly', 'weekly'] } },
       { type: 'component.setState', definitionId: def.id, state: 'open', schema: { type: 'boolean' } }
     ]);
@@ -292,7 +292,7 @@ describe('conditions and variants that read UI state', () => {
     expect(() => apply(s, [{ type: 'component.removeState', definitionId: def.id, state: 'billing' }])).toThrow(/still used by Monthly \(changes it\)\. Unbind/);
     const t = fresh();
     const built = billingDef(t);
-    const set = (state: string, schema: Record<string, unknown>) => () => apply(t, [{ type: 'component.setState', definitionId: built.def.id, state, schema }]);
+    const set = (state: string, schema: Record<string, unknown>) => () => apply(t, [{ type: 'component.setState', definitionId: built.def.id, state, schema } as EditOperation]);
     // The nested component cannot lose an option the state can choose.
     expect(() => apply(t, [{ type: 'component.removeVariant', definitionId: built.price.id, variant: 'annual', axis: 'period' }])).toThrow(/can choose the period "annual" through its "Billing" UI state/);
     // Relabelling or reordering keeps every reader.
@@ -322,7 +322,7 @@ describe('buttons that change UI state', () => {
     const { def } = plainDef(s);
     (s.components[def.id].tree!.nodes.btn as LinkNode).link = { type: 'anchor', target: 'plans' };
     const r = apply(s, [
-      { type: 'component.setState', definitionId: def.id, state: 'billing', schema: BILLING as unknown as Record<string, unknown> },
+      { type: 'component.setState', definitionId: def.id, state: 'billing', schema: BILLING },
       { type: 'component.setState', definitionId: def.id, state: 'open', schema: { type: 'boolean' } }
     ]);
     const act = (action: unknown, nodeId = 'btn', o: { kind: 'component' | 'page'; id: string } = owner(def)) => () =>
@@ -474,7 +474,7 @@ describe('the generated site', () => {
     expect(priceRoot).toContain(period('annual'));
     expect(priceRoot).not.toContain(period('monthly'));
     // Starting monthly instead shows the other note and the price's own default.
-    const monthly = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: { ...BILLING, initial: 'monthly' } as unknown as Record<string, unknown> }]);
+    const monthly = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: { ...BILLING, initial: 'monthly' } }]);
     const other = await renderHome(monthly);
     expect(other).toContain('Billed monthly');
     expect(other).not.toContain('Billed yearly');
@@ -486,7 +486,7 @@ describe('the generated site', () => {
     const { def } = billingDef(s, { extra: (b) => [b.link('jump', { type: 'anchor', target: 'nowhere' }, 'Compare', 'link', { when: eq(uiState('billing'), 'monthly') })] });
     place(s, def);
     expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
-    const monthly = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: { ...BILLING, initial: 'monthly' } as unknown as Record<string, unknown> }]);
+    const monthly = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: { ...BILLING, initial: 'monthly' } }]);
     expect(validateState(monthly).filter((d) => d.code === 'LINK_SECTION_MISSING')).toHaveLength(1);
   });
 });
