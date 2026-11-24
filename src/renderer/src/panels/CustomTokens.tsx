@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import type { ProjectState, TokenDef, TokenGroup } from '@shared/types';
 import { effectiveTokens } from '@generator/index';
@@ -14,7 +14,7 @@ import { FontSelect, familyName } from './FontSelect';
  * each. Removing a used style asks for a replacement, or keeps its value where it is used.
  */
 const GROUPS: Array<{ group: TokenGroup; label: string; placeholder: string }> = [
-  { group: 'color', label: 'Colour', placeholder: '#2e8b57' },
+  { group: 'color', label: 'Color', placeholder: '#2e8b57' },
   { group: 'space', label: 'Spacing', placeholder: '24px' },
   { group: 'container', label: 'Page width', placeholder: '960px' },
   { group: 'radius', label: 'Corners', placeholder: '12px' },
@@ -26,8 +26,21 @@ const GROUPS: Array<{ group: TokenGroup; label: string; placeholder: string }> =
 const groupLabel = (g: TokenGroup) => GROUPS.find((x) => x.group === g)?.label ?? g;
 const times = (n: number) => (n ? `Used ${n} time${n === 1 ? '' : 's'}` : 'Not used yet');
 const isRef = (v: unknown): v is { token: string } => !!v && typeof v === 'object' && 'token' in (v as object);
+const WEIGHT_NAMES: Record<number, string> = { 100: 'Thin', 200: 'Extra light', 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Extra bold', 900: 'Black' };
+const px = (v: string) => {
+  const m = /^(-?\d*\.?\d+)(rem|em|px)$/.exec(v.trim());
+  return m ? Math.round(parseFloat(m[1]) * (m[2] === 'px' ? 1 : 16) * 10) / 10 : null;
+};
+/** A size as an owner reads it: "20px", or "42–78px" for one that grows with the window; anything else as written. */
+const sizeName = (v: string) => {
+  const one = px(v);
+  if (one !== null) return `${one}px`;
+  const m = /^clamp\(\s*([^,]+),[^,]+,\s*([^)]+)\)$/.exec(v.trim());
+  const [a, b] = m ? [px(m[1]), px(m[2])] : [null, null];
+  return a !== null && b !== null ? `${Math.round(a)}–${Math.round(b)}px` : v;
+};
 
-function NewStyle({ tokens }: { tokens: TokenDef[] }) {
+function NewStyle({ tokens, say }: { tokens: TokenDef[]; say: (text: string) => void }) {
   const uid = useId();
   const [group, setGroup] = useState<TokenGroup>('color');
   const [label, setLabel] = useState('');
@@ -41,19 +54,23 @@ function NewStyle({ tokens }: { tokens: TokenDef[] }) {
     const v = group === 'text' ? (base ? textMetrics(tokens, base.id) : null) : value.trim();
     if (!label.trim() || !v) return;
     if (await applyOps([{ type: 'token.create', group, label: label.trim(), value: v }], `Add ${label.trim()}`)) {
+      say(`${label.trim()} added to your styles.`);
       setLabel('');
       setValue('');
     }
   };
   return (
     <form
-      className="ss-new-style col"
-      style={{ gap: 8 }}
+      className="ss-new-style"
+      aria-labelledby={`${uid}-title`}
       onSubmit={(e) => {
         e.preventDefault();
         void create();
       }}
     >
+      <div className="ss-new-title" id={`${uid}-title`}>
+        Add a style
+      </div>
       <div className="grid-2">
         <Field label="Kind" controlId={`${uid}-group`}>
           <select id={`${uid}-group`} className="select sm" value={group} onChange={(e) => setGroup(e.target.value as TokenGroup)}>
@@ -80,9 +97,9 @@ function NewStyle({ tokens }: { tokens: TokenDef[] }) {
         </Field>
       ) : (
         <Field label="Value" controlId={`${uid}-value`}>
-          <span className="row" style={{ gap: 6 }}>
-            {group === 'color' && <ColorPick className="md" value={value} onPick={setValue} label="Pick a colour" />}
-            <input id={`${uid}-value`} className="input sm mono grow" value={value} placeholder={spec.placeholder} onChange={(e) => setValue(e.target.value)} />
+          <span className="ss-new-value">
+            {group === 'color' && <ColorPick className="md" value={value} onPick={setValue} label="Pick a color" />}
+            <input id={`${uid}-value`} className="input sm mono" value={value} placeholder={spec.placeholder} onChange={(e) => setValue(e.target.value)} />
           </span>
         </Field>
       )}
@@ -98,9 +115,37 @@ function NewStyle({ tokens }: { tokens: TokenDef[] }) {
 /** What a style's own value is called in its "Same as" menu. */
 const OWN: Partial<Record<TokenGroup, string>> = { color: 'Its own color', font: 'Its own font' };
 
-function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: number; tokens: TokenDef[]; state: ProjectState; onEditText: (id: string) => void }) {
+/** A small sample of a non-colour style, the same size as a colour's swatch, so every row starts on one edge. */
+function Mark({ t, value, tokens }: { t: TokenDef; value: string; tokens: TokenDef[] }) {
+  if (t.group === 'text') {
+    const v = textMetrics(tokens, t.id);
+    const famRef = linkOf(v?.family);
+    const stack = famRef ? followedText(tokens, famRef) : String(v?.family ?? '');
+    return (
+      <span className="ss-custom-mark" style={{ fontFamily: stack || undefined, fontWeight: v?.weight }} aria-hidden="true">
+        Aa
+      </span>
+    );
+  }
+  if (t.group === 'font')
+    return (
+      <span className="ss-custom-mark" style={{ fontFamily: value || undefined }} aria-hidden="true">
+        Aa
+      </span>
+    );
+  const style: React.CSSProperties =
+    t.group === 'radius' ? { borderTopLeftRadius: value } : t.group === 'shadow' ? { boxShadow: value } : t.group === 'border' ? { border: value.replace(/var\((--so-[a-z0-9-]+)\)/gi, 'currentColor') } : {};
+  return (
+    <span className={`ss-custom-mark ${t.group}`} aria-hidden="true">
+      <i style={style} />
+    </span>
+  );
+}
+
+function StyleRow({ t, uses, where, tokens, state, say, onEditText }: { t: TokenDef; uses: number; where: string[]; tokens: TokenDef[]; state: ProjectState; say: (text: string) => void; onEditText: (id: string) => void }) {
   const uid = useId();
   const [removing, setRemoving] = useState(false);
+  const toggle = useRef<HTMLButtonElement>(null);
   const [choice, setChoice] = useState('');
   const [editingStack, setEditingStack] = useState(false);
   // Styles that follow this one (directly or through others) would end up following themselves.
@@ -117,7 +162,7 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
   const options = [...(t.group !== 'text' ? ['__keep'] : []), ...others.map((o) => o.id)];
   const replacement = options.includes(choice) ? choice : (options[0] ?? '');
   const ref = linkOf(t.value, t.group);
-  const follows = ref ? (tokens.find((x) => x.id === ref)?.label ?? ref) : null;
+  const follows = ref ? (tokens.find((x) => x.id === ref)?.label ?? 'a style that is no longer available') : null;
   // The value in effect, a style it follows already followed: what a link shows, and what unlinking keeps.
   const literal = followedText(tokens, t.id);
   /** A picker's changes merge with each other, never with a typed value: undo returns to what was typed. */
@@ -125,9 +170,17 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
   /** Linking and unlinking are steps of their own, so undo always returns to the link before. */
   const relink = (value: unknown) => applyOps([{ type: 'token.set', tokenId: t.id, value }], `Change ${t.label}`);
   const remove = async () => {
-    if (!uses) return void applyOps([{ type: 'token.remove', tokenId: t.id }], `Remove ${t.label}`);
-    if (!replacement) return;
-    await applyOps([{ type: 'token.remove', tokenId: t.id, ...(replacement === '__keep' ? { detach: true } : { replacementTokenId: replacement }) }], `Remove ${t.label}`);
+    if (uses && !replacement) return;
+    // Where focus goes once this row is gone: the next style's name, the one before, or the Add a style form.
+    const row = toggle.current?.closest('.ss-custom-row');
+    const list = row?.closest('.ss-custom');
+    // Found before the change: once it lands this row is detached and has no neighbours left to ask.
+    const neighbour = (row?.nextElementSibling ?? row?.previousElementSibling)?.getAttribute('data-token-id') ?? null;
+    const after = () => (neighbour ? list?.querySelector<HTMLElement>(`[data-token-id="${CSS.escape(neighbour)}"] .ss-custom-name`) : null) ?? list?.querySelector<HTMLElement>('.ss-new-style select') ?? null;
+    const ok = await applyOps([{ type: 'token.remove', tokenId: t.id, ...(!uses ? {} : replacement === '__keep' ? { detach: true } : { replacementTokenId: replacement }) }], `Remove ${t.label}`);
+    if (!ok) return;
+    say(`${t.label} removed. You can undo this.`);
+    requestAnimationFrame(() => after()?.focus());
   };
   const spec = GROUPS.find((g) => g.group === t.group);
   let value: React.ReactNode;
@@ -138,18 +191,17 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
     // A text style whose metrics cannot be read (hand-edited, or linked to a style that is gone) starts again from one that can.
     const restart = v ? null : tokens.find((x) => x.group === 'text' && x.id !== t.id && textMetrics(tokens, x.id));
     value = v ? (
-      <div className="row" style={{ gap: 8 }}>
-        <span className="grow" style={{ fontFamily: stack || undefined, fontWeight: v.weight, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {famRef ? (tokens.find((x) => x.id === famRef)?.label ?? famRef) : familyName(stack)}
-          <span className="faint"> · {v.weight}</span>
+      <div className="ss-custom-text">
+        <span className="ss-custom-summary">
+          {sizeName(v.size)} · {WEIGHT_NAMES[v.weight] ?? v.weight} · {famRef ? (tokens.find((x) => x.id === famRef)?.label ?? 'a font that is no longer available') : familyName(stack)}
         </span>
         <button type="button" className="btn btn-sm" onClick={() => onEditText(t.id)}>
           Edit text style<span className="sr-only"> {t.label}</span>
         </button>
       </div>
     ) : (
-      <div className="row faint" style={{ gap: 8, fontSize: 12 }}>
-        <span className="grow">Its settings are missing.</span>
+      <div className="ss-custom-text">
+        <span className="ss-custom-summary">Its settings are missing.</span>
         {restart && (
           <button type="button" className="btn btn-sm" onClick={() => void relink(textMetrics(tokens, restart.id))}>
             Start from {restart.label}
@@ -171,7 +223,7 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
         <div className="grid-2">
           <Field label="Value" controlId={ref && !broken ? undefined : `${uid}-value`}>
             {ref && !broken ? (
-              <span className="mono faint" style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }} title={literal}>
+              <span className="ss-custom-linked mono" title={literal}>
                 {t.group === 'font' ? familyName(literal) : literal}
               </span>
             ) : (
@@ -202,9 +254,9 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
           </Field>
         </div>
         {t.group === 'font' && !ref && (
-          <div className="col" style={{ gap: 4 }}>
+          <div className="ss-custom-stack">
             {editingStack && <DraftInput className="input sm mono" value={literal} ariaLabel={`${t.label} font stack`} onCommit={(v) => (v.trim() ? set(v.trim()) : false)} />}
-            <button type="button" className="link-btn" style={{ alignSelf: 'flex-start', fontSize: 12 }} aria-expanded={editingStack} onClick={() => setEditingStack(!editingStack)}>
+            <button type="button" className="link-btn" aria-expanded={editingStack} onClick={() => setEditingStack(!editingStack)}>
               {editingStack ? 'Hide font stack' : 'Edit font stack'}
               <span className="sr-only"> for {t.label}</span>
             </button>
@@ -214,15 +266,24 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
     );
   }
   return (
-    <div className="ss-custom-row" data-ss-row data-token-id={t.id} style={{ display: 'grid', gap: 6, paddingBlock: 6, borderBottom: '1px solid var(--line, #e5e5e5)' }}>
-      <div className="row" style={{ gap: 8 }}>
-        {t.group === 'color' && <ColorPick className="sm" value={literal} disabled={!!ref} onPick={(next) => set(next, 'picker')} label={`${t.label} color`} />}
-        <DraftInput className="input sm grow" value={t.label} onCommit={(v) => (v.trim() ? void applyOps([{ type: 'token.rename', tokenId: t.id, label: v.trim() }], `Rename ${t.label}`) : false)} ariaLabel={`${t.label} name`} />
-        <button type="button" className="btn btn-sm btn-ghost" aria-label={`Remove ${t.label}`} aria-expanded={removing} onClick={() => (uses ? setRemoving(!removing) : void remove())}>
+    <div className={`ss-custom-row${removing ? ' removing' : ''}`} data-ss-row data-token-id={t.id}>
+      <div className="ss-custom-head">
+        {t.group === 'color' ? <ColorPick className="md" value={literal} disabled={!!ref} onPick={(next) => set(next, 'picker')} label={`${t.label} color`} /> : <Mark t={t} value={literal} tokens={tokens} />}
+        <DraftInput className="input sm ss-custom-name" value={t.label} onCommit={(v) => (v.trim() ? void applyOps([{ type: 'token.rename', tokenId: t.id, label: v.trim() }], `Rename ${t.label}`) : false)} ariaLabel={`${t.label} name`} />
+        <button
+          ref={toggle}
+          type="button"
+          className="btn btn-sm btn-ghost ss-custom-remove-toggle"
+          title={uses ? `Remove ${t.label}…` : `Remove ${t.label}`}
+          aria-label={`Remove ${t.label}`}
+          // Only a style in use asks first; one that is not used is removed at once, and undo brings it back.
+          aria-expanded={uses ? removing : undefined}
+          onClick={() => (uses ? setRemoving(!removing) : void remove())}
+        >
           <Trash2 />
         </button>
       </div>
-      <div className="row faint" style={{ gap: 8, fontSize: 12 }}>
+      <div className="ss-custom-meta">
         <span>{groupLabel(t.group)}</span>
         <span aria-hidden="true">·</span>
         <span className="ss-custom-uses">{times(uses)}</span>
@@ -235,22 +296,47 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
       </div>
       {value}
       {removing && uses > 0 && (
-        <div className="col" style={{ gap: 6 }} role="group" aria-label={`Remove ${t.label}`}>
-          <Field label={`${times(uses)}. Where it is used:`} controlId={`${uid}-repl`}>
-            <select id={`${uid}-repl`} className="select sm" value={replacement} onChange={(e) => setChoice(e.target.value)}>
-              {t.group !== 'text' && <option value="__keep">Keep its current value there</option>}
+        <div className="ss-custom-remove" role="group" aria-label={`Remove ${t.label}`}>
+          <p className="ss-custom-where">
+            {where.length ? (
+              <>
+                Used in <strong>{where.join(', ')}</strong>.
+              </>
+            ) : (
+              `Used in ${uses === 1 ? 'one place' : `${uses} places`}.`
+            )}{' '}
+            {uses === 1
+              ? t.group !== 'text'
+                ? 'That place can keep the value it shows now, or follow another style.'
+                : 'That place follows another text style instead.'
+              : t.group !== 'text'
+                ? 'Those places can keep the value they show now, or follow another style.'
+                : 'Those places follow another text style instead.'}
+          </p>
+          <Field label="In its place" controlId={`${uid}-repl`}>
+            {/* Opening the step puts focus on its one decision. */}
+            <select id={`${uid}-repl`} className="select sm" value={replacement} autoFocus onChange={(e) => setChoice(e.target.value)}>
+              {t.group !== 'text' && <option value="__keep">{uses === 1 ? 'Keep the value it shows now' : 'Keep the value they show now'}</option>}
               {others.map((o) => (
                 <option key={o.id} value={o.id}>
-                  Use {o.label} instead
+                  Use {o.label}
                 </option>
               ))}
             </select>
           </Field>
-          <div className="row" style={{ gap: 6 }}>
+          <div className="ss-custom-remove-actions">
             <button type="button" className="btn btn-sm btn-danger" disabled={!replacement} onClick={() => void remove()}>
-              Remove {t.label}
+              <Trash2 />
+              Remove<span className="sr-only"> {t.label}</span>
             </button>
-            <button type="button" className="btn btn-sm btn-ghost" onClick={() => setRemoving(false)}>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={() => {
+                setRemoving(false);
+                toggle.current?.focus();
+              }}
+            >
               Cancel
             </button>
           </div>
@@ -261,17 +347,26 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
 }
 
 /** `onEditText` opens a text style in the Text styles list, where all of its metrics are edited. */
-export function CustomTokens({ state, onEditText }: { state: ProjectState; onEditText: (id: string) => void }) {
+/** `whereUsed` names the pages, shared parts, components and styles that use a style, for the remove step. */
+export function CustomTokens({ state, whereUsed, say = () => {}, onEditText }: { state: ProjectState; whereUsed?: (id: string) => string[]; say?: (text: string) => void; onEditText: (id: string) => void }) {
   const tokens = useMemo(() => effectiveTokens(state), [state]);
   const uses = useMemo(() => tokenUsageCounts(state), [state]);
   const custom = tokens.filter((t) => state.tokens.custom.some((c) => c.id === t.id));
   return (
-    <div className="col ss-custom" style={{ gap: 10 }}>
-      <p className="faint" style={{ margin: 0, fontSize: 12 }}>
-        Your own colours, sizes and text styles, alongside the theme's. Link elements to them like any site style.
+    <div className="ss-custom">
+      <p className="ss-custom-intro">
+        Your own colors, sizes, fonts and text styles, beside the theme's. Pick them in the Inspector like any site style.
+        {custom.length > 2 && (
+          <>
+            {' '}
+            <button type="button" className="link-btn ss-jump" onClick={(e) => e.currentTarget.closest('.ss-custom')?.querySelector<HTMLElement>('.ss-new-style select')?.focus()}>
+              Add a style
+            </button>
+          </>
+        )}
       </p>
-      {custom.length ? custom.map((t) => <StyleRow key={t.id} t={t} uses={uses[t.id] ?? 0} tokens={tokens} state={state} onEditText={onEditText} />) : <p className="ss-none">No styles of your own yet.</p>}
-      <NewStyle tokens={tokens} />
+      {custom.length ? <div className="ss-custom-list">{custom.map((t) => <StyleRow key={t.id} t={t} uses={uses[t.id] ?? 0} where={whereUsed?.(t.id) ?? []} tokens={tokens} say={say} state={state} onEditText={onEditText} />)}</div> : <p className="ss-none">No styles of your own yet.</p>}
+      <NewStyle tokens={tokens} say={say} />
     </div>
   );
 }

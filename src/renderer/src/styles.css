@@ -1141,74 +1141,98 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .empty-insp svg { width: 26px; height: 26px; }
 
 /* ---------- Site styles ---------- */
-/* Site-wide theme editor (SiteStyles.tsx). Reads top-down as the owner's questions: which theme and look,
-   what has changed, the fonts, the palette (brand first), text styles as specimens, then layout and site
-   details. Rows share
-   one rhythm: a preview on the left, the name (with its reset when changed) and a plain-words line, the
-   value on the right. Changed values follow the inspector's rule: the reset beside the name is the mark. */
+/* Site-wide theme editor (SiteStyles.tsx). Reads top-down as the owner's questions: which theme and look, and how far
+   the site has moved from it (one card), the shortcuts most owners change first, the palette (brand first), text
+   styles as specimens, then layout, the owner's own styles and site details. Rows share one rhythm: a preview on
+   the left, the name (with its reset when changed) and a plain-words line, the value on the right. Anything a row
+   needs to say beyond that (a link, a contrast flag, details) sits below it under the name, never squeezed beside
+   the value. Changed values follow the inspector's rule: the reset beside the name is the mark. */
 .swatch-lg { width: 22px; height: 22px; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15), 0 0 0 1px rgb(255 255 255 / 0.14); flex: none; }
-.ss-intro { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 14px; border-bottom: 1px solid var(--border); }
+/* The dock tab names the panel, so the sticky head carries only the jump links, wrapping rather than clipping in a narrow dock. */
+.ss-head { padding-top: 8px; padding-bottom: 8px; }
+.ss-head .insp-jump { flex-wrap: wrap; gap: 2px 3px; margin: 0 -4px; }
+.ss-head .insp-jump button { padding: 0 4px; color: var(--text-2); }
+.ss-head .insp-jump button:focus-visible { outline-offset: 1px; }
+/* The section under the header is marked by more than colour: a fill, weight and the accent, as a current location. */
+.ss-head .insp-jump button:hover, .ss-head .insp-jump button[aria-current='location'] { color: var(--accent-text); }
+.ss-head .insp-jump button[aria-current='location'] { background: var(--accent-soft); font-weight: 600; }
+.ss-intro { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-bottom: 1px solid var(--border); }
 .ss-intro .scope-note { font-size: 12px; line-height: 1.4; padding: 7px 10px; }
-.ss-theme { display: flex; align-items: center; gap: 12px; }
-.ss-look { display: grid; place-items: center; align-content: center; gap: 4px; width: 60px; height: 60px; flex: none; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12), 0 0 0 1px var(--border-strong); }
-.ss-look > span:first-child { font-size: 24px; line-height: 1; }
+/* The theme card: what the site is built on, how it looks, and how far it has moved from it. */
+.ss-theme { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--r-md); background: var(--raised); box-shadow: 0 0 0 1px var(--border), var(--shadow-sm); }
+.ss-theme-id { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* A tiny page in the site's own colours and display font: a heading, a button and the palette. */
+.ss-look { display: flex; flex-direction: column; justify-content: center; gap: 5px; width: 64px; height: 64px; flex: none; padding: 0 9px; overflow: hidden; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.1), 0 0 0 1px var(--border); }
+.ss-look-type { font-size: 22px; line-height: 1; }
+.ss-look-button { width: 30px; height: 7px; border-radius: 99px; }
 .ss-look-dots { display: flex; gap: 3px; }
 .ss-look-dots i { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15); }
-.ss-theme-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.ss-eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); }
-.ss-theme-name { display: flex; align-items: baseline; gap: 6px; }
-.ss-theme-name strong { font-size: 14px; font-weight: 600; }
-.ss-theme-name span { font-size: 12px; }
+.ss-theme-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ss-eyebrow { font-size: 12px; font-weight: 500; color: var(--text-3); }
+.ss-theme-name { font-size: 14px; line-height: 1.3; overflow-wrap: anywhere; }
+.ss-theme-name strong { font-weight: 600; }
+.ss-theme-version { font-size: 12px; color: var(--text-3); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ss-theme-desc { font-size: 12px; line-height: 1.4; color: var(--text-2); }
-.ss-theme-switch { margin-top: 6px; }
-.ss-theme-hint { margin-top: 3px; font-size: 12px; color: var(--text-3); }
+.ss-theme-switch { width: 100%; height: 30px; margin: 3px 0 4px; font-size: 13px; font-weight: 600; }
+.ss-theme-hint { font-size: 12px; line-height: 1.4; color: var(--text-3); }
 .welcome-packs { margin: 0 12px 10px; font-size: 12px; color: var(--text-2); }
 .welcome-packs summary { cursor: pointer; color: var(--red); }
 .welcome-packs ul { margin: 4px 0 0; padding-left: 16px; max-height: 160px; overflow: auto; }
 .welcome-packs li { margin: 2px 0; overflow-wrap: anywhere; }
-.ss-packs-refused { margin-top: 6px; font-size: 12px; color: var(--text-2); }
+.ss-packs-refused { font-size: 12px; color: var(--text-2); }
 .ss-packs-refused summary { cursor: pointer; color: var(--red); }
 .ss-packs-refused ul { margin: 4px 0; padding-left: 16px; }
 .ss-packs-refused li { margin: 2px 0; overflow-wrap: anywhere; }
 .ss-packs-refused p { margin: 4px 0 0; overflow-wrap: anywhere; }
-.ss-theme { align-items: flex-start; }
-.ss .section-body { gap: 14px; }
+/* Changes from the theme, at the foot of its card: a count, a review list and one undoable reset. */
+.ss-changes { display: flex; flex-direction: column; gap: 4px; margin: 4px -12px -4px; padding: 8px 12px 0; border-top: 1px solid var(--border); }
+.ss-changes-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; font-size: 13px; color: var(--text-2); }
+.ss-changes-row strong { color: var(--text); font-weight: 600; }
+.ss-changes-row .btn svg { width: 13px; height: 13px; }
+.ss-flip { transform: rotate(180deg); }
+.ss-review { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.ss-review li { display: grid; grid-template-columns: minmax(0, 1fr) 24px; column-gap: 6px; padding: 6px 0; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.4; }
+.ss-review-what { color: var(--text-3); }
+.ss-review .ss-review-name { grid-column: 1; justify-self: start; min-height: 24px; margin: -3px 0; color: var(--text); font-size: 12px; font-weight: 500; text-align: left; text-decoration-color: color-mix(in srgb, currentColor 30%, transparent); }
+.ss-review .ss-review-name:hover { color: var(--accent-text); }
+.ss-review li.ss-review-all { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; padding: 6px 0 2px; }
+.ss-review-all .btn { margin-left: -8px; }
+.ss-review-all .btn svg { width: 13px; height: 13px; }
+.ss-review-undo { color: var(--text-3); white-space: nowrap; }
+.ss-review-vals { grid-column: 1; color: var(--text-2); overflow-wrap: anywhere; }
+.ss-review-was { color: var(--text-3); }
+.ss-review-vals .ss-chip { display: inline-block; width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px; }
+.ss-review .reset-dot { grid-column: 2; grid-row: 1 / span 2; align-self: center; margin: 0; }
+/* Section scopes line up with the values' right edge, as in the inspector. */
+.ss .section > .row { padding-right: 0 !important; }
+.ss .section-head { padding-right: 14px; }
+.ss .section-body { gap: 12px; }
 .ss-group { display: flex; flex-direction: column; gap: 2px; }
-.ss-group-label { padding: 2px 0 4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.ss-group + .ss-group { padding-top: 10px; border-top: 1px solid var(--border); }
+.ss-group-label { min-height: 24px; display: flex; align-items: center; padding: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
 .ss-name { min-width: 0; min-height: 20px; font-size: 13px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
 /* The reset sits inline right after the name, so it stays beside the last word when a long name wraps. */
 .ss-name .reset-dot { vertical-align: middle; margin: -4px 0 -3px; }
 .ss-nowrap { white-space: nowrap; }
 .ss-name > label { font-weight: inherit; color: inherit; }
-.set > * > .ss-name { font-weight: 500; }
-/* Changes from the theme: a count, a review list and one undoable reset. */
-.ss-changes { display: flex; flex-direction: column; gap: 6px; padding: 6px 6px 6px 10px; border-radius: var(--r-sm); background: var(--panel-2); }
-.ss-changes-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--text-2); }
-.ss-changes-actions { display: flex; gap: 4px; margin-left: auto; }
-.ss-changes-row strong { color: var(--text); font-weight: 600; }
-.ss-changes-row .btn svg { width: 13px; height: 13px; }
-.ss-flip { transform: rotate(180deg); }
-.ss-review { display: flex; flex-direction: column; margin: 0; padding: 0 0 2px; list-style: none; }
-.ss-review li { display: grid; grid-template-columns: minmax(0, 1fr) 24px; column-gap: 6px; padding: 5px 0; border-top: 1px solid var(--border); font-size: 12px; }
-.ss-review-what { color: var(--text-3); }
-.ss-review-name { grid-column: 1; color: var(--text); font-weight: 500; }
-.ss-review-vals { grid-column: 1; color: var(--text-2); overflow-wrap: anywhere; }
-.ss-review .reset-dot { grid-column: 2; grid-row: 1 / span 2; align-self: center; margin: 0; }
-/* Colours: one row per role. Details (where it is used, linking) · swatch (the picker) · name and what it colours · hex. */
-.ss-color { display: grid; grid-template-columns: 16px 28px minmax(0, 1fr) 74px; align-items: center; column-gap: 8px; min-height: 44px; padding: 4px 0; margin-left: -6px; }
-.ss-color.compact { grid-template-columns: 44px minmax(0, 1fr) 74px; column-gap: 10px; margin-left: 0; }
+.set > * > .ss-name, .ss-token.set .ss-token-text > .ss-name { font-weight: 500; }
+/* Colours: one row per role. Details (linking, contrast, where it is used) · swatch (the picker) · name and what it colours · value. */
+.ss-color { display: grid; grid-template-columns: 24px 28px minmax(0, 1fr) 78px; align-items: center; column-gap: 8px; row-gap: 4px; min-height: 44px; padding: 5px 0; margin-left: -6px; }
+.ss-color.compact { grid-template-columns: 44px minmax(0, 1fr) 78px; column-gap: 10px; margin-left: 0; }
 .ss-color.compact .color-pick { width: 44px; height: 44px; }
+.ss-color > .ss-color-extra { grid-column: 3 / -1; min-width: 0; }
+.ss-color.compact > .ss-color-extra { grid-column: 2 / -1; }
+.ss-flags-slot:empty { display: none; }
 .ss-hex-linked { display: block; height: 26px; line-height: 24px; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: var(--r-sm); border: 1px dashed var(--border-control); font-size: 12px; color: var(--text-2); outline-offset: 1px; }
 .ss-detail[hidden], .ss-text-body[hidden], .ss-review[hidden] { display: none; }
-.ss-disclose { display: grid; place-items: center; width: 22px; height: 28px; margin-right: -6px; padding: 0; border: 0; border-radius: var(--r-xs); background: none; color: var(--text-3); }
+.ss-disclose { display: grid; place-items: center; width: 24px; height: 28px; padding: 0; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-3); }
 .ss-disclose:hover { background: var(--hover); color: var(--text); }
 .ss-disclose svg { width: 12px; height: 12px; transition: transform 120ms; }
 .ss-disclose[aria-expanded='true'] svg { transform: rotate(90deg); }
-.ss-detail { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 8px; margin: 6px 0 4px; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); }
+.ss-detail { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 10px; margin: 4px 0 4px; padding: 10px 12px; border-radius: var(--r-md); background: var(--panel-2); }
 .ss-detail-label { font-size: 12px; font-weight: 500; color: var(--text-2); }
 .ss-none { margin: 0; font-size: 12px; color: var(--text-3); }
 .ss-uses-block { display: flex; flex-direction: column; gap: 6px; }
-/* The colour swatch (ColorPick): the saved colour as it renders, over a checkerboard so opacity shows, with the native picker laid invisibly on top. */
 /* The colour swatch (ColorPick): the saved colour as it renders over a checkerboard, so opacity shows, with the native picker laid invisibly on top. */
 .color-pick { position: relative; display: grid; width: 28px; height: 28px; flex: none; border-radius: var(--r-sm); overflow: hidden; background: #fff conic-gradient(#d3d6dc 25%, #fff 0 50%, #d3d6dc 0 75%, #fff 0) 0 0 / 8px 8px; box-shadow: 0 0 0 1px var(--border-control); }
 .color-pick.md { width: 26px; height: 26px; }
@@ -1221,28 +1245,37 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .color-pick.unpainted { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--border-control) 5px 6px), var(--raised); }
 @media (prefers-color-scheme: dark) { .color-pick-fill { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2); } }
 .ss-color-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.ss-desc { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; font-size: 12px; line-height: 1.35; color: var(--text-3); }
+.ss-desc { font-size: 12px; line-height: 1.35; color: var(--text-3); }
 .ss-follows { display: flex; flex-wrap: wrap; align-items: center; column-gap: 4px; font-size: 12px; line-height: 1.35; color: var(--text-2); }
-.ss-follows .link-btn { margin-left: 2px; font-size: 12px; min-height: 24px; }
+.ss-follows .link-btn { font-size: 12px; min-height: 24px; }
 .ss-follows svg { width: 12px; height: 12px; flex: none; }
+.ss-jump { font-size: inherit; font-weight: 500; }
 .ss-hex { text-transform: lowercase; }
-/* Contrast: a sample in the pair's own colours, its ratio in words and an icon, and the offer to fix it. */
-.ss-contrast { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 6px; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); }
-.ss-contrast-flags { display: flex; flex-direction: column; gap: 6px; margin: 3px 0 2px; }
-.ss-contrast-block { display: flex; flex-direction: column; gap: 6px; }
+/* Contrast: a sample in the pair's own colours beside what it colours and how readable it is, and the offer to fix it. */
+.ss-contrast { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 6px; padding: 10px 12px; border-radius: var(--r-md); background: var(--panel-2); }
+.ss-contrast-flags { display: flex; flex-direction: column; gap: 6px; margin: 0 0 2px; }
+.ss-contrast-block { display: flex; flex-direction: column; gap: 8px; }
 .ss-pairs { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.ss-pair { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; font-size: 12px; }
-.ss-pair-use { grid-column: 1 / -1; color: var(--text-2); }
-.ss-sample { display: inline-flex; align-items: center; justify-content: center; min-width: 92px; min-height: 30px; padding: 4px 14px; border-radius: 999px; box-shadow: 0 0 0 1px var(--border-control); font: 550 13px/1.2 var(--font); }
+.ss-pair { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; column-gap: 10px; font-size: 12px; }
+.ss-pair-use { grid-column: 2; grid-row: 1; color: var(--text); line-height: 1.35; }
+.ss-sample { grid-column: 1; grid-row: 1 / span 2; display: flex; align-items: center; justify-content: center; width: 76px; height: 30px; padding: 0 6px; overflow: hidden; white-space: nowrap; border-radius: var(--r-sm); box-shadow: 0 0 0 1px var(--border-control); font: 600 12px/1 var(--font); }
 .ss-sample.none { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--border-control) 5px 6px), var(--raised); }
-.ss-verdict { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--text-2); }
+.ss-verdict { grid-column: 2; grid-row: 2; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 5px; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--text-2); }
+.ss-ratio { font-weight: 600; font-variant-numeric: tabular-nums; }
 .ss-verdict svg, .ss-flag svg { width: 13px; height: 13px; flex: none; }
 .ss-verdict.pass, .ss-verdict.pass svg { color: var(--green); }
 .ss-verdict.fail, .ss-verdict.fail svg, .ss-flag, .ss-flag svg { color: var(--red); }
-.ss-flag { display: flex; align-items: flex-start; gap: 5px; font-size: 12px; line-height: 1.35; }
+.ss-flag { display: flex; align-items: flex-start; gap: 5px; font-size: 12px; line-height: 1.4; }
 .ss-flag svg { margin-top: 2px; }
 .ss-contrast-fix { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.ss-contrast-trade { margin: 0; font-size: 12px; font-weight: 500; line-height: 1.4; color: var(--text); text-wrap: pretty; }
+/* The offer names the colour it sets, so it may run to two lines in a narrow dock rather than clip. */
+.ss-contrast-fix .btn { height: auto; min-height: 28px; max-width: 100%; padding-block: 4px; white-space: normal; text-align: left; line-height: 1.3; }
 .ss-contrast-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+/* The offer's own result, the suggested text colour on the ground it fixes. */
+.ss-ink { display: inline-grid; place-items: center; width: 26px; height: 20px; flex: none; border-radius: var(--r-sm); box-shadow: 0 0 0 1px var(--border-control); font: 600 11px/1 var(--font); }
+.ss-hover-note { display: flex; align-items: flex-start; gap: 8px; margin: -2px 0 2px; padding: 0 2px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.ss-hover-note .ss-chip { margin-top: 2px; }
 .ss-chip { width: 12px; height: 12px; flex: none; border-radius: 50%; box-shadow: 0 0 0 1px var(--border-control); }
 .ss-uses { display: flex; flex-direction: column; gap: 4px; margin: -4px 0 0; font-size: 12px; }
 .ss-uses > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; }
@@ -1253,7 +1286,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .ss-font-sample { display: grid; place-items: center; width: 44px; height: 44px; border-radius: var(--r-sm); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); font-size: 22px; line-height: 1; color: var(--text); }
 .ss-font-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 /* Text styles: each one previewed in its own font, weight and (capped) size; the numbers open below. */
-.ss-text-list { display: flex; flex-direction: column; border-radius: var(--r-sm); box-shadow: 0 0 0 1px var(--border-strong); background: var(--raised); overflow: hidden; }
+.ss-text-list { display: flex; flex-direction: column; border-radius: var(--r-md); box-shadow: 0 0 0 1px var(--border-strong); background: var(--raised); overflow: hidden; }
 .ss-text + .ss-text { border-top: 1px solid var(--border); }
 .ss-text-head { display: flex; align-items: center; gap: 2px; padding-right: 8px; }
 .ss-text-head:hover { background: var(--hover); }
@@ -1266,39 +1299,92 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .ss-field-name { font-size: 12px; font-weight: 500; color: var(--text-2); }
 .ss-field-name label { color: inherit; }
 .ss-text-body { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 12px 30px; border-top: 1px solid var(--border); background: var(--panel-2); }
-/* Layout: preview · name (and the plain size for values that scale) · value. Long values take their own line. */
-.ss-token { display: grid; grid-template-columns: minmax(0, 1fr) 92px; align-items: center; gap: 8px; min-height: 34px; }
-.ss-token.wide { grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 2px 0 8px; }
-.ss-token.wide > :not(.ss-token-label) { width: 100%; }
+/* Layout: preview · name · value, values flush with the right edge. Long values take their own line, under the name. */
+.ss-token { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 36px; }
+.ss-token.wide { grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 5px 0 8px; }
+.ss-token:has(.ss-desc):not(.wide) { padding: 5px 0; }
+.ss-token.wide > :not(.ss-token-label) { margin-left: 48px; min-width: 0; }
+.ss-token:not(.wide) .ss-size { align-items: flex-end; }
 /* A shadow's CSS, once opened, takes the full width to be read whole. */
 .ss-token:has(.ss-css-area) { grid-template-columns: minmax(0, 1fr); }
-.ss-token .ss-size:has(> .ss-css-toggle:only-child) { align-items: flex-end; }
+.ss-token:has(.ss-css-area) .ss-size { align-items: stretch; margin-left: 48px; }
+.ss-token:has(.ss-css-area) .ss-css-toggle { align-self: flex-start; }
+.ss-text-body .grid-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; }
+/* Fonts start their own part of Basics, after the brand colour and what it says. */
+.ss-group > :not(.ss-font) + .ss-font { margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+.ss-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ss-group-head .ss-css-toggle { font-weight: 500; }
+.ss-contrast-block { scroll-margin-top: 150px; }
+/* No word left alone on a line in the panel's running text. */
+.ss :is(.ss-desc, .ss-contrast-note, .ss-flag > span, .ss-theme-desc, .ss-theme-hint, .ss-size-note, .ss-custom-intro, .ss-custom-where, .ss-hover-note, .field-hint) { text-wrap: pretty; }
+.ss-contrast-fix .btn { text-wrap: balance; }
+.ss-contrast-block:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: var(--r-sm); }
+.ss-size > .ss-border { align-self: stretch; }
 .ss-token-label { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ss-preview { display: grid; place-items: center start; width: 40px; height: 28px; flex: none; }
-.ss-bar { display: block; height: 8px; border-radius: 2px; background: color-mix(in srgb, var(--text-2) 45%, transparent); }
-.ss-corner { position: relative; display: block; width: 28px; height: 28px; overflow: hidden; border-radius: var(--r-xs); background: var(--panel-2); }
-.ss-corner i { position: absolute; top: 6px; left: 6px; width: 60px; height: 60px; border: 2px solid var(--text-2); background: var(--raised); }
-.ss-well { position: relative; display: grid; place-items: center; width: 40px; height: 28px; overflow: hidden; border-radius: var(--r-xs); box-shadow: 0 0 0 1px var(--border-strong); }
-/* Drawn three times larger and scaled down, so a shadow's real offsets and spread survive the small sample. */
-.ss-well i { position: absolute; top: 40%; left: 50%; display: block; width: 84px; height: 52px; border-radius: 10px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.06); transform: translate(-50%, -50%) scale(0.25); }
-.ss-token .ss-well { height: 32px; }
+.ss-token-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ss-preview { display: grid; place-items: center start; width: 40px; height: 32px; flex: none; }
+.ss-bar { display: block; height: 6px; border-radius: 3px; background: var(--border-control); }
+.ss-corner { position: relative; display: block; width: 40px; height: 32px; overflow: hidden; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border-strong); }
+.ss-corner i { position: absolute; top: 8px; left: 10px; width: 60px; height: 60px; border: 2px solid var(--text-2); background: var(--raised); }
+.ss-corner.pill { display: grid; place-items: center; }
+.ss-corner.pill i { position: static; width: 24px; height: 13px; border-radius: 99px; }
+.ss-well { position: relative; display: grid; place-items: center; width: 40px; height: 32px; overflow: hidden; border-radius: var(--r-sm); box-shadow: 0 0 0 1px var(--border-strong); }
+/* Drawn larger and scaled down, so a shadow's real offsets and spread survive the small sample. */
+.ss-well i { position: absolute; top: 42%; left: 50%; display: block; width: 64px; height: 40px; border-radius: 8px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.08); transform: translate(-50%, -50%) scale(0.4); }
 .ss-well i[style*='border'] { top: 50%; width: 24px; height: 15px; border-radius: 3px; transform: translate(-50%, -50%); }
 /* Size fields: pixels for an owner, with the CSS itself one step away. */
 .ss-size { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .ss-size-pair { display: flex; align-items: flex-end; gap: 8px; }
 .ss-num { display: inline-grid; grid-template-columns: 58px auto; align-items: center; column-gap: 5px; }
 .ss-num .input { text-align: right; font-variant-numeric: tabular-nums; }
-.ss-num-label { grid-column: 1 / -1; padding-bottom: 3px; font-size: 12px; color: var(--text-3); }
+.ss-num-label { grid-column: 1 / -1; padding-bottom: 3px; font-size: 12px; font-weight: 500; color: var(--text-2); }
 .ss-unit { font-size: 12px; color: var(--text-3); }
 .ss-size-to { padding-bottom: 5px; font-size: 12px; color: var(--text-3); }
 .ss-size > .input { width: 100%; }
 .ss-size-note { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; font-size: 12px; color: var(--text-3); }
 .ss-css-toggle { min-height: 24px; font-size: 12px; }
+/* CSS is the way out, not the way in: the escape hatch stays quiet until pointed at. */
+.ss .ss-css-toggle { color: var(--text-2); text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); }
+.ss .ss-css-toggle:hover { color: var(--accent-text); }
+.ss-size-error { color: var(--red); }
 .ss-css-area { min-height: 52px; font-size: 12px; }
 .ss-theme-use { margin: 0; font-size: 12px; color: var(--text); }
-.ss-border { display: grid; grid-template-columns: auto minmax(0, 0.7fr) minmax(0, 1.3fr); gap: 6px; align-items: center; }
+.ss-border { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; align-items: center; }
+.ss-border > select:last-child { grid-column: 1 / -1; }
 .ss-border .ss-num { grid-template-columns: 44px auto; }
 .ss-lang { max-width: 140px; }
+/* Your styles: each row starts with a sample (the colour, or a drawing of the size, corner or font), then its name and remove. */
+.ss-custom { display: flex; flex-direction: column; gap: 12px; }
+.ss-custom-intro { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.ss-custom-list { display: flex; flex-direction: column; }
+.ss-custom-row { display: grid; gap: 6px; padding: 10px 0 12px; border-bottom: 1px solid var(--border); }
+.ss-custom-row:first-child { padding-top: 0; }
+.ss-custom-row > :not(.ss-custom-head) { margin-left: 34px; min-width: 0; }
+.ss-custom-head { display: flex; align-items: center; gap: 8px; }
+.ss-custom-name { flex: 1; min-width: 0; text-overflow: ellipsis; }
+.ss-custom-mark { display: grid; place-items: center; width: 26px; height: 26px; flex: none; overflow: hidden; border-radius: var(--r-sm); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); font-size: 14px; line-height: 1; color: var(--text); }
+/* A measure, |—|, so a size reads as a distance rather than a minus sign. */
+.ss-custom-mark.space i, .ss-custom-mark.container i { width: 14px; height: 8px; border: solid var(--text-2); border-width: 0 2px; background: linear-gradient(var(--text-2), var(--text-2)) center / 100% 2px no-repeat; }
+.ss-custom-mark.radius { place-items: start; }
+.ss-custom-mark.radius i { width: 40px; height: 40px; margin: 7px 0 0 7px; border: 2px solid var(--text-2); }
+.ss-custom-mark.shadow i { width: 14px; height: 10px; border-radius: 3px; background: var(--raised); }
+.ss-custom-mark.border i { width: 16px; height: 12px; border-radius: 3px; color: var(--text-2); }
+.ss-custom-meta { display: flex; flex-wrap: wrap; gap: 2px 6px; font-size: 12px; color: var(--text-3); }
+.ss-custom-text { display: flex; align-items: center; gap: 8px; }
+.ss-custom-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-2); }
+.ss-custom-linked { display: block; height: 26px; line-height: 24px; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px dashed var(--border-control); border-radius: var(--r-sm); font-size: 12px; color: var(--text-2); }
+.ss-custom-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.ss-custom-stack .link-btn { min-height: 24px; font-size: 12px; }
+.ss-custom-remove-toggle[aria-expanded='true'] { background: var(--red-soft); color: var(--red); }
+/* Removing a style that is in use: what happens where it is used, then the destructive action, set apart from the edit fields. */
+.ss-custom-remove { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r-md); background: var(--panel-2); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 40%, transparent); }
+.ss-custom-remove-actions { display: flex; gap: 6px; }
+.ss-custom-where { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text); }
+.ss-custom-where strong { font-weight: 600; }
+.ss-new-style { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--r-md); background: var(--panel-2); }
+.ss-new-title { font-size: 12px; font-weight: 600; color: var(--text); }
+.ss-new-value { display: flex; align-items: center; gap: 6px; }
+.ss-new-value .input { flex: 1; min-width: 0; }
 
 /* ---------- Chat ---------- */
 /* ---------- AI panel ----------
