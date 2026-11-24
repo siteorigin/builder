@@ -401,7 +401,7 @@ function placeReveal(roots = revealRoots()) {
       // opened next is measured where it really is; the page then scrolls to the list, which leaves the list as it is.
       const side = sideScroller(el);
       if (side) bringInside(side, el);
-      revealSide = side ? { list: side, at: offsetIn(side, el) } : null;
+      revealSide = side ? { list: side, at: offsetAlong(side, el) } : null;
       const target = side || el;
       const r = target.getBoundingClientRect();
       if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: instant ? 'instant' : 'smooth' });
@@ -410,10 +410,10 @@ function placeReveal(roots = revealRoots()) {
     const el = roots.find((r) => r.tagName !== 'HR' && rectOf(r));
     const side = el ? sideScroller(el) : null;
     if (side) {
-      const at = offsetIn(side, el);
+      const at = offsetAlong(side, el);
       if (!revealSide || revealSide.list !== side || Math.abs(revealSide.at - at) > 1) {
         bringInside(side, el);
-        revealSide = { list: side, at: offsetIn(side, el) };
+        revealSide = { list: side, at: offsetAlong(side, el) };
       }
     }
   }
@@ -439,7 +439,7 @@ function drawnScale(box) {
   return k > 0 && Math.abs(k - 1) >= 0.01 ? k : 1;
 }
 /** Where `el` sits along `list`, however far the list is scrolled, in the list's own units. */
-function offsetIn(list, el) {
+function offsetAlong(list, el) {
   return (el.getBoundingClientRect().left - list.getBoundingClientRect().left) / drawnScale(list) + list.scrollLeft;
 }
 /**
