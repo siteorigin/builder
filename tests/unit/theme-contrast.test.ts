@@ -359,7 +359,7 @@ describe('values that cannot be known', () => {
 describe('what ships', () => {
   it('declares only tokens its theme has, with unique ids', () => {
     const declaring = listThemes().filter((t) => t.contrastPairs);
-    expect(declaring.map((t) => t.id).sort()).toEqual(['editorial', 'foundation', 'foundation-alt']);
+    expect(declaring.map((t) => t.id).sort()).toEqual(['editorial', 'foundation', 'foundation-alt', 'signal']);
     for (const theme of declaring) {
       const ids = new Set(theme.tokens.map((t) => t.id));
       const pairs = theme.contrastPairs!;
@@ -373,7 +373,7 @@ describe('what ships', () => {
 
   it('is readable for every theme and starter as it is delivered', () => {
     const themes = listThemes().filter((t) => t.contrastPairs);
-    expect(themes.length).toBeGreaterThanOrEqual(2);
+    expect(themes.map((t) => t.id)).toEqual(expect.arrayContaining(['foundation', 'signal']));
     for (const theme of themes) {
       const results = evaluatePairs(theme.tokens, theme.contrastPairs!);
       expect(results.map((r) => r.pair.id)).toEqual(expect.arrayContaining(['button', 'button-hover', 'dark-text', 'dark-accent', 'text-background', 'muted-surface-alt']));

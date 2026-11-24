@@ -1,5 +1,5 @@
 /**
- * WCAG contrast for every Foundation component and tone variant, computed from the theme's resolved tokens.
+ * WCAG contrast for every component and tone variant of every theme, computed from the theme's resolved tokens.
  * Walks each managed component tree the way the browser cascades colour: backgrounds paint over their
  * parent's background, text colour inherits, and opacity fades a node towards whatever is behind it.
  */
@@ -51,8 +51,16 @@ function resolver(tokens: TokenDef[]) {
     if (s === 'transparent') return { r: 0, g: 0, b: 0, a: 0 };
     if (s === 'white') return hex('#fff');
     if (s === 'black') return hex('#000');
-    const mix = s.match(/^color-mix\(in srgb, var\(--so-color-([a-z-]+)\) (\d+(?:\.\d+)?)%, transparent\)$/);
-    if (mix) return { ...color({ token: `color.${mix[1]}` }, current), a: Number(mix[2]) / 100 };
+    // color-mix(in srgb, A p%, B), each side a site colour, currentColor or transparent: mixed with premultiplied alpha.
+    const mix = s.match(/^color-mix\(in srgb, (var\(--so-color-[a-z-]+\)|currentcolor|transparent) (\d+(?:\.\d+)?)%, (var\(--so-color-[a-z-]+\)|currentcolor|transparent)\)$/);
+    if (mix) {
+      const side = (x: string) => (x.startsWith('var(') ? color({ token: `color.${x.slice('var(--so-color-'.length, -1)}` }, current) : color(x, current));
+      const [a, b, p] = [side(mix[1]), side(mix[3]), Number(mix[2]) / 100];
+      const alpha = a.a * p + b.a * (1 - p);
+      if (!alpha) return { r: 0, g: 0, b: 0, a: 0 };
+      const ch = (k: 'r' | 'g' | 'b') => (a[k] * a.a * p + b[k] * b.a * (1 - p)) / alpha;
+      return { r: ch('r'), g: ch('g'), b: ch('b'), a: alpha };
+    }
     throw new Error(`Unsupported colour "${s}" in the contrast test; teach the test how to read it.`);
   };
   return color;
@@ -114,8 +122,9 @@ function check(def: ComponentDefinition, selection: Record<string, string>, toke
       if (a?.bg) nodeBg = over(color({ token: a.bg }, fg), bg);
       if (a?.fg) nodeFg = color({ token: a.fg }, fg);
     }
-    if (styles.background !== undefined) nodeBg = over(color(styles.background, fg), bg);
     if (styles.color !== undefined) nodeFg = color(styles.color, fg);
+    // A background that mixes in currentColor takes the node's own text colour, as the browser computes it.
+    if (styles.background !== undefined) nodeBg = over(color(styles.background, nodeFg), bg);
     const visible = flatten(over(nodeFg, nodeBg), inner);
     const shownBg = flatten(nodeBg, inner);
     const textStyle = styles.textStyle && typeof styles.textStyle === 'object' ? (styles.textStyle as { token: string }).token : '';
@@ -135,7 +144,7 @@ function check(def: ComponentDefinition, selection: Record<string, string>, toke
   return out;
 }
 
-describe('Foundation contrast (WCAG AA)', () => {
+describe('theme contrast (WCAG AA)', () => {
   for (const theme of listThemes()) {
     it(`every ${theme.name} component and tone variant is readable`, () => {
       const findings: Finding[] = [];

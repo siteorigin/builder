@@ -99,6 +99,7 @@ describe('authoring a pack', () => {
     expect(BUILTIN_PACKS.map((p) => [p.id, !!p.devOnly])).toEqual([
       ['foundation', false],
       ['editorial', false],
+      ['signal', false],
       ['foundation-alt', true]
     ]);
   });
@@ -127,7 +128,7 @@ describe('a pack release', () => {
 
 describe('the pack registry', () => {
   it('finds packs by ID, falls back to the default theme, and refuses two packs with one ID', () => {
-    expect(listThemes().map((t) => t.id)).toEqual(['foundation', 'editorial', 'foundation-alt']);
+    expect(listThemes().map((t) => t.id)).toEqual(['foundation', 'editorial', 'signal', 'foundation-alt']);
     expect(defaultTheme().id).toBe('foundation');
     expect(findTheme('nope')).toBeUndefined();
     expect(getTheme('nope').id).toBe('foundation');
@@ -136,8 +137,10 @@ describe('the pack registry', () => {
     expect(() => registerPacks([...listThemes(), listThemes()[0]])).toThrow(/Two packs have the ID "foundation"/);
     // A fixture is never the default, even listed first: the first pack that is not one is.
     registerPacks([...listThemes()].reverse());
-    expect(defaultTheme().id).toBe('editorial');
-    expect(getTheme('nope').id).toBe('editorial');
+    expect(defaultTheme().id).toBe('signal');
+    expect(getTheme('nope').id).toBe('signal');
+    registerPacks([findTheme('foundation-alt')!, findTheme('foundation')!, findTheme('signal')!]);
+    expect(defaultTheme().id).toBe('foundation');
     registerPacks([]);
     expect(() => getTheme('foundation')).toThrow(/No theme packs are loaded/);
   });

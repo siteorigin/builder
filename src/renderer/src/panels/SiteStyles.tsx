@@ -6,7 +6,8 @@ import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles
 import { effectiveTokens } from '@generator/index';
 import { hasDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { ColorSchemeControls } from './ColorSchemeControls';
-import { getTheme, listThemes } from '@catalogue/index';
+import { getTheme, listThemes, type ThemePack } from '@catalogue/index';
+import { usePackPreview } from '../components/PackPreview';
 import { installedFonts } from '@catalogue/fonts';
 import { activePairing, activeTypeScale, availablePairings, pairingOps, scaleRoles, sizeAtWidth, typeScale, typeScaleOps, TYPE_SCALE_CHOICES, type TypeScaleChoice } from '@shared/type-scale';
 import { allTrees, instancesOf } from '@engine/tree';
@@ -586,6 +587,21 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
       )}
     </div>
   );
+}
+
+/** The preview a theme is pictured by: its split hero, or else its first section with a thumbnail. */
+function themeShotFile(theme: Pick<ThemePack, 'previews'>): string | undefined {
+  return theme.previews?.['hero.split']?.default ?? Object.values(theme.previews ?? {})[0]?.default;
+}
+
+/**
+ * The theme as it was drawn when its pack was built, in its own colours and fonts. Decorative: the swatch beside its
+ * name shows the site's own colours, and stays the only picture for a pack built without thumbnails.
+ */
+function ThemeShot({ theme }: { theme: ThemePack }) {
+  const url = usePackPreview(theme.id, themeShotFile(theme));
+  if (!url) return null;
+  return <img className="ss-theme-shot" src={url} alt="" draggable={false} data-theme={theme.id} />;
 }
 
 export function SiteStyles() {
@@ -1282,6 +1298,7 @@ export function SiteStyles() {
               <div className="ss-theme-desc">{theme.description}</div>
             </div>
           </div>
+          <ThemeShot theme={theme} />
           {themes.length > 1 && (
             <div className="ss-theme-hint" id={`${uid}-theme-hint`}>
               Switching keeps your content and changes.
