@@ -220,7 +220,8 @@ export const MANAGED_COMPONENT_ARGS = z
       .boolean()
       .optional()
       .describe('After an error: send name (and definitionId) with only the corrected nodes (by id) and properties (by name), and any other list to replace whole; the rest of the rejected call is kept.'),
-    remove: z.array(z.string()).max(100).optional().describe('With repair: node IDs and property names to leave out of the rejected call.')
+    removeNodes: z.array(z.string()).max(100).optional().describe('With repair: node IDs to leave out of the rejected call.'),
+    removeProperties: z.array(z.string()).max(60).optional().describe('With repair: property names to leave out of the rejected call.')
   })
   .strict();
 export type ManagedComponentArgs = z.infer<typeof MANAGED_COMPONENT_ARGS>;
@@ -278,12 +279,15 @@ const keyOf = (row: unknown, key: string): string | undefined => (isRecord(row) 
  * was given twice is left once), a new key is added at the end, and `removed` keys go. A held row with no key, which the
  * error named for that, is left out: the repair sends it again with one.
  */
-function mergeRows(held: unknown, sent: unknown, key: string, removed: ReadonlySet<string>): unknown[] {
-  const out = (Array.isArray(held) ? held : []).filter((r) => {
+function mergeRows(held: unknown, sent: unknown, key: string, removed: ReadonlySet<string>): unknown {
+  // Something that is not a list stays as it was sent, for the argument check to name: never read as an empty list.
+  if (sent !== undefined && !Array.isArray(sent)) return sent;
+  if (!Array.isArray(held)) return sent === undefined ? held : sent;
+  const out = held.filter((r) => {
     const k = keyOf(r, key);
     return k !== undefined && !removed.has(k);
   });
-  for (const row of Array.isArray(sent) ? sent : []) {
+  for (const row of (sent as unknown[] | undefined) ?? []) {
     const k = keyOf(row, key);
     const first = k === undefined ? -1 : out.findIndex((h) => keyOf(h, key) === k);
     if (first < 0) {
@@ -296,12 +300,15 @@ function mergeRows(held: unknown, sent: unknown, key: string, removed: ReadonlyS
   return out;
 }
 
+const REPAIR_KEYS = new Set(['repair', 'removeNodes', 'removeProperties', 'nodes', 'properties']);
+/** Checked before a repair uses them: a list of names, or nothing. */
+const names = (v: unknown): v is string[] | undefined => v === undefined || (Array.isArray(v) && v.every((x) => typeof x === 'string'));
+
 function mergeRepair(held: Record<string, unknown>, sent: Record<string, unknown>): Record<string, unknown> {
-  const removed = new Set(Array.isArray(sent.remove) ? sent.remove.filter((r): r is string => typeof r === 'string') : []);
   const out: Record<string, unknown> = { ...held };
-  for (const [k, v] of Object.entries(sent)) if (k !== 'repair' && k !== 'remove' && k !== 'nodes' && k !== 'properties' && v !== undefined) out[k] = v;
-  if (held.nodes !== undefined || sent.nodes !== undefined) out.nodes = mergeRows(held.nodes, sent.nodes, 'id', removed);
-  if (held.properties !== undefined || sent.properties !== undefined) out.properties = mergeRows(held.properties, sent.properties, 'name', removed);
+  for (const [k, v] of Object.entries(sent)) if (!REPAIR_KEYS.has(k) && v !== undefined) out[k] = v;
+  if (held.nodes !== undefined || sent.nodes !== undefined) out.nodes = mergeRows(held.nodes, sent.nodes, 'id', new Set((sent.removeNodes as string[] | undefined) ?? []));
+  if (held.properties !== undefined || sent.properties !== undefined) out.properties = mergeRows(held.properties, sent.properties, 'name', new Set((sent.removeProperties as string[] | undefined) ?? []));
   return out;
 }
 
@@ -312,7 +319,7 @@ const targetOf = (state: ProjectState, a: Record<string, unknown>): string | nul
   typeof a.definitionId === 'string' && Object.hasOwn(state.components, a.definitionId) ? sha256Hex(JSON.stringify(state.components[a.definitionId])) : null;
 
 const NOTHING_APPLIED =
-  'Nothing was applied. Call again with repair: true, the same name (and definitionId), and only what needs fixing: the corrected nodes (by id) and properties (by name), remove for any to leave out, and any other list to replace whole.';
+  'Nothing was applied. Call again with repair: true, the same name (and definitionId), and only what needs fixing: the corrected nodes (by id) and properties (by name), removeNodes or removeProperties for any to leave out, and any other list to replace whole.';
 const SEND_WHOLE = 'Send the whole component, without repair.';
 
 export async function runManagedComponent(raw: unknown, host: ToolHost, callId: string, memory: MacroMemory): Promise<ToolOutcome> {
@@ -332,21 +339,25 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
   if (!isRecord(raw)) return fieldError([{ field: 'arguments', message: 'expected an object' }], 'Nothing was applied.');
   // Anything but a plain true or false would be taken for a whole new description, losing what a repair keeps.
   if (raw.repair !== undefined && typeof raw.repair !== 'boolean') return fieldError([{ field: 'repair', message: 'expected true or false' }], 'Nothing was applied.');
-  if (raw.remove !== undefined && raw.repair !== true) return fieldError([{ field: 'remove', message: 'only with repair: true' }], 'Nothing was applied.');
+  for (const k of ['removeNodes', 'removeProperties'] as const) {
+    if (raw[k] === undefined) continue;
+    if (raw.repair !== true) return fieldError([{ field: k, message: 'only with repair: true' }], 'Nothing was applied.');
+    if (!names(raw[k])) return fieldError([{ field: k, message: 'expected a list of names' }], 'Nothing was applied.');
+  }
   const state = host.state();
   const drafts = (memory.componentDrafts ??= new Map());
   let given = raw;
   let target = targetOf(state, raw);
   let from: string | null = null;
   if (raw.repair === true) {
+    // A rebuild is repaired by its definitionId, a new component by its name: never another component's call.
     from = draftKey(raw);
-    // A rebuild repaired without its definitionId is found by its name, when only one was rejected under it.
-    if (!drafts.has(from) && raw.definitionId === undefined) {
-      const named = [...drafts.entries()].filter(([, d]) => typeof d.args.name === 'string' && typeof raw.name === 'string' && d.args.name.trim().toLowerCase() === raw.name.trim().toLowerCase());
-      if (named.length === 1) from = named[0][0];
-    }
     const draft = drafts.get(from);
-    if (!draft) return fieldError([{ field: 'repair', message: `there is no rejected call for "${String(raw.name ?? '')}" to repair` }], SEND_WHOLE);
+    if (!draft)
+      return fieldError(
+        [{ field: 'repair', message: `there is no rejected call ${raw.definitionId !== undefined ? `rebuilding "${String(raw.definitionId)}"` : `creating "${String(raw.name ?? '')}"`} to repair. A rebuild's repair names its definitionId` }],
+        SEND_WHOLE
+      );
     if (draft.target !== targetOf(state, draft.args)) {
       drafts.delete(from);
       return fieldError([{ field: 'repair', message: `"${String(draft.args.name ?? '')}" changed since that call was rejected` }], `Read it again and ${SEND_WHOLE.charAt(0).toLowerCase()}${SEND_WHOLE.slice(1)}`);
@@ -355,7 +366,7 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
     target = draft.target;
   }
   // Whatever is sent is held until it applies, so the next call can repair only what this one names.
-  const { repair: _r, remove: _x, ...held } = given;
+  const { repair: _r, removeNodes: _n, removeProperties: _p, ...held } = given;
   if (from) drafts.delete(from);
   drafts.set(draftKey(held), { args: held, target });
   const parsed = MANAGED_COMPONENT_ARGS.safeParse(held);
@@ -378,7 +389,8 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
   const failure = (e: unknown, fallback: string) => {
     const details = (e as EngineError).details;
     const owner = isRecord(details) && isRecord(details.owner) ? details.owner.kind : undefined;
-    const field = owner === 'page' ? 'placeOnPage' : fallback === 'placeOnPage' && owner !== 'component' ? 'placeOnPage' : index.locate((e as Error).message, details);
+    // A page's problem is the placement asked for here; without one, it is an existing placement the design no longer fits.
+    const field = owner === 'page' ? (place ? 'placeOnPage' : 'nodes') : fallback === 'placeOnPage' && owner !== 'component' ? 'placeOnPage' : index.locate((e as Error).message, details);
     return fieldError([{ field, message: (e as Error).message }], NOTHING_APPLIED);
   };
   try {
@@ -478,15 +490,24 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     } catch (e) {
       return issues.push({ field: `${at}.name`, message: (e as Error).message });
     }
-    const rawSchema = propertySchema(p, at, issues);
-    if (!rawSchema) return;
+    const sent = propertySchema(p, at, issues);
+    if (!sent) return;
     const old = was && Object.hasOwn(was.properties, p.name) ? (was.properties[p.name] as unknown as Record<string, unknown>) : undefined;
-    if (old?.type === p.type) for (const k of KEPT_PROPERTY_KEYS) if (Object.hasOwn(old, k) && !Object.hasOwn(rawSchema, k)) rawSchema[k] = old[k];
-    properties[p.name] = rawSchema;
+    const kept = old?.type === p.type ? keptSettings(old, sent) : sent;
     try {
-      props.set(p.name, { at: i, schema: normalizePropSchema(rawSchema, state, p.name) });
+      props.set(p.name, { at: i, schema: normalizePropSchema(kept, state, p.name) });
+      properties[p.name] = kept;
     } catch (e) {
-      issues.push({ field: propertyField(p, at, (e as Error).message), message: (e as Error).message });
+      // What it kept no longer fits the fields this call gives it (a page list's card fields renamed, say): the call's
+      // own description stands, as the call describes it.
+      try {
+        if (kept === sent) throw e;
+        props.set(p.name, { at: i, schema: normalizePropSchema(sent, state, p.name) });
+        properties[p.name] = sent;
+      } catch (err) {
+        properties[p.name] = sent;
+        issues.push({ field: propertyField(p, at, (err as Error).message), message: (err as Error).message });
+      }
     }
   });
 
@@ -560,6 +581,13 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   const designNodes = nodes.map((n, i) => {
     const at = `nodes[${i}]`;
     const out: Record<string, unknown> = { ...n };
+    // A rebuild keeps what a node it names again had that this tool cannot say (a carousel track, an entrance, a
+    // date), and a text read back shortened (ending in …) keeps its whole text.
+    const prev = was?.tree && Object.hasOwn(was.tree.nodes, n.id) ? (was.tree.nodes[n.id] as unknown as Record<string, unknown>) : undefined;
+    if (prev?.kind === n.kind) {
+      for (const k of KEPT_NODE_KEYS[n.kind] ?? []) if (Object.hasOwn(prev, k) && out[k] === undefined) out[k] = prev[k];
+      if (n.kind === 'text' && typeof n.text === 'string' && n.text.endsWith('…') && typeof prev.text === 'string' && prev.text.length > n.text.length && prev.text.startsWith(n.text.slice(0, -1))) out.text = prev.text;
+    }
     for (const field of BINDABLE[n.kind] ?? []) {
       const v = (n as Record<string, unknown>)[field];
       if (v === undefined) continue;
@@ -682,8 +710,35 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   return { op, place, index: sourceIndex(args) };
 }
 
-/** What a property keeps through a rebuild that this tool has no field for. */
+/** What a property, or a field of a list or object, keeps through a rebuild that this tool has no field for. */
 const KEPT_PROPERTY_KEYS = ['group', 'feed', 'pageTeaser', 'plainAs', 'codeForm'] as const;
+
+/** `sent` with the settings `old` had that this tool cannot give, its fields' included, where `sent` names none. */
+function keptSettings(old: Record<string, unknown>, sent: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...sent };
+  for (const k of KEPT_PROPERTY_KEYS) if (Object.hasOwn(old, k) && !Object.hasOwn(out, k)) out[k] = old[k];
+  const was = isRecord(old.fields) ? old.fields : undefined;
+  if (was && isRecord(sent.fields))
+    out.fields = Object.fromEntries(
+      Object.entries(sent.fields).map(([k, f]) => {
+        const prev = Object.hasOwn(was, k) ? was[k] : undefined;
+        return [k, isRecord(prev) && isRecord(f) && prev.type === f.type ? keptSettings(prev, f) : f];
+      })
+    );
+  return out;
+}
+
+/** What a design node keeps through a rebuild that this tool has no field for, by its kind. */
+const KEPT_NODE_KEYS: Partial<Record<string, readonly string[]>> = {
+  element: ['action', 'carousel', 'appear'],
+  text: ['datetime', 'anchor'],
+  image: ['anchor'],
+  link: ['anchor'],
+  icon: ['anchor'],
+  divider: ['anchor'],
+  repeat: ['appearStagger', 'anchor'],
+  slot: ['anchor']
+};
 
 /** The property's schema as the operation takes it, its rows turned back into maps. */
 function propertySchema(p: PropertyArgs, at: string, issues: FieldIssue[]): Record<string, unknown> | null {

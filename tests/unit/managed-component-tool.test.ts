@@ -183,7 +183,7 @@ describe('upsert_managed_component: its schema (#359)', () => {
     const calls = [
       pricing({ placeOnPage: { pageId: '/', index: 0 } }),
       { name: 'Deep', nodes: chain },
-      { name: 'Pricing table', repair: true, remove: ['badge'], nodes: [{ kind: 'text', id: 'name', tag: 'h3', text: { $item: 'name' } }] },
+      { name: 'Pricing table', repair: true, removeNodes: ['badge'], removeProperties: ['note'], nodes: [{ kind: 'text', id: 'name', tag: 'h3', text: { $item: 'name' } }] },
       { name: 'Notes', properties: [{ type: 'table', name: 'hours', label: 'Hours', default: { columns: ['Day', 'Open'], rows: [['Mon', '9–5']] } }, { type: 'choices', name: 'topics', label: 'Topics', default: [{ label: 'Kitchens' }] }], nodes: [{ kind: 'element', id: 'root' }] },
       ...COMPONENT_BLUEPRINTS.map((b) => b.args)
     ];
@@ -455,7 +455,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     expect(s.state.components[beta]).toEqual(before);
   });
 
-  it('repairs a node given twice, leaves out what remove names, and never takes a malformed flag for a whole new call', async () => {
+  it('repairs a node given twice, leaves out what removeNodes names, and never takes a malformed flag for a whole new call', async () => {
     const { s, call, applies } = await session();
     const twice = pricing();
     twice.nodes.push({ kind: 'text', id: 'price', tag: 'p', text: 'Twice' } as never);
@@ -463,17 +463,64 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     // "true" as text: refused, and the rejected call is still there to repair.
     const flag = await call({ name: 'Pricing table', repair: 'true', nodes: [{ kind: 'element', id: 'root', tag: 'section' }] });
     expect(fields(flag.content)).toEqual(['repair']);
-    const misuse = await call({ name: 'Pricing table', remove: ['badge'], nodes: [{ kind: 'element', id: 'root' }] });
-    expect(fields(misuse.content)).toEqual(['remove']);
-    // Sending "price" once leaves it once; remove takes the badge out of the design and its card's children.
+    const misuse = await call({ name: 'Pricing table', removeNodes: ['badge'], nodes: [{ kind: 'element', id: 'root' }] });
+    expect(fields(misuse.content)).toEqual(['removeNodes']);
+    const loose = await call({ name: 'Pricing table', repair: true, removeNodes: 'badge' });
+    expect(fields(loose.content)).toEqual(['removeNodes']);
+    // Sending "price" once leaves it once; removeNodes takes the badge out of the design, and a property of the same
+    // name as a node would stay.
     const card = { kind: 'element', id: 'card', tag: 'li', children: ['name', 'price', 'cta'] };
-    const done = await call({ name: 'Pricing table', repair: true, remove: ['badge'], nodes: [{ kind: 'text', id: 'price', tag: 'p', text: { $item: 'price' } }, card] });
+    const done = await call({ name: 'Pricing table', repair: true, removeNodes: ['badge'], nodes: [{ kind: 'text', id: 'price', tag: 'p', text: { $item: 'price' } }, card] });
     expect(done.ok).toBe(true);
     expect(applies()).toBe(1);
     const nodes = s.state.components[done.content.definitionId].tree!.nodes;
     expect(nodes.badge).toBeUndefined();
     expect(nodes.price).toMatchObject({ text: { $item: 'price' } });
     expect(Object.keys(nodes)).toHaveLength(13);
+  });
+
+  it('repairs a rebuild only by its definitionId, and never reads a list sent as something else as an empty one', async () => {
+    const { s, call } = await session();
+    const made = await call(pricing({ name: 'Alpha' }));
+    const id = made.content.definitionId;
+    const before = structuredClone(s.state.components[id]);
+    const bad = pricing({ definitionId: id, name: 'Alpha' }) as Record<string, any>;
+    bad.properties = { heading: { type: 'string', label: 'Heading' } };
+    expect(fields((await call(bad)).content)).toEqual(['properties']);
+    const name = { kind: 'text', id: 'name', tag: 'h4', text: { $item: 'name' } };
+    // Named only, a repair is for a new component called that: not this rebuild.
+    expect(fields((await call({ name: 'Alpha', repair: true, nodes: [name] })).content)).toEqual(['repair']);
+    // By its definitionId, the properties sent as a map are still what is wrong, not an empty contract.
+    expect(fields((await call({ definitionId: id, name: 'Alpha', repair: true, nodes: [name] })).content)).toEqual(['properties']);
+    expect(s.state.components[id]).toEqual(before);
+  });
+
+  it('keeps through a rebuild the node settings the tool has no field for, and a text read back shortened', async () => {
+    const { s, call } = await session();
+    const long = 'Every plan includes setup, training and a named contact. '.repeat(6).trim();
+    const args = pricing();
+    args.nodes[3] = { kind: 'text', id: 'intro', tag: 'p', text: long } as never;
+    const made = await call(args);
+    const id = made.content.definitionId;
+    const r = await s.apply({ operations: [{ type: 'node.setContent', owner: { kind: 'component', id }, nodeId: 'root', field: 'appear', value: 'fade' }] }, { label: 'Entrance' });
+    expect(r.ok).toBe(true);
+    // The rebuild sends the text as read_component shows it: cut short, ending in …
+    const again = pricing({ definitionId: id });
+    again.nodes[3] = { kind: 'text', id: 'intro', tag: 'p', text: `${long.slice(0, 219)}…` } as never;
+    expect((await call(again)).ok).toBe(true);
+    const nodes = s.state.components[id].tree!.nodes;
+    expect(nodes.root).toMatchObject({ appear: 'fade' });
+    expect(nodes.intro).toMatchObject({ text: long });
+  });
+
+  it('names a rebuild its existing placements cannot take by the design, not by a placement it did not ask for', async () => {
+    const { call, home } = await session();
+    const made = await call(pricing({ placeOnPage: { pageId: home } }));
+    const next = pricing({ definitionId: made.content.definitionId });
+    next.nodes[0] = { ...next.nodes[0], tag: 'li' } as never;
+    const out = await call(next);
+    expect(out.ok).toBe(false);
+    expect(fields(out.content)).not.toContain('placeOnPage');
   });
 
   it('refuses a rebuild a placement cannot take, leaving the page, the design and the history as they were', async () => {
