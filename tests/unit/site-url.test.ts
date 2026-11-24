@@ -154,7 +154,7 @@ describe('the export warning about the public URL', () => {
     expect(publicUrlWarning(s)).toMatch(/^No public site URL is set/);
     s.site.baseUrl = 'https://example.com:65536';
     expect(publicUrlWarning(s)).toBe(
-      'The public site URL “https://example.com:65536” can’t be used, so canonical links, social image URLs and the sitemap were omitted. The port 65536 is not valid. Use a port from 1 to 65535. Correct it in Site settings.'
+      'The public site URL “https://example.com:65536” can’t be used, so canonical links, social image URLs and the sitemap were omitted. The port 65536 is not valid. Use a port from 1 to 65535. Correct the Public URL in Site styles › Site details.'
     );
     // A value of another kind, written by hand, is one that can't be used rather than none.
     (s.site as unknown as Record<string, unknown>).baseUrl = 65536;

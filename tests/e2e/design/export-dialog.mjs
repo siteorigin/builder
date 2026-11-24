@@ -260,7 +260,7 @@ await app.evaluate(({ ipcMain }, result) => {
   path: (await snapshot()).recentExports[0].path,
   message: 'Exported 12 pages as a ZIP file.',
   // Notes the website export really gives (main/controller.ts), worded as it words them.
-  warnings: ['No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.', 'One image has not been chosen yet and shows a placeholder.', 'kitchen.jpg is 2.4 MB; consider a smaller image.']
+  warnings: ['No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. If the site will have its own address, add it as the Public URL in Site styles › Site details.', 'One image has not been chosen yet and shows a placeholder.', 'kitchen.jpg is 2.4 MB; consider a smaller image.']
 });
 await openDialog();
 await websiteButton.click();
