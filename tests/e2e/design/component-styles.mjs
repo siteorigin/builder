@@ -1,11 +1,13 @@
-// Design capture for the component style controls (StyleControls.tsx inside the Inspector's Style section):
-// a component, a component part and a primitive, at All sizes and at one screen size, with inherited,
-// token-linked, custom and changed values. Opt-in only, never part of `npm run test:e2e`:
+// Design capture for the component style controls (StyleControls.tsx inside the Inspector's Style section) and
+// Paste style (StylePaste.tsx): a component, a component part and a primitive, at All sizes and at one screen size,
+// with inherited, token-linked, custom, drafted and changed values; a primitive's groups opened one at a time and
+// all at once, with effects set; the paste review at every size, at one size and with nothing to change; and the
+// same controls in Edit everywhere. Opt-in only, never part of `npm run test:e2e`:
 //
 //   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/component-styles.mjs
 //
 // Each state is checked on screen after it settles and the harness throws rather than write an image of a
-// state that did not render. Files are named `{state}--{theme}.png` and show the inspector panel only.
+// state that did not render. Files are named `{state}--{theme}.png` and show the inspector panel or the dialog.
 import { _electron as electron } from 'playwright';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -38,18 +40,18 @@ const written = [];
 await win.evaluate(() => window.builder.app.setSettings({ appearance: 'system' }));
 
 /** Capture the inspector in each theme; every `checks` selector must be visible inside it at that moment. */
-async function shot(state, checks, { themes = THEMES, keepFocus = false } = {}) {
+async function shot(state, checks, { themes = THEMES, keepFocus = false, root = panel } = {}) {
   for (const theme of themes) {
     await win.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
     await win.mouse.move(2, 1000);
     if (!keepFocus) await win.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
     await pause(300);
     for (const check of [].concat(checks)) {
-      const visible = await panel.locator(check).first().isVisible().catch(() => false);
+      const visible = await root.locator(check).first().isVisible().catch(() => false);
       if (!visible) throw new Error(`state "${state}" (${theme}) did not render "${check}"; refusing to write`);
     }
     const path = join(OUT, `${state}--${theme}.png`);
-    await panel.screenshot({ path });
+    await root.screenshot({ path });
     written.push(path);
     console.log('wrote', path);
   }
@@ -58,8 +60,11 @@ async function shot(state, checks, { themes = THEMES, keepFocus = false } = {}) 
 
 /** Open a Style section and bring it to the top of the inspector, under the sticky header. */
 async function openStyle(id) {
-  await win.evaluate((sid) => window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: sid })), id);
-  await pause(500);
+  // Twice: the first request can land while the inspector is still laying out a new selection.
+  for (let i = 0; i < 2; i++) {
+    await win.evaluate((sid) => window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: sid })), id);
+    await pause(450);
+  }
 }
 
 const styleSelect = (label) => panel.locator(`select[aria-label="${label}"]`).first();
@@ -104,6 +109,13 @@ await pickCustom('Corner radius', '12px').catch(() => console.log('component: no
 await openStyle('style');
 await shot('component-changed', ['.style-row.set', '.reset-dot']);
 
+// A custom colour being drafted: nothing is written until it is committed, and Escape leaves the stored value.
+await styleSelect('Background').selectOption('custom');
+await pause(400);
+await shot('component-custom-draft', ['.style-custom'], { themes: ['light'], keepFocus: true });
+await panel.locator('input[aria-label="Background value"]').first().press('Escape');
+await pause(300);
+
 // One screen size: base changes show through as placeholders, one phone-only change of its own.
 await scope('Phone');
 await pickToken('Vertical padding', 0);
@@ -127,12 +139,13 @@ await win.keyboard.press('Tab');
 await shot('component-scope-focus', ['[role="radiogroup"]'], { themes: ['light'], keepFocus: true });
 
 // ---- A component part (the hero heading) ----
-await frame.locator('h1').first().click();
+// Alt-click picks the element itself rather than walking down from its section.
+await frame.locator('h1').first().click({ modifiers: ['Alt'] });
 await pause(800);
 await openStyle('part-style');
 await shot('part-rest', ['.style-row']);
 await pickToken('Text style', 1).catch(() => console.log('part: no Text style control'));
-await pickCustom('Text colour', '#8a3b12').catch(() => console.log('part: no Text colour control'));
+await pickCustom('Text color', '#8a3b12').catch(() => console.log('part: no Text color control'));
 await openStyle('part-style');
 await shot('part-changed', ['.style-row.set']);
 
@@ -146,14 +159,78 @@ await win.locator('.dock-tab', { hasText: 'Inspector' }).click().catch(() => {})
 await pause(400);
 await openStyle('prim-style');
 await shot('primitive-rest', ['.style-row']);
-const more = panel.getByRole("button", { name: /^More style options/ });
-if (await more.count()) {
+// Long lists open group by group from each group's heading.
+const groupToggles = panel.locator('.style-group-toggle[aria-expanded="false"]');
+if (await groupToggles.count()) {
   await pickToken('Gap', 1).catch(() => console.log('primitive: no Gap control'));
-  await more.click();
+  await panel.locator('[data-group="motion"] .style-group-toggle').click();
   await pause(400);
+  // Effects: a transform and an animated change, which bring their refining rows with them.
+  const typed = async (label, value) => {
+    const input = panel.locator(`input[aria-label^="${label}"]`).first();
+    await input.fill(value);
+    await input.press('Enter');
+    await pause(400);
+  };
+  await typed('Scale', '1.05');
+  await typed('Rotate', '-2');
+  await styleSelect('Animate changes').selectOption({ index: 2 });
+  await pause(500);
+  await panel.locator('.style-row[data-prop="scale"]').first().scrollIntoViewIfNeeded();
+  await pause(300);
+  await shot('primitive-effects', ['.style-row[data-prop="transitionDuration"]']);
+  // Every group open at once: the longest the list gets.
+  while (await groupToggles.count()) {
+    await groupToggles.first().click();
+    await pause(150);
+  }
   await openStyle('prim-style');
   await shot('primitive-all', ['.style-row.set']);
-} else console.log('skipped primitive-all: no disclosure for this primitive');
+} else console.log('skipped primitive-all: no group opens for this primitive');
+
+// ---- Copy style and Paste style ----
+await win.locator('.rail [aria-label="Layers"]').click();
+await pause(500);
+await win.locator('.list-item', { hasText: 'Split hero' }).first().click();
+await pause(500);
+await win.getByRole('button', { name: /^More actions for / }).first().click();
+await win.getByRole('menuitem', { name: 'Copy style' }).click();
+await win.locator('.toast', { hasText: 'Copied the style of Split hero' }).waitFor();
+const pasteDialog = win.getByRole('dialog', { name: 'Paste style' });
+const openPaste = async (row) => {
+  await win.locator('.list-item', { hasText: row }).first().click({ button: 'right' });
+  await win.getByRole('menuitem', { name: /Paste style…/ }).click();
+  await pasteDialog.waitFor();
+  await pause(500);
+};
+await openPaste('Content with image');
+await shot('paste-review', ['h3'], { root: pasteDialog });
+await pasteDialog.getByLabel('Sizes').selectOption('phone');
+await pause(400);
+await shot('paste-phone-only', ['h3'], { root: pasteDialog, themes: ['light'] });
+await pasteDialog.getByRole('button', { name: 'Cancel' }).click();
+await pasteDialog.waitFor({ state: 'detached' });
+// Onto the section it came from: there is nothing to change, and the dialog says so.
+await openPaste('Split hero');
+await shot('paste-nothing', ['h3'], { root: pasteDialog, themes: ['light'] });
+await pasteDialog.getByRole('button', { name: 'Cancel' }).click();
+await pasteDialog.waitFor({ state: 'detached' });
+
+// ---- Edit everywhere: the same controls on the component's own design ----
+await win.locator('.list-item', { hasText: 'Split hero' }).first().click();
+await pause(500);
+await win.locator('.dock-tab', { hasText: 'Inspector' }).click().catch(() => {});
+await pause(300);
+const componentSection = win.locator('.section-head', { hasText: 'Component' }).first();
+if ((await componentSection.getAttribute('aria-expanded')) === 'false') await componentSection.click();
+await win.getByRole('button', { name: 'Edit everywhere…' }).first().click();
+await win.getByRole('button', { name: /Make a copy and edit/ }).click();
+await win.locator('.editor.defining').waitFor({ timeout: 20000 });
+await pause(1800);
+await frame.locator('h1').first().click();
+await pause(900);
+await openStyle('def-style');
+await shot('definition-rest', ['.style-row']);
 
 await app.close();
 rmSync(WORK, { recursive: true, force: true });
