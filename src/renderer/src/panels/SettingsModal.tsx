@@ -279,7 +279,7 @@ export function SettingsModal() {
                   : { label: 'Try again', run: () => void server.refresh() }
                 : server.phase === 'empty'
                   ? { label: 'Refresh models', run: () => void server.refresh() }
-                  : server.missing
+                  : server.phase === 'ready' && server.missing
                     ? { label: 'Choose a model', run: () => focusById('settings-local-model') }
                     : testAction;
     // Stays mounted and focusable while busy, so a keyboard user keeps their place through a retry.
