@@ -7,7 +7,7 @@ import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs'
 import { shortPath, whereLabels } from './lib/recent-places';
 import { SettingsModal } from './panels/SettingsModal';
 import { AppMark, MARK_COLORS } from './components/AppMark';
-import { useEditorScheme } from './lib/appearance';
+import { switchScheme, useEditorScheme } from './lib/appearance';
 
 export function BrandMark() {
   return (
@@ -20,25 +20,16 @@ export function BrandMark() {
 /**
  * One click between the editor's light and dark Appearance, without opening Settings (#554). It shows the scheme the
  * editor is drawn in (System resolved to this computer's) and saves the other one as the Appearance; System stays a
- * choice in Settings. The editor redraws from the saved setting (lib/appearance.ts), never from this button.
+ * choice in Settings. The editor redraws from the saved setting (lib/appearance.ts).
  */
 export function AppearanceToggle() {
   const scheme = useEditorScheme();
   const dark = scheme === 'dark';
-  // The scheme a press is on its way to. Until the editor is drawn in it, another press would still see the old
-  // scheme and save the same one again, so it waits; the save's reply can come before the redraw.
-  const pending = useRef<'light' | 'dark' | null>(null);
-  useEffect(() => {
-    if (pending.current === scheme) pending.current = null;
-  }, [scheme]);
   const toggle = async () => {
-    if (pending.current) return;
-    const target = dark ? 'light' : 'dark';
-    pending.current = target;
     try {
-      setState({ settings: await api.app.setSettings({ appearance: target }) });
+      const saved = await switchScheme();
+      if (saved) setState({ settings: saved });
     } catch (e) {
-      pending.current = null;
       toast(`Could not change the appearance: ${errorText(e)}`, 'error');
     }
   };

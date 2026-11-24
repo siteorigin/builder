@@ -1,6 +1,7 @@
 // Settings › Appearance styles the editor and never the website it previews (#202): the preview keeps this
 // computer's color scheme, as a visitor's browser here would, whichever Appearance the editor is drawn in.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step } from './harness.mjs';
 
@@ -117,36 +118,77 @@ const saved = () => win.evaluate(() => window.builder.app.getSettings().then((s)
 const toggledTo = async (scheme, what) => {
   await drawnIn(scheme, what, { previewed: false });
   await eventually(async () => assert.equal(await toggle().getAttribute('aria-checked'), String(scheme === 'dark'), `${what}: the toggle shows ${scheme}`));
+  assert.equal(await toggle().getAttribute('title'), `Switch to ${scheme === 'dark' ? 'light' : 'dark'} appearance`, `${what}: the toggle says what a click does`);
   assert.equal(await saved(), scheme, `${what}: ${label(scheme)} is the saved Appearance`);
 };
+/** Inside the main pane's window drag strip, top right, and a control there: a press reaches it rather than moving the window. */
+const inTopRight = async (what) => {
+  const box = await toggle().boundingBox();
+  const { width } = win.viewportSize();
+  assert.ok(box.y >= 0 && box.y + box.height <= 44 && box.x + box.width <= width && box.x + box.width > width - 40, `${what}: the toggle sits in the top right strip (${JSON.stringify(box)})`);
+  assert.equal(await toggle().evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region')), 'no-drag', `${what}: the toggle is out of the drag region`);
+};
+const openSettings = async () => {
+  await win.locator('.welcome-foot').getByRole('button', { name: 'Settings' }).click();
+  return win.getByRole('dialog');
+};
+const closeSettings = async (settings) => {
+  await win.keyboard.press('Escape');
+  await settings.waitFor({ state: 'detached' });
+};
 await win.locator('.recent-grid').waitFor();
-assert.equal(await toggle().getAttribute('title'), `Switch to ${other} appearance`, 'the toggle says what a click does');
-// Inside the main pane's window drag strip, the toggle is a control: a press reaches it rather than moving the window.
-assert.equal(await toggle().evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region')), 'no-drag', 'the toggle is out of the drag region');
-const box = await toggle().boundingBox();
-const viewport = win.viewportSize();
-assert.ok(box.y < 44 && box.x + box.width > viewport.width - 40, `the toggle sits at the top right (${JSON.stringify(box)})`);
-await toggle().click();
-await toggledTo(other, 'clicked from System');
-await toggle().focus();
+// Settings says System first, so what it shows afterwards can only have come from the toggle.
+let settings = await openSettings();
+await settings.getByRole('radio', { name: 'System' }).click();
+await eventually(async () => assert.equal(await settings.getByRole('radio', { name: 'System' }).getAttribute('aria-checked'), 'true', 'Settings starts on System'));
+await closeSettings(settings);
+assert.equal(await saved(), 'system', 'System is saved');
+await eventually(async () => assert.equal(await toggle().getAttribute('aria-checked'), String(system === 'dark'), `on System the toggle shows this computer’s ${system}`));
+await inTopRight('with recent projects');
+// In the tab order, straight after the rail.
+await win.locator('.welcome-foot').getByRole('button', { name: 'Settings' }).focus();
+await win.keyboard.press('Tab');
+assert.ok(await toggle().evaluate((el) => el === document.activeElement), 'Tab moves from the rail to the toggle');
 await win.keyboard.press('Space');
-await toggledTo(system, 'Space');
+await toggledTo(other, 'Space');
 await win.keyboard.press('Enter');
-await toggledTo(other, 'Enter');
+await toggledTo(system, 'Enter');
 assert.ok(await toggle().evaluate((el) => el === document.activeElement), 'focus stays on the toggle');
+await toggle().click();
+await toggledTo(other, 'click');
+const userData = await app.evaluate(({ app }) => app.getPath('userData'));
+assert.equal(JSON.parse(readFileSync(join(userData, 'settings.json'), 'utf8')).settings.appearance, other, 'the toggle’s choice is on disk at once');
 
 step('Settings shows the toggle’s choice, and System is still there to go back to');
-await win.locator('.welcome-foot').getByRole('button', { name: 'Settings' }).click();
-const settings = win.getByRole('dialog');
+settings = await openSettings();
 await eventually(async () => assert.equal(await settings.getByRole('radio', { name: label(other) }).getAttribute('aria-checked'), 'true', 'Settings shows the toggled Appearance'));
-await settings.getByRole('radio', { name: 'System' }).click();
-await drawnIn(system, 'System from Settings after the toggle', { previewed: false });
-assert.equal(await saved(), 'system', 'System is saved from Settings');
-await eventually(async () => assert.equal(await toggle().getAttribute('aria-checked'), String(system === 'dark'), 'the toggle follows Settings'));
-await win.keyboard.press('Escape');
-await settings.waitFor({ state: 'detached' });
+assert.equal(await settings.getByRole('radio', { name: 'System' }).getAttribute('aria-checked'), 'false', 'System is no longer chosen');
+assert.ok(await settings.getByRole('radio', { name: 'System' }).isEnabled(), 'System can still be chosen');
+await closeSettings(settings);
+
+step('a switch draws the editor in what its save answered, one press at a time, whether or not main says so');
+// Main's answer is held, and it never sends the appearance event: the toggle must not save twice or wait for one.
+const before = await win.evaluate(() => window.builder.app.getSettings());
+await app.evaluate(({ BrowserWindow }, base) => {
+  globalThis.heldSaves = [];
+  BrowserWindow.getAllWindows()[0].webContents.ipc.handle('app:setSettings', (_e, patch) => new Promise((resolve) => globalThis.heldSaves.push({ patch, answer: () => resolve({ ...base, ...patch }) })));
+}, before);
+const held = () => app.evaluate(() => globalThis.heldSaves.map((s) => s.patch));
+const answer = () => app.evaluate(() => globalThis.heldSaves.at(-1).answer());
 await toggle().click();
-await toggledTo(other, 'clicked after Settings');
+await toggle().click();
+await win.keyboard.press('Enter');
+await eventually(async () => assert.deepEqual(await held(), [{ appearance: system }], 'one save, for the other scheme'));
+assert.equal((await editor()).scheme, other, 'the editor stays drawn as it is until the save answers');
+await answer();
+await eventually(async () => assert.equal((await editor()).scheme, system, 'the editor is drawn in what the save answered'));
+await eventually(async () => assert.equal(await toggle().getAttribute('aria-checked'), String(system === 'dark'), 'the toggle shows it'));
+await toggle().click();
+await eventually(async () => assert.deepEqual(await held(), [{ appearance: system }, { appearance: other }], 'the next press saves the scheme back'));
+await answer();
+await eventually(async () => assert.equal((await editor()).scheme, other, 'and is drawn in it'));
+await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.ipc.removeHandler('app:setSettings'));
+assert.equal(await saved(), other, `${label(other)} is still the saved Appearance`);
 
 step('the toggle’s choice survives a restart, and the first-run screen has the toggle too');
 assert.deepEqual(errors, [], 'no page errors');
@@ -157,11 +199,12 @@ await toggledTo(other, 'reopened after the toggle');
 for (const r of await win.evaluate(() => window.builder.projects.recents())) await win.evaluate((d) => window.builder.projects.removeRecent(d), r.dir);
 await win.reload();
 await win.locator('.welcome-hero').waitFor();
+await inTopRight('on the first-run screen');
 await toggle().click();
 await toggledTo(system, 'first-run screen');
 await win.evaluate(() => window.builder.app.setSettings({ appearance: 'system' }));
 await drawnIn(system, 'System again', { previewed: false });
-
+assert.equal(await saved(), 'system', 'System is saved again');
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();
 cleanup();
