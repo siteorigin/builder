@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react';
 import type { Appearance } from '@shared/api';
 import { editorScheme, knownAppearance } from '@shared/appearance';
 import { api } from '../store';
@@ -30,3 +31,13 @@ export function followAppearance(): () => void {
     system.removeEventListener('change', apply);
   };
 }
+
+/** The scheme the editor is drawn in right now, from its root's mark (the preload's, then followAppearance's). */
+const drawnScheme = (): 'light' | 'dark' => (document.documentElement.dataset.appearance === 'dark' ? 'dark' : 'light');
+const watchDrawnScheme = (changed: () => void) => {
+  const watch = new MutationObserver(changed);
+  watch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-appearance'] });
+  return () => watch.disconnect();
+};
+/** The scheme the editor is drawn in, kept current: System resolved to this computer's setting, as it changes too. */
+export const useEditorScheme = () => useSyncExternalStore(watchDrawnScheme, drawnScheme);
