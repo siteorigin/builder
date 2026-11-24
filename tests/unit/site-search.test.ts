@@ -16,7 +16,7 @@ import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, buildSearchIndex, pag
 import { readField } from '../../src/renderer/src/lib/held';
 import { describeOps } from '@agent/report';
 import type { EditOperation } from '@shared/ops';
-import type { GraphNode, InstanceNode, ProjectState } from '@shared/types';
+import type { GraphNode, InstanceNode, ProjectState, ResponsiveStyles } from '@shared/types';
 
 const HELPER = `${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`;
 const INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
@@ -261,12 +261,13 @@ describe('site search index', () => {
     section('pg_project2').overrides = { root: { phone: { hidden: true }, tablet: { hidden: true }, desktop: { hidden: true } } };
     expect(text('pg_project2')).not.toContain('secret');
     // Anything a size or the wide range says about its display may show it again: its text stays searchable.
-    for (const root of [
+    const shownSomewhere: ResponsiveStyles[] = [
       { base: { hidden: true }, desktop: { hidden: false } },
       { base: { hidden: true }, desktop: { layout: 'stack' } },
       { base: { hidden: true }, phone: { customCss: 'display: none;' } },
       { base: { hidden: true, columnSpan: 2, customCss: 'display: block' } }
-    ]) {
+    ];
+    for (const root of shownSomewhere) {
       section('pg_project2').overrides = { root };
       expect(text('pg_project2'), JSON.stringify(root)).toContain('A secret kept on every screen.');
     }
