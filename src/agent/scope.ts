@@ -298,7 +298,15 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'asset.update': 'wider',
   'asset.remove': 'wider',
   'asset.replace': 'wider',
-  'asset.relink': 'wider'
+  'asset.relink': 'wider',
+  // Collections are the editor's only, for now: the session refuses them from an AI run.
+  'collection.create': 'wider',
+  'collection.update': 'wider',
+  'collection.remove': 'wider',
+  'entry.create': 'wider',
+  'entry.update': 'wider',
+  'entry.reorder': 'wider',
+  'entry.remove': 'wider'
 };
 
 /**

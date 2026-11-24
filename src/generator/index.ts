@@ -222,6 +222,9 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
     case 'anchor':
       href = `#${link.target.replace(/^#/, '')}`;
       break;
+    case 'entry':
+      // Entries are not pages of the website yet: the link's words show without a destination.
+      return null;
   }
   return link.newTab ? { href, newTab: true } : { href };
 }

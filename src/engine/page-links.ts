@@ -3,12 +3,15 @@ import { labelKeyFor } from '@generator/checks';
 import { allTrees } from './tree';
 import { effectiveItem } from '@shared/page-teasers';
 
-/** A stored link to a page: what it is called and where it lives, for reviewing what a change to that page moves. */
+/** What holds a stored link: the header, footer, a page or a component, or a collection entry's text. */
+export type LinkHolder = OwnerRef | { kind: 'entry'; id: string; collectionId: string };
+
+/** A stored link to a page or entry: what it is called and where it lives, for reviewing what a change to it moves. */
 export interface PageLinkUse {
   /** The stored value itself: changing it changes the link. */
   link: LinkValue;
-  /** The header, footer, page or component that holds it. */
-  owner: OwnerRef;
+  /** The header, footer, page, component or entry that holds it. */
+  owner: LinkHolder;
   /** That holder by name: Header, Footer, a page's title or a component's name. */
   where: string;
   /** The link's text, its paired label, its list item's title, or else the name of the field that holds it. */
@@ -24,14 +27,28 @@ const text = (v: unknown) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').tri
 
 /**
  * Every stored link to `pageId` from the rest of the site: shared header and footer, other pages, component trees and
- * component defaults, links inside rich text included. Links on the page itself go with it, so they are not listed.
- * One row per stored value, so an edit to the rows changes exactly the links the site holds.
+ * component defaults, collection entries' text, links inside rich text included. Links on the page itself go with it,
+ * so they are not listed. One row per stored value, so an edit to the rows changes exactly the links the site holds.
  */
 export function pageLinkUses(state: ProjectState, pageId: string): PageLinkUse[] {
+  return linkUses(state, 'page', pageId);
+}
+
+/**
+ * Every stored link to any of the collection entries `entryIds` from anywhere else in the project, in one walk. Links
+ * those entries hold themselves go with them, so they are not listed.
+ */
+export function entryLinkUses(state: ProjectState, entryIds: string | ReadonlySet<string>): PageLinkUse[] {
+  return linkUses(state, 'entry', typeof entryIds === 'string' ? new Set([entryIds]) : entryIds);
+}
+
+function linkUses(state: ProjectState, kind: 'page' | 'entry', target: string | ReadonlySet<string>): PageLinkUse[] {
   const out: PageLinkUse[] = [];
   const seen = new Set<object>();
-  const isTarget = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && (v as LinkValue).type === 'page' && (v as LinkValue).target === pageId;
-  const add = (link: LinkValue, owner: OwnerRef, where: string, label: string, card?: PageLinkUse['card']) => {
+  const ids = typeof target === 'string' ? new Set([target]) : target;
+  const pageId = kind === 'page' && typeof target === 'string' ? target : undefined;
+  const isTarget = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && (v as LinkValue).type === kind && typeof (v as LinkValue).target === 'string' && ids.has((v as LinkValue).target);
+  const add = (link: LinkValue, owner: LinkHolder, where: string, label: string, card?: PageLinkUse['card']) => {
     if (seen.has(link)) return;
     seen.add(link);
     out.push(card ? { link, owner, where, label, card } : { link, owner, where, label });
@@ -44,7 +61,7 @@ export function pageLinkUses(state: ProjectState, pageId: string): PageLinkUse[]
     Object.values(x).forEach(skip);
   };
   /** Every link in a value; one inside rich text is named by its own text. */
-  const collect = (v: unknown, owner: OwnerRef, where: string, label: string) => {
+  const collect = (v: unknown, owner: LinkHolder, where: string, label: string) => {
     const walk = (x: unknown, parent?: Record<string, unknown>) => {
       if (Array.isArray(x)) return x.forEach((y) => walk(y));
       if (!x || typeof x !== 'object') return;
@@ -70,7 +87,7 @@ export function pageLinkUses(state: ProjectState, pageId: string): PageLinkUse[]
         const shown = effectiveItem(state, schema, item);
         const title = text(shown[schema.titleField ?? 'label']) || schema.itemLabel || name;
         const teaser = schema.pageTeaser;
-        if (teaser && isTarget(item[teaser.link])) {
+        if (teaser && kind === 'page' && isTarget(item[teaser.link])) {
           add(item[teaser.link] as LinkValue, owner, where, title, { items: value as unknown[], item });
           // Any other link to the page inside that card goes with the card: it needs nowhere else to point.
           skip(item);
@@ -103,5 +120,12 @@ export function pageLinkUses(state: ProjectState, pageId: string): PageLinkUse[]
     collect(def.properties, owner, where, def.name);
   }
   for (const p of Object.values(state.pages)) if (p.id !== pageId) collect(p.seo, { kind: 'page', id: p.id }, p.title, 'Page settings');
+  for (const c of Object.values(state.collections ?? {}))
+    for (const e of Object.values(c.entries)) {
+      if (kind === 'entry' && ids.has(e.id)) continue;
+      const owner: LinkHolder = { kind: 'entry', id: e.id, collectionId: c.settings.id };
+      // Only the text holds links: custom fields are plain values, whatever they are named.
+      collect(e.body, owner, `${typeof e.title === 'string' ? e.title : e.id} (${c.settings.name})`, 'Entry text');
+    }
   return out;
 }

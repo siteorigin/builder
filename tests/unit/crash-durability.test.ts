@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { cpSync, mkdtempSync, promises as fsp, readdirSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -69,7 +69,7 @@ function crashBefore(step: number | ((method: string, args: unknown[]) => boolea
  * prepares the project once; each crash point starts from a copy of it, opened and then readied by `start`.
  */
 async function eachCrashPoint(
-  setup: { build: (s: ProjectSession) => Promise<void>; start?: (s: ProjectSession) => Promise<void> },
+  setup: { build: (s: ProjectSession) => Promise<void>; start?: (s: ProjectSession) => Promise<void>; afterCrash?: (dir: string) => void },
   op: (s: ProjectSession) => Promise<unknown>,
   check: (s: ProjectSession) => Promise<void>
 ) {
@@ -88,6 +88,8 @@ async function eachCrashPoint(
     await op(s).catch(() => undefined);
     const crashed = crash.crashed();
     disarm?.();
+    // What the disk holds when the process has died: anything checked or changed here comes before recovery.
+    if (crashed) setup.afterCrash?.(dir);
     const again = await reopen(dir);
     await check(again);
     if (!crashed) return points;
@@ -214,6 +216,76 @@ describe('crash durability', { timeout: 300_000 }, () => {
       expect(s.state.site.name).toBe('Persist');
       expect(s.historyInfo().canUndo).toBe(false);
     });
+  });
+
+  it('deletes a whole collection or none of it, whatever point a crash interrupts it (#392)', async () => {
+    const setup = {
+      build: async (s: ProjectSession) => {
+        const r = await s.apply(
+          {
+            operations: [
+              { type: 'collection.create', collectionId: 'posts' },
+              { type: 'entry.create', collectionId: 'posts', entryId: 'en_first', title: 'One' },
+              { type: 'entry.create', collectionId: 'posts', entryId: 'en_second', title: 'Two', body: ['See [one](entry:en_first).'] }
+            ]
+          },
+          { label: 'Blog' }
+        );
+        expect(r.error?.message).toBeUndefined();
+        expect(r.ok).toBe(true);
+      }
+    };
+    const outcomes = new Set<string>();
+    const entriesOf = (s: ProjectSession) => Object.keys(s.state.collections.posts?.entries ?? {}).sort();
+    const posts = (dir: string) => join(dir, 'siteorigin/collections/posts');
+    // Before recovery, an entry is never on disk without its collection's settings: entries go first.
+    const left = (dir: string) => (existsSync(join(posts(dir), 'entries')) ? readdirSync(join(posts(dir), 'entries')) : []);
+    Object.assign(setup, { afterCrash: (dir: string) => expect(left(dir).length === 0 || existsSync(join(posts(dir), 'collection.json'))).toBe(true) });
+    await eachCrashPoint(setup, (s) => s.apply({ operations: [{ type: 'collection.remove', collectionId: 'posts' }] }, { label: 'Delete Posts' }), async (s) => {
+      expect(s.conflicts).toEqual([]);
+      const posts = join(s.dir, 'siteorigin/collections/posts');
+      if (s.state.collections.posts) {
+        outcomes.add('kept');
+        expect(entriesOf(s)).toEqual(['en_first', 'en_second']);
+        expect(readdirSync(join(posts, 'entries')).sort()).toEqual(['en_first.json', 'en_second.json']);
+        expect(s.historyInfo().undoLabel).toBe('Blog');
+      } else {
+        outcomes.add('deleted');
+        expect(existsSync(join(posts, 'collection.json'))).toBe(false);
+        expect(existsSync(join(posts, 'entries'))).toBe(false);
+        expect(s.historyInfo().undoLabel).toBe('Delete Posts');
+        expect((await s.undo()).ok).toBe(true);
+        expect(entriesOf(s)).toEqual(['en_first', 'en_second']);
+      }
+    });
+    expect(outcomes).toEqual(new Set(['kept', 'deleted']));
+  });
+
+  it('keeps a collection whose deletion was interrupted while an entry was added to it outside the app (#392)', async () => {
+    const late = { schemaVersion: SCHEMA_VERSION, id: 'en_late', slug: 'late', title: 'Late', publishedAt: '2026-01-01', draft: true, terms: {}, values: {}, body: [] };
+    const setup = {
+      build: async (s: ProjectSession) => {
+        const r = await s.apply({ operations: [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_first', title: 'One' }] }, { label: 'Blog' });
+        expect(r.ok).toBe(true);
+      },
+      afterCrash: (dir: string) => {
+        const entries = join(dir, 'siteorigin/collections/posts/entries');
+        if (existsSync(join(dir, 'siteorigin/collections/posts/collection.json'))) {
+          mkdirSync(entries, { recursive: true });
+          writeFileSync(join(entries, 'en_late.json'), JSON.stringify(late));
+        }
+      }
+    };
+    let added = 0;
+    await eachCrashPoint(setup, (s) => s.apply({ operations: [{ type: 'collection.remove', collectionId: 'posts' }] }, { label: 'Delete Posts' }), async (s) => {
+      // The project opens; the late entry keeps its collection whenever it was added.
+      if (existsSync(join(s.dir, 'siteorigin/collections/posts/entries/en_late.json'))) {
+        added++;
+        expect(s.state.collections.posts?.entries.en_late).toEqual(late);
+        rmSync(join(s.dir, 'siteorigin/collections/posts/entries/en_late.json'));
+      }
+    });
+    expect(added).toBeGreaterThan(0);
   });
 
   it('records an edit and its undo step together, whatever point a crash interrupts it', async () => {

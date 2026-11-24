@@ -167,10 +167,15 @@ export function linkToTarget(link: LinkValue, pages: RichPages): string {
       return `tel:${link.target}`;
     case 'anchor':
       return `#${link.target}`;
+    case 'entry':
+      return `${ENTRY_LINK_PREFIX}${link.target}`;
     default:
       return link.target;
   }
 }
+
+/** How a link to a collection entry is written as text: `entry:` and the entry's ID, which never changes. */
+export const ENTRY_LINK_PREFIX = 'entry:';
 
 // ---------------------------------------------------------------------------
 // Text input

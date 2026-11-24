@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
 import { suggestRoute } from '@shared/routes';
+import { collectionRoutes } from '@shared/collections';
 import type { ProjectState } from '@shared/types';
 import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, toast, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
@@ -25,7 +26,9 @@ const FIND_FROM = 8;
 function newPageRoute(st: ProjectState, title: string, parent = '/'): { route: string; base: string; reserved?: string } {
   // Old addresses kept working count as taken: a new page is never given one without asking.
   const kept: unknown[] = Array.isArray(st.site.redirects) ? st.site.redirects : [];
-  const taken = (r: string) => [...Object.values(st.pages).map((p) => p.route), ...kept.map((x) => (x as { from?: unknown })?.from)].some((u) => typeof u === 'string' && u.toLowerCase() === r.toLowerCase());
+  // So do the addresses of collections and their entries, which a page can never take.
+  const held = collectionRoutes(st).map((o) => o.route);
+  const taken = (r: string) => [...Object.values(st.pages).map((p) => p.route), ...kept.map((x) => (x as { from?: unknown })?.from), ...held].some((u) => typeof u === 'string' && u.toLowerCase() === r.toLowerCase());
   return suggestRoute(title, taken, 'page', parent);
 }
 

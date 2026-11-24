@@ -588,7 +588,8 @@ describe('migrating documents to structured rich text', () => {
     expect(project(2)).toEqual({ helper: ['paragraphs', 'paragraphs'], strings: ['paragraphs', 'paragraphs'], declared: ['paragraphs', undefined], partly: ['blocks', 'paragraphs'], converted: ['paragraphs', 'paragraphs'] });
     // Since then, the source decided: rendering through the helper, or being converted, took blocks.
     const before = MIGRATIONS.findIndex((m) => m.id === 'rich-text-code-form') + 1;
-    expect(MIGRATIONS.at(-1)!.id).toBe('rich-text-code-form');
+    // Released as the sixth migration, upgrading format 6 to 7; later ones change nothing it decided.
+    expect(before).toBe(6);
     expect(project(before)).toEqual({ helper: ['blocks', 'blocks'], strings: [undefined, undefined], declared: ['paragraphs', undefined], partly: ['blocks', undefined], converted: ['blocks', 'blocks'] });
   });
 

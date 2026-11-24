@@ -3,6 +3,7 @@ import type {
   AltReview,
   ComponentDefinition,
   GraphNode,
+  ImageValue,
   InstanceNode,
   LinkValue,
   ListItem,
@@ -30,6 +31,8 @@ import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, 
 import { newId } from '@shared/ids';
 import { checkPublicUrl } from '@shared/public-url';
 import { ARTICLE_ROW_FIELDS, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { collectionRouteOwner } from '@shared/collections';
+import { collectionCreate, collectionRemove, collectionUpdate, entryCreate, entryRemove, entryReorder, entryUpdate } from './collections';
 import { isListBlock, toRichText } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { teaserFields } from '@shared/page-teasers';
@@ -316,6 +319,20 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       }
       return {};
     }
+    case 'collection.create':
+      return collectionCreate(state, op);
+    case 'collection.update':
+      return collectionUpdate(state, op);
+    case 'collection.remove':
+      return collectionRemove(state, op);
+    case 'entry.create':
+      return entryCreate(state, op);
+    case 'entry.update':
+      return entryUpdate(state, op);
+    case 'entry.reorder':
+      return entryReorder(state, op);
+    case 'entry.remove':
+      return entryRemove(state, op);
     case 'asset.remove': {
       const removing = own(state.assets.assets, op.assetId);
       if (!removing) fail(`Asset "${op.assetId}" does not exist.`);
@@ -372,6 +389,16 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         // A use left with no description at all is listed too, however it came to have none.
         if (!(alt === was ? now : alt)) altReview.push({ ...u.place, reason: 'missing', alt: typeof v.alt === 'string' ? v.alt : '' });
         else if (alt !== was && alt !== now) altReview.push({ ...u.place, reason: 'custom', alt: v.alt });
+      }
+      // Collections' uses have no place a replacement can name yet, so they change only with every other use: each
+      // entry's featured image, and their picture fields' defaults and each entry's value. A description that was the
+      // old image's suggestion follows the new one, as above; entries have no place in the review list yet.
+      if (!op.uses) {
+        for (const e of collectionEntries(state)) if (e.featuredImage === op.assetId) e.featuredImage = op.withAssetId;
+        for (const v of collectionImageValues(state, op.assetId)) {
+          v.assetId = op.withAssetId;
+          if (!op.keepAlt && !v.decorative && (typeof v.alt === 'string' ? v.alt.trim() : '') === was) v.alt = now;
+        }
       }
       return { altReview };
     }
@@ -485,6 +512,33 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
   for (const t of allTrees(state)) walk(t.tree.nodes);
   for (const d of Object.values(state.components)) walk(d.properties);
   for (const p of Object.values(state.pages)) walk(p.seo);
+  for (const c of Object.values(state.collections ?? {})) {
+    // A custom field's default, and each entry's value of a picture field: only those hold a picture.
+    const pictures = Object.entries(c.settings.fields ?? {}).filter(([, f]) => f?.type === 'image');
+    for (const [, f] of pictures) walk(f.default);
+    for (const e of Object.values(c.entries)) {
+      for (const [name] of pictures) if (Object.hasOwn(e.values ?? {}, name)) walk(e.values[name]);
+      walk(e.body);
+    }
+  }
+}
+
+/** Every entry of every collection. */
+const collectionEntries = (state: ProjectState) => Object.values(state.collections ?? {}).flatMap((c) => Object.values(c.entries));
+
+/** The picture values of collections' image fields showing `assetId`: each field's default and each entry's value. */
+function collectionImageValues(state: ProjectState, assetId: string): ImageValue[] {
+  const out: ImageValue[] = [];
+  const pick = (v: unknown) => {
+    if (v && typeof v === 'object' && (v as ImageValue).assetId === assetId) out.push(v as ImageValue);
+  };
+  for (const c of Object.values(state.collections ?? {}))
+    for (const [name, f] of Object.entries(c.settings.fields ?? {})) {
+      if (f?.type !== 'image') continue;
+      pick(f.default);
+      for (const e of Object.values(c.entries)) if (Object.hasOwn(e.values ?? {}, name)) pick(e.values[name]);
+    }
+  return out;
 }
 
 /** A stored link to a library document (see LinkValue). */
@@ -505,6 +559,7 @@ export function assetUsages(state: ProjectState): Record<string, number> {
   });
   for (const k of [state.site.favicon, state.site.socialImage]) if (k) out[k] = (out[k] ?? 0) + 1;
   for (const p of Object.values(state.pages)) if (p.seo.socialImage) out[p.seo.socialImage] = (out[p.seo.socialImage] ?? 0) + 1;
+  for (const e of collectionEntries(state)) if (typeof e.featuredImage === 'string' && e.featuredImage) out[e.featuredImage] = (out[e.featuredImage] ?? 0) + 1;
   // An imported font is in use while a token or style names its family.
   for (const [id, n] of Object.entries(fontAssetUsages(state))) out[id] = (out[id] ?? 0) + n;
   return out;
@@ -538,7 +593,7 @@ function redirectIndex(state: ProjectState, route: string): number {
  * an old address kept working for another page. A page may take back an old address of its own.
  */
 function routeReserved(state: ProjectState, route: string, forPageId?: string): boolean {
-  if (routeTaken(state, route, forPageId)) return true;
+  if (routeTaken(state, route, forPageId) || collectionRouteOwner(state, route)) return true;
   const i = redirectIndex(state, route);
   return i >= 0 && state.site.redirects![i].pageId !== forPageId;
 }
@@ -550,6 +605,12 @@ function routeReserved(state: ProjectState, route: string, forPageId?: string): 
  */
 function autoRoute(state: ProjectState, title: string, fallback: string, forPageId?: string, folder = '/'): string {
   return suggestRoute(title, (r) => routeReserved(state, r, forPageId), fallback, folder).route;
+}
+
+/** Refuses an address a collection or one of its entries holds: a page can never take it over. */
+function refuseCollectionRoute(state: ProjectState, route: string) {
+  const owner = collectionRouteOwner(state, route);
+  if (owner) fail(`${route} is the address of ${owner.label}. Choose another address for the page.`);
 }
 
 /** A page now uses `route`: an old address kept working there stops redirecting, because the page takes it over. */
@@ -572,6 +633,7 @@ function pageCreate(state: ProjectState, op: Op<'page.create'>): OpResult {
     if (err) fail(err);
     if (route === '/') fail('The "/" route belongs to the Home page.');
     if (routeTaken(state, route)) fail(`Another page already uses ${route}.`);
+    refuseCollectionRoute(state, route);
   } else route = autoRoute(state, op.title, 'page');
   if (op.pageId && Object.hasOwn(state.pages, op.pageId)) fail(`Page "${op.pageId}" already exists.`);
   claimRoute(state, route);
@@ -636,6 +698,13 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
     // The pages inside it move with it, and every address left behind keeps working for its page.
     const plan = planRouteMove(state, page.id, route, validateRoute);
     if ('error' in plan) fail(plan.error);
+    refuseCollectionRoute(state, route);
+    // No page moved along with it may land on an address a collection or one of its entries holds either.
+    for (const m of plan.moves) {
+      if (m.pageId === page.id) continue;
+      const owner = collectionRouteOwner(state, m.to);
+      if (owner) fail(`Moving “${page.title}” would move “${state.pages[m.pageId].title}” to ${m.to}, which is the address of ${owner.label}. Choose another address for the page.`);
+    }
     movePages(state, plan.moves, ctx.addressesAtStart);
     if (plan.moves.length > 1) moved = plan.moves;
   }

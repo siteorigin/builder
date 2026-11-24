@@ -6,7 +6,7 @@ import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { PageDoc, ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
-import type { ApplyResult, EditBatch } from '@shared/ops';
+import type { ApplyResult, EditBatch, EditOperation } from '@shared/ops';
 import type { FileText, RestoreVersionResult, SavedCopy, StorageInfo, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { choicesLost } from '@shared/variants';
@@ -27,7 +27,7 @@ import { packFileInfo, readPackFile } from '../packs/files';
 import { ownServerHook } from './server-hook';
 import { checkSvelteSource, componentSources } from '../codecheck';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
-import { CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { collectionPathOf, collectionsFromDocs, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -313,6 +313,37 @@ interface GeneratedManifest {
   files: Record<string, string>;
   /** Files a publication was writing when it stopped: each is this app's own if it holds that version. */
   pending?: Record<string, string>;
+}
+
+/** Whether an operation changes a collection or one of its entries. */
+const isCollectionOperation = (o: EditOperation) => o.type.startsWith('collection.') || o.type.startsWith('entry.');
+
+/**
+ * A collection change checked against files it does not write: a removal guards the links other entries and pages
+ * hold, and a new address must be free of every page's and entry's. One changed outside the app since it was read
+ * makes that check stale, so the change waits for it (see `wholeProject`).
+ */
+function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
+  switch (o.type) {
+    // A page's new address must be free of every entry's too, once the project has any.
+    case 'page.create':
+    case 'page.duplicate':
+    case 'page.setHome':
+      return Object.keys(state.collections).length > 0;
+    case 'page.update':
+      return o.route !== undefined && Object.keys(state.collections).length > 0;
+    case 'collection.create':
+    case 'collection.remove':
+    case 'entry.create':
+    case 'entry.remove':
+      return true;
+    case 'collection.update':
+      return o.route !== undefined;
+    case 'entry.update':
+      return o.slug !== undefined;
+    default:
+      return false;
+  }
 }
 
 /** A page's document path, capturing the page ID. */
@@ -1194,11 +1225,22 @@ export class ProjectSession extends EventEmitter {
         continue;
       }
       const disk = await this.diskContent(d.path);
-      if (disk === null) continue;
+      if (disk === null) {
+        // Removed before the interruption: the folders that leaves empty go too, as they do after a whole delete.
+        await removeEmptyDirs(dirname(safeJoin(this.dir, d.path)), join(this.dir, d.path.startsWith('src/') ? 'src' : 'siteorigin'));
+        continue;
+      }
       if (sha(disk) !== d.before) {
         conflicts++;
         this.holdConflict(d.path, null, 'Changed outside SiteOrigin Builder while a save was interrupted.');
         continue;
+      }
+      // A collection's settings stay while any of its entries is still there (one added outside the app since, or one
+      // held above): an entry is never left without its collection, which would stop the project opening.
+      const settingsOf = collectionPathOf(d.path);
+      if (settingsOf && settingsOf.entryId === undefined) {
+        const left = await fs.readdir(join(this.dir, DOC_DIR, 'collections', settingsOf.collectionId, 'entries')).catch(() => [] as string[]);
+        if (left.some((f) => isCanonicalPath(`${DOC_DIR}/collections/${settingsOf.collectionId}/entries/${f}`))) continue;
       }
       await this.removeCanonical(d.path);
     }
@@ -1328,7 +1370,10 @@ export class ProjectSession extends EventEmitter {
     }
     // Authored sources go before the definitions that name them, so a component's definition is never missing
     // beside its source part way through a delete: recovery can then tell that from a definition deleted outside.
-    deletes.sort((a, b) => Number(!CUSTOM_SOURCE_RE.test(a.path)) - Number(!CUSTOM_SOURCE_RE.test(b.path)));
+    // Entries go before their collection's settings for the same reason: an entry is never left without the collection
+    // it belongs to, which reading the project would refuse.
+    const deleteRank = (p: string) => (CUSTOM_SOURCE_RE.test(p) ? 0 : collectionPathOf(p)?.entryId !== undefined ? 1 : 2);
+    deletes.sort((a, b) => deleteRank(a.path) - deleteRank(b.path));
     // A change worked out from the whole project (a theme update or switch, a format update) also depends on files it
     // does not write: what builds on a component, what its placements hold. One changed outside the app since it was
     // read (an edit the watcher has not delivered yet) makes those checks stale, so the change waits for it. The
@@ -1768,6 +1813,9 @@ export class ProjectSession extends EventEmitter {
       // Paste places what the editor copied; an AI run never sends it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'node.paste'))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'node.paste is only for the editor. Use node.copy.', recoverable: true } };
+      // Collections have no tools of their own yet: the assistant neither sees nor changes them.
+      if ((opts.source === 'ai' || opts.runId) && ops.some(isCollectionOperation))
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections and their entries can only be changed in the editor for now.', recoverable: true } };
       // A library image's file is only ever one the importer checked and wrote.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'asset.relink'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can give an image a new file. Ask the user to locate it in Assets.', recoverable: true } };
@@ -1801,7 +1849,7 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;
       try {
-        ev = await this.persist(next, { ...opts, wholeProject: ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply') });
+        ev = await this.persist(next, { ...opts, wholeProject: ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state)) });
       } catch (e) {
         if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
         throw e;
@@ -2761,6 +2809,12 @@ export class ProjectSession extends EventEmitter {
       const path = `${DOC_DIR}/components/${d}/component.json`;
       if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path) && existsSync(join(this.dir, path))) return path;
     }
+    // A collection or an entry added outside the app.
+    for (const c of await fs.readdir(join(this.dir, DOC_DIR, 'collections')).catch(() => [] as string[])) {
+      const paths = [`${DOC_DIR}/collections/${c}/collection.json`];
+      for (const f of await fs.readdir(join(this.dir, DOC_DIR, 'collections', c, 'entries')).catch(() => [] as string[])) paths.push(`${DOC_DIR}/collections/${c}/entries/${f}`);
+      for (const path of paths) if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path) && existsSync(join(this.dir, path))) return path;
+    }
     return null;
   }
 
@@ -2781,6 +2835,12 @@ export class ProjectSession extends EventEmitter {
       if (h === null) docs.delete(path);
       else docs.set(path, await this.getBlob(h));
     }
+    // An entry is kept only with its collection: a restore that would leave one without it (its collection deleted
+    // outside the app since) cannot be saved.
+    // Nor beside another entry with its ID (one added to another collection outside the app since).
+    const restored = collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)]));
+    const unsaveable = restored.orphans.length ? `${restored.orphans[0]} would have no collection` : restored.duplicates.length ? `${restored.duplicates[0]} would share its entry ID with another entry` : null;
+    if (unsaveable) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${unsaveable}.`, recoverable: false } };
     const next = docsToState(docs, this.state);
     // History restores only its own documents, and another may have changed outside the app since (a page now on
     // a route this restores, an old address kept there): never save a project that could not be opened again.
@@ -3524,7 +3584,8 @@ function docsToState(docs: Map<string, string>, current: ProjectState): ProjectS
     assets: parse('siteorigin/assets.json') ?? current.assets,
     themeLock: parse('siteorigin/theme-lock.json') ?? current.themeLock,
     pages: {},
-    components: {}
+    components: {},
+    collections: collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)])).collections
   };
   for (const [p, c] of docs) {
     const pm = p.match(/^siteorigin\/pages\/(.+)\.json$/);
