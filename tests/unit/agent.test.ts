@@ -698,11 +698,16 @@ describe('page scope (#513)', () => {
     expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), component: { id: design.id, name: design.name } })).toEqual({ ok: false, message: unreadable });
     expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), mode: 'review' as never })).toEqual({ ok: false, message: unreadable });
     expect(await env.orch.send('Hi', { ...pageCtx(home, 7 as unknown as string) })).toEqual({ ok: false, message: unreadable });
-    // The header, chosen on this page, is.
-    const header = env.session.state.site.shell.header.rootIds[0];
-    const fine = await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'selection', selection: { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: header }, selectionLabel: 'Header' });
-    expect(fine.ok).toBe(true);
-    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    // A shared part is the header or the footer, whatever the request says it is about.
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'selection', selection: { owner: { kind: 'shell', id: 'constructor' }, instancePath: [], nodeId: 'n_x' }, selectionLabel: 'X' })).toEqual({ ok: false, message: unreadable });
+    expect(await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: undefined, selection: { owner: { kind: 'shell', id: 'constructor' }, instancePath: [], nodeId: 'n_x' }, selectionLabel: 'X' })).toEqual({ ok: false, message: unreadable });
+    // The header or footer, chosen on this page, is.
+    for (const shell of ['header', 'footer'] as const) {
+      const root = env.session.state.site.shell[shell].rootIds[0];
+      const fine = await env.orch.send('Hi', { ...pageCtx(home, 'Home'), scope: 'selection', selection: { owner: { kind: 'shell', id: shell }, instancePath: [], nodeId: root }, selectionLabel: shell });
+      expect(fine.ok, shell).toBe(true);
+      while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    }
   });
 
   it('ends a request whose page was removed before it started, without holding the project', async () => {
@@ -732,6 +737,37 @@ describe('page scope (#513)', () => {
     expect(adapter.requests).toHaveLength(0);
     // Nothing is held: the author's next change goes straight in.
     expect((await session.apply({ operations: [{ type: 'site.update', name: 'Still mine' }], expectedRevision: session.revision }, { label: 'Rename', source: 'user' })).ok).toBe(true);
+  });
+
+  it('keeps links an earlier request left on other pages for a run that may connect them', async () => {
+    const env = await setup([
+      // The whole site: About's banner links to a page that does not exist yet.
+      () => [call('l1', 'upsert_page_with_sections', { slug: '/about/', sections: [{ componentId: 'cta.banner', props: { heading: 'Talk to us', primaryLink: '/contact-us/' } }] })],
+      () => finish('Done.'),
+      () => finish('Done.'),
+      // Continued on Home alone, once the page exists.
+      () => finish('Nothing else to do here.'),
+      // Continued with the whole site.
+      () => finish('Connected.')
+    ]);
+    const state = () => env.session.state;
+    const home = state().site.homePageId;
+    const about = Object.values(state().pages).find((p) => p.route === '/about/')!.id;
+    const banner = () => Object.values(state().pages[about].nodes).find((n) => n.kind === 'instance' && state().components[n.definitionId]?.componentId === 'cta.banner') as InstanceNode;
+    const first = await env.run('Point the About banner at a Contact us page');
+    expect(first.result).toMatchObject({ incomplete: true, pendingLinks: [expect.objectContaining({ route: '/contact-us/', pageId: about })] });
+    expect((await env.session.apply({ operations: [{ type: 'page.create', title: 'Contact us', route: '/contact-us/' }], expectedRevision: env.session.revision }, { label: 'Add page', source: 'user' })).ok).toBe(true);
+    const contact = Object.values(state().pages).find((p) => p.route === '/contact-us/')!.id;
+    // Limited to Home, the run may not connect About's link: it says so, and keeps it.
+    const second = await env.run('continue', pageCtx(home, 'Home'));
+    expect(second.result).toMatchObject({ incomplete: true, pendingLinks: [expect.objectContaining({ route: '/contact-us/', pageId: about })] });
+    expect(second.result?.summary).toMatch(/Links to \/contact-us\/ on other pages are still waiting, because this request may change only the Home page\. To connect them, choose Whole site and reply "continue"\./);
+    expect(banner().props.primaryLink).toEqual({ type: 'none', target: '' });
+    // The whole site connects it.
+    const third = await env.run('continue', { ...pageCtx(home, 'Home'), scope: 'site' });
+    expect(third.result?.status).toBe('completed');
+    expect(third.result?.incomplete).toBeUndefined();
+    expect(banner().props.primaryLink).toEqual({ type: 'page', target: contact });
   });
 
   it('sends the request without the page glance when only that keeps it inside a known window', async () => {

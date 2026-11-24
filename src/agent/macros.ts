@@ -446,7 +446,11 @@ function pendingLinkOps(state: ProjectState, memory: MacroMemory, route: string,
 }
 
 /** Connect links whose page now exists, however that page was made. Returns the routes still missing. */
-export async function connectPendingLinks(host: ToolHost, memory: MacroMemory, key: string): Promise<{ outcome?: ToolOutcome; missing: string[]; error?: string }> {
+/**
+ * `deferred`: routes that exist, whose links wait on pages a run limited to one page may not change; a run that may
+ * change those pages connects them.
+ */
+export async function connectPendingLinks(host: ToolHost, memory: MacroMemory, key: string): Promise<{ outcome?: ToolOutcome; missing: string[]; deferred: string[]; error?: string }> {
   const state = host.state();
   memory.pendingLinks = memory.pendingLinks.filter((p) => stillWaiting(state, p));
   const ops: EditOperation[] = [];
@@ -462,12 +466,13 @@ export async function connectPendingLinks(host: ToolHost, memory: MacroMemory, k
   let outcome: ToolOutcome | undefined;
   if (ops.length) {
     const res = await host.apply(ops, host.revision(), 'Connect page links', key);
-    if (!res.ok) return { missing: [...new Set(memory.pendingLinks.map((p) => p.route))], error: res.error?.message ?? 'The links could not be connected.' };
+    if (!res.ok) return { missing: [...new Set(memory.pendingLinks.map((p) => p.route))], deferred: [], error: res.error?.message ?? 'The links could not be connected.' };
     outcome = { ok: true, mutated: true, ops, results: res.results, content: { ok: true } };
   }
   memory.pendingLinks = memory.pendingLinks.filter((p) => !filled.includes(p));
   // Only a route no page has is missing: a link on another page that a run limited to one page leaves waiting is not.
-  return { outcome, missing: [...new Set(memory.pendingLinks.map((p) => p.route))].filter((r) => !pageAtRoute(state, r)) };
+  const routes = [...new Set(memory.pendingLinks.map((p) => p.route))];
+  return { outcome, missing: routes.filter((r) => !pageAtRoute(state, r)), deferred: limit ? routes.filter((r) => pageAtRoute(state, r)) : [] };
 }
 
 // ---------------------------------------------------------------------------

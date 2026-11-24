@@ -41,7 +41,11 @@ describe('the scope of the next AI message', () => {
     expect(scope()).toBe('site');
     setState({ selection: null });
     expect(scope()).toBe('selection');
-    // Whole component, chosen while editing a component everywhere, ends with it.
+    // Whole component, chosen while editing a component everywhere, ends with it, selection or not.
+    setState({ definitionMode: { definitionId: 'proj.hero', returnPageId: 'pg_about' }, selection: null });
+    choose('site');
+    setState({ definitionMode: null });
+    expect(scope()).toBe('selection');
     setState({ definitionMode: { definitionId: 'proj.hero', returnPageId: 'pg_about' }, selection: ref('heading') });
     choose('site');
     setState({ definitionMode: null, selection: null });
@@ -53,5 +57,7 @@ describe('the scope of the next AI message', () => {
     // "Edit and try again": the request's page, as far as it reached.
     setState({ pageId: 'pg_about', selection: null, chatContextEnabled: { page: true, scope: 'site' } });
     expect(scope()).toBe('site');
+    setState({ pageId: 'pg_contact', selection: ref('n_intro'), chatContextEnabled: { page: true, scope: 'page' } });
+    expect(scope()).toBe('page');
   });
 });

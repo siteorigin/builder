@@ -2368,6 +2368,8 @@ describe('a run limited to one page (#513)', () => {
     const types = (tools: ToolDefinition[]) => offered(tools).map((o) => (o.type as { const: string }).const).sort();
     // Nothing beyond the page's own (the editor's clipboard, UI state and bindings are never offered here).
     expect(types(cloud.tools).filter((t) => !PAGE_OPERATIONS.has(t as never))).toEqual([]);
+    for (const t of ['page.create', 'page.remove', 'page.reorder', 'page.setHome', 'page.duplicate', 'token.set', 'site.update', 'theme.apply', 'asset.update', 'component.makeUnique', 'component.convertToCode', 'component.createFromNode', 'component.setPropSchema', 'node.paste'])
+      expect(PAGE_OPERATIONS.has(t as never), t).toBe(false);
     for (const t of ['node.insert', 'node.move', 'node.remove', 'node.copy', 'node.setStyle', 'instance.setProp', 'instance.listInsert', 'page.update', 'component.detachInstance']) expect(types(cloud.tools), t).toContain(t);
     const pageUpdate = offered(cloud.tools).find((o) => (o.type as { const: string }).const === 'page.update')!;
     expect(Object.keys(pageUpdate)).toEqual(expect.arrayContaining(['title', 'navLabel', 'description', 'showHeader', 'showFooter', 'draft']));
@@ -2382,7 +2384,8 @@ describe('a run limited to one page (#513)', () => {
     expect([local.mode, local.focused]).toEqual(['page', true]);
     expect(names(local.tools)).toEqual(expect.arrayContaining(['upsert_page_with_sections', 'apply_operations', 'read_page']));
     expect(names(local.tools)).not.toContain('update_site_brand');
-    expect(types(local.tools)).toEqual([...FOCUSED_PAGE_OPERATIONS].sort());
+    expect(types(local.tools)).toEqual(['node.move', 'node.remove', 'page.update']);
+    expect([...FOCUSED_PAGE_OPERATIONS].sort()).toEqual(['node.move', 'node.remove', 'page.update']);
     expect(Object.keys(offered(local.tools).find((o) => (o.type as { const: string }).const === 'page.update')!)).not.toContain('route');
     // Once widened, the run is a site run again.
     expect(toolsForRun({ ...base, page: null, definitionOps: true, capabilities: { toolCalling: 'native', contextWindowTokens: 400000 } }).mode).toBe('site');
@@ -2485,6 +2488,7 @@ describe('a run limited to one page (#513)', () => {
     expect((now().pages[services.id].nodes['n_cta00001'] as InstanceNode).props.primaryLink).toEqual({ type: 'page', target: contact });
     expect((now().pages[about.id].nodes[aboutBanner] as InstanceNode).props.primaryLink).toEqual({ type: 'none', target: '' });
     expect(done.missing).toEqual([]);
+    expect(done.deferred).toEqual(['/contact/']);
     expect(memory.pendingLinks).toEqual([{ route: '/contact/', pageId: about.id, nodeId: aboutBanner, prop: 'primaryLink' }]);
   });
 });

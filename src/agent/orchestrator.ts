@@ -165,7 +165,17 @@ function readableSelection(sel: unknown): boolean {
   if (sel === null || sel === undefined) return true;
   if (typeof sel !== 'object') return false;
   const r = sel as { owner?: { kind?: unknown; id?: unknown }; instancePath?: unknown; nodeId?: unknown };
-  return !!r.owner && typeof r.owner === 'object' && typeof r.owner.kind === 'string' && typeof r.owner.id === 'string' && Array.isArray(r.instancePath) && r.instancePath.every((x) => typeof x === 'string') && typeof r.nodeId === 'string';
+  return (
+    !!r.owner &&
+    typeof r.owner === 'object' &&
+    typeof r.owner.kind === 'string' &&
+    typeof r.owner.id === 'string' &&
+    // The shared parts are the header and the footer: no other name is one.
+    (r.owner.kind !== 'shell' || r.owner.id === 'header' || r.owner.id === 'footer') &&
+    Array.isArray(r.instancePath) &&
+    r.instancePath.every((x) => typeof x === 'string') &&
+    typeof r.nodeId === 'string'
+  );
 }
 
 /** Image references read back from a saved conversation: anything malformed is left out. */
@@ -760,14 +770,16 @@ export class Orchestrator {
     /** Working time the run may use, not counting time spent waiting for the user's answers. */
     const limitMs = ad.provider === 'local' ? LIMITS.localActiveMs : LIMITS.activeMs;
     const timeLimit = `the ${Math.round(limitMs / 60_000)}-minute time limit`;
-    // A page removed since the request was sent leaves nothing it may change: it ends before anything is held or sent.
-    if (!ask && userMsg.context?.scope === 'page' && !Object.hasOwn(session.state.pages, userMsg.context.pageId)) {
-      await finish('failed', `${userMsg.context.pageTitle || 'That page'} is no longer in the site. ${UNCHANGED}`, { error: 'page removed' });
-      return;
-    }
     const lockErr = ask ? null : await session.beginRun(runId);
     if (lockErr) {
       await finish('failed', lockErr, { error: lockErr });
+      return;
+    }
+    // A page removed since the request was sent (a removal already on its way lands before the lock) leaves nothing it
+    // may change: the run lets go of the project and ends before anything is sent.
+    if (!ask && userMsg.context?.scope === 'page' && !Object.hasOwn(session.state.pages, userMsg.context.pageId)) {
+      await session.abortRun().catch(() => undefined);
+      await finish('failed', `${userMsg.context.pageTitle || 'That page'} is no longer in the site. ${UNCHANGED}`, { error: 'page removed' });
       return;
     }
     const startState = structuredClone(session.state);
@@ -1079,6 +1091,9 @@ export class Orchestrator {
       return out;
     };
     const notCreated = (w: MissingPage) => `The page ${describePage(w)} was not created.`;
+    /** Links an earlier request left on other pages, which a run limited to one page may not connect. */
+    const leftWaiting = (route: string) =>
+      `Links to ${route} on other pages are still waiting, because this request may change only ${authority.kind === 'page' ? authority.label : 'one page'}. To connect them, choose Whole site and reply "continue".`;
 
     /** `repair`: the AI setup failed, not the request, and the card offers the way to fix it and send it again. */
     const revertAndFinish = async (status: RunStatus, summary: string, error?: string, repair?: 'settings' | 'key') => {
@@ -1402,7 +1417,8 @@ export class Orchestrator {
             items.push({ kind: 'user', text });
           };
           // Links a "continue" brought back connect as soon as their page exists, even when nothing else changed.
-          const waiting = !session.runChanged() && macros.pendingLinks.length ? (await connectLinks()).missing : [];
+          const carried = !session.runChanged() && macros.pendingLinks.length ? await connectLinks() : null;
+          const waiting = carried?.missing ?? [];
           if (signal.aborted) throw new Error('Cancelled');
           // A page that was rejected or skipped and never retried counts even if nothing else changed.
           if (!session.runChanged() && (macros.drafts.size || missing().length || waiting.length) && !nudged) {
@@ -1449,6 +1465,7 @@ export class Orchestrator {
             const unfinished = [
               ...stubs.map((s) => `${s.title} still has ${s.sections ? 'only an opening section' : 'no sections'}.`),
               ...links.missing.map((r) => `Links to ${r} do not go anywhere yet.`),
+              ...links.deferred.map(leftWaiting),
               ...rejected.map((r) => `The page ${r} was not built.`),
               ...absent.map(notCreated)
             ];
@@ -1478,7 +1495,7 @@ export class Orchestrator {
             await session.completeRun('AI (no changes)');
             msg.text = finalText;
             // Nothing landed, but the request asked for pages that a rejected or skipped change never made.
-            const unfinished = [...[...macros.drafts.keys()].map((r) => `The page ${r} was not built.`), ...waiting.map((r) => `Links to ${r} do not go anywhere yet.`), ...missing().map(notCreated)];
+            const unfinished = [...[...macros.drafts.keys()].map((r) => `The page ${r} was not built.`), ...waiting.map((r) => `Links to ${r} do not go anywhere yet.`), ...(carried?.deferred ?? []).map(leftWaiting), ...missing().map(notCreated)];
             if (unfinished.length)
               await finish('no-changes', `This request is not finished: nothing was changed. ${unfinished.join(' ')} Press Continue, or reply "continue", to try again.`, {
                 usage,
