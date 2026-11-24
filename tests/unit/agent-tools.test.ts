@@ -148,6 +148,23 @@ describe('upsert_page_with_sections', () => {
     expect(schema.required).not.toContain('draft');
   });
 
+  it('puts a child page’s header link under its parent’s link, and leaves the footer flat (#169)', async () => {
+    const { session, run } = await setup([
+      () => [call('c1', 'upsert_page_with_sections', { slug: '/about/team/', title: 'Team', addToHeaderNav: true, addToFooterNav: true, sections: [{ componentId: 'intro.page', props: { heading: 'Our team' } }] })],
+      () => finish()
+    ]);
+    await run('Add a Team page under About, in the menus');
+    const team = pageAt(session.state, '/about/team/')!;
+    const header = session.state.site.shell.header;
+    const footer = session.state.site.shell.footer;
+    const rows = (tree: typeof header) => ((tree.nodes[tree.rootIds[0]] as InstanceNode).props.links as Array<{ label: string; sub?: boolean; link: { target?: string } }>).map((i) => `${i.sub ? '  ' : ''}${i.label}`);
+    expect(rows(header)).toEqual(['Home', 'About', '  Team', 'Contact']);
+    expect(rows(footer)).toEqual(['Home', 'About', 'Contact', 'Team']);
+    expect(((header.nodes[header.rootIds[0]] as InstanceNode).props.links as Array<{ link: { target?: string } }>)[2].link.target).toBe(team.id);
+    expect(((footer.nodes[footer.rootIds[0]] as InstanceNode).props.links as Array<{ sub?: boolean; link: { target?: string } }>)[3]).toMatchObject({ link: { target: team.id } });
+    expect(((footer.nodes[footer.rootIds[0]] as InstanceNode).props.links as Array<{ sub?: boolean }>)[3]).not.toHaveProperty('sub');
+  });
+
   it('writes a page in another language as a translation of an existing one, and unlinks it when asked', async () => {
     const sections = [
       { componentId: 'intro.page', props: { heading: 'À propos du studio' } },

@@ -42,3 +42,21 @@ export function validateRoute(route: string): string | null {
 export function routeDir(route: string): string {
   return route.replace(/^\/+|\/+$/g, '');
 }
+
+/**
+ * The address a page titled `title` gets in `folder` ("/" for the top level, or a page's address for a page inside
+ * it): its slug, made valid when it is a reserved name, with a numbered suffix while `taken` says the address is
+ * in use, kept within the 60-character segment limit. `base` is the address before any suffix and `reserved` the
+ * reserved address it avoided. The Pages panel previews new addresses with it, so the preview is what the page gets.
+ */
+export function suggestRoute(title: string, taken: (route: string) => boolean, fallback = 'page', folder = '/'): { route: string; base: string; reserved?: string } {
+  let slug = slugify(title) || fallback;
+  const first = `${folder}${slug}/`;
+  // Only a top-level name can be reserved; deeper, a slug is always a valid segment.
+  const reserved = folder === '/' && validateRoute(first) ? first : undefined;
+  if (reserved) slug = `${slug.slice(0, 55)}-page`;
+  const base = `${folder}${slug}/`;
+  let route = base;
+  for (let i = 2; taken(route); i++) route = `${folder}${slug.slice(0, 60 - `-${i}`.length).replace(/-+$/, '')}-${i}/`;
+  return reserved ? { route, base, reserved } : { route, base };
+}

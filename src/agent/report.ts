@@ -125,8 +125,13 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const o: OwnerRef = { kind: 'page', id: op.pageId };
         const render = (d: string[]) => `Changed the ${d.length ? joinWords(d) : 'settings'} of page ${where(o)}`;
         const fields = Object.keys(PAGE_FIELDS).filter((f) => (op as Record<string, unknown>)[f] !== undefined);
-        if (!fields.length) return add(op, `page:${op.pageId}`, render, linkTo(o));
-        return fields.forEach((f) => add(op, `page:${op.pageId}`, render, linkTo(o), PAGE_FIELDS[f]));
+        if (!fields.length) add(op, `page:${op.pageId}`, render, linkTo(o));
+        else fields.forEach((f) => add(op, `page:${op.pageId}`, render, linkTo(o), PAGE_FIELDS[f]));
+        // A new address moves the pages inside the page too (see shared/page-tree.ts): say so, naming them.
+        // Where each is at the end of the run.
+        const moved = ((results[i] ?? {}) as { moved?: Array<{ pageId: string }> }).moved?.filter((m) => m.pageId !== op.pageId && after.pages[m.pageId]) ?? [];
+        if (moved.length) plain(op, `Moved ${joinWords(moved.map((m) => `${where({ kind: 'page', id: m.pageId })} (now ${after.pages[m.pageId].route})`))} with it`);
+        return;
       }
       case 'page.duplicate':
         return plain(op, `Duplicated page ${where({ kind: 'page', id: op.pageId })}`, res.pageId && after.pages[res.pageId] ? { owner: { kind: 'page', id: res.pageId }, pageId: res.pageId } : {});
@@ -448,6 +453,9 @@ export function pagesTouched(ops: EditOperation[], state?: ProjectState): Set<st
       if (op.addToNavigation || op.starter === 'article' || op.articleDate !== undefined) return 'all';
     } else if (op.type === 'page.setHome') {
       // Header and footer links change destination on every page, and a page can be styled by where its links go.
+      return 'all';
+    } else if (op.type === 'page.update' && op.route !== undefined) {
+      // A new address moves the pages inside the page too, and changes where links to them lead on every page.
       return 'all';
     } else if (op.type === 'page.remove' || (op.type === 'page.update' && (op.title !== undefined || op.description !== undefined || op.socialImage !== undefined))) {
       // Page lists elsewhere show a page's title, description and sharing image, and drop its card when it goes.

@@ -15,7 +15,7 @@ import { newId } from '@shared/ids';
 import { isLanguageCode } from '@shared/languages';
 import { catalogueComponent, catalogueEntries } from '@catalogue/index';
 import { applyOperation } from '@engine/apply';
-import { itemLinkPairs } from '@engine/tree';
+import { headerMenuSlot, itemLinkPairs } from '@engine/tree';
 import { followText, joinedLines } from '@shared/contact-links';
 import { normalizeProp, normalizeScalar } from '@engine/values';
 import { compactPropsSchema, IMAGE_SCHEMA, type JsonSchema } from './propschema';
@@ -378,7 +378,8 @@ function shellLinks(state: ProjectState, shell: 'header' | 'footer'): { node: In
     const schema = state.components[n.definitionId]?.properties.links;
     // A computed list fills itself from the site's pages: a link stored in it would never show.
     if (schema?.type === 'list' && !schema.feed && schema.fields.label?.type === 'string' && schema.fields.link?.type === 'link')
-      return { node: n, max: schema.max, items: (n.props.links as ListItem[] | undefined) ?? [] };
+      // An unset list shows its default items, and an insertion starts from them.
+      return { node: n, max: schema.max, items: (n.props.links as ListItem[] | undefined) ?? (schema.default as ListItem[] | undefined) ?? [] };
   }
   return null;
 }
@@ -388,7 +389,11 @@ function navOps(state: ProjectState, shell: 'header' | 'footer', pageId: string,
   if (!menu) return { ops: [], status: 'unavailable' };
   if (menu.items.some((i) => (i.link as LinkValue | undefined)?.type === 'page' && (i.link as LinkValue).target === pageId)) return { ops: [], status: 'present' };
   if (menu.max !== undefined && menu.items.length >= menu.max) return { ops: [], status: 'full' };
-  return { status: 'added', ops: [{ type: 'instance.listInsert', owner: { kind: 'shell', id: shell }, nodeId: menu.node.id, prop: 'links', item: { label, link: { type: 'page', target: pageId } } }] };
+  // In the header, a page inside another goes under that page's link, as Add page puts it (see headerMenuSlot).
+  const slot = shell === 'header' ? headerMenuSlot(state, menu.items, pageId) : { index: menu.items.length, sub: false };
+  const item = { label, link: { type: 'page', target: pageId }, ...(slot.sub ? { sub: true } : {}) };
+  const at = slot.index < menu.items.length ? { index: slot.index } : {};
+  return { status: 'added', ops: [{ type: 'instance.listInsert', owner: { kind: 'shell', id: shell }, nodeId: menu.node.id, prop: 'links', ...at, item }] };
 }
 
 // ---------------------------------------------------------------------------
@@ -946,7 +951,7 @@ export function upsertToolSchema(state: ProjectState): JsonSchema {
       byline: { type: 'string', maxLength: 80 },
       excerpt: { type: 'string', maxLength: 320 },
       newsHidden: { type: 'boolean' },
-      addToHeaderNav: { type: 'boolean', description: 'true adds a header link if missing. false or omitted leaves navigation as it is.' },
+      addToHeaderNav: { type: 'boolean', description: 'true adds a header link if missing (a child page\'s goes under its parent\'s). false or omitted leaves navigation as it is.' },
       addToFooterNav: { type: 'boolean', description: 'true adds a footer link if missing. false or omitted leaves navigation as it is.' },
       removeOtherSections: { type: 'boolean', description: 'Remove existing sections (theme or project components) that are not in this list. Hand-built layout stays.' },
       sections: {

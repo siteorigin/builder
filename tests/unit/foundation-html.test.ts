@@ -88,7 +88,7 @@ async function bundleComponents(): Promise<{ module: Rendered; files: Map<string
         load(id) {
           if (id === '\0entry') return entry;
           if (id === '\0$app/paths') return "export const resolve = (p) => p; export const asset = (p) => '/' + p; export const base = '';";
-          if (id === '\0$app/state') return "export const page = { route: { id: '/' }, url: new URL('https://site.test/') };";
+          if (id === '\0$app/state') return "export const page = { get route() { return { id: globalThis.soTestRouteId ?? '/' }; }, url: new URL('https://site.test/') };";
           if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const beforeNavigate = () => {};';
           if (!id.startsWith(GEN)) return null;
           const path = id.slice(GEN.length);
@@ -136,7 +136,7 @@ async function renderRoute(state: ProjectState, pageId: string): Promise<string>
         load(id) {
           if (id === '\0entry') return entry;
           if (id === '\0$app/paths') return "export const resolve = (p) => p; export const asset = (p) => '/' + p; export const base = '';";
-          if (id === '\0$app/state') return "export const page = { route: { id: '/' }, url: new URL('https://site.test/') };";
+          if (id === '\0$app/state') return "export const page = { get route() { return { id: globalThis.soTestRouteId ?? '/' }; }, url: new URL('https://site.test/') };";
           if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const beforeNavigate = () => {};';
           if (!id.startsWith(GEN)) return null;
           const path = id.slice(GEN.length);
@@ -548,6 +548,83 @@ describe('shell.header', () => {
       expect(source).toMatch(/max-height: calc\(100dvh - 100% \+ var\(--so-header-notice, 0px\)\);/);
       // Its measure goes with the effect that set it.
       expect(source).toMatch(/el\.style\.removeProperty\('--so-header-notice'\);\n\t\t\};/);
+    });
+  });
+
+  describe('submenus (#169)', () => {
+    const pageAt = (route: string) => Object.values(bundle.state.pages).find((p) => p.route === route)!.id;
+    const link = (route: string) => ({ type: 'page', target: pageAt(route) });
+    /** The main menu's markup, without Svelte's scoping classes or the whitespace between tags. */
+    const nav = (out: string) =>
+      out.match(/<ul class="so-header__list[^"]*"[^>]*>[\s\S]*<\/ul>(?=\s*(<a class="so-btn|<\/nav>))/)![0].replace(/ class="svelte-[a-z0-9]+"/g, '').replace(/ svelte-[a-z0-9]+/g, '').replace(/\s+/g, ' ').replace(/> </g, '><');
+    const toggle = (id: string, label: string) =>
+      `<button type="button" class="so-header__sub-toggle" aria-expanded="false" aria-controls="so-sub:${id}"><span class="so-visually-hidden">${label} submenu</span><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"></path></svg></button>`;
+
+    it('nests links marked to show under the link above in a hidden list its button controls', () => {
+      const links = [
+        { id: 'l1', label: 'Home', link: link('/') },
+        { id: 'l2', label: 'About', link: link('/about/') },
+        { id: 'l3', label: 'Team', link: { type: 'url', target: 'https://example.com/team' }, sub: true },
+        { id: 'l4', label: 'Contact', link: link('/contact/'), sub: true },
+        { id: 'l5', label: 'Shop', link: { type: 'url', target: 'https://example.com/shop' } }
+      ];
+      expect(nav(authoredHtml('shell.header', { links }))).toBe(
+        '<ul class="so-header__list">' +
+          '<li><a href="/" aria-current="page">Home</a></li>' +
+          `<li class="so-header__group"><a href="/about/">About</a>${toggle('1', 'About')}` +
+          '<ul id="so-sub:1" class="so-header__sub" hidden=""><li><a href="https://example.com/team">Team</a></li><li><a href="/contact/">Contact</a></li></ul></li>' +
+          '<li><a href="https://example.com/shop">Shop</a></li>' +
+          '</ul>'
+      );
+    });
+
+    it('keeps a flat menu flat, and a marked link with no link above it at the top level', () => {
+      const flat = nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/') }, { id: 'l2', label: 'Contact', link: link('/contact/'), sub: false }] }));
+      expect(flat).toBe('<ul class="so-header__list"><li><a href="/about/">About</a></li><li><a href="/contact/">Contact</a></li></ul>');
+      const leading = nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/'), sub: true }, { id: 'l2', label: 'Contact', link: link('/contact/'), sub: true }] }));
+      expect(leading).toBe(`<ul class="so-header__list"><li class="so-header__group"><a href="/about/">About</a>${toggle('0', 'About')}<ul id="so-sub:0" class="so-header__sub" hidden=""><li><a href="/contact/">Contact</a></li></ul></li></ul>`);
+      // Items stored before submenus existed have no mark: they are top-level links.
+      expect(nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/') }] }))).toBe('<ul class="so-header__list"><li><a href="/about/">About</a></li></ul>');
+    });
+
+    it('names each submenu by its place in the menu, whatever its link’s item ID holds', () => {
+      const links = [
+        { id: 'a b', label: 'About', link: link('/about/') },
+        { id: 'l2', label: 'Contact', link: link('/contact/'), sub: true },
+        { id: 'a-b', label: 'Shop', link: { type: 'url', target: 'https://example.com/shop' } },
+        { id: 'x"y', label: 'Team', link: { type: 'url', target: 'https://example.com/team' }, sub: true }
+      ];
+      const out = nav(authoredHtml('shell.header', { links }));
+      expect([...out.matchAll(/aria-controls="([^"]*)"/g)].map((m) => m[1])).toEqual(['so-sub:0', 'so-sub:1']);
+      expect([...out.matchAll(/<ul id="([^"]*)" class="so-header__sub"/g)].map((m) => m[1])).toEqual(['so-sub:0', 'so-sub:1']);
+    });
+
+    it('marks only the open page, and its parent link as the section, on a page under it', () => {
+      const links = [
+        { id: 'l1', label: 'About', link: link('/about/') },
+        { id: 'l2', label: 'Contact', link: link('/contact/'), sub: true }
+      ];
+      // The page being rendered is the one at /contact/.
+      (globalThis as { soTestRouteId?: string }).soTestRouteId = '/contact';
+      let out: string;
+      try {
+        out = nav(authoredHtml('shell.header', { links }, pageAt('/contact/')));
+      } finally {
+        delete (globalThis as { soTestRouteId?: string }).soTestRouteId;
+      }
+      expect(out).toContain('<a href="/contact/" aria-current="page">Contact</a>');
+      expect(out).toContain('<li class="so-header__group so-header__group--current"><a href="/about/">About</a>');
+      expect(out.match(/aria-current/g)).toHaveLength(1);
+    });
+
+    it('declares the field, and styles the panel and the phone menu without hover', () => {
+      const field = bundle.defs['shell.header'].properties.links;
+      expect(field.type === 'list' && field.fields.sub).toMatchObject({ type: 'boolean', default: false, label: 'Show under the link above' });
+      const source = bundle.defs['shell.header'].source!;
+      expect(source).toMatch(/\.so-header__sub\[hidden\] \{\s*display: none;/);
+      expect(source).not.toMatch(/:hover[^{]*\.so-header__sub\b[^{]*\{[^}]*display/);
+      // Escape closes the submenu first, back to its button, then the phone menu.
+      expect(source).toMatch(/if \(openSub !== null\) \{[\s\S]*?subToggle\(id\)\?\.focus\(\);[\s\S]*?\} else if \(menu\?\.open\) \{/);
     });
   });
 

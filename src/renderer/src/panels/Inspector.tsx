@@ -33,6 +33,8 @@ import type { ComponentDefinition, ElementRef, GraphNode, ImageValue, InstanceNo
 import { isBinding } from '@shared/types';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
+import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
+import { validateRoute } from '@shared/routes';
 import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { articleRows, feedLimit, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { cascadeStyles, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
@@ -1723,6 +1725,64 @@ function ArticleSettings({ page, draft, upd }: { page: PageDoc; draft: boolean; 
   );
 }
 
+/**
+ * Which page this page is inside, chosen from a list: the page moves into that page's folder, keeping the last part
+ * of its address ("/kitchens/" inside Lookbook becomes "/lookbook/kitchens/"), with the pages inside it. A page that
+ * could not move there (too deep, or onto an address in use) is offered disabled. Where its link sits in the header
+ * menu is chosen in the menu itself.
+ */
+function PageLocation({ page, state }: { page: PageDoc; state: ProjectState }) {
+  // The version of the project these choices come from: a move is sent against it, so a page that moved meanwhile
+  // asks the author to choose again rather than landing somewhere else.
+  const revision = useStore((s) => s.snapshot?.revision);
+  const rows = pageRows(state.pages, state.site.pageOrder);
+  const parentId = pageParents(Object.values(state.pages)).get(page.id) ?? '';
+  const leaf = routeLeaf(page.route);
+  const branch = new Set([page.id, ...pagesWithin(state.pages, page.id)]);
+  /** Why the page cannot move to `to`, or null. */
+  const problem = (to: string) => (to === page.route ? null : (validateRoute(to) ?? (planRouteMove(state, page.id, to, validateRoute) as { error?: string }).error ?? null));
+  const choices = rows
+    .filter((r) => r.id !== state.site.homePageId && !branch.has(r.id))
+    .map((r) => {
+      const to = `${state.pages[r.id].route}${leaf}/`;
+      return { ...r, to, err: problem(to) };
+    });
+  const atTop = `/${leaf}/`;
+  const topErr = problem(atTop);
+  // An address with folders no page uses ("/lookbook/2026/kitchens/") is shown as it is, so its parent (or the top
+  // level) can still be chosen to move it straight there.
+  const exact = (parentId ? `${state.pages[parentId].route}${leaf}/` : atTop) === page.route;
+  const move = (id: string) => {
+    if (id === HERE) return;
+    const to = id ? choices.find((c) => c.id === id)?.to : atTop;
+    if (!to || to === page.route) return;
+    void applyOps([{ type: 'page.update', pageId: page.id, route: to }], id ? `Move page into ${state.pages[id].title}` : 'Move page to the top level', undefined, revision);
+  };
+  return (
+    <Field label="Inside" hint={exact ? 'Moves the page and its address. Its link in the header menu stays where it is.' : `Its address, ${page.route}, has folders of its own. Choosing a page moves it straight inside that page.`}>
+      <select className="select" value={exact ? parentId : HERE} onChange={(e) => move(e.target.value)} aria-label="Inside page">
+        {!exact && (
+          <option value={HERE} disabled>
+            {parentId ? `${state.pages[parentId].title}, at ${page.route}` : `Top level, at ${page.route}`}
+          </option>
+        )}
+        <option value="" disabled={!!topErr} title={topErr ?? undefined}>
+          Top level{topErr ? ' (not possible)' : ''}
+        </option>
+        {choices.map((c) => (
+          <option key={c.id} value={c.id} disabled={!!c.err} title={c.err ?? undefined}>
+            {'\u2003'.repeat(c.depth)}
+            {state.pages[c.id].title} ({state.pages[c.id].route}){c.err ? ' (not possible)' : ''}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
+/** The Inside choice standing for where a page with folders of its own in its address is now. */
+const HERE = ':here';
+
 function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
   const assetSort = useStore((s) => s.assetSort);
@@ -1732,6 +1792,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const upd = (patch: Record<string, unknown>, label = 'Update page settings') => void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], label);
   const isHome = page.id === state.site.homePageId;
   const draft = isDraftPage(state, page);
+  const inside = pagesWithin(state.pages, page.id);
   // The sharing image menu lists images in the order Assets does, with the ID of any that share a name.
   const images = sortAssets(Object.values(state.assets.assets).filter((a) => a.kind === 'image'), assetSort);
   const imageLabels = assetLabels(images);
@@ -1756,9 +1817,10 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
             }}
           />
         </Field>
-        <Field label="Address" hint={isHome ? 'The home page is always at /.' : 'Links to this page update automatically when you change it.'}>
+        <Field label="Address" hint={isHome ? 'The home page is always at /.' : `Links to this page update automatically when you change it, and its old address keeps working.${inside.length ? ` The ${inside.length === 1 ? 'page' : `${inside.length} pages`} inside it move${inside.length === 1 ? 's' : ''} with it.` : ''}`}>
           {isHome ? <input className="input" value="/" readOnly aria-label="Page address" /> : <DraftInput value={page.route} onCommit={(v) => upd({ route: v }, 'Change page address')} ariaLabel="Page address" />}
         </Field>
+        {!isHome && <PageLocation page={page} state={state} />}
         {/* The Home page is the website's front door: it is always published. */}
         {!isHome && (
           <SwitchRow

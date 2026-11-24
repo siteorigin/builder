@@ -8,6 +8,7 @@ import { TABLE_LIMITS } from '@engine/table';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { teaserFields } from '@shared/page-teasers';
+import { pageParents } from '@shared/page-tree';
 import { notFoundCopy } from '@shared/not-found';
 import { itemStylesOf, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { isLanguageCode, pageLanguage, translationPeers } from '@shared/languages';
@@ -109,6 +110,8 @@ function pageLanguageSummary(state: ProjectState, p: PageDoc): { language?: stri
 
 export function projectSummary(state: ProjectState, revision: number) {
   const theme = getTheme(state.site.themeId);
+  // The page each page is inside, by route (see shared/page-tree.ts).
+  const parents = pageParents(Object.values(state.pages));
   return {
     revision,
     site: { name: state.site.name, description: state.site.description, language: state.site.language, baseUrl: state.site.baseUrl ?? null, notFoundPage: notFoundCopy(state.site) },
@@ -116,7 +119,8 @@ export function projectSummary(state: ProjectState, revision: number) {
     homePageId: state.site.homePageId,
     pages: state.site.pageOrder.map((id) => {
       const p = state.pages[id];
-      return { id, title: p.title, route: p.route, sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(isDraftPage(state, p) ? { draft: true } : {}), ...pageLanguageSummary(state, p), ...(p.article ? { article: p.article } : {}) };
+      const parent = parents.get(id);
+      return { id, title: p.title, route: p.route, ...(parent ? { parentPageId: parent } : {}), sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(isDraftPage(state, p) ? { draft: true } : {}), ...pageLanguageSummary(state, p), ...(p.article ? { article: p.article } : {}) };
     }),
     shell: {
       header: state.site.shell.header.rootIds.map((id) => compactNode(state, state.site.shell.header, id)),

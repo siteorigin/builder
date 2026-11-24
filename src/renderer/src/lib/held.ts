@@ -6,6 +6,8 @@ import { getTheme } from '@catalogue/index';
 import { displayName, enclosingRepeatProp } from '@engine/tree';
 import { boundSchema } from '@engine/schema';
 import { followsPage, inheritedValue } from '@shared/page-teasers';
+import { pagesWithin } from '@shared/page-tree';
+import { normalizeRoute } from '@shared/routes';
 import { itemStylesOf, placementItems, repeatedPartList } from '@shared/item-styles';
 
 /**
@@ -89,7 +91,16 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       // A byline, excerpt or news-list choice belongs to an article: once the page is no longer one, it has gone.
       // An edit that also dates the page makes it an article itself.
       if (!page.article && !keys.includes('articleDate') && keys.some((k) => k === 'byline' || k === 'excerpt' || k === 'newsHidden')) return gone('article');
-      return found(Object.fromEntries(keys.map((k) => [k, at(page, PAGE_FIELDS[k])])));
+      const read = Object.fromEntries(keys.map((k) => [k, at(page, PAGE_FIELDS[k])]));
+      // A new address moves the pages inside the page too: pages added there, or moved, since change what it does.
+      // And it takes over an old address kept at its destination: whose that is matters as well.
+      if (op.route !== undefined) {
+        read.inside = Object.fromEntries(pagesWithin(state.pages, page.id).map((id) => [id, state.pages[id].route]));
+        const to = normalizeRoute(op.route).toLowerCase();
+        const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
+        read.keptFor = (kept.find((r) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === to) as { pageId?: unknown } | undefined)?.pageId ?? null;
+      }
+      return found(read);
     }
     case 'site.update': {
       const keys = SITE_FIELDS.filter((k) => (op as Record<string, unknown>)[k] !== undefined);

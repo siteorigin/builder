@@ -1745,6 +1745,9 @@ iframe { color-scheme: light dark; }
 .choices-add .input[aria-invalid='true'] { border-color: var(--red); }
 .list-editor-item { border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); overflow: hidden; }
 .list-editor-item.focused { border-color: var(--accent); box-shadow: var(--ring); }
+/* A menu link shown under the link above it, in that link’s submenu. */
+.list-editor-item.nested { margin-left: 18px; }
+.list-editor-under { flex: none; }
 .list-editor-head { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 4px 0 8px; }
 .list-editor-head button.title { flex: 1; min-width: 0; text-align: left; border: 0; background: none; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list-editor-body { padding: 4px 10px 10px; display: flex; flex-direction: column; gap: 9px; border-top: 1px solid var(--border); background: var(--panel-2); }
