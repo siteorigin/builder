@@ -5,7 +5,7 @@ import { findParent } from '@engine/tree';
 import { applyOps, commitOps } from '../store';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { treeFor } from '../lib/model';
-import { editLabel, placeWords } from '../lib/edit-label';
+import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';

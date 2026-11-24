@@ -122,7 +122,7 @@ const gallery = (await home()).nodes[roots[1]];
 assert.equal(gallery.kind, 'instance', 'the new section is a placed section');
 const historyAfter = await applied();
 assert.equal(historyAfter.length, historyBefore.length + 1, 'one change');
-assert.equal(historyAfter.at(-1).label, 'Insert Gallery');
+assert.equal(historyAfter.at(-1).label, 'Insert Gallery on Home');
 await eventually(async () => assert.equal(JSON.parse((await win.locator('.canvas').getAttribute('data-selected-ref')) ?? 'null')?.nodeId, roots[1], 'the new section is selected'));
 await undo();
 await eventually(async () => assert.deepEqual((await home()).rootIds, rootsBefore, 'one Undo takes it away'));
@@ -153,7 +153,7 @@ const button = (await home()).nodes[rowAfter.at(-1)];
 assert.equal(button.kind, 'link', 'a Button');
 assert.deepEqual((await home()).rootIds, rootsBefore, 'the page’s sections are as they were');
 assert.equal((await applied()).length, before2.length + 1, 'one change');
-assert.equal((await applied()).at(-1).label, 'Insert Button');
+assert.equal((await applied()).at(-1).label, 'Insert Button on Home');
 await undo();
 await eventually(async () => assert.deepEqual((await home()).nodes[row].children, rowBefore, 'one Undo takes it away'));
 
