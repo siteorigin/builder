@@ -66,7 +66,9 @@ export const OPERATION_SCHEMAS = {
     draft: z.boolean().optional().describe('true keeps the page as a draft: still editable and previewed, but left out of the exported website. false publishes it. The Home page cannot be a draft.'),
     showHeader: z.boolean().optional().describe('Whether this page shows the site\'s shared header. Only this page changes; the footer setting is separate.'),
     showFooter: z.boolean().optional().describe('Whether this page shows the site\'s shared footer. Only this page changes; the header setting is separate.'),
-    socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.')
+    socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.'),
+    language: z.string().max(20).optional().describe('Language code such as "fr", when not the site language. "" uses the site language.'),
+    linkTranslationTo: z.string().nullable().optional().describe('Page ID of this page in another language: links them, joining any versions the other has. Each version needs its own language. null unlinks.')
   }),
   'page.duplicate': z.object({ type: z.literal('page.duplicate'), pageId: z.string(), title: z.string().optional() }),
   'page.reorder': z.object({ type: z.literal('page.reorder'), pageIds: z.array(z.string()) }),

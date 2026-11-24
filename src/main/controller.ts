@@ -16,7 +16,7 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
+import { builtPhotosMessage, pageLanguageWarning, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -1717,6 +1717,9 @@ export class Controller {
       const before = await projectFingerprint(s.dir);
       const edited = await editedGeneratedFile(s.dir);
       if (edited) return stop(`${edited} was changed outside SiteOrigin Builder. Open Project health to restore it, then export again.`);
+      // Both exports are the published site: its pages decide whether it needs the generated server hook.
+      const rival = await rivalHookStop(s.dir, publishedState(s.state));
+      if (rival) return stop(rival);
       await copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) });
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
       await leaveOutDrafts(dest, s.state);
@@ -1800,6 +1803,8 @@ export class Controller {
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${p.route}.`, warnings };
       const html = await fs.readFile(file, 'utf8');
       if (/data-so-(ctx|node)|siteorigin-bridge/.test(html)) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings };
+      const language = pageLanguageWarning(live, p, html);
+      if (language) warnings.push(language);
     }
     // Old addresses kept working are pages of their own on a static host: each must be there to send visitors on.
     for (const { from } of liveRedirects(live)) {

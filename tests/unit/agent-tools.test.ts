@@ -131,6 +131,50 @@ describe('upsert_page_with_sections', () => {
     expect(schema.required).not.toContain('draft');
   });
 
+  it('writes a page in another language as a translation of an existing one, and unlinks it when asked', async () => {
+    const sections = [
+      { componentId: 'intro.page', props: { heading: 'À propos du studio' } },
+      { componentId: 'features.grid', props: { heading: 'Notre approche', items: [{ icon: 'leaf', title: 'Calme', description: 'Des intérieurs pratiques.' }] } }
+    ];
+    const { session, adapter, run } = await setup([
+      () => [call('l1', 'upsert_page_with_sections', { slug: 'fr/a-propos', title: 'À propos', language: 'fr', translationOf: 'about', sections })],
+      () => finish(),
+      () => [call('l2', 'upsert_page_with_sections', { slug: 'fr/a-propos', title: 'À propos du studio' })],
+      () => finish(),
+      () => [call('l3', 'upsert_page_with_sections', { slug: 'fr/a-propos', language: 'French' })],
+      () => [call('l4', 'upsert_page_with_sections', { slug: 'fr/a-propos', translationOf: 'nowhere' })],
+      () => finish(),
+      () => [call('l5', 'upsert_page_with_sections', { slug: 'fr/a-propos', translationOf: '', language: '' })],
+      () => finish()
+    ]);
+    await run('Add a French version of the About page');
+    const about = pageAt(session.state, '/about/')!;
+    const fr = pageAt(session.state, '/fr/a-propos/')!;
+    expect(fr.language).toBe('fr');
+    expect(componentsOn(session.state, '/fr/a-propos/')).toEqual(['intro.page', 'features.grid']);
+    expect(fr.translationGroup).toBeTruthy();
+    expect(about.translationGroup).toBe(fr.translationGroup);
+    // A later change that does not mention them leaves the language and the link alone.
+    await run('Retitle the French page');
+    expect(pageAt(session.state, '/fr/a-propos/')).toMatchObject({ title: 'À propos du studio', language: 'fr', translationGroup: fr.translationGroup });
+    // A name instead of a code, or a page that does not exist, changes nothing and says why.
+    const before = structuredClone(session.state);
+    await run('Make it French, then link it to a page that is not there');
+    const refusals = adapter.requests.slice(-2).map(lastResult);
+    expect(JSON.stringify(refusals[0])).toMatch(/language code/);
+    expect(JSON.stringify(refusals[1])).toMatch(/no page at \/nowhere\//);
+    expect(session.state.pages).toEqual(before.pages);
+    await run('Unlink it and make it use the site language');
+    const after = pageAt(session.state, '/fr/a-propos/')!;
+    expect(after.translationGroup).toBeUndefined();
+    expect('language' in after).toBe(false);
+    expect(pageAt(session.state, '/about/')!.translationGroup).toBeUndefined();
+    const schema = upsertToolSchema(session.state) as { properties: Record<string, { type?: string }>; required: string[] };
+    expect(schema.properties.language.type).toBe('string');
+    expect(schema.properties.translationOf.type).toBe('string');
+    expect(schema.required).not.toContain('language');
+  });
+
   it('moves a contact link with the address a rewrite changes, unless the rewrite sends the link', async () => {
     const items = [
       { label: 'Email', value: 'bookings@kloof.example' },

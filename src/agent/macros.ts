@@ -10,6 +10,7 @@ import { effectiveItem, followsPage, teaserFields } from '@shared/page-teasers';
 import type { EditOperation } from '@shared/ops';
 import { normalizeRoute, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
+import { isLanguageCode } from '@shared/languages';
 import { catalogueComponent, catalogueEntries } from '@catalogue/index';
 import { applyOperation } from '@engine/apply';
 import { itemLinkPairs } from '@engine/tree';
@@ -29,6 +30,8 @@ export const SECTION_ARGS = z.object({
 export type SectionInput = Omit<z.infer<typeof SECTION_ARGS>, 'index'>;
 
 const DRAFT_DESCRIPTION = 'true keeps the page as a draft: editable and previewed, but left out of the exported website. false publishes it. Omit to leave it as it is. The home page is never a draft.';
+const LANGUAGE_DESCRIPTION = 'Language code such as "fr", when not the site language. "" uses the site language. Omit to leave it.';
+const TRANSLATION_DESCRIPTION = 'Slug of the page this one translates, such as "about": links them, joining any versions it has. Each version needs its own language; a page without one uses the site language. "" unlinks. Omit to leave it.';
 
 export const UPSERT_ARGS = z.object({
   slug: z.string().min(1).max(120).describe('Page path such as "services" or "/about/team/". "home" or "/" is the home page.'),
@@ -36,6 +39,8 @@ export const UPSERT_ARGS = z.object({
   navLabel: z.string().max(40).optional(),
   description: z.string().max(320).optional().describe('Search engine description.'),
   draft: z.boolean().optional().describe(DRAFT_DESCRIPTION),
+  language: z.string().max(20).optional().describe(LANGUAGE_DESCRIPTION),
+  translationOf: z.string().max(120).optional().describe(TRANSLATION_DESCRIPTION),
   addToHeaderNav: z.boolean().optional(),
   addToFooterNav: z.boolean().optional(),
   removeOtherSections: z.boolean().optional(),
@@ -502,6 +507,13 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     args = { ...held, ...Object.fromEntries(Object.entries(meta).filter(([, v]) => v !== undefined)), sections: merged };
   }
   if (!args.sections && !page) return fieldError([{ field: 'sections', message: 'a new page needs at least one section' }], 'Nothing was applied.');
+  if (args.language?.trim() && !isLanguageCode(args.language.trim())) return fieldError([{ field: 'language', message: 'use a language code such as "fr" or "en-GB"' }], 'Nothing was applied.');
+  let linkTranslationTo: string | null | undefined;
+  if (args.translationOf !== undefined) {
+    const other = args.translationOf.trim() ? findPage(state, args.translationOf) : null;
+    if (other && (other.error || !other.page)) return fieldError([{ field: 'translationOf', message: other.error ?? `there is no page at ${other.route}` }], 'Nothing was applied.');
+    linkTranslationTo = other ? other.page!.id : null;
+  }
   const sections = args.sections ?? [];
   const keepDraft = () => {
     const { repair: _r, sections: _s, ...meta } = args;
@@ -553,25 +565,17 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     ops.push(op);
     opSection.push(section);
   };
+  // A language and a translation are set together, so a new version can join its translations in its own language.
+  const settings = {
+    ...(!createOp && args.title && args.title.trim() !== page!.title ? { title: args.title.trim() } : {}),
+    ...(args.navLabel !== undefined ? { navLabel: args.navLabel } : {}),
+    ...(args.description !== undefined ? { description: args.description } : {}),
+    ...(args.draft !== undefined ? { draft: args.draft } : {}),
+    ...(args.language !== undefined ? { language: args.language.trim() } : {}),
+    ...(linkTranslationTo !== undefined ? { linkTranslationTo } : {})
+  };
   if (createOp) push(createOp);
-  else if ((args.title && args.title.trim() !== page!.title) || args.navLabel !== undefined || args.description !== undefined || args.draft !== undefined) {
-    push({
-      type: 'page.update',
-      pageId,
-      ...(args.title && args.title.trim() !== page!.title ? { title: args.title.trim() } : {}),
-      ...(args.navLabel !== undefined ? { navLabel: args.navLabel } : {}),
-      ...(args.description !== undefined ? { description: args.description } : {}),
-      ...(args.draft !== undefined ? { draft: args.draft } : {})
-    });
-  }
-  if (createOp && (args.navLabel !== undefined || args.description !== undefined || args.draft !== undefined))
-    push({
-      type: 'page.update',
-      pageId,
-      ...(args.navLabel !== undefined ? { navLabel: args.navLabel } : {}),
-      ...(args.description !== undefined ? { description: args.description } : {}),
-      ...(args.draft !== undefined ? { draft: args.draft } : {})
-    });
+  if (Object.keys(settings).length) push({ type: 'page.update', pageId, ...settings });
 
   const plan = planSections(scratch, page, good, !!args.removeOtherSections && !!args.sections);
   for (const id of plan.removed) push({ type: 'node.remove', owner, nodeId: id });
@@ -739,6 +743,8 @@ export function upsertToolSchema(state: ProjectState): JsonSchema {
       navLabel: { type: 'string', maxLength: 40 },
       description: { type: 'string', maxLength: 320, description: 'Search engine description.' },
       draft: { type: 'boolean', description: DRAFT_DESCRIPTION },
+      language: { type: 'string', maxLength: 20, description: LANGUAGE_DESCRIPTION },
+      translationOf: { type: 'string', maxLength: 120, description: TRANSLATION_DESCRIPTION },
       addToHeaderNav: { type: 'boolean', description: 'true adds a header link if missing. false or omitted leaves navigation as it is.' },
       addToFooterNav: { type: 'boolean', description: 'true adds a footer link if missing. false or omitted leaves navigation as it is.' },
       removeOtherSections: { type: 'boolean', description: 'Remove existing sections (theme or project components) that are not in this list. Hand-built layout stays.' },

@@ -1,5 +1,5 @@
 import { axesOf, selectedVariants } from '@shared/variants';
-import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { partStyleControls } from '@shared/styles';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
@@ -10,6 +10,7 @@ import { catalogueEntries, getTheme } from '@catalogue/index';
 import { teaserFields } from '@shared/page-teasers';
 import { notFoundCopy } from '@shared/not-found';
 import { itemStylesOf, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
+import { isLanguageCode, pageLanguage, translationPeers } from '@shared/languages';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -95,6 +96,12 @@ function summarizeValue(v: unknown, pages: RichPages, depth = 0): unknown {
   return v;
 }
 
+/** A page's own language and the IDs of its translations, when it has them: pages without use the site language. */
+function pageLanguageSummary(state: ProjectState, p: PageDoc): { language?: string; translations?: string[] } {
+  const peers = translationPeers(state, p);
+  return { ...(isLanguageCode(p.language) ? { language: p.language } : {}), ...(peers.length ? { translations: peers.map((t) => t.id) } : {}) };
+}
+
 export function projectSummary(state: ProjectState, revision: number) {
   const theme = getTheme(state.site.themeId);
   return {
@@ -104,7 +111,7 @@ export function projectSummary(state: ProjectState, revision: number) {
     homePageId: state.site.homePageId,
     pages: state.site.pageOrder.map((id) => {
       const p = state.pages[id];
-      return { id, title: p.title, route: p.route, sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(isDraftPage(state, p) ? { draft: true } : {}) };
+      return { id, title: p.title, route: p.route, sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(isDraftPage(state, p) ? { draft: true } : {}), ...pageLanguageSummary(state, p) };
     }),
     shell: {
       header: state.site.shell.header.rootIds.map((id) => compactNode(state, state.site.shell.header, id)),
@@ -185,6 +192,8 @@ export function pageDetail(state: ProjectState, pageId: string) {
     showHeader: p.showHeader,
     showFooter: p.showFooter,
     ...(isDraftPage(state, p) ? { draft: true } : {}),
+    language: pageLanguage(state.site, p),
+    ...(translationPeers(state, p).length ? { translations: translationPeers(state, p).map((t) => ({ id: t.id, title: t.title, route: t.route, language: pageLanguage(state.site, t) })) } : {}),
     owner: { kind: 'page', id: p.id },
     sections: p.rootIds.map((id) => compactNode(state, p, id))
   };

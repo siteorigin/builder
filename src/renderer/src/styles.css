@@ -1800,6 +1800,9 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp-check svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-2); }
 .insp-part-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 280px; }
 .insp-note { margin: 0; font-size: 12px; line-height: 1.5; }
+.insp-translations { display: flex; flex-direction: column; gap: 4px; margin: 0 0 6px; padding: 0; list-style: none; }
+.insp-translations li { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.insp-translations .insp-mini { justify-content: flex-start; min-width: 0; margin-left: -6px; }
 .insp-parts .link-btn { font-size: 12px; }
 .insp-inline-btn, .insp-add { align-self: flex-start; }
 .insp-group { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 0; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }

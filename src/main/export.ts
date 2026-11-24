@@ -5,19 +5,21 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, promises as fs, readdirSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
-import type { AssetRecord, ProjectState } from '@shared/types';
+import type { AssetRecord, PageDoc, ProjectState } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
+import { declaredLanguage, pageLanguage, sameLanguage } from '@shared/languages';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
 import { describeDraftLink, publicationPlan, unlinkedButtons } from '@generator/checks';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState } from '@generator/index';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
+import { ownServerHook } from './project/server-hook';
 import type { MissingAssetFiles } from '@shared/api';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
@@ -761,6 +763,30 @@ export function brokenSectionLinks(state: ProjectState): string[] {
     .map((d) => d.message);
 }
 
+/**
+ * Why the website cannot be exported when it needs the language part of the generated server hook (it has pages in
+ * another language) and the project has a hook of its own: SvelteKit would run one of them and skip the other. Null
+ * otherwise. A generated hook not written yet is no reason: the staged copy is settled (settleServerHook).
+ */
+export async function rivalHookStop(dir: string, state: ProjectState): Promise<string | null> {
+  if (!routeLanguages(state).length) return null;
+  const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
+  const claimed = Object.hasOwn(manifest.files ?? {}, SERVER_HOOK_FILE) || Object.hasOwn(manifest.pending ?? {}, SERVER_HOOK_FILE);
+  const own = ownServerHook(dir, claimed);
+  return own ? `Pages written in another language need SiteOrigin Builder's ${SERVER_HOOK_FILE}, and this project has a server hook of its own (${own}): SvelteKit runs only one of them. Rename or remove yours, then export again.` : null;
+}
+
+/**
+ * A built page that does not declare the language it is written in: the project's own server hook or page template
+ * took over from the generated ones. Null when it declares its own.
+ */
+export function pageLanguageWarning(state: ProjectState, page: PageDoc, html: string): string | null {
+  const expected = pageLanguage(state.site, page);
+  const found = declaredLanguage(html);
+  if (found && sameLanguage(found, expected)) return null;
+  return `“${page.title}” (${page.route}) was built ${found ? `as “${found}”` : 'without a language'}, not “${expected}”: the project’s own src/app.html or server hook may be setting it.`;
+}
+
 /** Warnings for a source export whose links would stop the exported project from building. */
 export function sectionLinkWarnings(state: ProjectState): string[] {
   const broken = brokenSectionLinks(state);
@@ -966,11 +992,9 @@ export function notFoundHostNote(base: string): string {
  * and writing it when there is no hook at all. generated-manifest.json then lists what the copy has.
  */
 export async function settleServerHook(dir: string, state: ProjectState): Promise<void> {
-  const file = (f: string) => lstatSync(join(dir, 'src', f), { throwIfNoEntry: false })?.isFile() ?? false;
-  // A folder named src/hooks.server counts when it has the index file SvelteKit loads from it.
-  const own = ['hooks.server.ts', 'hooks.server', 'hooks.server/index.js', 'hooks.server/index.ts'].some(file);
   const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
   const files = (manifest.files ??= {});
+  const own = ownServerHook(dir, Object.hasOwn(files, SERVER_HOOK_FILE));
   if (own && Object.hasOwn(files, SERVER_HOOK_FILE)) {
     await fs.rm(join(dir, SERVER_HOOK_FILE), { force: true });
     delete files[SERVER_HOOK_FILE];

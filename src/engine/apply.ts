@@ -21,6 +21,7 @@ import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isBinding, isCompariso
 import type { EditOperation, Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
+import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageClash, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
 import { findVariant, variantOptions } from '@shared/variants';
 import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily } from '@shared/fonts';
@@ -560,12 +561,50 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
   }
   if (op.showHeader !== undefined) page.showHeader = op.showHeader;
   if (op.showFooter !== undefined) page.showFooter = op.showFooter;
+  if (op.language !== undefined) {
+    const language = op.language.trim();
+    if (language && !isLanguageCode(language)) fail(LANGUAGE_CODE_ERROR);
+    if (language) page.language = language;
+    else delete page.language;
+  }
+  if (op.linkTranslationTo !== undefined) {
+    if (op.linkTranslationTo === null) leaveTranslations(state, page);
+    else linkTranslation(state, page, op.linkTranslationTo);
+  }
+  // The language and the link are checked together, so one edit can both set a copy's language and link it.
+  if (op.language !== undefined || op.linkTranslationTo) {
+    const group = translationGroup(page);
+    const clash = group ? translationClash(state, group) : null;
+    if (clash) fail(translationClashMessage(clash));
+  }
   if (op.socialImage !== undefined) {
     if (op.socialImage && own(state.assets.assets, op.socialImage)?.kind !== 'image') fail('Social image asset not found.');
     if (op.socialImage) page.seo.socialImage = op.socialImage;
     else delete page.seo.socialImage;
   }
   return { route: page.route };
+}
+
+/** Make two pages versions of each other: one joins the other's translations, or the two start a set of their own. */
+function linkTranslation(state: ProjectState, page: PageDoc, otherId: string) {
+  if (otherId === page.id) fail('Choose another page as its translation.');
+  const other = own(state.pages, otherId) ?? fail('The page to link as a translation does not exist.');
+  // A key left on one page alone (in a document written by hand) is no set: the page joins as if it had none.
+  const mine = linkedGroup(state, page);
+  const theirs = linkedGroup(state, other);
+  if (mine && theirs && mine !== theirs) fail(`“${page.title}” and “${other.title}” each already have other translations. Unlink one of them first.`);
+  const group = mine ?? theirs ?? newId('tr');
+  page.translationGroup = group;
+  other.translationGroup = group;
+}
+
+/** Take a page out of its translations. A page left on its own is no longer a translation of anything. */
+function leaveTranslations(state: ProjectState, page: PageDoc) {
+  const group = translationGroup(page);
+  delete page.translationGroup;
+  if (!group) return;
+  const rest = translationMembers(state, group);
+  if (rest.length === 1) delete rest[0].translationGroup;
 }
 
 /** Copy a node subtree from one tree into another, allocating new IDs. Returns the new root ID. */
@@ -632,6 +671,8 @@ function pageDuplicate(state: ProjectState, op: Op<'page.duplicate'>): OpResult 
   const title = op.title?.trim() || `${src.title} copy`;
   const id = newId('pg');
   const page: PageDoc = { ...clone(src), id, title, route: autoRoute(state, title, 'page'), rootIds: [], nodes: {} };
+  // A copy is in the same language until it is translated: it is nobody's translation yet.
+  delete page.translationGroup;
   for (const rid of src.rootIds) page.rootIds.push(copySubtree(src, page, rid, state));
   state.pages[id] = page;
   keepSectionLinksOnCopy(state, src.id, page);
@@ -719,7 +760,9 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
     state.site.redirects = state.site.redirects.flatMap((r) => (r.pageId !== page.id ? [r] : op.replacementPageId ? [{ ...r, pageId: op.replacementPageId }] : []));
     if (!state.site.redirects.length) delete state.site.redirects;
   }
+  // Its translations stay linked to each other; they are never handed to the replacement page.
   delete state.pages[page.id];
+  leaveTranslations(state, page);
   state.site.pageOrder = state.site.pageOrder.filter((id) => id !== page.id);
   // Where each removed card was, for the change summary: what this removal did, not what the batch started with.
   return cards.length ? { removedCards: cards.map((u) => u.where) } : {};
@@ -1685,7 +1728,11 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   const s = state.site;
   if (op.name !== undefined) s.name = op.name.trim();
   if (op.language !== undefined) {
-    if (!/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(op.language)) fail('Language must be a code such as "en" or "en-AU".');
+    if (!isLanguageCode(op.language)) fail(LANGUAGE_CODE_ERROR);
+    // Pages that use the site language follow it: none may end up in the language of one of its translations. A set
+    // that already had two versions in one language (written by hand) is reported elsewhere and does not stop this.
+    const clash = siteLanguageClash(state, op.language);
+    if (clash) fail(`${translationClashMessage(clash)} Pages without a language of their own use the site language.`);
     s.language = op.language;
   }
   if (op.description !== undefined) s.description = op.description;
