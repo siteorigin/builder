@@ -33,6 +33,10 @@ export function constrainedToolSets(starter: StarterId = 'business'): ToolSet[] 
     run('selection', { selection: selectionTarget(whole) });
     run('part', { selection: selectionTarget(part) });
     run('ask', { ask: true });
+    // A component's own design (#360): the whole of it, and a node selected in it.
+    run('definition', { definition: true, definitionOps: true, definitionTarget: { definitionId: def.id } });
+    run('definition node', { definition: true, definitionOps: true, definitionTarget: { definitionId: def.id, nodeId: def.parts[partId].nodeId } });
+    // The general tools, as a design run has them once the author lets it change more.
     run('general', { definition: true, definitionOps: true });
   }
   return sets;

@@ -2111,14 +2111,22 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     expect(canEditContracts({ kind: 'selection', owner: { kind: 'page', id: 'p' }, nodeId: 'a', label: 'A' })).toBe(false);
   });
 
-  it('keeps a small model on the general tools for a component everywhere, also once it is widened', () => {
+  it('gives a small model its definition tools for a component everywhere, and the general tools once it is widened', () => {
     const state = createStarterState('business', 'Test', false);
     const small = { toolCalling: 'constrained-json' as const, contextWindowTokens: 32_000 };
     const names = (r: { tools: Array<{ name: string }> }) => r.tools.map((t) => t.name);
-    const component = toolsForRun({ state, selection: null, capabilities: small, codeEnabled: false, definitionOps: true, definition: true });
-    expect(component).toMatchObject({ mode: 'general', focused: false });
-    expect(offeredOps({ tools: component.tools } as CanonicalModelRequest)).toEqual(expect.arrayContaining(contract));
+    const hero = (state.pages[state.site.homePageId].nodes[state.pages[state.site.homePageId].rootIds[0]] as InstanceNode).definitionId;
+    // What the orchestrator passes while the run is limited to the component's design (#360).
+    const component = toolsForRun({ state, selection: null, capabilities: small, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: { definitionId: hero } });
+    expect(component).toMatchObject({ mode: 'definition', focused: true });
+    expect(names(component)).toEqual(expect.arrayContaining(['manage_component_prop', 'bind_definition_field', 'edit_definition_node', 'style_definition_element', 'add_definition_variant']));
+    expect(names(component)).not.toContain('apply_operations');
     expect(names(component)).not.toContain('apply_source_patch');
+    // Once the author lets it change more, the general tools, with every contract operation.
+    const widened = toolsForRun({ state, selection: null, capabilities: small, codeEnabled: false, definitionOps: true, definition: true, definitionTarget: null });
+    expect(widened).toMatchObject({ mode: 'general', focused: false });
+    expect(offeredOps({ tools: widened.tools } as CanonicalModelRequest)).toEqual(expect.arrayContaining(contract));
+    expect(names(widened)).not.toContain('apply_source_patch');
     // An ordinary site request on a small model keeps the page and brand tools only.
     const site = toolsForRun({ state, selection: null, capabilities: small, codeEnabled: false, definitionOps: true });
     expect(site).toMatchObject({ mode: 'site', focused: true });
@@ -2228,9 +2236,12 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     expect(q.choices[0]).toBe('Yes, allow changes beyond Split hero');
     expect(env.orch.answer(r.runId!, q.id!, q.choices[0])).toBe(true);
     while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
-    // The general tools before and after: a site request on this model would get the page and brand tools only.
-    for (const t of tools) expect(t).toContain('apply_operations');
-    for (const o of offered) expect(o).toEqual(expect.arrayContaining(contract));
+    // Its definition tools before the author's yes (#360), and the general tools after it: a site request on this model
+    // would get the page and brand tools only.
+    expect(tools[0]).toEqual(expect.arrayContaining(['manage_component_prop', 'bind_definition_field', 'request_clarification']));
+    expect(tools[0]).not.toContain('apply_operations');
+    expect(tools[1]).toContain('apply_operations');
+    expect(offered[1]).toEqual(expect.arrayContaining(contract));
     expect(applied.error).toBeUndefined();
     expect(env.session.state.tokens.overrides['color.brand']).toBe('#000080');
     expect(env.session.state.components[def.id].properties.tagline).toBeDefined();

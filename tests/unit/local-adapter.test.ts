@@ -1552,6 +1552,8 @@ describe('compact schemas on the wire (#364)', () => {
       ['selection', 'update_selected_props', { props: { heading: 'Sharper' }, variant: 'muted' }, {}],
       ['part', 'style_selected_element', { scope: 'phone', styles: [{ property: 'paddingBlock', value: { token: 'space.lg' } }, { property: 'color', value: null }] }, {}],
       ['ask', 'locate_field', { owner: { kind: 'page', id: 'pg_1' }, nodeId: 'n_1', prop: 'items', itemId: 'i_1', field: 'value' }, {}],
+      ['definition', 'style_definition_element', { partId: 'heading', variant: { axis: 'tone', option: 'muted' }, scope: 'phone', styles: [{ property: 'gap', value: { token: 'space.lg' } }, { property: 'color', value: null }] }, {}],
+      ['definition', 'bind_definition_field', { nodeId: 'heading', field: 'when', binding: { $prop: 'heading' }, eq: 'Hi' }, {}],
       ['general (code)', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: 'pg_1' }, nodeId: 'n_1', prop: 'items', value: { [OPEN_VALUE_KEY]: '[{"id":"i_1"}]' } }] }, { operations: [{ value: [{ id: 'i_1' }] }] }]
     ];
     const refusals = {
