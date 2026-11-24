@@ -1,6 +1,6 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, CornerDownRight, FilePlus, Image as ImageIcon, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
@@ -923,11 +923,47 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
 }
 
 /**
- * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
- * its hint; without, it names itself with aria-label. `onProblem` hears why text typed in a number field can't be
- * saved (null once it can), for beside the field.
+ * A number property's field. Text that is not a number in range ("12px") is never sent: it stays in the field with
+ * the reason under it until it is corrected or put back with Escape. An emptied field sends nothing, and the saved
+ * value comes back. The reason belongs to this field alone, so it goes with it.
  */
-export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder, everywhere, onProblem }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean; onProblem?: (problem: string | null) => void }) {
+function NumberInput({ schema, value, onChange, id, describedBy, invalid, ariaLabel }: { schema: NumberProp; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; id?: string; describedBy?: string; invalid?: boolean; ariaLabel?: string }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const problemId = `${useId()}-problem`;
+  return (
+    <>
+      <DraftInput
+        id={id}
+        aria-describedby={[problem ? problemId : '', describedBy ?? ''].filter(Boolean).join(' ') || undefined}
+        aria-invalid={invalid || !!problem || undefined}
+        value={String(value ?? schema.default)}
+        check={(t) => {
+          const read = readNumberDraft(t, schema);
+          return 'problem' in read ? { message: read.problem } : null;
+        }}
+        onProblem={(p) => setProblem(p?.message ?? null)}
+        // Checked against the property as it is when the field is left (see check); here only that it is a number,
+        // since a commit made after the AI ran is the one built when typing began, and the engine checks the range.
+        onCommit={(t, edit) => {
+          const read = readNumberDraft(t);
+          return 'value' in read ? onChange(read.value, edit) : 'empty' in read ? undefined : false;
+        }}
+        ariaLabel={ariaLabel}
+      />
+      {problem && (
+        <div className="field-error" id={problemId} role="alert">
+          {problem}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
+ * its hint; without, it names itself with aria-label.
+ */
+export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder, everywhere }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean }) {
   const name = id ? undefined : (label ?? schema.label);
   const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
@@ -948,24 +984,7 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
         />
       );
     case 'number':
-      // Text that is not a number in range ("12px") is never sent: it stays in the field with the reason beside it.
-      // An emptied field sends nothing either, and the saved value comes back.
-      return (
-        <DraftInput
-          {...wired}
-          value={String(value ?? schema.default)}
-          check={(t) => {
-            const read = readNumberDraft(t, schema);
-            return 'problem' in read ? { message: read.problem } : null;
-          }}
-          onProblem={(p) => onProblem?.(p?.message ?? null)}
-          onCommit={(t, edit) => {
-            const read = readNumberDraft(t, schema);
-            return 'value' in read ? onChange(read.value, edit) : 'empty' in read ? undefined : false;
-          }}
-          ariaLabel={name}
-        />
-      );
+      return <NumberInput schema={schema} value={value} onChange={onChange} id={id} describedBy={describedBy} invalid={invalid} ariaLabel={name} />;
     case 'boolean':
       return <Switch id={id} describedBy={describedBy} checked={!!value} onChange={onChange} label={name ?? schema.label} />;
     case 'enum':
@@ -1367,8 +1386,6 @@ export interface FieldAction {
  */
 export function ScalarField({ schema, value, onChange, read, state, label, hint, error, action, onLive, placeholder, everywhere, notedBy }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean; notedBy?: string }) {
   const id = useId();
-  // Why the number typed in the field can't be saved, shown in place of the field's own note until it is corrected.
-  const [numberProblem, setNumberProblem] = useState<string | null>(null);
   const shown = label ?? schema.label;
   const note = hint ?? schema.description;
   // A set of choices names itself and says what it is under its own rows.
@@ -1407,10 +1424,9 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
         )}
       </div>
     );
-  const problem = (schema.type === 'number' ? numberProblem : null) ?? error;
   return (
-    <Field label={shown} hint={note} error={problem} controlId={id}>
-      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || problem ? `${id}-note` : undefined} invalid={!!problem} onLive={onLive} placeholder={placeholder} everywhere={everywhere} onProblem={setNumberProblem} />
+    <Field label={shown} hint={note} error={error} controlId={id}>
+      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} onLive={onLive} placeholder={placeholder} everywhere={everywhere} />
     </Field>
   );
 }

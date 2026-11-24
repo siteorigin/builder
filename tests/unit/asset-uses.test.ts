@@ -12,6 +12,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { imageUseRows } from '../../src/renderer/src/lib/asset-uses';
 import { useKey } from '@engine/image-uses';
 import { altChecks } from '../../src/renderer/src/lib/alt-review';
+import { defaultEditorNode } from '../../src/renderer/src/lib/design-content';
 
 /**
  * Issue #228: Portrait 1 shows in five places. The author replaces it on Home (the hero, two gallery rows) and on
@@ -183,6 +184,25 @@ describe('the uses of an image, one row each', () => {
     designImage.image = { assetId: 'a_person1', alt: '' };
     const row = imageUseRows(s, 'a_person1').find((r) => r.where === 'Portrait band design')!;
     expect(row).toMatchObject({ icon: 'component', what: 'Image', definitionId, at: { owner: { kind: 'component', id: definitionId }, nodeId: designImage.id } });
+  });
+
+  it('names the property of a project component’s starting image, and the element of its design that changes it (#209)', () => {
+    const { state, work, home, galleryId } = studio();
+    const sectionId = state.pages[work.id].rootIds[0];
+    const made = applyOperations(state, [{ type: 'component.createFromNode', owner: work, nodeId: sectionId, name: 'Portrait band' }]);
+    const definitionId = made.results[0].definitionId as string;
+    const def = made.state.components[definitionId];
+    // Making the component let each placement fill in its picture: the one it had is now the starting image.
+    const start = imageUseRows(made.state, 'a_person1').find((r) => r.where === 'Portrait band default')!;
+    expect(start).toMatchObject({ icon: 'component', definitionId });
+    expect(start.at).toBeUndefined();
+    expect(def.properties[start.prop!]?.type).toBe('image');
+    const designImage = Object.values(def.tree!.nodes).find((n) => n.kind === 'image')!;
+    expect(defaultEditorNode(def, start.prop!)).toBe(designImage.id);
+    expect(defaultEditorNode(def, 'no-such-property')).toBeNull();
+    // A list's starting rows show in no one element.
+    const gallery = made.state.components[(made.state.pages[home.id].nodes[galleryId] as InstanceNode).definitionId];
+    expect(defaultEditorNode(gallery, 'images')).toBeNull();
   });
 
   it('shows a component’s starting image by the component alone, and a theme component’s design nowhere (#209)', () => {

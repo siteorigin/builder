@@ -52,8 +52,20 @@ describe('clicks on a page row', () => {
     vi.advanceTimersByTime(100);
     c.click('contact', 1);
     expect(log).toEqual(['open about']);
-    vi.advanceTimersByTime(DOUBLE_CLICK_MS);
+    // Contact waits its own full time from its click, not what was left of About's.
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS - 1);
+    expect(log).toEqual(['open about']);
+    vi.advanceTimersByTime(1);
     expect(log).toEqual(['open about', 'open contact']);
+  });
+
+  it('opens a page still waiting before renaming another row double-clicked', () => {
+    const c = make();
+    c.click('about', 1);
+    c.click('contact', 2);
+    expect(log).toEqual(['open about', 'rename contact']);
+    vi.advanceTimersByTime(DOUBLE_CLICK_MS * 2);
+    expect(log).toEqual(['open about', 'rename contact']);
   });
 
   it('opens the waiting page at once when the author does something else, and only once', () => {
@@ -70,7 +82,9 @@ describe('clicks on a page row', () => {
     const c = make();
     c.click('about', 1);
     c.drop();
+    expect(c.waiting()).toBeNull();
     vi.advanceTimersByTime(DOUBLE_CLICK_MS * 2);
+    c.settle();
     expect(log).toEqual([]);
   });
 
@@ -79,5 +93,9 @@ describe('clicks on a page row', () => {
     c.click('about', 0);
     expect(log).toEqual(['open about']);
     expect(c.waiting()).toBeNull();
+    // A page still waiting opens first, so the later choice is the one left open.
+    c.click('contact', 1);
+    c.click('home', 0);
+    expect(log).toEqual(['open about', 'open contact', 'open home']);
   });
 });

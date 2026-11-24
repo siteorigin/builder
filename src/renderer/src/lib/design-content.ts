@@ -63,6 +63,15 @@ export function designContent(def: ComponentDefinition, node: GraphNode): Design
   return out;
 }
 
+/**
+ * The element of a design whose content shows a property's starting value, so its Content is where that value is
+ * changed. Null when no one element shows it: a list's or a table's starting rows, or a property nothing shows.
+ */
+export function defaultEditorNode(def: ComponentDefinition, prop: string): string | null {
+  for (const node of Object.values(def.tree?.nodes ?? {})) if (designContent(def, node).some((f) => f.source === 'default' && f.prop === prop)) return node.id;
+  return null;
+}
+
 /** The edit that changes one content field of a design's node: the value fixed in it, or its property's default. */
 export function designContentOp(def: ComponentDefinition, nodeId: string, field: ContentField, value: unknown): EditOperation {
   return { type: 'node.setContent', owner: { kind: 'component', id: def.id }, nodeId, field, value };

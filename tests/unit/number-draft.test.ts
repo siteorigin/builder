@@ -5,6 +5,7 @@ describe('text typed in a number property', () => {
   it('saves nothing when emptied, so the saved value comes back instead of 0', () => {
     expect(readNumberDraft('')).toEqual({ empty: true });
     expect(readNumberDraft('   ')).toEqual({ empty: true });
+    expect(readNumberDraft('\t\n')).toEqual({ empty: true });
     expect(readNumberDraft('', { min: 1, max: 10 })).toEqual({ empty: true });
   });
 
@@ -15,6 +16,8 @@ describe('text typed in a number property', () => {
     expect(readNumberDraft('3.')).toEqual({ value: 3 });
     expect(readNumberDraft('+4')).toEqual({ value: 4 });
     expect(readNumberDraft('1e3')).toEqual({ value: 1000 });
+    expect(readNumberDraft('1e-3')).toEqual({ value: 0.001 });
+    expect(readNumberDraft('2E+2')).toEqual({ value: 200 });
     expect(readNumberDraft('0')).toEqual({ value: 0 });
   });
 
@@ -30,6 +33,9 @@ describe('text typed in a number property', () => {
     }
     expect(readNumberDraft('abc', { min: 1, max: 6 })).toEqual({ problem: 'Type a number from 1 to 6.' });
     expect(readNumberDraft('1e309')).toEqual({ problem: 'That number is too large to save.' });
+    expect(readNumberDraft('1e309', { min: 0, max: 6 })).toEqual({ problem: 'Type a number from 0 to 6.' });
+    // An exponent left unfinished is not a unit.
+    expect(readNumberDraft('1e')).toEqual({ problem: 'Type a number, such as 12.' });
   });
 
   it('keeps to the property’s bounds, either end included', () => {
@@ -41,6 +47,7 @@ describe('text typed in a number property', () => {
     expect(readNumberDraft('-1', { min: 0 })).toEqual({ problem: 'Use a number of at least 0.' });
     expect(readNumberDraft('11', { max: 10 })).toEqual({ problem: 'Use a number of at most 10.' });
     // A step is guidance, as the engine treats it: a value between steps still saves.
-    expect(readNumberDraft('2.5', bounds)).toEqual({ value: 2.5 });
+    const stepped = { ...bounds, step: 1 };
+    expect(readNumberDraft('2.5', stepped)).toEqual({ value: 2.5 });
   });
 });

@@ -3,7 +3,7 @@ import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, Layou
 import { suggestRoute } from '@shared/routes';
 import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasCategoryArchives } from '@shared/collections';
 import type { ElementRef, ProjectState } from '@shared/types';
-import { aiActivity, applyOps, commitDraft, commitOps, getState, markDraft, renamePage, setState, toast, undoAction, useStore } from '../store';
+import { aiActivity, api, applyOps, commitDraft, commitOps, getState, markDraft, renamePage, setState, toast, undoAction, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { limitNote } from '../lib/kept-drafts';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -366,9 +366,13 @@ export function PagesPanel() {
     const box = { top: t.top - wrap.top - 2, left: t.left - wrap.left - 5, width: r.right - 6 - t.left + 5 };
     setRenameBox((was) => (was && was.top === box.top && was.left === box.left && was.width === box.width ? was : box));
   };
+  // A page that leaves the list while it is being renamed (the AI removed it, an Undo, or its new title no longer
+  // matches the find) ends the rename, as leaving the field would.
+  const renameGone = useRef<(id: string) => void>(() => {});
   useLayoutEffect(() => {
-    if (renaming) placeRename();
-    else if (renameBox) setRenameBox(null);
+    if (!renaming) return void (renameBox && setRenameBox(null));
+    if (snap && !listRef.current?.querySelector(`[data-page="${renaming}"]`)) return renameGone.current(renaming);
+    placeRename();
   });
   useEffect(() => {
     if (!renaming) return;
@@ -393,17 +397,21 @@ export function PagesPanel() {
       const id = clicks.waiting();
       if (!id) return;
       const t = e.target instanceof Element ? e.target : null;
-      // The second click of a double click on the row itself, not on its options button.
+      // A press on that row may be the second click; its options button settles the click itself (see pageMenu),
+      // after the press, so the row stays where it is under the pointer.
       const row = t?.closest<HTMLElement>('[data-page]');
-      if (e.button === 0 && row?.dataset.page === id && listRef.current?.contains(row) && !t?.closest('button')) return;
+      if (e.button === 0 && row?.dataset.page === id && listRef.current?.contains(row)) return;
       clicks.settle();
     };
-    const key = () => clicks.settle();
+    const other = () => clicks.settle();
     document.addEventListener('pointerdown', press, true);
-    document.addEventListener('keydown', key, true);
+    document.addEventListener('keydown', other, true);
+    // A press in the preview reaches its own document, not this one: focus leaving the editor's window shows it.
+    window.addEventListener('blur', other);
     return () => {
       document.removeEventListener('pointerdown', press, true);
-      document.removeEventListener('keydown', key, true);
+      document.removeEventListener('keydown', other, true);
+      window.removeEventListener('blur', other);
       // Another project, or no Pages list: the click waiting is for a page that is no longer here.
       clicks.drop();
     };
@@ -436,6 +444,8 @@ export function PagesPanel() {
   }, [pageId]);
   if (!snap) return null;
   const st = snap.state;
+  // The modifier this platform's keys use, as the row's shortcuts are announced.
+  const mac = api.platform === 'darwin';
   const order = st.site.pageOrder;
   const homeId = st.site.homePageId;
   const place = outline(st, order);
@@ -484,6 +494,12 @@ export function PagesPanel() {
   };
   // A page clicked a moment ago opens only while it is still in the project.
   clickActions.current = { open: (id) => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id) && open(id), rename: setRenaming };
+  renameGone.current = (id) => {
+    if (Object.hasOwn(st.pages, id)) return endRename(id, renameInput.current?.value);
+    // Removed: there is no page left to give the title to.
+    renameBase.current = null;
+    setRenaming(null);
+  };
 
   const closeForm = () => {
     addFrom.current = null;
@@ -641,6 +657,8 @@ export function PagesPanel() {
   };
 
   const pageMenu = (el: HTMLElement | { x: number; y: number; row: HTMLElement }, id: string) => {
+    // A row clicked a moment ago opens first: the menu acts on the page as it then is.
+    clicks.settle();
     const isHome = id === homeId;
     const draft = isDraftPage(st, st.pages[id]);
     const within = place.get(id)?.parent;
@@ -920,7 +938,7 @@ export function PagesPanel() {
             className={`list pages-list${finding ? ' finding' : ''}`}
             role="listbox"
             aria-label={finding ? `Pages matching “${query.trim()}”` : 'Pages'}
-            aria-description="Type a title to jump to it. F2 renames, Shift+F10 opens page options, Shift+Command+Up or Down moves a page."
+            aria-description={`Type a title to jump to it. F2 renames, Shift+F10 opens page options, Shift+${mac ? 'Command' : 'Control'}+Up or Down moves a page.`}
             ref={listRef}
             hidden={!shown.length}
             onFocus={(e) => {
@@ -973,7 +991,7 @@ export function PagesPanel() {
                   aria-selected={selected}
                   aria-label={status ? `${p.title}, ${status}` : p.title}
                   aria-description={section ? `${p.route}, in ${st.pages[section].title}` : p.route}
-                  aria-keyshortcuts="F2 Shift+F10 Shift+Meta+ArrowUp Shift+Meta+ArrowDown"
+                  aria-keyshortcuts={`F2 Shift+F10 Shift+${mac ? 'Meta' : 'Control'}+ArrowUp Shift+${mac ? 'Meta' : 'Control'}+ArrowDown`}
                   style={{ '--depth': d, '--drop-depth': dropDepth } as React.CSSProperties}
                   // The list's one tab stop is the open page (else the first); arrows move focus between rows.
                   tabIndex={id === tabStop ? 0 : -1}
