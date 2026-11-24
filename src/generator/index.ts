@@ -550,8 +550,9 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
     // The hide right after the rule it came from, per size, so it keeps its place in the cascade.
     if (gated && scope === 'base') for (const size of ['phone', 'tablet', 'desktop'] as const) rules.base.push(`@media ${MEDIA_QUERIES[size]} {\n\t${wrap(shownGate(raw, size, opts.gateHides!))} {\n\t\tdisplay: none;\n\t}\n}`);
     else if (gated && scope !== 'base') rules[scope].push(`${wrap(shownGate(raw, scope, opts.gateHides!))} {\n\tdisplay: none;\n}`);
-    // At every size: a transition set for one size is turned off wherever the element is.
-    if (reduced.length) rules.reduced.push(`${quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
+    // At every size: a transition set for one size is turned off wherever the element is. Against important styles
+    // (a code component's placement) it takes their own selector, and wins by coming last.
+    if (reduced.length) rules.reduced.push(`${opts.important ? selector : quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
     // Shown at all sizes: each range where it is hidden gets the display its own layout gives it.
     if (scope === 'base' && input.base?.hidden === false && opts.unhide)
       for (const r of ['phone', 'tablet', 'desktop'] as const) {

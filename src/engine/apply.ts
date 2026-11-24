@@ -2338,8 +2338,8 @@ const CODE_RESERVED_PROPS = ['class'];
  * Renames what a definition converted to code cannot keep (CODE_RESERVED_PROPS): its properties of those names, and
  * its lists' fields of those names, each to a free name of its own (`classValue`, `classValue2`…, also clear of keys
  * saved values still hold). Its schema, list defaults, examples and design follow, and so do the values `placed` (the
- * placement being converted) gives it, so nothing it shows changes. A list the placement is handed from the design
- * around it keeps its fields: its rows come with their keys.
+ * placement being converted) gives it, so nothing it shows changes. A list whose rows are handed in from the design
+ * around it, or handed whole to a component inside it, keeps its fields: its rows carry their keys.
  */
 function moveCodeReservedProps(def: ComponentDefinition, placed: InstanceNode) {
   const free = (taken: Set<string>, from: string) => {
@@ -2354,11 +2354,13 @@ function moveCodeReservedProps(def: ComponentDefinition, placed: InstanceNode) {
   const props = new Map<string, string>();
   for (const from of CODE_RESERVED_PROPS) if (Object.hasOwn(def.properties, from)) props.set(from, free(takenProps, from));
   const prop = (k: string) => props.get(k) ?? k;
-  // Each list's moved fields, by the list's new name.
+  // Each list's moved fields, by the list's new name. A list whose rows come with their keys from outside (handed in
+  // by the design around the placement) or go out with them (handed whole to a component inside the design, which
+  // reads those keys) keeps its fields' names.
+  const handedOn = new Set(Object.values(def.tree?.nodes ?? {}).flatMap((n) => (n.kind === 'instance' ? Object.values(n.props).flatMap((v) => (isBinding(v) && '$prop' in v ? [v.$prop] : [])) : [])));
   const fields = new Map<string, Map<string, string>>();
   for (const [name, schema] of Object.entries(def.properties)) {
-    // A list the design around the placement hands it keeps its rows' keys, so its fields keep their names too.
-    if (schema.type !== 'list' || isBinding(placed.props[name])) continue;
+    if (schema.type !== 'list' || isBinding(placed.props[name]) || handedOn.has(name)) continue;
     const saved = [schema.default, placed.props[name], ...examples.map((e) => e.props[name])].flatMap((v) => (Array.isArray(v) ? v : []));
     const taken = new Set([...Object.keys(schema.fields), ...saved.flatMap((it) => (it && typeof it === 'object' ? Object.keys(it) : []))]);
     const moved = new Map<string, string>();

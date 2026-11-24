@@ -14,6 +14,7 @@ import { articleRows, feedLimit } from '@shared/articles';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
 import { parseVideoUrl } from '@shared/video';
+import { derived } from './cache';
 import { selectedVariantStyles } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
 
@@ -323,42 +324,51 @@ const plainText = (v: unknown, rich = false) => (typeof v === 'string' && !rich 
 /** A label that is itself a telephone number, as opposed to words such as "Call reception". */
 const phoneLike = (s: string) => /^[+(\d][\d\s().\-/+]*$/.test(s) && (s.match(/\d/g)?.length ?? 0) >= 6;
 
+type Size = (typeof SIZES)[number];
+
 /**
- * Whether layers of styles, weaker first, hide an element at every size, as the stylesheet decides: within a layer a
- * size's own value beats its all-sizes value, and a stronger layer's all-sizes value beats a weaker layer's sizes.
+ * The sizes at which layers of styles, weaker first, hide an element, as the stylesheet decides: within a layer a
+ * size's own value beats its all-sizes value, and a stronger layer's all-sizes value (a hide, or a layout or display
+ * that shows it) beats a weaker layer's values at every size.
  */
-function hiddenAtEverySize(layers: Array<ResponsiveStyles | undefined>): boolean {
-  const hidden = new Map<(typeof SIZES)[number], boolean>(SIZES.map((z) => [z, false]));
+function hiddenSizes(layers: Array<ResponsiveStyles | undefined>): Set<Size> {
+  const hidden = new Map<Size, boolean>(SIZES.map((z) => [z, false]));
   for (const l of layers) {
     if (!l || typeof l !== 'object') continue;
-    const base = l.base && typeof l.base === 'object' ? l.base.hidden : undefined;
-    if (base !== undefined) for (const z of SIZES) hidden.set(z, base === true);
+    const base = l.base && typeof l.base === 'object' ? (l.base as Record<string, unknown>) : undefined;
+    if (base?.hidden === true) for (const z of SIZES) hidden.set(z, true);
+    else if (showsAt(base)) for (const z of SIZES) hidden.set(z, false);
     for (const z of SIZES) {
       const at = l[z] as Record<string, unknown> | undefined;
       if (at && typeof at === 'object' && at.hidden === true) hidden.set(z, true);
       else if (showsAt(at)) hidden.set(z, false);
     }
   }
-  return SIZES.every((z) => hidden.get(z));
+  return new Set(SIZES.filter((z) => hidden.get(z)));
 }
 
+/** Whether what sits inside every one of these is hidden at every size: each size hidden by one of them at least. */
+const hiddenEverySize = (sets: Array<Set<Size>>) => SIZES.every((z) => sets.some((s) => s.has(z)));
+
 /**
- * Whether a design's node, or one of its ancestors in the design, is hidden at every size: by the design, the options
- * its placement chose, the placement's styles for that part, or the current item's own. A placement made in the page
- * or inside another design is read the same way; whether that design hides the placement itself is not known here.
+ * The sizes at which a design's node is hidden, by itself or one of its ancestors in the design: by the design, the
+ * options its placement chose, the placement's styles for that part, or the current item's own. A placement made in
+ * the page or inside another design is read the same way; whether that design hides the placement itself is not
+ * known here.
  */
-function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope): boolean {
-  if (!def.tree) return false;
+function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope): Array<Set<Size>> {
+  if (!def.tree) return [];
   const inst = scope.instance;
   const itemId = typeof scope.item?.id === 'string' ? scope.item.id : undefined;
+  const out: Array<Set<Size>> = [];
   const seen = new Set<string>();
   for (let id: string | null | undefined = nodeId; id && !seen.has(id); id = findParent(def.tree, id)?.parentId) {
     seen.add(id);
     const part = Object.entries(def.parts).find(([, p]) => p.nodeId === id)?.[0];
     const own = part && inst ? [inst.overrides?.[part], itemId ? itemStylesOf(def, inst, part, itemId) : undefined] : [];
-    if (hiddenAtEverySize([def.tree.nodes[id]?.styles, ...selectedVariantStyles(def, inst?.variants, id), ...own])) return true;
+    out.push(hiddenSizes([def.tree.nodes[id]?.styles, ...selectedVariantStyles(def, inst?.variants, id), ...own]));
   }
-  return false;
+  return out;
 }
 
 /**
@@ -368,28 +378,39 @@ function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope):
  * placement's values), from the theme's FAQ and Contact details and project copies of them whose design still has
  * those nodes; what is hidden at every size is left out, as visitors never see it.
  */
-export function structuredContent(state: ProjectState, page: PageDoc): { faq: FaqEntry[]; businesses: BusinessFacts[] } {
+export function structuredContent(state: ProjectState, page: PageDoc): StructuredContent {
+  // The shared header and footer are read once per run, and a page depends on what they show, not on every edit to them.
+  const shell = (part: ShellPart): StructuredContent => (showsPart(page, part) ? derived(state, `structured:${part}`, (s) => structuredIn(s, [s.site.shell[part]])) : { faq: [], businesses: [] });
+  const parts = [shell('header'), structuredIn(state, [page]), shell('footer')];
+  return { faq: parts.flatMap((p) => p.faq), businesses: parts.flatMap((p) => p.businesses) };
+}
+
+/** What `structuredContent` reads from page or shell trees, in their order. */
+interface StructuredContent {
+  faq: FaqEntry[];
+  businesses: BusinessFacts[];
+}
+
+function structuredIn(state: ProjectState, trees: NodeTree[]): StructuredContent {
   const faq: Array<Partial<FaqEntry>> = [];
   const businesses: BusinessFacts[] = [];
   // Each rendering of a placement evaluates its values afresh: that object tells two renderings apart, even where
   // lists inside lists give them the same trail.
   const faqIn = new Map<object, Map<string, Partial<FaqEntry>>>();
   const factsIn = new Map<object, BusinessFacts>();
-  const trees: NodeTree[] = [...(showsPart(page, 'header') ? [state.site.shell.header] : []), page, ...(showsPart(page, 'footer') ? [state.site.shell.footer] : [])];
   for (const tree of trees) {
-    const hiding: boolean[] = [];
-    let hidden = 0;
+    // The sizes each page node around what renders hides it at, from the outermost one in.
+    const hiding: Array<Set<Size>> = [];
+    const shown = (def: ComponentDefinition, nodeId: string, scope: Scope) => !hiddenEverySize([...hiding, ...hiddenInDesign(def, nodeId, scope)]);
     walkRendered(state, tree, {
       enter: (n) => {
-        const hides = hiddenAtEverySize([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]);
-        hiding.push(hides);
-        if (hides) hidden++;
+        hiding.push(hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]));
       },
       leave: () => {
-        if (hiding.pop()) hidden--;
+        hiding.pop();
       },
       text: (n, scope, _reportId, inDef, def) => {
-        if (hidden || !inDef || !def || !isComponent(def, 'faq.list') || (n.id !== 'question' && n.id !== 'answer') || hiddenInDesign(def, n.id, scope)) return;
+        if (!inDef || !def || !isComponent(def, 'faq.list') || (n.id !== 'question' && n.id !== 'answer') || !shown(def, n.id, scope)) return;
         // One entry per item of each rendering: its question and answer render together.
         const byItem = faqIn.get(scope.props) ?? new Map<string, Partial<FaqEntry>>();
         faqIn.set(scope.props, byItem);
@@ -403,7 +424,7 @@ export function structuredContent(state: ProjectState, page: PageDoc): { faq: Fa
         entry[n.id] = plainText(evaluate(n.text, scope), !!n.rich);
       },
       node: (n, scope, _reportId, inDef, def) => {
-        if (hidden || !inDef || !def || n.kind !== 'link' || n.id !== 'method-value' || !isComponent(def, 'contact.details') || hiddenInDesign(def, n.id, scope)) return;
+        if (!inDef || !def || n.kind !== 'link' || n.id !== 'method-value' || !isComponent(def, 'contact.details') || !shown(def, n.id, scope)) return;
         let facts = factsIn.get(scope.props);
         if (!facts) {
           facts = { email: [], telephone: [], address: [] };

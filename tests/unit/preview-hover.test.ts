@@ -239,10 +239,11 @@ describe.skipIf(!browserInstalled)('pointer movement and page changes in the pre
     await reset();
     for (const p of points) await page.mouse.move(p.x, p.y);
     const chains = hovers(await flushed());
-    expect(chains.map((chain) => chain.slice(0, 2).map((d: Desc) => desc(d)))).toEqual(
+    expect(chains.map((chain) => (chain ?? []).map((d: Desc) => desc(d)))).toEqual(
       ['r1', 'r2'].map((row) => [
         { ctx: 'page:p|team|badge', node: 'label', items: '' },
-        { ctx: 'page:p|team|badge', node: 'root', items: row }
+        { ctx: 'page:p|team|badge', node: 'root', items: row },
+        desc(SEC)
       ])
     );
   });

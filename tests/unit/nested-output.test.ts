@@ -17,6 +17,7 @@ import { blocksSaving, validateState } from '@engine/validate';
 import { formNameWarnings, runtimeFontWarnings } from '../../src/main/export';
 import { choosesFontAtRunTime, installedFonts } from '@catalogue/fonts';
 import { generateProject, nodeClass, pageFile } from '@generator/index';
+import { GenerationCache } from '@generator/cache';
 import { codeImportantProps } from '@engine/tree';
 import { definitionPick, descOf, selectionFromChain, shownValue, type BridgeDesc } from '../../src/renderer/src/lib/model';
 import { P, item, prop, type ComponentSpec } from '@catalogue/dsl';
@@ -197,6 +198,30 @@ describe('converting a component with a property named class to code', () => {
     place(s, outer);
     const r = applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'component', id: outer.id }, nodeId: inner.id, name: 'Tags code' }]);
     expect(Object.keys((r.state.components[r.results[0].definitionId as string].properties.tags as ListProp).fields)).toEqual(['class']);
+    expect(compileErrors(r.state)).toEqual([]);
+    expect((await renderPage(r.state)).body).toMatch(/<span[^>]*>Gold<\/span>/);
+  });
+
+  it('leaves the fields of a list it hands whole to a component inside it, which reads their keys', async () => {
+    const s = fresh();
+    const tags = addDef(s, {
+      componentId: 'project.tags',
+      name: 'Tags',
+      properties: { tags: P.list('Tags', 'Tag', { class: P.str('Class', 'Plain') }, [{ class: 'Plain' }]) },
+      parts: { root: { nodeId: 'root', label: 'Tags' } },
+      build: (b) => b.el('root', 'div', { name: 'Tags' }, [b.repeat('tag-items', 'tags', [b.text('tag', 'span', item('class'), { name: 'Tag', when: item('class') })])])
+    });
+    const outer = addDef(s, {
+      componentId: 'project.shelf',
+      name: 'Shelf',
+      properties: { rows: P.list('Rows', 'Row', { class: P.str('Class', 'Plain') }, [{ class: 'Gold' }]) },
+      parts: { root: { nodeId: 'root', label: 'Shelf' } },
+      build: (b) => b.el('root', 'section', { name: 'Shelf' }, [])
+    });
+    nest(outer, 'root', tags, { tags: prop('rows') });
+    const placed = place(s, outer);
+    const r = applyOperations(s, [{ type: 'component.convertToCode', owner: pageOwner(s), nodeId: placed.id, name: 'Shelf code' }]);
+    expect(Object.keys((r.state.components[r.results[0].definitionId as string].properties.rows as ListProp).fields)).toEqual(['class']);
     expect(compileErrors(r.state)).toEqual([]);
     expect((await renderPage(r.state)).body).toMatch(/<span[^>]*>Gold<\/span>/);
   });
@@ -436,6 +461,23 @@ describe.runIf(BROWSER)('overrides of a code component', () => {
       await tab.setContent(`<!doctype html><html><head><style>${css}</style></head><body><header class="so-header so-o-a"><nav class="so-header__nav so-o-a">Menu</nav></header></body></html>`);
       await tab.emulateMedia({ media: 'print' });
       expect(await tab.evaluate(`[getComputedStyle(document.querySelector('nav')).display, getComputedStyle(document.querySelector('header')).position]`)).toEqual(['none', 'static']);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('give way to a visitor who asks for less motion, delay included', async () => {
+    const { state: s, def } = fancyDef(fresh());
+    const node = place(s, def, { title: 'Placed' });
+    node.overrides = { title: { base: { transition: 'common', transitionDuration: 2000, customCss: 'transition-delay: 2s' } } };
+    const page = await renderPage(s);
+    const tab = await browser!.newPage();
+    try {
+      await tab.emulateMedia({ reducedMotion: 'reduce' });
+      await tab.setContent(`<!doctype html><html><head><style>${page.css}</style></head><body>${page.body}</body></html>`);
+      const [duration, delay] = (await tab.evaluate(`[getComputedStyle(document.querySelector('#box .title')).transitionDuration, getComputedStyle(document.querySelector('#box .title')).transitionDelay]`)) as string[];
+      expect(parseFloat(duration)).toBeLessThan(0.001);
+      expect(delay).toBe('0s');
     } finally {
       await tab.close();
     }
@@ -844,6 +886,22 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect((page.mainEntity as unknown[]).length).toBe(2 * (faqDef.properties.items.default as unknown[]).length);
   });
 
+  it('reads visibility as the stylesheet decides it, size by size through every element around the question', async () => {
+    const s = fresh();
+    const contact = byTitle(s, 'Contact');
+    const faq = firstOf(s, contact, 'faq.list');
+    const faqDef = s.components[faq.definitionId];
+    const root = faqDef.tree!.rootIds[0];
+    // The design hides its root, and the placement gives it a layout: shown.
+    faqDef.tree!.nodes[root].styles = { ...faqDef.tree!.nodes[root].styles, base: { ...faqDef.tree!.nodes[root].styles?.base, hidden: true } };
+    faq.overrides = { root: { base: { layout: 'stack' } } };
+    expect(ofType((await renderPage(s, contact)).head, 'FAQPage')).toHaveLength(1);
+    // Shown only on desktop, with the answers hidden on desktop: no answer is ever seen.
+    faqDef.tree!.nodes[root].styles = { ...faqDef.tree!.nodes[root].styles, base: { ...faqDef.tree!.nodes[root].styles?.base, hidden: false } };
+    faq.overrides = { root: { base: { hidden: true }, desktop: { hidden: false } }, answer: { desktop: { hidden: true } } };
+    expect(ofType((await renderPage(s, contact)).head, 'FAQPage')).toEqual([]);
+  });
+
   it('reads an FAQ placed in a design with the options and styles that design gives it', async () => {
     const s = fresh();
     const faqDef = s.components[installComponent(s, 'faq.list')];
@@ -866,6 +924,18 @@ describe('structured data on a page with contact details and an FAQ', () => {
     s.site.shell.footer.nodes[details.id] = details;
     s.site.shell.footer.rootIds.push(details.id);
     expect(ofType((await renderPage(s, about)).head, 'LocalBusiness')).toHaveLength(1);
+    // A cached run follows what the footer shows into every page, and an edit elsewhere in it changes no page.
+    const cache = new GenerationCache();
+    const page = pageFile(about);
+    const before = generateProject(s, {}, cache).get(page)!;
+    expect(before).toContain('hello@example.com');
+    const t = structuredClone(s);
+    (t.site.shell.footer.nodes[details.id] as InstanceNode).props.heading = 'Visit us';
+    expect(generateProject(t, {}, cache).get(page)).toBe(before);
+    const u = structuredClone(t);
+    ((u.site.shell.footer.nodes[details.id] as InstanceNode).props.items as Array<{ value: string; link: { type: string; target: string } }>)[0].link.target = 'studio@example.com';
+    expect(generateProject(u, {}, cache).get(page)).toContain('studio@example.com');
+    expect(generateProject(u, {}, cache).get(page)).toBe(generateProject(u).get(page));
     about.showFooter = false;
     expect(ofType((await renderPage(s, about)).head, 'LocalBusiness')).toEqual([]);
     s.site.name = '  ';
