@@ -260,7 +260,12 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
   for (const c of folders) {
     if (c.startsWith('.')) continue;
     const dir = `${DOC_DIR}/collections/${c}`;
-    if (!isCollectionId(c)) throw new ProjectFormatError(`${dir} is not a valid collection folder name (use lowercase letters, numbers and hyphens).`);
+    if (!isCollectionId(c)) {
+      // Anything else in the folder (a note, a stray file) is not the project's; settings under a name no collection
+      // can have would be lost without a word, so they stop the read instead.
+      if (exists(`${dir}/collection.json`)) throw new ProjectFormatError(`${dir} is not a valid collection folder name (use lowercase letters, numbers and single hyphens).`);
+      continue;
+    }
     const entryFiles = await list(`${dir}/entries`, (p) => {
       const at = collectionPathOf(p);
       return at?.collectionId === c && at.entryId !== undefined ? `${at.entryId}.json` : null;

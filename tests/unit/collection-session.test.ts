@@ -138,6 +138,13 @@ describe('collections on disk', () => {
     writeFileSync(join(dir, 'siteorigin/collections/projects/collection.json'), JSON.stringify(settings));
     writeFileSync(join(dir, 'siteorigin/collections/projects/entries/en_hall.json'), JSON.stringify(entry));
     expect((await readState(dir)).collections.projects).toEqual({ settings, entries: { en_hall: entry } });
+    // A note beside the collections is not one; settings in a folder no collection can be named stop the read.
+    writeFileSync(join(dir, 'siteorigin/collections/README.md'), 'notes');
+    expect(Object.keys((await readState(dir)).collections)).toEqual(['projects']);
+    mkdirSync(join(dir, 'siteorigin/collections/Case_Studies'));
+    writeFileSync(join(dir, 'siteorigin/collections/Case_Studies/collection.json'), JSON.stringify({ ...settings, id: 'Case_Studies' }));
+    await expect(readState(dir)).rejects.toThrow(/Case_Studies is not a valid collection folder name/);
+    rmSync(join(dir, 'siteorigin/collections/Case_Studies'), { recursive: true });
     // A file named for another entry.
     writeFileSync(join(dir, 'siteorigin/collections/projects/entries/en_park.json'), JSON.stringify(entry));
     await expect(readState(dir)).rejects.toThrow(/en_park\.json has a mismatched id "en_hall"/);
