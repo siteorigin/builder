@@ -65,8 +65,9 @@ export function isArticleHeader(state: ProjectState, def: ComponentDefinition, p
   );
 }
 
-/** Long enough for any valid route: four levels of 60 characters (each up to two UTF-16 units) and their slashes. */
-const SLUG_CHARS = 500;
+/** Long enough for any valid route, also escaped as a browser copies it: four segments of up to 120 bytes, each
+ *  escaped as three characters, and their slashes. */
+const SLUG_CHARS = 1500;
 
 export const UPSERT_ARGS = z.object({
   slug: z.string().min(1).max(SLUG_CHARS).describe('Page path such as "services" or "/about/team/". "home" or "/" is the home page.'),

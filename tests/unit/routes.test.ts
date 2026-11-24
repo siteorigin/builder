@@ -57,7 +57,7 @@ describe('normalizeRoute', () => {
 });
 
 /** Titles in Latin script, whose addresses must stay exactly what they were before addresses took other scripts. */
-const LATIN_TITLES = ['About Us', '  Café & Bar!  ', 'Oﬃce Hours', 'Crème Brûlée', 'Straße 12', 'Đà Nẵng', 'Liên hệ', 'Ｆｕｌｌ Ｗｉｄｔｈ', 'Q&A — 2026', 'İstanbul', 'Ærø', '---', `${'a'.repeat(59)} b`, 'b'.repeat(70)];
+const LATIN_TITLES = ['OʼNeil & Sons', 'Rock ʼn Roll', 'About Us', '  Café & Bar!  ', 'Oﬃce Hours', 'Crème Brûlée', 'Straße 12', 'Đà Nẵng', 'Liên hệ', 'Ｆｕｌｌ Ｗｉｄｔｈ', 'Q&A — 2026', 'İstanbul', 'Ærø', '---', `${'a'.repeat(59)} b`, 'b'.repeat(70)];
 
 describe('addresses in any script (#36)', () => {
   it('gives a page titled in Japanese, or other scripts, its natural address', () => {
@@ -95,14 +95,22 @@ describe('addresses in any script (#36)', () => {
     expect(suggestRoute('ｶﾌｪ', (r) => taken.has(r))).toEqual({ route: '/カフェ-2/', base: '/カフェ/' });
   });
 
-  it('cuts at 60 characters, not UTF-16 units, and keeps a cut or numbered address valid', () => {
+  it('cuts to 60 characters and 120 bytes, so a deep address stays a path the disk can hold', () => {
+    // Two-byte letters fill all 60 characters; Japanese takes 40, and characters beyond the BMP 30, never split.
+    expect(addressSlug('я'.repeat(70))).toBe('я'.repeat(60));
+    expect(addressSlug('お'.repeat(70))).toBe('お'.repeat(40));
     const astral = addressSlug('𠮷'.repeat(70));
-    expect(Array.from(astral)).toHaveLength(60);
-    expect(validateRoute(`/${astral}/`)).toBeNull();
-    expect(validateRoute(`/${'𠮷'.repeat(61)}/`)).toMatch(/60 characters/);
+    expect(astral).toBe('𠮷'.repeat(30));
+    for (const seg of ['я'.repeat(60), 'お'.repeat(40), astral, 'a'.repeat(60)]) expect(validateRoute(`/${seg}/${seg}/${seg}/${seg}/`), seg).toBeNull();
+    expect(validateRoute(`/${'я'.repeat(61)}/`)).toMatch(/60 characters/);
+    expect(validateRoute(`/${'お'.repeat(41)}/`)).toMatch(/40 in Japanese/);
+    expect(validateRoute(`/${'𠮷'.repeat(31)}/`)).toMatch(/40 in Japanese/);
+    const deepest = `/${Array(4).fill(astral).join('/')}/`;
+    expect(new TextEncoder().encode(deepest).length).toBeLessThanOrEqual(485);
     const numbered = numberedSlug(astral, 12);
-    expect(Array.from(numbered)).toHaveLength(60);
-    expect(numbered.endsWith('𠮷-12')).toBe(true);
+    expect(numbered).toBe(`${'𠮷'.repeat(29)}-12`);
+    expect(validateRoute(`/${numbered}/`)).toBeNull();
+    expect(numberedSlug('お'.repeat(40), 2)).toBe(`${'お'.repeat(39)}-2`);
     // The cut can leave a sigma ending the word, which is then spelled as one.
     const greek = `${'a'.repeat(57)}σβ`;
     expect(numberedSlug(addressSlug(greek), 2)).toBe(`${'a'.repeat(57)}ς-2`);
@@ -145,8 +153,10 @@ describe('addresses in any script (#36)', () => {
     expect(routeUrl('/お問い合わせ/')).toBe('/%E3%81%8A%E5%95%8F%E3%81%84%E5%90%88%E3%82%8F%E3%81%9B/');
     expect(routeUrl('/services/web-design/')).toBe('/services/web-design/');
     expect(readablePath(routeUrl('/お問い合わせ/'))).toBe('/お問い合わせ/');
-    // Escapes of a slash stay escaped, and a malformed one leaves the path as it is.
+    // Escapes of a slash stay escaped, and a malformed one leaves the path as it is. Decoded once only: an escaped
+    // "%" is a "%", never the start of another escape.
     expect(readablePath('/a%2Fb/')).toBe('/a%2Fb/');
+    expect(readablePath(encodeURI(routeUrl('/お/')))).toBe(routeUrl('/お/'));
     expect(readablePath('/%E3%81/')).toBe('/%E3%81/');
   });
 });

@@ -24,8 +24,16 @@ export function slugify(text: string): string {
 const LATIN = /\p{Script=Latin}/u;
 /** Letters, combining marks and decimal digits, of any script. */
 const WORD = /[\p{L}\p{M}\p{Nd}]/u;
-/** Characters of no script in particular, such as the modifier apostrophe "ʼ", which are punctuation in an address. */
+/** Characters of no script in particular, which are punctuation in an address. */
 const NO_SCRIPT = /\p{scx=Common}/u;
+/** Characters shared between scripts... */
+const SHARED = /\p{Script=Common}/u;
+/** ...that Latin text uses, such as the modifier apostrophe in "OʼNeil", which Latin titles never kept. */
+const USED_BY_LATIN = /\p{scx=Latin}/u;
+
+/** The most a segment holds: 60 characters, and 120 bytes once written as a folder name (UTF-8). */
+const SEGMENT_CHARS = 60;
+const SEGMENT_BYTES = 120;
 
 /**
  * Whether a character may stand in an address: a–z, 0–9 and the hyphen, or a letter, mark or digit of a script other
@@ -33,7 +41,18 @@ const NO_SCRIPT = /\p{scx=Common}/u;
  * plain ASCII addresses they always had.
  */
 function addressChar(ch: string): boolean {
-  return /^[a-z0-9-]$/.test(ch) || (WORD.test(ch) && !LATIN.test(ch) && !NO_SCRIPT.test(ch));
+  if (/^[a-z0-9-]$/.test(ch)) return true;
+  return WORD.test(ch) && !LATIN.test(ch) && !NO_SCRIPT.test(ch) && !(SHARED.test(ch) && USED_BY_LATIN.test(ch));
+}
+
+/** Bytes a code point takes in UTF-8, as file systems count a name's length. */
+const utf8Length = (cp: number) => (cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4);
+
+/** Bytes `text` takes in UTF-8. */
+function utf8Bytes(text: string): number {
+  let n = 0;
+  for (const ch of text) n += utf8Length(ch.codePointAt(0)!);
+  return n;
 }
 
 /**
@@ -69,12 +88,20 @@ function foldAddress(text: string): string {
 }
 
 /**
- * A segment cut to at most `max` code points (never splitting a character outside the Basic Multilingual Plane),
- * without the hyphen the cut may leave at its end, and with a sigma that now ends the word spelled so.
+ * A segment cut to at most `chars` code points and `bytes` UTF-8 bytes (never splitting a character outside the Basic
+ * Multilingual Plane), without the hyphen the cut may leave at its end, and with a sigma that now ends the word
+ * spelled so.
  */
-function cutSegment(text: string, max: number): string {
-  const points = Array.from(text);
-  const cut = points.length > max ? points.slice(0, max).join('').normalize('NFC') : text;
+function cutSegment(text: string, chars: number, bytes: number): string {
+  let kept = 0;
+  let size = 0;
+  let end = 0;
+  for (const ch of text) {
+    size += utf8Length(ch.codePointAt(0)!);
+    if (++kept > chars || size > bytes) break;
+    end += ch.length;
+  }
+  const cut = end < text.length ? text.slice(0, end).normalize('NFC') : text;
   return spellSigma(cut.replace(/-+$/, ''));
 }
 
@@ -84,7 +111,8 @@ const pointCount = (text: string) => Array.from(text).length;
 /**
  * The address segment for a page titled `text`: Latin titles as `slugify` makes them ("Café & Bar!" is
  * "cafe-and-bar"), and words in other scripts as written ("お問い合わせ", "привет-мир"), with everything else
- * between words a single hyphen, cut to 60 characters. "" when nothing in the title can be kept.
+ * between words a single hyphen, cut to fit a segment (60 characters, 40 in Japanese). "" when nothing in the title
+ * can be kept.
  */
 export function addressSlug(text: string): string {
   const kept = Array.from(foldAddress(text).replace(/&/g, ' and '), (ch) => (ch !== '-' && addressChar(ch) ? ch : '-'))
@@ -94,7 +122,7 @@ export function addressSlug(text: string): string {
     .replace(/-+/g, '-')
     .replace(/^-+/, '');
   // Trimmed after the cut, which may land on the hyphen between two words.
-  return cutSegment(kept, 60);
+  return cutSegment(kept, SEGMENT_CHARS, SEGMENT_BYTES);
 }
 
 /** A segment as pasted from a browser's address bar ("%E3%81%8A..."), decoded; anything else stays as typed. */
@@ -131,7 +159,8 @@ export function normalizeRoute(input: string): string {
 /**
  * Returns an error message for one segment of an address (a page's last part, or an entry's slug), or null when it is
  * valid: a–z, 0–9 and hyphens, or letters, marks and digits of other scripts, spelled as foldAddress spells them,
- * starting with a letter or number, at most 60 characters.
+ * starting with a letter or number, at most 60 characters and 120 bytes (UTF-8). The bytes keep an address four
+ * levels deep in another script well within the longest path a file system takes; ASCII never reaches them.
  */
 export function validateSegment(seg: string): string | null {
   if (!seg) return 'Routes cannot contain empty segments.';
@@ -139,7 +168,8 @@ export function validateSegment(seg: string): string | null {
   // Plain ASCII addresses, which every Latin title gets, need nothing more.
   if (/^[a-z0-9][a-z0-9-]*$/.test(seg)) return seg.length > 60 ? 'Route segments must be 60 characters or fewer.' : null;
   if (!/^[\p{L}\p{Nd}]/u.test(seg) || !Array.from(seg).every(addressChar)) return `"${seg}" may only contain lowercase letters, numbers and hyphens.`;
-  if (pointCount(seg) > 60) return 'Route segments must be 60 characters or fewer.';
+  if (pointCount(seg) > SEGMENT_CHARS) return 'Route segments must be 60 characters or fewer.';
+  if (utf8Bytes(seg) > SEGMENT_BYTES) return 'Route segments must be 60 characters or fewer, and fewer in scripts whose letters take more room (40 in Japanese, Chinese or Korean).';
   // One spelling per address, so two that look the same, or share a folder on disk, are the same route.
   const folded = foldAddress(seg);
   return folded === seg ? null : `"${seg}" must be written "${folded}".`;
@@ -197,14 +227,15 @@ export function suggestRoute(title: string, taken: (route: string) => boolean, f
   const first = `${folder}${slug}/`;
   // Only a top-level name can be reserved; deeper, a slug is always a valid segment.
   const reserved = folder === '/' && validateRoute(first) ? first : undefined;
-  if (reserved) slug = `${cutSegment(slug, 55)}-page`;
+  if (reserved) slug = `${cutSegment(slug, SEGMENT_CHARS - 5, SEGMENT_BYTES - 5)}-page`;
   const base = `${folder}${slug}/`;
   let route = base;
   for (let i = 2; taken(route); i++) route = `${folder}${numberedSlug(slug, i)}/`;
   return reserved ? { route, base, reserved } : { route, base };
 }
 
-/** `slug` numbered `n` ("cafe-2", "カフェ-2"), cut so the whole stays within the 60-character segment limit. */
+/** `slug` numbered `n` ("cafe-2", "カフェ-2"), cut so the whole stays within a segment's limits. */
 export function numberedSlug(slug: string, n: number): string {
-  return `${cutSegment(slug, 60 - `-${n}`.length)}-${n}`;
+  const suffix = `-${n}`;
+  return `${cutSegment(slug, SEGMENT_CHARS - suffix.length, SEGMENT_BYTES - suffix.length)}${suffix}`;
 }

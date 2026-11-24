@@ -39,8 +39,8 @@ describe('page addresses in other scripts', () => {
     ]);
     expect(['pg_cafe0001', 'pg_cafe0002', 'pg_cafe0003'].map((id) => r.state.pages[id].route)).toEqual(['/カフェ/', '/カフェ-2/', '/カフェ-3/']);
     // Typed in another spelling, the address is the same one, and taken.
-    expect(() => applyOperations(r.state, [{ type: 'page.create', title: 'Menu', route: '/ｶﾌｪ/' }])).toThrow(/already|taken|has the address|holds/i);
-    expect(() => applyOperations(r.state, [{ type: 'page.update', pageId: 'pg_cafe0002', route: '/ｶﾌｪ/' }])).toThrow();
+    expect(() => applyOperations(r.state, [{ type: 'page.create', title: 'Menu', route: '/ｶﾌｪ/' }])).toThrow('Another page already uses /カフェ/.');
+    expect(() => applyOperations(r.state, [{ type: 'page.update', pageId: 'pg_cafe0002', route: '/ｶﾌｪ/' }])).toThrow('Another page already uses /カフェ/.');
     expect(errors(r.state)).toEqual([]);
   });
 
@@ -76,8 +76,10 @@ describe('page addresses in other scripts', () => {
     expect(files.get('static/sitemap.xml')).not.toMatch(/[^\x00-\x7f]/);
     // The header links to it as written; browsers escape it.
     expect(files.get('src/routes/+layout.svelte')).toContain('"/お問い合わせ/"');
-    // An old address in another script leads on to the new one.
-    expect(files.get(redirectFile('/お問い合わせ/アクセス/'))).toContain('resolve("/会社/アクセス/")');
+    // An old address in another script leads on to the new one, and names the new one as canonical, escaped.
+    const redirect = files.get(redirectFile('/お問い合わせ/アクセス/'))!;
+    expect(redirect).toContain('resolve("/会社/アクセス/")');
+    expect(redirect).toContain(`<link rel="canonical" href={${JSON.stringify(`https://example.com${encodeURI('/会社/アクセス/')}`)}} />`);
   });
 
   it('finds the page for a link to its address, as written or escaped as a browser copies it', () => {
@@ -86,6 +88,8 @@ describe('page addresses in other scripts', () => {
     expect(linkFromTarget(`${encodeURI('/お問い合わせ/')}#form`, s.pages)).toEqual({ type: 'page', target: 'pg_contact1', anchor: 'form' });
     const text = normalizeRichText(`[Write to us](${encodeURI('/お問い合わせ')})`, s, 'Text');
     expect(JSON.stringify(text)).toContain('"target":"pg_contact1"');
+    // Escaped once is the page; escaped twice is an address with "%" in it, which no page has.
+    expect(linkFromTarget(encodeURI(encodeURI('/お問い合わせ/')), s.pages)).toBeNull();
   });
 });
 
@@ -103,17 +107,23 @@ describe('collection entries in other scripts', () => {
     expect(errors(r.state)).toEqual([]);
     for (const e of Object.values(entries)) e.draft = false;
     r.state.site.baseUrl = 'https://example.com';
-    const files = generateProject(r.state);
+    let files = generateProject(r.state);
     expect(files.get('static/sitemap.xml')).toContain(`<loc>https://example.com${encodeURI('/お知らせ/春のセール/')}</loc>`);
-    // A slug stored in another spelling is refused, not given a page.
+    const entryPage = [...files.entries()].find(([path, src]) => path.startsWith('src/routes/') && src.includes('canonical') && src.includes(encodeURI('/お知らせ/春のセール-2/')));
+    expect(entryPage, 'an entry names its escaped address as canonical').toBeTruthy();
+    // A slug stored in another spelling, or holding a folder, is refused, and given no page.
     r.state.collections.posts.entries.en_sale0002.slug = '春のｾｰﾙ';
-    expect(errors(r.state).some((d) => d.code === 'ROUTE_INVALID')).toBe(true);
+    r.state.collections.posts.entries.en_hours001.slug = '営業/時間';
+    expect(errors(r.state).filter((d) => d.code === 'ROUTE_INVALID')).toHaveLength(2);
+    files = generateProject(r.state);
+    expect(files.get('static/sitemap.xml')).not.toContain(encodeURI('ｾｰﾙ'));
+    expect(files.get('static/sitemap.xml')).not.toContain(encodeURI('営業'));
   });
 });
 
 describe('the assistant', () => {
   it('is told page addresses may be in any script', () => {
-    const create = toolDefinitions().find((t) => t.name === 'edit_site' || JSON.stringify(t).includes('page.create'));
-    expect(JSON.stringify(create ?? toolDefinitions())).toContain('/お問い合わせ/');
+    const apply = JSON.stringify(toolDefinitions().find((t) => t.name === 'apply_operations')!.parameters);
+    expect(apply).toContain('Static route such as \\"/services/\\" or \\"/お問い合わせ/\\": lowercase letters, numbers and hyphens, in any script.');
   });
 });

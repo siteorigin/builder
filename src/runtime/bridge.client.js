@@ -2035,7 +2035,7 @@ function pastedHref(raw) {
   if (/^https?:\/\//i.test(href)) {
     try {
       const url = new URL(href);
-      if (url.origin === location.origin) href = readablePath(url.pathname) + url.hash;
+      if (url.origin === location.origin) href = url.pathname + url.hash;
     } catch {
       return '';
     }

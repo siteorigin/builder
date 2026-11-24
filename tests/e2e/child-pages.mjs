@@ -145,11 +145,12 @@ try {
   await win.getByRole('menuitem', { name: 'Page settings' }).click();
   const addressField = inspector().getByLabel('Page address');
   await eventually(async () => assert.equal(await addressField.inputValue(), '/お問い合わせ/'));
-  for (const typed of ['/連絡先/', '/お問い合わせ/']) {
+  // One typed, one copied from a browser's address bar with its escapes.
+  for (const [typed, route] of [['/連絡先/', '/連絡先/'], [encodeURI('/お問い合わせ/'), '/お問い合わせ/']]) {
     await addressField.fill(typed);
     await addressField.press('Enter');
-    await eventually(async () => assert.equal((await pageBy('お問い合わせ')).route, typed, `the typed address ${typed} is kept`));
-    assert.equal(await addressField.inputValue(), typed, 'the field shows the address the page has');
+    await eventually(async () => assert.equal((await pageBy('お問い合わせ')).route, route, `the address ${typed} is kept as ${route}`));
+    await eventually(async () => assert.equal(await addressField.inputValue(), route, 'the field shows the address the page has'));
   }
   assert.deepEqual((await snapshot()).state.site.redirects.find((r) => r.pageId === contactJa.id), { from: '/連絡先/', pageId: contactJa.id }, 'the address it left keeps leading to it');
 
