@@ -1,19 +1,22 @@
 import { axesOf, designLayers, designStyles, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
-import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { Children, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
   ChevronDown,
   ChevronRight,
+  CircleAlert,
   Code,
   Component,
   Copy,
   Ellipsis,
+  Eye,
   FileCode2,
   FileText,
   Heading,
   House,
   Image as ImageIcon,
+  Layers,
   Link as LinkIcon,
   List,
   MousePointerClick,
@@ -75,15 +78,22 @@ function formKeyNotes(def: ComponentDefinition, value: unknown): ((item: ListIte
   return (_item, i) => ({ field: 'name', ...formKeyNote(fields, i) });
 }
 
-/** Under a contact form's service setting: what the form still needs, then how to get it from the service. */
-function formServiceHint(service: FormServiceSetup): ReactNode {
+/**
+ * Under a contact form's service setting: how to get it from the service. A value entered that the service won't
+ * take is flagged here, beside it; a setting still empty is said in the problems above the sections.
+ */
+function formServiceHint(service: FormServiceSetup, entered: boolean): ReactNode {
   return (
     <>
-      {service.problem && <span className="field-warning">{service.problem}</span>}
+      {entered && service.problem && <span className="field-warning">{service.problem}</span>}
       {service.setup}
     </>
   );
 }
+
+/** A property choosing a heading's level (Heading 1 to 6): it sets the page outline, not the look. */
+const isHeadingLevel = (schema: PropSchema | ScalarPropSchema) => schema.type === 'enum' && schema.options.length > 1 && schema.options.every((o) => /^h[1-6]$/.test(o.value));
+const HEADING_LEVEL_HINT = 'Sets the page outline screen readers use, not the look. Use Heading 1 for the page title only.';
 
 /** A video field's hint, when it has one. */
 const videoHint = (note: VideoFieldNotes['url'] | VideoFieldNotes['title'] | undefined) => (note && 'hint' in note ? note.hint : undefined);
@@ -197,6 +207,13 @@ function sharedPartStyles(def: ComponentDefinition, nodeId: string, inst: Instan
   return cascadeStyles([...design, { styles: inst.overrides?.[partId], strength: 3, wideColumns: true, unhides: design.map((l) => l.styles) }]);
 }
 
+/**
+ * The style reach (one card, or every card) last chosen for each card of each placement, so moving from a card's
+ * title to its icon, from Parts or on the canvas, never quietly widens the edit. A card not chosen for yet follows
+ * the shared style until "This card" is picked.
+ */
+const reachByItem = new Map<string, 'all' | 'item'>();
+
 /** The selection one level up: the component a part belongs to (what Escape selects). */
 function parentOf(sel: ElementRef): ElementRef {
   return { owner: sel.owner, instancePath: sel.instancePath.slice(0, -1), nodeId: sel.instancePath[sel.instancePath.length - 1] };
@@ -225,7 +242,8 @@ const REVEAL_FIELD_MS = 1000;
 
 /** Bring a content field into view, put focus on its control and ring it briefly. Nothing is clicked or changed. */
 function revealField(slot: HTMLElement) {
-  const box = (slot.firstElementChild as HTMLElement | null) ?? slot;
+  // A `display: contents` wrapper has no box of its own: ring the field inside it. A field that is its own slot rings itself.
+  const box = getComputedStyle(slot).display === 'contents' ? ((slot.firstElementChild as HTMLElement | null) ?? slot) : slot;
   const control = slot.querySelector<HTMLElement>('input:not([type="hidden"]), textarea, select, [contenteditable="true"], button');
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   box.scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' });
@@ -330,7 +348,51 @@ function elementKind(node: GraphNode): { name: string; icon: ReactNode } {
   }
 }
 
+/**
+ * The Inspector, with one status line that outlives every selection's panel: problems a selection brings are said
+ * through it as the selection arrives.
+ */
 export function Inspector() {
+  useFocusRecovery();
+  return (
+    <>
+      <p id="insp-announce" className="sr-only" role="status" aria-live="polite" />
+      <InspectorBody />
+    </>
+  );
+}
+
+/**
+ * When the control that had focus is taken out of the Inspector (a selection change, an undo, a row removed) and
+ * nothing else took focus, it goes to the selection's name rather than back to the start of the window. Focus that
+ * moved to the canvas, Layers or a dialog is left where it is.
+ */
+function useFocusRecovery() {
+  useEffect(() => {
+    const panel = document.getElementById('dock-panel-inspect');
+    if (!panel) return;
+    // The Inspector control focus was last on, and only while focus stays in the Inspector: focus that has moved to
+    // Layers, the canvas or a menu clears it, so their own handoffs are never overruled.
+    let last: Element | null = null;
+    const onIn = (e: FocusEvent) => (last = e.target instanceof Element && panel.contains(e.target) ? e.target : null);
+    const mo = new MutationObserver(() => {
+      if (!last || last.isConnected || (document.activeElement && document.activeElement !== document.body)) return;
+      last = null;
+      requestAnimationFrame(() => {
+        if (document.activeElement && document.activeElement !== document.body) return;
+        panel.querySelector<HTMLElement>('.insp-name h3')?.focus();
+      });
+    });
+    document.addEventListener('focusin', onIn);
+    mo.observe(panel, { childList: true, subtree: true });
+    return () => {
+      document.removeEventListener('focusin', onIn);
+      mo.disconnect();
+    };
+  }, []);
+}
+
+function InspectorBody() {
   const snap = useStore((s) => s.snapshot);
   const selection = useStore((s) => s.selection);
   const pageId = useStore((s) => s.pageId);
@@ -398,8 +460,23 @@ export function Inspector() {
  */
 function Header({ title, kind, icon, tone = 'local', actions, children }: { title: string; kind: ReactNode; icon: ReactNode; tone?: Tone; actions?: ReactNode; children?: ReactNode }) {
   // The name takes focus (not a tab stop) when an Inspector link changes the selection, so focus stays here.
+  // Keyboard focus scrolls fields clear of this header at whatever height it wraps to.
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    const body = el?.closest<HTMLElement>('.panel-body');
+    if (!el || !body) return;
+    // Written only when the height changes. The style controls measure this header for their own allowance.
+    const ro = new ResizeObserver(() => {
+      // Room for the label above a focused field as well as the field.
+      const h = `${Math.ceil(el.offsetHeight) + 32}px`;
+      if (body.style.getPropertyValue('--insp-head-h') !== h) body.style.setProperty('--insp-head-h', h);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   return (
-    <div className="insp-head insp-sel">
+    <div className="insp-head insp-sel" ref={ref}>
       <div className="insp-id">
         <span className={`insp-kind ${tone}`} aria-hidden="true">
           {icon}
@@ -426,6 +503,136 @@ function Scope({ tone, icon, children, aside }: { tone: Tone; icon: ReactNode; c
       {aside}
     </div>
   );
+}
+
+/**
+ * Setup problems that stop something working on the site, between the header and the sections, so a closed Content
+ * can't hide them. The strip is always mounted, so a problem that appears while the panel is open is announced.
+ */
+function Problems({ children }: { children: ReactNode }) {
+  const rows = Children.toArray(children);
+  const [all, setAll] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const said = useRef<string | null>(null);
+  // Said through the Inspector's lasting status line, so a problem is heard when its selection arrives, not only
+  // when it appears while the panel is already open. Each selection says its problems once; leaving clears them.
+  useEffect(() => {
+    const text = [...(ref.current?.querySelectorAll('.grow') ?? [])].map((el) => el.textContent ?? '').join(' ');
+    if (text !== said.current) announce((said.current = text));
+  });
+  useEffect(() => () => announce(''), []);
+  // Many broken list items would push Content out of view: the first stays, the rest are one click away.
+  const shown = all || rows.length <= 2 ? rows : rows.slice(0, 1);
+  return (
+    <div className={rows.length ? 'insp-problems' : 'insp-problems empty'} ref={ref}>
+      {shown}
+      {shown.length < rows.length && (
+        <button className="insp-mini insp-more" onClick={() => setAll(true)}>
+          Show {rows.length - shown.length} more {rows.length - shown.length === 1 ? 'problem' : 'problems'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A list item by its title (“Planning & layout”), else by its place ("card 2"), for a problem row. */
+function itemTitle(def: ComponentDefinition, value: unknown, prop: string, itemId: string): string {
+  const schema = def.properties[prop];
+  if (schema?.type !== 'list') return '';
+  const items = (Array.isArray(value) ? value : schema.default) as ListItem[] | undefined;
+  const i = Array.isArray(items) ? items.findIndex((it) => it?.id === itemId) : -1;
+  if (i < 0) return '';
+  const t = schema.titleField ? (items![i] as Record<string, unknown>)[schema.titleField] : undefined;
+  return typeof t === 'string' && t.trim() ? `“${t.trim()}”` : `${schema.itemLabel.toLowerCase()} ${i + 1}`;
+}
+
+/**
+ * The Inspector's status line, outside every selection's panel. Emptied first, so the same words said for the next
+ * selection are heard again.
+ */
+function announce(text: string) {
+  const el = document.getElementById('insp-announce');
+  if (!el) return;
+  el.textContent = '';
+  if (text) requestAnimationFrame(() => (el.textContent = text));
+}
+
+/** One problem: what visitors will experience, then what is missing, with a way to the field when it is here. */
+function Problem({ children, onGo, go = 'Go to field' }: { children: ReactNode; onGo?: () => void; go?: string }) {
+  return (
+    <div className="insp-scope danger">
+      <CircleAlert />
+      <span className="grow">{children}</span>
+      {onGo && (
+        <button className="insp-mini" onClick={onGo}>
+          {go}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Open a section if it is closed, then bring one of its own fields (not a list item's) into view and focus it: for
+ * an object, the one field of it named.
+ */
+function revealContentField(section: string, prop: string, field?: string) {
+  openSection(section, { scroll: false });
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const slots = document.querySelectorAll<HTMLElement>(`#dock-panel-inspect [data-field="${CSS.escape(prop)}"]`);
+      const slot = [...slots].find((el) => !el.parentElement?.closest('.list-editor-body'));
+      const inner = slot && field !== undefined ? slot.querySelector<HTMLElement>(`[data-object-field="${CSS.escape(field)}"]`) : null;
+      if (slot) revealField(inner ?? slot);
+    })
+  );
+}
+
+/** Open Content, open one list item's row, then bring one of its fields into view and focus it. */
+function revealListField(prop: string, itemId: string, field: string) {
+  openSection('content', { scroll: false });
+  setTimeout(() => {
+    const list = document.querySelector<HTMLElement>(`#dock-panel-inspect [data-list="${CSS.escape(prop)}"]`);
+    const head = list?.querySelector<HTMLElement>(`#list-head-${CSS.escape(itemId)}`);
+    if (head && head.getAttribute('aria-expanded') !== 'true') head.click();
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const slot = document.querySelector<HTMLElement>(`#list-item-${CSS.escape(itemId)} [data-field="${CSS.escape(field)}"]`);
+        if (slot) revealField(slot);
+        else head?.focus();
+      })
+    );
+  }, 60);
+}
+
+/** "both" for two, "all 3" for more. */
+const allOf = (n: number) => (n === 2 ? 'both' : `all ${n}`);
+
+/**
+ * Several layers selected together in Layers: the fields below belong to the one everything follows, while
+ * Duplicate and Delete (and their shortcuts) act on all of them. Said first, so neither surprises.
+ */
+function GroupScope({ plan, title }: { plan: ReturnType<typeof planLayers>; title: string }) {
+  if (!plan?.several) return null;
+  // Quiet like the page scope, with the selection blue on its icon alone: this is the live selection, not a reach.
+  return (
+    <div className="insp-scope local group">
+      <Layers />
+      <span className="grow">
+        <strong>{groupCount(plan.group)} selected.</strong> Editing {title}. Duplicate and Delete affect {allOf(plan.group.ids.length)}.
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The selection's commands, grouped by what they reach when several layers are selected together: the ones for
+ * the selected layer alone under its name, then Duplicate and Delete under the count they act on.
+ */
+function groupedItems(plan: ReturnType<typeof planLayers>, title: string, own: MenuItem[], batch: MenuItem[]): MenuItem[] {
+  const ownItems = own.filter((it, i, all) => !(it.separator && (i === 0 || i === all.length - 1 || all[i - 1]?.separator)));
+  if (!plan?.several) return [...ownItems, ...(ownItems.length && batch.length ? [{ separator: true }] : []), ...batch];
+  return [...(ownItems.length ? [{ heading: title }, ...ownItems, { separator: true }] : []), { heading: groupCount(plan.group) }, ...batch];
 }
 
 function OwnerScope({ owner, state, aside }: { owner: OwnerRef; state: ProjectState; aside?: ReactNode }) {
@@ -464,12 +671,15 @@ function OwnerScope({ owner, state, aside }: { owner: OwnerRef; state: ProjectSt
   );
 }
 
-/** A compact "Parts" menu: the way from a section down to one of its parts, beside the Style jump. */
-function PartsButton({ title, parts }: { title: string; parts: Array<{ label: string; select: () => void }> }) {
+/**
+ * A compact "Parts" menu: the way from a section down to one of its parts, beside the Style jump, and from one part
+ * across to another (the current one checked).
+ */
+function PartsButton({ title, parts }: { title: string; parts: Array<{ label: string; select: () => void; current?: boolean }> }) {
   const menu = useMenu();
   return (
     <>
-      <button className="insp-mini" aria-haspopup="menu" aria-expanded={menu.isOpen} title={`Select a part of ${title}`} onClick={(e) => menu.openAt(e.currentTarget, parts.map((p) => ({ label: p.label, onSelect: p.select })), `Parts of ${title}`)}>
+      <button className="insp-mini" aria-haspopup="menu" aria-expanded={menu.isOpen} title={`Select a part of ${title}`} onClick={(e) => menu.openAt(e.currentTarget, parts.map((p) => ({ label: p.label, onSelect: p.select, ...(p.current !== undefined ? { checked: p.current } : {}) })), `Parts of ${title}`)}>
         Parts <ChevronDown aria-hidden="true" />
       </button>
       {menu.node}
@@ -478,17 +688,24 @@ function PartsButton({ title, parts }: { title: string; parts: Array<{ label: st
 }
 
 /** Ask AI, plus a menu of everything else that can be done to the selection. */
-function SelectionActions({ title, selection, items, ask = true }: { title: string; selection: ElementRef; items: MenuItem[]; ask?: boolean }) {
+function SelectionActions({ title, selection, items, group, ask = true }: { title: string; selection: ElementRef; items: MenuItem[]; group?: string; ask?: boolean }) {
   const menu = useMenu();
   return (
     <>
       {ask && (
-        <button className="icon-btn" aria-label={`Ask AI about ${title}`} title="Ask AI about this (⌘J)" onClick={() => askAiAbout(selection)}>
+        <button className="icon-btn" aria-label={`Ask AI about ${title}`} title={`Ask AI about ${title} (⌘J)`} onClick={() => askAiAbout(selection)}>
           <Sparkles />
         </button>
       )}
       {items.length > 0 && (
-        <button className="icon-btn" aria-haspopup="menu" aria-expanded={menu.isOpen} aria-label={`More actions for ${title}`} title="More actions" onClick={(e) => menu.openAt(e.currentTarget, items, `Actions for ${title}`)}>
+        <button
+          className="icon-btn"
+          aria-haspopup="menu"
+          aria-expanded={menu.isOpen}
+          aria-label={group ? `More actions for ${title} and the ${group} selected` : `More actions for ${title}`}
+          title="More actions"
+          onClick={(e) => menu.openAt(e.currentTarget, items, group ? `Actions for ${title} and the ${group} selected` : `Actions for ${title}`)}
+        >
           <Ellipsis />
         </button>
       )}
@@ -557,30 +774,35 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
     const id = r?.[0]?.definitionId as string | undefined;
     if (id) toast('Converted to a code component. Its properties stay editable here.', 'info', { label: 'Open code', run: () => setState({ modal: { kind: 'source', definitionId: id } }) });
   };
-  const items: MenuItem[] = [
-    ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
-    ...(canMakeUnique ? [{ label: 'Make unique…', icon: <Split />, hint: 'Separate copy', onSelect: makeUnique }] : []),
-    ...(create ? [{ label: 'Create component…', icon: <Component />, hint: 'With its content', onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
-    ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void convertToCode() }] : []),
-    ...(dev ? [{ label: def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source', icon: <FileCode2 />, onSelect: viewSource }] : []),
-    ...(styleItems.length ? [...(def.kind === 'managed' || canMakeUnique ? [{ separator: true }] : []), ...styleItems] : []),
-    ...(partIds.length ? [{ separator: true }, { heading: 'Select a part' }, ...partIds.map((p) => ({ label: def.parts[p].label, onSelect: () => selectPart(p) }))] : []),
-    ...(!shell
-      ? [
-          { separator: true },
+  // Parts are reached from the Parts menu on the scope line, so this menu keeps to commands.
+  const items = groupedItems(
+    plan,
+    title,
+    [
+      ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
+      ...(canMakeUnique ? [{ label: 'Make unique…', icon: <Split />, onSelect: makeUnique }] : []),
+      ...(create ? [{ label: 'Create component…', icon: <Component />, hint: 'With its content', onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
+      ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void convertToCode() }] : []),
+      ...(dev ? [{ label: def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source', icon: <FileCode2 />, onSelect: viewSource }] : []),
+      { separator: true },
+      ...styleItems
+    ],
+    shell
+      ? []
+      : [
           // With layers selected together in Layers, these act on all of them, as their shortcuts do, and say so.
           { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: asPlanned(plan, duplicateLayers) },
           { label: plan?.several ? `Delete ${groupCount(plan.group)}` : 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: asPlanned(plan, deleteLayers) }
         ]
-      : [])
-  ];
+  );
   // A contact form shows only the setting its service needs. The others keep their values for a switch back.
   const service = formServiceSetup(def, node.props);
-  const fields = groupFields(
-    Object.entries(def.properties)
-      .filter(([key]) => !service?.hidden.includes(key))
-      .map(([key, schema]) => ({ key, schema, data: null }))
-  );
+  // A heading level changes the page outline, not the look: it comes after the content rather than between a
+  // heading and the words under it.
+  const entries = Object.entries(def.properties)
+    .filter(([key]) => !service?.hidden.includes(key))
+    .map(([key, schema]) => ({ key, schema, data: null }));
+  const fields = groupFields([...entries.filter((e) => !isHeadingLevel(e.schema)), ...entries.filter((e) => isHeadingLevel(e.schema))]);
   // Buttons with no link are left out of the site: flag each at the field that sets its link. Hide is offered there
   // only when that field and the label belong to the same one button (not a link or label every item shares).
   const unlinked = unlinkedAt(state, owner, node.id);
@@ -600,21 +822,25 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   // A video section says whether its address is a video visitors can play, where it loads from, and when it needs a title.
   const video = def.componentId === 'media.video' ? videoFieldNotes(node.props) : undefined;
   const videoNote = (key: string) => (key === 'url' || key === 'title' ? video?.[key as keyof VideoFieldNotes] : undefined);
+  const videoEmpty = !!video && !String(node.props.url ?? '').trim();
+  // A renamed section still says what it is: the name is the author's, the kind line the component's.
+  const what = node.name && node.name !== def.name ? def.name : shell ? `Shared ${owner.id}` : 'Section';
+  const goToField = (prop: string, field?: string) => revealContentField('content', prop, field);
   return (
     <>
       <Header
         title={title}
-        kind={shell ? `Shared ${owner.id} · ${origin.toLowerCase()}` : `Section · ${origin.toLowerCase()}`}
+        kind={`${what} · ${origin.toLowerCase()}`}
         tone={shell ? 'shared' : 'local'}
         icon={shell ? owner.id === 'footer' ? <PanelBottom /> : <PanelTop /> : <Component />}
-        actions={<SelectionActions title={title} selection={selection} items={items} />}
+        actions={<SelectionActions title={title} selection={selection} items={items} group={plan?.several ? groupCount(plan.group) : undefined} />}
       >
+        <GroupScope plan={plan} title={title} />
         <OwnerScope
           owner={owner}
           state={state}
           aside={
-            !shell &&
-            def.kind === 'managed' && (
+            (def.kind === 'managed' || codeStyled) && (
               <span className="insp-mini-row">
                 {partIds.length > 0 && <PartsButton title={title} parts={partIds.map((p) => ({ label: def.parts[p].label, select: () => selectPart(p) }))} />}
                 <button className="insp-mini" onClick={() => openSection('style')} title="Open Style and scroll to it">
@@ -625,13 +851,37 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           }
         />
       </Header>
+      <Problems>
+        {service?.problem && (
+          <Problem onGo={() => goToField(service.prop)} go={`Go to ${(def.properties[service.prop]?.label ?? 'the setting').replace(/^Form /, '')}`}>
+            <strong>This form can’t send messages yet.</strong> {service.problem}
+          </Problem>
+        )}
+        {video && (video.url?.error || videoEmpty) && (
+          <Problem onGo={() => goToField('url')} go={videoEmpty ? 'Add an address' : 'Go to address'}>
+            <strong>Visitors see no video yet.</strong> {videoEmpty ? 'Paste the address of a YouTube or Vimeo video.' : 'The address isn’t one this section can play.'}
+          </Problem>
+        )}
+        {/* A button whose link this placement sets: one row each, straight to its link, a list item's row opened for it. */}
+        {unlinked
+          .filter((b) => b.link)
+          .map((b, i) => {
+            const at = b.link!;
+            const where = at.itemId ? itemTitle(def, node.props[at.prop], at.prop, at.itemId) : '';
+            return (
+              <Problem key={`own-${i}`} onGo={() => (at.itemId && at.field ? revealListField(at.prop, at.itemId, at.field) : goToField(at.prop, at.field))} go="Choose a link">
+                <strong>Visitors won’t see “{b.label}”{where ? ` in ${where}` : ''}.</strong> It has no link yet.
+              </Problem>
+            );
+          })}
+        {fixedUnlinked.map((b, i) => (
+          <Problem key={`design-${i}`} onGo={def.kind === 'managed' ? editEverywhere : undefined} go="Edit everywhere…">
+            <strong>Visitors won’t see “{b.label}”.</strong> Its link is set in the section’s design: edit it everywhere and select the button to give it one.
+          </Problem>
+        ))}
+      </Problems>
       <Section title="Content" id="content" level={LEVEL} remember={fields.length > 0}>
         {fields.length === 0 && <p className="faint insp-note">This section has no content of its own. Add elements inside it from Insert.</p>}
-        {fixedUnlinked.map((b, i) => (
-          <p key={i} className="field-error insp-note">
-            “{b.label}” has no link, so visitors won’t see it. Its link is set in the section’s design: choose Edit everywhere and select the button, or the component it belongs to, to give it one.
-          </p>
-        ))}
         <FieldGroups
           groups={fields}
           render={({ key, schema, label }) => {
@@ -642,9 +892,9 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               <PropField
                 key={key}
                 name={key}
-                schema={schema}
+                schema={isHeadingLevel(schema) ? { ...schema, description: HEADING_LEVEL_HINT } : schema}
                 label={label}
-                hint={service && key === service.prop ? formServiceHint(service) : videoHint(videoNote(key))}
+                hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : videoHint(videoNote(key))}
                 value={node.props[key] ?? schema.default}
                 onChange={(v, edit) => set(key, v, edit)}
                 onField={(field, v, edit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], `Edit ${schema.label}`, `${node.id}:${key}:${field}`)}
@@ -691,17 +941,14 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={overrides ? `Whole section · ${changes(overrides)}` : 'Whole section'}>
           {rootCode && <CodeImportantNote name={rootCode.name} props={codeImportantProps(rootCode)} />}
           {partIds.length > 0 && (
-            <p className="insp-note insp-parts">
-              <span className="faint">To style one part, select it:</span>{' '}
-              {partIds.map((p, i) => (
-                <span key={p}>
-                  {i > 0 && <span className="faint"> · </span>}
-                  <button className="link-btn" onClick={() => selectPart(p)}>
-                    {def.parts[p].label}
-                  </button>
-                </span>
+            <div className="insp-parts" role="group" aria-label="Style one part instead">
+              <span className="faint">Style one part:</span>
+              {partIds.map((p) => (
+                <button key={p} className="insp-mini" onClick={() => selectPart(p)}>
+                  {def.parts[p].label}
+                </button>
               ))}
-            </p>
+            </div>
           )}
           <StyleControls
             styles={node.overrides?.root}
@@ -717,7 +964,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         </Section>
       )}
       {codeStyled && (
-        <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={overrides ? `${def.parts[styledPart]?.label ?? 'Whole section'} · ${changes(overrides)}` : undefined}>
+        <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={[styledPart === 'root' ? 'Whole section' : (def.parts[styledPart]?.label ?? 'Whole section'), overrides ? changes(overrides) : ''].filter(Boolean).join(' · ')}>
           {Object.keys(def.parts).length > 1 && (
             <Field label="Part">
               <select className="select" value={styledPart} onChange={(e) => setCodePart(e.target.value)}>
@@ -881,7 +1128,13 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   // one is what the author picked, so nothing is offered until they select again.
   const itemGone = !!itemList && itemList === listProp && !!itemId && itemIndex < 0;
   const ownItemStyles = canStyleItem ? itemStylesOf(def, inst, partId!, itemId!) : undefined;
-  const [reach, setReach] = useState<'all' | 'item'>(ownItemStyles ? 'item' : 'all');
+  // Another part of the same card keeps the choice made there: "This card" stays this card.
+  const reachKey = canStyleItem ? JSON.stringify([owner.kind, owner.id, selection.instancePath[0], itemId]) : '';
+  const [reach, setReachState] = useState<'all' | 'item'>(() => (reachKey && reachByItem.get(reachKey)) || (ownItemStyles ? 'item' : 'all'));
+  const setReach = (r: 'all' | 'item') => {
+    if (reachKey) reachByItem.set(reachKey, r);
+    setReachState(r);
+  };
   const oneItem = canStyleItem && reach === 'item';
   const itemName = (it: Record<string, unknown> | undefined, i: number) => {
     const t = listSchema?.titleField ? it?.[listSchema.titleField] : undefined;
@@ -894,14 +1147,31 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   const styleReach = oneItem ? `this ${partName} only` : n === 1 ? `the 1 ${partName}` : `all ${n} ${partName}s`;
   const kind = elementKind(node);
   const parentName = inst.name ?? def.name;
+  // Which item of the list this part is in, or that it is in every one: said once, beside the section it belongs to.
+  const itemPos = !listSchema || nested ? '' : itemIndex >= 0 ? `${itemLabel} ${itemIndex + 1} of ${n}` : itemId ? '' : n === 1 ? `the one ${itemLabel}` : `every ${itemLabel}`;
   const parentLink = (
     <>
       Part of{' '}
       <button className="link-btn" onClick={() => selectAndFocus(parent)} title="Select the whole section (Esc)">
         {parentName}
       </button>
+      {itemPos ? (
+        <>
+          {' '}
+          <span className="insp-kind-pos">· {itemPos}</span>
+        </>
+      ) : null}
     </>
   );
+  // The section's other parts, one click away; this one checked. A part repeated over the same list as this one stays
+  // on the same item, so moving from one card's title to its icon never widens the edit to every card.
+  const siblings = !nested && !everywhere && def.kind === 'managed' ? Object.keys(def.parts).filter((p) => p !== 'root') : [];
+  const selectSibling = (p: string) => {
+    if (p === partId) return focusName();
+    const sameItem = !!selection.itemPath?.length && !!repeatList && enclosingRepeatProp(def, def.parts[p].nodeId) === repeatList;
+    selectAndFocus({ owner, instancePath: selection.instancePath, nodeId: def.parts[p].nodeId, partId: p, ...(sameItem ? { itemPath: selection.itemPath } : {}) });
+  };
+  const reachId = useId();
   const hasContent = !nested && bindings.length > 0;
   // A repeated link whose visible text and destination are two fields of the selected item (a contact method).
   const textField = node.kind === 'link' && isBinding(node.label) && '$item' in node.label ? node.label.$item : undefined;
@@ -921,11 +1191,13 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
       }
     : undefined;
   const flagged = (kind: string) => (kind === 'link' && unlinked?.link ? { error: unlinkedNote(unlinked), action: hideAction } : {});
+  // The field that sets the flagged button's link, for the problem row's way to it.
+  const linkBinding = bindings.find((b) => b.kind === 'link');
+  const linkSlot = linkBinding?.prop ?? linkBinding?.item;
   // Content reach comes from the binding: an item field is per item, a section property is shared by every item.
   const perItem = bindings.some((b) => b.item);
   // A placed component can read both an item's fields and the section's properties: no one reach covers them all.
-  const mixed = perItem && bindings.some((b) => b.prop);
-  const contentReach = !hasContent || !listSchema || mixed ? '' : perItem ? (itemId ? `This ${itemLabel} only${itemIndex >= 0 ? ` (${itemIndex + 1} of ${n})` : ''}` : `Each ${itemLabel} has its own`) : `Same in every ${itemLabel}`;
+  const mixedReach = !!listSchema && !nested && perItem && bindings.some((b) => b.prop);
   // The item this part belongs to stays revealed on the page while it is selected: picking an answer inside a question
   // the inspector opened must not close that question under the pointer.
   const reveal = useRevealedItem(!nested && listProp && !feedRows && itemIndex >= 0 ? { ref: parent, list: listProp } : undefined, itemIndex >= 0 ? (listItems[itemIndex] as ListItem) : undefined, true);
@@ -952,19 +1224,41 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
         icon={kind.icon}
         actions={everywhere ? <DoneButton /> : <SelectionActions title={title} selection={selection} items={[{ label: `Select ${parentName}`, icon: <Component />, shortcut: 'Esc', onSelect: () => selectAndFocus(parent) }, ...(styleItems.length ? [{ separator: true }, ...styleItems] : [])]} />}
       >
-        {everywhere ? <EverywhereScope state={state} def={everywhere} /> : <OwnerScope owner={owner} state={state} />}
-        {listSchema && !nested && (
-          <Scope tone="local" icon={<List />}>
-            {contentReach ? `Content: ${contentReach.charAt(0).toLowerCase()}${contentReach.slice(1)} · ` : ''}Style: {styleReach}
-          </Scope>
+        {everywhere ? (
+          <EverywhereScope state={state} def={everywhere} />
+        ) : (
+          <OwnerScope
+            owner={owner}
+            state={state}
+            aside={
+              siblings.length > 1 && (
+                <span className="insp-mini-row">
+                  <PartsButton title={parentName} parts={siblings.map((p) => ({ label: def.parts[p].label, current: p === partId, select: () => selectSibling(p) }))} />
+                </span>
+              )
+            }
+          />
         )}
       </Header>
+      <Problems>
+        {unlinked?.link && linkSlot && (
+          <Problem onGo={() => revealContentField('part-content', linkSlot)} go="Choose a link">
+            <strong>Visitors won’t see this button.</strong> It has no link yet.
+          </Problem>
+        )}
+        {unlinked && !unlinked.link && !everywhere && (
+          <Problem onGo={def.kind === 'managed' ? () => setState({ modal: { kind: 'edit-definition', ref: parent } }) : undefined} go="Edit everywhere…">
+            <strong>Visitors won’t see this button.</strong> Its link is set in the section’s design: edit it everywhere and select the button to give it one.
+          </Problem>
+        )}
+      </Problems>
       {nested ? (
         <Section title="Content" id="part-content" level={LEVEL}>
           <p className="muted insp-note">This belongs to a component inside {def.name}. Change it with Edit everywhere on that component, or make {def.name} unique.</p>
         </Section>
       ) : bindings.length ? (
-        <Section title="Content" id="part-content" level={LEVEL} scope={mixed ? undefined : listSchema ? (perItem ? (itemId ? `This ${itemLabel} only` : `Each ${itemLabel}`) : `Every ${itemLabel}`) : everywhere ? 'Same in every placement' : undefined}>
+        // When some of this part's words are the card's own and some every card shares, each field says which instead.
+        <Section title="Content" id="part-content" level={LEVEL} scope={mixedReach ? undefined : listSchema ? (perItem ? (itemId ? `This ${itemLabel} only` : `Each ${itemLabel}`) : `Every ${itemLabel}`) : everywhere ? 'Same in every placement' : undefined}>
           {bindings.map((b, i) => {
             if (b.prop) {
               const schema = def.properties[b.prop];
@@ -986,6 +1280,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                   schema={schema}
                   value={inst.props[b.prop] ?? schema.default}
                   state={state}
+                  hint={mixedReach ? `Same in every ${itemLabel}.` : undefined}
                   everywhere={!!everywhere}
                   onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}`)}
                   onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, field, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}:${field}`)}
@@ -1013,7 +1308,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
               const value = Object.hasOwn(item, b.item!) ? item[b.item!] : field.default;
               return (
                 <div key={`${itemId}:${b.item}`} data-field={b.item} style={{ display: 'contents' }} {...reveal.handlers}>
-                  <ScalarField schema={field} value={value} state={state} onChange={edit} hint={teaser?.hint} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
+                  <ScalarField schema={field} value={value} state={state} onChange={edit} hint={teaser?.hint ?? (mixedReach ? `This ${itemLabel} only.` : undefined)} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
                 </div>
               );
             }
@@ -1030,12 +1325,13 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
             </button>
           )}
         </Section>
-      ) : (
+      ) : node.kind === 'element' ? null : (
+        // A structural part (a container) has nothing to write in, so it opens on Style. Fixed words or pictures say where they are set.
         <Section title="Content" id="part-content" level={LEVEL}>
           <p className="muted insp-note">
             {everywhere
               ? `This is fixed in the ${def.name} design. To change it, click Done editing, then edit ${def.name} everywhere.`
-              : `This is fixed in the section’s design. To change it, select ${def.name} and choose Edit everywhere, or Make unique for just this placement.`}
+              : `This is fixed in the section’s design. To change it, select ${parentName} and choose Edit everywhere, or Make unique for just this placement.`}
           </p>
         </Section>
       )}
@@ -1044,20 +1340,33 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
           title="Style"
           id="part-style"
           level={LEVEL}
+          // Said here even with the choice below, so a closed Style still says which cards it changes.
           scope={[listSchema ? styleReach.charAt(0).toUpperCase() + styleReach.slice(1) : '', countStyles(oneItem ? ownItemStyles : inst.overrides?.[partId!]) ? changes(countStyles(oneItem ? ownItemStyles : inst.overrides?.[partId!])) : ''].filter(Boolean).join(' · ') || undefined}
         >
           {canStyleItem && (
-            <Segmented
-              full
-              label={`Style which ${partName}s`}
-              value={reach}
-              onChange={setReach}
-              options={[
-                // Named by their visible text: a title would replace it as the accessible name.
-                { value: 'all', label: n === 1 ? `The ${partName}` : `All ${n} ${partName}s` },
-                { value: 'item', label: `This ${partName}` }
-              ]}
-            />
+            <div className="field">
+              {/* Named "Apply to: style which plan cards", so the choice says what it is for when heard on its own. */}
+              <div className="field-label" id={reachId}>
+                Apply to<span className="sr-only">: style which {partName}s</span>
+              </div>
+              <Segmented
+                full
+                labelledBy={reachId}
+                value={reach}
+                onChange={setReach}
+                options={[
+                  // Named by their visible text: a title would replace it as the accessible name.
+                  { value: 'all', label: n === 1 ? `The ${partName}` : `All ${n} ${partName}s` },
+                  { value: 'item', label: `This ${partName}` }
+                ]}
+                describedBy={oneItem ? `${reachId}-note` : undefined}
+              />
+              {oneItem && (
+                <div className="field-hint" id={`${reachId}-note`}>
+                  Only {thisItem} changes. Anything it doesn’t set follows the style all {listLabel} share.
+                </div>
+              )}
+            </div>
           )}
           {(() => {
             // A part that is a code component placed in the design: styles beat its selectors, not its important values.
@@ -1074,9 +1383,6 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
             </p>
           ) : oneItem ? (
             <>
-              <p className="muted insp-note">
-                Changes here apply to {thisItem} only. Anything it does not change follows the style all {listLabel} share.
-              </p>
               <StyleControls
                 key={`item:${itemId}`}
                 styles={ownItemStyles}
@@ -1110,7 +1416,12 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                       <button
                         className="link-btn"
                         // The selected card's own style is one choice away; any other card is selected.
-                        onClick={() => (x.id === itemId && canStyleItem ? setReach('item') : selectAndFocus({ ...selection, itemPath: [x.id] }))}
+                        onClick={() => {
+                          if (x.id !== itemId || !canStyleItem) return selectAndFocus({ ...selection, itemPath: [x.id] });
+                          // This link goes with the switch: focus moves to the choice it made.
+                          setReach('item');
+                          requestAnimationFrame(() => document.querySelector<HTMLElement>(`#dock-panel-inspect [aria-labelledby="${CSS.escape(reachId)}"] button[aria-pressed="true"]`)?.focus());
+                        }}
                         title={`Show ${itemName(listItems[x.index], x.index)}’s own style, to change or reset it`}
                       >
                         {itemName(listItems[x.index], x.index)}
@@ -1165,23 +1476,31 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
   const structural = !!t && owner.kind !== 'shell';
   // Not while other layers are selected with this one: the menu's other commands act on them all.
   const create = plan?.several ? null : createComponentTarget({ state, readOnly }, selection);
-  const items: MenuItem[] = [
-    ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }, { separator: true }] : []),
-    ...styleItems,
-    ...(structural
+  const items = groupedItems(
+    plan,
+    title,
+    [...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }, { separator: true }] : []), ...styleItems],
+    structural
       ? [
-          ...(styleItems.length ? [{ separator: true }] : []),
           // With layers selected together in Layers, these act on all of them, as their shortcuts do, and say so.
           { label: plan?.several ? `Duplicate ${groupCount(plan.group)}` : 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: asPlanned(plan, duplicateLayers) },
           { label: plan?.several ? `Delete ${groupCount(plan.group)}` : 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: asPlanned(plan, deleteLayers) }
         ]
-      : [])
-  ];
+      : []
+  );
   return (
     <>
-      <Header title={title} kind={title.toLowerCase().startsWith(kind.name.toLowerCase()) ? 'Basic element' : `${kind.name} · basic element`} tone={owner.kind === 'shell' ? 'shared' : owner.kind === 'component' ? 'definition' : 'local'} icon={kind.icon} actions={<SelectionActions title={title} selection={selection} items={items} />}>
+      <Header title={title} kind={title.toLowerCase().startsWith(kind.name.toLowerCase()) ? 'Basic element' : `${kind.name} · basic element`} tone={owner.kind === 'shell' ? 'shared' : owner.kind === 'component' ? 'definition' : 'local'} icon={kind.icon} actions={<SelectionActions title={title} selection={selection} items={items} group={plan?.several ? groupCount(plan.group) : undefined} />}>
+        <GroupScope plan={plan} title={title} />
         <OwnerScope owner={owner} state={state} />
       </Header>
+      <Problems>
+        {unlinked && (
+          <Problem onGo={() => revealContentField('prim-content', 'link')} go="Choose a link">
+            <strong>Visitors won’t see this button.</strong> It has no link yet.
+          </Problem>
+        )}
+      </Problems>
       <Section title="Content" id="prim-content" level={LEVEL}>
         {node.kind === 'text' && (
           <>
@@ -1216,22 +1535,16 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
               </Field>
             </div>
             {!isBinding(node.link) && (
-              <div className="field" data-field="link" role="group" aria-labelledby={`${node.id}-dest`} aria-describedby={unlinked ? `${node.id}-dest-note` : undefined}>
+              <div className="field" data-field="link" role="group" aria-labelledby={`${node.id}-dest`}>
                 <div className="field-label" id={`${node.id}-dest`}>
                   Link
                 </div>
                 <LinkEditor value={node.link} onChange={(v, edit) => content('link', v, edit)} state={state} label={kind.name} />
-                {unlinked && (
-                  <>
-                    <div className="field-error" id={`${node.id}-dest-note`}>
-                      {removable ? 'No link yet, so visitors won’t see this button. Choose where it goes, or remove it.' : 'No link yet, so visitors won’t see this button. Choose where it goes.'}
-                    </div>
-                    {removable && (
-                      <button className="btn btn-sm insp-inline-btn" onClick={() => void deleteSelection()}>
-                        <Trash2 /> Remove button
-                      </button>
-                    )}
-                  </>
+                {/* The problem itself is said once, above the sections; beside the control is the other way out. */}
+                {unlinked && removable && (
+                  <button className="btn btn-sm insp-inline-btn" onClick={() => void deleteSelection()}>
+                    <Trash2 /> Remove button
+                  </button>
                 )}
               </div>
             )}
@@ -1292,17 +1605,15 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
   return (
     <>
       <Header title={def.name} kind="Component design" tone="definition" icon={<Component />} actions={<DoneButton />}>
-        <Scope tone="definition" icon={<Pencil />}>
-          <strong>Editing everywhere.</strong> Changes apply wherever it’s used: {placesText(state, def)}.
-        </Scope>
+        <EverywhereScope state={state} def={def} />
       </Header>
       <div className="insp-empty">
         <MousePointerClick aria-hidden="true" />
-        <p>{nested ? `That belongs to a component inside ${def.name}, so it can’t be changed here. ` : ''}Click part of {def.name} on the page, or choose a part:</p>
+        <p>{nested ? `That belongs to a component inside ${def.name}, so it can’t be changed here. ` : ''}Click a part of {def.name} on the page, or choose one:</p>
         <div className="insp-part-list" role="group" aria-label={`Parts of ${def.name}`}>
           {def.tree?.rootIds[0] && (
             <button className="btn btn-sm" onClick={() => selectAndFocus({ owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: def.tree!.rootIds[0] })}>
-              Whole {def.name.toLowerCase()}
+              Whole {def.name}
             </button>
           )}
           {Object.entries(def.parts)
@@ -1319,12 +1630,16 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
 }
 
 /** Who a change made while editing a component everywhere reaches. */
-function EverywhereScope({ state, def }: { state: ProjectState; def: ComponentDefinition }) {
+function EverywhereScope({ state, def, aside }: { state: ProjectState; def: ComponentDefinition; aside?: ReactNode }) {
   const uses = instancesOf(state, def.id).length;
   return (
-    <Scope tone="definition" icon={<Pencil />}>
+    <Scope tone="definition" icon={<Pencil />} aside={aside}>
       <strong>Editing everywhere.</strong>{' '}
-      {uses === 1 ? `Used once, on ${placesText(state, def)}, and wherever you add it later. A placement’s own changes still win.` : `Changes apply to all ${uses} placements, except where one has its own changes.`}
+      {uses === 0
+        ? 'Not placed on any page yet. Changes apply wherever you add it.'
+        : uses === 1
+          ? `Used on ${placesText(state, def)} and wherever you add it later. A placement’s own changes still win.`
+          : `Used ${uses} times, on ${placesText(state, def)}. A placement’s own changes still win.`}
     </Scope>
   );
 }
@@ -1528,22 +1843,47 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         }
       : undefined;
   const placedDef = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
+  // A button with words and no destination in the design: the site leaves it out of every placement.
+  const fixedLink = node.kind === 'link' && !isBinding(node.link) ? (node.link as LinkValue | null | undefined) : undefined;
+  const designUnlinked =
+    node.kind === 'link' &&
+    !isBinding(node.link) &&
+    (node.appearance === 'primary' || node.appearance === 'secondary') &&
+    typeof node.label === 'string' &&
+    !!node.label.trim() &&
+    (!fixedLink || fixedLink.type === 'none' || !fixedLink.target);
   const itemWord = repeated ? (def.properties[repeated] as { itemLabel?: string } | undefined)?.itemLabel?.toLowerCase() : undefined;
   const placements = uses === 1 ? '1 placement' : `${uses} placements`;
-  const rootRef: ElementRef | null = def.tree?.rootIds[0] ? { owner, instancePath: [], nodeId: def.tree.rootIds[0] } : null;
+  // The design's parts, the whole design first, this one checked: across to another part without the overview.
+  const rootId = def.tree?.rootIds[0];
+  const designParts = [
+    ...(rootId ? [{ label: `Whole ${def.name}`, current: isRoot, select: () => selectAndFocus({ owner, instancePath: [], nodeId: rootId }) }] : []),
+    ...Object.entries(def.parts)
+      .filter(([id]) => id !== 'root')
+      .map(([id, p]) => ({ label: p.label, current: p.nodeId === node.id, select: () => selectAndFocus({ owner, instancePath: [], nodeId: p.nodeId, partId: id }) }))
+  ];
   const kindLine = isRoot ? (
     'Component design'
   ) : (
     <>
       Part of{' '}
-      {rootRef ? (
-        <button className="link-btn" onClick={() => selectAndFocus(rootRef)} title="Select the whole design (Esc)">
-          {def.name}
-        </button>
-      ) : (
-        def.name
-      )}{' '}
-      design
+      {/* Back to the design's parts, as Esc goes: the whole design is one of them. */}
+      <button
+        className="link-btn"
+        onClick={() => {
+          setState({ selection: null });
+          focusName();
+        }}
+        title={`Show the parts of ${def.name} (Esc)`}
+      >
+        {def.name}
+      </button>
+      {repeated ? (
+        <>
+          {' '}
+          <span className="insp-kind-pos">· every {itemWord ?? 'item'}</span>
+        </>
+      ) : null}
     </>
   );
   return (
@@ -1560,8 +1900,25 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           </>
         }
       >
-        <EverywhereScope state={state} def={def} />
+        <EverywhereScope
+          state={state}
+          def={def}
+          aside={
+            designParts.length > 1 && (
+              <span className="insp-mini-row">
+                <PartsButton title={def.name} parts={designParts} />
+              </span>
+            )
+          }
+        />
       </Header>
+      <Problems>
+        {designUnlinked && (
+          <Problem onGo={() => revealContentField('def-content', 'link')} go="Choose a link">
+            <strong>Visitors won’t see this button.</strong> It has no link in the design, so no placement shows it.
+          </Problem>
+        )}
+      </Problems>
       <DesignContentSection state={state} def={def} node={node} />
       {/* A component placed in the design: what it is given here, the same in every placement. */}
       {node.kind === 'instance' && placedDef && <NestedInputs state={state} def={def} node={node} placedDef={placedDef} />}
@@ -1624,9 +1981,12 @@ function PageLanguage({ page, state }: { page: PageDoc; state: ProjectState }) {
     .filter((p) => p && p.id !== page.id && !peers.includes(p) && (!group || !linkedGroup(state, p)))
     .map((p) => ({ page: p, clash: linkClash(state, page, p) }));
   const link = (pageId: string, to: string | null, label: string) => void applyOps([{ type: 'page.update', pageId, linkTranslationTo: to }], label);
+  // Closed until wanted: its heading says what the page is written in and how many versions it has.
+  const name = languageName(own || site);
+  const summary = peers.length ? `${name} · ${peers.length} translation${peers.length === 1 ? '' : 's'}` : own ? name : `${name} · site language`;
   return (
-    <Section title="Language" id="page-language" level={LEVEL}>
-      <Field label="Language" hint={own ? 'A language code, such as fr or en-GB. Clear it to use the site language.' : 'Uses the site language. Enter a code such as fr or en-GB if this page is written in another language.'}>
+    <Section title="Language" id="page-language" level={LEVEL} defaultOpen={false} scope={summary}>
+      <Field label="Page language" hint={own ? 'A language code, such as fr or en-GB. Clear it to use the site language.' : 'Uses the site language. Enter a code such as fr or en-GB if this page is written in another language.'}>
         <DraftInput value={own} placeholder={site} onCommit={(v) => void applyOps([{ type: 'page.update', pageId: page.id, language: v.trim() }], 'Change page language')} ariaLabel="Page language" />
       </Field>
       <Field label="Translations" hint="Browsers and search engines learn which pages are the same page in other languages. For visitors to switch, add a link or button to the other version and choose it under Page.">
@@ -1634,14 +1994,29 @@ function PageLanguage({ page, state }: { page: PageDoc; state: ProjectState }) {
           <ul className="insp-translations" aria-label="Translations of this page">
             {peers.map((p) => (
               <li key={p.id}>
-                <button className="insp-mini grow ellipsis" onClick={() => selectPage(p.id)} title={`Open ${p.title}`}>
+                <button
+                  className="insp-mini grow ellipsis"
+                  onClick={() => {
+                    selectPage(p.id);
+                    focusName();
+                  }}
+                  title={`Open ${p.title}`}
+                >
                   {p.title}
                 </button>
                 <span className="mono faint">
                   {pageLanguage(state.site, p)}
                   {isDraftPage(state, p) ? ' · draft' : ''}
                 </span>
-                <button className="btn btn-sm" onClick={() => link(p.id, null, 'Unlink translation')} aria-label={`Unlink ${p.title}`}>
+                <button
+                  className="btn btn-sm"
+                  onClick={() => {
+                    link(p.id, null, 'Unlink translation');
+                    // The row goes with the link: focus moves on to the menu for linking another version.
+                    requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>('#dock-panel-inspect [aria-label="Link a translation"]')?.focus()));
+                  }}
+                  aria-label={`Unlink ${p.title}`}
+                >
                   Unlink
                 </button>
               </li>
@@ -1683,26 +2058,28 @@ function ComputedItemNote({ state, pageId, listLabel }: { state: ProjectState; p
  */
 function ArticleSettings({ page, draft, upd }: { page: PageDoc; draft: boolean; upd: (patch: Record<string, unknown>, label?: string) => void }) {
   const article = pageArticle(page);
+  // Open for an article; an ordinary page keeps it closed, with "Off" beside the heading.
   return (
-    <Section title="Article" id="page-article" level={LEVEL}>
+    // Remembered apart for articles and ordinary pages, so closing one never hides the other.
+    <Section title="Article" id={article ? 'page-article' : 'page-article-off'} level={LEVEL} defaultOpen={!!article} scope={article ? (draft ? 'Dated · draft' : 'Dated') : 'Off'}>
       <SwitchRow
         checked={!!article}
         onChange={(v) => upd(v ? { articleDate: todayArticleDate() } : { article: false }, v ? 'Make page an article' : 'Make article an ordinary page')}
         label="Dated article"
         hint={
           article
-            ? 'News lists show this page with its date, newest first. Turning this off removes its date, byline and excerpt.'
-            : 'For news and announcements: give the page a publication date, byline and excerpt, and News lists show it automatically.'
+            ? 'Turning this off removes its date, byline and excerpt.'
+            : 'For news and announcements: give the page a date, byline and excerpt, and News lists show it automatically.'
         }
       />
       {article && (
         <>
-          <Field label="Published" hint="News lists show articles newest first. An earlier date backdates it.">
+          <Field label="Article date" hint="Orders it in News lists. An earlier date backdates it.">
             {/* A date left incomplete (or cleared) changes nothing: the saved date comes back. */}
             <DraftInput type="date" value={article.date} onCommit={(v) => (isArticleDate(v) && v !== article.date ? upd({ articleDate: v }, 'Change publication date') : undefined)} />
           </Field>
-          <Field label="Byline" hint="Who wrote it, shown as written, such as “By Ana Ruiz”. Optional.">
-            <DraftInput maxLength={80} value={typeof article.byline === 'string' ? article.byline : ''} onCommit={(v) => upd({ byline: v }, 'Change byline')} />
+          <Field label="Byline" hint="Optional. Shown as written.">
+            <DraftInput maxLength={80} placeholder="By Ana Ruiz" value={typeof article.byline === 'string' ? article.byline : ''} onCommit={(v) => upd({ byline: v }, 'Change byline')} />
           </Field>
           <Field label="Excerpt" hint="A sentence or two for News lists and the Article header, under the title.">
             <DraftInput multiline maxLength={320} value={typeof article.excerpt === 'string' ? article.excerpt : ''} onCommit={(v) => upd({ excerpt: v }, 'Change excerpt')} />
@@ -1710,13 +2087,15 @@ function ArticleSettings({ page, draft, upd }: { page: PageDoc; draft: boolean; 
           <SwitchRow
             checked={article.hidden !== true}
             onChange={(v) => upd({ newsHidden: !v }, v ? 'Show article in news lists' : 'Hide article from news lists')}
-            label="Show in news lists"
+            label={draft ? 'Include in News lists once published' : 'Include in News lists'}
             hint={
               article.hidden === true
-                ? 'Left out of every News list. The page itself stays published at its address.'
+                ? draft
+                  ? 'Left out of every News list, even after the page is published.'
+                  : 'Left out of every News list. The page itself stays published at its address.'
                 : draft
-                  ? 'News lists show it once the page is published.'
-                  : 'Every News list on the site shows it, in date order.'
+                  ? 'Drafts stay out of News lists until the page is published.'
+                  : 'News lists show the newest articles first, up to each list’s limit.'
             }
           />
         </>
@@ -1783,6 +2162,22 @@ function PageLocation({ page, state }: { page: PageDoc; state: ProjectState }) {
 /** The Inside choice standing for where a page with folders of its own in its address is now. */
 const HERE = ':here';
 
+/** Whether a page is kept out of search, beside its Search & sharing heading; nothing when it is listed everywhere. */
+const searchSummary = (noindex: boolean, siteSearch: boolean) => (noindex && siteSearch ? 'Hidden from all search' : noindex ? 'Not in search engines' : siteSearch ? 'Not in site search' : undefined);
+
+/** A language code by name ("fr" → "French"), or the code itself when it isn't one the system knows. */
+function languageName(code: string): string {
+  try {
+    const name = new Intl.DisplayNames(['en'], { type: 'language' }).of(code);
+    return name && name !== code ? name : code;
+  } catch {
+    return code;
+  }
+}
+
+/** Which shared parts a page shows, for its closed section's heading. */
+const shellSummary = (header: boolean, footer: boolean) => (header && footer ? 'Both shown' : header ? 'Header only' : footer ? 'Footer only' : 'Both hidden');
+
 function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
   const assetSort = useStore((s) => s.assetSort);
@@ -1799,9 +2194,32 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   return (
     <div className="panel-body insp">
       <Header title={page.title} kind={`${isHome ? 'Home page' : draft ? 'Draft page' : 'Page'} · ${isHome ? '/' : page.route}`} icon={isHome ? <House /> : <FileText />}>
-        <Scope tone="local" icon={<MousePointerClick />}>
-          {previewing ? 'Previewing. Page settings stay editable; switch to Edit to select things on the page.' : 'Nothing selected. Click anything on the page to edit it.'}
-        </Scope>
+        {previewing ? (
+          <Scope
+            tone="local"
+            icon={<Eye />}
+            aside={
+              // The button goes with Preview, so focus moves on to the page's name.
+              <span className="insp-mini-row">
+                <button
+                  className="insp-mini"
+                  onClick={() => {
+                    setState({ mode: 'edit' });
+                    focusName();
+                  }}
+                >
+                  Back to Edit
+                </button>
+              </span>
+            }
+          >
+            <strong>Previewing.</strong> Page settings stay editable.
+          </Scope>
+        ) : (
+          <Scope tone="local" icon={<MousePointerClick />}>
+            Page settings. Select anything on the page to edit it.
+          </Scope>
+        )}
       </Header>
       <Section title="Page" id="page-basic" level={LEVEL}>
         <Field label="Title" error={titleError}>
@@ -1829,29 +2247,30 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
             label="Keep as draft"
             hint={
               draft
-                ? 'Left out of the website when you export it. You can still edit and preview it, and it stays in the editable project.'
+                ? 'Left out of the exported website. You can still edit and preview it.'
                 : 'Keep working on this page without publishing it. The website export leaves drafts out.'
             }
           />
         )}
       </Section>
+      {/* Settings most pages leave alone sit closed, each heading saying where it stands, so Search & sharing is in reach. */}
       <ArticleSettings page={page} draft={draft} upd={upd} />
-      <Section title="Shared header and footer" id="page-shell" level={LEVEL} scope="This page only">
+      <PageLanguage page={page} state={state} />
+      <Section title="Header & footer" id="page-shell" level={LEVEL} defaultOpen={false} scope={shellSummary(showsPart(page, 'header'), showsPart(page, 'footer'))}>
         <SwitchRow checked={showsPart(page, 'header')} onChange={(v) => upd({ showHeader: v }, v ? 'Show shared header on page' : 'Hide shared header on page')} label="Show shared header" />
         <SwitchRow checked={showsPart(page, 'footer')} onChange={(v) => upd({ showFooter: v }, v ? 'Show shared footer on page' : 'Hide shared footer on page')} label="Show shared footer" />
-        <p className="insp-note field-hint">Other pages keep their own choice. Editing the header or footer changes it on every page that shows it.</p>
+        <p className="insp-note field-hint">For this page only; other pages keep their own choice. Editing the header or footer changes it on every page that shows it.</p>
       </Section>
-      <PageLanguage page={page} state={state} />
-      <Section title="Search & sharing" id="page-seo" level={LEVEL}>
+      <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(!!page.seo.noindex, !!page.seo.searchHidden)}>
         <Field label="Browser title" hint={`Leave empty to use “${isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.`}>
           <DraftInput value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
         </Field>
         <Field label="Description" hint="Shown by search engines. About 150 characters.">
           <DraftInput multiline value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v }, 'Change page description')} />
         </Field>
-        <Field label="Sharing image" hint="Shown when the page is shared, and on this page’s card in page lists. None uses the site’s sharing image when shared.">
+        <Field label="Sharing image" hint="Shown when the page is shared, and on its card in page lists.">
           <select className="select" value={page.seo.socialImage ?? ''} onChange={(e) => upd({ socialImage: e.target.value || null }, 'Change sharing image')}>
-            <option value="">None</option>
+            <option value="">Use the site’s sharing image</option>
             {images.map((a) => (
               <option key={a.id} value={a.id}>
                 {imageLabels.get(a.id)?.label}
@@ -1865,11 +2284,11 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           label="Hide from search engines"
           hint={
             draft
-              ? 'Once the page is published, search engines are asked not to list it. Anyone with its address can still open it.'
-              : 'The page is still published and anyone with its address can open it; search engines are only asked not to list it.'
+              ? 'Once published, search engines are asked not to list it. Anyone with the address can still open it.'
+              : 'Search engines are asked not to list it. Anyone with the address can still open it.'
           }
         />
-        <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint="Leaves this page out of the results of the site’s own Site search section." />
+        <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint={draft ? 'Once published, leaves this page out of the site’s own Site search results.' : 'Leaves this page out of the site’s own Site search results.'} />
       </Section>
       {dev && (
         <Section title="Advanced" id="page-adv" defaultOpen={false} level={LEVEL}>

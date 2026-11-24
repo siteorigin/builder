@@ -3614,15 +3614,21 @@ button.asset-use:hover svg.go { color: var(--text); }
    for a component design), the name, a kind line, then one scope line. Only the shared and component
    scopes take a tinted box; the ordinary "only on this page" case is a quiet line. Fields that are one
    thing on the page (a button's label and link, an image and its description) sit in one framed group. */
-.insp .insp-head.insp-sel { padding: 12px 14px; gap: 8px; }
-.insp-id { display: flex; align-items: center; gap: 10px; min-height: 32px; }
+.insp .insp-head.insp-sel { padding: 12px 14px; gap: 8px; border-bottom-color: var(--border-strong); }
+/* Top-aligned, so a name or kind line that wraps keeps the tile and the actions level with the name's first line. */
+.insp-id { display: flex; align-items: flex-start; gap: 10px; min-height: 32px; }
+.insp-id > .insp-kind { margin-top: 2px; }
+.insp-id > .insp-actions { margin-top: 1px; }
 .insp-kind { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); }
 .insp-kind svg { width: 15px; height: 15px; }
 .insp-kind.shared { background: var(--green-soft); color: var(--green); }
 .insp-kind.definition { background: var(--plum-soft); color: var(--plum); }
 .insp-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.insp-name h3 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.insp-kind-label { font-size: 12px; line-height: 1.35; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A long name wraps beside the actions rather than hiding its distinguishing words (three lines at most). */
+.insp-name h3 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow-wrap: anywhere; }
+/* The kind line wraps too, so the parent's name and an item's position are never cut off; the position wraps whole. */
+.insp-kind-label { font-size: 12px; line-height: 1.35; color: var(--text-2); text-wrap: pretty; }
+.insp-kind-pos { white-space: nowrap; }
 /* Room inside the clipped line for a link's focus outline. */
 .insp-kind-label:has(.link-btn) { padding: 4px; margin: -4px; }
 .insp-name h3:focus { outline: none; }
@@ -3633,18 +3639,42 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp-actions:has(> .icon-btn:last-child) { margin-right: -4px; }
 .insp-scope { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
 .insp-scope > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+/* Wrap without leaving one word on a line of its own at narrow widths. */
+.insp-scope > .grow { min-width: 0; text-wrap: pretty; }
+/* At the narrowest dock the page scope keeps its line and the jumps move under it, rather than squeezing it. */
+.insp-scope.local { flex-wrap: wrap; row-gap: 6px; }
+.insp-scope.local > .grow { flex: 1 1 140px; }
 .insp-scope strong { font-weight: 600; color: var(--text); }
 .insp-scope.shared, .insp-scope.definition { padding: 7px 10px; border-radius: var(--r-sm); color: var(--text); }
 .insp-scope.shared { background: var(--green-soft); }
 .insp-scope.shared > svg { color: var(--green); }
 .insp-scope.definition { background: var(--plum-soft); }
 .insp-scope.definition > svg { color: var(--plum); }
+/* Several layers selected: quiet like the page scope, with the selection blue on its icon alone. */
+.insp-scope.group > svg { color: var(--accent-text); }
+/* Setup problems that stop something working on the site: red with their icon, under the header and above every
+   section, so a closed section can't hide them. Always mounted (a live region), and no height while empty. */
+.insp-problems { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px 2px; }
+.insp-problems.empty { padding: 0; }
+.insp-problems .insp-more { align-self: flex-start; margin-left: -6px; }
+.insp-scope.danger { padding: 7px 10px; border-radius: var(--r-sm); background: var(--red-soft); color: var(--text); }
+.insp-scope.danger > svg { color: var(--red); }
+/* In a tinted box the words take the full width and a button sits at the end of its own line. */
+.insp-scope:is(.shared, .definition, .danger) { flex-wrap: wrap; row-gap: 2px; }
+.insp-scope:is(.shared, .definition, .danger) > .grow { flex: 1 1 calc(100% - 20px); }
+.insp-scope:is(.shared, .definition, .danger) > :is(.insp-mini-row, .insp-mini) { margin: 0 -4px -3px auto; }
 .insp .section-body { gap: 12px; }
 /* Section scopes line up with the controls' right edge (the shared row adds room for actions this panel never uses). */
 .insp .section > .row { padding-right: 0 !important; }
-.insp .section-head { padding-right: 14px; }
-.insp-mini-row { display: inline-flex; align-items: center; gap: 2px; flex: none; margin: -3px -6px -3px 0; }
-.insp-mini { display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 6px; border: 0; border-radius: var(--r-xs); background: none; color: var(--accent-text); font-size: 12px; font-weight: 500; }
+/* A section's name stays on one line; its state summary is what gives way. */
+.insp .section-head { padding-right: 14px; white-space: nowrap; }
+.insp .section-head svg.chev { flex: none; }
+/* Keyboard focus scrolls fields clear of the selection header at the height it wraps to (measured in Header). */
+.insp :is(input, select, textarea, button) { scroll-margin-top: var(--insp-head-h, 150px); }
+/* A closed section's state summary gives way before the section's name does. */
+.insp .section-head .scope { min-width: 0; padding-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insp-mini-row { display: inline-flex; align-items: center; gap: 2px; flex: none; margin: -3px -6px -3px auto; }
+.insp-mini { display: inline-flex; flex: none; align-items: center; gap: 3px; height: 24px; white-space: nowrap; padding: 0 6px; border: 0; border-radius: var(--r-sm); background: none; color: var(--accent-text); font-size: 12px; font-weight: 500; }
 .insp-mini svg { width: 12px !important; height: 12px !important; margin: 0 !important; color: inherit !important; }
 .insp-mini:hover, .insp-mini[aria-expanded='true'] { background: var(--accent-soft); }
 .insp-check { display: flex; align-items: flex-start; gap: 5px; color: var(--text-2); }
@@ -3658,8 +3688,10 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp-condition-test > * { flex: 1 1 0; min-width: 0; }
 .insp-translations { display: flex; flex-direction: column; gap: 4px; margin: 0 0 6px; padding: 0; list-style: none; }
 .insp-translations li { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.insp-translations .insp-mini { justify-content: flex-start; min-width: 0; margin-left: -6px; }
-.insp-parts .link-btn { font-size: 12px; }
+.insp-translations .insp-mini { flex: 1 1 auto; justify-content: flex-start; min-width: 0; margin-left: -6px; }
+/* A section's parts as 24px targets in a wrapping row, so stacked lines never crowd each other. */
+.insp-parts { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin: -2px 0 0 -6px; font-size: 12px; }
+.insp-parts > .faint { padding: 0 4px 0 6px; }
 .insp-inline-btn, .insp-add { align-self: flex-start; }
 .insp-group { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin: 0; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
 /* Inside a list item (already a framed panel) a group is a plain block under a straight divider, not a second frame. */
@@ -3737,14 +3769,14 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp-icon-tile:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .insp-icon-name { margin: 0; padding-top: 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text); }
 .list-editor-body[hidden] { display: none; }
-.insp-count { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 99px; background: var(--active); font-size: 11px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.insp-count { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: var(--r-sm); background: var(--active); font-size: 11px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .insp-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 36px 24px; text-align: center; color: var(--text-2); }
 .insp-empty svg { width: 22px; height: 22px; color: var(--text-3); }
 .insp-empty p { margin: 0; max-width: 250px; font-size: 13px; }
 .insp-goto { display: flex; align-items: center; gap: 10px; width: calc(100% - 28px); margin: 14px; padding: 10px; border: 1px solid var(--border-control); border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-sm); text-align: left; }
 .insp-goto:hover { border-color: var(--accent); }
 .insp-goto strong { display: block; font-size: 13px; font-weight: 600; }
-.insp-goto .grow > span { display: block; font-size: 12px; color: var(--text-2); }
+.insp-goto .grow > span { display: block; font-size: 12px; color: var(--text-2); text-wrap: pretty; }
 .insp-goto .chev { width: 16px; height: 16px; flex: none; color: var(--text-3); }
 /* A contact link that opens something other than what visitors see: long addresses wrap inside the note. */
 /* The warning heads the note; the two values and the repair below it take the note's whole width. */

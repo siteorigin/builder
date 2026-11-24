@@ -28,6 +28,10 @@ async function pageSettings(title) {
   await win.locator('.side-panel .list-item', { hasText: title }).hover();
   await win.locator(`[aria-label="${title} options"]`).click();
   await win.getByRole('menuitem', { name: 'Page settings' }).click();
+  // Language is closed until wanted, its heading naming the page's language; open it for the language and translations.
+  const head = win.locator('#dock-panel-inspect .section-head', { hasText: 'Language' });
+  await head.waitFor();
+  if ((await head.getAttribute('aria-expanded')) !== 'true') await head.click();
 }
 
 /**
