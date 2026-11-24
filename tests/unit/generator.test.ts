@@ -73,7 +73,7 @@ describe('the blank starter (#15)', () => {
     const layout = files.get('src/routes/+layout.svelte')!;
     const footerTag = /<C_foundation_shell_footer_\w+[^]*?\/>/.exec(layout)?.[0] ?? '';
     expect(footerTag).toContain(`copyright={${JSON.stringify(`© ${new Date().getFullYear()} Kloof.`)}}`);
-    expect(footerTag).toMatch(/links=\{\[\{[^}]*"label":"Home"/);
+    expect(footerTag).toMatch(/links=\{\[\{[^}]*"label":"Home","link":\{"href":"\/"\}\}\]\}/);
     expect(footerTag).toContain('contact={[]}');
   });
 });

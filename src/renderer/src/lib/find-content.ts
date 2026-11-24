@@ -322,11 +322,11 @@ export function findContent(state: ProjectState, query: string, opts: FindOption
   return out;
 }
 
-/** The match of the range `start`–`end` of a part of a field, with the words around it. */
-function matchAt(f: ContentField, part: Part, start: number, end: number): ContentMatch {
+/** The match of the range `start`–`end` of a part of a field, with the words around it; `held` keeps it from replacing. */
+function matchAt(f: ContentField, part: Part, start: number, end: number, held?: string): ContentMatch {
   const from = Math.max(0, start - 40);
   const to = Math.min(part.text.length, end + 60);
-  const blocked = blockedReason(f, part, start, end);
+  const blocked = blockedReason(f, part, start, end) ?? held;
   return {
     id: `${f.key}|${part.path}|${start}`,
     field: f,
@@ -346,54 +346,54 @@ function matchAt(f: ContentField, part: Part, start: number, end: number): Conte
 // ---------------------------------------------------------------------------
 
 /** What may stand between the digits of a written telephone number: spaces (\s covers the non-breaking ones), dots, dashes and brackets. */
-const DIAL_GAP = '[\\s().\\u2010\\u2011-]*';
-/** An email address as a whole: the characters a mailbox may have, an @, and every label of its domain. */
-const EMAIL_TOKEN = /(?<![\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-])[\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*/gu;
-/** What joins one group of digits to the next in a longer number: a space, dot, slash or dash. */
-const JOIN = '[\\s./\\u2010\\u2011-]';
-/**
- * The sample number written any way, and only on its own: not the end of a longer number (+44 20 1555 0134, where a
- * digit comes just before it) or the start of one (+1 555 0134-5). A + always starts a number of its own, and words
- * after it, "(24 hours)" say, are not part of it.
- */
-const PHONE = new RegExp(
-  `(?<![\\p{L}\\p{N}_+])(?:\\+${DIAL_GAP}|(?<!\\d${JOIN}{1,3}))${[...SAMPLE_CONTACT.phoneDial.replace(/\D/g, '')].join(DIAL_GAP)}(?![\\p{L}\\p{N}_]|${JOIN}\\d)`,
-  'gu'
-);
+const DIAL_GAP = '[\\s().\\p{Pd}]*';
 const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const ADDRESS = new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?![\\p{L}\\p{N}_-])`, 'giu');
+
+/**
+ * Each sample detail as visitors may read it, found generously so none goes out unreviewed: the address not inside a
+ * longer mailbox or domain (myhello@…, …example.com.au), the number's digits in order with any spacing, the street
+ * address with any spacing and not run into another name (Millbrook-East).
+ */
+const SAMPLE_PATTERNS: Record<SampleContactKind, RegExp> = {
+  email: new RegExp(`(?<![\\p{L}\\p{N}_.+-])${escapeRe(SAMPLE_CONTACT.email)}(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}])`, 'giu'),
+  phone: new RegExp(`(?<![\\p{L}\\p{N}_+])(?:\\+${DIAL_GAP})?${[...SAMPLE_CONTACT.phoneDial.replace(/\D/g, '')].join(DIAL_GAP)}(?![\\p{L}\\p{N}_])`, 'gu'),
+  address: new RegExp(`(?<![\\p{L}\\p{N}_]|[\\p{L}\\p{N}]\\p{Pd})${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?![\\p{L}\\p{N}_]|\\p{Pd}[\\p{L}\\p{N}])`, 'giu')
+};
+
+/**
+ * Why a sample found in words is not replaced from here: it runs into more of an address or number, so it may be part
+ * of someone else's (o'hello@example.com, +44 (20) 1555 0134, +1 555 0134-5). It is still reviewed and opened.
+ */
+function joinedReason(kind: SampleContactKind, text: string, start: number, end: number): string | undefined {
+  if (kind === 'email' && /[!#$%&'*/=?^`{|}~]$/.test(text.slice(0, start)))
+    return 'This address runs into other characters, so it may be someone else’s. Check it in the inspector.';
+  if (kind !== 'phone') return undefined;
+  const before = text[start] !== '+' && /\d[\s()./\p{Pd}]{1,3}$/u.test(text.slice(Math.max(0, start - 4), start));
+  const after = /^[\s./\p{Pd}]\d/u.test(text.slice(end, end + 2));
+  return before || after ? 'This number runs into other digits, so it may be a different number. Check it in the inspector.' : undefined;
+}
 
 /** Whether a number dials the sample: its digits, as a telephone link sends them, with or without the leading +. */
 const dialsSample = (t: string) => {
   const dial = t.replace(/[^+\d]/g, '');
   return dial === SAMPLE_CONTACT.phoneDial || dial === SAMPLE_CONTACT.phoneDial.replace(/^\+/, '');
 };
-const ranges = (re: RegExp, text: string): Array<[number, number]> => [...text.matchAll(re)].map((m) => [m.index ?? 0, (m.index ?? 0) + m[0].length]);
 
 /**
- * Where each sample detail is in words visitors read. Only a whole address or number counts: myhello@example.com,
- * o'hello@example.com or +44 20 1555 0134 is someone else's, and replacing part of it would make a wrong one.
- */
-const SAMPLE_IN_TEXT: Record<SampleContactKind, (text: string) => Array<[number, number]>> = {
-  // An apostrophe may start a mailbox (o'hello@…), or quote one ('hello@…'): quotes before the address are left out.
-  email: (t) =>
-    [...t.matchAll(EMAIL_TOKEN)].flatMap((m): Array<[number, number]> => {
-      const quote = /^'*/.exec(m[0])![0].length;
-      const at = (m.index ?? 0) + quote;
-      return m[0].slice(quote).toLowerCase() === SAMPLE_CONTACT.email ? [[at, at + m[0].length - quote]] : [];
-    }),
-  phone: (t) => ranges(PHONE, t),
-  address: (t) => ranges(ADDRESS, t)
-};
-
-/**
- * Where each sample detail is in a destination: an email link whose recipient is the sample address (its subject
- * and the rest stay as they are), or a telephone link that dials the sample number, as a whole.
+ * Where each sample detail is in a destination: each recipient of an email link that is the sample address (the
+ * other recipients, the subject and the rest stay as they are), or a telephone link that dials the sample number, as
+ * a whole.
  */
 function sampleInLink(kind: SampleContactKind, type: 'email' | 'tel', target: string): Array<[number, number]> {
   if (kind === 'email' && type === 'email') {
+    const out: Array<[number, number]> = [];
     const to = target.split('?')[0];
-    return to.toLowerCase() === SAMPLE_CONTACT.email ? [[0, to.length]] : [];
+    for (const m of to.matchAll(/[^,]+/g)) {
+      const lead = m[0].length - m[0].trimStart().length;
+      const address = m[0].trim();
+      if (address.toLowerCase() === SAMPLE_CONTACT.email) out.push([(m.index ?? 0) + lead, (m.index ?? 0) + lead + address.length]);
+    }
+    return out;
   }
   return kind === 'phone' && type === 'tel' && dialsSample(target) ? [[0, target.length]] : [];
 }
@@ -430,10 +430,16 @@ export function sampleContactMatches(state: ProjectState): SampleContactGroup[] 
     const matches: ContentMatch[] = [];
     for (const f of fields) {
       for (const part of partsOf(live, f)) {
-        const type = part.kind === 'link' ? linkKind(f, part) : null;
-        if (part.kind === 'link' && !type) continue;
-        const found = type ? sampleInLink(sample.kind, type, part.text) : SAMPLE_IN_TEXT[sample.kind](part.text);
-        for (const [start, end] of found) matches.push(matchAt(f, part, start, end));
+        if (part.kind === 'link') {
+          const type = linkKind(f, part);
+          for (const [start, end] of type ? sampleInLink(sample.kind, type, part.text) : []) matches.push(matchAt(f, part, start, end));
+          continue;
+        }
+        for (const m of part.text.matchAll(SAMPLE_PATTERNS[sample.kind])) {
+          const start = m.index ?? 0;
+          const end = start + m[0].length;
+          matches.push(matchAt(f, part, start, end, joinedReason(sample.kind, part.text, start, end)));
+        }
       }
     }
     if (matches.length) groups.push({ ...sample, matches });
