@@ -140,6 +140,20 @@ export async function addRecent(dir: string, name: string) {
   await saveSettings();
 }
 
+/**
+ * Gives the recent entry of a project folder its site's current name (#31), keeping its place and the time it was
+ * opened: a rename is no new opening. A folder not on the list stays off it.
+ */
+export async function renameRecent(dir: string, name: string) {
+  const s = await loadSettings();
+  const real = canonicalDir(dir);
+  const at = s.recents.findIndex((r) => r.dir === dir || canonicalDir(r.dir) === real);
+  if (at < 0) return;
+  if (s.recents[at].name !== name) s.recents = s.recents.map((r, i) => (i === at ? { ...r, name } : r));
+  // Written even when the list already has the name: a write that failed before is made now.
+  await saveSettings();
+}
+
 export async function recents(): Promise<RecentProject[]> {
   const s = await loadSettings();
   return s.recents.map((r) => ({ ...r, missing: !existsSync(join(r.dir, 'siteorigin.project.json')) }));

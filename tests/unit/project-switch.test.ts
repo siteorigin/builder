@@ -62,6 +62,7 @@ const { Controller } = await import('../../src/main/controller');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
 const { sha } = await import('../../src/main/project/fsutil');
+const { addRecent, recents } = await import('../../src/main/settings');
 
 const dirs: string[] = [];
 const controllers: InstanceType<typeof Controller>[] = [];
@@ -528,5 +529,48 @@ describe('copying for Paste while another project opens (#240)', () => {
     await openCurrent(c, duplicate);
     expect(await c.copy(pageId, nodeId, c.session!.revision, keyB)).toMatchObject({ ok: false });
     expect(await c.copy(pageId, nodeId, c.session!.revision, '')).toMatchObject({ ok: false });
+  });
+});
+
+describe('the recent-projects entry of a renamed site (#31)', () => {
+  const recentName = async (dir: string) => (await recents()).find((r) => r.dir === dir)?.name;
+
+  it('takes the new name when the rename is made and when it is undone, keeping its place, and keeps it once closed to Welcome', async () => {
+    const other = await makeProject('other');
+    const kloof = await makeProject('kloof', 'business');
+    const { c } = controller();
+    await openCurrent(c, other);
+    await openCurrent(c, kloof);
+    // The settings cache outlives each test: only this test's own projects are looked at.
+    const mine = async () => (await recents()).filter((r) => r.dir === kloof || r.dir === other);
+    const before = await mine();
+    expect(before.map((r) => r.dir)).toEqual([kloof, other]);
+    expect((await c.apply({ operations: [{ type: 'site.update', name: 'New Kloof Studio' }] }, { label: 'Rename site' })).ok).toBe(true);
+    expect(await recentName(kloof)).toBe('New Kloof Studio');
+    // A rename is no new opening: the entry stays where it was, with the time it was opened.
+    const after = await mine();
+    expect(after.map((r) => r.dir)).toEqual([kloof, other]);
+    expect(after[0].openedAt).toBe(before[0].openedAt);
+    expect((await c.session!.undo()).ok).toBe(true);
+    expect(await recentName(kloof)).toBe('kloof');
+    expect((await c.apply({ operations: [{ type: 'site.update', name: 'New Kloof Studio' }] }, { label: 'Rename site' })).ok).toBe(true);
+    expect((await c.closeProject()).ok).toBe(true);
+    expect(await recentName(kloof)).toBe('New Kloof Studio');
+    // Saved, so Welcome (and the next start of the app) reads it too.
+    const saved = JSON.parse(readFileSync(join(env.userData, 'settings.json'), 'utf8')) as { recents: Array<{ dir: string; name: string }> };
+    expect(saved.recents.find((r) => r.dir === kloof)?.name).toBe('New Kloof Studio');
+  });
+
+  it('takes the name the project has when it is left for another one opened in its place', async () => {
+    const kloof = await makeProject('kloof', 'business');
+    const parent = temp('parent');
+    const { c } = controller();
+    await openCurrent(c, kloof);
+    expect((await c.apply({ operations: [{ type: 'site.update', name: 'New Kloof Studio' }] }, { label: 'Rename site' })).ok).toBe(true);
+    // A name the list missed (a write that failed, say) is put right as the project is left.
+    await addRecent(kloof, 'Kloof Light Studio');
+    expect((await c.create({ ...orchid(parent), attempt: 'attempt-1' })).ok).toBe(true);
+    const list = (await recents()).filter((r) => r.dir === kloof || r.dir.startsWith(parent));
+    expect(list.map((r) => r.name)).toEqual(['Orchid Garden', 'New Kloof Studio']);
   });
 });
