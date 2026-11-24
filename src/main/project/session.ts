@@ -2180,7 +2180,9 @@ export class ProjectSession extends EventEmitter {
       if (out.has(rel) || !heldAsMedia(rel) || this.generated.files[rel]) return;
       const named =
         rel === `static/assets/${name}` ? (IMPORTED_ASSET_RE.test(name) ? texts.some((t) => t.includes(assetToken(name))) : texts.some((t) => namesFile(t, name)) || byAddress(rel)) : byAddress(rel);
-      if (named && (await fs.lstat(abs).catch(() => null))?.isFile()) out.add(rel);
+      // A link it names is held as missing, so the author is told rather than the file left out unseen. Folders aren't files.
+      const st = named ? await fs.lstat(abs).catch(() => null) : null;
+      if (st && !st.isDirectory()) out.add(rel);
     };
     const entries = async (dir: string) => ((await fs.lstat(dir).catch(() => null))?.isDirectory() ? await fs.readdir(dir).catch(() => [] as string[]) : []);
     // static/assets/, where the app keeps media, always in full; then the rest of static/, through real folders only,
@@ -2195,7 +2197,7 @@ export class ProjectSession extends EventEmitter {
         const st = await fs.lstat(abs).catch(() => null);
         if (st?.isDirectory()) {
           if (depth < 12) await walk(abs, childRel, depth + 1);
-        } else if (st?.isFile() && childRel !== `static/assets/${name}`) await consider(abs, childRel, name);
+        } else if (st && !st.isDirectory() && childRel !== `static/assets/${name}`) await consider(abs, childRel, name);
       }
     };
     await walk(root, 'static', 0);
@@ -2212,8 +2214,15 @@ export class ProjectSession extends EventEmitter {
     for (const [path, content] of this.docs) docs[path] = await this.versions.putText(content);
     const media: Record<string, string | null> = {};
     for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
+      let abs: string;
       try {
-        const abs = safeJoin(this.dir, rel);
+        abs = safeJoin(this.dir, rel);
+      } catch {
+        // Reached through a link out of the project: not the project's own file, so held as missing.
+        media[rel] = null;
+        continue;
+      }
+      try {
         const st = await fs.lstat(abs);
         media[rel] = st.isFile() ? await this.versions.putFile(abs) : null;
       } catch (e) {
@@ -2425,7 +2434,11 @@ export class ProjectSession extends EventEmitter {
       const label = `Restore “${v.name}”`;
       const written: Array<{ path: string; hash: string; prior: string | null }> = [];
       let ev: SessionEvent | null = null;
-      await this.versions.markRestoring(v.name, way.name);
+      const earlier = await this.versions.markRestoring(v.name, way.name);
+      const clear = async () => {
+        if (!earlier) await this.versions.clearRestoring().catch(() => undefined);
+      };
+      const docsBefore = this.docs;
       try {
         for (const f of plan.files) {
           const before = prior.get(f.path) ?? null;
@@ -2433,25 +2446,31 @@ export class ProjectSession extends EventEmitter {
           // A takeover by another app, or a change to the file since it was copied aside, stops the restore.
           if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
           const abs = safeJoin(this.dir, f.path);
+          // Read before the file is checked, so as little time as possible passes between the check and the write.
+          const bytes = await this.versions.read(f.hash);
           const now = await fs.readFile(abs).then(sha, (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
           if (now !== before) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
           // Noted before writing: a write that lands but fails to report so is still undone.
           written.push({ path: f.path, hash: f.hash, prior: before });
-          await atomicWrite(abs, await this.versions.read(f.hash));
+          await atomicWrite(abs, bytes);
         }
         if (written.length) await this.refreshAssetFiles().catch(() => false);
         if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
         if (docsChange) ev = await this.persist(plan.state, { label, source: 'user' });
       } catch (e) {
-        // Once the documents' save is journaled, reopening finishes it, files and all; before that, nothing is kept.
-        if (!(this.unsettled && existsSync(this.local('journal.json')))) {
-          if (await this.putFilesBack(written, aside)) await this.versions.clearRestoring().catch(() => undefined);
+        // Once the documents are saved (in place, or journaled for reopening to finish), the files stay with them; before
+        // that, nothing of the restore is kept.
+        const installed = this.docs !== docsBefore;
+        const journaled = this.unsettled && existsSync(this.local('journal.json'));
+        if (installed && !journaled) await clear();
+        if (!installed && !journaled) {
+          if (await this.putFilesBack(written, aside)) await clear();
           if (written.length) await this.refreshAssetFiles().catch(() => false);
         }
         if (e instanceof DiskConflictError || e instanceof RestoreStopped) return { ok: false, message: e.message, backup: way };
         throw e;
       }
-      await this.versions.clearRestoring().catch(() => undefined);
+      await clear();
       if (!ev) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: written.map((w) => w.path), label, source: 'user' } satisfies SessionEvent);
       return { ok: true, revision: this.revision, entryId: ev?.entryId, backup: way, replaced: written.filter((w) => w.prior).length, left: plan.left };
     });
@@ -2466,16 +2485,14 @@ export class ProjectSession extends EventEmitter {
     for (const w of [...written].reverse()) {
       try {
         const abs = safeJoin(this.dir, w.path);
+        // The copy is read first, so the check below comes as close to the write as it can.
+        const copy = w.prior === null ? null : await fs.readFile(this.local('recovery', aside, w.path));
+        if (copy && sha(copy) !== w.prior) throw new Error('The copy set aside is damaged.');
         const now = await fs.readFile(abs).then(sha, (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
         // Never written, or changed again since by someone else: either way, not the restore's to touch.
         if (now !== w.hash) continue;
-        if (w.prior === null) {
-          await removeDurable(abs);
-          continue;
-        }
-        const copy = await fs.readFile(this.local('recovery', aside, w.path));
-        if (sha(copy) !== w.prior) throw new Error('The copy set aside is damaged.');
-        await atomicWrite(abs, copy);
+        if (copy) await atomicWrite(abs, copy);
+        else await removeDurable(abs);
       } catch {
         clean = false;
       }

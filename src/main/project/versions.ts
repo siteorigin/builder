@@ -251,9 +251,14 @@ export class VersionStore {
     this.versions = next;
   }
 
-  /** Note that a restore of `version` is under way, with the version holding the work it replaces. */
-  async markRestoring(version: string, backup: string): Promise<void> {
+  /**
+   * Note that a restore of `version` is under way, with the version holding the work it replaces. A note left by an
+   * earlier restore that could not be fully undone is kept as it is (and true returned), so reopening still tells of it.
+   */
+  async markRestoring(version: string, backup: string): Promise<boolean> {
+    if (await fs.lstat(this.restoringPath).then(() => true, () => false)) return true;
     await atomicWrite(this.restoringPath, toJson({ version, backup, time: new Date().toISOString() }));
+    return false;
   }
 
   async clearRestoring(): Promise<void> {
@@ -283,6 +288,8 @@ export class VersionStore {
    */
   async collect(): Promise<number> {
     if (this.problem) return 0;
+    // Only this project's own folders: one swapped for a link may hold another project's versions.
+    for (const dir of [this.root, this.objectDir]) if (!(await fs.lstat(dir).catch(() => null))?.isDirectory()) return 0;
     const keep = new Set(this.versions.flatMap((v) => [...objectsOf(v)]));
     let freed = 0;
     for (const name of await fs.readdir(this.objectDir).catch(() => [] as string[])) {

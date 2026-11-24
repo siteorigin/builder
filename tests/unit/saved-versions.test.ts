@@ -4,7 +4,7 @@
  * is saved first as a version of its own, so the way back outlasts history too.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
@@ -577,6 +577,82 @@ describe('saved versions, guarded further', () => {
     await describe1(again, 'Later', 'Later');
     await ok(again.restoreVersion(second.id!, again.revision));
     expect((await again.reviewVersion(first.id!)).review!.problem).toBeUndefined();
+  });
+});
+
+describe('saved versions, at the edges', () => {
+  async function withLogo() {
+    const { dir, s } = await make();
+    mkdirSync(join(dir, ASSETS), { recursive: true });
+    writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>blue</svg>');
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Logo', source: '<img src="/assets/logo.svg" alt="Logo" />\n' }] }, { label: 'Add logo' }));
+    const saved = await ok(s.saveVersion('Blue logo'));
+    return { dir, s, saved };
+  }
+  type Persist = { persist: (...a: unknown[]) => Promise<unknown> };
+
+  it('never collects through a versions folder linked to another project', async () => {
+    const other = mkdtempSync(join(tmpdir(), 'so-versions-other-'));
+    dirs.push(other);
+    writeFileSync(join(other, 'a'.repeat(64)), 'another project’s version');
+    const { dir, s } = await make();
+    await s.close();
+    mkdirSync(join(dir, '.siteorigin/versions'), { recursive: true });
+    symlinkSync(other, join(dir, '.siteorigin/versions/objects'));
+    await reopen(dir);
+    expect(existsSync(join(other, 'a'.repeat(64)))).toBe(true);
+  });
+
+  it('keeps the files once the documents are saved, even when a later step of that save fails', async () => {
+    const { dir, s, saved } = await withLogo();
+    writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green</svg>');
+    await describe1(s, 'Later', 'Later');
+    const real = (s as unknown as Persist).persist.bind(s);
+    vi.spyOn(s as unknown as Persist, 'persist').mockImplementationOnce(async (...args: unknown[]) => {
+      await real(...args);
+      throw new Error('folder sync failed');
+    });
+    await expect(s.restoreVersion(saved.id!, s.revision)).rejects.toThrow('folder sync failed');
+    expect(s.state.site.description).not.toBe('Later');
+    expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>blue</svg>');
+    expect(existsSync(join(dir, '.siteorigin/versions/restoring.json'))).toBe(false);
+  });
+
+  it('keeps the note of a restore it could not fully undo through a later restore', async () => {
+    const { dir, s, saved } = await withLogo();
+    writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green</svg>');
+    await describe1(s, 'Later', 'Later');
+    vi.spyOn(s as unknown as Persist, 'persist').mockImplementationOnce(async () => {
+      // The copy set aside is gone, so the logo can't be put back as it was.
+      rmSync(join(dir, '.siteorigin/recovery'), { recursive: true, force: true });
+      throw new Error('disk full');
+    });
+    await expect(s.restoreVersion(saved.id!, s.revision)).rejects.toThrow('disk full');
+    expect(existsSync(join(dir, '.siteorigin/versions/restoring.json'))).toBe(true);
+    await ok(s.restoreVersion(saved.id!, s.revision));
+    expect(existsSync(join(dir, '.siteorigin/versions/restoring.json'))).toBe(true);
+    await s.close();
+    expect((await reopen(dir)).recoveryNotes.join(' ')).toMatch(/Restoring “Blue logo” was interrupted/);
+  });
+
+  it('holds a named link, or a library file reached through a link out of the project, as missing', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'so-versions-outside-'));
+    dirs.push(outside);
+    writeFileSync(join(outside, 'logo.svg'), '<svg>elsewhere</svg>');
+    const { dir, s } = await make();
+    mkdirSync(join(dir, 'static/brand'), { recursive: true });
+    symlinkSync(join(outside, 'logo.svg'), join(dir, 'static/brand/logo.svg'));
+    mkdirSync(join(dir, ASSETS), { recursive: true });
+    symlinkSync(outside, join(dir, ASSETS, 'linked'));
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Brand', source: '<img src="/brand/logo.svg" alt="Logo" />\n' }] }, { label: 'Add brand' }));
+    const pic = picture(dir, 'photo', 1);
+    await ok(s.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_photo', ...pic.asset } }] }, { label: 'Import photo' }));
+    // The library's file now sits behind a link that leads out of the project.
+    rmSync(join(dir, pic.files[1]));
+    symlinkSync(join(outside, 'logo.svg'), join(dir, pic.files[1]));
+    const saved = await ok(s.saveVersion('Linked'));
+    expect(saved.missing).toEqual(expect.arrayContaining(['static/brand/logo.svg', pic.files[1]]));
+    expect(saved.missing).not.toContain(`${ASSETS}/linked`);
   });
 });
 
