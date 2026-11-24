@@ -4,7 +4,7 @@
  * long copy or empty fields without touching its starting content or any placement.
  */
 import type { ComponentDefinition, ListItem, ListProp, ObjectProp, PropSchema, ScalarPropSchema } from '@shared/types';
-import type { RichBlock, RichSpan, RichText } from '@shared/richtext';
+import { toRichText, type RichBlock, type RichSpan, type RichText } from '@shared/richtext';
 
 /** What the studio fills the component with: its starting content, long copy, or nothing in the fields that can be empty. */
 export type StudioSample = 'defaults' | 'long' | 'empty';
@@ -33,8 +33,9 @@ function longerSpans(spans: RichSpan[]): RichSpan[] {
   return [...spans.map((s) => ({ ...s })), { text: ` ${FILLER}` }];
 }
 
-function longerRich(value: RichText): RichText {
-  const blocks = Array.isArray(value) ? value : [];
+function longerRich(value: unknown): RichText {
+  // Stored as the canonical blocks, or as a hand-edited document may still hold it (plain strings).
+  const blocks = toRichText(value);
   if (!blocks.length) return [{ type: 'p', spans: [{ text: FILLER }] }];
   const out = blocks.map((b): RichBlock => ('spans' in b ? { ...b, spans: longerSpans(b.spans) } : { ...b, items: b.items.map(longerSpans) }));
   // One more paragraph after the last text block, so a design sized for one paragraph shows how it grows.
@@ -43,16 +44,18 @@ function longerRich(value: RichText): RichText {
 
 /** A scalar's long sample, or undefined to keep its starting value (numbers, choices, links, images and icons). */
 function longScalar(schema: ScalarPropSchema, value: unknown): unknown {
-  if (schema.type === 'string') return longer(typeof value === 'string' ? value : schema.default, schema.maxLength, schema.multiline);
-  if (schema.type === 'richtext') return longerRich(value as RichText);
+  if (schema.type === 'string') return longer(typeof value === 'string' ? value : typeof schema.default === 'string' ? schema.default : '', schema.maxLength, schema.multiline);
+  if (schema.type === 'richtext') return longerRich(value);
   return undefined;
 }
 
-/** A scalar's empty sample, or undefined to keep its starting value (what has no empty form: numbers, choices, links, icons). */
+/** A scalar's empty sample, or undefined to keep its starting value (what has no empty form: numbers, choices, icons). */
 function emptyScalar(schema: ScalarPropSchema): unknown {
   if (schema.type === 'string') return '';
   if (schema.type === 'richtext') return [];
   if (schema.type === 'image') return { assetId: null, alt: '' };
+  // A link to nowhere, as clearing it in the Inspector leaves it: what shows only with a link (a button) goes.
+  if (schema.type === 'link') return { type: 'none', target: '' };
   return undefined;
 }
 
@@ -81,7 +84,7 @@ function longList(schema: ListProp): ListItem[] {
 
 /**
  * The sample property values to preview `def` with (undefined for its starting content): long copy makes every text
- * longer and lists fuller, within each property's limits; empty clears every text, rich text and image and keeps
+ * longer and lists fuller, within each property's limits; empty clears every text, rich text, image and link and keeps
  * lists to their fewest items, cleared the same way. Lists that fill themselves from the site's pages are left as
  * they are.
  */

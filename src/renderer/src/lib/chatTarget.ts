@@ -35,6 +35,16 @@ export function editableDesign(state: ProjectState, id: unknown) {
   return def?.kind === 'managed' && def.owner === 'project' && def.tree ? def : null;
 }
 
+/**
+ * The component edited everywhere when it is one the AI does not edit (a code component, open in Component Studio),
+ * by name; null otherwise. The composer then refuses to send an edit, which would otherwise reach the page behind it.
+ */
+export function uneditableDesign(state: ProjectState, definitionMode: DefinitionMode): string | null {
+  const id = definitionMode?.definitionId;
+  const def = id !== undefined && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+  return def && !editableDesign(state, id) ? def.name : null;
+}
+
 /** The component a saved request was about: named, or (saved before requests named it) owning its selection. */
 export function requestComponentId(ctx: ChatContext | undefined): string | null {
   const named = ctx?.component?.id;

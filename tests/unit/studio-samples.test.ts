@@ -53,6 +53,26 @@ describe('Component Studio sample content', () => {
     expect(studioSampleProps(def, 'empty')).toEqual({ title: '', body: [], photo: { assetId: null, alt: '' }, items: [{ id: 'a', label: '' }] });
   });
 
+  it('makes rich text a hand-edited document stores as plain strings longer, without failing on it', () => {
+    const def: ComponentDefinition = {
+      ...catalogueComponent(starter().site.themeId, 'content.media')!,
+      properties: { body: { type: 'richtext', label: 'Body', default: ['Intro'] as unknown as [] } }
+    };
+    const long = studioSampleProps(def, 'long')!;
+    const text = JSON.stringify(long.body);
+    expect(text).toContain('Intro');
+    expect(text).toContain('longer sample line');
+  });
+
+  it('clears a link, so what shows only with one is seen without it', () => {
+    const def: ComponentDefinition = {
+      ...catalogueComponent(starter().site.themeId, 'content.media')!,
+      properties: { booking: { type: 'link', label: 'Booking', default: { type: 'url', target: 'https://example.com' } } }
+    };
+    expect(studioSampleProps(def, 'empty')).toEqual({ booking: { type: 'none', target: '' } });
+    expect(studioSampleProps(def, 'long')).toBeUndefined();
+  });
+
   // Every component the theme offers can be studied with each sample: the preview accepts what the studio sends.
   for (const sample of ['long', 'empty'] as const) {
     it(`previews every theme component with ${sample} samples`, () => {

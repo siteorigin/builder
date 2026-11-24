@@ -242,7 +242,7 @@ export function Canvas() {
    * frame was given, and on which server; `studioLoads` numbers the requests, so only the latest is shown, and releases
    * every other preview's files.
    */
-  const studioAt = useRef<{ url: string; path: string } | null>(null);
+  const studioAt = useRef<{ url: string; path: string; revision: number | undefined } | null>(null);
   const studioLoads = useRef<StudioLoads | null>(null);
   studioLoads.current ??= new StudioLoads((key) => void api.project.releaseComponentPreview(key).catch(() => undefined));
   const [studioRetry, setStudioRetry] = useState(0);
@@ -423,6 +423,12 @@ export function Canvas() {
   /** Start editing an element's text on the page (a double-click, or Edit text in its menu). A double-click passes
    *  its gesture id (`hit`) so the edit starts at the word clicked. */
   function beginTextEdit(ref: ElementRef, desc: BridgeDesc, hit?: string) {
+    // A Component Studio preview made before the project's latest change shows text that may be gone: typing over it
+    // would put it back. The next preview is on its way.
+    if (showsStudio() && studioAt.current!.revision !== getState().snapshot?.revision) {
+      toast('The preview is catching up with the latest change. Try again in a moment.', 'info');
+      return;
+    }
     const editId = Math.random().toString(36).slice(2);
     pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]), base: getState().snapshot, ai: aiActivity() });
     inlineEdit.active = true;
@@ -479,6 +485,7 @@ export function Canvas() {
     // Until the first preview is there, the page still showing is not what is being edited: it takes no picks.
     if (first) setState({ frameReady: false });
     const server = url;
+    const revision = getState().snapshot?.revision;
     const spec: unknown = JSON.parse(studioRequest);
     const failed = (message: string) => {
       if (!loads.latest(request)) return;
@@ -491,7 +498,7 @@ export function Canvas() {
           (prepared) => {
             if (!prepared.ok) return failed(prepared.message);
             if (!loads.prepared(request, prepared.key)) return;
-            studioAt.current = { url: server, path: prepared.path };
+            studioAt.current = { url: server, path: prepared.path, revision };
             setSession(newSessionId());
           },
           (e: unknown) => failed(`The component preview could not be prepared: ${e instanceof Error ? e.message : String(e)}`)
@@ -501,14 +508,21 @@ export function Canvas() {
     return () => clearTimeout(timer);
   }, [studioRequest, snapshot?.revision, url, workspaceKey, editing, studioRetry]); // eslint-disable-line react-hooks/exhaustive-deps
   // Leaving the studio releases its preview, and the frame opens the page again.
+  // An inline edit still open there is finished first (committed, or kept for the author when it no longer can be), so
+  // leaving never loses what was typed; a preview that does not answer in time is left without it.
   const inStudio = !!studioView;
   useEffect(() => {
     if (inStudio) return;
     studioLoads.current!.end();
     if (!studioAt.current) return;
+    if (editing) {
+      post('commitTextEdit');
+      const t = setTimeout(() => endInlineEdit(), 3000);
+      return () => clearTimeout(t);
+    }
     studioAt.current = null;
     setSession(newSessionId());
-  }, [inStudio]);
+  }, [inStudio, editing]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => studioLoads.current?.end(), []);
 
   // Bridge messages

@@ -5,7 +5,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { ChatContext, ChatMessage } from '@shared/api';
 import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
-import { chatContextFor, composerScope, editScope, retryView, targetOf } from '../../src/renderer/src/lib/chatTarget';
+import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditableDesign } from '../../src/renderer/src/lib/chatTarget';
 import { NEW_STUDIO } from '../../src/renderer/src/lib/studio';
 import { continueContext } from '../../src/renderer/src/lib/result';
 
@@ -104,6 +104,21 @@ describe('the composer while a component is edited everywhere (#191)', () => {
     // Read back from a damaged transcript.
     expect(targetOf({ ...base, component: { id: 'c' } as unknown as { id: string; name: string } })).toBe('Home');
     expect(targetOf(null)).toBe('');
+  });
+});
+
+describe('a code component open in Component Studio (#367)', () => {
+  it('is named as one the AI does not edit, so no edit is sent to the page behind it', () => {
+    const { state, home, hero } = project();
+    const made = applyOperations(state, [{ type: 'component.createCode', name: 'Note', source: '<p>Hi</p>\n', properties: {} }]);
+    const code = made.results[0].definitionId as string;
+    expect(uneditableDesign(made.state, { definitionId: code, returnPageId: home, studio: NEW_STUDIO })).toBe('Note');
+    // The composer's scope never names the code component, so it would fall back to the page.
+    expect(composerScope(made.state, { pageId: home, selection: null, definitionMode: { definitionId: code, returnPageId: home, studio: NEW_STUDIO } }).component).toBeNull();
+    // A design the AI does edit, and no component at all, send as they always have.
+    expect(uneditableDesign(made.state, { definitionId: hero, returnPageId: home, studio: NEW_STUDIO })).toBeNull();
+    expect(uneditableDesign(made.state, null)).toBeNull();
+    expect(uneditableDesign(made.state, { definitionId: 'gone', returnPageId: home })).toBeNull();
   });
 });
 
