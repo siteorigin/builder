@@ -4,6 +4,7 @@ import { isBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent } from '@engine/tree';
 import { effectiveItem, followsPage, inheritedValue } from '@shared/page-teasers';
 import { isShellPart, pagesShowing, partsShown, showsPart } from '@shared/page-shell';
+import { isDraftPage } from '@generator/index';
 import { layerLabel } from './layers';
 
 export interface BridgeDesc {
@@ -188,6 +189,20 @@ export function keepPagesValid(state: ProjectState, pageId: string | null, defin
 export function shellReach(state: ProjectState, part: string, pageId: string | null): { pages: number; here: boolean } {
   const here = !!pageId && Object.hasOwn(state.pages, pageId) && isShellPart(part) && showsPart(state.pages[pageId], part);
   return { pages: pagesUsingShell(state, part), here };
+}
+
+/** "a", "a and b", "a, b and c". */
+const inWords = (items: string[]) => (items.length < 2 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
+
+/**
+ * The pages a shared header or footer shows on, by name in site order: `text` names up to `max` of them and counts
+ * the rest ("Home, About and 4 more"), and `all` names every one, for a tooltip. A draft is marked, since the
+ * website leaves it out; a page without a title goes by its address.
+ */
+export function shellPageNames(state: ProjectState, part: string, max = 5): { text: string; all: string } {
+  const names = isShellPart(part) ? pagesShowing(state, part).map((p) => `${p.title?.trim() || p.route}${isDraftPage(state, p) ? ' (draft)' : ''}`) : [];
+  const listed = names.length > max ? [...names.slice(0, max - 1), `${names.length - max + 1} more`] : names;
+  return { text: inWords(listed), all: inWords(names) };
 }
 
 export function ownerLabel(state: ProjectState, owner: OwnerRef): string {

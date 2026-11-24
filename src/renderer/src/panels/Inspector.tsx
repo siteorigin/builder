@@ -45,7 +45,7 @@ import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuI
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import type { FocusImage } from './FocusEditor';
-import { assetUrl, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
+import { assetUrl, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -396,9 +396,22 @@ function OwnerScope({ owner, state, aside }: { owner: OwnerRef; state: ProjectSt
   const pageId = useStore((s) => s.pageId);
   if (owner.kind === 'shell') {
     const { pages: n, here } = shellReach(state, owner.id, pageId);
+    // Which pages inherit it, by name: one edit here (a notice, a menu link) reaches every one of them.
+    const names = shellPageNames(state, owner.id);
     return (
       <Scope tone="shared" icon={<Users />} aside={aside}>
-        <strong>Shared {owner.id}.</strong> {here ? '' : 'Not shown on this page. '}Changes show on {n === 1 ? 'the 1 page' : `all ${n} pages`} that use it.
+        <strong>Shared {owner.id}.</strong> {here ? '' : 'Not shown on this page. '}
+        {n === 0 ? (
+          'No page shows it.'
+        ) : (
+          <>
+            Changes show on {n === 1 ? 'the 1 page' : `all ${n} pages`} that use it:{' '}
+            <span className="insp-scope-pages" title={names.all}>
+              {names.text}
+            </span>
+            .
+          </>
+        )}
       </Scope>
     );
   }

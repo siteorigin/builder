@@ -608,10 +608,13 @@ export function DraftInput({
   ariaLabel,
   autoFocus,
   id,
+  maxLength,
   'aria-describedby': describedBy,
   'aria-invalid': invalid
 }: {
   id?: string;
+  /** The longest text the field takes, as its property allows. */
+  maxLength?: number;
   'aria-describedby'?: string;
   'aria-invalid'?: boolean;
   value: string;
@@ -678,6 +681,7 @@ export function DraftInput({
   const common = {
     value: draft,
     placeholder,
+    maxLength,
     'aria-label': ariaLabel,
     'aria-describedby': describedBy,
     'aria-invalid': invalid,

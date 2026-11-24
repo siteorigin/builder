@@ -554,7 +554,7 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
   const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
     case 'string':
-      return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} onLive={onLive} ariaLabel={name} placeholder={placeholder} />;
+      return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} onLive={onLive} ariaLabel={name} placeholder={placeholder} maxLength={schema.maxLength} />;
     case 'richtext':
       return (
         <DraftInput

@@ -205,6 +205,19 @@ Theme guidance for ${theme.name} (reference data):
 ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
 }
 
+/**
+ * Where a notice for every page goes. A project keeps its own copy of the header, so one installed before the
+ * header had a notice (or a customised copy) has no such fields until its theme components are updated.
+ */
+function headerNoticeGuidance(state: ProjectState): string {
+  const root = state.site.shell.header.nodes[state.site.shell.header.rootIds[0]];
+  const def = root?.kind === 'instance' ? state.components[root.definitionId] : undefined;
+  const never = 'Never add a page section for it, which shows on that page only.';
+  if (def && Object.hasOwn(def.properties, 'notice'))
+    return `A notice for every page (a closure, holiday hours, an announcement) is the header's "notice" text, with an optional "noticeLabel" and "noticeLink"; set "notice" to "" to remove it. ${never}`;
+  return `This project's header has no notice field. When the user wants a notice on every page (a closure, an announcement), say that updating the theme's components (Update, in the status bar's problems panel) adds one to the header, unless the header was customised. ${never}`;
+}
+
 function systemPrompt(state: ProjectState, run: RunTools): string {
   if (run.mode === 'ask') return askPrompt(state);
   if (run.focused) return focusedPrompt(state, run.mode, run.tools.some((t) => t.name === 'search_assets'));
@@ -220,7 +233,7 @@ function systemPrompt(state: ProjectState, run: RunTools): string {
 How the website is modelled:
 - Pages (IDs like "pg_…") have a route and an ordered list of sections. Most sections are component instances: { kind: "instance", componentId, props, variants } (variants holds one option per axis, such as tone and layout, and they combine).
 - Props are typed. Lists (cards, FAQs, plans, links) have items with stable "id" values; edit one item with instance.setProp using itemId + field, add with instance.listInsert, remove with instance.listRemove.
-- The shared header and footer are owned by { kind: "shell", id: "header" | "footer" }. Each already has exactly one component instance (its node ID is in the project summary's "shell" section). Never insert, remove or replace them: edit that instance with instance.setProp / instance.listInsert. Navigation links live in the header's "links" list and the footer's "links" list. Each page shows or hides the header and the footer on its own: page.update showHeader / showFooter (false hides it on that page only).
+- The shared header and footer are owned by { kind: "shell", id: "header" | "footer" }. Each already has exactly one component instance (its node ID is in the project summary's "shell" section). Never insert, remove or replace them: edit that instance with instance.setProp / instance.listInsert. Navigation links live in the header's "links" list and the footer's "links" list. ${headerNoticeGuidance(state)} Each page shows or hides the header and the footer on its own: page.update showHeader / showFooter (false hides it on that page only).
 - Links are objects: { "type": "page", "target": "<pageId>" } for internal pages (never use a URL for an internal page), { "type": "url", "target": "https://…" }, { "type": "email", "target": "name@example.com" }, { "type": "tel", "target": "+1…" }.
 - Images are { "assetId": "<asset id>" | null, "alt": "…" }. You cannot see images: use an image the user attached by its assetId, choose by name/description, or let the user pick between images by sight with request_clarification assetIds. Two images can share a name; the assetId tells them apart.
 - Styles use node.setStyle with a responsive scope ("base" for all sizes, or "phone" / "tablet" / "desktop" for one range) and prefer token values like { "token": "space.lg" } or { "token": "color.brand" }. For component instances pass partId (see the component's parts).

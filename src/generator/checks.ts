@@ -406,6 +406,12 @@ function shippedCode(state: ProjectState, def: ComponentDefinition): string | un
   return undefined;
 }
 
+const words = (v: unknown) => typeof v === 'string' && !!v.trim();
+/** Whether the shipped header shows its notice: its words, more than spaces. Clearing them removes it, link and all. */
+const headerNoticeShown = (props: Record<string, unknown>) => words(props.notice);
+/** Whether the header's notice link has words to show, beside the notice's own (its destination aside). */
+const headerNoticeLinkNamed = (props: Record<string, unknown>) => headerNoticeShown(props) && words(props.noticeLabel);
+
 /**
  * What a shipped code component shows visitors, as property names (and `list.field` for list items), read from its
  * markup: the header's name only while it shows (not beside a logo set to show alone) and its action only with both
@@ -415,10 +421,13 @@ function shippedCodeShows(state: ProjectState, which: string, props: Record<stri
   if (which === 'contact.form') return new Set(['eyebrow', 'heading', 'lead', 'fields.label', 'fields.placeholder', 'submitLabel', 'successMessage', 'errorMessage']);
   // The table's words around it. Its cells are a table value, edited in the inspector's table editor.
   if (which === 'data.table') return new Set(['eyebrow', 'heading', 'lead', 'caption']);
-  // As the header's markup reads them: `!!name && (showSiteName || !logo?.src)`, and `ctaLabel && ctaLink?.href`.
+  // As the header's markup reads them: `!!name && (showSiteName || !logo?.src)`, `ctaLabel && ctaLink?.href`, the
+  // notice's words once they are more than spaces, and its link beside them with a label and somewhere to go.
   const out = new Set(['links.label', 'links.link']);
   if (props.siteName && (props.showSiteName !== false || !shown(props.logo, state))) out.add('siteName');
   if (props.ctaLabel && resolveLink(props.ctaLink as LinkValue | undefined, { state })) (out.add('ctaLabel'), out.add('ctaLink'));
+  if (headerNoticeShown(props)) out.add('notice');
+  if (headerNoticeLinkNamed(props) && resolveLink(props.noticeLink as LinkValue | undefined, { state })) (out.add('noticeLabel'), out.add('noticeLink'));
   return out;
 }
 
@@ -657,9 +666,10 @@ export const labelKeyFor = (key: string) => (key.endsWith('Link') ? `${key.slice
 /**
  * Links a code component receives: its link properties, the link fields of its lists, and the links in its rich
  * text (unless it reads rich text as plain paragraphs). Whether its markup shows each one is up to its code; a
- * link paired with a label property is taken to show only when the label does, as the shipped header does.
+ * link paired with a label property is taken to show only when the label does, as the shipped header does. The
+ * shipped header (`which`) shows its notice's link only beside the notice's words, which a label alone does not show.
  */
-function codeLinks(def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string, out: RenderedLink[]) {
+function codeLinks(def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string, out: RenderedLink[], which?: string) {
   const rich = !takesParagraphs(def);
   const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, fallback: string, at: string) => {
     const v = values[key];
@@ -673,6 +683,7 @@ function codeLinks(def: ComponentDefinition, props: Record<string, unknown>, rep
     out.push({ link: v, label, reportId, key: at, inText: false });
   };
   for (const [key, schema] of Object.entries(def.properties)) {
+    if (which === 'shell.header' && key === 'noticeLink' && !headerNoticeLinkNamed(props)) continue;
     take(def.properties, props, key, schema.label, `${placement}:${key}`);
     if (schema.type !== 'list' || !Array.isArray(props[key])) continue;
     (props[key] as Array<Record<string, unknown>>).forEach((item, i) => {
@@ -701,7 +712,7 @@ function renderedLinks(state: ProjectState, tree: NodeTree): RenderedLink[] {
       const link = evaluate(n.link, scope);
       if (isLinkValue(link)) out.push({ link, label: n.name ?? '', reportId, key: at(n, scope), inText: false });
     },
-    code: (def, props, reportId, placement) => codeLinks(def, props, reportId, placement, out)
+    code: (def, props, reportId, placement) => codeLinks(def, props, reportId, placement, out, shippedCode(state, def))
   });
   return out;
 }

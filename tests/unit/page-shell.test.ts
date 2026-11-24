@@ -14,7 +14,7 @@ import { pageDetail, projectSummary } from '@agent/context';
 import { executeTool, type ToolHost } from '@agent/tools';
 import { readField } from '../../src/renderer/src/lib/held';
 import { changeTarget } from '../../src/renderer/src/lib/result';
-import { placementsOn, shellReach } from '../../src/renderer/src/lib/model';
+import { placementsOn, shellPageNames, shellReach } from '../../src/renderer/src/lib/model';
 import { contentTarget, findContent } from '../../src/renderer/src/lib/find-content';
 import { sectionOptions } from '../../src/renderer/src/lib/sections';
 
@@ -128,6 +128,32 @@ describe('choosing the shared header and footer per page', () => {
     expect(showsPart(edited.pages[kitchen], 'footer')).toBe(true);
     // Every page file is the same: what a page shows is the layout's decision, not the page's.
     for (const [path, text] of before) if (path.startsWith('src/routes/') && path.endsWith('+page.svelte')) expect(after.get(path), path).toBe(text);
+  });
+
+  it('publishes a notice from the shared header once, on every page that shows it, and removes it the same way (#269)', () => {
+    const s = createStarterState('business', 'Test Studio', false);
+    const [, about] = s.site.pageOrder;
+    const before = generateProject(s);
+    const notice = 'Studio closed on Friday for repairs';
+    const set = (state: ProjectState, prop: string, value: unknown) => applyOperations(state, [{ type: 'instance.setProp', owner: header, nodeId: headerOf(state).id, prop, value }]).state;
+    const published = set(set(s, 'notice', notice), 'noticeLabel', 'Directions');
+    const linked = set(published, 'noticeLink', { type: 'page', target: s.site.pageOrder[2] });
+    const after = generateProject(linked);
+    const g = guarded(after.get(LAYOUT)!);
+    expect(g.header).toContain(`notice={${JSON.stringify(notice)}}`);
+    expect(g.header).toContain('noticeLabel={"Directions"}');
+    expect(g.header).toContain('noticeLink={{"href":"/contact/"}}');
+    // Every page shows the header, so every page shows the notice, and no page's own file changes for it.
+    expect(g.withoutHeader).toEqual([]);
+    for (const [path, text] of before) if (path.startsWith('src/routes/') && path.endsWith('+page.svelte')) expect(after.get(path), path).toBe(text);
+    // The site name and the header's action keep their own fields.
+    expect(headerOf(linked).props).toMatchObject({ siteName: 'Test Studio', ctaLabel: 'Book a call' });
+    // A page that hides the header hides its notice with it.
+    expect(guarded(generateProject(applyOperations(linked, [{ type: 'page.update', pageId: about, showHeader: false }]).state).get(LAYOUT)!).withoutHeader).toEqual(['/about']);
+    // Clearing the words removes it everywhere; the header's markup then leaves its link out too (foundation-html).
+    const removed = generateProject(set(linked, 'notice', ''));
+    expect(guarded(removed.get(LAYOUT)!).header).not.toContain(notice);
+    expect(guarded(removed.get(LAYOUT)!).header).toContain('notice={""}');
   });
 
   it('hiding a part on one page leaves every other page’s generated files as they were', () => {
@@ -255,6 +281,34 @@ describe('choosing the shared header and footer per page', () => {
     const hidden = applyOperations(s, [{ type: 'page.update', pageId: home, showFooter: false }]).state;
     expect(shellReach(hidden, 'footer', home)).toEqual({ pages: 1, here: false });
     expect(shellReach(hidden, 'footer', null)).toEqual({ pages: 1, here: false });
+  });
+
+  it('names the pages a selected header or footer reaches, in site order, marking drafts', () => {
+    const { s, home, about, contact, kitchen } = site();
+    expect(shellPageNames(s, 'header')).toEqual({ text: 'Home and About', all: 'Home and About' });
+    expect(shellPageNames(s, 'footer')).toEqual({ text: 'Home and Kitchen', all: 'Home and Kitchen' });
+    // Every page in the business starter shows the header: all three are named, and a draft says it is left out.
+    let all = applyOperations(s, [
+      { type: 'page.update', pageId: kitchen, showHeader: true, draft: true },
+      { type: 'page.update', pageId: contact, showHeader: true }
+    ]).state;
+    expect(shellPageNames(all, 'header').text).toBe('Home, About, Contact and Kitchen (draft)');
+    // A long list names the first pages and counts the rest; the tooltip names them all.
+    for (const title of ['Team', 'Services', 'Journal']) all = applyOperations(all, [{ type: 'page.create', title, route: `/${title.toLowerCase()}/` }]).state;
+    const many = shellPageNames(all, 'header');
+    expect(many.text).toBe('Home, About, Contact, Kitchen (draft) and 3 more');
+    expect(many.all).toBe('Home, About, Contact, Kitchen (draft), Team, Services and Journal');
+    const none = applyOperations(s, [
+      { type: 'page.update', pageId: home, showHeader: false },
+      { type: 'page.update', pageId: about, showHeader: false }
+    ]).state;
+    expect(shellPageNames(none, 'header')).toEqual({ text: '', all: '' });
+    // Home is never a draft, whatever its document says; a page with no title goes by its address.
+    const odd = structuredClone(s);
+    odd.pages[home].draft = true;
+    odd.pages[about].title = '  ';
+    expect(shellPageNames(odd, 'header').text).toBe('Home and /about/');
+    expect(shellPageNames(s, 'sidebar')).toEqual({ text: '', all: '' });
   });
 
   it('refuses the old single setting from the assistant instead of dropping it', async () => {
