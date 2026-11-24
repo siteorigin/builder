@@ -251,8 +251,65 @@ export function keepPagesValid(state: ProjectState, pageId: string | null, defin
   };
 }
 
-/** Whether the selection is on a page the project no longer has (an Undo took it away): it goes with that page. */
-export const onGonePage = (state: ProjectState, selection: ElementRef | null) => selection?.owner.kind === 'page' && !Object.hasOwn(state.pages, selection.owner.id);
+/**
+ * The IDs of the items a repeated element of a placed component shows, where they can be told: the placement's own
+ * list (or the design's defaults while it has none), or for a News list on a page, the articles it lists there.
+ * Undefined for an element outside every list, and wherever the items come from further out (a component placed in
+ * another, a design edited everywhere, a list passed down from the placement around it).
+ */
+function shownItemIds(state: ProjectState, ref: ElementRef, r: ReturnType<typeof resolveRef>): string[] | undefined {
+  if (ref.owner.kind === 'component' || ref.instancePath.length !== 1 || !r.def || !r.instance) return undefined;
+  const list = listPropFor(r.def, ref.nodeId);
+  const schema = list ? own(r.def.properties, list) : undefined;
+  if (!list || schema?.type !== 'list') return undefined;
+  if (schema.feed) {
+    // The rows a News list shows depend on the page it is shown on: a shared header's or footer's are not one list.
+    if (ref.owner.kind !== 'page') return undefined;
+    const limit = feedLimit(schema);
+    return articleRows(state, schema.feed, ref.owner.id, Number.isFinite(limit) ? limit : undefined).map((row) => row.id);
+  }
+  const stored = own(r.instance.props as Record<string, unknown>, list);
+  const items = stored === undefined ? schema.default : stored;
+  if (!Array.isArray(items)) return undefined;
+  return items.flatMap((i) => (i && typeof i === 'object' && typeof (i as { id?: unknown }).id === 'string' ? [(i as { id: string }).id] : []));
+}
+
+/**
+ * Whether a reference still names something the project has: its page, shared header or footer, or component, each
+ * component on its path, its element, the part it names and, for an element of a placed component's list, its item.
+ * An Undo, a Redo, the AI or the files changing on disk can take any of them away while it stays selected.
+ */
+export function refExists(state: ProjectState, ref: ElementRef): boolean {
+  const r = resolveRef(state, ref);
+  // A code component has no tree: its parts are the ones its contract declares.
+  if (!r.node) return !!r.instance && r.def?.kind === 'code' && !!ref.partId && own(r.def.parts, ref.partId)?.nodeId === ref.nodeId;
+  if (r.node.kind === 'instance' && !own(state.components, r.node.definitionId)) return false;
+  // A part is named by the component it belongs to: the one placed, or the one edited everywhere.
+  const partOf = ref.instancePath.length ? r.def : ref.owner.kind === 'component' ? own(state.components, ref.owner.id) : undefined;
+  if (ref.partId && partOf && own(partOf.parts, ref.partId)?.nodeId !== ref.nodeId) return false;
+  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  const items = itemId === undefined ? undefined : shownItemIds(state, ref, r);
+  return !items || items.includes(itemId!);
+}
+
+type DefinitionMode = { definitionId: string; returnPageId: string } | null;
+
+/**
+ * The page shown, the selection and Edit everywhere kept to what the project still has after it changes (an Undo, a
+ * Redo, the AI, a theme refresh, the files changing on disk). A selection naming something that has gone is let go,
+ * never moved to what held it, so neither the Inspector nor the AI acts on a target the author did not pick. A
+ * component edited everywhere that has gone (its copy undone) ends that mode, back on the page it was entered from.
+ * `selection` is in the result only when it changes, so a selection that still holds is kept as it is.
+ */
+export function keepViewValid(state: ProjectState, view: { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode }): { pageId: string; definitionMode: DefinitionMode; selection?: null } {
+  const dm = view.definitionMode;
+  if (dm && !own(state.components, dm.definitionId)) {
+    const pageId = keepPagesValid(state, dm.returnPageId, null).pageId;
+    return view.selection ? { pageId, definitionMode: null, selection: null } : { pageId, definitionMode: null };
+  }
+  const pages = keepPagesValid(state, view.pageId, dm);
+  return view.selection && !refExists(state, view.selection) ? { ...pages, selection: null } : pages;
+}
 
 /**
  * Where a selected shared header or footer shows: on how many pages, and whether the page on screen is one. An Undo

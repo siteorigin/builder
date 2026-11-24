@@ -693,7 +693,8 @@ export function Canvas() {
     return placement ? throughPlacement(ref, placement) : null;
   }
 
-  // The component being edited went away (its copy was undone): editing it everywhere ends.
+  // The component being edited went away (its copy was undone): editing it everywhere ends. A snapshot that takes it
+  // away ends the mode itself (keepViewValid); this covers a mode entered for a component that had already gone.
   useEffect(() => {
     if (definitionMode && state && !state.components[definitionMode.definitionId]) setState({ definitionMode: null, pageId: definitionMode.returnPageId, selection: null });
   }, [definitionMode, state]);
