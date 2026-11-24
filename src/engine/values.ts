@@ -6,6 +6,7 @@ import { fail } from './tree';
 import { ICONS } from '@catalogue/foundation/icons';
 import { normalizeTable } from './table';
 import { declaredTokens } from './tokens';
+import { TEXT_LIMITS, tooLongMessage } from '@shared/text-limits';
 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
 
@@ -74,7 +75,9 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
   return out;
 }
 
-export function normalizeImage(v: unknown, state: ProjectState, label: string): ImageValue {
+/** `storedAlt` is the description already saved for this image: one longer than the limit, saved before it had one,
+ *  stays while it is not being changed, so toggling Decorative or picking another picture never fails on it. */
+export function normalizeImage(v: unknown, state: ProjectState, label: string, storedAlt?: string): ImageValue {
   if (v === null || v === undefined) return { assetId: null, alt: '' };
   // A document or a font in the library is no picture to show.
   const notImage = (id: string) => {
@@ -82,16 +85,23 @@ export function normalizeImage(v: unknown, state: ProjectState, label: string): 
     if (!a) fail(`${label}: asset "${id}" does not exist.`);
     if (a!.kind !== 'image') fail(`${label}: "${a!.name}" is not an image.`);
   };
+  // Refused whole, like any other text over its limit: a description cut short loses its end without a word.
+  const described = (alt: string, from: string) => {
+    if (alt.length > TEXT_LIMITS.imageAlt) fail(`${label}: ${from}: ${tooLongMessage(alt.length, TEXT_LIMITS.imageAlt)}`);
+    return alt;
+  };
   if (typeof v === 'string') {
     notImage(v);
-    return { assetId: v, alt: state.assets.assets[v].altSuggestion ?? '' };
+    const a = state.assets.assets[v];
+    return { assetId: v, alt: described(a.altSuggestion ?? '', `the suggested alt text of "${a.name}" (shorten it in Assets)`) };
   }
   const i = v as Partial<ImageValue>;
   // An ID is text: anything else would look up a library image without being one (an array reads as its text).
   if (i.assetId !== undefined && i.assetId !== null && typeof i.assetId !== 'string') fail(`${label}: an image's assetId must be an asset ID or null.`);
   if (i.assetId) notImage(i.assetId);
+  const alt = String(i.alt ?? '');
   // No image is null, however it was sent.
-  const out: ImageValue = { assetId: i.assetId || null, alt: String(i.alt ?? '').slice(0, 300) };
+  const out: ImageValue = { assetId: i.assetId || null, alt: alt === storedAlt ? alt : described(alt, 'image description') };
   if (i.decorative) out.decorative = true;
   return out;
 }
@@ -236,6 +246,9 @@ export function normalizeChoices(v: unknown, label: string, stored?: unknown): C
   });
 }
 
+/** The description of an image value already saved, if it is one. */
+export const storedAlt = (stored: unknown): string | undefined => (stored && typeof stored === 'object' && typeof (stored as ImageValue).alt === 'string' ? (stored as ImageValue).alt : undefined);
+
 /**
  * `stored` is the value already saved for this field, if any. A value that was valid under older rules is
  * kept when it is not being changed, so editing one field never fails on another.
@@ -271,7 +284,7 @@ export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: Pro
       // A link or image whose page or asset has gone missing stays while it is not being changed, so editing
       // another field of the same item never fails on it.
       if (stored !== undefined && v && typeof v === 'object' && JSON.stringify(v) === JSON.stringify(stored)) return v;
-      return schema.type === 'link' ? normalizeLink(v, state, label) : normalizeImage(v, state, label);
+      return schema.type === 'link' ? normalizeLink(v, state, label) : normalizeImage(v, state, label, storedAlt(stored));
     case 'icon':
       // An unknown name would silently render a fallback icon, so a new one is refused with the valid names.
       if (typeof v === 'string' && v === stored && /^[a-z0-9-]{1,40}$/.test(v)) return v;

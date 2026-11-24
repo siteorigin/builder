@@ -50,15 +50,26 @@ const drafts = new Set<string>();
 /** Fields keeping text they refused after the author left them (a public URL without https://), by draft key:
  *  what a later settle says about each, and where Keep editing returns. */
 const retained = new Map<string, { message: string; field: Refocusable | null }>();
+/** What a draft still open after a settle means, said by the field that holds it (text too long to save). */
+const notes = new Map<string, string>();
 const draftListeners = new Set<() => void>();
 const inflight = new Set<Promise<ApplyOutcome>>();
 const active: Active[] = [];
 let deferred: Array<() => void> = [];
 let canvasCommit: (() => void) | null = null;
 
-/** Mark or clear an uncommitted edit. Returns whether anything changed. */
-export function setDraft(key: string, on: boolean): boolean {
-  if (on === drafts.has(key)) return false;
+/** Mark or clear an uncommitted edit. Returns whether anything changed. `note` says why it is still open, for a
+ *  settle to report when the field is not on screen to say so itself; marking it again without one keeps it. A
+ *  draft being typed that is then refused (too long to save) stays open and changes only by its note. */
+export function setDraft(key: string, on: boolean, note?: string): boolean {
+  const before = notes.get(key);
+  if (!on) notes.delete(key);
+  else if (note) notes.set(key, note);
+  if (on === drafts.has(key)) {
+    if (notes.get(key) === before) return false;
+    draftListeners.forEach((f) => f());
+    return true;
+  }
   if (on) drafts.add(key);
   else drafts.delete(key);
   draftListeners.forEach((f) => f());
@@ -66,6 +77,8 @@ export function setDraft(key: string, on: boolean): boolean {
 }
 
 export const draftCount = () => drafts.size;
+/** Open drafts whose field refused its text and said why (too long to save), rather than ones still being typed. */
+export const refusedDraftCount = () => [...notes.keys()].filter((k) => drafts.has(k)).length;
 export const hasDraft = (key: string) => drafts.has(key);
 export function onDraftsChange(fn: () => void): () => void {
   draftListeners.add(fn);
@@ -204,7 +217,7 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
       if (s.explained.has(key)) continue;
       const kept = retained.get(key);
       if (kept && !s.refused && kept.field?.isConnected) s.refused = kept.field;
-      report(kept?.message ?? LEFT_OPEN[key] ?? 'A change you were typing has not been saved.');
+      report(kept?.message ?? LEFT_OPEN[key] ?? notes.get(key) ?? 'A change you were typing has not been saved.');
     }
     // The barrier's answer is this settle's alone, kept out of what an overlapping one (a Close) copies.
     const problems = unconfirmed && !s.problems.includes(unconfirmed) ? [...s.problems, unconfirmed] : [...s.problems];
@@ -219,6 +232,7 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
 export function resetPendingForTests(): void {
   drafts.clear();
   retained.clear();
+  notes.clear();
   inflight.clear();
   active.length = 0;
   deferred = [];

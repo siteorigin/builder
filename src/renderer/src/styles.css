@@ -253,6 +253,10 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 /* A checked field's refusal: what is still saved reads as plain text, and the correction sits under it. */
 .field-error .field-saved { color: var(--text-2); }
 .field-error .field-fix { display: block; margin-top: 4px; font-size: 12px; }
+/* A field with a limit counts against it under itself; text over it turns the count into an error (with its
+   glyph) saying why it is not saved. */
+.field-count { margin-top: -2px; font-size: 12px; color: var(--text-3); text-align: right; font-variant-numeric: tabular-nums; }
+.field-count.field-error { text-align: left; color: var(--red); }
 
 /* Segmented: a --r-sm tray with --r-xs options (concentric across its 2px padding). The selected option takes
    the raised face in both of Segmented's modes, toggle buttons (aria-pressed) and radios (aria-checked). */

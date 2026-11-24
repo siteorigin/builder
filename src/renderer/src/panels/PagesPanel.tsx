@@ -5,7 +5,9 @@ import { collectionRoutes } from '@shared/collections';
 import type { ProjectState } from '@shared/types';
 import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, toast, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
-import { openSection, rovingKeys, useMenu } from '../components/ui';
+import { limitNote } from '../lib/kept-drafts';
+import { TEXT_LIMITS } from '@shared/text-limits';
+import { keepRefusedText, openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { goToShellPart, selectPage } from '../lib/actions';
 import { headerMenu as findHeaderMenu, headerMenuSlotUnder } from '@engine/tree';
@@ -282,6 +284,7 @@ export function PagesPanel() {
     if (renaming) renameBase.current = { snap: getState().snapshot, ai: aiActivity() };
     return () => markDraft('page-rename', false);
   }, [renaming]);
+  const titleOver = title.trim().length > TEXT_LIMITS.pageTitle ? title.trim().length : 0;
   /**
    * Open the Add page form, optionally inside a section and with a title already typed. An open form keeps what is
    * in it: opening it again only moves focus there, or sets the section when one was asked for.
@@ -456,7 +459,7 @@ export function PagesPanel() {
   };
   const add = async () => {
     const t = title.trim();
-    if (!t || creating || dateMissing) return;
+    if (!t || creating || dateMissing || titleOver) return;
     setCreating(true);
     const nav = addToNav && !!headerMenu;
     // Sent against the snapshot the address was previewed on: a project that changed meanwhile previews again
@@ -513,7 +516,18 @@ export function PagesPanel() {
     const v = value?.trim();
     const from = renameBase.current;
     renameBase.current = null;
-    if (!v || v === (from?.snap?.state.pages[id]?.title ?? st.pages[id]?.title)) return;
+    const was = from?.snap?.state.pages[id]?.title ?? st.pages[id]?.title;
+    if (!v || v === was) return;
+    // Too long for a title: nothing is cut off or saved. The whole text goes to the page's Title field, refused there
+    // with the reason as if typed there (Escape there keeps the old title), and the page's settings open to show it.
+    if (v.length > TEXT_LIMITS.pageTitle) {
+      const commit = (t: string) => void applyOps([{ type: 'page.update', pageId: id, title: t.trim() }], 'Rename page');
+      keepRefusedText(`page:${id}:title`, v, { base: from?.snap ?? getState().snapshot, value: was ?? '', commit, ai: from?.ai ?? aiActivity() }, 'Title', TEXT_LIMITS.pageTitle, () => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id));
+      selectPage(id);
+      setState({ selection: null, rightTab: 'inspect', dockOpen: true, keptHandoff: getState().keptHandoff + 1 });
+      toast(`A page title can be up to ${TEXT_LIMITS.pageTitle} characters, and this one is ${v.length}, so it was not saved. It is in the page’s settings to shorten.`, 'error');
+      return;
+    }
     const rename = () => void applyOps([{ type: 'page.update', pageId: id, title: v }], 'Rename page');
     if (from && (getState().snapshot?.aiBusy || aiActivity() !== from.ai)) commitDraft(from.snap, rename, v, { check: true });
     // Otherwise written only while the title is still the one renaming began from (see commitOps).
@@ -707,15 +721,20 @@ export function PagesPanel() {
               autoFocus
               placeholder={asArticle ? 'Article title' : 'Page title'}
               aria-label={asArticle ? 'New article title' : 'New page title'}
-              aria-describedby="pages-add-route"
+              aria-describedby={titleOver ? 'pages-add-title-note pages-add-route' : 'pages-add-route'}
+              aria-invalid={titleOver > 0 || undefined}
               value={title}
-              maxLength={80}
               readOnly={creating}
               onChange={(e) => setTitle(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !isImeComposing(e)) void add();
               }}
             />
+            {titleOver > 0 && (
+              <div className="field-error" id="pages-add-title-note">
+                {limitNote(titleOver, TEXT_LIMITS.pageTitle, false).text}
+              </div>
+            )}
             <div className="pages-add-route" id="pages-add-route">
               <span className="label">Address</span> <span className={title.trim() ? 'value' : 'value empty'}>{newRoute}</span>
               {title.trim() && newRoute !== newBase && <span className="note"> · {newBase} is taken</span>}
@@ -780,7 +799,7 @@ export function PagesPanel() {
               </label>
             )}
             <div className="pages-add-actions">
-              <button className="btn btn-sm btn-primary" disabled={!title.trim() || creating || dateMissing} onMouseDown={(e) => e.preventDefault()} onClick={() => void add()}>
+              <button className="btn btn-sm btn-primary" disabled={!title.trim() || creating || dateMissing || titleOver > 0} onMouseDown={(e) => e.preventDefault()} onClick={() => void add()}>
                 {creating ? (asArticle ? 'Adding article…' : 'Adding page…') : asArticle ? 'Add article' : 'Add page'}
               </button>
               <button className="btn btn-sm btn-ghost" disabled={creating} onMouseDown={(e) => e.preventDefault()} onClick={cancelAdd}>
@@ -979,7 +998,6 @@ export function PagesPanel() {
               className="input inline-edit pages-rename"
               style={renameBox ?? { visibility: 'hidden' }}
               defaultValue={st.pages[renaming].title}
-              maxLength={80}
               aria-label={`Rename ${st.pages[renaming].title}`}
               onFocus={(e) => e.currentTarget.select()}
               onBlur={(e) => endRename(renaming, e.target.value)}

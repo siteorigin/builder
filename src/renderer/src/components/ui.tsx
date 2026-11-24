@@ -1,11 +1,12 @@
 import { isImeComposing } from '../lib/ime';
-import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
+import { Children, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
 import { aiActivity, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit } from '../store';
 import { afterSettle, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
+import { dropKeptDraft, keepDraft, keptDraft, keptDraftKey, keptField, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
 import { runPhase } from '../lib/savestate';
 import type { ProjectSnapshot } from '@shared/api';
 
@@ -686,37 +687,46 @@ export interface DraftHandle {
   commit: (text: string) => void;
 }
 
-/** Text input that commits on blur/Enter and keeps a local draft while focused. `onCommit` returns false when
- *  it refuses the value (its own check, such as a page with no title), so leaving the project can say so.
- *  With `check`, text it refuses is never sent: it stays in the field as an unsaved draft, its reason given to
- *  `onProblem` for beside the field, until it is corrected (checked again as it is typed), saved or discarded
- *  with Escape, instead of the saved value coming back. */
-export function DraftInput({
-  value,
-  onCommit,
-  onLive,
-  multiline,
-  className = 'input',
-  placeholder,
-  rows,
-  ariaLabel,
-  autoFocus,
-  id,
-  type,
-  maxLength,
-  'aria-describedby': describedBy,
-  'aria-invalid': invalid,
-  check,
-  onProblem,
-  onDirty,
-  reveal,
-  handle
-}: {
+/** Where the fields inside belong in the project, joined to the place around them: a `root` (a node) starts a
+ *  place, a `part` (one of its properties, a list row) narrows one and means nothing outside one. A field that
+ *  keeps text too long to save finds it again by this place when it comes back (see lib/kept-drafts). */
+interface Home {
+  key: string;
+  /** Whether the place is still in the project; a part narrows its root's. */
+  alive?: () => boolean;
+}
+const FieldHomeContext = createContext<Home | null>(null);
+export function FieldHome({ root, part, alive, children }: { root?: string; part?: string; alive?: () => boolean; children: ReactNode }) {
+  const outer = useContext(FieldHomeContext);
+  const within = outer?.alive;
+  const home: Home | null = root ? { key: root, alive } : outer && part ? { key: `${outer.key}|${part}`, alive: alive && within ? () => within() && alive() : (alive ?? within) } : null;
+  return <FieldHomeContext.Provider value={home}>{children}</FieldHomeContext.Provider>;
+}
+export const useFieldHome = () => useContext(FieldHomeContext);
+
+/** What a commit returns for text over the field's limit: refused before it is sent, and kept for shortening. */
+const TOO_LONG = Symbol('too long');
+
+/** A field's visible name, from its label (or its accessible name), for messages about what was typed in it. */
+function fieldName(el: HTMLInputElement | HTMLTextAreaElement, ariaLabel?: string): string {
+  const label = el.labels?.[0];
+  return (label?.querySelector('.grow')?.textContent ?? label?.textContent ?? ariaLabel ?? '').trim();
+}
+
+interface DraftInputProps {
   id?: string;
   /** For a single-line field: the input type, such as "date". */
   type?: string;
-  /** The most characters the project keeps for this field. */
-  maxLength?: number;
+  /** The most characters the project keeps for this field. The field counts against it as the author types,
+   *  and text over it, typed or pasted, is kept whole and refused, with the reason beside the field. */
+  limit?: number;
+  /** Where this field's text belongs in the project (a page's description, an image's alt text), so text
+   *  refused for being too long is kept for it while it is off screen. Without it, that text is offered to
+   *  copy when the field goes away. */
+  keep?: string;
+  /** With `keep`: whether what the field belongs to is still in the project. Kept text whose page, image or row is
+   *  removed goes, offered to copy. */
+  keepWhile?: () => boolean;
   'aria-describedby'?: string;
   'aria-invalid'?: boolean;
   value: string;
@@ -735,21 +745,82 @@ export function DraftInput({
   /** Shows the field (its panel may be closed) before leaving the project's Keep editing returns to it. */
   reveal?: () => void;
   handle?: RefObject<DraftHandle | null>;
-}) {
-  const [draft, setDraft] = useState(value);
+}
+
+/** Text input that commits on blur/Enter and keeps a local draft while focused. `onCommit` returns false when
+ *  it refuses the value (its own check, such as a page with no title), so leaving the project can say so.
+ *  With `check`, text it refuses is never sent: it stays in the field as an unsaved draft, its reason given to
+ *  `onProblem` for beside the field, until it is corrected (checked again as it is typed), saved or discarded
+ *  with Escape, instead of the saved value coming back. */
+export function DraftInput(props: DraftInputProps) {
+  // Another place is another field: one that keeps refused text starts afresh, with that place's own.
+  return <DraftField key={props.keep ?? ''} {...props} />;
+}
+
+/** Where the author started typing: the project, the text and the commit as they were then (see DraftField). */
+interface DraftStart {
+  base: ProjectSnapshot | null;
+  value: string;
+  commit: (v: string) => unknown;
+  ai: number;
+}
+
+/**
+ * Text too long for a field, refused somewhere else (an inline rename), handed to the field that keeps it: the
+ * field shows it, refused and marked not saved, until it is shortened and saved or put back, as if typed there.
+ */
+export function keepRefusedText(keep: string, text: string, start: DraftStart, name: string, limit: number, alive?: () => boolean): void {
+  const field = keptField(useStore.getState().snapshot?.workspaceKey, keep);
+  keepDraft<DraftStart>(field, { text, start, name, alive });
+  markDraft(keptDraftKey(field), true, tooLongReport(name, text.length, limit));
+}
+
+function DraftField({
+  value,
+  onCommit,
+  onLive,
+  multiline,
+  className = 'input',
+  placeholder,
+  rows,
+  ariaLabel,
+  autoFocus,
+  id,
+  type,
+  limit,
+  keep,
+  keepWhile,
+  'aria-describedby': describedBy,
+  'aria-invalid': invalid,
+  check,
+  onProblem,
+  onDirty,
+  reveal,
+  handle
+}: DraftInputProps) {
+  // Text this field refused for being too long, kept while it was off screen (another page was open).
+  const [field] = useState(() => (keep ? keptField(useStore.getState().snapshot?.workspaceKey, keep) : null));
+  const [restored] = useState(() => (field ? keptDraft<DraftStart>(field) : undefined));
+  const [draft, setDraft] = useState(restored?.text ?? value);
+  // Text over the limit was refused: it stays, marked as not saved, until it is shortened and saved, or the
+  // saved text is put back (Escape). The project changing meanwhile never replaces it.
+  const [tooLong, setTooLongState] = useState(!!restored);
+  const tooLongRef = useRef(!!restored);
+  const setTooLong = (on: boolean) => {
+    tooLongRef.current = on;
+    setTooLongState(on);
+    if (!on && field) dropKeptDraft(field);
+  };
   const input = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
   const focused = useRef(false);
   const cancelled = useRef(false);
-  // Report an uncommitted edit to the toolbar, so it never says "Saved" over text that is still a draft.
-  const draftKey = useId();
-  const mark = (on: boolean) => markDraft(draftKey, on);
-  useEffect(
-    () => () => {
-      markDraft(draftKey, false);
-      retainRefused(draftKey, null);
-    },
-    [draftKey]
-  );
+  // A field that has gone never puts a saved value back, nor clears a mark another control of its place now holds.
+  const mounted = useRef(true);
+  // Report an uncommitted edit to the toolbar, so it never says "Saved" over text that is still a draft. A field
+  // that keeps refused text marks it under its place, so the mark outlives the control while the text is kept.
+  const generatedKey = useId();
+  const draftKey = field ? keptDraftKey(field) : generatedKey;
+  const mark = (on: boolean, note?: string) => markDraft(draftKey, on, note);
   // A commit the project rejects (an empty title) leaves the stored value unchanged: show it again.
   const valueRef = useRef(value);
   valueRef.current = value;
@@ -760,7 +831,7 @@ export function DraftInput({
   // the field still holds what it held when typing began: one changed somewhere else meanwhile (its file
   // saved outside the app) keeps both versions for the author to choose between. A field nobody typed in
   // commits nothing. Text the project refused stays a draft, start and all.
-  const startedAt = useRef<{ base: ProjectSnapshot | null; value: string; commit: (v: string) => unknown; ai: number } | null>(null);
+  const startedAt = useRef<DraftStart | null>(restored?.start ?? null);
   const forget = () => (startedAt.current = null);
   // Text `check` refused, kept as a draft after the field was left, and the reason shown for it.
   const kept = useRef(false);
@@ -778,9 +849,11 @@ export function DraftInput({
   const draftRef = useRef(draft);
   draftRef.current = draft;
   // A field follows the project until the author types in it, focused or not, so typing always starts
-  // from what the project holds. Refused text it keeps stays while the saved value changes under it (an undo,
-  // the AI), until the project holds that very text.
+  // from what the project holds. Text refused for being too long stays whatever the project does meanwhile.
+  // Refused text it keeps stays while the saved value changes under it (an undo, the AI), until the project
+  // holds that very text.
   useEffect(() => {
+    if (tooLongRef.current) return;
     if (kept.current && startedAt.current) {
       if (draftRef.current === value) {
         forget();
@@ -809,43 +882,78 @@ export function DraftInput({
     else retainRefused(draftKey, null);
   });
   const aiRan = (from: { ai: number }) => !!useStore.getState().snapshot?.aiBusy || aiActivity() !== from.ai;
-  /** Commit what was typed; returns what the commit returned (false: the project refused it). */
+  /** Commit what was typed; returns what the commit returned (false: the project refused it; TOO_LONG: the
+   *  text is over the limit and was not sent). */
   const commit = (text: string): unknown => {
     const from = startedAt.current;
     if (!from || text === from.value) return forget();
-    const result = aiRan(from) ? commitDraft(from.base, () => from.commit(text), text, { check: true }) : commitDraft(from.base, () => onCommit(text), text);
+    if (limit !== undefined && text.length > limit) return TOO_LONG;
+    // Text refused for being too long is corrected in the field as it is shown now (the AI chose another picture
+    // meanwhile, say): once the AI is idle the edit is built from that, and still checked against where typing began.
+    // While it still runs, stopping it takes the project back there, so the edit is built from that instead.
+    const build = tooLongRef.current && !useStore.getState().snapshot?.aiBusy ? onCommit : from.commit;
+    const result = aiRan(from) ? commitDraft(from.base, () => build(text), text, { check: true }) : commitDraft(from.base, () => onCommit(text), text);
     if (result !== false) forget();
     return result;
   };
   // A field removed while the author is typing in it and the AI ran (it removed the page the field belongs
   // to, so the panel moved on) keeps what was typed, checked before it is applied. Removed any other way (a
   // file saved outside the app removed its page), what was typed is offered to copy: nothing is written for a
-  // field that is no longer there.
-  useEffect(
-    () => () => {
+  // field that is no longer there. Text too long to save, focused or not, stays with the field's place when it
+  // has one (another page was opened), and is offered to copy when it has none.
+  const nameRef = useRef(restored?.name ?? '');
+  // Kept as soon as it is refused and kept current as it is edited, so a control of the same place that comes up
+  // before this one has gone (the field moved into a group) finds it too.
+  // Each control keeps its place's text as its own; a newer one (text handed over from a rename) is never overwritten
+  // or dropped by a control that has gone.
+  const owner = useRef({});
+  const mine = () => !field || !keptDraft(field) || keptDraft(field)!.owner === owner.current;
+  const stash = (text: string, start: DraftStart) => field && keepDraft<DraftStart>(field, { text, start, name: nameRef.current, alive: keepWhile, owner: owner.current });
+  useEffect(() => {
+    mounted.current = true;
+    // Text found for this place on mount is this control's to keep from now on.
+    const found = field ? keptDraft<DraftStart>(field) : undefined;
+    if (field && restored && found) keepDraft<DraftStart>(field, { ...found, owner: owner.current });
+    return () => {
+      mounted.current = false;
+      retainRefused(draftKey, null);
       const from = startedAt.current;
       const text = draftRef.current;
-      if (!focused.current || !from || cancelled.current || text === from.value) return;
+      const over = limit !== undefined && text.length > limit;
       const snap = useStore.getState().snapshot;
-      if (!from.base || snap?.workspaceKey !== from.base.workspaceKey) return;
-      if (aiRan(from)) commitDraft(from.base, () => from.commit(text), text, { check: true });
-      else if (text.trim())
-        toast('What you were typing was not saved, because the field went away.', 'error', { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) });
-    },
-    []
-  );
+      const open = !!from?.base && !cancelled.current && text !== from.value && snap?.workspaceKey === from.base.workspaceKey;
+      // What the field belonged to was removed (its page, image or row): nothing is kept for a place that has gone. Not
+      // while the AI runs: what it removed comes back if it is stopped, and the check waits for the run to end.
+      const gone = !!field && !!keepWhile && !snap?.aiBusy && !keepWhile();
+      // Too long to save, or refused and shortened but not saved yet: it stays with the field's place.
+      if (open && field && !gone && (over || tooLongRef.current)) {
+        if (!mine()) return;
+        stash(text, from!);
+        markDraft(draftKey, true, over ? tooLongReport(nameRef.current, text.length, limit!) : unsavedReport(nameRef.current));
+        return;
+      }
+      // Kept text this field held is settled; text kept by another control of the same place is left to it.
+      if (field && tooLongRef.current && mine()) dropKeptDraft(field);
+      if (!field || !keptDraft(field)) markDraft(draftKey, false);
+      // Refused text kept for a place that has gone was already offered to copy as it went.
+      if (!open || !(focused.current || over) || (gone && tooLongRef.current)) return;
+      const copy = { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) };
+      if (over) toast(`${tooLongReport(nameRef.current, text.length, limit!)} The field went away, so copy it to keep it.`, 'error', copy);
+      else if (aiRan(from!)) commitDraft(from!.base, () => from!.commit(text), text, { check: true });
+      else if (text.trim()) toast('What you were typing was not saved, because the field went away.', 'error', copy);
+    };
+  }, []);
   // Each focus or keystroke starts a new edit: putting the saved value back for an earlier one must not
   // overwrite it. And text held back while the project was being left (Keep editing) is still a draft.
   const edit = useRef(0);
   const held = useRef(false);
-  const refusedLast = useRef(false);
+  const refusedLast = useRef(!!restored);
   const named = (el: HTMLInputElement | HTMLTextAreaElement) => {
-    const label = el.labels?.[0];
-    const name = (label?.querySelector('.grow')?.textContent ?? label?.textContent ?? ariaLabel ?? '').trim();
+    const name = fieldName(el, ariaLabel);
     return name ? `What you typed in ${name} can’t be saved.` : 'Something you typed can’t be saved.';
   };
   /** Leave the field with this text: commit it, or (refused) say so; the saved value comes back after, unless
-   *  `check` refused it, which keeps it. */
+   *  `check` refused it or it is too long to save, which keeps it. */
   const leave = (text: string, el: HTMLInputElement | HTMLTextAreaElement) => {
     const from = startedAt.current;
     const problem = check && from && text !== from.value ? check(text) : null;
@@ -861,7 +969,21 @@ export function DraftInput({
       reportRefused(named(el), draftKey, revealable(el, reveal));
       return;
     }
-    const refused = commit(text) === false;
+    const result = commit(text);
+    // Too long to save: the whole text stays, marked as not saved, for the author to shorten. Nothing is put
+    // back, now or once leaving the project is decided.
+    if (result === TOO_LONG) {
+      nameRef.current = fieldName(el, ariaLabel);
+      const report = tooLongReport(nameRef.current, text.length, limit!);
+      refusedLast.current = true;
+      setTooLong(true);
+      stash(text, startedAt.current!);
+      mark(true, report);
+      reportRefused(report, draftKey, el);
+      return;
+    }
+    if (tooLongRef.current) setTooLong(false);
+    const refused = result === false;
     refusedLast.current = refused;
     if (!refused) release();
     // While the project is being left, refused text stays a draft until the author decides about it.
@@ -873,7 +995,7 @@ export function DraftInput({
     const at = edit.current;
     afterSettle(() =>
       setTimeout(() => {
-        if (focused.current || edit.current !== at) return;
+        if (!mounted.current || focused.current || edit.current !== at) return;
         held.current = false;
         mark(false);
         forget();
@@ -897,17 +1019,20 @@ export function DraftInput({
         el.focus();
       }
     };
+  const note = limit !== undefined ? limitNote(draft.length, limit, tooLong) : null;
+  const noteId = `${generatedKey}-limit`;
   const common = {
     ref: input,
     value: draft,
     placeholder,
     'aria-label': ariaLabel,
-    'aria-describedby': describedBy,
-    'aria-invalid': invalid,
+    'aria-describedby': [describedBy, note ? noteId : null].filter(Boolean).join(' ') || undefined,
+    'aria-invalid': invalid || note?.over || undefined,
     id,
     autoFocus,
-    onFocus: () => {
+    onFocus: (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       focused.current = true;
+      nameRef.current = fieldName(e.currentTarget, ariaLabel);
       edit.current++;
       // Back in a field whose text was refused, or held back while leaving (Keep editing): still a draft.
       if ((held.current || refusedLast.current) && draft !== valueRef.current) mark(true);
@@ -927,18 +1052,21 @@ export function DraftInput({
       startedAt.current ??= { base: useStore.getState().snapshot, value: draft, commit: onCommit, ai: aiActivity() };
       setDraft(e.target.value);
       mark(e.target.value !== value);
+      if (tooLongRef.current) stash(e.target.value, startedAt.current);
       onLive?.(e.target.value);
     },
     onKeyDown: (e: React.KeyboardEvent) => {
       if (isImeComposing(e)) return;
       if (e.key === 'Escape') {
         // Revert: blur must not commit the abandoned draft. The key is spent on the field (a dialog around it
-        // reads that and stays open); the next Escape, with nothing being edited, closes it.
+        // reads that and stays open); the next Escape, with nothing being edited, closes it. Text kept for
+        // being too long goes too: the saved text is back.
         e.preventDefault();
         cancelled.current = true;
         forget();
         release();
         refusedLast.current = false;
+        if (tooLongRef.current) setTooLong(false);
         setDraft(value);
         (e.target as HTMLElement).blur();
       }
@@ -949,7 +1077,16 @@ export function DraftInput({
       }
     }
   };
-  return multiline ? <textarea className={className === 'input' ? 'textarea' : className} rows={rows ?? 3} maxLength={maxLength} {...common} /> : <input className={className} type={type} maxLength={maxLength} {...common} />;
+  const control = multiline ? <textarea className={className === 'input' ? 'textarea' : className} rows={rows ?? 3} {...common} /> : <input className={className} type={type} {...common} />;
+  if (!note) return control;
+  return (
+    <>
+      {control}
+      <div className={`field-count${note.over ? ' field-error' : ''}`} id={noteId}>
+        {note.text}
+      </div>
+    </>
+  );
 }
 
 const HELD_LABELS: Record<HeldAction, string> = {

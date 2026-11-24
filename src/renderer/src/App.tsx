@@ -12,7 +12,7 @@ import { handleShortcut } from './Editor';
 import { forgetCopy } from './lib/clipboard';
 import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
-import { endEditingHold, prepareToLeave, projectClosed } from './lib/leave';
+import { endEditingHold, forgetKeptDrafts, prepareToLeave, projectClosed } from './lib/leave';
 import { keepViewValid } from './lib/model';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
@@ -125,6 +125,7 @@ export function App() {
 
 function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>) {
   const local = snap.localState ?? {};
+  forgetKeptDrafts();
   setState({
     screen: 'editor',
     snapshot: snap,

@@ -6,7 +6,7 @@ import type { SampleContactKind } from '@shared/sample-contact';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
-import { draftCount, HELD_DRAFT, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
+import { draftCount, HELD_DRAFT, refusedDraftCount, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
 import { checkHeld, fieldKey, placeOf, readFields, shownField, typedText, whereOf } from './lib/held';
 import type { RevealedItem } from './lib/reveal';
 import type { StyleCopy } from './lib/style-copy';
@@ -123,6 +123,10 @@ export interface State {
   frameReady: boolean;
   /** Fields holding typed text that is not committed yet (the toolbar says "Editing…" rather than "Saved"). */
   drafting: number;
+  /** Of those, fields whose text was refused as too long to save: kept for the author to shorten. */
+  refusedDrafts: number;
+  /** Bumped when text refused somewhere else (an inline rename) is handed to a page's settings: they show it afresh. */
+  keptHandoff: number;
   /** The project is about to close (pending edits are saved): the editor takes no more input. */
   leaving: boolean;
   /** A problem the preview page itself reported (a component that failed to render), in plain words. */
@@ -206,6 +210,8 @@ export const useStore = create<State>((set) => ({
   rightTab: 'inspect',
   frameReady: false,
   drafting: 0,
+  refusedDrafts: 0,
+  keptHandoff: 0,
   leaving: false,
   previewIssue: null,
   dockOpen: true,
@@ -928,9 +934,9 @@ useStore.subscribe((s, prev) => {
   if (s.heldEdits !== prev.heldEdits) markDraft(HELD_DRAFT, s.heldEdits.length > 0);
 });
 
-export function markDraft(key: string, on: boolean) {
-  if (!setDraft(key, on)) return;
-  useStore.setState({ drafting: draftCount() });
+export function markDraft(key: string, on: boolean, note?: string) {
+  if (!setDraft(key, on, note)) return;
+  useStore.setState({ drafting: draftCount(), refusedDrafts: refusedDraftCount() });
   // A new draft retires any "saved" notice still on screen: it no longer describes what you are typing.
   if (on) {
     const toasts = useStore.getState().toasts;

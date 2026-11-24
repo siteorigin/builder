@@ -3,6 +3,7 @@ import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
 import { sha256Hex } from './sha256';
 import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from './types';
+import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -14,6 +15,9 @@ const RICH_TEXT_VALUE = 'For richtext: a string or string[] with **bold**, *ital
 const TABLE_VALUE = 'For table: { "columns": ["Day", "Workshop"], "rows": [["Monday", "Clay basics"]] }; to change one cell, row or column use instance.editTable.';
 
 export const OPS_VERSION = 1;
+
+/** Text up to one of TEXT_LIMITS, refused over it with its length and the limit (issue #226). */
+const limited = (limit: number) => z.string().max(limit, { error: (iss) => tooLongMessage(typeof iss.input === 'string' ? iss.input.length : limit + 1, limit) });
 
 /** The identity of a definition's property schema, which a whole-schema save names to prove it saw the latest one. */
 export function propertiesHash(properties: Record<string, unknown> | undefined): string {
@@ -66,8 +70,8 @@ const ARTICLE_FIELDS = {
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional()
     .describe('Publication date, YYYY-MM-DD (a past date backdates the piece). Makes the page a dated article: News lists show articles newest first.'),
-  byline: z.string().max(80).optional().describe('Articles only: who wrote it, shown as written ("By Ana Ruiz"). Empty removes it.'),
-  excerpt: z.string().max(320).optional().describe('Articles only: a short summary shown in News lists and under the article\'s title. Empty removes it.')
+  byline: limited(TEXT_LIMITS.byline).optional().describe('Articles only: who wrote it, shown as written ("By Ana Ruiz"). Empty removes it.'),
+  excerpt: limited(TEXT_LIMITS.excerpt).optional().describe('Articles only: a short summary shown in News lists and under the article\'s title. Empty removes it.')
 };
 
 /** A collection's settings, as collection.create and collection.update take them (see shared/collections.ts). */
@@ -113,11 +117,11 @@ export const OPERATION_SCHEMAS = {
   'page.update': z.object({
     type: z.literal('page.update'),
     pageId: z.string(),
-    title: z.string().min(1).max(80).optional(),
+    title: limited(TEXT_LIMITS.pageTitle).min(1).optional(),
     route: z.string().optional().describe('Child pages move with it. Old routes keep working.'),
-    navLabel: z.string().max(40).optional(),
-    seoTitle: z.string().max(120).optional(),
-    description: z.string().max(320).optional(),
+    navLabel: limited(TEXT_LIMITS.navLabel).optional(),
+    seoTitle: limited(TEXT_LIMITS.seoTitle).optional(),
+    description: limited(TEXT_LIMITS.pageDescription).optional(),
     noindex: z.boolean().optional(),
     searchHidden: z.boolean().optional().describe("Leave the page out of the site's own Site search results. Independent of noindex."),
     draft: z.boolean().optional().describe('true keeps the page as a draft: still editable and previewed, but left out of the exported website. false publishes it. The Home page cannot be a draft.'),
@@ -317,7 +321,7 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('site.update'),
     name: z.string().min(1).max(80).optional(),
     language: z.string().max(20).optional(),
-    description: z.string().max(320).optional(),
+    description: limited(TEXT_LIMITS.siteDescription).optional(),
     baseUrl: z.string().max(200).optional(),
     favicon: z.string().nullable().optional(),
     socialImage: z.string().nullable().optional(),
@@ -456,7 +460,7 @@ export const OPERATION_SCHEMAS = {
       font: FONT_FACE.optional(), originalName: z.string().max(255).optional()
     })
   }),
-  'asset.update': z.object({ type: z.literal('asset.update'), assetId: z.string(), name: z.string().max(120).optional(), description: z.string().max(500).optional(), altSuggestion: z.string().max(300).optional(), font: FONT_FACE.optional() }),
+  'asset.update': z.object({ type: z.literal('asset.update'), assetId: z.string(), name: z.string().max(120).optional(), description: limited(TEXT_LIMITS.assetDescription).optional(), altSuggestion: limited(TEXT_LIMITS.altSuggestion).optional(), font: FONT_FACE.optional() }),
   'asset.remove': z.object({ type: z.literal('asset.remove'), assetId: z.string() }),
   'asset.replace': z.object({
     type: z.literal('asset.replace'),

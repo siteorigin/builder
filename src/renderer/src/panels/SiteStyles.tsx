@@ -14,6 +14,7 @@ import { openSiteStyles } from '../lib/actions';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field, Section, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
 import { FontSelect, familyName } from './FontSelect';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
@@ -1347,7 +1348,7 @@ export function SiteStyles() {
           <DraftInput value={site.name} onCommit={(v) => (v.trim() ? updSite({ name: v.trim() }) : false)} />
         </Field>
         <Field label="Default description" hint="Used by pages without their own description.">
-          <DraftInput multiline value={site.description} onCommit={(v) => updSite({ description: v })} />
+          <DraftInput multiline limit={TEXT_LIMITS.siteDescription} keep="site:description" value={site.description} onCommit={(v) => updSite({ description: v })} />
         </Field>
         {/* Keyed by the project's opening: text one project refused never shows in the next. */}
         <CheckedField
