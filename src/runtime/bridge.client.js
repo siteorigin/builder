@@ -1170,7 +1170,7 @@ async function imageReport(deadline) {
 
 /**
  * In an isolated component preview (one component on a page of its own, see @shared/component-preview): whether it
- * rendered, why not, and the box it fills; undefined on a page of the site.
+ * rendered, why not, the box it fills and the text it shows; undefined on a page of the site.
  */
 function previewState() {
   const p = window.__siteoriginPreview;
@@ -1193,6 +1193,9 @@ function previewState() {
     }
   }
   out.bounds = bounds;
+  // What it says, as a reader would read it: evidence of the sample values without a picture of them.
+  const text = main ? (main.innerText || '').trim().replace(/\s+/g, ' ') : '';
+  out.text = text.length > 1000 ? text.slice(0, 999) + '…' : text;
   return out;
 }
 

@@ -94,6 +94,7 @@ interface PreviewState {
   mounted?: boolean;
   error?: string;
   bounds?: ComponentPreviewResult['bounds'];
+  text?: string;
 }
 
 /** A frame that shows one component on its own (see @shared/component-preview), shown and measured on request. */
@@ -201,7 +202,7 @@ export function componentFrame(): ComponentFrame {
     const report = (measured.payload as { report?: { preview?: PreviewState } }).report;
     const state = report?.preview;
     if (!state?.mounted) return fail('The component could not be shown.');
-    return { state: 'ready', width, definitionId, bounds: state.bounds ?? null, report };
+    return { state: 'ready', width, definitionId, bounds: state.bounds ?? null, text: typeof state.text === 'string' ? state.text : '', report };
   }
 
   return {

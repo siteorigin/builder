@@ -67,6 +67,8 @@ export interface ComponentPreviewResult {
   width: number;
   /** The component's box on the preview page in CSS pixels, or null when it renders nothing that takes up room. */
   bounds?: { x: number; y: number; width: number; height: number } | null;
+  /** The text it shows, as a reader would read it (at most about 1000 characters). */
+  text?: string;
   /** The bridge's inspection of the preview page: viewport and document size, layout and image findings, errors. */
   report?: unknown;
 }

@@ -12,7 +12,7 @@ const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
 
 type Box = { x: number; y: number; width: number; height: number };
-type Preview = { key: string; mounted: boolean; error?: string; bounds: Box | null };
+type Preview = { key: string; mounted: boolean; error?: string; bounds: Box | null; text: string };
 
 /** Load `body` (with `preview` as the entry module leaves it) in a 437px frame; what the bridge said on ready and on inspect. */
 async function run(body: string, preview: object) {
@@ -61,13 +61,14 @@ describe('the bridge in an isolated component preview', () => {
     expect(ready.preview).toMatchObject({ key: 'abcdefabcdefabcdef', mounted: true });
     expect(report.viewportWidth).toBe(437);
     expect(report.preview?.bounds).toEqual({ x: 20, y: 10, width: 397, height: 80 });
+    expect(report.preview?.text).toBe('One Two');
     // A component is not a page: it is never told it lacks the page's one h1.
     expect(report.issues.map((i) => i.kind)).not.toContain('heading-structure');
   }, 20000);
 
   it.skipIf(!browserInstalled)('says why a component did not mount', async () => {
     const { ready, report } = await run('<main id="main"></main>', { key: 'abcdefabcdefabcdef', mounted: false, error: 'boom' });
-    expect(ready.preview).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null });
+    expect(ready.preview).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null, text: '' });
     expect(report.preview?.mounted).toBe(false);
   }, 20000);
 });
