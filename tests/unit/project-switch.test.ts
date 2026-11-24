@@ -3,7 +3,7 @@
  * a new project that is cancelled or fails, leaves the current project open, locked and previewing as it was.
  */
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -492,5 +492,40 @@ describe('a new project that is cancelled while another is open', () => {
     expect(lockOf(current).token).toBe(open.lock);
     expect(open.worker.exited).toBe(false);
     expect(closedCount(sent)).toBe(0);
+  });
+});
+
+describe('copying for Paste while another project opens (#240)', () => {
+  it('takes a copy only in the opening it was pressed in, never from a duplicate with the same IDs opened meanwhile', async () => {
+    const original = await makeProject('original');
+    // Duplicated as the app does: the same documents, so the same page and element IDs, under a new project ID.
+    const duplicate = join(temp('duplicate'), 'site');
+    cpSync(original, duplicate, { recursive: true, verbatimSymlinks: true });
+    const manifest = join(duplicate, 'siteorigin.project.json');
+    writeFileSync(manifest, JSON.stringify({ ...JSON.parse(readFileSync(manifest, 'utf8')), projectId: 'p_duplicate' }));
+    const { c } = controller();
+    const a = await openCurrent(c, original);
+    const keyA = c.openingKey!;
+    const pageId = a.session.state.site.homePageId;
+    const nodeId = a.session.state.pages[pageId].rootIds[0];
+    const revision = a.session.revision;
+
+    const b = (await openCurrent(c, duplicate)).session;
+    // Everything the copy names is in the duplicate too, at the same revision: only its opening tells them apart.
+    expect(b.state.pages[pageId].rootIds[0]).toBe(nodeId);
+    expect(b.revision).toBe(revision);
+    const copy = vi.spyOn(b, 'copy');
+    expect(await c.copy(pageId, nodeId, revision, keyA)).toEqual({ ok: false, message: 'That project is no longer open.' });
+    expect(copy).not.toHaveBeenCalled();
+    // The duplicate's own Copy, from its own opening, is taken as usual.
+    const own = await c.copy(pageId, nodeId, revision, c.openingKey!);
+    expect(own.ok).toBe(true);
+    expect(own.clipboardId).toBeTruthy();
+    // Closed and opened again, the same folder is another opening: a Copy pressed before still finds nothing.
+    const keyB = c.openingKey!;
+    await c.close();
+    await openCurrent(c, duplicate);
+    expect(await c.copy(pageId, nodeId, c.session!.revision, keyB)).toMatchObject({ ok: false });
+    expect(await c.copy(pageId, nodeId, c.session!.revision, '')).toMatchObject({ ok: false });
   });
 });

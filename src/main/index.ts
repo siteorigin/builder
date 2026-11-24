@@ -268,9 +268,9 @@ function registerIpc() {
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
   // One node, or several siblings copied together (the session checks they are siblings on that page).
   const nodeIds = (v: unknown): v is string | string[] => typeof v === 'string' || (Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string'));
-  handle('project:copy', (pageId: unknown, nodeId: unknown, rev: unknown) =>
-    typeof pageId === 'string' && nodeIds(nodeId) && typeof rev === 'number' && controller.session
-      ? controller.session.copy(pageId, nodeId, rev)
+  handle('project:copy', (pageId: unknown, nodeId: unknown, rev: unknown, key: unknown) =>
+    typeof pageId === 'string' && nodeIds(nodeId) && typeof rev === 'number' && typeof key === 'string'
+      ? controller.copy(pageId, nodeId, rev, key)
       : { ok: false, message: 'Nothing to copy.' }
   );
   // The focused field's own Undo and Redo (in the editor, a dialog or the preview frame): the renderer sends

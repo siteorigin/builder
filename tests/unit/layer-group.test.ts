@@ -18,7 +18,8 @@ const bridge = {
     apply: (batch: Parameters<ProjectSession['apply']>[0], opts: { label?: string; coalesceKey?: string } = {}) => track(session.apply(batch, { label: opts.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user' }).then(refresh)),
     undo: () => track(session.undo().then(refresh)),
     undoEntry: (entryId: string) => track(session.undoEntry(entryId).then(refresh)),
-    copy: (pageId: string, nodeId: string | string[], rev: number) => session.copy(pageId, nodeId, rev),
+    // Taken only in the opening it was pressed in, as the app does (#240).
+    copy: (pageId: string, nodeId: string | string[], rev: number, key?: string) => (key === opening ? session.copy(pageId, nodeId, rev) : Promise.resolve({ ok: false, message: 'That project is no longer open.' })),
     saveLocalState: async () => {}
   },
   ai: { stop: async () => {} },
