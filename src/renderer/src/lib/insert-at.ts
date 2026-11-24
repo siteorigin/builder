@@ -89,36 +89,47 @@ export function heldSlots(state: ProjectState, ref: ElementRef | null): string[]
   const inst = own(treeFor(state, ref.owner)?.nodes, ref.instancePath[0]);
   const def = inst?.kind === 'instance' ? own(state.components, inst.definitionId) : undefined;
   if (!def?.tree || ref.nodeId === def.tree.rootIds[0]) return [];
-  return slotsOnce(def, [ref.nodeId]);
+  const shown = slotOutlets(def, [ref.nodeId]);
+  return Object.keys(def.slots ?? {}).filter((name) => shown.has(name));
 }
 
 /**
- * The slots a component's design shows exactly once: through its own elements, not inside a repeat (shown once per
- * item, or never) or handed to a component placed in it (which may not show it). In the order it declares them. A code
- * component renders its own, so every slot it declares counts.
+ * The slots a component's design shows exactly once, so what is put in one shows once: through its own elements, or
+ * handed to a component placed in it that shows that slot once itself; not inside a repeat (shown once per item, or
+ * never), nor shown from two places. In the order it declares them. A code component renders its own, so every slot it
+ * declares counts.
  */
-export function shownOnceSlots(state: ProjectState, definitionId: string): string[] {
+export function shownOnceSlots(state: ProjectState, definitionId: string, through: ReadonlySet<string> = new Set()): string[] {
   const def = own(state.components, definitionId);
-  if (!def) return [];
+  if (!def || through.has(def.id)) return [];
   if (def.kind !== 'managed' || !def.tree) return Object.keys(def.slots ?? {});
-  return slotsOnce(def, def.tree.rootIds);
+  const path = new Set(through).add(def.id);
+  const shown = slotOutlets(def, def.tree.rootIds, (inner) => new Set(shownOnceSlots(state, inner, path)));
+  return Object.keys(def.slots ?? {}).filter((name) => shown.get(name) === 1);
 }
 
-/** The declared slots `def`'s design shows through the nodes `from`, walking only its elements (see shownOnceSlots). */
-function slotsOnce(def: ComponentDefinition, from: string[]): string[] {
+/**
+ * How many times `def`'s design shows each of its slots through the nodes `from`, walking only its elements, and, with
+ * `forwards`, what it hands a component placed in it in a slot that component shows once (see shownOnceSlots).
+ */
+function slotOutlets(def: ComponentDefinition, from: string[], forwards?: (definitionId: string) => Set<string>): Map<string, number> {
   const tree = def.tree;
-  if (!tree) return [];
-  const held = new Set<string>();
+  const count = new Map<string, number>();
+  if (!tree) return count;
   const seen = new Set<string>();
   const walk = (id: string) => {
     const n = own(tree.nodes, id);
     if (!n || seen.has(id)) return;
     seen.add(id);
-    if (n.kind === 'slot') held.add(n.slot);
+    if (n.kind === 'slot') count.set(n.slot, (count.get(n.slot) ?? 0) + 1);
     else if (n.kind === 'element') n.children.forEach(walk);
+    else if (n.kind === 'instance' && forwards) {
+      const once = forwards(n.definitionId);
+      for (const [slot, ids] of Object.entries(n.slots ?? {})) if (once.has(slot) && Array.isArray(ids)) ids.forEach(walk);
+    }
   };
   from.forEach(walk);
-  return Object.keys(def.slots ?? {}).filter((name) => held.has(name));
+  return count;
 }
 
 /**

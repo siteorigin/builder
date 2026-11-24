@@ -745,9 +745,13 @@ export function Canvas() {
             heldHover.current = true;
             break;
           }
+          // Back on the page after a kept hover: the page dropped what it outlined when the pointer left, so it is told
+          // again even when the hover is the same.
+          const held = heldHover.current;
           heldHover.current = false;
           hoverChain.current = chain;
           resolveHover();
+          if (held) syncTrack();
           break;
         }
         case 'rects': {
@@ -1060,7 +1064,9 @@ export function Canvas() {
    * hover would otherwise outlive the pointer, or lose its outline while the pointer is back on it. Back on the page, the
    * page reports what it is over again.
    */
-  function leaveHoverChrome() {
+  function leaveHoverChrome(e: React.PointerEvent) {
+    // Straight onto another of them (two Add buttons of a short section): the hover is still being rested on.
+    if (e.relatedTarget instanceof Element && e.relatedTarget.closest('.ov-label.outside, .ov-add')) return;
     overTag.current = false;
     if (!heldHover.current) return;
     heldHover.current = false;
@@ -1958,7 +1964,8 @@ export function Canvas() {
       ].filter((b, i, all) => all.findIndex((o) => o.p.key === b.p.key) === i);
   /** Where an Add button sits, in the overlay: on its section's edge three quarters across (clear of the chip at the
    *  start and the spacing handles at the middle), or inset in its container's lower trailing corner; kept on the page,
-   *  and not drawn for an edge scrolled out of view. */
+   *  and not drawn for an edge scrolled out of view. Drawn before the spacing handles and the chip, which stay on top
+   *  where a small page brings them together. */
   const addAt = (p: AddPoint, b: AddBox): { left: number; top: number } | null => {
     const h = frameH * z;
     if (b.top > h || b.top + b.height < 0 || b.left > frameW || b.left + b.width < 0) return null;
@@ -1966,7 +1973,9 @@ export function Canvas() {
     // A short or narrow container (a Row of one line) has it centred on that side instead, so it stays on the box.
     const y = inside ? (b.height < 40 ? b.top + b.height / 2 : b.top + b.height - 16) : p.side === 'before' ? b.top : b.top + b.height;
     if (!inside && (y < -2 || y > h + 2)) return null;
-    const x = inside ? (b.width < 40 ? b.left + b.width / 2 : b.left + b.width - 16) : b.left + b.width * 0.75;
+    // On a narrow section, kept past the margin handle, which sits just after the middle (see SpacingHandles).
+    const edgeX = b.left + Math.max(b.width * 0.75, b.width / 2 + Math.min(28, b.width / 4) + 30);
+    const x = inside ? (b.width < 40 ? b.left + b.width / 2 : b.left + b.width - 16) : Math.min(edgeX, b.left + b.width - 14);
     return { left: Math.max(14, Math.min(x, frameW - 14)), top: Math.max(14, Math.min(y, h - 14)) };
   };
   const device = viewport < 768 ? 'Phone' : viewport < 1024 ? 'Tablet' : 'Desktop';
@@ -2263,22 +2272,6 @@ export function Canvas() {
                     style={b}
                   />
                 ))}
-                {spaceShown && (
-                  <SpacingHandles
-                    // A drag belongs to one selection, at one size, zoom and page: any change ends it.
-                    key={JSON.stringify([session, pageId, refKey(selection!), selection!.itemPath ?? [], styleScope, viewport, z])}
-                    state={state!}
-                    selection={selection!}
-                    desc={spaceDesc!}
-                    box={toBox(rects.selected[0])}
-                    spacing={spacing!}
-                    zoom={z}
-                    post={post}
-                    measureSpace={measureSpace}
-                    onDragging={setDragging}
-                    focusCanvas={() => canvasRef.current?.focus({ preventScroll: true })}
-                  />
-                )}
                 {addButtons.map(({ p, box }) => {
                   const at = adding ? adding.at : addAt(p, box);
                   if (!at) return null;
@@ -2299,7 +2292,15 @@ export function Canvas() {
                         onPointerEnter={() => (overTag.current = true)}
                         onPointerLeave={leaveHoverChrome}
                         onFocus={() => (addFocused.current = true)}
-                        onBlur={() => (addFocused.current = false)}
+                        onBlur={(e) => {
+                          addFocused.current = false;
+                          // Gone with its focus (its hover moved on): focus goes to the canvas, as below.
+                          const el = e.currentTarget;
+                          requestAnimationFrame(() => {
+                            const a = document.activeElement;
+                            if (!el.isConnected && (!a || a === document.body)) canvasRef.current?.focus({ preventScroll: true });
+                          });
+                        }}
                         onClick={(e) => (adding ? closeAdd(true) : openAdd(p, e.currentTarget, at, box))}
                       >
                         <Plus aria-hidden="true" />
@@ -2309,6 +2310,22 @@ export function Canvas() {
                     </span>
                   );
                 })}
+                {spaceShown && (
+                  <SpacingHandles
+                    // A drag belongs to one selection, at one size, zoom and page: any change ends it.
+                    key={JSON.stringify([session, pageId, refKey(selection!), selection!.itemPath ?? [], styleScope, viewport, z])}
+                    state={state!}
+                    selection={selection!}
+                    desc={spaceDesc!}
+                    box={toBox(rects.selected[0])}
+                    spacing={spacing!}
+                    zoom={z}
+                    post={post}
+                    measureSpace={measureSpace}
+                    onDragging={setDragging}
+                    focusCanvas={() => canvasRef.current?.focus({ preventScroll: true })}
+                  />
+                )}
                 {reorder?.line &&
                   (() => {
                     const d = dropBox(reorder.line);

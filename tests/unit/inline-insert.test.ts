@@ -200,6 +200,27 @@ describe('an Add button goes only where the slot it fills is plain', () => {
     expect(addPoints(p.state, p.owner, ref(p.owner, p.card)).map((x) => [x.side, x.slot])).toEqual([['inside', 'extra']]);
   });
 
+  it('a placement whose one slot is handed to a Section in its design takes it there; shown twice, none', () => {
+    const p = page();
+    const def = p.state.components[p.cardDef];
+    const root = def.tree!.rootIds[0];
+    const sectionDef = (home(p.state).nodes[p.section] as InstanceNode).definitionId;
+    def.slots = { body: { label: 'Body' } };
+    def.tree!.nodes.bodySlot = { id: 'bodySlot', kind: 'slot', slot: 'body' };
+    def.tree!.nodes.inner = { id: 'inner', kind: 'instance', definitionId: sectionDef, props: {}, slots: { content: ['bodySlot'] } };
+    (def.tree!.nodes[root] as ElementNode).children.push('inner');
+    const [inside] = addPoints(p.state, p.owner, ref(p.owner, p.card));
+    expect(resolvePoint(p.state, inside)).toEqual({ owner: p.owner, parentId: p.card, slot: 'body' });
+    // Handed to a slot the Section does not have, it shows nowhere.
+    def.tree!.nodes.inner = { id: 'inner', kind: 'instance', definitionId: sectionDef, props: {}, slots: { aside: ['bodySlot'] } };
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
+    // Shown from two places, it would show twice.
+    def.tree!.nodes.inner = { id: 'inner', kind: 'instance', definitionId: sectionDef, props: {}, slots: { content: ['bodySlot'] } };
+    def.tree!.nodes.bodySlot2 = { id: 'bodySlot2', kind: 'slot', slot: 'body' };
+    (def.tree!.nodes[root] as ElementNode).children.push('bodySlot2');
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
+  });
+
   it('a repeated item’s copy gets none: the place would be every item’s', () => {
     const p = page();
     expect(addPoints(p.state, p.owner, { ...ref(p.owner, p.row), itemPath: ['a'] })).toEqual([]);
