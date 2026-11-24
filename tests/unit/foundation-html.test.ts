@@ -571,8 +571,8 @@ describe('shell.header', () => {
       expect(nav(authoredHtml('shell.header', { links }))).toBe(
         '<ul class="so-header__list">' +
           '<li><a href="/" aria-current="page">Home</a></li>' +
-          `<li class="so-header__group"><a href="/about/">About</a>${toggle('l2', 'About')}` +
-          '<ul id="so-sub-l2" class="so-header__sub" hidden=""><li><a href="https://example.com/team">Team</a></li><li><a href="/contact/">Contact</a></li></ul></li>' +
+          `<li class="so-header__group"><a href="/about/">About</a>${toggle('1', 'About')}` +
+          '<ul id="so-sub-1" class="so-header__sub" hidden=""><li><a href="https://example.com/team">Team</a></li><li><a href="/contact/">Contact</a></li></ul></li>' +
           '<li><a href="https://example.com/shop">Shop</a></li>' +
           '</ul>'
       );
@@ -582,19 +582,21 @@ describe('shell.header', () => {
       const flat = nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/') }, { id: 'l2', label: 'Contact', link: link('/contact/'), sub: false }] }));
       expect(flat).toBe('<ul class="so-header__list"><li><a href="/about/">About</a></li><li><a href="/contact/">Contact</a></li></ul>');
       const leading = nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/'), sub: true }, { id: 'l2', label: 'Contact', link: link('/contact/'), sub: true }] }));
-      expect(leading).toBe(`<ul class="so-header__list"><li class="so-header__group"><a href="/about/">About</a>${toggle('l1', 'About')}<ul id="so-sub-l1" class="so-header__sub" hidden=""><li><a href="/contact/">Contact</a></li></ul></li></ul>`);
+      expect(leading).toBe(`<ul class="so-header__list"><li class="so-header__group"><a href="/about/">About</a>${toggle('0', 'About')}<ul id="so-sub-0" class="so-header__sub" hidden=""><li><a href="/contact/">Contact</a></li></ul></li></ul>`);
       // Items stored before submenus existed have no mark: they are top-level links.
       expect(nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/') }] }))).toBe('<ul class="so-header__list"><li><a href="/about/">About</a></li></ul>');
     });
 
-    it('makes an element ID safe from any item ID, so its button still finds its list', () => {
+    it('names each submenu by its place in the menu, whatever its link’s item ID holds', () => {
       const links = [
-        { id: 'a "b" c', label: 'About', link: link('/about/') },
-        { id: 'l2', label: 'Contact', link: link('/contact/'), sub: true }
+        { id: 'a b', label: 'About', link: link('/about/') },
+        { id: 'l2', label: 'Contact', link: link('/contact/'), sub: true },
+        { id: 'a-b', label: 'Shop', link: { type: 'url', target: 'https://example.com/shop' } },
+        { id: 'x"y', label: 'Team', link: { type: 'url', target: 'https://example.com/team' }, sub: true }
       ];
       const out = nav(authoredHtml('shell.header', { links }));
-      expect(out).toContain('aria-controls="so-sub-a--b--c"');
-      expect(out).toContain('<ul id="so-sub-a--b--c" class="so-header__sub" hidden="">');
+      expect([...out.matchAll(/aria-controls="([^"]*)"/g)].map((m) => m[1])).toEqual(['so-sub-0', 'so-sub-1']);
+      expect([...out.matchAll(/<ul id="([^"]*)" class="so-header__sub"/g)].map((m) => m[1])).toEqual(['so-sub-0', 'so-sub-1']);
     });
 
     it('marks only the open page, and its parent link as the section, on a page under it', () => {

@@ -81,8 +81,8 @@ const HEADER_SOURCE = `<script>
 		openSub = null;
 	});
 
-	/** The submenu toggle and list of the link with this item ID (made safe to use as an element ID). */
-	const subId = (id) => \`so-sub-\${String(id).replace(/[^\\w-]/g, '-')}\`;
+	/** The element ID of the submenu under the link with this item ID: by its place in the menu, unique and safe. */
+	const subId = (id) => \`so-sub-\${groups.findIndex((g) => g.item.id === id)}\`;
 	const subToggle = (id) => header?.querySelector(\`[aria-controls="\${subId(id)}"]\`);
 
 	/** Choosing a link closes the menus, including links to the current page or an anchor on it. */

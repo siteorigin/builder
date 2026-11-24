@@ -107,6 +107,12 @@ export interface ApplyContext {
    * the draft they were made from. applyOperations fills it.
    */
   assetUses?: { state?: ProjectState; counts?: Record<string, number> };
+  /**
+   * The addresses in use when the batch began, lowercased: page routes and old addresses kept working. A page moved
+   * from an address outside it only passed through (a swap through a spare address, a parent moved before its
+   * child), was never served there, and keeps nothing at it. applyOperations fills it.
+   */
+  addressesAtStart?: ReadonlySet<string>;
 }
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
@@ -120,7 +126,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'page.create':
       return pageCreate(state, op);
     case 'page.update':
-      return pageUpdate(state, op);
+      return pageUpdate(state, op, ctx);
     case 'page.duplicate':
       return pageDuplicate(state, op);
     case 'page.reorder': {
@@ -603,7 +609,7 @@ function addToHeaderNavigation(state: ProjectState, page: PageDoc): boolean {
   return true;
 }
 
-function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
+function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContext = {}): OpResult {
   const page = own(state.pages, op.pageId) ?? fail(`Page "${op.pageId}" does not exist.`);
   let moved: RouteMove[] | undefined;
   if (op.title !== undefined) page.title = op.title.trim();
@@ -616,7 +622,7 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
     // The pages inside it move with it, and every address left behind keeps working for its page.
     const plan = planRouteMove(state, page.id, route, validateRoute);
     if ('error' in plan) fail(plan.error);
-    movePages(state, plan.moves);
+    movePages(state, plan.moves, ctx.addressesAtStart);
     if (plan.moves.length > 1) moved = plan.moves;
   }
   if (op.navLabel !== undefined) page.navLabel = op.navLabel || undefined;
@@ -661,13 +667,13 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
  * a page left that no page now uses is kept working for it, so old links and bookmarks still arrive (a page moved
  * again keeps every earlier address leading to where it is now, because kept addresses name the page).
  */
-function movePages(state: ProjectState, moves: RouteMove[]) {
+function movePages(state: ProjectState, moves: RouteMove[], atStart?: ReadonlySet<string>) {
   for (const m of moves) state.pages[m.pageId].route = m.to;
   for (const m of moves) claimRoute(state, m.to);
   const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
-  // A draft is not on the website, so nothing outside leads to its address; and an address that is not a valid
-  // route (a hand-written one) could not be kept working.
-  const keep = (m: RouteMove) => !used.has(m.from.toLowerCase()) && redirectIndex(state, m.from) < 0 && state.pages[m.pageId].draft !== true && !validateRoute(m.from);
+  // Not an address the page only passed through in this batch, nor one that is not a valid route (a hand-written
+  // one), which could not be kept working.
+  const keep = (m: RouteMove) => !used.has(m.from.toLowerCase()) && redirectIndex(state, m.from) < 0 && (!atStart || atStart.has(m.from.toLowerCase())) && !validateRoute(m.from);
   const kept = moves.filter(keep).map((m) => ({ from: m.from, pageId: m.pageId }));
   if (kept.length) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), ...kept];
 }
@@ -2767,7 +2773,7 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
 export function walkOperations(state: ProjectState, ops: EditOperation[], check: (state: ProjectState, op: EditOperation) => string | null, ctx: ApplyContext = {}): string | null {
   let draft: ProjectState | null = null;
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses };
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state) };
   for (const [i, op] of ops.entries()) {
     const reason = check(draft ?? state, op);
     if (reason) return reason;
@@ -2784,27 +2790,18 @@ export function walkOperations(state: ProjectState, ops: EditOperation[], check:
   return null;
 }
 
-/**
- * Old addresses kept during one batch for addresses no page had when it began: a page that passed through an
- * address on its way somewhere else (swapping two pages' addresses through a spare one, a parent moved before its
- * child) was never served there, so nothing outside leads to it.
- */
-function dropPassingAddresses(before: ProjectState, after: ProjectState) {
-  const list: unknown = after.site.redirects;
-  if (!Array.isArray(list) || list === before.site.redirects) return;
-  const known = new Set<string>(Object.values(before.pages).map((p) => p.route.toLowerCase()));
-  for (const r of Array.isArray(before.site.redirects) ? (before.site.redirects as unknown[]) : []) if (typeof (r as { from?: unknown })?.from === 'string') known.add((r as { from: string }).from.toLowerCase());
-  const kept = list.filter((r) => typeof r?.from !== 'string' || known.has(r.from.toLowerCase()));
-  if (kept.length === list.length) return;
-  if (kept.length) after.site.redirects = kept;
-  else delete after.site.redirects;
+/** The addresses in use in `state`, lowercased: its pages' routes and the old addresses it keeps working. */
+function addressesInUse(state: ProjectState): Set<string> {
+  const out = new Set<string>(Object.values(state.pages).map((p) => p.route.toLowerCase()));
+  for (const r of Array.isArray(state.site.redirects) ? (state.site.redirects as unknown[]) : []) if (typeof (r as { from?: unknown })?.from === 'string') out.add((r as { from: string }).from.toLowerCase());
+  return out;
 }
 
 export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): { state: ProjectState; results: OpResult[] } {
   const draft = clone(state);
   const results: OpResult[] = [];
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses };
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state) };
   for (const [i, op] of ops.entries()) {
     // Any edit but a removal may move an asset's uses: the next removal counts them again.
     if (op.type !== 'asset.remove') assetUses.counts = undefined;
@@ -2818,7 +2815,6 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
       throw e;
     }
   }
-  dropPassingAddresses(state, draft);
   // A theme update changes no project component, not even this derived field.
   if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };
   // A managed project component's dependencies are the components its tree places: keep them current.

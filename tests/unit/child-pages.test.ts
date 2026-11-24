@@ -179,12 +179,19 @@ describe('moving a page', () => {
     expect(routes(s)).toMatchObject({ Kitchens: '/rooms/kitchens/', Spring: '/rooms/kitchens/spring/' });
   });
 
-  it('keeps no old address for a draft, which is not on the website, or for an address that is not a route', () => {
-    let s = applyOperations(lookbook(), [{ type: 'page.update', pageId: 'pg_kitchens', draft: true }]).state;
-    s = applyOperations(s, [{ type: 'page.update', pageId: 'pg_lookbook', route: '/work/' }]).state;
-    expect(s.site.redirects?.map((r) => r.from).sort()).toEqual(['/lookbook/', '/lookbook/kitchens/spring/']);
-    // A team page later made with a draft's old title is not pushed to a numbered address.
-    expect(applyOperations(s, [{ type: 'page.create', title: 'Kitchens' }]).results[0].route).toBe('/kitchens/');
+  it('keeps no address a page was created at in the same edit, or one that is not a route', () => {
+    const made = applyOperations(fresh(), [{ type: 'page.create', pageId: 'pg_team0001', title: 'Team' }, { type: 'page.update', pageId: 'pg_team0001', route: '/about/team/' }]).state;
+    expect(made.pages.pg_team0001.route).toBe('/about/team/');
+    expect(made.site.redirects).toBeUndefined();
+    // A page that passed through an address keeps nothing there to stop a later move in the same edit.
+    const s = lookbook();
+    const through = applyOperations(s, [
+      { type: 'page.update', pageId: byTitle(s, 'About').id, route: '/work/kitchens/' },
+      { type: 'page.update', pageId: byTitle(s, 'About').id, route: '/about-us/' },
+      { type: 'page.update', pageId: 'pg_lookbook', route: '/work/' }
+    ]).state;
+    expect(through.pages.pg_kitchens.route).toBe('/work/kitchens/');
+    expect(through.site.redirects?.some((r) => r.from === '/work/kitchens/')).toBe(false);
     const legacy = lookbook();
     legacy.pages.pg_lookbook.route = '/Lookbook/';
     const moved = applyOperations(legacy, [{ type: 'page.update', pageId: 'pg_lookbook', route: '/studio/' }]).state;
@@ -253,10 +260,11 @@ describe('a page inside another in the header menu', () => {
     const about = byTitle(s, 'About').id;
     const header = headerMenu(s)!.node;
     const items = header.props.links as ListItem[];
-    header.props.links = [{ ...items[1], sub: true }, items[0], items[2]];
+    header.props.links = [{ ...items[1], label: 'Our studio', sub: true }, items[0], items[2]];
     const t = applyOperations(s, [{ type: 'page.create', title: 'Team', route: '/about/team/', addToNavigation: true }]).state;
-    expect(menuRows(t)).toEqual(['  About', '  Team', 'Home', 'Contact']);
-    expect(headerMenuSlotUnder(t, menu(t), about)).toMatchObject({ index: 2, sub: true, under: 'About' });
+    expect(menuRows(t)).toEqual(['  Our studio', '  Team', 'Home', 'Contact']);
+    // The parent is named as the menu names it.
+    expect(headerMenuSlotUnder(t, menu(t), about)).toMatchObject({ index: 2, sub: true, under: 'Our studio' });
   });
 
   it('keeps the menu and the page’s place independent of each other', () => {
@@ -320,6 +328,9 @@ describe('what else reads a page’s place', () => {
     const taken = applyOperations(made, [{ type: 'page.update', pageId: 'pg_workold', route: '/work-old/' }]).state;
     expect(taken.site.redirects).toEqual([{ from: '/work/lookbook/', pageId: 'pg_workold' }]);
     expect(checkHeld(taken, ops, base).kind).toBe('changed');
+    // However the address was typed.
+    const typed = [{ type: 'page.update' as const, pageId: 'pg_lookbook', route: ' Work/Lookbook ' }];
+    expect(checkHeld(taken, typed, readFields(s, typed)!.map((r) => (r.found ? r.value : undefined))).kind).toBe('changed');
   });
 
   it('reports the pages a move carried along, and counts every page as changed', async () => {
@@ -330,6 +341,14 @@ describe('what else reads a page’s place', () => {
     const labels = describeOps(ops, s, r.state, r.results).map((c) => c.label);
     expect(labels).toEqual(['Changed the address of page Lookbook', 'Moved Kitchens (now /work/kitchens/) and Spring (now /work/kitchens/spring/) with it; old addresses keep working']);
     expect(pagesTouched(ops, r.state)).toBe('all');
+    // Moved again later in the run: the report says where they ended up, and only promises what still holds.
+    const again = applyOperations(r.state, [{ type: 'page.update', pageId: 'pg_kitchens', route: '/rooms/' }]).state;
+    expect(describeOps(ops, s, again, r.results).at(-1)!.label).toBe('Moved Kitchens (now /rooms/) and Spring (now /rooms/spring/) with it; old addresses keep working');
+    // A page made later at one of the old addresses takes it over: the report no longer promises it.
+    const taken = applyOperations(s, [...ops, { type: 'page.create', title: 'Kitchens archive', route: '/lookbook/kitchens/' }]);
+    expect(describeOps(ops, s, taken.state, taken.results.slice(0, 1)).at(-1)!.label).toBe('Moved Kitchens (now /work/kitchens/) and Spring (now /work/kitchens/spring/) with it');
+    // A page with nothing inside it changes where links to it lead on other pages too.
+    expect(pagesTouched([{ type: 'page.update', pageId: 'pg_spring01', route: '/spring/' }], r.state)).toBe('all');
     expect(pagesTouched([{ type: 'page.update', pageId: 'pg_lookbook', seoTitle: 'Lookbook' }], r.state)).toEqual(new Set(['pg_lookbook']));
   });
 });
