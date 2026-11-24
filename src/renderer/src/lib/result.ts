@@ -4,6 +4,7 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { locateField } from '@engine/locate';
 import { resolveRef } from './model';
 import { pageShowing, partName } from '@shared/page-shell';
+import { editableDesign, requestComponentId } from './chatTarget';
 
 /** Checks that need attention, read from the wording of results stored before checks carried a status. */
 const ISSUE = /wider than the screen|overflows its box|(?<!no )horizontal overflow detected|issues? remains?|could(?: not|n['’]t) (?:run|check)|^stopped at /i;
@@ -85,7 +86,15 @@ export function continueContext(user: ChatMessage | undefined, state: ProjectSta
   const ctx = user.context;
   // Requests saved before messages carried a context were about the whole site.
   if (!ctx) return { ctx: { pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId]?.title ?? '', selection: null, selectionLabel: null, viewport } };
-  if (!ctx.pageId || !Object.hasOwn(state.pages, ctx.pageId)) return { error: `${ctx.pageTitle || 'That page'} is no longer in the site. ${choose}` };
+  const pageOk = !!ctx.pageId && Object.hasOwn(state.pages, ctx.pageId);
+  // A request about a component edited everywhere carries on with that component, wherever it was shown.
+  let page: Pick<ChatContext, 'pageId' | 'pageTitle'> | null = null;
+  const componentId = requestComponentId(ctx);
+  if (componentId) {
+    if (!editableDesign(state, componentId)) return { error: `${ctx.component?.name || ctx.selectionLabel || 'That component'} is no longer in the site. ${choose}` };
+    // The page only showed it, so another one does as well.
+    if (!pageOk) page = { pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId]?.title ?? '' };
+  } else if (!pageOk) return { error: `${ctx.pageTitle || 'That page'} is no longer in the site. ${choose}` };
   if (ctx.selection) {
     let found = false;
     try {
@@ -101,5 +110,5 @@ export function continueContext(user: ChatMessage | undefined, state: ProjectSta
     const name = user.images?.find((i) => i.assetId === gone[0])?.name;
     return { error: `${name ? `The image “${name}”` : 'An image attached to that request'} is no longer in Assets. Attach the images you want, then send "Continue".` };
   }
-  return { ctx: structuredClone(ctx) };
+  return { ctx: { ...structuredClone(ctx), ...page } };
 }

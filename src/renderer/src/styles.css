@@ -1388,6 +1388,8 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .chips .segmented button { min-width: 0; max-width: 220px; }
 .chips .segmented button svg { width: 12px; height: 12px; flex: none; }
 .chip svg { width: 11px; height: 11px; flex: none; }
+/* A component edited everywhere, in the plum of the editing band. */
+.chip.def { background: var(--plum-soft); color: var(--plum); font-weight: 600; }
 .chip button { width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); background: none; color: inherit; padding: 0; }
 .chip button:hover { background: var(--hover); }
 .send-btn { flex: none; width: 30px; height: 30px; border-radius: var(--r-sm); border: 0; display: grid; place-items: center; background: var(--accent-fill); color: var(--on-accent); }

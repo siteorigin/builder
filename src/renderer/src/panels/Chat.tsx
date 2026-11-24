@@ -1,11 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, FileText, Globe, History, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, FileText, Globe, History, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChatActivity, ChatChange, ChatContext, ChatImageRef, ChatMessage, FieldLocation } from '@shared/api';
 import { refKey } from '@shared/types';
 import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
-import { refLabel, resolveRef } from '../lib/model';
+import { chatContextFor, composerScope, retryView, targetOf } from '../lib/chatTarget';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId } from '../lib/result';
@@ -63,8 +63,6 @@ function summaryOf(r: NonNullable<ChatMessage['result']>) {
   return r.summary;
 }
 
-const targetOf = (ctx?: ChatContext | null) => (ctx ? (ctx.selectionLabel ? `${ctx.pageTitle} → ${ctx.selectionLabel}` : ctx.pageTitle) : '');
-
 function sizeToFit(ta: HTMLTextAreaElement | null) {
   // A hidden panel measures nothing; it is sized again when it is shown.
   if (!ta || !ta.offsetParent) return;
@@ -82,6 +80,7 @@ export function Chat() {
   const images = useStore(selectChatImages);
   const selection = useStore((s) => s.selection);
   const pageId = useStore((s) => s.pageId);
+  const definitionMode = useStore((s) => s.definitionMode);
   const snap = useStore((s) => s.snapshot);
   const viewport = useStore((s) => s.viewport);
   const ctxOn = useStore((s) => s.chatContextEnabled);
@@ -179,14 +178,17 @@ export function Chat() {
 
   if (!snap) return null;
   const st = snap.state;
-  const page = pageId ? st.pages[pageId] : null;
-  const selLabel = selection ? refLabel(st, selection) : null;
+  // What the next message is about: the page, or the component edited everywhere, and the element within it.
+  const scope = composerScope(st, { pageId, selection, definitionMode });
+  const { page, component } = scope;
+  const selLabel = scope.selectionLabel;
   const model = provider ? settings?.ai.models[provider.id] : undefined;
   const modelLabel = provider?.models.find((m) => m.id === model)?.label ?? model;
   const sel = selLabel?.toLowerCase();
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
-  // The starters are changes to make, so a question starts from an empty box.
-  const suggestions = !askMode && msgs.length === 0 && configured && conversation && !draft.trim() ? chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: ctxOn }) : [];
+  // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
+  // edited everywhere offers none.
+  const suggestions = !askMode && !component && msgs.length === 0 && configured && conversation && !draft.trim() ? chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: ctxOn }) : [];
   const openSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   const focusComposer = () => requestAnimationFrame(() => taRef.current?.focus());
 
@@ -219,16 +221,7 @@ export function Chat() {
     const conversationId = conversation.id;
     const opening = snap.workspaceKey;
     // Freeze the exact context at send time.
-    const ctx: ChatContext = context ?? {
-      pageId: ctxOn.page && page ? page.id : st.site.homePageId,
-      pageTitle: ctxOn.page && page ? page.title : st.pages[st.site.homePageId]?.title ?? '',
-      selection: ctxOn.selection && selection ? structuredClone(selection) : null,
-      selectionLabel: ctxOn.selection && selLabel ? selLabel : null,
-      viewport,
-      // The images go by asset ID only; the app checks they are still in Assets before anything is sent.
-      ...(images.length ? { assetIds: [...images] } : {}),
-      ...(askMode ? { mode: 'ask' as const } : {})
-    };
+    const ctx: ChatContext = context ?? chatContextFor(st, scope, { enabled: ctxOn, viewport, assetIds: images, ask: askMode });
     // Keep focus in the composer: the Send button is about to be disabled.
     taRef.current?.focus();
     setSending(true);
@@ -471,12 +464,19 @@ export function Chat() {
       )}
       {configured || asking ? (
         <div className="composer">
-          {(page || selLabel) && (
+          {(page || component || selLabel) && (
             <div className="chips" role="group" aria-label={askMode ? 'Your question is about' : 'Your next message applies to'}>
-              {page && (
-                <span className="chip" title={askMode ? 'The AI starts from the page you are viewing.' : 'The AI starts from the page you are viewing. Without a selection, it can also change other pages.'}>
-                  <FileText /> <span className="ellipsis">{page.title}</span>
+              {component ? (
+                // Editing a component everywhere: the request is about its design, never the page behind it.
+                <span className="chip def" title={askMode ? `The AI starts from ${component.name}, the component you are editing everywhere.` : `The AI changes ${component.name} everywhere it is used, and nothing else unless you allow it.`}>
+                  <Component /> <span className="ellipsis">{component.name}</span>
                 </span>
+              ) : (
+                page && (
+                  <span className="chip" title={askMode ? 'The AI starts from the page you are viewing.' : 'The AI starts from the page you are viewing. Without a selection, it can also change other pages.'}>
+                    <FileText /> <span className="ellipsis">{page.title}</span>
+                  </span>
+                )
               )}
               {selLabel && askMode && ctxOn.selection && (
                 // A question changes nothing, so the selection only says what it is about.
@@ -485,7 +485,8 @@ export function Chat() {
                 </span>
               )}
               {selLabel && !askMode && (
-                // What the next message may change: the selected element only, or anything on the site.
+                // What the next message may change: the selected element only, or anything on the site (the whole
+                // component, while it is edited everywhere).
                 <Segmented<'selection' | 'site'>
                   label="What the AI may change"
                   value={ctxOn.selection ? 'selection' : 'site'}
@@ -494,22 +495,32 @@ export function Chat() {
                     {
                       value: 'selection',
                       // A part of a component is scoped to the whole component placement (see agent/scope.ts).
-                      title: selection?.instancePath.length ? `Only the component containing ${selLabel}` : `Only ${selLabel}`,
+                      title: scope.selection?.instancePath.length ? `Only the component containing ${selLabel}` : `Only ${selLabel}`,
                       label: (
                         <>
                           <MousePointerClick /> <span className="ellipsis">{selLabel}</span>
                         </>
                       )
                     },
-                    {
-                      value: 'site',
-                      title: 'Whole site',
-                      label: (
-                        <>
-                          <Globe /> Whole site
-                        </>
-                      )
-                    }
+                    component
+                      ? {
+                          value: 'site',
+                          title: `All of ${component.name}, everywhere it is used`,
+                          label: (
+                            <>
+                              <Component /> Whole component
+                            </>
+                          )
+                        }
+                      : {
+                          value: 'site',
+                          title: 'Whole site',
+                          label: (
+                            <>
+                              <Globe /> Whole site
+                            </>
+                          )
+                        }
                   ]}
                 />
               )}
@@ -827,31 +838,26 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
     const i = conv.messages.findIndex((x) => x.id === m.id);
     const user = conv.messages[i - 1];
     if (user) {
-      // Retry with the original target: same page and same selection, not whatever is selected now.
-      // Both are checked against the project as it is now; a target that has since been deleted is
-      // dropped rather than restored, and the note below asks for a new one.
+      // Retry with the original target: same page, same component edited everywhere and same selection, not
+      // whatever is selected now. Each is checked against the project as it is now; a target that has since been
+      // deleted is dropped rather than restored, and the note below asks for a new one.
       const ctx = user.context;
-      const st = getState().snapshot?.state;
-      const pageOk = !!ctx?.pageId && !!st?.pages[ctx.pageId];
-      const selOk = (() => {
-        try {
-          return pageOk && !!ctx?.selection && !!st && !!resolveRef(st, ctx.selection).node;
-        } catch {
-          return false;
-        }
-      })();
+      const s = getState();
+      const st = s.snapshot?.state;
+      const view = st ? retryView(st, ctx, { pageId: s.pageId, definitionMode: s.definitionMode }) : null;
       setState({
         chatDrafts: withDraft(getState().chatDrafts, conv.id, user.text),
         chatImages: withImages(getState().chatImages, conv.id, originalImages),
-        ...(pageOk ? { pageId: ctx!.pageId } : {}),
-        selection: selOk ? ctx!.selection : null,
-        chatContextEnabled: { page: true, selection: selOk },
+        // Editing a component everywhere happens in Edit, never in Preview.
+        ...(view ? { ...(view.pageId ? { pageId: view.pageId } : {}), definitionMode: view.definitionMode, ...(view.definitionMode ? { mode: 'edit' as const } : {}) } : {}),
+        selection: view?.selection ?? null,
+        chatContextEnabled: { page: true, selection: !!view?.selection },
         // Tried again as it was sent: a question stays a question.
         chatMode: ctx?.mode === 'ask' ? 'ask' : 'edit'
       });
       // Kept with the draft it comes back with, so reopening the project cannot send it the other way.
       saveLocal({ chatMode: ctx?.mode === 'ask' ? 'ask' : 'edit' });
-      if ((ctx?.selection && !selOk) || (ctx?.pageId && !pageOk)) toast(`${ctx?.selectionLabel ?? ctx?.pageTitle ?? 'What this was about'} is no longer in the site. Choose what to change, then send again.`, 'info');
+      if (view?.missing) toast(`${view.missing} is no longer in the site. Choose what to change, then send again.`, 'info');
     }
     requestAnimationFrame(() => {
       const ta = document.querySelector<HTMLTextAreaElement>('.composer textarea');

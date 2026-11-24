@@ -71,12 +71,15 @@ export function toolCallReply(name: string, args: unknown, opts: { id?: string; 
 
 export { chunk as sseChunk };
 
+/** A reply worked out from the request it answers, for a step that needs something an earlier step returned. */
+export type MockResponder = (req: MockRequest) => MockReply;
+
 export class MockOpenAIServer {
   readonly requests: MockRequest[] = [];
   /** Requests whose client went away before the reply finished. */
   disconnects = 0;
   models: unknown = { object: 'list', data: [{ id: 'test-model', object: 'model' }] };
-  private replies: MockReply[] = [];
+  private replies: Array<MockReply | MockResponder> = [];
   private open = new Set<ServerResponse>();
   private server: Server;
   private port = 0;
@@ -95,7 +98,7 @@ export class MockOpenAIServer {
     return this;
   }
 
-  script(...replies: MockReply[]) {
+  script(...replies: Array<MockReply | MockResponder>) {
     this.replies.push(...replies);
     return this;
   }
@@ -110,13 +113,15 @@ export class MockOpenAIServer {
     const parts: Buffer[] = [];
     for await (const p of req) parts.push(p as Buffer);
     const text = Buffer.concat(parts).toString('utf8');
-    this.requests.push({ url: req.url ?? '', method: req.method ?? '', headers: req.headers, body: text ? JSON.parse(text) : {} });
+    const request: MockRequest = { url: req.url ?? '', method: req.method ?? '', headers: req.headers, body: text ? JSON.parse(text) : {} };
+    this.requests.push(request);
     if (req.method === 'GET' && req.url === '/v1/models') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(this.models));
       return;
     }
-    const reply = this.replies.shift();
+    const next = this.replies.shift();
+    const reply = typeof next === 'function' ? next(request) : next;
     if (!reply) {
       res.writeHead(500, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'No scripted reply left' } }));
