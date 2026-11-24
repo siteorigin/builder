@@ -20,6 +20,8 @@ export interface MockReply {
   keepOpen?: boolean;
   /** Wait this long before answering, as a model that takes a while to start would. */
   delayMs?: number;
+  /** Wait for this before answering: a reply held until the test lets it go. */
+  hold?: Promise<unknown>;
   /** After the last frame, keep sending this frame every `everyMs` until the client goes away: a reply that never ends. */
   endless?: { frame: unknown; everyMs: number };
 }
@@ -198,6 +200,7 @@ export class MockOpenAIServer {
       this.open.delete(res);
       if (!finished) this.disconnects++;
     });
+    if (reply.hold) await reply.hold;
     if (reply.delayMs) await new Promise((resolve) => setTimeout(resolve, reply.delayMs));
     if (res.destroyed) return;
     res.writeHead(200, { 'content-type': 'text/event-stream', ...reply.headers });

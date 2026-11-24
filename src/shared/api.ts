@@ -6,6 +6,7 @@ import type { ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPre
 import type { ComponentThumb } from './component-thumbs';
 import type { ThemePack } from '@catalogue/pack';
 import type { FontCoverage } from './font-scripts';
+import type { Recipient, TurnModel } from './turn-model';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
@@ -413,6 +414,11 @@ export interface ChatMessage {
   time: string;
   context?: ChatContext;
   runId?: string;
+  /**
+   * The provider and model that received this turn's request, fixed when the run started. Absent on user messages,
+   * on turns that never reached a model, and on turns stored before it existed; read through `readTurnModel`.
+   */
+  model?: TurnModel;
   activities?: ChatActivity[];
   result?: {
     status: RunStatus;
@@ -715,8 +721,11 @@ export interface BuilderApi {
     openConversation(id: string): Promise<Conversation>;
     /** `workspaceKey` is the opening of the project the user confirmed this in; main refuses any other. */
     clearHistory(workspaceKey?: string): Promise<Conversation>;
-    /** `conversationId` is the conversation the message was written in; main refuses it if another one is open. */
-    send(text: string, context: ChatContext, conversationId?: string): Promise<{ ok: boolean; runId?: string; message?: string }>;
+    /**
+     * `conversationId` is the conversation the message was written in; main refuses it if another one is open.
+     * `recipient` is the model the composer named for it: a run that would go to another one sends nothing.
+     */
+    send(text: string, context: ChatContext, conversationId?: string, recipient?: Recipient): Promise<{ ok: boolean; runId?: string; message?: string }>;
     /** Stop the AI. Given the request's ID, resolves once that request has ended and its changes are
      *  rolled back; `stopped` is false when it had already ended (or another request is running). */
     stop(): Promise<void>;

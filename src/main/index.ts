@@ -158,21 +158,24 @@ const orchestratorDeps = {
     if (!provider) return { error: 'Choose an AI provider in Settings to use the assistant.', repair: 'settings' };
     if (provider === 'local') {
       const epoch = localCheckEpoch();
-      const endpoint = await localEndpoint();
+      // The same reading of Settings as the provider: a model chosen meanwhile is the next request's. With none
+      // chosen, the server's first model takes the request, and the turn says so.
+      const endpoint = await localEndpoint(s);
+      const auto = !endpoint.model;
       // What the request learns about this server and model is what Chat and Settings show until something newer.
       const record = localCheckRecorder(endpoint, epoch);
       let used = endpoint.model;
       const opened = await openLocalAdapter(endpoint, { signal, onCheck: (check) => record(check, used) });
       if ('error' in opened) return opened.setup ? { error: opened.error, repair: 'settings' } : { error: opened.error };
       used = opened.model;
-      return { ...opened, provider };
+      return { ...opened, provider, ...(auto ? { auto: true } : {}) };
     }
     const key = await getKey(provider);
     if (!key) return { error: `Add your ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key in Settings to use the assistant.`, repair: 'key' };
     const model = s.models[provider];
     return { adapter: provider === 'openai' ? new OpenAIAdapter(key.key, model) : new AnthropicAdapter(key.key, model), model, provider };
   }
-} as { adapter: (signal?: AbortSignal) => Promise<{ adapter: import('@agent/types').AgentModelAdapter; model: string; provider: ProviderId } | { error: string; repair?: 'settings' | 'key' }> };
+} as { adapter: (signal?: AbortSignal) => Promise<{ adapter: import('@agent/types').AgentModelAdapter; model: string; provider: ProviderId; auto?: boolean } | { error: string; repair?: 'settings' | 'key' }> };
 
 const orchestrator = new Orchestrator({
   session: () => controller.session,
@@ -428,7 +431,7 @@ function registerIpc() {
     return readOnlyReason() ? (await orchestrator.loadConversations()).active : orchestrator.clearHistory();
   });
   // A question may be asked of a project another app is editing; the orchestrator decides (it writes nothing).
-  handle('ai:send', (text: string, ctx, conversationId?: string) => (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock) ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined)));
+  handle('ai:send', (text: string, ctx, conversationId?: string, recipient?: unknown) => (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock) ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined, recipient)));
   // With a request ID, stop exactly that request and answer once it has ended and its changes are rolled back.
   handle('ai:stop', (runId?: unknown) => (typeof runId === 'string' ? orchestrator.stopRun(runId) : orchestrator.stop()));
   handle('ai:answer', (runId: string, questionId: string, answer: string | { assetId: string }) => orchestrator.answer(runId, questionId, answer));

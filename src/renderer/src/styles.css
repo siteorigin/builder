@@ -2572,6 +2572,15 @@ iframe { color-scheme: light dark; }
 /* What the run may change wraps rather than clip; its full text is also on hover. */
 .run-target { font-size: 12px; color: var(--text-2); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 .run-strip:not(:has(.run-actions)) { padding-right: 10px; }
+/* The model the running turn went to, under what it may change. */
+.run-model { font-size: 11px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The model a turn went to, under the turn: quiet, and never cut by its result card. */
+.turn-model { display: flex; align-items: center; gap: 5px; min-width: 0; padding: 0 2px; font-size: 11px; color: var(--text-3); }
+.turn-model svg { width: 12px; height: 12px; flex: none; }
+.turn-model > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Before a message goes to a model that has not seen the recent messages of the conversation. */
+.switch-note { background: var(--panel-2); }
+.switch-note .link:disabled { color: var(--text-3); text-decoration: none; cursor: default; }
 .run-actions { flex: none; display: flex; gap: 6px; }
 .run-stop svg { width: 10px; height: 10px; }
 /* The waiting question below carries the accent ring; the strip only names the pause, so one box draws the eye.

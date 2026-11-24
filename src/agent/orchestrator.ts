@@ -20,6 +20,8 @@ import { applyContextBudget, contextVerdict, estimateRequestTokens } from './bud
 import { completenessNudge, describePage, findStubPages, missingPages, pageCreatesIn, rememberPage, savedPage, type MissingPage, type WantedPage } from './completeness';
 import { exampleSection, retrieveExamples } from './examples';
 import { changedComponents, introducedReusability, reusabilityNudge } from './reusability';
+import { modelInfo } from './models';
+import { readRecipient, replayedHistory, turnModelText, type Recipient } from '@shared/turn-model';
 
 /**
  * Budgets for one run. They are sized for building a whole multi-page site in one request; a run that
@@ -83,9 +85,10 @@ export interface OrchestratorDeps {
   session(): RunSession | null;
   /**
    * `signal` ends anything the factory asks a server while preparing, such as reading a local model's window. `repair`
-   * says where an error that stops the request before it starts is fixed.
+   * says where an error that stops the request before it starts is fixed. `auto`: Settings named no local model, so
+   * `model` is the one the server offered first.
    */
-  adapter(signal?: AbortSignal): Promise<{ adapter: AgentModelAdapter; model: string; provider: ProviderId } | { error: string; repair?: 'settings' | 'key' }>;
+  adapter(signal?: AbortSignal): Promise<{ adapter: AgentModelAdapter; model: string; provider: ProviderId; auto?: boolean } | { error: string; repair?: 'settings' | 'key' }>;
   emit(e: AiEvent): void;
   compileAll(): Promise<Diagnostic[]>;
   inspectLayout(pageId: string, width: number): Promise<unknown>;
@@ -108,6 +111,10 @@ interface ActiveRun {
    * be ending then, and nothing it sends may show in the next opening's thread, not even the same one read again.
    */
   conversationId: string;
+  /** The model has answered at least once: until then, the turn has not been handled by the model it names. */
+  reached: boolean;
+  /** The model the composer named for this message; a run that would go to another one sends nothing. */
+  recipient: Recipient | null;
 }
 
 /** The longest answer replayed to later requests in full. */
@@ -508,7 +515,7 @@ export class Orchestrator {
   }
 
   /** `conversationId` is the conversation the message was written in; it is sent only if that one is still open. */
-  async send(text: string, context: ChatContext, conversationId?: string): Promise<{ ok: boolean; runId?: string; message?: string }> {
+  async send(text: string, context: ChatContext, conversationId?: string, recipient?: unknown): Promise<{ ok: boolean; runId?: string; message?: string }> {
     if (this.run) return { ok: false, message: 'The AI is already working on a request.' };
     const clearing = { ok: false, message: 'The conversation history is being cleared. Send your message again in a moment.' };
     if (this.clearing) return clearing;
@@ -539,6 +546,9 @@ export class Orchestrator {
       if (context.selection && !Object.hasOwn(def.tree.nodes, context.selection.instancePath[0] ?? context.selection.nodeId))
         return { ok: false, message: `${context.selectionLabel || 'The selected element'} is no longer in ${def.name}. Choose what to change, then send again.` };
     }
+    // The model the message was written for, as the composer named it; one that cannot be read is not guessed at.
+    const intended = recipient === undefined ? null : readRecipient(recipient);
+    if (recipient !== undefined && !intended) return { ok: false, message: 'Your message could not be read. Try sending it again.' };
     // Attached images are checked against the project as it is now, before the request joins the conversation.
     const attached = attachedImages(session.state, context.assetIds);
     if ('error' in attached) return { ok: false, message: attached.error };
@@ -549,14 +559,15 @@ export class Orchestrator {
     else delete stored.assetIds;
     const userMsg: ChatMessage = { id: newId('m'), role: 'user', text: text.trim(), time: new Date().toISOString(), context: stored, ...(attached.images.length ? { images: attached.images } : {}) };
     const assistant: ChatMessage = { id: newId('m'), role: 'assistant', text: '', time: new Date().toISOString(), runId, activities: [] };
-    const history = conv.messages.slice(-12);
+    const history = replayedHistory(conv.messages);
     // The request a "continue" carries on with, read from the whole conversation: a long run of "continue"
     // messages can push it out of the history the model sees.
     // A saved request whose text cannot be read is not one to carry on with.
     const request = [...conv.messages].reverse().find((m) => m.role === 'user' && typeof m.text === 'string' && !CONTINUE.test(m.text))?.text;
     conv.messages.push(userMsg, assistant);
     if (conv.title === 'New conversation') conv.title = text.trim().slice(0, 60);
-    this.run = { id: runId, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id };
+    const active: ActiveRun = { id: runId, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id, reached: false, recipient: intended };
+    this.run = active;
     this.deps.onBusyChange(true);
     this.emitMessage(userMsg, runId);
     this.emitMessage(assistant, runId);
@@ -565,6 +576,7 @@ export class Orchestrator {
       .finally(async () => {
         // A request that ended without a result (its rollback threw) still ends: nothing may wait on it.
         if (!assistant.result) {
+          if (!active.reached && assistant.model) assistant.model.unanswered = true;
           assistant.result = { status: 'failed', summary: 'Something went wrong while ending this request. Check the project before going on.', changes: [], validation: [], canUndo: false };
           this.setStatus('failed');
           this.emitMessage(assistant, runId);
@@ -652,6 +664,9 @@ export class Orchestrator {
     const locations = new Map<string, FieldLocation>();
     const finish = async (status: RunStatus, summary: string, extra: Partial<NonNullable<ChatMessage['result']>> = {}) => {
       const checks = extra.checks ?? [];
+      // A turn its model never answered (stopped before a reply, refused, never delivered) still says which model it
+      // was for, and that it went unanswered: that model may not have its messages, so the next one still warns.
+      if (!run.reached && msg.model) msg.model.unanswered = true;
       msg.result = {
         status,
         summary,
@@ -684,6 +699,20 @@ export class Orchestrator {
       await finish('failed', ask ? ad.error : `${ad.error} ${UNCHANGED}`, { error: ad.error, ...(ad.repair ? { repair: ad.repair } : {}) });
       return;
     }
+    const label = modelInfo(ad.provider, ad.model).label;
+    // The message goes only where the composer said it would. Settings may have changed since, or the local server
+    // may offer another model first now: then nothing is sent, and the composer shows where the next one goes.
+    const intended = run.recipient;
+    if (intended && (intended.provider !== ad.provider || (intended.model !== null && intended.model !== ad.model))) {
+      const meant = turnModelText({ provider: intended.provider, label: intended.model === null ? "server's model" : modelInfo(intended.provider, intended.model).label });
+      const why = `Nothing was sent. This message was for ${meant}, but it would now go to ${turnModelText({ provider: ad.provider, label })}. Check where your next message goes, then send it again.`;
+      await finish('failed', why, { error: 'recipient changed' });
+      return;
+    }
+    // The turn names the model it goes to, fixed now: Settings may choose another model for the next message while
+    // this one runs, and the transcript keeps saying which model each turn was for.
+    msg.model = { provider: ad.provider, id: ad.model, label, ...(ad.auto ? { auto: true } : {}) };
+    this.emitMessage(msg, runId);
     /** Working time the run may use, not counting time spent waiting for the user's answers. */
     const limitMs = ad.provider === 'local' ? LIMITS.localActiveMs : LIMITS.activeMs;
     const timeLimit = `the ${Math.round(limitMs / 60_000)}-minute time limit`;
@@ -1190,6 +1219,8 @@ export class Orchestrator {
             let err: Extract<ModelEvent, { type: 'error' }> | null = null;
             // Reasoning models spend part of the output budget thinking, so the adapter's full budget is used.
             for await (const ev of ad.adapter.streamTurn({ model: ad.model, system, items, tools, maxOutputTokens: budget.maxOutputTokens }, turn.signal)) {
+              // Anything but an error is the model answering, so it has this turn's request.
+              if (ev.type !== 'error') run.reached = true;
               if (signal.aborted) throw new Error('Cancelled');
               if (expired) break;
               if (ev.type === 'text') {

@@ -1,7 +1,10 @@
 // Local model settings in the real app (issue #122): Local is chosen in Settings, a server preset is picked, the
 // server's models are discovered and one is chosen, the connection is tested with a short chat request, and a chat
-// edit runs through that model and lands in the project. Then (issue #83) a second server: switching to it moves both
-// the model menu and the requests' `model` to its own model, and switching back restores the first server's choice.
+// edit runs through that model and lands in the project. Each turn names the model it went to (issue #86): switching
+// models while a reply is held leaves that turn's model alone, the composer says what history the next model gets,
+// Start fresh leaves it behind, and a message goes only to the model the composer named. Then (issue #83) a second
+// server: switching to it moves both the model menu and the requests' `model` to its own model, and switching back
+// restores the first server's choice.
 // With that server stopped, Chat says so instead of offering starters, and a request fails saying nothing changed,
 // with AI settings and Try again on its card. Restarted with a model it lists but cannot chat with, Test connection
 // fails it; once the model answers, Try again sends the same request and it lands. The servers are OpenAI-compatible
@@ -151,6 +154,11 @@ try {
     assert.equal(p.body.model, 'second-model');
   }
   assert.match(JSON.stringify(edits[1].body.messages), /Result of update_site_brand/, 'the tool result went back to the model');
+  // Each turn names its model, as a screen reader reads it too.
+  const turnModel = () => win.locator('.msg-ai .turn-model');
+  const said = (texts) => texts.map((t) => t.replace(/\s+/g, ' ').trim());
+  const turnModels = async () => said(await turnModel().allTextContents());
+  await eventually(async () => assert.deepEqual(await turnModels(), ['Handled by Local model · second-model']));
 
   const openAi = async () => {
     await win.locator('[aria-label="Settings"]').click();
@@ -167,6 +175,116 @@ try {
     await eventually(async () => assert.equal((await settings()).ai.local.baseURL, url));
   };
   const modelOptions = () => modelSelect.locator('option').allInnerTexts();
+
+  // Issue #86: the model a turn went to is fixed on that turn, apart from the one Settings choose for the next message.
+  step('the model is switched in Settings while a reply is held');
+  const chooseLocalModel = async (id) => {
+    await win.locator('[aria-label="Settings"]').click();
+    await dialog.getByRole('tab', { name: 'AI assistant' }).click();
+    await modelSelect.selectOption(id);
+    await eventually(async () => assert.equal((await settings()).ai.models.local, id));
+    await dialog.locator('button.btn', { hasText: /^Close$/ }).click();
+    await dialog.waitFor({ state: 'detached' });
+  };
+  let release;
+  server.script({ ...envelopeReply('finish', { message: 'Noted cobalt.' }), hold: new Promise((resolve) => (release = resolve)) });
+  const heldCards = await win.locator('.result-card').count();
+  const sentBefore = posts().length;
+  await message.fill('Remember cobalt as the accent colour');
+  await message.press('Enter');
+  const strip = win.locator('.run-strip');
+  await eventually(async () => assert.ok(posts().length > sentBefore, 'the held request reached the server'));
+  const runModel = async () => said([(await strip.locator('.run-model').textContent()) ?? ''])[0];
+  await eventually(async () => assert.equal(await runModel(), 'Sent to Local model · second-model'));
+  await chooseLocalModel('first-model');
+  const composerModel = win.locator('.composer-model');
+  await win.getByRole('button', { name: 'Next: first-model, Local model. Change AI provider or model', exact: true }).waitFor();
+  assert.equal((await composerModel.innerText()).trim(), 'Next: first-model');
+  assert.equal(await runModel(), 'Sent to Local model · second-model', 'the running turn still names the model it went to');
+  assert.match(await strip.locator('.run-phase').innerText(), /Working/);
+  const notice = win.locator('.switch-note');
+  await eventually(async () => assert.equal(await notice.innerText(), 'Your next message goes to Local model · first-model with recent messages from your conversation with Local model · second-model. Start fresh'));
+  assert.equal(await notice.getByRole('button', { name: 'Start fresh' }).isDisabled(), true, 'a new conversation waits for the running request');
+  release();
+  await eventually(async () => assert.ok((await win.locator('.result-card').count()) > heldCards, 'the held run ends'), 60000, 200);
+  await win.locator('.msg-ai').last().getByText('Noted cobalt.').waitFor();
+  assert.equal(posts().at(-1).body.model, 'second-model', 'the held request was sent to the model chosen when it started');
+  assert.deepEqual(await turnModels(), ['Handled by Local model · second-model', 'Handled by Local model · second-model']);
+  // Once nothing runs, the selector shows the model, and says out loud that it is for the next message.
+  await win.getByRole('button', { name: 'Next message: first-model, Local model. Change AI provider or model', exact: true }).waitFor();
+  assert.equal((await composerModel.innerText()).trim(), 'first-model');
+
+  step('Start fresh takes the unsent message to a new conversation without the earlier ones');
+  await notice.waitFor();
+  await message.fill('A fresh question for first-model');
+  await notice.getByRole('button', { name: 'Start fresh' }).click();
+  await eventually(async () => assert.equal(await win.locator('.chat-title').innerText(), 'New conversation'));
+  assert.equal(await message.inputValue(), 'A fresh question for first-model', 'the unsent message came along');
+  assert.equal(await win.locator('.msg-ai').count(), 0);
+  assert.equal(await notice.count(), 0, 'a new conversation carries nothing to warn about');
+  server.script(envelopeReply('finish', { message: 'Fresh answer.' }));
+  const freshSent = posts().length;
+  await message.press('Enter');
+  await win.locator('.msg-ai').last().getByText('Fresh answer.').waitFor({ timeout: 60000 });
+  assert.equal(posts().length, freshSent + 1);
+  assert.equal(posts().at(-1).body.model, 'first-model');
+  const freshBody = JSON.stringify(posts().at(-1).body.messages);
+  assert.match(freshBody, /A fresh question for first-model/);
+  // The site is now called Harbor Coffee, which every request's project summary says; the conversation's own words are not sent.
+  assert.doesNotMatch(freshBody, /Remember cobalt|Noted cobalt|Rename the site/, 'nothing from the earlier conversation went with it');
+  assert.deepEqual(await turnModels(), ['Handled by Local model · first-model']);
+
+  step('the earlier conversation, reopened, still names the model of each turn');
+  await win.getByRole('button', { name: 'Earlier conversations' }).click();
+  await win.locator('.menu [role^="menuitem"]', { hasText: 'Rename the site to Harbor Coffee' }).click();
+  await eventually(async () => assert.equal(await win.locator('.chat-title').innerText(), 'Rename the site to Harbor Coffee'));
+  assert.deepEqual(await turnModels(), ['Handled by Local model · second-model', 'Handled by Local model · second-model']);
+  await notice.filter({ hasText: 'from your conversation with Local model · second-model.' }).waitFor();
+
+  step('a message sent anyway goes to the new model with the recent messages, as the notice said');
+  server.script(envelopeReply('finish', { message: 'Got it from first-model.' }));
+  const followSent = posts().length;
+  await message.fill('A follow-up for first-model');
+  await message.press('Enter');
+  await win.locator('.msg-ai').last().getByText('Got it from first-model.').waitFor({ timeout: 60000 });
+  assert.equal(posts().length, followSent + 1);
+  assert.equal(posts().at(-1).body.model, 'first-model');
+  assert.match(JSON.stringify(posts().at(-1).body.messages), /Remember cobalt/, 'the earlier note went with it');
+  assert.deepEqual(await turnModels(), ['Handled by Local model · second-model', 'Handled by Local model · second-model', 'Handled by Local model · first-model']);
+  await eventually(async () => assert.equal(await notice.count(), 0, 'first-model has now seen the conversation'));
+
+  step('switching this conversation to a hosted provider warns that its messages leave this computer');
+  await win.evaluate(() => window.builder.ai.setKey('openai', `sk-proj-${'e2eNotARealKey0123456789'.repeat(2)}`));
+  await win.locator('[aria-label="Settings"]').click();
+  await dialog.getByRole('tab', { name: 'AI assistant' }).click();
+  await dialog.getByRole('radio', { name: 'OpenAI' }).click();
+  await eventually(async () => assert.equal((await settings()).ai.provider, 'openai'));
+  await dialog.locator('button.btn', { hasText: /^Close$/ }).click();
+  await dialog.waitFor({ state: 'detached' });
+  await eventually(async () => assert.equal(await notice.innerText(), 'Your next message goes to OpenAI · GPT-6.2 Sol with recent messages from your conversation with Local model · first-model and Local model · second-model. Those messages leave this computer. Start fresh'));
+  assert.match((await notice.getAttribute('class')) ?? '', /\bdanger\b/);
+
+  step('a message goes only to the model the composer named, even if Settings changed underneath');
+  // Settings now name the local server in the main process, while the composer still says OpenAI.
+  await win.evaluate(() => window.builder.app.setSettings({ ai: { provider: 'local' } }));
+  const quietCards = await win.locator('.result-card').count();
+  const quietSent = posts().length;
+  await message.fill('Meant for OpenAI only');
+  await message.press('Enter');
+  await eventually(async () => assert.ok((await win.locator('.result-card').count()) > quietCards, 'the turn ends'), 60000, 200);
+  await win.locator('.result-card').last().getByText('Nothing was sent. This message was for OpenAI · GPT-6.2 Sol, but it would now go to Local model · first-model.', { exact: false }).waitFor();
+  assert.match((await win.locator('.result-card').last().getAttribute('class')) ?? '', /\bfailed\b/);
+  assert.equal(posts().length, quietSent, 'nothing reached the local server');
+
+  step("back on Local, with the first server's model chosen again, for the servers that follow");
+  // The composer still names OpenAI (Settings changed underneath it), so Local is chosen where the author would.
+  await openAi();
+  await dialog.getByRole('radio', { name: 'Local model' }).click();
+  await eventually(async () => assert.equal((await settings()).ai.provider, 'local'));
+  await eventually(async () => assert.deepEqual(await modelOptions(), ["Use the server's model", 'first-model', 'second-model']), 15000);
+  await modelSelect.selectOption('second-model');
+  await eventually(async () => assert.equal((await settings()).ai.models.local, 'second-model'));
+  await closeSettings();
 
   step('a second server: the model menu and the requests follow it');
   await openAi();
