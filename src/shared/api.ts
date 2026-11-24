@@ -326,12 +326,18 @@ export interface StorageInfo {
 export type ExportFormat = 'folder' | 'zip';
 
 /**
- * Where the author fixes something an export note or Project health names: a placed contact form's settings (the
- * setting is found when it is opened, since the form's service may have changed since), or a field of Site details.
+ * Where the author fixes something an export note, Project health or an SEO finding names: a placed contact form's
+ * settings (the setting is found when it is opened, since the form's service may have changed since), a field of Site
+ * details, a field of a page's Search & sharing settings, a field of a post (its text, at a picture when `picture`
+ * numbers one as the writer does, from 1), or an element of a page, the shared header or footer, or a collection's
+ * layout (shown on `entryId`'s page).
  */
 export type EditorDestination =
   | { kind: 'form'; owner: OwnerRef; nodeId: string; setting: 'connection' | 'fieldKeys' | 'fieldChoices' | 'formName'; itemId?: string }
-  | { kind: 'site'; field: 'baseUrl' | 'favicon' | 'socialImage' };
+  | { kind: 'site'; field: 'baseUrl' | 'favicon' | 'socialImage' }
+  | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'socialImage' }
+  | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'body'; picture?: number }
+  | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string };
 
 /** One note about an export, in the order the export said it, with where to fix what it describes when it can be fixed. */
 export interface ExportNote {

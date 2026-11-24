@@ -3,7 +3,7 @@
  * writes these into the page's `<head>` and the Inspector's Search & sharing preview shows them, both through
  * `pageSharing`, so what the author reviews is what the exported site carries.
  */
-import type { AssetRecord, PageDoc, ProjectState } from './types';
+import type { AssetRecord, PageDoc, PageSeo, ProjectState } from './types';
 
 /** Whose choice a page's sharing image is: its own, the site's, or nobody's yet. */
 export type SharingImageSource = 'page' | 'site' | 'none';
@@ -31,12 +31,14 @@ export function defaultPageTitle(state: ProjectState, page: Pick<PageDoc, 'id' |
 export function pageSharing(state: ProjectState, page: PageDoc): PageSharing {
   const site = state.site;
   // An empty ID is no choice: the engine clears a page's image by deleting it, and a hand-edited "" does the same.
-  const own = page.seo.socialImage || undefined;
+  // A page stored without search and sharing settings (written by hand) has none of its own.
+  const seo: PageSeo = page.seo && typeof page.seo === 'object' ? page.seo : {};
+  const own = seo.socialImage || undefined;
   const imageId = own ?? (site.socialImage || null);
   const found = imageId && Object.hasOwn(state.assets.assets, imageId) ? state.assets.assets[imageId] : undefined;
   return {
-    title: page.seo.title || defaultPageTitle(state, page),
-    description: page.seo.description || site.description,
+    title: seo.title || defaultPageTitle(state, page),
+    description: seo.description || site.description,
     imageId,
     image: found?.kind === 'image' ? found : undefined,
     // A page's own choice stands even when its image has gone from the library: the page is not quietly given the site's.

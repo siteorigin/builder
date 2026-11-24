@@ -1,11 +1,12 @@
 import type { EditorDestination } from '@shared/api';
-import type { ElementRef } from '@shared/types';
+import type { ElementRef, ProjectState } from '@shared/types';
 import { getState, inspectorFocusRequest, setState, toast } from '../store';
 import { openSection } from '../components/ui';
 import { pageShowing } from '@shared/page-shell';
 import { siteEntries } from '@generator/index';
 import { openComponentStudio, openLayout, openPost, openSiteStyles, selectPage, setMode } from './actions';
 import { formDestinationField } from './destinations';
+import { treeFor } from './model';
 
 /** The control each Site details field is reached by (see SiteStyles): a site image's card, by its first button. */
 const SITE_FIELDS: Record<Extract<EditorDestination, { kind: 'site' }>['field'], string> = {
@@ -14,8 +15,16 @@ const SITE_FIELDS: Record<Extract<EditorDestination, { kind: 'site' }>['field'],
   socialImage: '#site-social-image button'
 };
 
+/** The control each Search & sharing field of a page is reached by (see the page Inspector). */
+const PAGE_SEO_FIELDS: Record<Extract<EditorDestination, { kind: 'pageSeo' }>['field'], string> = {
+  title: '#page-seo-title',
+  description: '#page-seo-description',
+  noindex: '#page-seo-noindex',
+  socialImage: '[data-seo-field="socialImage"] button'
+};
+
 /**
- * Take the author to where a Project health finding or an export note is fixed, closing the dialog that named it.
+ * Take the author to where a Project health finding, an SEO finding or an export note is fixed, closing the dialog that named it.
  * A contact form is selected where it is (its page, a page showing the shared header or footer, its collection's
  * layout, or its component in Component Studio) with Content open and the setting it needs focused; a site setting
  * opens Site styles with Site details expanded and its field focused. A form that has gone since is said, and nothing
@@ -32,6 +41,24 @@ export function openEditorDestination(dest: EditorDestination) {
     requestAnimationFrame(() => openSection('site-settings', { focus: SITE_FIELDS[dest.field] }));
     return;
   }
+  if (dest.kind === 'pageSeo') {
+    if (!Object.hasOwn(snap.state.pages, dest.pageId)) return toast('That page is no longer on the site.', 'info');
+    if (s.mode !== 'edit') setMode('edit');
+    // The page itself is selected, so the Inspector shows its settings, with Search & sharing opened at the field.
+    selectPage(dest.pageId, null);
+    setState({ modal: null, rightTab: 'inspect', dockOpen: true });
+    return revealWhenShown('page-seo', PAGE_SEO_FIELDS[dest.field]);
+  }
+  if (dest.kind === 'entry') {
+    const collection = Object.hasOwn(snap.state.collections ?? {}, dest.collectionId) ? snap.state.collections[dest.collectionId] : undefined;
+    if (!collection || !Object.hasOwn(collection.entries, dest.entryId)) return toast('That post is no longer on the site.', 'info');
+    // The writer shows the post, at the picture when one is named; its title or excerpt is focused once it shows.
+    const writer = dest.field !== 'body' && Object.hasOwn(POST_FIELDS, dest.field) ? POST_FIELDS[dest.field] : undefined;
+    return void openPost(dest.collectionId, dest.entryId, dest.field === 'body' ? dest.picture : undefined).then(() => {
+      if (writer && getState().post?.entryId === dest.entryId) revealInWriter(writer);
+    });
+  }
+  if (dest.kind === 'element') return showElement(snap.state, dest);
   const field = formDestinationField(snap.state, dest);
   if (!field) return toast('That form is no longer on the site.', 'info');
   const { owner, nodeId } = dest;
@@ -61,6 +88,35 @@ export function openEditorDestination(dest: EditorDestination) {
   // The Inspector of the form takes the request: it opens Content (and a field's row) and focuses the setting once it shows.
   const at = field.itemId ? { itemId: field.itemId, field: field.field } : {};
   setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, inspectorFocus: inspectorFocusRequest({ opening: snap.workspaceKey, owner, nodeId, prop: field.prop, ...at, label: field.label }) });
+}
+
+/**
+ * Select an element where it is: its page, a page showing the shared header or footer, or its collection's layout
+ * (on the entry named, else the first). One no longer there is said, and nothing moves.
+ */
+function showElement(state: ProjectState, dest: Extract<EditorDestination, { kind: 'element' }>) {
+  const s = getState();
+  const { owner, nodeId } = dest;
+  const tree = treeFor(state, owner);
+  if (!tree || !Object.hasOwn(tree.nodes, nodeId)) return toast('That element is no longer on the site.', 'info');
+  const ref: ElementRef = { owner, instancePath: [], nodeId };
+  if (s.mode !== 'edit') setMode('edit');
+  if (owner.kind === 'page') selectPage(owner.id, ref);
+  else if (owner.kind === 'template') openLayout(owner.id, dest.entryId);
+  else if (owner.kind === 'component') {
+    if (!openComponentStudio(owner.id)) return toast('That element is in a component that can no longer be edited here.', 'info');
+  } else {
+    // A page showing the shared part, else a post's page, else a collection's layout, whose index shows it too.
+    const pageId = pageShowing(state, owner.id, s.definitionMode?.returnPageId ?? s.pageId);
+    const entry = pageId ? undefined : siteEntries(state)[0];
+    const collectionId = pageId || entry ? undefined : Object.keys(state.collections ?? {}).sort()[0];
+    if (pageId) selectPage(pageId, ref);
+    else if (entry) openLayout(entry.collection.settings.id, entry.entry.id);
+    else if (collectionId) openLayout(collectionId);
+    else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
+  }
+  // Opened from the post writer, Layers takes its place, so the canvas shows the element where it is.
+  setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, ...(getState().leftTab === 'posts' ? { leftTab: 'layers' as const } : {}) });
 }
 
 /** Frames to wait for the Inspector of a new selection (or the post writer) to show a control, before giving up quietly. */

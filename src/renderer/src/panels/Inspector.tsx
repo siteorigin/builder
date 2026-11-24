@@ -2612,13 +2612,13 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
       <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(page)}>
         <SharingPreview state={state} page={page} />
         <Field label="Browser title" hint={`Leave empty to use “${isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.`}>
-          <DraftInput limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
+          <DraftInput id="page-seo-title" limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
         </Field>
         <Field label="Description" hint="Shown by search engines. About 150 characters.">
-          <DraftInput multiline limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v }, 'Change page description')} />
+          <DraftInput id="page-seo-description" multiline limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v }, 'Change page description')} />
         </Field>
         {/* The page's own choice, or the site's while it has none: the picker shows both, and Use the site’s image returns to it. */}
-        <div className="col" style={{ gap: 4 }}>
+        <div className="col" style={{ gap: 4 }} data-seo-field="socialImage">
           <ImageEditor
             title="Sharing image"
             value={{ assetId: page.seo.socialImage || null, alt: '' }}
@@ -2632,6 +2632,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           </button>
         </div>
         <SwitchRow
+          id="page-seo-noindex"
           checked={!!page.seo.noindex}
           onChange={(v) => upd({ noindex: v })}
           label="Hide from search engines"

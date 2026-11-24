@@ -709,6 +709,12 @@ export interface PageSeo {
   searchHidden?: boolean;
 }
 
+/** A collection entry's search settings, read through generator/seo-metadata. No edit sets them yet. */
+export interface EntrySeo {
+  /** Left out of the site's own search, whatever search engines are told, as a page's switch does. */
+  searchHidden?: boolean;
+}
+
 export interface PageDoc extends NodeTree {
   schemaVersion: number;
   id: string;
@@ -925,6 +931,8 @@ export interface EntryDoc {
   excerpt?: string;
   /** A library image's asset ID. */
   featuredImage?: string;
+  /** Search settings. Absent on every entry stored before they existed. */
+  seo?: EntrySeo;
   /** Assigned term IDs, by taxonomy ID. */
   terms: Record<string, string[]>;
   /** Custom field values by field name. A field left out shows its default. */

@@ -680,8 +680,10 @@ export function Switch({ checked, onChange, label, id, labelledBy, describedBy }
 }
 
 /** A switch with its visible label and optional hint, all clickable and wired together. */
-export function SwitchRow({ checked, onChange, label, hint }: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode }) {
-  const id = useId();
+export function SwitchRow({ checked, onChange, label, hint, id: explicitId }: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode; id?: string }) {
+  const generated = useId();
+  // A switch a destination focuses has an ID of its own (see open-destination).
+  const id = explicitId ?? generated;
   return (
     <div className="switch-row">
       <div className="grow">

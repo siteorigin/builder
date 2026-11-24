@@ -101,8 +101,18 @@ function sendsNot(def: ComponentDefinition, props: () => Record<string, unknown>
 
 /** What a destination's button says. */
 export function destinationLabel(dest: EditorDestination): string {
-  if (dest.kind === 'form') return 'Go to form';
-  return dest.field === 'baseUrl' ? 'Go to Public URL' : dest.field === 'favicon' ? 'Go to site icon' : 'Go to sharing image';
+  switch (dest.kind) {
+    case 'form':
+      return 'Go to form';
+    case 'site':
+      return dest.field === 'baseUrl' ? 'Go to Public URL' : dest.field === 'favicon' ? 'Go to site icon' : 'Go to sharing image';
+    case 'pageSeo':
+      return 'Go to Search & sharing';
+    case 'entry':
+      return dest.field === 'body' && dest.picture ? 'Go to picture' : 'Open post';
+    case 'element':
+      return 'Show on page';
+  }
 }
 
 /**
@@ -116,6 +126,8 @@ export function noteState(state: ProjectState, note: ExportNote, forms: ExportNo
   const dest = note.destination;
   if (!dest) return null;
   if (dest.kind === 'site') return dest.field !== 'baseUrl' ? null : publicUrl(state.site) ? 'fixed' : 'open';
+  // Only an SEO finding leads to a page's settings, a post or an element; an export note never does.
+  if (dest.kind !== 'form') return null;
   const { owner, nodeId } = dest;
   // Off the website first: a form on a page made a draft since is not one visitors can send, connected or not.
   const shown = (trees ?? websiteTrees(publishedState(state))).find((t) => t.owner.kind === owner.kind && t.owner.id === owner.id);
