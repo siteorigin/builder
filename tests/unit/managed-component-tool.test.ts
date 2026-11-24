@@ -283,6 +283,21 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     expect(s.state).toEqual(before);
   });
 
+  it('refuses a name every object already has as a key, by its path, instead of failing on it', async () => {
+    const { call, applies } = await session();
+    const args = pricing();
+    args.nodes.push({ kind: 'divider', id: 'constructor' } as never);
+    (args.nodes[11] as { children: string[] }).children.push('constructor');
+    args.parts.push({ id: '__proto__', nodeId: 'card', label: 'Card' });
+    args.slots[0].name = 'toString';
+    (args.properties[3] as { fields: Array<{ name: string }> }).fields[0].name = 'hasOwnProperty';
+    args.variantAxes[0].options[1].styles!.push({ nodeId: 'constructor', property: 'color', value: tok('color.brand') });
+    const out = await call(args);
+    expect(out.ok).toBe(false);
+    expect(fields(out.content)).toEqual(expect.arrayContaining(['nodes[14].id', 'parts[2].id', 'slots[0].name', 'properties[3].fields[0].name', 'variantAxes[0].options[1].styles[2].nodeId']));
+    expect(applies()).toBe(0);
+  });
+
   it('names a wrong shape by its path, and a property whose default does not fit it', async () => {
     const { call } = await session();
     const shape = pricing();

@@ -18,7 +18,7 @@ import { projectDefinitionId } from '@shared/component-ids';
 import { normalizeRoute } from '@shared/routes';
 import { applyOperations } from '@engine/apply';
 import type { EngineError } from '@engine/tree';
-import { acceptedTypes, checkPropName, normalizePropSchema, type BindField } from '@engine/schema';
+import { acceptedTypes, checkPropName, isProtoKey, normalizePropSchema, type BindField } from '@engine/schema';
 import { normalizeLink } from '@engine/values';
 import { fieldError, type FieldIssue, type MacroMemory } from './macros';
 import type { JsonSchema } from './propschema';
@@ -340,6 +340,13 @@ const BINDABLE: Partial<Record<NodeArgs['kind'], BindField[]>> = {
   icon: ['icon', 'ariaLabel']
 };
 
+/** A name used as a key that every object already has (constructor, __proto__): refused, as the engine refuses it. */
+function reservedKey(key: string, field: string, issues: FieldIssue[]): boolean {
+  if (!isProtoKey(key)) return false;
+  issues.push({ field, message: `"${key}" is a reserved name. Choose another` });
+  return true;
+}
+
 const isBindingValue = (v: unknown): v is { $prop: string; field?: string } | { $item: string } => isRecord(v) && (typeof v.$prop === 'string' || typeof v.$item === 'string');
 
 /** A page by its ID or its route. */
@@ -380,6 +387,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   const byId = new Map<string, number>();
   nodes.forEach((n, i) => {
     if (!NODE_ID_RE.test(n.id)) issues.push({ field: `nodes[${i}].id`, message: 'use a letter, then letters, numbers, - or _ (up to 64)' });
+    else if (reservedKey(n.id, `nodes[${i}].id`, issues)) return;
     else if (byId.has(n.id)) issues.push({ field: `nodes[${i}].id`, message: `"${n.id}" is already the ID of nodes[${byId.get(n.id)}]. Give each node an ID of its own` });
     else byId.set(n.id, i);
   });
@@ -491,6 +499,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   const parts: Record<string, unknown> = {};
   (args.parts ?? []).forEach((p, i) => {
     const at = `parts[${i}]`;
+    if (reservedKey(p.id, `${at}.id`, issues)) return;
     if (Object.hasOwn(parts, p.id)) return issues.push({ field: `${at}.id`, message: `"${p.id}" is listed twice` });
     if (!byId.has(p.nodeId)) issues.push({ field: `${at}.nodeId`, message: `"${p.nodeId}" is not the id of any node` });
     const bad = (p.styleControls ?? []).filter((s) => !Object.hasOwn(STYLE_PROP_MAP, s));
@@ -500,6 +509,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   const slots: Record<string, unknown> = {};
   (args.slots ?? []).forEach((s, i) => {
     const at = `slots[${i}]`;
+    if (reservedKey(s.name, `${at}.name`, issues)) return;
     if (Object.hasOwn(slots, s.name)) return issues.push({ field: `${at}.name`, message: `"${s.name}" is listed twice` });
     if (!slotsShown.has(s.name)) issues.push({ field: at, message: `no slot node shows "${s.name}", so content put there would never appear. Add a node { "kind": "slot", "slot": "${s.name}" }` });
     const { name: _n, ...rest } = s;
@@ -508,15 +518,17 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   const variantAxes: Record<string, unknown> = {};
   (args.variantAxes ?? []).forEach((a, i) => {
     const at = `variantAxes[${i}]`;
+    if (reservedKey(a.name, `${at}.name`, issues)) return;
     if (Object.hasOwn(variantAxes, a.name)) return issues.push({ field: `${at}.name`, message: `"${a.name}" is listed twice` });
     const options: Record<string, unknown> = {};
     a.options.forEach((o, j) => {
       const oat = `${at}.options[${j}]`;
+      if (reservedKey(o.id, `${oat}.id`, issues)) return;
       if (Object.hasOwn(options, o.id)) return issues.push({ field: `${oat}.id`, message: `"${o.id}" is listed twice` });
       const byNode: Record<string, StyleRow[]> = {};
       (o.styles ?? []).forEach((r, k) => {
         if (!byId.has(r.nodeId)) issues.push({ field: `${oat}.styles[${k}].nodeId`, message: `"${r.nodeId}" is not the id of any node` });
-        (byNode[r.nodeId] ??= []).push(r);
+        else (byNode[r.nodeId] ??= []).push(r);
       });
       const styles: Record<string, unknown> = {};
       for (const [nodeId, rows] of Object.entries(byNode)) {
@@ -569,6 +581,7 @@ function propertySchema(p: PropertyArgs, at: string, issues: FieldIssue[]): Reco
     const fields: Record<string, unknown> = {};
     let ok = true;
     p.fields.forEach((f: FieldArgs, j: number) => {
+      if (reservedKey(f.name, `${at}.fields[${j}].name`, issues)) return (ok = false);
       if (Object.hasOwn(fields, f.name)) {
         ok = false;
         return issues.push({ field: `${at}.fields[${j}].name`, message: `"${f.name}" is listed twice` });
