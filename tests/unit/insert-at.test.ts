@@ -3,7 +3,7 @@ import type { ElementNode, ElementRef, InstanceNode, OwnerRef, PageDoc, ProjectS
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { definitionRole, elementWhere, heldSlot, insertAt, insertOps, insertRole, placeFor, placementOf, sectionWhere, whereFor } from '../../src/renderer/src/lib/insert-at';
+import { definitionRole, elementWhere, heldSlot, insertAt, insertOps, insertRole, nodeBefore, nodeLabel, placeFor, placementOf, sectionWhere, whereFor } from '../../src/renderer/src/lib/insert-at';
 
 /**
  * Where Insert puts a project component (#52): a card made inside a grid goes beside the selected card in that grid,
@@ -266,5 +266,124 @@ describe('a part picked inside a placement counts as the placement, in the slot 
     // And what the Body takes lands there.
     const out = apply(p.state, insertOps(insertAt(p.state, p.owner, 'element', partOf(p.owner, p.card, 'bodyBox'))!, { definitionId: p.bandDef }, 'element'));
     expect((home(out.state).nodes[p.card] as InstanceNode).slots?.body).toEqual([out.results.at(-1)!.nodeId]);
+  });
+});
+
+describe('a part or repeated item inside a placed section inserts beside that section, never at the page end (#510)', () => {
+  /** The exhibitors page (Intro, a Section holding a grid and its card, the slotless Closing band), with one more
+   *  flexible Section after the band when `tail`: the page's last section that takes content, where the insert used to go. */
+  function page(tail: boolean) {
+    const p = exhibitors();
+    if (!tail) return { ...p, tail: undefined };
+    const out = apply(p.state, [{ type: 'node.insert', owner: p.owner, parentId: null, componentId: 'layout.section' }]);
+    return { ...p, state: out.state, tail: out.results[0].nodeId as string };
+  }
+  type Page = ReturnType<typeof page>;
+  const placement = (p: Page, id: string) => p.state.components[(home(p.state).nodes[id] as InstanceNode).definitionId];
+  /** A part of a placement, as Layers or the canvas picks it, from inside the placement's own design. */
+  const part = (p: Page, id: string, nodeId: string, extra: Partial<ElementRef> = {}): ElementRef => ({ owner: p.owner, instancePath: [id], nodeId, ...extra });
+  const container = (p: Page, id: string) => part(p, id, placement(p, id).parts.container.nodeId, { partId: 'container' });
+  /** Something inside the Closing band's design that is not its root. */
+  const inBand = (p: Page, extra: Partial<ElementRef> = {}) => {
+    const def = placement(p, p.band);
+    return part(p, p.band, Object.keys(def.tree!.nodes).find((id) => id !== def.tree!.rootIds[0] && def.tree!.nodes[id].kind !== 'slot')!, extra);
+  };
+  const after = (p: Page, at: NonNullable<ReturnType<typeof insertAt>>) => nodeBefore(p.state, p.owner, at.parentId, at.slot, at.index);
+
+  for (const tail of [false, true]) {
+    describe(tail ? 'with a flexible Section after the last component' : 'with a component as the last section', () => {
+      it('puts a section right after the section holding the part, and the Insert line says so', () => {
+        const p = page(tail);
+        const picks: Array<[string, ElementRef, string]> = [
+          ['a part of the first Section', container(p, p.intro), p.intro],
+          ['a part of a card inside the second Section’s grid', part(p, p.card, placement(p, p.card).tree!.rootIds[0]), p.section],
+          ['a part of the Closing band', inBand(p), p.band]
+        ];
+        for (const [name, from, enclosing] of picks) {
+          const at = insertAt(p.state, p.owner, 'section', from)!;
+          expect(at, name).toEqual({ owner: p.owner, parentId: null, index: home(p.state).rootIds.indexOf(enclosing) + 1 });
+          expect(after(p, at)).toBe(enclosing);
+          expect(sectionWhere(p.state, at)).toEqual({ lead: 'after', target: nodeLabel(p.state, p.owner, enclosing) });
+          // The placement itself picked says the same.
+          expect(insertAt(p.state, p.owner, 'section', ref(p.owner, enclosing))).toEqual(at);
+        }
+        // It lands there, and the page's last section stays last.
+        const at = insertAt(p.state, p.owner, 'section', container(p, p.intro))!;
+        const out = apply(p.state, insertOps(at, { componentId: 'layout.section' }, 'section'));
+        expect(home(out.state).rootIds).toHaveLength(home(p.state).rootIds.length + 1);
+        expect(home(out.state).rootIds[1]).toBe(out.results.at(-1)!.nodeId);
+        expect(home(out.state).rootIds.at(-1)).toBe(p.tail ?? p.band);
+      });
+
+      it('puts an element into the slot of the section holding the part, not the last section that takes content', () => {
+        const p = page(tail);
+        for (const from of [container(p, p.intro), part(p, p.intro, placement(p, p.intro).parts.root.nodeId, { partId: 'root' })]) {
+          const at = insertAt(p.state, p.owner, 'element', from)!;
+          expect(at).toEqual({ owner: p.owner, parentId: p.intro, slot: 'content' });
+          expect(elementWhere(p.state, at)).toEqual({ lead: 'inside', target: nodeLabel(p.state, p.owner, p.intro), node: true });
+          const out = apply(p.state, insertOps(at, { primitive: 'heading' }, 'element'));
+          expect((home(out.state).nodes[p.intro] as InstanceNode).slots?.content).toEqual([out.results.at(-1)!.nodeId]);
+          expect(home(out.state).rootIds).toEqual(home(p.state).rootIds);
+          for (const other of [p.section, p.tail]) if (other) expect((home(out.state).nodes[other] as InstanceNode).slots?.content ?? []).toEqual((home(p.state).nodes[other] as InstanceNode).slots?.content ?? []);
+        }
+        // Beside a card inside a grid, an element goes next to the card, in its grid.
+        const card = insertAt(p.state, p.owner, 'element', part(p, p.card, placement(p, p.card).tree!.rootIds[0]))!;
+        expect(card).toEqual({ owner: p.owner, parentId: p.grid, index: 1 });
+      });
+
+      it('wraps an element for a part of a section that takes no content in a new section right after it', () => {
+        const p = page(tail);
+        const from = inBand(p);
+        const at = insertAt(p.state, p.owner, 'element', from)!;
+        const index = home(p.state).rootIds.indexOf(p.band) + 1;
+        expect(at).toEqual({ owner: p.owner, parentId: null, index });
+        expect(elementWhere(p.state, at)).toEqual({ lead: 'in a new section after', target: 'Closing band', node: true });
+        const ops = insertOps(at, { primitive: 'heading' }, 'element');
+        expect(ops[0]).toMatchObject({ type: 'node.insert', parentId: null, index, componentId: 'layout.section' });
+        const out = apply(p.state, ops);
+        const rootIds = home(out.state).rootIds;
+        expect(rootIds).toHaveLength(home(p.state).rootIds.length + 1);
+        expect(rootIds[index - 1]).toBe(p.band);
+        expect((home(out.state).nodes[rootIds[index]] as InstanceNode).slots?.content).toEqual([out.results.at(-1)!.nodeId]);
+        // The flexible Section after it, when there is one, takes nothing.
+        if (p.tail) {
+          expect(rootIds.at(-1)).toBe(p.tail);
+          expect((home(out.state).nodes[p.tail] as InstanceNode).slots?.content ?? []).toEqual([]);
+        }
+      });
+
+      it('reads a repeated item of a placed section as the section too', () => {
+        const p = page(tail);
+        const item = ['row-1'];
+        for (const role of ['section', 'element'] as const) {
+          expect(insertAt(p.state, p.owner, role, inBand(p, { itemPath: item }))).toEqual(insertAt(p.state, p.owner, role, inBand(p)));
+          expect(insertAt(p.state, p.owner, role, container(p, p.intro))).toEqual(insertAt(p.state, p.owner, role, { ...container(p, p.intro), itemPath: item }));
+        }
+        expect(insertAt(p.state, p.owner, 'section', inBand(p, { itemPath: item }))).toEqual({ owner: p.owner, parentId: null, index: home(p.state).rootIds.indexOf(p.band) + 1 });
+        // Two levels deep (a repeated item of a component placed in a section's design) is still the outer placement.
+        const deep: ElementRef = { owner: p.owner, instancePath: [p.intro, 'nested'], nodeId: 'deep', itemPath: item };
+        expect(insertAt(p.state, p.owner, 'section', deep)).toEqual({ owner: p.owner, parentId: null, index: 1 });
+        expect(insertAt(p.state, p.owner, 'element', deep)).toEqual({ owner: p.owner, parentId: p.intro, slot: 'content' });
+      });
+    });
+  }
+
+  it('does the same inside a component edited everywhere: a part of a section placed in its design counts as that section', () => {
+    const p = page(false);
+    const owner: OwnerRef = { kind: 'component', id: p.cardDef };
+    const root = p.state.components[p.cardDef].tree!.rootIds[0];
+    const out = apply(p.state, [{ type: 'node.insert', owner, parentId: root, componentId: 'layout.section' }]);
+    const state = out.state;
+    const first = out.results[0].nodeId as string;
+    const def = state.components[(state.components[p.cardDef].tree!.nodes[first] as InstanceNode).definitionId];
+    const from: ElementRef = { owner, instancePath: [first], nodeId: def.parts.container.nodeId, partId: 'container' };
+    // An element goes into the nested section's slot, and a section at the end of the component's one root: the
+    // same places as with the nested section itself picked.
+    expect(insertAt(state, owner, 'element', from)).toEqual({ owner, parentId: first, slot: 'content' });
+    expect(insertAt(state, owner, 'section', from)).toEqual({ owner, parentId: root });
+    expect(insertAt(state, owner, 'section', from)).toEqual(insertAt(state, owner, 'section', ref(owner, first)));
+    expect(insertAt(state, owner, 'element', from)).toEqual(insertAt(state, owner, 'element', ref(owner, first)));
+    // A repeated item of it too.
+    for (const role of ['section', 'element'] as const) expect(insertAt(state, owner, role, { ...from, itemPath: ['row-1'] })).toEqual(insertAt(state, owner, role, from));
   });
 });
