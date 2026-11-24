@@ -188,11 +188,11 @@ function listFields(lists: Array<[string, ListSchema]>): Record<string, JsonSche
 
 /**
  * Another list's shape for a field this list's check would quietly empty rather than refuse: a number for an
- * image, or an image for a link.
+ * image, or an image or a list of choices for a link.
  */
 function emptiedBy(field: PropSchema, v: unknown): string | null {
   if (field.type === 'image' && (typeof v === 'number' || typeof v === 'boolean' || Array.isArray(v))) return 'must be an image: an asset ID or { assetId, alt }';
-  if (field.type === 'link' && !!v && typeof v === 'object' && !Array.isArray(v) && !('type' in v)) return 'must be a link: a route, a URL or { type, target }';
+  if (field.type === 'link' && !!v && typeof v === 'object' && (Array.isArray(v) || !('type' in v))) return 'must be a link: a route, a URL or { type, target }';
   return null;
 }
 

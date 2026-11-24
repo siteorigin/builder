@@ -979,6 +979,8 @@ describe('selection tools', () => {
         () => [call('l0', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: 42 } })],
         () => [call('l1', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: { assetId: null, alt: 'Chart' } } })],
         () => [call('l2', 'edit_selected_list', { prop: 'items', action: 'insert', fields: { icon: 'leaf', title: 'Care', description: 'Weekly.' } })],
+        // An update is checked the same way: a list of choices would quietly clear a destination.
+        () => [call('l3', 'edit_selected_list', { prop: 'links', action: 'update', itemId: 'it_go', fields: { title: [{ label: 'Email' }] } })],
         () => finish()
       ],
       focused,
@@ -991,15 +993,17 @@ describe('selection tools', () => {
         // The same shape under another label is one shape.
         const items = props.items as List;
         props.notes = { ...items, label: 'Notes', fields: { title: { ...items.fields.title, label: 'Note' } }, default: [] } as PropSchema;
+        props.links = { type: 'list', label: 'Links', itemLabel: 'Link', fields: { title: { type: 'link', label: 'Destination', default: { type: 'none', target: '' } } }, default: [{ id: 'it_go', title: { type: 'url', target: 'https://example.com' } }] } as unknown as PropSchema;
       }
     );
     const ref = { ...heroRef(session.state), nodeId: pageAt(session.state, '/')!.rootIds[2] };
     await run('Add a stat and a card', ref);
     const tool = adapter.requests[0].tools.find((t) => t.name === 'edit_selected_list')!;
     const title = ((tool.parameters.properties as Record<string, JsonSchemaLike>).fields.properties as Record<string, JsonSchemaLike>).title;
-    expect(title.anyOf?.map((b) => b.type)).toEqual(['string', 'object']);
+    expect(title.anyOf?.map((b) => b.type)).toEqual(['string', 'object', 'string']);
     // One shape the lists describe differently keeps each list's description.
-    expect(title.anyOf?.map((b) => b.description)).toEqual(['When prop is "items": Title. When prop is "notes": Note', 'When prop is "stats": Value']);
+    expect(title.anyOf?.slice(0, 2).map((b) => b.description)).toEqual(['When prop is "items": Title. When prop is "notes": Note', 'When prop is "stats": Value']);
+    expect(title.anyOf?.[2].description).toMatch(/^When prop is "links": Destination/);
     const strict = toStrictSchema(tool.parameters);
     const strictTitle = ((strict.properties as Record<string, JsonSchemaLike>).fields.properties as Record<string, JsonSchemaLike>).title;
     expect(JSON.stringify(strictTitle)).toMatch(/"type":"string".*"type":"object"/);
@@ -1009,6 +1013,8 @@ describe('selection tools', () => {
     const grid = nodeAt(session.state, 2).props;
     expect((grid.stats as Array<{ title: unknown }>).map((i) => i.title)).toEqual([{ assetId: null, alt: 'Chart' }]);
     expect((grid.items as Array<{ title: string }>).at(-1)?.title).toBe('Care');
+    expect(lastResult(adapter.requests[4]).fields).toEqual([{ field: 'fields.title', message: 'must be a link: a route, a URL or { type, target } for "links"' }]);
+    expect(grid.links).toBeUndefined();
   });
 
   it('switches to the site tools once the user allows a wider change', async () => {
