@@ -5,7 +5,7 @@ import { refKey, sameRef } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
-import { aiActivity, api, applyOps, commitDraft, getState, markDraft, setState, toast, useStore } from '../store';
+import { aiActivity, api, applyOps, commitDraft, getState, markDraft, setState, showLayer, toast, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { askAiAbout, deleteLayers, deleteSelection, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, type LayersPlan } from '../lib/actions';
@@ -773,7 +773,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
             if (pickRow(e.shiftKey ? 'range' : 'toggle', ref)) e.currentTarget.focus();
             return;
           }
-          setState({ selection: ref });
+          // Shown on the page even when already selected: the page may have scrolled it away (issue #168).
+          showLayer(ref);
         }}
         onDoubleClick={(e) => !e.shiftKey && !additive(e) && startRename()}
         onMouseEnter={() => setState({ hover: ref })}
@@ -815,7 +816,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
             // Space on a layer focus reached without selecting it (Cmd/Ctrl+↑/↓) adds it to the selection; on one of
             // several selected, it takes that one away. Enter selects this layer alone.
             if (e.key === ' ' && !e.shiftKey && (!selected || !!picked)) pickRow('toggle', ref);
-            else setState({ selection: ref });
+            else showLayer(ref);
           }
           if (e.key === 'F2') (e.preventDefault(), startRename());
           if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') (e.preventDefault(), onMenu(row, ref, true, startRename));
@@ -984,14 +985,14 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
                 onClick={(e) => {
                   // A Shift or Cmd/Ctrl pick of a part says why it can't join layers selected, rather than replacing them.
                   if (e.shiftKey || additive(e)) return void pickRow(e.shiftKey ? 'range' : 'toggle', pref);
-                  setState({ selection: pref });
+                  showLayer(pref);
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === 'ArrowLeft') (e.preventDefault(), setState({ selection: ref }), rowFor(id)?.focus());
+                  if (e.key === 'ArrowLeft') (e.preventDefault(), showLayer(ref), rowFor(id)?.focus());
                   if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
                     e.preventDefault();
                     if (e.key === ' ' && !psel) pickRow('toggle', pref);
-                    else setState({ selection: pref });
+                    else showLayer(pref);
                   }
                   if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') (e.preventDefault(), onMenu(e.currentTarget, pref, false));
                 }}

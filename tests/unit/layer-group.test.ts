@@ -46,6 +46,7 @@ interface EditorState {
   layerSet: LayerSet | null;
   pageId: string | null;
   definitionMode: unknown;
+  showSelection: number;
   setState: (p: Partial<EditorState>) => void;
 }
 interface Plan {
@@ -60,7 +61,7 @@ const actions = (await load('../../src/renderer/src/lib/actions')) as {
   moveToPage: (pageId: string, plan?: Plan | null) => Promise<string[] | null>;
   asPlanned: (shown: Plan | null, act: (plan: Plan | null) => Promise<void>) => () => Promise<void> | void;
 };
-const { getState, setState } = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void };
+const { getState, setState, showLayer } = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void; showLayer: (ref: ElementRef) => void };
 const clipboard = (await load('../../src/renderer/src/lib/clipboard')) as { copySelection: (plan?: Plan | null) => boolean; pasteCopy: () => boolean; forgetCopy: () => void };
 
 function refresh<T>(r: T): T {
@@ -149,6 +150,20 @@ describe('sections selected together in Layers', () => {
     pickGalleryAndTestimonials();
     getState().setState({ selection: getState().selection });
     expect(getState().layerSet).toBeNull();
+  });
+
+  it('a plain Layers row asks the page to show its layer every time, even one already selected (#168)', () => {
+    // Gallery, picked with Testimonials (which is the selection), becomes the one layer selected.
+    const { gallery } = pickGalleryAndTestimonials();
+    const asked = getState().showSelection;
+    showLayer(ref(home(), gallery));
+    expect(getState().selection).toEqual(ref(home(), gallery));
+    expect(getState().layerSet).toBeNull();
+    expect(getState().showSelection).toBe(asked + 1);
+    // The same row again, with nothing else changed: the page is asked again, as the page may have scrolled it away.
+    showLayer(ref(home(), gallery));
+    expect(getState().selection).toEqual(ref(home(), gallery));
+    expect(getState().showSelection).toBe(asked + 2);
   });
 
   it('layers selected on a page that is not open are not acted on (an Undo brought it back while another is open)', async () => {
