@@ -226,6 +226,16 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       expect(await editable('r')).toBeNull();
     });
 
+    it('starts nothing when the words double-clicked changed before the editor answered', async () => {
+      const dbl = await doubleClick('r', 'word');
+      // The page updates the same text in place: the word under the pointer is now another.
+      await frame.evaluate(`(() => { const t = [...document.querySelectorAll('[data-so-node="r"] p')][1].firstChild; t.nodeValue = 'New: ' + t.nodeValue; })()`);
+      const before = (await messages()).length;
+      await answer(dbl);
+      expect(editMessages((await messages()).slice(before))).toEqual(['textCancel']);
+      expect(await editable('r')).toBeNull();
+    });
+
     it('starts nothing once the editor has gone to Preview', async () => {
       const dbl = await doubleClick('r', 'word');
       await post('mode', { mode: 'preview' });
@@ -366,6 +376,13 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       await page.keyboard.press('ControlOrMeta+A');
       await pasteRaw('<p>Keep</p><p title="<!--">After a marker in an attribute</p><!--><p>After a short comment</p><<!---->style>Shown</style>', 'Keep');
       expect(await commit()).toEqual([p('Keep'), p('After a marker in an attribute'), p('After a short comment'), p('<style>Shown')]);
+    });
+
+    it('keeps the words after a stray table tag', async () => {
+      await editAt('r', 'Fourth');
+      await page.keyboard.press('ControlOrMeta+A');
+      await pasteRaw('<!--StartFragment-->First<col><p>Second</p><!--EndFragment-->', 'First Second');
+      expect(await commit()).toEqual([p('First'), p('Second')]);
     });
 
     it('reads a paste of many empty comments in one pass', async () => {

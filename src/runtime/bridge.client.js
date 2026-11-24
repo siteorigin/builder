@@ -886,6 +886,12 @@ function beginTextEdit(desc, editId, hitId) {
   if (editing) commitEdit();
   // Typed text shown there from the inspector gives way to the page's own text, which the edit then works on.
   restoreDraft(el);
+  // The page's own text can have replaced typed text shown there: the word is found again in the same words, and
+  // otherwise the edit starts with a caret at the end.
+  let node = hit && hit.at && hit.at.node.deref();
+  // The words under the pointer changed before the editor answered: the word clicked is no longer there.
+  if (node && el.contains(node) && node.nodeValue !== hit.at.text) return send('textCancel', { desc, editId });
+  if (node && !el.contains(node)) node = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue === hit.at.text);
   const rich = el.classList.contains('so-rich');
   // before: the plain text shown as the edit began, so the editor can tell what the author typed over.
   editing = { el, desc, editId, original: el.innerHTML, rich, before: rich ? null : el.innerText.replace(/\s+/g, ' ').trim() };
@@ -895,10 +901,6 @@ function beginTextEdit(desc, editId, hitId) {
   el.style.outline = 'none';
   el.style.cursor = 'text';
   el.focus();
-  // The page's own text can have replaced typed text shown there: the word is found again in the same words, and
-  // otherwise the edit starts with a caret at the end.
-  let node = hit && hit.at && hit.at.node.deref();
-  if (node && !el.contains(node)) node = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue === hit.at.text);
   let range;
   if (node && el.contains(node)) range = wordRange(el, node, hit.at);
   else {
@@ -1097,11 +1099,9 @@ function pastedHref(raw) {
  */
 function pastedRich(html) {
   if (!html || html.length > 2000000) return '';
-  // Parsed as a template's contents: inert (nothing runs or loads), and read as a fragment, so markup before the
-  // copy's body (comments, Word's conditional blocks) never goes through the slow path of a whole document's parse.
-  const holder = document.createElement('template');
-  holder.innerHTML = html;
-  const src = holder.content;
+  // Parsed inert (nothing runs or loads), from inside a body: what comes before the copy's own body (comments, Word's
+  // conditional blocks) lands there too, never in the document itself, which Chromium is slow to add many nodes to.
+  const src = new DOMParser().parseFromString(`<body>${html}`, 'text/html').body;
   /** { kind: '' (words outside any block) | 'p' | 'h3' | 'h4' | 'blockquote' | 'li', list, runs: [{ text } | { br }] with marks } */
   const lines = [];
   let line = null;
