@@ -609,7 +609,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           }
         />
       </Header>
-      <Section title="Content" id="content" level={LEVEL}>
+      <Section title="Content" id="content" level={LEVEL} remember={fields.length > 0}>
         {fields.length === 0 && <p className="faint insp-note">This section has no content of its own. Add elements inside it from Insert.</p>}
         {fixedUnlinked.map((b, i) => (
           <p key={i} className="field-error insp-note">

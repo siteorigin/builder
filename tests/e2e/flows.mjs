@@ -305,6 +305,23 @@ assert.deepEqual(await order(), ['Split hero', 'Logo strip', 'Services grid']);
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('.list-item', { hasText: 'Split hero' }).click();
 await win.waitForTimeout(800);
+step('Edit on the selection chip moves focus to the first control in the inspector');
+await win.locator('.dock-tab', { hasText: 'AI' }).click();
+await win.locator('#dock-panel-inspect').waitFor({ state: 'hidden' });
+await win.locator('.ov-chip .chip-text', { hasText: 'Edit' }).click();
+await eventually(async () => {
+  const at = await win.evaluate(() => {
+    const el = document.activeElement;
+    const panel = document.getElementById('dock-panel-inspect');
+    if (!el || !panel?.contains(el)) return null;
+    // The control the page would reach first among the open sections' fields.
+    const first = [...panel.querySelectorAll('.section-body input:not([type="hidden"]), .section-body textarea, .section-body select, .section-body button, .section-body [role="switch"]')].find((n) => n.offsetParent !== null && !n.disabled);
+    return { tag: el.tagName, first: first === el };
+  });
+  assert.ok(at, 'focus is inside the inspector');
+  assert.equal(at.first, true, 'on the first control of its open sections');
+});
+
 const gb = await win.locator('.ov-chip [aria-label="Drag to move"]').boundingBox();
 assert.ok(gb, 'the selection chip shows a drag grip');
 const wrap = await win.locator('.frame-wrap').boundingBox();

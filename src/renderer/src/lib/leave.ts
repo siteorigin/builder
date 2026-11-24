@@ -1,5 +1,5 @@
 import { settle, type Settled } from './pending';
-import { api, confirmDialog, getConfirm, getState, setState, toast } from '../store';
+import { api, confirmDialog, getConfirm, getState, pendingConfirms, setState, toast } from '../store';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -53,8 +53,7 @@ export function projectClosed() {
   closedCount++;
   endEditingHold();
   // A question about the project that just went away has nothing left to decide.
-  const open = getConfirm();
-  if (open?.title === LEAVE_QUESTION) open.resolve(null);
+  for (const q of [...pendingConfirms()]) if (q.title === LEAVE_QUESTION) q.resolve(null);
 }
 
 /** Close the project from the editor (Close Project, New project, a project to trust). The main process asks

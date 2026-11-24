@@ -436,8 +436,9 @@ export function Tabs<T extends string>({
  * level, so assistive technology can move between sections by heading. The controlled region always exists
  * (hidden while closed) so aria-controls resolves; its children mount only while open.
  */
-export function Section({ title, children, defaultOpen = true, actions, id, scope, level }: { title: ReactNode; children: ReactNode; defaultOpen?: boolean; actions?: ReactNode; id?: string; scope?: ReactNode; level?: number }) {
-  const key = id ? `section:${id}` : null;
+export function Section({ title, children, defaultOpen = true, actions, id, scope, level, remember = true }: { title: ReactNode; children: ReactNode; defaultOpen?: boolean; actions?: ReactNode; id?: string; scope?: ReactNode; level?: number; remember?: boolean }) {
+  // `remember: false` for a section with nothing in it: closing it says nothing about the others that share its ID.
+  const key = id && remember ? `section:${id}` : null;
   const bodyId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(() => (key && localStorage.getItem(key) !== null ? localStorage.getItem(key) === '1' : defaultOpen));
@@ -752,7 +753,10 @@ export function DraftInput({
     onKeyDown: (e: React.KeyboardEvent) => {
       if (isImeComposing(e)) return;
       if (e.key === 'Escape') {
-        // Revert: blur must not commit the abandoned draft.
+        // Revert: blur must not commit the abandoned draft. The key is spent on the field, so a dialog around
+        // it stays open; the next Escape, with nothing being edited, closes it.
+        e.preventDefault();
+        e.stopPropagation();
         cancelled.current = true;
         forget();
         setDraft(value);
