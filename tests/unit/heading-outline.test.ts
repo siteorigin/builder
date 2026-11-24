@@ -79,7 +79,9 @@ describe('heading outline', () => {
     const footer = headingOutline(s, about.id).filter((h) => h.owner.kind === 'shell');
     expect(footer.length).toBeGreaterThan(0);
     expect(footer.every((h) => h.owner.id === 'footer' && h.level === 2)).toBe(true);
-    s.pages[about.id].shell = 'none';
+    // The footer's headings come after the page's own.
+    expect(headingOutline(s, about.id).findIndex((h) => h.owner.kind === 'shell')).toBeGreaterThan(headingOutline(s, about.id).findLastIndex((h) => h.owner.kind === 'page'));
+    s.pages[about.id].showFooter = false;
     expect(headingOutline(s, about.id).every((h) => h.owner.kind === 'page')).toBe(true);
   });
 

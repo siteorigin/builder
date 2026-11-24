@@ -1104,7 +1104,9 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
   const page = Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
   if (!page) return { outline: [], uninspected: false };
   const trees: Array<[OwnerRef, NodeTree]> = [[{ kind: 'page', id: page.id }, page]];
-  if (shell && hasShell(page)) trees.unshift([{ kind: 'shell', id: 'header' }, state.site.shell.header]), trees.push([{ kind: 'shell', id: 'footer' }, state.site.shell.footer]);
+  // The shared header and footer the page shows, each in its place around the page's own content.
+  if (shell && showsPart(page, 'header')) trees.unshift([{ kind: 'shell', id: 'header' }, state.site.shell.header]);
+  if (shell && showsPart(page, 'footer')) trees.push([{ kind: 'shell', id: 'footer' }, state.site.shell.footer]);
   const out: OutlineHeading[] = [];
   let uninspected = false;
   // The headings shown through each slot: a slot shown again (by a second slot of that name) repeats them.
