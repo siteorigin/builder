@@ -1,12 +1,14 @@
 import { SHARED_BASE_CSS } from '../foundation/base.css';
 
-/** The classes the generator gives Signal's Services grid (`so-{definition}__{node}`, `so-{definition}--{axis}-{option}`). */
-const FEATURES = 'so-signal-features-grid';
+/** A class ending in `suffix` anywhere in an element's class list (a part's override class may follow it). */
+const ends = (suffix: string) => `:is([class$='${suffix}'], [class*='${suffix} '])`;
 /**
- * The first card of three or more, directly in a Services grid in its default layout. The grid carries its layout
- * option's class itself, so a grid with another layout, or a copy of the section inside this one, is never matched.
+ * The first card of three or more, directly in a Services grid in its default layout. Signal's grid node is called
+ * `bento`, a name no Foundation design has, and a copy of the section (Make unique) keeps it, so the layout follows
+ * the copy. The grid carries its layout option's class itself, so a grid with another layout, or a section placed
+ * inside this one, is never matched.
  */
-const FEATURED = `.${FEATURES}__grid.${FEATURES}--layout-default > li.${FEATURES}__card:first-child:nth-last-child(n + 3)`;
+const FEATURED = `${ends('__bento')}${ends('--layout-default')} > li:first-child:nth-last-child(n + 3)`;
 
 /**
  * Signal's own rules, after the shared base. Buttons are set a little bolder and the filled ones rise on hover; the
@@ -25,8 +27,9 @@ const SIGNAL_RULES = `
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {
   :where(:is(a, button):is(.so-btn--primary, .so-btn--light):hover) { translate: 0 -2px; }
 }
+/* A chosen tab or a choice that is on keeps the inner ring that marks it. */
 @media (hover: hover) {
-  :is(a, button).so-btn--primary:hover { box-shadow: var(--so-shadow-md); }
+  :is(a, button).so-btn--primary:not([aria-selected='true'], [aria-pressed='true']):hover { box-shadow: var(--so-shadow-md); }
 }
 :is(a, button).so-btn--text:hover::after { transform: translateX(5px); }
 :is(a, button).so-btn--text:dir(rtl):hover::after { transform: translateX(-5px); }
@@ -43,7 +46,7 @@ const SIGNAL_RULES = `
   :where(${FEATURED}) { grid-column: 1 / -2; grid-row: span 2; }
   /* The tall tile keeps its icon at the top and sets its words at the bottom. The title's own class outweighs the
      reset of heading margins, and any margin the site gives the title (a later rule of the same weight) still wins. */
-  :where(${FEATURED}) > .${FEATURES}__card-title { margin-block-start: auto; }
+  :where(${FEATURED}) > ${ends('__card-title')} { margin-block-start: auto; }
 }
 `;
 

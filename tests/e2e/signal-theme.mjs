@@ -35,12 +35,14 @@ async function inspectAll(label) {
       for (const k of ['contrast', 'overlaps', 'clippedText']) assert.ok(!report.checks[k].incomplete, `${label}: ${page.route} at ${width}px measured every ${k} candidate`);
       for (const f of report.issues.filter((i) => !NOT_FINDINGS.has(i.kind))) {
         const where = f.ref ? `${f.ref.owner.kind}:${f.ref.owner.id}/${f.ref.partId ?? f.ref.nodeId}` : (f.text ?? '');
-        out.set(`${page.route} ${width}px ${f.kind} ${where}`, f);
+        // How many elements a finding stands for counts too: a second small link under the same part is a new failure.
+        const key = `${page.route} ${width}px ${f.kind} ${where}`;
+        out.set(key, (out.get(key) ?? 0) + (f.count ?? 1));
       }
     }
   return out;
 }
-const list = (m) => [...m.keys()].join('\n') || '(none)';
+const list = (m) => [...m].map(([k, n]) => `${k} ×${n}`).join('\n') || '(none)';
 
 /** Wait until the preview shows the theme: its display font on the page's first heading, from its own files. */
 async function shows(font) {
@@ -107,7 +109,7 @@ await variants.click();
 await panel.locator('.insert-group[data-kind="section"]').first().screenshot({ path: join(SHOTS, 'signal-insert.png') });
 
 step('the home page’s Services grid is a bento: its first card takes the room of two');
-const bento = await frame.locator('[class*="so-signal-features-grid__grid"]').first().evaluate((grid) => {
+const bento = await frame.locator('[class*="so-signal-features-grid__bento"]').first().evaluate((grid) => {
   const [first, second] = [...grid.children].map((c) => c.getBoundingClientRect());
   const title = grid.children[0].querySelector('h3').getBoundingClientRect();
   return { width: innerWidth, grid: grid.getBoundingClientRect().width, first: { w: first.width, h: first.height, titleAt: (title.top - first.top) / first.height }, second: { w: second.width, h: second.height }, cards: grid.children.length };
@@ -124,7 +126,7 @@ await frame.locator('[class*="so-signal-features-grid__root"]').first().screensh
 step('every Signal page passes the layout inspection at 390px and 1280px');
 const signal = await inspectAll('Signal');
 console.log(`Signal findings:\n${list(signal)}`);
-const added = [...signal.keys()].filter((k) => !baseline.has(k));
+const added = [...signal].filter(([k, n]) => n > (baseline.get(k) ?? 0)).map(([k]) => k);
 assert.deepEqual(added, [], `Signal reports nothing Foundation's own pages do not:\n${list(signal)}`);
 
 step('switching back to Foundation leaves the project as it was');
@@ -137,7 +139,7 @@ assert.deepEqual(after.pages, before.pages, 'the pages are exactly as they were'
 assert.deepEqual(after.site.shell, before.site.shell, 'so are the header and footer');
 assert.deepEqual(after.components, before.components, 'and the components');
 const back = await inspectAll('Foundation again');
-assert.deepEqual([...back.keys()].sort(), [...baseline.keys()].sort(), 'and the inspection reports what it did before');
+assert.deepEqual([...back].sort(), [...baseline].sort(), 'and the inspection reports what it did before');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

@@ -741,6 +741,39 @@ describe('update_site_brand', () => {
     expect(session.state.tokens).toEqual(before);
   });
 
+  it("switches a small model's site to another theme with a new brand color, in one undoable step (#391)", async () => {
+    const small = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'native' as const };
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'signal', brandColor: '#0f766e', headingFont: 'Space Grotesk' })], () => finish()], small);
+    const before = structuredClone(session.state);
+    const { result } = await run('Make the site look like a modern software product, in teal');
+    // A small site run ends with its one macro call.
+    expect(result?.status).toBe('completed');
+    const schema = adapter.requests[0].tools.find((t) => t.name === 'update_site_brand')!.parameters as { properties: Record<string, { enum?: string[]; description?: string }> };
+    // The shipped themes it can switch to, each described so the model can choose.
+    expect(schema.properties.theme.enum).toEqual(['signal']);
+    expect(schema.properties.theme.description).toContain('signal: Geometric and crisp');
+    const s = session.state;
+    expect(s.site.themeId).toBe('signal');
+    expect(s.tokens.overrides['color.brand']).toBe('#0f766e');
+    expect(String(s.tokens.overrides['font.display'])).toContain('Space Grotesk Variable');
+    // The pages hold what they did; only their sections now come from Signal.
+    expect(JSON.parse(JSON.stringify(s.pages).replace(/"definitionId":"signal\./g, '"definitionId":"foundation.'))).toEqual(before.pages);
+    expect(await compileProject(s)).toEqual([]);
+    await session.undo();
+    expect(session.state.site.themeId).toBe('foundation');
+    expect(session.state.tokens).toEqual(before.tokens);
+    expect(session.state.pages).toEqual(before.pages);
+  });
+
+  it('refuses a theme that is not offered, naming the field, and changes nothing else in the call', async () => {
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'foundation-alt', siteName: 'Kept Out' })], () => finish()]);
+    await run('Use the other theme');
+    const r = lastResult(adapter.requests[1]);
+    expect(r.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('Use one of: signal') })]);
+    expect(session.state.site.themeId).toBe('foundation');
+    expect(session.state.site.name).toBe('Test Studio');
+  });
+
   it('derives readable colors for both dark and light brand colors', () => {
     const hex = (h: string): [number, number, number] => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
     for (const brand of ['#0b5cad', '#f5c518', '#1f5a4c', '#ffffff', '#000000', '#e11d48']) {

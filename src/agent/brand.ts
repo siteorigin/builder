@@ -1,6 +1,6 @@
 /**
- * The site's brand in one call: name, tagline, contact details, colors, fonts and type scale. It compiles to one validated
- * batch that keeps site settings, the shared header and footer, and the derived color tokens in step.
+ * The site's brand in one call: its theme, name, tagline, contact details, colors, fonts and type scale. It compiles to
+ * one validated batch that keeps site settings, the shared header and footer, and the derived color tokens in step.
  */
 import { z } from 'zod';
 import type { InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
@@ -9,7 +9,8 @@ import { importedFontStack, projectFontFamilies } from '@shared/fonts';
 import { READABLE_TEXT_COLORS, contrastBetween } from '@shared/contrast';
 import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens } from '@generator/index';
-import { getTheme } from '@catalogue/index';
+import { getTheme, listThemes } from '@catalogue/index';
+import { applyOperations } from '@engine/apply';
 import { TYPE_SCALE_CHOICES, scaleRoles, typeScaleOps } from '@shared/type-scale';
 import { normalizeLink } from '@engine/values';
 import { contactInText } from '@shared/contact-links';
@@ -21,6 +22,7 @@ import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
 
 export const BRAND_ARGS = z.object({
+  theme: z.string().max(40).optional(),
   siteName: z.string().min(1).max(80).optional(),
   tagline: z.string().max(200).optional(),
   description: z.string().max(320).optional(),
@@ -39,17 +41,24 @@ export const BRAND_ARGS = z.object({
 export type BrandArgs = z.infer<typeof BRAND_ARGS>;
 
 export const BRAND_DESCRIPTION =
-  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once), and the site\'s public address, language and link preview image. Send only what changes. Fonts must be installed; an error lists the choices.';
+  'Update the site brand in one call: the theme (the whole design; content is kept), the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once), and the site\'s public address, language and link preview image. Send only what changes. Fonts must be installed; an error lists the choices.';
 
 export const BRAND_BRIEF = 'Set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors, installed fonts, the type scale (every heading and text size at once), and the site address, language and link preview image. Send only what changes.';
 
+/** The themes a site can switch to: every installed pack but its own theme and development fixtures. */
+export function brandThemes(state: Pick<ProjectState, 'site'>) {
+  return listThemes().filter((t) => !t.devOnly && t.id !== state.site.themeId);
+}
+
 export function brandToolSchema(state: ProjectState): JsonSchema {
   const fonts = installedFontNames(state);
+  const themes = brandThemes(state);
   const font = (description: string) => ({ type: 'string', enum: fonts, description });
   const color = (description: string) => ({ type: 'string', pattern: '^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$', description });
   return {
     type: 'object',
     properties: {
+      ...(themes.length ? { theme: { type: 'string', enum: themes.map((t) => t.id), description: `Switch the site's design; content stays. ${themes.map((t) => `${t.id}: ${t.description}`).join(' ')}` } } : {}),
       siteName: { type: 'string', maxLength: 80 },
       tagline: { type: 'string', maxLength: 200 },
       description: { type: 'string', maxLength: 320, description: 'Search engine description of the site.' },
@@ -154,11 +163,27 @@ function resolvedColor(tokens: Map<string, { value: unknown }>, id: string): str
 }
 
 export async function runBrand(args: BrandArgs, host: ToolHost, callId: string): Promise<ToolOutcome> {
-  const state = host.state();
+  let state = host.state();
   const issues: FieldIssue[] = [];
   const ops: EditOperation[] = [];
   const warnings: string[] = [];
   if (!Object.values(args).some((v) => v !== undefined)) return fieldError([{ field: 'arguments', message: 'send at least one brand field' }], 'Nothing was applied.');
+
+  // A theme switch goes first, and everything else in the call is worked out against the new theme (its fonts, its
+  // colors, its text styles), so the batch reads as one change.
+  if (args.theme !== undefined && args.theme !== state.site.themeId) {
+    const choices = brandThemes(state);
+    if (!choices.some((t) => t.id === args.theme)) issues.push({ field: 'theme', message: `"${args.theme}" is not an installed theme. Use one of: ${choices.map((t) => t.id).join(', ')}` });
+    else {
+      const op: EditOperation = { type: 'theme.apply', themeId: args.theme };
+      try {
+        state = applyOperations(state, [op]).state;
+        ops.push(op);
+      } catch (e) {
+        issues.push({ field: 'theme', message: (e as Error).message });
+      }
+    }
+  }
 
   const tokens = new Map(effectiveTokens(state).map((t) => [t.id, t]));
   const setToken = (tokenId: string, value: string) => {

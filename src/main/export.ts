@@ -11,7 +11,7 @@ import { documentFormat } from '@shared/document-files';
 import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameLanguage } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
-import { getTheme } from '@catalogue/index';
+import { getTheme, listThemes } from '@catalogue/index';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
@@ -742,9 +742,9 @@ export function isGeneratedReadme(text: string): boolean {
   const normalized = text.replace(/\r\n/g, '\n');
   const title = normalized.match(/^# (.*)\n/)?.[1];
   if (title === undefined) return false;
-  // The notices name the site's theme: one written for whichever theme the site had then is still the app's.
-  const theme = normalized.match(THEME_NOTICE_RE);
-  const notices = [NOTICE, NPM_FONTS_NOTICE, ...(theme ? [themeNotice({ name: theme[1], license: theme[2] })] : [])];
+  // The notices name the site's theme: one written for any installed theme, word for word, is still the app's. An
+  // owner's change to them (another licence, say) makes the README theirs.
+  const notices = [...new Set([NOTICE, NPM_FONTS_NOTICE, ...listThemes().map(themeNotice)])];
   return [
     ...notices.flatMap((n) => [projectReadme(title, false, n), projectReadme(title, true, n), projectReadme(title, false, n, true), projectReadme(title, true, n, true)]),
     legacyReadme(title)
@@ -769,8 +769,6 @@ This project has draft collection entries. Their documents are in \`siteorigin/c
 export function themeNotice(theme: { name: string; license: string }): string {
   return `The ${theme.name} theme is licensed under ${theme.license}. Icons come from Lucide (ISC licence). The fonts come with the theme, in \`src/lib/siteorigin/fonts/\`, whose NOTICE.txt gives their licences. Sample images from the Business starter, where still used, are described in NOTICE.md.`;
 }
-/** The theme a README's notices name, and its licence. */
-const THEME_NOTICE_RE = /^The (.{1,80}) theme is licensed under (\S{1,80})\. Icons come from Lucide \(ISC licence\)\. The fonts come with the theme/m;
 /** The notices of a site on Foundation, the theme every new project starts with. */
 const NOTICE = themeNotice({ name: 'Foundation', license: 'GPL-3.0-or-later' });
 /** The notices from before fonts came with the theme, recognised so that exports can bring them up to date. */

@@ -15,6 +15,11 @@ export type StylePatch = Partial<Record<StyleScopeKey, Record<string, StyleValue
 
 /** What Signal changes in one definition: its nodes' styles, and the styles its variant options add. */
 export interface Restyle {
+  /**
+   * Nodes given another ID first (old → new), so Signal's stylesheet can know them by a name only Signal's design has.
+   * Parts, variant options and the tree follow; a placement addresses parts, never node IDs, so nothing it holds changes.
+   */
+  rename?: Record<string, string>;
   nodes?: Record<string, StylePatch>;
   /** Axis → option → node → rules, merged into what the option already styles. */
   variants?: Record<string, Record<string, Record<string, StylePatch>>>;
@@ -36,8 +41,23 @@ export function mergeStyles(styles: ResponsiveStyles | undefined, patch: StylePa
   return out;
 }
 
+/** Give a node of a definition (an adopted copy, changed in place) another ID, wherever the definition names it. */
+export function renameNode(def: ComponentDefinition, from: string, to: string): void {
+  const tree = def.tree;
+  if (!tree?.nodes[from]) throw new Error(`${def.componentId} has no node "${from}" to rename.`);
+  if (tree.nodes[to]) throw new Error(`${def.componentId} already has a node "${to}".`);
+  const swap = (id: string) => (id === from ? to : id);
+  tree.nodes = Object.fromEntries(Object.entries(tree.nodes).map(([id, n]) => [swap(id), id === from ? { ...n, id: to } : n]));
+  tree.rootIds = tree.rootIds.map(swap);
+  for (const n of Object.values(tree.nodes)) if ('children' in n) n.children = n.children.map(swap);
+  for (const part of Object.values(def.parts)) part.nodeId = swap(part.nodeId);
+  for (const axis of Object.values(def.variantAxes ?? {}))
+    for (const option of Object.values(axis.options)) if (option.styles) option.styles = Object.fromEntries(Object.entries(option.styles).map(([id, st]) => [swap(id), st]));
+}
+
 /** Apply a restyle to a definition (an adopted copy, which this changes in place). */
 export function restyle(def: ComponentDefinition, r: Restyle): ComponentDefinition {
+  for (const [from, to] of Object.entries(r.rename ?? {})) renameNode(def, from, to);
   const nodes = def.tree?.nodes;
   if (!nodes) throw new Error(`${def.componentId} has no tree to restyle.`);
   for (const [nodeId, patch] of Object.entries(r.nodes ?? {})) {
@@ -100,6 +120,8 @@ export const SIGNAL_RESTYLES: Record<string, Restyle> = {
     nodes: { grid: { desktop: { gridTemplate: '1.15fr 1fr' } }, media: { base: { shadow: tok('shadow.lg') } } }
   },
   'features.grid': {
+    // The grid is the bento the stylesheet lays out (see ./base.css), known by this ID in any copy of the section.
+    rename: { grid: 'bento' },
     nodes: {
       card: both(both(tile(), { base: { gap: tok('space.sm') } }), rises({ background: tok('color.surface') })),
       'card-icon-wrap': {

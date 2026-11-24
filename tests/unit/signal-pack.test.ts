@@ -43,7 +43,8 @@ function contract(d: ComponentDefinition) {
     tags: d.tags,
     icon: d.icon,
     properties: d.properties,
-    parts: d.parts,
+    // Placements style parts by their public ID; which node a part names is the design's own.
+    parts: Object.fromEntries(Object.entries(d.parts).map(([p, { nodeId: _node, ...part }]) => [p, part])),
     slots: d.slots,
     state: d.state,
     examples: d.examples,
@@ -110,7 +111,12 @@ describe('the Signal pack', () => {
 
     // The bento: the first of three or more cards in the default layout spans two columns and two rows on desktop.
     expect(signal.baseCss).toMatch(/^\/\* Signal theme base styles \*\//);
-    expect(signal.baseCss).toContain('@media screen and (min-width: 1024px) {\n  :where(.so-signal-features-grid__grid.so-signal-features-grid--layout-default > li.so-signal-features-grid__card:first-child:nth-last-child(n + 3)) { grid-column: 1 / -2; grid-row: span 2; }');
+    const featured = ":is([class$='__bento'], [class*='__bento ']):is([class$='--layout-default'], [class*='--layout-default ']) > li:first-child:nth-last-child(n + 3)";
+    expect(signal.baseCss).toContain(`@media screen and (min-width: 1024px) {\n  :where(${featured}) { grid-column: 1 / -2; grid-row: span 2; }`);
+    expect(def(signal, 'features.grid').parts.grid.nodeId).toBe('bento');
+    expect(def(signal, 'features.grid').variantAxes!.layout.options['two-columns'].styles).toEqual({ bento: { desktop: { columns: 2 } } });
+    // A chosen tab keeps its ring on hover: the lifted shadow is for buttons that are not marking a choice.
+    expect(signal.baseCss).toContain(":is(a, button).so-btn--primary:not([aria-selected='true'], [aria-pressed='true']):hover { box-shadow: var(--so-shadow-md); }");
     // Lifts only play where a pointer hovers, for visitors who have not asked for less motion.
     expect(signal.baseCss).toContain('@media (hover: hover) and (prefers-reduced-motion: no-preference) {\n  :where(:is(a, button):is(.so-btn--primary, .so-btn--light):hover) { translate: 0 -2px; }');
     // Everything Foundation's stylesheet does for every section, Signal's does too, unchanged.
@@ -126,12 +132,27 @@ describe('the Signal pack', () => {
     const svelte = [...generateProject(placed, { instrument: false }).entries()].find(([path]) => path.endsWith('/signal-features-grid.svelte'))?.[1];
     expect(svelte).toBeTruthy();
     // The grid carries its layout option's class itself, and each card is a list item straight inside it.
-    expect(svelte).toMatch(/<ul class=\{\["so-signal-features-grid__grid", [^\n]*`so-signal-features-grid--layout-\$\{variant_layout\}`\]\}>\s*\{#each items [^}]+\}\s*<li class=\{\["so-signal-features-grid__card",/);
+    expect(svelte).toMatch(/<ul class=\{\["so-signal-features-grid__bento", [^\n]*`so-signal-features-grid--layout-\$\{variant_layout\}`\]\}>\s*\{#each items [^}]+\}\s*<li class=\{\["so-signal-features-grid__card",/);
     expect(svelte).toMatch(/variant_layout = "default"/);
+
+    // A copy of the section (Make unique) keeps the node, so the stylesheet still lays it out as a bento.
+    const grid = Object.values(placed.pages[page].nodes).find((n) => n.kind === 'instance' && placed.components[n.definitionId].componentId === 'features.grid')!;
+    const unique = applyOperations(placed, [{ type: 'component.makeUnique', owner: { kind: 'page', id: page }, nodeId: grid.id, name: 'Our services' }]).state;
+    const copy = Object.values(unique.components).find((d) => d.owner === 'project')!;
+    const copied = [...generateProject(unique, { instrument: false }).entries()].find(([path]) => path.includes(copy.id.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()) && path.endsWith('.svelte'))?.[1];
+    expect(copied).toMatch(/<ul class=\{\["so-[a-z0-9-]+__bento", [^\n]*`so-[a-z0-9-]+--layout-\$\{variant_layout\}`\]\}>/);
   });
 
   it('restyles only nodes and options a definition has, and keeps every rule a change does not name', () => {
     const features = structuredClone(def(FOUNDATION_PACK, 'features.grid'));
+    expect(() => restyle(structuredClone(features), { rename: { grid: 'card' } })).toThrow(/already has a node "card"/);
+    const renamed = restyle(structuredClone(features), { rename: { grid: 'tiles' } });
+    expect(renamed.tree!.nodes.tiles).toMatchObject({ id: 'tiles', kind: 'element' });
+    expect(renamed.tree!.nodes.grid).toBeUndefined();
+    expect(renamed.tree!.nodes.inner).toMatchObject({ children: expect.arrayContaining(['tiles']) });
+    expect(renamed.parts.grid.nodeId).toBe('tiles');
+    expect(renamed.variantAxes!.layout.options['four-columns'].styles).toEqual({ tiles: { desktop: { columns: 4 } } });
+    expect(Object.values(renamed.tree!.nodes).flatMap((n) => [n.id, ...('children' in n ? n.children : [])])).not.toContain('grid');
     expect(() => restyle(structuredClone(features), { nodes: { nope: { base: { color: 'red' } } } })).toThrow(/no node "nope"/);
     expect(() => restyle(structuredClone(features), { variants: { tone: { loud: { card: { base: { color: 'red' } } } } } })).toThrow(/no tone option "loud"/);
     expect(mergeStyles({ base: { layout: 'grid', columns: 1 }, tablet: { columns: 2 } }, { base: { columns: null, gap: '8px' }, desktop: { columns: 3 } })).toEqual({ base: { layout: 'grid', gap: '8px' }, tablet: { columns: 2 }, desktop: { columns: 3 } });
@@ -270,6 +291,8 @@ describe('a Signal site as it is exported', () => {
     expect(isGeneratedReadme(projectReadme('Northwind', true, notice, true))).toBe(true);
     // Foundation's README is the one it always was.
     expect(themeNotice(findTheme('foundation')!)).toBe(projectReadme('x').split('## Notices\n\n')[1].trim());
+    // A notice the owner changed is theirs: another licence, or a theme name of their own.
+    expect(isGeneratedReadme(readme.replace('GPL-3.0-or-later', 'LicenseRef-Owner'))).toBe(false);
     expect(isGeneratedReadme(readme.replace('Signal theme', 'Signal theme, customised,'))).toBe(false);
   });
 });
