@@ -74,12 +74,16 @@ describe('History and Undo wording for a list edit', () => {
     label: 'Cards',
     itemLabel: 'Card',
     titleField: 'title',
-    fields: { title: { type: 'text', label: 'Title' }, text: { type: 'text', label: 'Text' } },
+    fields: { title: { type: 'text', label: 'Title' }, text: { type: 'text', label: 'Description' } },
     default: []
   };
   const state = {
-    pages: { home: { id: 'home', title: 'Home', nodes: { n1: { kind: 'instance', id: 'n1', definitionId: 'services', props: { items: cards } } } } },
-    components: { services: { id: 'services', name: 'Services', properties: { items: schema } } },
+    pages: { home: { id: 'home', title: 'Home', nodes: { n1: { kind: 'instance', id: 'n1', definitionId: 'services', props: { items: cards } }, n3: { kind: 'instance', id: 'n3', definitionId: 'fromdefault', props: {} } } } },
+    components: {
+      services: { id: 'services', name: 'Services', properties: { items: schema } },
+      fromdefault: { id: 'fromdefault', name: 'Defaults', properties: { items: { ...schema, default: cards } } },
+      host: { id: 'host', name: 'Host', properties: {}, tree: { nodes: { n2: { kind: 'instance', id: 'n2', definitionId: 'services', props: { items: cards } } } } }
+    },
     assets: { assets: {} }
   } as unknown as ProjectState;
   const label = (op: ListEdit, everywhere = false) => listEditLabel(state, owner, 'n1', 'items', op, 'Edit Cards', everywhere);
@@ -88,7 +92,13 @@ describe('History and Undo wording for a list edit', () => {
     expect(label({ kind: 'insert' })).toBe('Add card 4 to Cards (Services on Home)');
     expect(label({ kind: 'remove', itemId: 'i1' })).toBe('Remove “Planning & layout” from Cards (Services on Home)');
     expect(label({ kind: 'move', itemId: 'i2', index: 0 })).toBe('Move “Materials & colour” from 2 to 1 in Cards (Services on Home)');
-    expect(label({ kind: 'field', itemId: 'i1', field: 'text' })).toBe('Edit Text of “Planning & layout” in Cards (Services on Home)');
+    expect(label({ kind: 'field', itemId: 'i1', field: 'text' })).toBe('Edit Description of “Planning & layout” in Cards (Services on Home)');
+  });
+
+  it('names a card added for a page or with its own title, and the places of another move', () => {
+    expect(label({ kind: 'insert', item: { title: 'About' } })).toBe('Add “About” to Cards (Services on Home)');
+    expect(label({ kind: 'move', itemId: 'i1', index: 2 })).toBe('Move “Planning & layout” from 1 to 3 in Cards (Services on Home)');
+    expect(label({ kind: 'move', itemId: 'i1', index: 99 })).toContain('from 1 to 3 in Cards');
   });
 
   it('tells an add from a remove, a move and a field edit made close together', () => {
@@ -106,6 +116,12 @@ describe('History and Undo wording for a list edit', () => {
 
   it('names a design, not a page, for an edit made everywhere', () => {
     expect(label({ kind: 'remove', itemId: 'i1' }, true)).toBe('Remove “Planning & layout” from Cards everywhere');
+    // The nested placement sits in a design, whose owner is not a page.
+    expect(listEditLabel(state, { kind: 'component', id: 'host' }, 'n2', 'items', { kind: 'field', itemId: 'i2', field: 'title' }, 'Fallback', true)).toBe('Edit Title of “Materials & colour” in Cards everywhere');
+  });
+
+  it('names a row of a list still on its default items', () => {
+    expect(listEditLabel(state, owner, 'n3', 'items', { kind: 'remove', itemId: 'i2' }, 'Fallback')).toBe('Remove “Materials & colour” from Cards (Defaults on Home)');
   });
 
   it('names a default row an edit still addresses by its default id', () => {
@@ -116,7 +132,8 @@ describe('History and Undo wording for a list edit', () => {
   });
 
   it('keeps the generic label when the row is gone or the list is not there', () => {
-    expect(label({ kind: 'remove', itemId: 'gone' })).toBe('Edit Cards');
-    expect(listEditLabel(state, owner, 'missing', 'items', { kind: 'insert' }, 'Edit Cards')).toBe('Edit Cards');
+    expect(listEditLabel(state, owner, 'n1', 'items', { kind: 'remove', itemId: 'gone' }, 'Fallback')).toBe('Fallback');
+    expect(listEditLabel(state, owner, 'missing', 'items', { kind: 'insert' }, 'Fallback')).toBe('Fallback');
+    expect(listEditLabel(state, owner, 'n1', 'nope', { kind: 'insert' }, 'Fallback')).toBe('Fallback');
   });
 });
