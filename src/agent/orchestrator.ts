@@ -7,14 +7,14 @@ import type { ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
 import { getTheme } from '@catalogue/index';
 import { introducedDiagnostics, type Diagnostic } from '@engine/validate';
-import type { AgentModelAdapter, CanonicalItem, ModelEvent, ToolCall } from './types';
+import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { assetSummary, copiesCode, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { compactProjectSummary, describeSelection, projectSummary } from './context';
 import { authorityFor, canEditContracts, checkAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { selectionTarget } from './selection';
-import { applyContextBudget } from './budget';
+import { applyContextBudget, contextVerdict, estimateRequestTokens } from './budget';
 import { completenessNudge, describePage, findStubPages, missingPages, pageCreatesIn, rememberPage, savedPage, type MissingPage, type WantedPage } from './completeness';
 import { exampleSection, retrieveExamples } from './examples';
 
@@ -75,7 +75,8 @@ export interface RunSession {
 
 export interface OrchestratorDeps {
   session(): RunSession | null;
-  adapter(): Promise<{ adapter: AgentModelAdapter; model: string; provider: ProviderId } | { error: string }>;
+  /** `signal` ends anything the factory asks a server while preparing, such as reading a local model's window. */
+  adapter(signal?: AbortSignal): Promise<{ adapter: AgentModelAdapter; model: string; provider: ProviderId } | { error: string }>;
   emit(e: AiEvent): void;
   compileAll(): Promise<Diagnostic[]>;
   inspectLayout(pageId: string, width: number): Promise<unknown>;
@@ -623,7 +624,12 @@ export class Orchestrator {
       this.emitMessage(msg, runId);
     };
 
-    const ad = await this.deps.adapter();
+    const ad = await this.deps.adapter(signal);
+    // Stopped while the adapter was prepared (a local server is asked about its model first): nothing is locked yet.
+    if (signal.aborted) {
+      await finish('cancelled', 'Stopped.');
+      return;
+    }
     if ('error' in ad) {
       await finish('failed', ad.error, { error: ad.error });
       return;
@@ -654,7 +660,10 @@ export class Orchestrator {
 
     const codeEnabled = (await this.deps.codeEnabled?.()) ?? true;
     const selected = selectionTarget(userMsg.context?.selection);
+    // Read once: a window a local server reports part way through the run must not take away a tool it already used.
     const capabilities = ad.adapter.capabilities();
+    /** Set on the first turn, before any call, when the model's window cannot hold the request beside the general tools. */
+    let onlyFocused = false;
     /** Re-chosen each turn, because the user can widen a selection run to the whole site part way through. */
     const runTools = (): RunTools =>
       toolsForRun({
@@ -668,7 +677,8 @@ export class Orchestrator {
         definitionOps: canEditContracts(authority),
         definition: definitionRun,
         attachedImages: !!userMsg.images?.length,
-        ask
+        ask,
+        focused: onlyFocused
       });
     let current = runTools();
     const macros = newMacroMemory();
@@ -721,7 +731,8 @@ export class Orchestrator {
     const ctx = userMsg.context;
     const selection = ctx ? describeSelection(readState(), ctx.selection) : null;
     const examples = authority.kind === 'site' && !ask ? retrieveExamples(session.state, userMsg.text).map(exampleSection) : [];
-    items.push({
+    /** This request's own message: what a new conversation would still have to send. */
+    const requestItem: CanonicalItem = {
       kind: 'user',
       text: `${userMsg.text}\n\n<editor_context>\n${JSON.stringify(
         {
@@ -747,7 +758,8 @@ export class Orchestrator {
         null,
         1
       )}\n</editor_context>`
-    });
+    };
+    items.push(requestItem);
 
     let mutated = false;
     const executedOps: EditOperation[] = [];
@@ -957,6 +969,46 @@ export class Orchestrator {
       });
     };
 
+    /**
+     * The request does not fit the model's window and nothing has changed. The advice depends on why: a model loaded
+     * with too small a context for any request needs setting up again, while a long conversation only needs a new one.
+     */
+    const failForContext = async (system: string, tools: ToolDefinition[], error: string, reported?: ContextOverflow) => {
+      // A local adapter has already taken in what the error reported, together with any size set in Settings.
+      const caps = ad.adapter.capabilities();
+      const windowTokens = caps.contextWindowKnown ? caps.contextWindowTokens : reported?.windowTokens;
+      // A refusal of the adapter's own correction says nothing about the request the run sent.
+      const v = contextVerdict({ system, tools, items, current: requestItem, windowTokens, maxOutputTokens: caps.maxOutputTokens, reported, rejected: !!reported && !reported.retried });
+      const n = (t: number) => t.toLocaleString('en-US');
+      const size = windowTokens ? `${n(windowTokens)}-token context` : 'context';
+      const help = ad.adapter.contextHelp?.(v.recommendedTokens) ?? `Load the model with a context of ${n(v.recommendedTokens)} tokens or more.`;
+      const needs = `The assistant needs at least ${n(v.minimumTokens)} tokens${v.estimated ? ' (an estimate)' : ''} for its instructions, its tools, your message and a short reply, and about ${n(v.recommendedTokens)} to work through a request.`;
+      const history = items.indexOf(requestItem) > 0;
+      const summary =
+        v.kind === 'setup'
+          ? `This model's ${size} cannot hold even a first request. ${needs} ${help} ${v.estimated && history ? 'Starting a new conversation is unlikely to help.' : 'Starting a new conversation will not help.'}`
+          : v.kind === 'conversation'
+            ? `This conversation has grown too long for the model's ${size}. Start a new conversation to carry on, or load the model with a larger context.`
+            : v.kind === 'run'
+              ? `The model's ${size} filled up while it worked on this request, before anything changed. Try a smaller request, or load the model with a larger context.`
+              : `The request is too long for this model's context. If this conversation is long, start a new one. If a new conversation fails too, the model needs a larger context: ${needs} ${help}`;
+      await revertAndFinish('failed', summary, error);
+    };
+
+    /**
+     * Offer only the small tools from now on, when that actually makes the request smaller. A question, a definition
+     * run, or a selection the small tools cannot cover has nothing smaller to fall back to.
+     */
+    const narrowTools = () => {
+      if (onlyFocused) return false;
+      const size = (run: RunTools) => estimateRequestTokens(systemPrompt(readState(), run), run.tools, []);
+      const before = size(runTools());
+      onlyFocused = true;
+      if (size(runTools()) < before) return true;
+      onlyFocused = false;
+      return false;
+    };
+
     try {
       outer: while (true) {
         if (signal.aborted) throw new Error('Cancelled');
@@ -971,12 +1023,23 @@ export class Orchestrator {
           return;
         }
         current = runTools();
-        const tools = current.tools;
-        const system = systemPrompt(readState(), current);
-        const budget = applyContextBudget(items, { system, tools, capabilities: ad.adapter.capabilities(), isMutation: (n) => MUTATING_TOOLS.has(n as never), revision: readRevision() });
-        // The first request goes out regardless: only the provider knows its exact count.
-        if (budget.overflow && turns > 1) {
-          await stopAtLimit("the model's context limit", 'context limit');
+        let tools = current.tools;
+        let system = systemPrompt(readState(), current);
+        const caps = ad.adapter.capabilities();
+        const fit = () => applyContextBudget(items, { system, tools, capabilities: caps, isMutation: (n) => MUTATING_TOOLS.has(n as never), revision: readRevision() });
+        let budget = fit();
+        // A known window that cannot hold the general tools may still hold the small set. Only before this run's
+        // first call, so no call in the history names a tool that is no longer offered.
+        if (budget.overflow && turns === 1 && caps.contextWindowKnown && !current.focused && narrowTools()) {
+          current = runTools();
+          tools = current.tools;
+          system = systemPrompt(readState(), current);
+          budget = fit();
+        }
+        // With only a guessed window the first request goes out regardless: only the server knows its exact count.
+        if (budget.overflow && (turns > 1 || caps.contextWindowKnown)) {
+          if (session.runChanged() || !caps.contextWindowKnown) await stopAtLimit("the model's context limit", 'context limit');
+          else await failForContext(system, tools, 'context limit');
           return;
         }
         // Stream one model turn with bounded retries for temporary provider errors. The time limit also ends a
@@ -1044,8 +1107,21 @@ export class Orchestrator {
         }
         if (failed) {
           // The provider's count is the real one: a request it finds too long keeps the valid work so far.
-          if (failed.code === 'invalid_request' && /context.{0,20}(length|window|limit)|too long|too many tokens|maximum context/i.test(failed.message) && session.runChanged()) {
+          const tooLong = failed.code === 'invalid_request' && (!!failed.context || /context.{0,20}(length|window|limit)|too long|too many tokens|maximum context/i.test(failed.message));
+          if (tooLong && session.runChanged()) {
             await stopAtLimit("the model's context limit", 'context limit');
+            return;
+          }
+          // The first request of a run, refused by the server's own count: the small tools may still fit. The same
+          // turn is asked again, so it does not count against the step limit, and nothing it showed is kept.
+          if (tooLong && failed.context && turns === 1 && narrowTools()) {
+            turns--;
+            msg.text = finalText;
+            this.deps.emit({ runId, conversationId: this.conversation?.id ?? '', kind: 'text', text: msg.text });
+            continue outer;
+          }
+          if (tooLong && failed.context) {
+            await failForContext(system, tools, failed.message, failed.context);
             return;
           }
           await revertAndFinish('failed', failed.code === 'auth' ? 'The AI provider rejected the API key. Update it in Settings.' : `The AI request failed: ${failed.message}`, failed.message);

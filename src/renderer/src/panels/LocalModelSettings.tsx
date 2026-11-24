@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronRight, RefreshCw, Shield, TriangleAlert } from 'lucide-react';
 import type { AppSettings, SettingsPatch } from '@shared/api';
-import { checkLocalBaseURL, LOCAL_PRESETS, type LocalToolMode } from '@shared/local';
+import { checkLocalBaseURL, LOCAL_CONTEXT_MAX, LOCAL_CONTEXT_MIN, LOCAL_PRESETS, parseContextSize, type LocalToolMode } from '@shared/local';
 import { api, setState } from '../store';
 import { Field, SwitchRow } from '../components/ui';
 
@@ -50,7 +50,7 @@ export function LocalModelSettings({
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
   // Open when something in it is already in use, so a customized setting is never hidden.
-  const [advanced, setAdvanced] = useState(local.toolMode !== 'auto' || keySaved);
+  const [advanced, setAdvanced] = useState(local.toolMode !== 'auto' || keySaved || local.contextWindow !== null);
   const request = useRef(0);
   const statusRequest = useRef(0);
   // Whether the field holds something the user typed, as opposed to the saved address.
@@ -143,6 +143,37 @@ export function LocalModelSettings({
     void update({ ai: { local: { allowRemote: allow, ...(allow && next.ok ? { baseURL: next.url } : {}) } } });
   };
   const missing = !!model && !models.includes(model);
+  const shownWindow = local.contextWindow === null ? '' : String(local.contextWindow);
+  const [windowDraft, setWindowDraft] = useState(shownWindow);
+  // As for the address: whether the field holds the author's typing, and the size most recently sent to be saved.
+  const windowEdited = useRef(false);
+  const windowSubmitted = useRef(local.contextWindow);
+  // A saved size arriving (also one sent before this panel opened) is what a later change is compared with.
+  useEffect(() => {
+    windowSubmitted.current = local.contextWindow;
+    if (!windowEdited.current) setWindowDraft(shownWindow);
+  }, [local.contextWindow, shownWindow]);
+  const windowCheck = parseContextSize(windowDraft);
+  const windowError = windowCheck.ok ? null : `Enter a whole number of tokens from ${LOCAL_CONTEXT_MIN.toLocaleString('en-US')} to ${LOCAL_CONTEXT_MAX.toLocaleString('en-US')}, or leave it empty.`;
+  // Only a valid size is saved; an empty field goes back to reading the size from the server.
+  const commitWindow = () => {
+    if (!windowCheck.ok) return;
+    windowEdited.current = false;
+    if (windowCheck.value === windowSubmitted.current) return;
+    windowSubmitted.current = windowCheck.value;
+    void update({ ai: { local: { contextWindow: windowCheck.value } } });
+  };
+  const pendingWindow = useRef(windowDraft);
+  pendingWindow.current = windowDraft;
+  // Closing Settings with Escape skips the field's blur, as for the address.
+  useEffect(
+    () => () => {
+      if (!windowEdited.current) return;
+      const next = parseContextSize(pendingWindow.current);
+      if (next.ok && next.value !== windowSubmitted.current) void update({ ai: { local: { contextWindow: next.value } } });
+    },
+    [update]
+  );
   const url = saved.ok ? saved.url : '';
   // Results only ever describe the saved address, so a different one in the field holds them back.
   const revert = () => {
@@ -259,6 +290,29 @@ export function LocalModelSettings({
               <option value="constrained-json">Constrained JSON</option>
               <option value="native">Native tool calls</option>
             </select>
+          </Field>
+          <Field
+            label="Context size"
+            controlId="settings-local-context"
+            error={windowError}
+            hint="The context size, in tokens, your model is loaded with. Leave it empty to read it from the server. Set it when the server does not report it, or to use less than it reports. Changing it here does not change the server."
+          >
+            <input
+              id="settings-local-context"
+              aria-describedby="settings-local-context-note"
+              aria-invalid={windowError ? true : undefined}
+              className="input mono"
+              inputMode="numeric"
+              placeholder="Automatic"
+              value={windowDraft}
+              spellCheck={false}
+              onChange={(e) => {
+                windowEdited.current = true;
+                setWindowDraft(e.target.value);
+              }}
+              onBlur={commitWindow}
+              onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && commitWindow()}
+            />
           </Field>
           {keyField}
         </div>

@@ -1,10 +1,11 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { newId } from '@shared/ids';
-import { checkLocalBaseURL, localKeyProblem, type LocalToolMode, type LocalURLCheck } from '@shared/local';
-import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall } from './types';
+import { checkLocalBaseURL, localContextWindow, localKeyProblem, type LocalToolMode, type LocalURLCheck } from '@shared/local';
+import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall } from './types';
 import { redact } from './types';
 import { envelopeInstructions, envelopeSchema, FINISH_ACTION, parseEnvelope, partialStatus, stripThinking } from './constrained';
 import { localModelProfile, type LocalModelProfile } from './models';
+import { MIN_OUTPUT_TOKENS, WORKING_WINDOW_TOKENS } from './budget';
 
 /** A loaded model can take minutes to read a long prompt before its first token. */
 export const FIRST_TOKEN_TIMEOUT_MS = 180_000;
@@ -13,6 +14,9 @@ export const IDLE_TIMEOUT_MS = 30_000;
 /** After the finish reason only a usage chunk can follow, and not every server closes the stream promptly. */
 const FINISH_GRACE_MS = 2_000;
 const DISCOVERY_TIMEOUT_MS = 5_000;
+/** Reading the loaded context size is optional, so a server that is slow to report it never holds up a request. */
+const CONTEXT_DISCOVERY_MS = 1_000;
+
 /** How long a failed response gets to deliver its error text. */
 const ERROR_BODY_MS = 5_000;
 const FINISH_REASONS = new Set(['stop', 'tool_calls', 'length', 'content_filter']);
@@ -29,6 +33,17 @@ export interface LocalEndpoint {
   apiKey?: string | null;
   allowRemote?: boolean;
   toolMode?: LocalToolMode;
+  /** The context size the author set in Settings. It caps whatever the server reports. */
+  contextWindow?: number | null;
+}
+
+/** Servers whose report of the loaded context size the app reads, and whose setup it can explain. */
+export type LocalServerKind = 'llama.cpp' | 'ollama' | 'lm-studio' | 'vllm';
+
+/** What the server reported about the loaded model. */
+export interface LocalContext {
+  windowTokens?: number;
+  server?: LocalServerKind;
 }
 
 export interface LocalAdapterOptions {
@@ -38,6 +53,8 @@ export interface LocalAdapterOptions {
   profile?: LocalModelProfile;
   /** Every address a name resolves to. Tests stand in for the system resolver. */
   lookup?: (host: string) => Promise<Array<{ address: string }>>;
+  /** The loaded context size the server reported before the run, from `discoverLocalContext`. */
+  context?: LocalContext;
 }
 
 const LOOKUP_TIMEOUT_MS = 2_000;
@@ -72,10 +89,11 @@ async function localhostProblem(url: string, lookup: LocalAdapterOptions['lookup
   }
 }
 
-type LocalError = { code: ModelErrorCode; message: string; retryAfterMs?: number };
+type LocalError = { code: ModelErrorCode; message: string; retryAfterMs?: number; context?: ReturnType<typeof contextOverflow> };
 type TurnResult =
   | { kind: 'done'; event: Extract<ModelEvent, { type: 'done' }> }
-  | { kind: 'error'; error: LocalError }
+  /** `streamed`: part of the reply had already arrived, so asking again would show it twice. */
+  | { kind: 'error'; error: LocalError; streamed?: boolean }
   | { kind: 'http'; status: number; body: string; retryAfterMs?: number }
   | { kind: 'unusable'; problem: string; raw: string };
 type ChatMessage = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
@@ -107,12 +125,38 @@ function serverParam(body: string): string {
 }
 
 const CONTEXT_FULL = /context (size|length|window)|exceeds? .*context|n_ctx|too many tokens|prompt is too long/i;
-const contextMessage = 'The conversation is too long for this model\'s context window. Start a new conversation, or load the model with a larger context size.';
+
+const contextMessage = "The request is too long for this model's context window.";
+
+const count = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined);
+const first = (text: string, patterns: RegExp[]) => {
+  for (const p of patterns) {
+    const n = count(Number(p.exec(text)?.[1]));
+    if (n) return n;
+  }
+  return undefined;
+};
+
+/**
+ * The numbers in a context error, from the shapes local servers use: llama.cpp's `n_ctx` and `n_prompt_tokens`
+ * fields and its message, vLLM's "maximum context length is X … (A in the messages", and LM Studio's texts.
+ * LM Studio's "keep the first N tokens" is only part of the prompt, so it is not taken as the prompt's size.
+ */
+export function contextOverflow(body: string): ContextOverflow & { server?: LocalServerKind } {
+  const v = safeJson(body) as { error?: unknown } | undefined;
+  const fields = (v && typeof v.error === 'object' && v.error ? v.error : (v ?? {})) as Record<string, unknown>;
+  const text = serverMessage(body);
+  const windowTokens = count(fields.n_ctx) ?? first(text, [/available context size \((\d+) tokens?\)/i, /maximum context length is (\d+)/i, /context length of only (\d+)/i, /maximum context size is (\d+)/i]);
+  const promptTokens = count(fields.n_prompt_tokens) ?? first(text, [/request \((\d+) tokens?\)/i, /\((\d+) in the messages/i, /but (\d+) tokens were provided/i, /request has (\d+) input tokens/i]);
+  const server: LocalServerKind | undefined =
+    fields.type === 'exceed_context_size_error' || /available context size/i.test(text) ? 'llama.cpp' : /maximum context length is \d+/i.test(text) ? 'vllm' : /context length of only|maximum context size is/i.test(text) ? 'lm-studio' : undefined;
+  return { ...(windowTokens ? { windowTokens } : {}), ...(promptTokens ? { promptTokens } : {}), ...(server ? { server } : {}) };
+}
 
 function httpError(status: number, body: string, model: string, retryAfterMs?: number, apiKey?: string | null): LocalError {
   const message = serverMessage(body, apiKey);
   if (status === 401 || status === 403) return { code: 'auth', message: 'The local server rejected the API key. Check it in Settings.' };
-  if (CONTEXT_FULL.test(message)) return { code: 'invalid_request', message: contextMessage };
+  if (CONTEXT_FULL.test(message)) return { code: 'invalid_request', message: contextMessage, context: contextOverflow(body) };
   if (status === 404) return { code: 'invalid_request', message: message ? `The local server could not use ${model}: ${message}` : `The local server has no model called ${model}.` };
   if (status === 429) return { code: 'rate_limit', message: 'The local server is busy.', retryAfterMs };
   // llama-server answers 503 while the model is still loading.
@@ -346,12 +390,29 @@ export class LocalAdapter implements AgentModelAdapter {
   private responseFormat: 'json_schema' | 'json_object' | 'none' = 'json_schema';
   private usageOption = true;
   private fetchImpl: typeof globalThis.fetch;
+  /** The context size the author set in Settings. */
+  private configured: number | undefined;
+  /** The context size the server reported, before the run or in a context error during it. */
+  private reported: number | undefined;
+  /** The server answered `discoverLocalContext`, so the size in Settings can be cleared and read from it instead. */
+  private reportsSize: boolean;
+  private server: LocalServerKind | undefined;
 
   constructor(private endpoint: LocalEndpoint, private opts: LocalAdapterOptions = {}) {
     this.url = checkLocalBaseURL(endpoint.baseURL, endpoint.allowRemote);
     this.profile = opts.profile ?? localModelProfile(endpoint.model);
     this.mode = endpoint.toolMode === 'native' || endpoint.toolMode === 'constrained-json' ? endpoint.toolMode : this.profile.toolCalling;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
+    this.configured = localContextWindow(endpoint.contextWindow) ?? undefined;
+    this.reported = count(opts.context?.windowTokens);
+    this.reportsSize = this.reported !== undefined;
+    this.server = opts.context?.server;
+  }
+
+  /** The smaller of what the author set and what the server reported; the profile's guess when neither is known. */
+  private window(): number {
+    const known = [this.configured, this.reported].filter((n): n is number => n !== undefined);
+    return known.length ? Math.min(...known) : this.profile.contextWindow;
   }
 
   capabilities(): ModelCapabilities {
@@ -360,9 +421,43 @@ export class LocalAdapter implements AgentModelAdapter {
       streaming: true,
       strictSchemas: this.mode === 'constrained-json',
       parallelToolCalls: this.mode === 'native',
-      contextWindowTokens: this.profile.contextWindow,
-      maxOutputTokens: this.profile.maxOutput
+      contextWindowTokens: this.window(),
+      maxOutputTokens: this.profile.maxOutput,
+      contextWindowKnown: this.configured !== undefined || this.reported !== undefined
     };
+  }
+
+  /**
+   * What to change so the model has a context of at least `tokens` tokens: the server's setting when the model is
+   * not loaded with that much (or nothing says how much it has), and the size in Settings whenever that would still
+   * hold it back.
+   */
+  contextHelp(tokens: number): string {
+    const n = (t: number) => t.toLocaleString('en-US');
+    const steps: string[] = [];
+    if (this.reported === undefined || this.reported < tokens) {
+      switch (this.server) {
+        case 'llama.cpp':
+          steps.push(`Restart llama-server with --ctx-size ${tokens} or more. With --parallel, each parallel request gets an equal share of that size.`);
+          break;
+        case 'ollama':
+          steps.push(`Set OLLAMA_CONTEXT_LENGTH=${tokens} or more and restart Ollama, or set PARAMETER num_ctx ${tokens} in the model's Modelfile. Requests through Ollama's OpenAI-compatible address cannot change it.`);
+          break;
+        case 'lm-studio':
+          steps.push(`In LM Studio, load the model again with its Context Length set to ${tokens} or more.`);
+          break;
+        case 'vllm':
+          steps.push(`Restart vLLM with --max-model-len ${tokens} or more.`);
+          break;
+        default:
+          steps.push(`Load the model again with a context size of ${tokens} tokens or more in your model app.`);
+      }
+    } else steps.push(`The server already has the model loaded with ${n(this.reported)} tokens.`);
+    // Clearing it helps only when the server reports its own size; otherwise the assistant falls back to a guess.
+    if (this.configured !== undefined && this.configured < tokens)
+      steps.push(`The context size set in Settings, ${n(this.configured)} tokens, also limits the assistant: raise it under Advanced server options${this.reportsSize ? ', or clear it to use the size the server reports' : ' to the size the model is loaded with'}.`);
+    else if (this.configured === undefined && this.reported === undefined) steps.push('This server does not report its context size, so also enter the new size under Advanced server options in Settings.');
+    return steps.join(' ');
   }
 
   private messages(items: CanonicalItem[], constrained: boolean): ChatMessage[] {
@@ -393,11 +488,11 @@ export class LocalAdapter implements AgentModelAdapter {
     return out;
   }
 
-  private body(req: CanonicalModelRequest, constrained: boolean, corrections: ChatMessage[]): Record<string, unknown> {
+  private body(req: CanonicalModelRequest, constrained: boolean, corrections: ChatMessage[], replyCap = Infinity): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: req.model,
       messages: alternate([{ role: 'system', content: constrained ? req.system + envelopeInstructions(req.tools) : req.system }, ...this.messages(req.items, constrained), ...corrections]),
-      max_tokens: Math.min(req.maxOutputTokens, this.profile.maxOutput),
+      max_tokens: Math.min(req.maxOutputTokens, this.profile.maxOutput, replyCap),
       temperature: this.profile.temperature,
       stream: true
     };
@@ -447,8 +542,9 @@ export class LocalAdapter implements AgentModelAdapter {
     const corrections: ChatMessage[] = [];
     let fallbacks = 0;
     let shownStatus = false;
+    let replyCap = Infinity;
     for (;;) {
-      const body = this.body(req, constrained, corrections);
+      const body = this.body(req, constrained, corrections, replyCap);
       const result: TurnResult = yield* this.readTurn(`${this.url.url}/chat/completions`, body, req.model, signal, constrained, !shownStatus);
       if (constrained) shownStatus = true;
       if (result.kind === 'done') {
@@ -456,7 +552,14 @@ export class LocalAdapter implements AgentModelAdapter {
         return;
       }
       if (result.kind === 'error') {
-        yield { type: 'error', ...result.error };
+        if (!result.streamed && replyCap === Infinity && !corrections.length && !signal.aborted) {
+          const room = this.shorterReply(result.error, Number(body.max_tokens));
+          if (room) {
+            replyCap = room;
+            continue;
+          }
+        }
+        yield this.errorEvent(result.error, corrections.length > 0);
         return;
       }
       if (result.kind === 'http') {
@@ -464,7 +567,16 @@ export class LocalAdapter implements AgentModelAdapter {
           fallbacks++;
           continue;
         }
-        yield { type: 'error', ...httpError(result.status, result.body, req.model, result.retryAfterMs, this.endpoint.apiKey) };
+        const error = httpError(result.status, result.body, req.model, result.retryAfterMs, this.endpoint.apiKey);
+        // Once per turn, and only for the turn's own prompt: after a correction it is no longer the prompt measured.
+        if (replyCap === Infinity && !corrections.length && !signal.aborted) {
+          const room = this.shorterReply(error, Number(body.max_tokens));
+          if (room) {
+            replyCap = room;
+            continue;
+          }
+        }
+        yield this.errorEvent(error, corrections.length > 0);
         return;
       }
       // The reply could not be read as an action: ask again, without involving the tool loop.
@@ -476,13 +588,42 @@ export class LocalAdapter implements AgentModelAdapter {
     }
   }
 
+  /**
+   * A server that counts the reply against the window (vLLM) takes the same prompt with a smaller reply. The size
+   * comes from the server's own count of the prompt, within any size set in Settings. Zero when that cannot help,
+   * such as a prompt that alone overflows the window.
+   */
+  private shorterReply(error: LocalError, sent: number): number {
+    const promptTokens = error.context?.promptTokens;
+    if (!promptTokens || !error.context?.windowTokens) return 0;
+    this.learn(error.context);
+    const room = this.window() - promptTokens;
+    return room >= MIN_OUTPUT_TOKENS && room < sent ? room : 0;
+  }
+
+  /** Keeps what a context error says about the server for the rest of the run, and passes the numbers on. */
+  private learn(context: NonNullable<LocalError['context']>): ContextOverflow {
+    const { server, ...numbers } = context;
+    if (numbers.windowTokens) this.reported = numbers.windowTokens;
+    this.server ??= server;
+    return numbers;
+  }
+
+  /** `retried`: the refused request carried a correction, so its prompt count is not the caller's request. */
+  private errorEvent(error: LocalError, retried = false): Extract<ModelEvent, { type: 'error' }> {
+    const { context, ...rest } = error;
+    if (!context) return { type: 'error', ...rest };
+    const { promptTokens, ...numbers } = this.learn(context);
+    return { type: 'error', ...rest, context: retried ? { ...numbers, retried } : { ...numbers, ...(promptTokens ? { promptTokens } : {}) } };
+  }
+
   /** An error sent inside the stream, classified the same way as the same failure in an HTTP status. */
   private streamError(error: unknown, model: string): LocalError {
     const body = JSON.stringify({ error });
     const status = (error as { code?: unknown } | null)?.code;
     if (typeof status === 'number' && status >= 400) return httpError(status, body, model, undefined, this.endpoint.apiKey);
     const message = serverMessage(body, this.endpoint.apiKey);
-    return CONTEXT_FULL.test(message) ? { code: 'invalid_request', message: contextMessage } : { code: 'unknown', message: `The local server reported an error: ${message}` };
+    return CONTEXT_FULL.test(message) ? { code: 'invalid_request', message: contextMessage, context: contextOverflow(body) } : { code: 'unknown', message: `The local server reported an error: ${message}` };
   }
 
   private async *readTurn(url: string, body: Record<string, unknown>, model: string, signal: AbortSignal, constrained: boolean, showStatus: boolean): AsyncGenerator<ModelEvent, TurnResult> {
@@ -551,7 +692,7 @@ export class LocalAdapter implements AgentModelAdapter {
             corrupt = true;
             continue;
           }
-          if (chunk.error) return { kind: 'error', error: this.streamError(chunk.error, model) };
+          if (chunk.error) return { kind: 'error', error: this.streamError(chunk.error, model), streamed: !!raw };
           if (typeof chunk.usage?.prompt_tokens === 'number' && typeof chunk.usage?.completion_tokens === 'number') usage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens };
           const choice = chunk.choices?.[0];
           if (!choice) continue;
@@ -629,13 +770,15 @@ export class LocalAdapter implements AgentModelAdapter {
 }
 
 /** Models the server reports through `GET {baseURL}/models`. */
-export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote'>, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; models: string[]; message?: string }> {
+export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote'>, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<{ ok: boolean; models: string[]; message?: string }> {
   const url = checkLocalBaseURL(endpoint.baseURL, endpoint.allowRemote);
   if (!url.ok) return { ok: false, models: [], message: url.message };
-  const keyProblem = localKeyProblem(endpoint.apiKey) ?? (await localhostProblem(url.url, opts.lookup));
+  const keyProblem = localKeyProblem(endpoint.apiKey) ?? (await localhostProblem(url.url, opts.lookup, opts.signal));
   if (keyProblem) return { ok: false, models: [], message: keyProblem };
+  if (opts.signal?.aborted) return { ok: false, models: [], message: 'Cancelled' };
   try {
-    const res = await (opts.fetch ?? globalThis.fetch)(`${url.url}/models`, { headers: headers(endpoint.apiKey, 'application/json'), redirect: 'error', signal: AbortSignal.timeout(opts.timeoutMs ?? DISCOVERY_TIMEOUT_MS) });
+    const timeout = AbortSignal.timeout(opts.timeoutMs ?? DISCOVERY_TIMEOUT_MS);
+    const res = await (opts.fetch ?? globalThis.fetch)(`${url.url}/models`, { headers: headers(endpoint.apiKey, 'application/json'), redirect: 'error', signal: opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout });
     if (!res.ok) return { ok: false, models: [], message: httpError(res.status, await res.text().catch(() => ''), 'that model', undefined, endpoint.apiKey).message };
     const data = ((await res.json()) as { data?: Array<{ id?: unknown }> }).data;
     if (!Array.isArray(data)) return { ok: false, models: [], message: `The server at ${url.url} did not return a model list.` };
@@ -646,11 +789,96 @@ export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 
   }
 }
 
+/**
+ * The context size the server has `model` loaded with, from whichever report it offers: llama.cpp's `/props` and
+ * `/models` metadata, LM Studio's `/api/v0/models`, Ollama's `/api/ps`, or vLLM's `max_model_len`. A training
+ * context or a model's maximum is never taken for the loaded size. Every request goes to the saved server, with
+ * one short deadline for all of them; a server that reports nothing yields an empty answer, never an error.
+ */
+export async function discoverLocalContext(endpoint: Pick<LocalEndpoint, 'baseURL' | 'apiKey' | 'allowRemote' | 'model'>, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<LocalContext> {
+  const url = checkLocalBaseURL(endpoint.baseURL, endpoint.allowRemote);
+  if (!url.ok || !endpoint.model || opts.signal?.aborted || localKeyProblem(endpoint.apiKey)) return {};
+  // The servers' own routes sit beside the OpenAI-compatible ones, not under them.
+  const root = url.url.replace(/\/v1$/, '');
+  // One deadline for everything, the `localhost` check included.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), opts.timeoutMs ?? CONTEXT_DISCOVERY_MS);
+  // A Stop, or permission for a remote server withdrawn, ends the probes at once.
+  const stop = () => ctl.abort();
+  opts.signal?.addEventListener('abort', stop, { once: true });
+  const get = async (target: string): Promise<Record<string, any> | undefined> => {
+    try {
+      const res = await (opts.fetch ?? globalThis.fetch)(target, { headers: headers(endpoint.apiKey, 'application/json'), redirect: 'error', signal: ctl.signal });
+      if (!res.ok) {
+        void res.body?.cancel().catch(() => undefined);
+        return undefined;
+      }
+      const v: unknown = await res.json();
+      return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  try {
+    // The same check as every other request to the server: a `localhost` that is this computer.
+    if ((await localhostProblem(url.url, opts.lookup, ctl.signal)) || ctl.signal.aborted) return {};
+    const model = endpoint.model;
+    let modelPath: string | null = null;
+    try {
+      modelPath = encodeURIComponent(model);
+    } catch {
+      /* an ID no URL can carry */
+    }
+    // Every probe settles by the deadline, even through a transport that ignores the abort.
+    const late = new Promise<undefined>((resolve) => ctl.signal.addEventListener('abort', () => resolve(undefined), { once: true }));
+    const probe = (target: string | null) => (target ? Promise.race([get(target), late]) : Promise.resolve(undefined));
+    const [models, props, lmStudio, ollama] = await Promise.all([probe(`${url.url}/models`), probe(`${root}/props`), probe(modelPath && `${root}/api/v0/models/${modelPath}`), probe(`${root}/api/ps`)]);
+    const listed: unknown[] | undefined = Array.isArray(models?.data) ? models.data : undefined;
+    const entry = listed?.find((m): m is Record<string, any> => !!m && typeof m === 'object' && (m as { id?: unknown }).id === model);
+    // `/props` describes the one model a llama-server runs, so it counts only when that model is the one chosen.
+    const llama = listed?.length === 1 && entry ? count(props?.default_generation_settings?.n_ctx) : undefined;
+    if (llama) return { windowTokens: llama, server: 'llama.cpp' };
+    if (count(entry?.meta?.n_ctx)) return { windowTokens: entry!.meta.n_ctx, server: 'llama.cpp' };
+    if (lmStudio?.id === model && count(lmStudio.loaded_context_length)) return { windowTokens: lmStudio.loaded_context_length, server: 'lm-studio' };
+    const running = Array.isArray(ollama?.models) ? ollama.models.find((m: Record<string, unknown> | null) => m && (m.name === model || m.model === model)) : undefined;
+    if (count(running?.context_length)) return { windowTokens: running.context_length, server: 'ollama' };
+    if (count(entry?.max_model_len)) return { windowTokens: entry!.max_model_len, server: 'vllm' };
+    return {};
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', stop);
+    ctl.abort();
+  }
+}
+
+/**
+ * The adapter for a run against the saved local server: the model the author chose, or the server's only model,
+ * and the context size the server reports for it.
+ */
+export async function openLocalAdapter(endpoint: LocalEndpoint, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<{ adapter: LocalAdapter; model: string } | { error: string }> {
+  const chosen = { ...endpoint };
+  if (opts.signal?.aborted) return { error: 'Cancelled' };
+  // A server that runs a single model needs no choice in Settings.
+  if (!chosen.model) {
+    const found = await listLocalModels(chosen, opts);
+    if (!found.ok) return { error: found.message ?? 'Could not reach the local server.' };
+    if (!found.models.length) return { error: 'The local server has no models loaded.' };
+    chosen.model = found.models[0];
+  }
+  // The loaded context size decides the tools and the reply budget, so it is read before the first request.
+  const context = await discoverLocalContext(chosen, opts);
+  return { adapter: new LocalAdapter(chosen, { fetch: opts.fetch, lookup: opts.lookup, context }), model: chosen.model };
+}
+
 /** Check that the server answers and offers the model. Nothing is generated, so this is quick. */
 export async function testLocal(endpoint: LocalEndpoint, opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { timeoutMs?: number } = {}): Promise<{ ok: boolean; message: string }> {
   const r = await listLocalModels(endpoint, opts);
   if (!r.ok) return { ok: false, message: r.message ?? 'Could not reach the local server.' };
   if (!r.models.length) return { ok: false, message: 'Connected, but the server has no models loaded.' };
   if (endpoint.model && !r.models.includes(endpoint.model)) return { ok: false, message: `Connected, but the server does not list ${endpoint.model}. Choose one of its models.` };
-  return { ok: true, message: `Connected. ${endpoint.model || r.models[0]} is available.` };
+  const model = endpoint.model || r.models[0];
+  const { windowTokens } = await discoverLocalContext({ ...endpoint, model }, opts);
+  if (!windowTokens) return { ok: true, message: `Connected. ${model} is available.` };
+  const short = windowTokens < WORKING_WINDOW_TOKENS ? ` The assistant works best with ${WORKING_WINDOW_TOKENS.toLocaleString('en-US')} tokens or more, so long requests may not fit.` : '';
+  return { ok: true, message: `Connected. ${model} is available, loaded with a ${windowTokens.toLocaleString('en-US')}-token context.${short}` };
 }

@@ -206,9 +206,11 @@ export function toolsForRun(opts: {
   definition?: boolean;
   attachedImages?: boolean;
   ask?: boolean;
+  /** The small set whatever the window: the request would not fit beside the general tools. */
+  focused?: boolean;
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
-  const focused = capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
+  const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
   if (opts.ask) return { tools: askTools(codeEnabled), mode: 'ask', focused };
   const general = toolDefinitions({ codeEnabled, definitionOps });
   if (selection) {

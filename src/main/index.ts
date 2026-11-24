@@ -18,7 +18,7 @@ import { loadSettings, localEndpoint, providerStatuses, recents, removeRecent, s
 import { Orchestrator } from '@agent/orchestrator';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
 import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
-import { LocalAdapter, listLocalModels, testLocal } from '@agent/local';
+import { listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource, componentSources } from './codecheck';
 import { stopMediaWorker } from './project/assets';
@@ -121,32 +121,25 @@ const menuCommands = createMenuCommands<BrowserWindow>({
 controller.onOpeningChange = () => updateProjectMenu();
 let fixAbort: AbortController | null = null;
 
-async function orchestratorAdapter() {
-  return orchestratorDeps.adapter();
+async function orchestratorAdapter(signal?: AbortSignal) {
+  return orchestratorDeps.adapter(signal);
 }
 
 const orchestratorDeps = {
-  adapter: async () => {
+  adapter: async (signal?: AbortSignal) => {
     const s = (await loadSettings()).settings.ai;
     const provider = s.provider;
     if (!provider) return { error: 'Choose an AI provider in Settings to use the assistant.' };
     if (provider === 'local') {
-      const endpoint = await localEndpoint();
-      // A server that runs a single model needs no choice in Settings.
-      if (!endpoint.model) {
-        const found = await listLocalModels(endpoint);
-        if (!found.ok) return { error: found.message ?? 'Could not reach the local server.' };
-        if (!found.models.length) return { error: 'The local server has no models loaded.' };
-        endpoint.model = found.models[0];
-      }
-      return { adapter: new LocalAdapter(endpoint), model: endpoint.model, provider };
+      const opened = await openLocalAdapter(await localEndpoint(), { signal });
+      return 'error' in opened ? opened : { ...opened, provider };
     }
     const key = await getKey(provider);
     if (!key) return { error: `Add your ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key in Settings to use the assistant.` };
     const model = s.models[provider];
     return { adapter: provider === 'openai' ? new OpenAIAdapter(key.key, model) : new AnthropicAdapter(key.key, model), model, provider };
   }
-} as { adapter: () => Promise<{ adapter: import('@agent/types').AgentModelAdapter; model: string; provider: ProviderId } | { error: string }> };
+} as { adapter: (signal?: AbortSignal) => Promise<{ adapter: import('@agent/types').AgentModelAdapter; model: string; provider: ProviderId } | { error: string }> };
 
 const orchestrator = new Orchestrator({
   session: () => controller.session,
@@ -389,7 +382,7 @@ function registerIpc() {
     fixAbort?.abort();
     const abort = (fixAbort = new AbortController());
     try {
-      const ad = await orchestratorAdapter();
+      const ad = await orchestratorAdapter(abort.signal);
       if (abort.signal.aborted) return { ok: false, cancelled: true, message: 'Cancelled' };
       if ('error' in ad) return { ok: false, message: ad.error };
       // The repaired code is written by the assistant, so it must pass the assistant's stricter policy, and so
