@@ -2,6 +2,7 @@ import { app } from 'electron';
 import { existsSync, promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import type { AppSettings, LocalCheck, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
+import { PROVIDER_LABELS } from '@shared/turn-model';
 import { atomicWrite } from './project/fsutil';
 import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
@@ -234,7 +235,7 @@ export async function providerStatuses(): Promise<ProviderStatus[]> {
     const k = await getKey(id);
     out.push({
       id,
-      label: id === 'openai' ? 'OpenAI' : 'Anthropic',
+      label: PROVIDER_LABELS[id],
       configured: !!k,
       source: k?.source ?? null,
       storage: 'local-file',
@@ -247,7 +248,7 @@ export async function providerStatuses(): Promise<ProviderStatus[]> {
   const key = await getKey('local');
   out.push({
     id: 'local',
-    label: 'Local model',
+    label: PROVIDER_LABELS.local,
     configured: url.ok,
     source: key?.source ?? null,
     storage: 'local-file',
@@ -258,9 +259,12 @@ export async function providerStatuses(): Promise<ProviderStatus[]> {
   return out;
 }
 
-/** The saved local server. A model server the app runs itself can supply the same shape without Settings. */
-export async function localEndpoint(): Promise<LocalEndpoint> {
-  const { local } = (await loadSettings()).settings.ai;
+/**
+ * The saved local server. A model server the app runs itself can supply the same shape without Settings. `ai` is
+ * the settings already read for this request, so the provider and the model come from the same reading.
+ */
+export async function localEndpoint(ai?: AppSettings['ai']): Promise<LocalEndpoint> {
+  const { local } = ai ?? (await loadSettings()).settings.ai;
   return { baseURL: local.baseURL, allowRemote: local.allowRemote, toolMode: local.toolMode, contextWindow: local.contextWindow, model: localModelFor(local), apiKey: (await getKey('local'))?.key ?? null };
 }
 

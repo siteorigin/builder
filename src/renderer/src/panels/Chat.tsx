@@ -1,11 +1,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatImageRef, type ChatMessage, type FieldLocation } from '@shared/api';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
 import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
+import { nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
+import { PROVIDER_LABELS, turnModelText } from '@shared/turn-model';
 import { chatContextFor, composerScope, retryView, targetOf } from '../lib/chatTarget';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
@@ -192,6 +194,48 @@ export function Chat() {
   const answeredAt = useRef(0);
   const working = msgs.find((m) => m.runId === activeRunId && m.role === 'assistant');
   const workingUser = working ? msgs[msgs.indexOf(working) - 1] : null;
+  // Two destinations, never confused: the model the running turn went to (fixed on the turn when it started), and
+  // the one Settings choose for the next message.
+  const inFlight = running ? turnRecipient(working) : null;
+  /** A turn has started and not ended, even before its status arrives (a local server can take a while to answer). */
+  const pending = running || !!(working && !working.result);
+  // With no local model chosen, the server's first model takes the next message: asked whenever it may have changed
+  // (another conversation, a finished run, coming back to the app), so a server that now runs another model is a switch.
+  const autoLocal = configured && provider?.id === 'local' && !settings?.ai.models.local?.trim() ? (settings?.ai.local.baseURL ?? '') : null;
+  const [serverModel, setServerModel] = useState<{ baseURL: string; id: string | null } | null>(null);
+  const probeSeq = useRef(0);
+  /** The model the local server offers first now; only the newest answer is kept, whatever order they arrive in. */
+  const probeServer = (baseURL: string): Promise<string | null> => {
+    const seq = ++probeSeq.current;
+    return api.ai
+      .localModels()
+      .then(
+        (r) => (r.ok && r.models[0]) || null,
+        () => null
+      )
+      .then((id) => {
+        if (seq === probeSeq.current) setServerModel({ baseURL, id });
+        return id;
+      });
+  };
+  useEffect(() => {
+    if (autoLocal === null) return;
+    const ask = () => void probeServer(autoLocal);
+    ask();
+    window.addEventListener('focus', ask);
+    return () => {
+      // Answers to questions asked before now are for another server or another moment.
+      probeSeq.current++;
+      window.removeEventListener('focus', ask);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoLocal, conversation?.id, running]);
+  const next = nextRecipient(provider, settings?.ai.models, autoLocal !== null && serverModel?.baseURL === autoLocal ? serverModel.id : null);
+  // A message to a model that has not seen this conversation's recent messages says so before it is sent.
+  const notice = asking ? null : switchNotice(msgs, next);
+  const noticeId = useId();
+  const freshing = useRef(false);
+  const answerElsewhere = !!(asking && inFlight && next && !sameRecipient(inFlight, next));
   // Undo turn is offered only while that turn is the newest step in the project's undo history: history
   // undoes in order, so any later edit (manual or AI) makes an older turn's Undo fail.
   const undoableId = undoableTurn(msgs, history);
@@ -291,8 +335,6 @@ export function Chat() {
   const scope = composerScope(st, { pageId, selection, definitionMode });
   const { page, component } = scope;
   const selLabel = scope.selectionLabel;
-  const model = provider ? settings?.ai.models[provider.id] : undefined;
-  const modelLabel = provider?.models.find((m) => m.id === model)?.label ?? model;
   const sel = selLabel?.toLowerCase();
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
@@ -396,7 +438,9 @@ export function Chat() {
     taRef.current?.focus();
     setSending(true);
     nearBottom.current = true;
-    const r = await api.ai.send(text.trim(), ctx, conversationId);
+    // Sent for the model the composer names now: if Settings or the local server would send it elsewhere by the time it
+    // runs, nothing is sent and the turn says so.
+    const r = await api.ai.send(text.trim(), ctx, conversationId, next ? { provider: next.provider, model: next.id } : undefined);
     setSending(false);
     if (!r.ok) return toast(r.message ?? 'Could not start the request.', 'error');
     // A continuation was never typed, so whatever is in the composer is the user's own next message.
@@ -480,6 +524,16 @@ export function Chat() {
       ],
       'Conversations'
     );
+  };
+
+  /** A new conversation that takes the unsent message (and its images) along, so nothing earlier goes with it. */
+  const startFresh = () => {
+    // A second activation before the first opens would find the message already moved, and open another empty one.
+    if (!conversation || freshing.current) return;
+    freshing.current = true;
+    const from = conversation.id;
+    const opened = api.ai.newConversation().finally(() => (freshing.current = false));
+    show(opened, (c) => ({ chatDrafts: moveDraft(getState().chatDrafts, from, c.id), chatImages: moveImages(getState().chatImages, from, c.id) }));
   };
 
 
@@ -607,6 +661,7 @@ export function Chat() {
               canCompose={configured}
               asking={asking}
               onUndo={undoTurn}
+              continueNote={configured && notice ? noticeId : undefined}
               onContinue={m.id === resumable && !sending && configured ? () => continueRequest(msgs[i - 1]) : undefined}
               onRetry={m.id === retryable && !sending && configured ? () => retryRequest(msgs[i - 1]) : undefined}
             />
@@ -637,6 +692,12 @@ export function Chat() {
                 {stripDetail}
               </span>
             )}
+            {inFlight && (
+              <span className="run-model">
+                <span className="sr-only">Sent to </span>
+                {turnModelText(inFlight)}
+              </span>
+            )}
           </span>
           {/* Stopping an edit puts the site back as it was before the request, so the button says so. Once it is
               stopping there is nothing left to press. */}
@@ -662,6 +723,17 @@ export function Chat() {
           <span>{provider.warning}</span>
         </div>
       )}
+      {configured && notice && (
+        <div className={`scope-note switch-note${notice.leavesComputer ? ' danger' : ''}`} role="status">
+          <Info />
+          <span>
+            <span id={noticeId}>{switchNoticeText(notice)}</span>{' '}
+            <button className="link" disabled={pending || sending} title={pending ? 'Available when the current request finishes' : 'Start a new conversation with your unsent message, without the earlier ones'} onClick={startFresh}>
+              Start fresh
+            </button>
+          </span>
+        </div>
+      )}
       {/* Shown whenever a question waits, even if the provider was changed meanwhile: the run still needs it. */}
       {asking && (
         // The question waiting for an answer sits by the composer, which answers it; a choice answers it in one click.
@@ -681,6 +753,7 @@ export function Chat() {
             {offeredImages(asking.question).length && !asking.question.widen
               ? `Choose a picture${asking.question.choices.length ? ' or an option' : ''}, or type your own answer below. Select a photo to see it larger first.`
               : questionHint(asking.question)}
+            {answerElsewhere && inFlight ? ` Your answer goes to ${turnModelText(inFlight)}, which asked.` : ''}
             {draft.trim() || images.length ? ' Your unsent message is kept for afterwards.' : ''}
           </p>
           {/* Only the options scroll, so a long list never scrolls the question and its instructions out of sight. */}
@@ -894,10 +967,21 @@ export function Chat() {
                 ]}
               />
             )}
-            {provider && !asking && (
-              // The model is the part that changes between requests, so it gets the room; the provider is in the title.
-              <button className="btn btn-sm btn-ghost composer-model" title={`${provider.label}${modelLabel ? ` · ${modelLabel}` : ''}. Change AI provider or model`} aria-label={`AI model: ${provider.label}${modelLabel ? ` ${modelLabel}` : ''}. Change provider or model`} aria-haspopup="dialog" onClick={openSettings}>
-                <span className="label">{modelLabel ?? provider.label}</span>
+            {next && !asking && (
+              // The model for the next message, which may differ from the one a running turn went to. The model is the
+              // part that changes between requests, so it gets the room; the provider is in its name and title.
+              <button
+                className="btn btn-sm btn-ghost composer-model"
+                title={`Next message: ${recipientText(next)}. Change AI provider or model`}
+                aria-label={`${pending ? 'Next: ' : 'Next message: '}${next.id ? `${next.label}, ${PROVIDER_LABELS[next.provider]}` : PROVIDER_LABELS[next.provider]}. Change AI provider or model`}
+                aria-haspopup="dialog"
+                onClick={openSettings}
+              >
+                <span className="label">
+                  {/* Shown while a running turn has a model of its own; always said out loud. */}
+                  {pending ? 'Next: ' : ''}
+                  {next.id ? next.label : PROVIDER_LABELS[next.provider]}
+                </span>
                 <Settings2 size={12} />
               </button>
             )}
@@ -1007,7 +1091,8 @@ function AssistantMessage({
   asking,
   onUndo,
   onContinue,
-  onRetry
+  onRetry,
+  continueNote
 }: {
   m: ChatMessage;
   live: boolean;
@@ -1019,6 +1104,7 @@ function AssistantMessage({
   onUndo: (runId: string) => void;
   onContinue?: () => void;
   onRetry?: () => void;
+  continueNote?: string;
 }) {
   const r = m.result;
   const activities = m.activities ?? [];
@@ -1050,6 +1136,8 @@ function AssistantMessage({
       </div>
     );
   });
+  // The model this turn went to, as fixed when it started; old transcripts and turns that never reached one show none.
+  const recipient = turnRecipient(m);
   return (
     <div className="msg-ai" aria-busy={live || undefined}>
       {!r && taken.length > 0 && <Steps items={taken} waiting={waitingHere} recent={4} />}
@@ -1062,9 +1150,18 @@ function AssistantMessage({
       {!r && answers}
       {/* A finished turn is one card that leads with its result; what was asked and answered on the way sits inside it. */}
       {r && (
-        <ResultCard m={m} undoable={undoable} latest={latest} canCompose={canCompose} onUndo={onUndo} onContinue={onContinue} onRetry={onRetry}>
+        <ResultCard m={m} undoable={undoable} latest={latest} canCompose={canCompose} onUndo={onUndo} onContinue={onContinue} onRetry={onRetry} continueNote={continueNote}>
           {answers.length > 0 ? answers : null}
         </ResultCard>
+      )}
+      {recipient && (
+        <div className="turn-model">
+          <Cpu aria-hidden="true" />
+          <span>
+            <span className="sr-only">{r && !recipient.unanswered ? 'Handled by ' : 'Sent to '}</span>
+            {turnModelText(recipient)}
+          </span>
+        </div>
       )}
     </div>
   );
@@ -1123,6 +1220,7 @@ function ResultCard({
   onUndo,
   onContinue,
   onRetry,
+  continueNote,
   children
 }: {
   m: ChatMessage;
@@ -1132,6 +1230,8 @@ function ResultCard({
   onUndo: (runId: string) => void;
   onContinue?: () => void;
   onRetry?: () => void;
+  /** The note Continue and Try again are read with: what goes with them, when that is news to the model. */
+  continueNote?: string;
   children?: ReactNode;
 }) {
   const history = useStore((s) => s.snapshot?.history);
@@ -1416,7 +1516,8 @@ function ResultCard({
       {((r.canUndo && undoable) || retryable || repair || onContinue || onRetry) && (
         <div className="result-foot">
           {onContinue && (
-            <button className="btn btn-sm btn-primary" onClick={onContinue}>
+            // Continue sends a new message at once: what goes with it, when that is news to the model, is read with it.
+            <button className="btn btn-sm btn-primary" onClick={onContinue} aria-describedby={continueNote}>
               <Play /> Continue
             </button>
           )}
@@ -1430,9 +1531,10 @@ function ResultCard({
               <Settings2 /> Open AI settings
             </button>
           )}
-          {/* The same request again, once the setup is fixed: nothing to retype. */}
+          {/* The same request again, once the setup is fixed: nothing to retype. It too is sent at once, so it is read
+              with the same note as Continue. */}
           {onRetry && (
-            <button className="btn btn-sm" onClick={onRetry}>
+            <button className="btn btn-sm" onClick={onRetry} aria-describedby={continueNote}>
               <RefreshCw /> Try again
             </button>
           )}
