@@ -139,6 +139,11 @@ export interface State {
   post: PostRef | null;
   /** Whether the Posts workspace shows its writer, or the post on the canvas as visitors see it. */
   postView: 'write' | 'preview';
+  /**
+   * While the open post is previewed: the address the canvas last reported, a page or another post when a visitor's
+   * link went on from the post; null until it reports (the post is on its way). Never saved (see lib/posts postShown).
+   */
+  postPreviewAt: string | null;
   /** A picture of the open post's text to bring into view once the writer shows it (Show in Assets). */
   postReveal: { entryId: string; picture: number; seq: number } | null;
   selection: ElementRef | null;
@@ -271,6 +276,7 @@ export const useStore = create<State>((set) => ({
   pageId: null,
   post: null,
   postView: 'write',
+  postPreviewAt: null,
   postReveal: null,
   selection: null,
   layerSet: null,

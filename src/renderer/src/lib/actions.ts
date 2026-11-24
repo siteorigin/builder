@@ -8,7 +8,8 @@ import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
 import { applyOperations } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction, useStore } from '../store';
+import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction, useStore, type State } from '../store';
+import { postWorkspace } from './posts';
 import { flushOpenPost } from './post-draft';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
@@ -320,7 +321,8 @@ export async function moveToPage(pageId: string, plan = planLayers(), follow = f
   let followMove = stillOn(plan) && start.pageId === g.owner.id && !start.definitionMode && start.mode === 'edit';
   const stopWatching = useStore.subscribe((now, prev) => {
     if (!followMove) return;
-    if (now.pageId !== start.pageId || now.definitionMode || now.mode !== start.mode || now.snapshot?.workspaceKey !== plan.snap.workspaceKey) {
+    // The post writer opened meanwhile is where the author went (#578).
+    if (now.pageId !== start.pageId || now.definitionMode || now.mode !== start.mode || postWorkspace(now) || now.snapshot?.workspaceKey !== plan.snap.workspaceKey) {
       followMove = false;
     } else if (now.selection !== prev.selection || now.layerSet !== prev.layerSet) {
       // The move's snapshot clears the old selection before the apply reply supplies the new IDs.
@@ -600,16 +602,28 @@ export function openLayout(collectionId: string, entryId?: string) {
 }
 
 /**
+ * Whether showing `pageId` takes opening it: another page is open, a component is edited everywhere, or the Posts
+ * workspace is in front of the page (#578). A jump to something on the page (a match, a broken link) opens it first.
+ */
+export function pageOutOfSight(s: Pick<State, 'pageId' | 'definitionMode' | 'leftTab' | 'postView' | 'mode' | 'post'>, pageId: string): boolean {
+  return s.pageId !== pageId || !!s.definitionMode || !!postWorkspace(s);
+}
+
+/**
  * Open a page. Another page opens at the element last selected there (lib/page-place), so the author resumes where
  * they were; `target` names what to select instead, and null opens the page itself and forgets its place. Choosing the
  * page already shown selects the page itself too. In Preview nothing is selected.
  */
 export function selectPage(pageId: string, target?: ElementRef | null) {
-  // A page chosen while a post is previewed ends that preview: the canvas goes to the page (see Editor).
+  // A page chosen while a post is previewed ends that preview: the canvas goes to the page (see Editor). One chosen
+  // while the post writer covers the canvas puts the writer away, so the page shows and the editor names it (#578);
+  // the page was not on screen, so it opens at its place as another page does.
+  const covered = getState().leftTab === 'posts' && getState().postView === 'write';
   if (getState().postView === 'preview') setState({ postView: 'write', ...(getState().leftTab === 'posts' ? { leftTab: 'pages' as const } : {}) });
+  else if (covered) setState({ leftTab: 'pages' });
   const s = getState();
   const st = s.snapshot?.state;
-  const itself = target === null || (target === undefined && pageId === s.pageId && !s.definitionMode && s.mode === 'edit');
+  const itself = target === null || (target === undefined && !covered && pageId === s.pageId && !s.definitionMode && s.mode === 'edit');
   const selection = target !== undefined ? target : s.mode === 'edit' && !itself && st ? placeOn(st, s.pagePlaces, pageId) : null;
   // A page opened while previewing is where Edit opens: what was selected before Preview is not selected again.
   setState({ pageId, selection, definitionMode: null, templateMode: null, previewReturn: null, ...(itself ? { pagePlaces: forgetPlace(s.pagePlaces, pageId) } : {}) });
@@ -626,7 +640,7 @@ export function goToShellPart(part: string): boolean {
   const st = s.snapshot?.state;
   const pageId = st && pageShowing(st, part, s.definitionMode?.returnPageId ?? s.pageId);
   if (!pageId) return false;
-  if (pageId !== s.pageId || s.definitionMode) selectPage(pageId);
+  if (pageOutOfSight(s, pageId)) selectPage(pageId);
   return true;
 }
 
@@ -747,7 +761,7 @@ export function openOutline(pageId?: string | null) {
   const s = getState();
   const target = pageId ?? s.definitionMode?.returnPageId ?? s.pageId;
   if (!target) return;
-  if (s.pageId !== target || s.definitionMode) selectPage(target);
+  if (pageOutOfSight(s, target)) selectPage(target);
   setState({ modal: null, leftTab: 'layers', layersView: 'outline' });
   // The first heading's row, or the outline itself when the page has none.
   requestAnimationFrame(() => requestAnimationFrame(() => (document.querySelector<HTMLElement>('.outline-view .outline-row') ?? document.querySelector<HTMLElement>('.outline-view'))?.focus()));

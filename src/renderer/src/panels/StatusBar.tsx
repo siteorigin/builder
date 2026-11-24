@@ -4,7 +4,7 @@ import type { Diagnostic, FileText as FileContent, ProjectSnapshot, RuntimeState
 import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
-import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, selectPage } from '../lib/actions';
+import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOfSight, selectPage } from '../lib/actions';
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
 import { Modal, Spinner, useMenu } from '../components/ui';
@@ -302,7 +302,7 @@ function diagnosticTarget(state: ProjectState, d: Diagnostic): ElementRef | null
 function showElement(ref: ElementRef) {
   const s = getState();
   if (ref.owner.kind === 'page') {
-    if (s.pageId !== ref.owner.id || s.definitionMode) selectPage(ref.owner.id);
+    if (pageOutOfSight(s, ref.owner.id)) selectPage(ref.owner.id);
   } else if (!goToShellPart(ref.owner.id)) {
     toast(`No page shows the shared ${ref.owner.id} right now.`, 'error');
     return;

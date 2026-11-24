@@ -4,7 +4,7 @@
  */
 import type { Collection, EntryDoc, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, entryRoute, orderedEntries } from '@shared/collections';
+import { POSTS_COLLECTION_ID, entryRoute, orderedEntries, siteEntries } from '@shared/collections';
 import { newId } from '@shared/ids';
 
 /** A collection entry the Posts workspace has open. */
@@ -47,6 +47,40 @@ export function postAt(state: ProjectState, ref: PostRef | null | undefined): En
   if (!ref) return undefined;
   const c = Object.hasOwn(state.collections ?? {}, ref.collectionId) ? state.collections[ref.collectionId] : undefined;
   return c && Object.hasOwn(c.entries, ref.entryId) ? c.entries[ref.entryId] : undefined;
+}
+
+/**
+ * What the Posts workspace puts in front of the editor (#578): its writer, over the canvas (also with no post chosen,
+ * and while a Preview waits for what was typed to save), or the post it opened, previewed on the canvas whichever panel
+ * the sidebar shows. Null while neither is: the editor shows its page. The toolbar and the Inspector speak of the post
+ * meanwhile, never of the page under the writer, so nothing changed there lands on that page.
+ */
+export function postWorkspace(s: { leftTab: string | null; postView: 'write' | 'preview'; mode: 'edit' | 'preview'; post: PostRef | null }): 'write' | 'preview' | null {
+  if (s.leftTab === 'posts' && s.postView === 'write') return 'write';
+  return s.postView === 'preview' && s.mode === 'preview' && s.post ? 'preview' : null;
+}
+
+/**
+ * What the editor shows while the Posts workspace is in front: the post written or previewed (none chosen yet in the
+ * writer), or where a visitor went on to from its preview, as the canvas last reported (`at`, null until it has: the
+ * post is still on its way). That is another post, a page of the site, or an address that is neither (an old one, the
+ * not-found page).
+ */
+export type PostShown = { kind: 'post'; ref: PostRef | null; title: string; draft: boolean } | { kind: 'page'; pageId: string } | { kind: 'address'; path: string };
+
+const named = (ref: PostRef, e: EntryDoc): PostShown => ({ kind: 'post', ref, title: typeof e.title === 'string' && e.title ? e.title : 'Untitled', draft: e.draft !== false });
+
+export function postShown(state: ProjectState, workspace: 'write' | 'preview', post: PostRef | null, at: string | null): PostShown {
+  if (workspace === 'preview' && at !== null) {
+    // As the canvas resolves an address (lib/template-view viewAt): an entry's page first, then the site's pages.
+    const same = (route: string) => route === at || route === `${at}/`;
+    const hit = siteEntries(state).find((e) => same(e.route));
+    if (hit) return named({ collectionId: hit.collection.settings.id, entryId: hit.entry.id }, hit.entry);
+    const page = Object.values(state.pages).find((p) => same(p.route));
+    return page ? { kind: 'page', pageId: page.id } : { kind: 'address', path: at };
+  }
+  const entry = postAt(state, post);
+  return entry && post ? named(post, entry) : { kind: 'post', ref: null, title: 'Posts', draft: false };
 }
 
 const words = (s: unknown) => (typeof s === 'string' ? s.toLowerCase() : '');

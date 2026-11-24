@@ -34,6 +34,21 @@ const imported = await win.evaluate((p) => window.builder.project.importAssets([
 assert.equal(imported.ok, true, `the photo imports: ${imported.message}`);
 const photoId = imported.assetIds[0];
 
+step('a section of Home selected in Layers, as the Inspector shows');
+const s0 = await snapshot();
+const home = s0.state.pages[s0.state.site.homePageId];
+const inspector = win.locator('#dock-panel-inspect');
+const inspected = inspector.locator('.insp-name h3');
+const placeShown = win.locator('.toolbar .project-title .page');
+await win.locator('.rail [aria-label="Layers"]').click();
+await win.locator(`[role="tree"] [role="treeitem"][data-owner="page:${home.id}"]`).first().click();
+const sectionName = await eventually(async () => {
+  const t = await inspected.innerText();
+  assert.ok(t && t !== home.title, `the Inspector shows the section: ${t}`);
+  return t;
+});
+assert.equal(await placeShown.innerText(), home.title, 'the toolbar names Home');
+
 step('a new post from the Posts panel creates the blog and opens the writer');
 await win.locator('.rail [aria-label="Posts"]').click();
 await win.locator('.posts-panel').getByRole('button', { name: 'New post' }).click();
@@ -49,6 +64,56 @@ assert.equal(await win.locator('.post-row .post-status').innerText(), 'Draft', '
 // The writer has the canvas's place, and the canvas under it takes no input meanwhile.
 assert.equal(await win.locator('.post-writer-holder').isVisible(), true);
 assert.notEqual(await win.locator('.canvas-holder').getAttribute('inert'), null, 'the canvas is inert while writing');
+
+step('the toolbar and the Inspector speak of the post, never of Home under the writer (#578)');
+/** Nothing of a page's in the Inspector: not Home's section, not page settings, no field to change. */
+const noPageSettings = async (where) => {
+  const text = await inspector.innerText();
+  assert.ok(!text.includes(sectionName), `${where}: Home's section is out of the Inspector`);
+  assert.ok(!/Home page · \//.test(text), `${where}: Home's page settings are out of the Inspector`);
+  assert.equal(await inspector.locator('input, textarea, select, [contenteditable="true"]').count(), 0, `${where}: nothing in the Inspector to change`);
+};
+/** The toolbar menu's page items that are checked, by their text. */
+const checkedPages = async () => {
+  await win.locator('.toolbar .project-title').click();
+  const menu = win.getByRole('menu');
+  await menu.waitFor();
+  const checked = await menu.getByRole('menuitemradio', { checked: true }).locator('.grow').allInnerTexts();
+  await win.keyboard.press('Escape');
+  await menu.waitFor({ state: 'detached' });
+  return checked;
+};
+await eventually(async () => assert.equal(await placeShown.innerText(), 'Opening the kiln', 'the toolbar names the post'));
+await eventually(async () => assert.equal(await inspected.innerText(), 'Opening the kiln', 'the Inspector names the post'));
+assert.match(await inspector.locator('.insp-kind-label').innerText(), /Draft post/);
+await noPageSettings('writing');
+// The canvas is under the writer: its widths and zoom wait for the preview.
+for (const name of ['Desktop', 'Tablet', 'Phone']) assert.equal(await win.getByRole('button', { name, exact: true }).isDisabled(), true, `${name} waits while writing`);
+assert.equal(await win.getByLabel('Preview width in pixels').isDisabled(), true, 'and the width field');
+assert.equal(await win.locator('.toolbar .zoom-btn').isDisabled(), true, 'and the zoom');
+assert.deepEqual(await checkedPages(), [], 'the toolbar menu checks no page while the post is written');
+// No key acts on the section selected out of sight: Delete, Duplicate and Escape from the window leave it as it was.
+const homeNodes = async () => {
+  const pg = (await snapshot()).state.pages[home.id];
+  return JSON.stringify({ rootIds: pg.rootIds, nodes: pg.nodes });
+};
+const homeBefore = await homeNodes();
+assert.ok(JSON.parse(homeBefore).rootIds.length > 0, 'Home has sections to lose');
+await win.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : undefined));
+await win.keyboard.press('Backspace');
+await win.keyboard.press(`${MOD}+d`);
+await win.keyboard.press('Escape');
+await win.waitForTimeout(800);
+assert.equal(await homeNodes(), homeBefore, 'Home keeps its sections');
+// Home chosen in the toolbar puts the writer away and opens Home where the author left it: the section, still selected.
+await win.locator('.toolbar .project-title').click();
+await win.getByRole('menu').getByRole('menuitemradio').filter({ hasText: home.title }).first().click();
+await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), false, 'the writer goes away'));
+await eventually(async () => assert.equal(await inspected.innerText(), sectionName, 'Home opens at the section still selected'));
+assert.equal(await placeShown.innerText(), home.title, 'and the toolbar names Home');
+await win.locator('.rail [aria-label="Posts"]').click();
+await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer is back'));
+await eventually(async () => assert.equal(await inspected.innerText(), 'Opening the kiln', 'with the post in the Inspector'));
 
 step('writing: paragraphs, a section heading, a list and a link to a page');
 await body.click();
@@ -147,6 +212,15 @@ await win.getByRole('button', { name: 'Preview in site' }).click();
 const route = (await snapshot()).state.collections.posts.entries[entryId].slug;
 const path = `/blog/${route}/`;
 await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), path, 'the canvas shows the post'), 60000);
+// The previewed post is what the toolbar and the Inspector name (#578), and the canvas's width is the author's again.
+await eventually(async () => assert.equal(await placeShown.innerText(), 'Opening the kiln', 'the toolbar names the previewed post'));
+await eventually(async () => assert.match(await inspector.locator('.insp-kind-label').innerText(), /Draft post · preview/, 'the Inspector names the previewed post'));
+assert.equal(await inspected.innerText(), 'Opening the kiln');
+await noPageSettings('previewing');
+assert.deepEqual(await checkedPages(), [], 'the toolbar menu checks no page while the post is shown');
+for (const name of ['Desktop', 'Tablet', 'Phone']) assert.equal(await win.getByRole('button', { name, exact: true }).isEnabled(), true, `${name} acts on the preview`);
+assert.equal(await win.getByLabel('Preview width in pixels').isEnabled(), true, 'and the width field');
+assert.equal(await win.locator('.toolbar .zoom-btn').isEnabled(), true, 'and the zoom');
 // The post's page is its collection's layout, read for this post.
 const article = frame.locator('article', { has: frame.locator('h1') });
 await eventually(async () => assert.equal(await article.locator('h1').innerText(), 'Opening the kiln'), 60000);
@@ -160,6 +234,39 @@ assert.equal(await img.getAttribute('alt'), 'The kiln, glowing orange');
 await eventually(async () => assert.ok(await img.evaluate((el) => el.complete && el.naturalWidth > 0), 'the picture loads'), 20000);
 assert.equal(await article.locator('figure.so-rich__figure figcaption').innerText(), 'First firing of the year.');
 await win.screenshot({ path: join(SHOTS, 'posts-preview-draft.png') });
+
+step('a visitor’s link from the post: the editor names where they went, and Back names the post again (#578)');
+// With the sidebar hidden, so nothing depends on the Posts panel showing.
+await win.locator('.toolbar [aria-label="Sidebar"]').click();
+await eventually(async () => assert.equal(await win.locator('#editor-sidebar').isVisible(), false, 'the sidebar is hidden'));
+/** Follow a link on the page as a visitor does, once the page is ready for one, and wait to be there. */
+const visit = async (link, to) => {
+  await eventually(async () => assert.equal(await frame.locator('html').evaluate((html) => document.readyState === 'complete' && !html.hasAttribute('data-so-editing')), true, 'the page is ready for a visitor'));
+  await link.evaluate((a) => a.click());
+  await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), to, `the visitor is at ${to}`), 60000);
+};
+// The post's own link to About.
+await visit(article.locator('.so-rich a', { hasText: 'studio hours' }), about.route);
+await eventually(async () => assert.equal(await placeShown.innerText(), about.title, 'the toolbar names About, where the visitor is'));
+await eventually(async () => assert.equal(await inspected.innerText(), about.title, 'and so does the Inspector'));
+assert.equal(await inspector.locator('.insp-kind-label').innerText(), 'Page · preview');
+await noPageSettings('a visitor on About');
+assert.deepEqual(await checkedPages(), [about.title], 'the toolbar menu checks About');
+await win.getByRole('group', { name: 'Preview', exact: true }).getByRole('button', { name: 'Back', exact: true }).click();
+await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), path, 'Back is the post'), 60000);
+await eventually(async () => assert.equal(await placeShown.innerText(), 'Opening the kiln', 'the toolbar names the post again'));
+await eventually(async () => assert.equal(await inspected.innerText(), 'Opening the kiln', 'and the Inspector'));
+assert.deepEqual(await checkedPages(), [], 'and the menu checks no page');
+// The site's own link home, then the Inspector's way back to the writer, which brings the sidebar back with it.
+await visit(frame.locator('header.so-header a[href="/"]').first(), '/');
+await eventually(async () => assert.match(await inspector.locator('.insp-kind-label').innerText(), /^Home page · preview$/));
+await noPageSettings('a visitor on Home');
+await inspector.getByRole('button', { name: 'Back to writing' }).click();
+await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer shows again'));
+assert.equal(await win.locator('.posts-panel').isVisible(), true, 'with the Posts panel');
+await eventually(async () => assert.match(await inspector.locator('.insp-kind-label').innerText(), /^Draft post$/));
+await win.getByRole('button', { name: 'Preview in site' }).click();
+await eventually(async () => assert.equal(await frame.locator('body').evaluate(() => location.pathname), path, 'the post again'), 60000);
 
 step('back to writing, backdated and published');
 await win.locator('.posts-panel').getByRole('button', { name: 'Back to writing' }).click();

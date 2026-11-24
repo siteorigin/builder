@@ -457,12 +457,18 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     else toast('Part of the post is not saved yet. See the note beside it.', 'error');
   };
   const preview = async () => {
+    const key = getState().snapshot?.workspaceKey;
     // The preview shows what is saved: text that could not be saved stays in view with its note.
     if (!(await saveAll())) return toast('Part of the post is not saved yet, so the preview would not show it. See the note beside it.', 'error');
+    // Another post (or project) opened while this one saved: the preview was this post's, so it does not start (#578).
+    const now = getState();
+    if (now.snapshot?.workspaceKey !== key || now.post?.collectionId !== post.collectionId || now.post?.entryId !== post.entryId) return;
     setState({ postView: 'preview' });
     setMode('preview');
     // Once the canvas shows again; a preview still starting opens the post once it is ready.
     requestAnimationFrame(() => {
+      // The preview ended before it began (a page chosen): the canvas stays on the page the editor names (#578).
+      if (getState().postView !== 'preview' || getState().post?.entryId !== post.entryId) return;
       const c = getState().snapshot?.state.collections[post.collectionId];
       const e = c && Object.hasOwn(c.entries, post.entryId) ? c.entries[post.entryId] : undefined;
       if (c && e && !visitAddress(entryRoute(c, e))) toast('The preview is starting: the post opens in it once it is ready.', 'info');
