@@ -11,7 +11,6 @@ import { compile } from 'svelte/compiler';
 import type { ElementNode, InstanceNode, ListItem, ProjectState, RepeatNode } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
-import { isReusabilityWarning } from '@engine/reusability';
 import { defFile, generateManagedComponent } from '@generator/index';
 import { executeTool, toolsForRun, type ToolHost } from '@agent/tools';
 import { newMacroMemory } from '@agent/macros';
@@ -138,6 +137,29 @@ function pricing(extra: Record<string, unknown> = {}) {
 
 const fields = (content: Record<string, any>) => (content.fields as Array<{ field: string; message: string }>).map((f) => f.field);
 
+/**
+ * Whether a value is one the strict subset accepts, as a grammar compiled from it would: types, enums, closed
+ * objects and their required keys, items, unions and the bounds the subset keeps. References are already resolved.
+ */
+function accepts(schema: Record<string, any>, v: unknown): boolean {
+  if (Array.isArray(schema.anyOf)) return schema.anyOf.some((b: Record<string, any>) => accepts(b, v));
+  if (Array.isArray(schema.enum) && !schema.enum.some((e: unknown) => JSON.stringify(e) === JSON.stringify(v))) return false;
+  const type = schema.type;
+  if (type === 'string') return typeof v === 'string' && (schema.minLength === undefined || v.length >= schema.minLength) && (schema.maxLength === undefined || v.length <= schema.maxLength);
+  if (type === 'number') return typeof v === 'number';
+  if (type === 'integer') return Number.isInteger(v) && (schema.minimum === undefined || (v as number) >= schema.minimum) && (schema.maximum === undefined || (v as number) <= schema.maximum);
+  if (type === 'boolean') return typeof v === 'boolean';
+  if (type === 'null') return v === null;
+  if (type === 'array')
+    return Array.isArray(v) && (schema.minItems === undefined || v.length >= schema.minItems) && (schema.maxItems === undefined || v.length <= schema.maxItems) && v.every((x) => accepts(schema.items, x));
+  if (type === 'object') {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    const o = v as Record<string, unknown>;
+    return Object.keys(o).every((k) => Object.hasOwn(schema.properties, k) && accepts(schema.properties[k], o[k])) && (schema.required ?? []).every((k: string) => Object.hasOwn(o, k));
+  }
+  return type === undefined && Array.isArray(schema.enum);
+}
+
 describe('upsert_managed_component: its schema (#359)', () => {
   it('compiles to the strict subset with no forbidden shape and no value carried as encoded JSON', () => {
     const schema = managedComponentSchema();
@@ -155,6 +177,23 @@ describe('upsert_managed_component: its schema (#359)', () => {
     expect(envelopeInstructions([tool])).not.toMatch(/(?<![\w-])json(?![\w-])|json-object/);
   });
 
+  it('takes real calls in its strict form, as a grammar compiled from it would, and refuses malformed ones', () => {
+    const strict = toStrictSchema(managedComponentSchema());
+    const chain = Array.from({ length: 300 }, (_, i) => ({ kind: 'element', id: `level${i}`, children: i < 299 ? [`level${i + 1}`] : [] }));
+    const calls = [
+      pricing({ placeOnPage: { pageId: '/', index: 0 } }),
+      { name: 'Deep', nodes: chain },
+      { name: 'Pricing table', repair: true, remove: ['badge'], nodes: [{ kind: 'text', id: 'name', tag: 'h3', text: { $item: 'name' } }] },
+      { name: 'Notes', properties: [{ type: 'table', name: 'hours', label: 'Hours', default: { columns: ['Day', 'Open'], rows: [['Mon', '9–5']] } }, { type: 'choices', name: 'topics', label: 'Topics', default: [{ label: 'Kitchens' }] }], nodes: [{ kind: 'element', id: 'root' }] },
+      ...COMPONENT_BLUEPRINTS.map((b) => b.args)
+    ];
+    for (const c of calls) expect(accepts(strict, JSON.parse(JSON.stringify(c))), JSON.stringify(c).slice(0, 80)).toBe(true);
+    // A node without its kind, a key no shape names, and a value sent as encoded JSON are each refused.
+    expect(accepts(strict, { name: 'X', nodes: [{ id: 'root' }] })).toBe(false);
+    expect(accepts(strict, { name: 'X', nodes: [{ kind: 'element', id: 'root', colour: 'red' }] })).toBe(false);
+    expect(accepts(strict, { name: 'X', properties: { [OPEN_VALUE_KEY]: '[]' }, nodes: [{ kind: 'element', id: 'root' }] })).toBe(false);
+  });
+
   it('has the same, finite depth for a design of any depth: the nodes are a flat list that name their children', () => {
     const depthOf = (v: unknown): number => (v && typeof v === 'object' ? 1 + Math.max(0, ...Object.values(v as object).map(depthOf)) : 0);
     const strict = toStrictSchema(managedComponentSchema());
@@ -168,14 +207,21 @@ describe('upsert_managed_component: its schema (#359)', () => {
     const state = createStarterState('business', 'Test', false);
     const names = (r: { tools: Array<{ name: string }> }) => r.tools.map((t) => t.name);
     const home = state.pages[state.site.homePageId];
+    const reads = (r: { tools: Array<{ name: string; parameters: unknown }> }) => JSON.stringify(r.tools.find((t) => t.name === 'read_component')!.parameters);
     for (const capabilities of [
       { toolCalling: 'native' as const, contextWindowTokens: 200_000 },
-      { toolCalling: 'constrained-json' as const, contextWindowTokens: 32_000 }
+      { toolCalling: 'native' as const, contextWindowTokens: 32_000 },
+      { toolCalling: 'constrained-json' as const, contextWindowTokens: 32_000 },
+      { toolCalling: 'constrained-json' as const, contextWindowTokens: 200_000 }
     ]) {
       const base = { state, selection: null, capabilities, codeEnabled: false, definitionOps: true };
-      // A small site run keeps its window for pages unless the request asks for a component.
-      expect(names(toolsForRun(base)).includes('upsert_managed_component')).toBe(capabilities.toolCalling === 'native');
+      const small = capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < 64_000;
+      // A small site run keeps its window for pages unless the request asks for a component; then it can also read a
+      // design whole, to rebuild it.
+      expect(names(toolsForRun(base)).includes('upsert_managed_component')).toBe(!small);
       expect(names(toolsForRun({ ...base, componentRequest: true }))).toContain('upsert_managed_component');
+      expect(reads(toolsForRun({ ...base, componentRequest: true }))).toContain('"structure"');
+      if (small) expect(reads(toolsForRun(base))).not.toContain('"structure"');
       expect(names(toolsForRun({ ...base, task: 'component' }))[0]).toBe('upsert_managed_component');
       expect(names(toolsForRun({ ...base, ask: true }))).not.toContain('upsert_managed_component');
       expect(names(toolsForRun({ ...base, page: { route: home.route } }))).not.toContain('upsert_managed_component');
@@ -197,6 +243,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
   it('creates a component with a list, bindings, conditions, parts, a slot and two variant axes, places it, and undoes both in one step', async () => {
     const { s, call, home } = await session();
     const entries = s.historyInfo().entries.length;
+    const pageBefore = structuredClone(s.state.pages[home]);
     const out = await call(pricing({ placeOnPage: { pageId: '/', index: 0 } }));
     expect(out.ok).toBe(true);
     const { definitionId, rootNodeId, placed } = out.content;
@@ -239,7 +286,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     const built = structuredClone(s.state);
     await s.undo();
     expect(s.state.components[definitionId]).toBeUndefined();
-    expect(s.state.pages[home].nodes[placed.nodeId]).toBeUndefined();
+    expect(s.state.pages[home]).toEqual(pageBefore);
     await s.redo();
     expect(s.state.components[definitionId]).toEqual(built.components[definitionId]);
     expect(s.state.pages[home]).toEqual(built.pages[home]);
@@ -259,18 +306,19 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     const out = await call(bad);
     expect(out.ok).toBe(false);
     expect(out.content.error).toBe('VALIDATION_FAILED');
-    expect(fields(out.content)).toEqual(
-      expect.arrayContaining([
+    expect(fields(out.content).sort()).toEqual(
+      [
         'nodes[0].children[2]',
         'nodes[2].text',
         'nodes[9].text',
         'nodes[11]',
         'nodes[14]',
+        'nodes[14].text',
         'parts[1].nodeId',
         'variantAxes[0].options[1].styles[0].nodeId',
         'variantAxes[1].default',
         'placeOnPage.pageId'
-      ])
+      ].sort()
     );
     // The messages name what is wrong in the model's own terms.
     const msg = (f: string) => (out.content.fields as Array<{ field: string; message: string }>).find((x) => x.field === f)!.message;
@@ -279,6 +327,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     // A node no children list names, because its parent named another ID, is a second root.
     expect(msg('nodes[11]')).toMatch(/"footnote" is inside no other node/);
     expect(msg('nodes[14]')).toMatch(/"stray" is inside no other node/);
+    expect(msg('nodes[14].text')).toMatch(/"stray" shows the item field "name" outside any repeat/);
     expect(applies()).toBe(0);
     expect(s.state).toEqual(before);
   });
@@ -291,10 +340,14 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     args.parts.push({ id: '__proto__', nodeId: 'card', label: 'Card' });
     args.slots[0].name = 'toString';
     (args.properties[3] as { fields: Array<{ name: string }> }).fields[0].name = 'hasOwnProperty';
-    args.variantAxes[0].options[1].styles!.push({ nodeId: 'constructor', property: 'color', value: tok('color.brand') });
+    args.variantAxes[0].options[1].styles!.push({ nodeId: 'constructor', property: 'color', value: tok('color.brand') } as never);
+    args.variantAxes[1].name = 'valueOf';
+    args.variantAxes[0].options[0].id = 'prototype';
     const out = await call(args);
     expect(out.ok).toBe(false);
-    expect(fields(out.content)).toEqual(expect.arrayContaining(['nodes[14].id', 'parts[2].id', 'slots[0].name', 'properties[3].fields[0].name', 'variantAxes[0].options[1].styles[2].nodeId']));
+    expect(fields(out.content)).toEqual(expect.arrayContaining(['nodes[14].id', 'parts[2].id', 'slots[0].name', 'properties[3].fields[0].name', 'variantAxes[1].name', 'variantAxes[0].options[0].id']));
+    const msg = (f: string) => (out.content.fields as Array<{ field: string; message: string }>).find((x) => x.field === f)!.message;
+    for (const f of ['nodes[14].id', 'parts[2].id', 'variantAxes[1].name', 'variantAxes[0].options[0].id']) expect(msg(f)).toMatch(/is a reserved name/);
     expect(applies()).toBe(0);
   });
 
@@ -302,9 +355,12 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     const { call } = await session();
     const shape = pricing();
     delete (shape.nodes[8] as Record<string, unknown>).text;
+    // An image whose alt is a number matches none of the image field's shapes: the image's own is named.
+    shape.nodes.push({ kind: 'image', id: 'pic', image: { assetId: null, alt: 42 } } as never);
+    (shape.nodes[6] as { children: string[] }).children.push('pic');
     const out = await call(shape);
     expect(out.ok).toBe(false);
-    expect(fields(out.content)).toContain('nodes[8].text');
+    expect(fields(out.content)).toEqual(['nodes[8].text', 'nodes[14].image.alt']);
 
     const typed = pricing();
     (typed.properties[3] as { default: unknown[] }).default = [{ values: [{ field: 'name', value: 'Basic' }, { field: 'cost', value: '$9' }] }];
@@ -324,6 +380,22 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     expect(fields(out.content)).toEqual(['nodes[1]']);
   });
 
+  it('names the root part pointed at another node by its row, and a placement outside the page by placeOnPage', async () => {
+    const { s, call, home } = await session();
+    const args = pricing();
+    args.parts.push({ id: 'root', nodeId: 'header', label: 'Section' });
+    expect(fields((await call(args)).content)).toEqual(['parts[2].nodeId']);
+    const count = s.state.pages[home].rootIds.length;
+    expect(fields((await call(pricing({ placeOnPage: { pageId: home, index: count + 1 } }))).content)).toEqual(['placeOnPage.index']);
+    // A list item may be a component's root, but not placed straight on a page: only the two together break it.
+    const item = pricing({ placeOnPage: { pageId: home } });
+    item.nodes[0] = { ...item.nodes[0], tag: 'li' } as never;
+    expect(fields((await call(item)).content)).toEqual(['placeOnPage']);
+    const last = await call(pricing({ placeOnPage: { pageId: home, index: count } }));
+    expect(last.ok).toBe(true);
+    expect(s.state.pages[home].rootIds.at(-1)).toBe(last.content.placed.nodeId);
+  });
+
   it('repairs a rejected call from only the corrected node, and refuses a repair with nothing to repair', async () => {
     const { s, call, applies } = await session();
     const none = await call({ name: 'Nothing', repair: true, nodes: [{ kind: 'divider', id: 'x' }] });
@@ -332,22 +404,109 @@ describe('upsert_managed_component: building in one call (#359)', () => {
 
     const bad = pricing();
     bad.nodes[8] = { kind: 'text', id: 'name', tag: 'h3', text: { $item: 'title' } } as never;
+    (bad.properties[2] as { default: string }).default = 'h5';
     const first = await call(bad);
     expect(first.ok).toBe(false);
-    expect(fields(first.content)).toEqual(['nodes[8].text']);
+    expect(fields(first.content).sort()).toEqual(['nodes[8].text', 'properties[2].default']);
     expect(first.content.message).toMatch(/repair: true/);
 
-    const fixed = await call({ name: 'Pricing table', repair: true, nodes: [{ kind: 'text', id: 'name', tag: 'h3', text: { $item: 'name' } }] });
+    const level = { type: 'enum', name: 'level', label: 'Heading level', options: [{ value: 'h2', label: 'H2' }, { value: 'h3', label: 'H3' }], default: 'h3' };
+    const fixed = await call({ name: 'Pricing table', repair: true, nodes: [{ kind: 'text', id: 'name', tag: 'h3', text: { $item: 'name' } }], properties: [level] });
     expect(fixed.ok).toBe(true);
     expect(applies()).toBe(1);
     const def = s.state.components[fixed.content.definitionId];
     expect(def.tree!.nodes.name).toMatchObject({ text: { $item: 'name' } });
+    // The property was replaced in its place, by its name; the others are the rejected call's.
+    expect(Object.keys(def.properties)).toEqual(['heading', 'intro', 'level', 'plans', 'note']);
+    expect(def.properties.level.default).toBe('h3');
     // Everything else came from the rejected call.
     expect(Object.keys(def.tree!.nodes)).toHaveLength(14);
     expect(Object.keys(def.variantAxes!)).toEqual(['tone', 'layout']);
     // Once applied, there is nothing left to repair.
     const again = await call({ name: 'Pricing table', repair: true, nodes: [{ kind: 'divider', id: 'x' }] });
     expect(fields(again.content)).toEqual(['repair']);
+  });
+
+  it('repairs only the component it names, and never from a call made before that component changed', async () => {
+    const { s, call } = await session();
+    const a = await call(pricing({ name: 'Alpha' }));
+    const b = await call(pricing({ name: 'Beta' }));
+    const [alpha, beta] = [a.content.definitionId, b.content.definitionId];
+    const broken = (definitionId: string, name: string) => {
+      const args = pricing({ definitionId, name });
+      args.nodes[8] = { kind: 'text', id: 'name', tag: 'h3', text: { $item: 'title' } } as never;
+      return args;
+    };
+    expect((await call(broken(alpha, 'Alpha'))).ok).toBe(false);
+    expect((await call(broken(beta, 'Beta'))).ok).toBe(false);
+    const name = { kind: 'text', id: 'name', tag: 'h4', text: { $item: 'name' } };
+    // Beta's rejected call came last; a repair of Alpha still mends Alpha's.
+    const repaired = await call({ definitionId: alpha, name: 'Alpha', repair: true, nodes: [name] });
+    expect(repaired.ok).toBe(true);
+    expect(s.state.components[alpha].tree!.nodes.name).toMatchObject({ tag: 'h4' });
+    expect(s.state.components[beta].tree!.nodes.name).toMatchObject({ tag: 'h3', text: { $item: 'name' } });
+    // Beta changes after its call was rejected: a repair would put back what that call saw, so it is refused.
+    const r = await s.apply({ operations: [{ type: 'component.rename', definitionId: beta, name: 'Beta', description: 'Changed since.' }] }, { label: 'Edit' });
+    expect(r.ok).toBe(true);
+    const before = structuredClone(s.state.components[beta]);
+    const stale = await call({ definitionId: beta, name: 'Beta', repair: true, nodes: [name] });
+    expect(fields(stale.content)).toEqual(['repair']);
+    expect(stale.content.message).toMatch(/changed since that call was rejected/);
+    expect(s.state.components[beta]).toEqual(before);
+  });
+
+  it('repairs a node given twice, leaves out what remove names, and never takes a malformed flag for a whole new call', async () => {
+    const { s, call, applies } = await session();
+    const twice = pricing();
+    twice.nodes.push({ kind: 'text', id: 'price', tag: 'p', text: 'Twice' } as never);
+    expect(fields((await call(twice)).content)).toEqual(['nodes[14].id']);
+    // "true" as text: refused, and the rejected call is still there to repair.
+    const flag = await call({ name: 'Pricing table', repair: 'true', nodes: [{ kind: 'element', id: 'root', tag: 'section' }] });
+    expect(fields(flag.content)).toEqual(['repair']);
+    const misuse = await call({ name: 'Pricing table', remove: ['badge'], nodes: [{ kind: 'element', id: 'root' }] });
+    expect(fields(misuse.content)).toEqual(['remove']);
+    // Sending "price" once leaves it once; remove takes the badge out of the design and its card's children.
+    const card = { kind: 'element', id: 'card', tag: 'li', children: ['name', 'price', 'cta'] };
+    const done = await call({ name: 'Pricing table', repair: true, remove: ['badge'], nodes: [{ kind: 'text', id: 'price', tag: 'p', text: { $item: 'price' } }, card] });
+    expect(done.ok).toBe(true);
+    expect(applies()).toBe(1);
+    const nodes = s.state.components[done.content.definitionId].tree!.nodes;
+    expect(nodes.badge).toBeUndefined();
+    expect(nodes.price).toMatchObject({ text: { $item: 'price' } });
+    expect(Object.keys(nodes)).toHaveLength(13);
+  });
+
+  it('refuses a rebuild a placement cannot take, leaving the page, the design and the history as they were', async () => {
+    const { s, call, home } = await session();
+    const made = await call(pricing({ placeOnPage: { pageId: home } }));
+    const { definitionId, placed } = made.content;
+    const owner = { kind: 'page' as const, id: home };
+    const filled = await s.apply({ operations: [{ type: 'node.insert', owner, parentId: placed.nodeId, slot: 'notes', primitive: 'paragraph', text: 'Prices include tax.' }] }, { label: 'Fill' });
+    expect(filled.ok).toBe(true);
+    const before = structuredClone(s.state);
+    const [revision, entries] = [s.revision, s.historyInfo().entries.length];
+    // The slot goes, while it holds this placement's note; and another placement is asked for in the same call.
+    const next = pricing({ definitionId, placeOnPage: { pageId: home } });
+    next.slots = [];
+    next.nodes = next.nodes.filter((n) => n.id !== 'notes');
+    next.nodes.find((n) => n.id === 'footnote')!.children = ['noteText'];
+    const out = await call(next);
+    expect(out.ok).toBe(false);
+    expect(s.state).toEqual(before);
+    expect([s.revision, s.historyInfo().entries.length]).toEqual([revision, entries]);
+  });
+
+  it('keeps through a rebuild what the tool has no field for: a slot\'s categories', async () => {
+    const { s, call } = await session();
+    const args = pricing();
+    args.slots = [{ name: 'notes', label: 'Notes', categories: ['media'] } as never];
+    const made = await call(args);
+    expect(made.ok).toBe(true);
+    const id = made.content.definitionId;
+    const again = pricing({ definitionId: id });
+    again.slots = [{ name: 'notes', label: 'Small print' }] as never;
+    expect((await call(again)).ok).toBe(true);
+    expect(s.state.components[id].slots!.notes).toMatchObject({ label: 'Small print', categories: ['media'] });
   });
 
   it('rebuilds a placed component whole, keeping its placement values, and places it again', async () => {
@@ -400,9 +559,24 @@ describe('component blueprints (#359)', () => {
       expect(Object.values(def.variantAxes ?? {}).some((a) => Object.values(a.options).some((o) => o.styles))).toBe(true);
       expect(Object.values(def.tree!.nodes).some((n) => n.styles && Object.keys(n.styles).some((k) => k !== 'base'))).toBe(true);
       expect(errors(s.state)).toEqual([]);
-      // Followed as it is, a blueprint leaves nothing the reusability check would send the model back for.
-      expect(validateState(s.state).filter((d) => isReusabilityWarning(d) && d.owner?.kind === 'component' && d.owner.id === def.id).map((d) => d.message), blueprint.id).toEqual([]);
+      // Followed as it is, a blueprint leaves nothing to warn about, on its design or its placement: nothing the
+      // reusability check would send the model back for, and no button hidden for want of a link.
+      const mine = (d: { owner?: { kind: string; id: string }; nodeId?: string }) => (d.owner?.kind === 'component' && d.owner.id === def.id) || d.nodeId === out.content.placed.nodeId;
+      expect(validateState(s.state).filter((d) => d.severity === 'warning' && mine(d)).map((d) => d.message), blueprint.id).toEqual([]);
       compiles(s.state, out.content.definitionId);
+    }
+  });
+
+  it('show the conventions they are there for: a list shown by a repeat, phone to desktop columns, parts and a dark tone', () => {
+    const grid = COMPONENT_BLUEPRINTS.find((b) => b.id === 'card-grid')!.args;
+    const node = (id: string) => grid.nodes!.find((n) => n.id === id)!;
+    expect(node('cards')).toMatchObject({ kind: 'repeat', list: 'cards' });
+    expect(node('title')).toMatchObject({ text: { $item: 'title' } });
+    expect((node('grid') as { styles: unknown[] }).styles).toEqual(expect.arrayContaining([{ property: 'columns', value: 1 }, { property: 'columns', value: 2, scope: 'tablet' }, { property: 'columns', value: 3, scope: 'desktop' }]));
+    expect(grid.parts!.map((p) => [p.id, p.nodeId])).toEqual([['heading', 'heading'], ['card', 'card']]);
+    for (const b of COMPONENT_BLUEPRINTS) {
+      const inverse = b.args.variantAxes![0].options.find((o) => o.id === 'inverse')!;
+      expect(inverse.styles).toEqual(expect.arrayContaining([{ nodeId: 'root', property: 'background', value: tok('color.inverse') }, { nodeId: 'root', property: 'color', value: tok('color.on-inverse') }]));
     }
   });
 
@@ -411,7 +585,7 @@ describe('component blueprints (#359)', () => {
     expect(retrieveBlueprints(state, 'Create a component with team member cards').map((b) => b.id)).toEqual(['card-grid']);
     expect(retrieveBlueprints(state, 'A newsletter signup banner component').map((b) => b.id)).toEqual(['callout']);
     expect(retrieveBlueprints(state, 'Cards in a grid, and a banner').map((b) => b.id)).toEqual(['card-grid', 'callout']);
-    expect(retrieveBlueprints(state, 'A component for opening hours')).toHaveLength(1);
+    expect(retrieveBlueprints(state, 'A component for opening hours').map((b) => b.id)).toEqual(['card-grid']);
     expect(blueprintSection(COMPONENT_BLUEPRINTS[0])).toEqual({ for: COMPONENT_BLUEPRINTS[0].description, upsert_managed_component: COMPONENT_BLUEPRINTS[0].args });
   });
 

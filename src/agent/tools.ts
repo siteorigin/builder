@@ -412,7 +412,9 @@ export function toolsForRun(opts: {
   // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
   // do (styling every card of a selected one, say).
   const kept = focused && opts.widened ? (selectionTools(state, opts.widened, { widened: true }) ?? []).filter((t) => t.name === 'style_selected_element') : [];
-  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(contractRead) : general)], mode: 'site', focused };
+  // A small run asked for a component reads a design whole, which a rebuild has to describe again in full.
+  const reads = (t: ToolDefinition) => (opts.componentRequest && t.name === 'read_component' ? t : contractRead(t));
+  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
 }
 
 /**
@@ -420,7 +422,7 @@ export function toolsForRun(opts: {
  * placement), and no Developer mode: a managed design is not code.
  */
 /** Whether a request typed into the chat asks for a component, which a small site run then builds whole. */
-export const asksForComponent = (text: string): boolean => /\bcomponents?\b/i.test(text);
+export const asksForComponent = (text: string): boolean => /\b(?:components?|reusable|re-usable)\b/i.test(text);
 
 const managedComponentTool = (): ToolDefinition => ({ name: 'upsert_managed_component', ...describe('upsert_managed_component'), parameters: managedComponentSchema() });
 

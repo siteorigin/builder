@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext, ProviderId } from '@shared/api';
-import type { ElementRef } from '@shared/types';
+import type { ElementRef, InstanceNode } from '@shared/types';
 import { createStarterState, type StarterId } from '@catalogue/starters';
 import { LIMITS, Orchestrator } from '@agent/orchestrator';
 import { LocalAdapter, openLocalAdapter, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
@@ -134,13 +134,50 @@ describe('orchestrator with constrained JSON', () => {
     const def = Object.values(session.state.components).find((d) => d.name === 'Studio cards')!;
     expect(def).toMatchObject({ kind: 'managed', owner: 'project' });
     expect(def.tree!.nodes.title).toMatchObject({ text: { $item: 'title' } });
-    expect(Object.keys(def.properties)).toEqual(['heading', 'cards']);
+    expect(Object.keys(def.properties)).toEqual(['heading', 'headingLevel', 'cards']);
     expect(Object.keys(def.parts)).toEqual(expect.arrayContaining(['root', 'card']));
     expect(Object.keys(def.variantAxes!.tone.options)).toEqual(['default', 'muted', 'inverse']);
     expect(session.state.pages[home].nodes[session.state.pages[home].rootIds[0]]).toMatchObject({ kind: 'instance', definitionId: def.id });
     expect(session.historyInfo().entries.length).toBe(before + 1);
     expect((await session.undoGroup(runId)).ok).toBe(true);
     expect(session.state.components[def.id]).toBeUndefined();
+  });
+
+  it('rebuilds a component it reads whole, without Developer mode, keeping what its placement holds (#359)', async () => {
+    const { session, run } = await setup({}, {}, false);
+    const home = session.state.site.homePageId;
+    const blueprint = COMPONENT_BLUEPRINTS.find((b) => b.id === 'card-grid')!.args;
+    server.script(envelopeReply('upsert_managed_component', { ...blueprint, name: 'Studio cards', placeOnPage: { pageId: home } }), envelopeReply('finish', { message: 'Made Studio cards.' }));
+    await run('Create a component of service cards on the home page');
+    const def = Object.values(session.state.components).find((d) => d.name === 'Studio cards')!;
+    const placed = session.state.pages[home].rootIds.at(-1)!;
+    const edit = await session.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home }, nodeId: placed, prop: 'heading', value: 'How we help' }] }, { label: 'Edit', source: 'user' });
+    expect(edit.ok).toBe(true);
+    server.requests.length = 0;
+    // The rebuild adds a short label under each title.
+    const fields = [...(blueprint.properties![2] as { fields: unknown[] }).fields, { type: 'string', name: 'label', label: 'Label', default: '' }];
+    const nodes = blueprint.nodes!.map((n) => (n.id === 'card' ? { ...n, children: ['icon', 'title', 'label', 'text'] } : n));
+    nodes.push({ kind: 'text', id: 'label', tag: 'p', text: { $item: 'label' }, when: { $item: 'label' } } as never);
+    const properties = blueprint.properties!.map((p) => (p.name === 'cards' ? { ...p, fields } : p));
+    server.script(
+      envelopeReply('read_component', { definitionId: def.id, structure: true }, 'Reading the design'),
+      envelopeReply('upsert_managed_component', { ...blueprint, definitionId: def.id, name: 'Studio cards', properties, nodes }, 'Adding a label'),
+      envelopeReply('finish', { message: 'Added a label to each card.' })
+    );
+    const { runId, result } = await run('Update the Studio cards component: add a short label under each card title');
+    expect(result?.status).toBe('completed');
+    // The design was read whole: its structure, with the node IDs the rebuild names again.
+    const first = server.requests.find((r) => r.method === 'POST')!.body;
+    expect(JSON.stringify(first.response_format)).toContain('"structure"');
+    expect(toolResults().some((m) => m.content.startsWith('Result of read_component') && m.content.includes('"card"'))).toBe(true);
+    const rebuilt = session.state.components[def.id];
+    expect(rebuilt.tree!.nodes.label).toMatchObject({ text: { $item: 'label' } });
+    expect((rebuilt.properties.cards as { fields: Record<string, unknown> }).fields).toHaveProperty('label');
+    // The placement keeps its own heading through the rebuild, and one undo takes the rebuild back.
+    expect((session.state.pages[home].nodes[placed] as InstanceNode).props.heading).toBe('How we help');
+    expect((await session.undoGroup(runId)).ok).toBe(true);
+    expect(session.state.components[def.id].tree!.nodes.label).toBeUndefined();
+    expect((session.state.pages[home].nodes[placed] as InstanceNode).props.heading).toBe('How we help');
   });
 
   it('sends a component request to a model whose known window holds it as it is sent: tools as signatures, not schemas (#359)', async () => {

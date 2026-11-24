@@ -16,6 +16,8 @@ import { STYLE_PROP_MAP } from '@shared/styles';
 import { newId } from '@shared/ids';
 import { projectDefinitionId } from '@shared/component-ids';
 import { normalizeRoute } from '@shared/routes';
+import { validateOperation } from '@shared/ops';
+import { sha256Hex } from '@shared/sha256';
 import { applyOperations } from '@engine/apply';
 import type { EngineError } from '@engine/tree';
 import { acceptedTypes, checkPropName, isProtoKey, normalizePropSchema, type BindField } from '@engine/schema';
@@ -119,7 +121,10 @@ const scalarProps = () =>
     z.object({ type: z.literal('link'), ...PROP_HEAD, default: LINK.optional() }).strict(),
     z.object({ type: z.literal('image'), ...PROP_HEAD, default: IMAGE.optional() }).strict(),
     z.object({ type: z.literal('icon'), ...PROP_HEAD, default: z.string().max(40).optional() }).strict(),
-    z.object({ type: z.literal('token'), ...PROP_HEAD, tokenGroup: z.enum(TOKEN_GROUPS), default: z.string().optional().describe('A token ID of that group, such as color.brand.') }).strict()
+    z.object({ type: z.literal('token'), ...PROP_HEAD, tokenGroup: z.enum(TOKEN_GROUPS), default: z.string().optional().describe('A token ID of that group, such as color.brand.') }).strict(),
+    z
+      .object({ type: z.literal('choices'), ...PROP_HEAD, default: z.array(z.object({ label: z.string().max(200), value: z.string().max(200).optional() }).strict()).max(50).optional().describe('Answers a visitor picks from, in order.') })
+      .strict()
   ] as const;
 const FIELD = z.discriminatedUnion('type', [...scalarProps()]);
 /** A list item's or an object's values, one row per field. */
@@ -138,7 +143,18 @@ const PROPERTY = z.discriminatedUnion('type', [
       max: z.number().int().min(1).optional()
     })
     .strict(),
-  z.object({ type: z.literal('object'), ...PROP_HEAD, fields: z.array(FIELD).min(1).max(20), default: VALUES.optional() }).strict()
+  z.object({ type: z.literal('object'), ...PROP_HEAD, fields: z.array(FIELD).min(1).max(20), default: VALUES.optional() }).strict(),
+  z
+    .object({
+      type: z.literal('table'),
+      ...PROP_HEAD,
+      default: z
+        .object({ columns: z.array(z.string().max(80)).min(1).max(12), rows: z.array(z.array(z.string().max(500)).max(12)).max(100) })
+        .strict()
+        .optional()
+        .describe('Column names, then one row per entry with one text per column.')
+    })
+    .strict()
 ]);
 
 export const MANAGED_COMPONENT_ARGS = z
@@ -158,7 +174,14 @@ export const MANAGED_COMPONENT_ARGS = z
     slots: z
       .array(
         z
-          .object({ name: NAME, label: z.string().min(1).max(60), description: z.string().max(300).optional(), primitives: z.array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]])).max(6).optional(), max: z.number().int().min(0).max(1000).optional() })
+          .object({
+            name: NAME,
+            label: z.string().min(1).max(60),
+            description: z.string().max(300).optional(),
+            categories: z.array(z.enum(COMPONENT_CATEGORIES as unknown as [string, ...string[]])).max(20).optional().describe('Component categories it takes.'),
+            primitives: z.array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]])).max(6).optional(),
+            max: z.number().int().min(0).max(1000).optional()
+          })
           .strict()
       )
       .max(10)
@@ -193,7 +216,11 @@ export const MANAGED_COMPONENT_ARGS = z
       .strict()
       .optional()
       .describe('Also place it on this page, in the same step.'),
-    repair: z.boolean().optional().describe('After an error: send only the corrected nodes (by id) and properties (by name), and any list to replace whole; the rest of the rejected call is kept.')
+    repair: z
+      .boolean()
+      .optional()
+      .describe('After an error: send name (and definitionId) with only the corrected nodes (by id) and properties (by name), and any other list to replace whole; the rest of the rejected call is kept.'),
+    remove: z.array(z.string()).max(100).optional().describe('With repair: node IDs and property names to leave out of the rejected call.')
   })
   .strict();
 export type ManagedComponentArgs = z.infer<typeof MANAGED_COMPONENT_ARGS>;
@@ -228,31 +255,69 @@ function pathOf(path: readonly PropertyKey[]): string {
   return path.reduce<string>((out, k) => (typeof k === 'number' ? `${out}[${k}]` : out ? `${out}.${String(k)}` : String(k)), '') || 'arguments';
 }
 
-/** A rejected call's own rows replaced by those a repair sends with the same key; new ones are added at the end. */
-function mergeRows(held: unknown, sent: unknown, key: string): unknown {
-  if (!Array.isArray(held) || !Array.isArray(sent)) return sent;
-  const out = [...held];
-  for (const row of sent) {
-    const at = isRecord(row) ? out.findIndex((h) => isRecord(h) && h[key] === row[key]) : -1;
-    if (at >= 0) out[at] = row;
-    else out.push(row);
+/**
+ * A zod issue as the problems a model can fix: a union the value matched none of is reported by the branch that got
+ * furthest (an image whose alt is a number, not "matches no shape"), when one got past the value itself.
+ */
+function issueRows(issue: z.core.$ZodIssue, base: readonly PropertyKey[] = []): FieldIssue[] {
+  const path = [...base, ...issue.path];
+  const branches = issue.code === 'invalid_union' ? (issue as { errors?: z.core.$ZodIssue[][] }).errors : undefined;
+  if (branches?.length) {
+    const depth = (b: z.core.$ZodIssue[]) => Math.max(0, ...b.map((i) => i.path.length));
+    const best = branches.filter((b) => b.length).sort((a, b) => depth(b) - depth(a) || a.length - b.length)[0];
+    if (best && depth(best) > 0) return best.flatMap((i) => issueRows(i, path));
+  }
+  return [{ field: pathOf(path), message: issue.message }];
+}
+
+/** The key of a row a repair addresses: a node's id or a property's name. Rows without one cannot be addressed. */
+const keyOf = (row: unknown, key: string): string | undefined => (isRecord(row) && typeof row[key] === 'string' ? (row[key] as string) : undefined);
+
+/**
+ * A rejected call's rows with a repair's applied: each row sent replaces every held row with its key (so a key that
+ * was given twice is left once), a new key is added at the end, and `removed` keys go. A held row with no key, which the
+ * error named for that, is left out: the repair sends it again with one.
+ */
+function mergeRows(held: unknown, sent: unknown, key: string, removed: ReadonlySet<string>): unknown[] {
+  const out = (Array.isArray(held) ? held : []).filter((r) => {
+    const k = keyOf(r, key);
+    return k !== undefined && !removed.has(k);
+  });
+  for (const row of Array.isArray(sent) ? sent : []) {
+    const k = keyOf(row, key);
+    const first = k === undefined ? -1 : out.findIndex((h) => keyOf(h, key) === k);
+    if (first < 0) {
+      out.push(row);
+      continue;
+    }
+    out[first] = row;
+    for (let i = out.length - 1; i > first; i--) if (keyOf(out[i], key) === k) out.splice(i, 1);
   }
   return out;
 }
 
 function mergeRepair(held: Record<string, unknown>, sent: Record<string, unknown>): Record<string, unknown> {
+  const removed = new Set(Array.isArray(sent.remove) ? sent.remove.filter((r): r is string => typeof r === 'string') : []);
   const out: Record<string, unknown> = { ...held };
-  for (const [k, v] of Object.entries(sent)) {
-    if (k === 'repair' || v === undefined) continue;
-    out[k] = k === 'nodes' ? mergeRows(held.nodes, v, 'id') : k === 'properties' ? mergeRows(held.properties, v, 'name') : v;
-  }
+  for (const [k, v] of Object.entries(sent)) if (k !== 'repair' && k !== 'remove' && k !== 'nodes' && k !== 'properties' && v !== undefined) out[k] = v;
+  if (held.nodes !== undefined || sent.nodes !== undefined) out.nodes = mergeRows(held.nodes, sent.nodes, 'id', removed);
+  if (held.properties !== undefined || sent.properties !== undefined) out.properties = mergeRows(held.properties, sent.properties, 'name', removed);
   return out;
 }
 
-const NOTHING_APPLIED = 'Nothing was applied. Call again with repair: true and only what needs fixing: the corrected nodes (by id) and properties (by name), and any other list to replace whole.';
+/** Which component a call is about: the one it rebuilds, or a new one by its name. */
+const draftKey = (a: Record<string, unknown>) => (typeof a.definitionId === 'string' ? `id:${a.definitionId}` : `new:${typeof a.name === 'string' ? a.name.trim().toLowerCase() : ''}`);
+/** The component a rebuild was described against, so a repair never applies a description made before it changed. */
+const targetOf = (state: ProjectState, a: Record<string, unknown>): string | null =>
+  typeof a.definitionId === 'string' && Object.hasOwn(state.components, a.definitionId) ? sha256Hex(JSON.stringify(state.components[a.definitionId])) : null;
+
+const NOTHING_APPLIED =
+  'Nothing was applied. Call again with repair: true, the same name (and definitionId), and only what needs fixing: the corrected nodes (by id) and properties (by name), remove for any to leave out, and any other list to replace whole.';
+const SEND_WHOLE = 'Send the whole component, without repair.';
 
 export async function runManagedComponent(raw: unknown, host: ToolHost, callId: string, memory: MacroMemory): Promise<ToolOutcome> {
-  const fingerprint = JSON.stringify(raw);
+  // Named with the tool, so another tool's call ID is never taken as this one's.
+  const fingerprint = JSON.stringify(['upsert_managed_component', raw]);
   const prior = memory.replay.get(callId);
   if (prior) {
     if (prior.args === fingerprint) return { ok: prior.ok, content: prior.content };
@@ -265,42 +330,74 @@ export async function runManagedComponent(raw: unknown, host: ToolHost, callId: 
 
 async function compileAndApply(raw: unknown, host: ToolHost, callId: string, memory: MacroMemory): Promise<ToolOutcome> {
   if (!isRecord(raw)) return fieldError([{ field: 'arguments', message: 'expected an object' }], 'Nothing was applied.');
+  // Anything but a plain true or false would be taken for a whole new description, losing what a repair keeps.
+  if (raw.repair !== undefined && typeof raw.repair !== 'boolean') return fieldError([{ field: 'repair', message: 'expected true or false' }], 'Nothing was applied.');
+  if (raw.remove !== undefined && raw.repair !== true) return fieldError([{ field: 'remove', message: 'only with repair: true' }], 'Nothing was applied.');
+  const state = host.state();
+  const drafts = (memory.componentDrafts ??= new Map());
   let given = raw;
+  let target = targetOf(state, raw);
+  let from: string | null = null;
   if (raw.repair === true) {
-    if (!memory.componentDraft) return fieldError([{ field: 'repair', message: 'there is no rejected call to repair' }], 'Send the whole component, without repair.');
-    given = mergeRepair(memory.componentDraft, raw);
+    from = draftKey(raw);
+    // A rebuild repaired without its definitionId is found by its name, when only one was rejected under it.
+    if (!drafts.has(from) && raw.definitionId === undefined) {
+      const named = [...drafts.entries()].filter(([, d]) => typeof d.args.name === 'string' && typeof raw.name === 'string' && d.args.name.trim().toLowerCase() === raw.name.trim().toLowerCase());
+      if (named.length === 1) from = named[0][0];
+    }
+    const draft = drafts.get(from);
+    if (!draft) return fieldError([{ field: 'repair', message: `there is no rejected call for "${String(raw.name ?? '')}" to repair` }], SEND_WHOLE);
+    if (draft.target !== targetOf(state, draft.args)) {
+      drafts.delete(from);
+      return fieldError([{ field: 'repair', message: `"${String(draft.args.name ?? '')}" changed since that call was rejected` }], `Read it again and ${SEND_WHOLE.charAt(0).toLowerCase()}${SEND_WHOLE.slice(1)}`);
+    }
+    given = mergeRepair(draft.args, raw);
+    target = draft.target;
   }
   // Whatever is sent is held until it applies, so the next call can repair only what this one names.
-  const { repair: _r, ...held } = given;
-  memory.componentDraft = held;
+  const { repair: _r, remove: _x, ...held } = given;
+  if (from) drafts.delete(from);
+  drafts.set(draftKey(held), { args: held, target });
   const parsed = MANAGED_COMPONENT_ARGS.safeParse(held);
-  if (!parsed.success) return fieldError(parsed.error.issues.slice(0, MAX_ISSUES).map((i) => ({ field: pathOf(i.path), message: i.message })), NOTHING_APPLIED);
-  const state = host.state();
+  if (!parsed.success) return fieldError(parsed.error.issues.flatMap((i) => issueRows(i)).slice(0, MAX_ISSUES), NOTHING_APPLIED);
   const compiled = compile(state, parsed.data);
   if ('issues' in compiled) return fieldError(compiled.issues.slice(0, MAX_ISSUES), NOTHING_APPLIED);
   const { op, place, index } = compiled;
+  const ops: EditOperation[] = place ? [op, place] : [op];
+  // What the session checks every operation for (reserved names, the operation's own schema), named where it can be.
+  for (const o of ops) {
+    const v = validateOperation(o);
+    if (v.ok) continue;
+    const node = /^nodes\.(\d+)/.exec(v.message)?.[1];
+    return fieldError([{ field: o === place ? 'placeOnPage' : node !== undefined ? `nodes[${node}]` : 'arguments', message: v.message }], NOTHING_APPLIED);
+  }
 
-  // The engine checks the description as the finished component: run it on a copy first, so a problem it finds is
-  // named by the field it came from, and the placement's problems by placeOnPage.
-  let scratch: ProjectState;
+  // The engine checks the description as the finished component: run it on a copy first, alone so a problem it finds
+  // is named by the field it came from, then with its placement, as the session will apply them, so what only the two
+  // together break (a list item placed straight on a page) is named by placeOnPage.
+  const failure = (e: unknown, fallback: string) => {
+    const details = (e as EngineError).details;
+    const owner = isRecord(details) && isRecord(details.owner) ? details.owner.kind : undefined;
+    const field = owner === 'page' ? 'placeOnPage' : fallback === 'placeOnPage' && owner !== 'component' ? 'placeOnPage' : index.locate((e as Error).message, details);
+    return fieldError([{ field, message: (e as Error).message }], NOTHING_APPLIED);
+  };
   try {
-    scratch = applyOperations(state, [op]).state;
+    applyOperations(state, [op]);
   } catch (e) {
-    return fieldError([{ field: index.locate((e as Error).message, (e as EngineError).details), message: (e as Error).message }], NOTHING_APPLIED);
+    return failure(e, 'nodes');
   }
   if (place) {
     try {
-      applyOperations(scratch, [place]);
+      applyOperations(state, ops);
     } catch (e) {
-      return fieldError([{ field: 'placeOnPage', message: (e as Error).message }], NOTHING_APPLIED);
+      return failure(e, 'placeOnPage');
     }
   }
 
-  const ops: EditOperation[] = place ? [op, place] : [op];
   const label = `${op.definitionId ? 'Rebuild' : 'Build'} ${op.name}`;
   const res = await host.apply(ops, host.revision(), label, callId);
   if (!res.ok) return { ok: false, content: { ok: false, revision: res.revision, error: res.error, note: NOTHING_APPLIED } };
-  memory.componentDraft = undefined;
+  drafts.delete(draftKey(held));
   const made = (res.results?.[0] ?? {}) as { definitionId?: string; rootNodeId?: string };
   const placed = place ? ((res.results?.[1] ?? {}) as { nodeId?: string }) : null;
   const definitionId = made.definitionId ?? op.definitionId ?? op.newDefinitionId;
@@ -340,9 +437,11 @@ const BINDABLE: Partial<Record<NodeArgs['kind'], BindField[]>> = {
   icon: ['icon', 'ariaLabel']
 };
 
-/** A name used as a key that every object already has (constructor, __proto__): refused, as the engine refuses it. */
+/** Names the session refuses anywhere in an operation (see validateOperation), beside those every object has. */
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+/** A name used as a key that every object already has (constructor, __proto__), or `prototype`: refused, as the engine refuses it. */
 function reservedKey(key: string, field: string, issues: FieldIssue[]): boolean {
-  if (!isProtoKey(key)) return false;
+  if (!isProtoKey(key) && !FORBIDDEN_KEYS.has(key)) return false;
   issues.push({ field, message: `"${key}" is a reserved name. Choose another` });
   return true;
 }
@@ -362,11 +461,17 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   const nodes = args.nodes ?? [];
   if (!nodes.length) issues.push({ field: 'nodes', message: 'a component needs its design: at least one node, its root' });
 
+  // A rebuild keeps what this tool cannot say about a property or slot it keeps (a list filled from the site's pages,
+  // a page list's card fields, a rich text's list kind, an Inspector group, the categories a slot takes), rather than
+  // dropping it unseen.
+  const was = args.definitionId !== undefined && Object.hasOwn(state.components, args.definitionId) ? state.components[args.definitionId] : undefined;
+
   // Properties: each checked as the engine will store it, so a problem is named by its row and field.
   const props = new Map<string, { at: number; schema: PropSchema }>();
   const properties: Record<string, unknown> = {};
   (args.properties ?? []).forEach((p, i) => {
     const at = `properties[${i}]`;
+    if (reservedKey(p.name, `${at}.name`, issues)) return;
     if (props.has(p.name) || Object.hasOwn(properties, p.name)) return issues.push({ field: `${at}.name`, message: `"${p.name}" is already the name of properties[${props.get(p.name)?.at ?? '?'}]` });
     try {
       checkPropName(p.name);
@@ -375,6 +480,8 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     }
     const rawSchema = propertySchema(p, at, issues);
     if (!rawSchema) return;
+    const old = was && Object.hasOwn(was.properties, p.name) ? (was.properties[p.name] as unknown as Record<string, unknown>) : undefined;
+    if (old?.type === p.type) for (const k of KEPT_PROPERTY_KEYS) if (Object.hasOwn(old, k) && !Object.hasOwn(rawSchema, k)) rawSchema[k] = old[k];
     properties[p.name] = rawSchema;
     try {
       props.set(p.name, { at: i, schema: normalizePropSchema(rawSchema, state, p.name) });
@@ -502,6 +609,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     if (reservedKey(p.id, `${at}.id`, issues)) return;
     if (Object.hasOwn(parts, p.id)) return issues.push({ field: `${at}.id`, message: `"${p.id}" is listed twice` });
     if (!byId.has(p.nodeId)) issues.push({ field: `${at}.nodeId`, message: `"${p.nodeId}" is not the id of any node` });
+    else if (p.id === 'root' && roots.length === 1 && p.nodeId !== roots[0].id) issues.push({ field: `${at}.nodeId`, message: `the root part is always the root node, "${roots[0].id}"` });
     const bad = (p.styleControls ?? []).filter((s) => !Object.hasOwn(STYLE_PROP_MAP, s));
     if (bad.length) issues.push({ field: `${at}.styleControls`, message: `unknown style properties: ${bad.join(', ')}` });
     parts[p.id] = { nodeId: p.nodeId, label: p.label, ...(p.styleControls ? { styleControls: p.styleControls } : {}) };
@@ -513,7 +621,8 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     if (Object.hasOwn(slots, s.name)) return issues.push({ field: `${at}.name`, message: `"${s.name}" is listed twice` });
     if (!slotsShown.has(s.name)) issues.push({ field: at, message: `no slot node shows "${s.name}", so content put there would never appear. Add a node { "kind": "slot", "slot": "${s.name}" }` });
     const { name: _n, ...rest } = s;
-    slots[s.name] = rest;
+    const old = was?.slots && Object.hasOwn(was.slots, s.name) ? was.slots[s.name] : undefined;
+    slots[s.name] = old?.categories && rest.categories === undefined ? { ...rest, categories: old.categories } : rest;
   });
   const variantAxes: Record<string, unknown> = {};
   (args.variantAxes ?? []).forEach((a, i) => {
@@ -572,6 +681,9 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   if (place) place.definitionId = definitionId;
   return { op, place, index: sourceIndex(args) };
 }
+
+/** What a property keeps through a rebuild that this tool has no field for. */
+const KEPT_PROPERTY_KEYS = ['group', 'feed', 'pageTeaser', 'plainAs', 'codeForm'] as const;
 
 /** The property's schema as the operation takes it, its rows turned back into maps. */
 function propertySchema(p: PropertyArgs, at: string, issues: FieldIssue[]): Record<string, unknown> | null {

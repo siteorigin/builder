@@ -70,6 +70,8 @@ export interface ComponentBlueprint {
 }
 
 const t = (token: string) => ({ token });
+/** A variant option's style rule for one node. */
+type OptionStyle = { nodeId: string; property: string; value: string | number | boolean | { token: string } };
 /** The section shell every theme section has: page padding, its background, and a centred content-width container. */
 const shellRoot = [
   { property: 'paddingBlock', value: t('space.section') },
@@ -85,7 +87,7 @@ const shellInner = [
   { property: 'marginInline', value: 'auto' }
 ];
 /** A tone axis whose options restyle the root: an option without rules would change nothing. */
-const toneAxis = (dark: Array<{ nodeId: string; property: string; value: unknown }>) => ({
+const toneAxis = (dark: OptionStyle[]) => ({
   name: 'tone',
   label: 'Tone',
   options: [
@@ -106,6 +108,8 @@ export const COMPONENT_BLUEPRINTS: ComponentBlueprint[] = [
       category: 'content',
       properties: [
         { type: 'string', name: 'heading', label: 'Heading', default: 'What we offer' },
+        // The heading's place in the page outline, chosen per placement, as the theme's sections do.
+        { type: 'enum', name: 'headingLevel', label: 'Heading level', options: [{ value: 'h2', label: 'Heading 2' }, { value: 'h3', label: 'Heading 3' }], default: 'h2' },
         {
           type: 'list',
           name: 'cards',
@@ -126,7 +130,7 @@ export const COMPONENT_BLUEPRINTS: ComponentBlueprint[] = [
       nodes: [
         { kind: 'element', id: 'root', tag: 'section', children: ['inner'], styles: shellRoot },
         { kind: 'element', id: 'inner', children: ['heading', 'grid'], styles: shellInner },
-        { kind: 'text', id: 'heading', tag: 'h2', text: { $prop: 'heading' }, styles: [{ property: 'textStyle', value: t('text.h2') }] },
+        { kind: 'text', id: 'heading', tag: { $prop: 'headingLevel' }, text: { $prop: 'heading' }, when: { $prop: 'heading' }, styles: [{ property: 'textStyle', value: t('text.h2') }] },
         {
           kind: 'element',
           id: 'grid',
@@ -180,7 +184,7 @@ export const COMPONENT_BLUEPRINTS: ComponentBlueprint[] = [
         { type: 'string', name: 'heading', label: 'Heading', default: 'Ready when you are' },
         { type: 'richtext', name: 'text', label: 'Text', default: 'Tell us what you need and we will reply within a day.' },
         { type: 'string', name: 'buttonLabel', label: 'Button text', default: 'Get in touch' },
-        { type: 'link', name: 'buttonLink', label: 'Button link', default: '' }
+        { type: 'link', name: 'buttonLink', label: 'Button link', description: 'The button shows once it has a link.', default: '' }
       ],
       nodes: [
         { kind: 'element', id: 'root', tag: 'section', children: ['inner'], styles: shellRoot },
@@ -193,7 +197,8 @@ export const COMPONENT_BLUEPRINTS: ComponentBlueprint[] = [
         { kind: 'element', id: 'copy', children: ['heading', 'text'], styles: [{ property: 'layout', value: 'stack' }, { property: 'gap', value: t('space.sm') }] },
         { kind: 'text', id: 'heading', tag: 'h2', text: { $prop: 'heading' }, styles: [{ property: 'textStyle', value: t('text.h2') }] },
         { kind: 'text', id: 'text', rich: true, text: { $prop: 'text' }, when: { $prop: 'text' } },
-        { kind: 'link', id: 'button', link: { $prop: 'buttonLink' }, label: { $prop: 'buttonLabel' }, appearance: 'primary', when: { $prop: 'buttonLabel' } }
+        // Shown only with both a link and a label: an unlinked button would be hidden from visitors anyway.
+        { kind: 'link', id: 'button', link: { $prop: 'buttonLink' }, label: { $prop: 'buttonLabel' }, appearance: 'primary', when: { $prop: 'buttonLink' }, unless: { ref: { $prop: 'buttonLabel' }, eq: '' } }
       ],
       parts: [
         { id: 'heading', nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },

@@ -181,7 +181,8 @@ class RecordingAdapter implements AgentModelAdapter {
           this.outputTokens += ev.usage.outputTokens;
         } else {
           this.tokensEstimated = true;
-          this.inputTokens += estimateRequestTokens(req.system, req.tools, req.items);
+          // A constrained model is sent its tools as signatures (see budget.ts), and counted that way.
+          this.inputTokens += estimateRequestTokens(req.system, req.tools, req.items, this.inner.capabilities().toolCalling === 'constrained-json');
           this.outputTokens += estimateTokens(ev.text) + ev.toolCalls.reduce((n, c) => n + estimateTokens(c.arguments), 0);
         }
         const calls = ev.toolCalls.map((c) => ({ name: c.name, arguments: c.arguments }));

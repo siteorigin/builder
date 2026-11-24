@@ -109,8 +109,12 @@ export interface MacroMemory {
   /** The last rejected page per route, so one section can be repaired without resending the page. */
   drafts: Map<string, Omit<UpsertArgs, 'repair' | 'sections'> & { sections: SectionInput[]; pageId: string | null }>;
   pendingLinks: PendingLink[];
-  /** The last upsert_managed_component call that did not apply, as sent, so the next can repair only what it names. */
-  componentDraft?: Record<string, unknown>;
+  /**
+   * upsert_managed_component calls that did not apply, as sent, by the component they are about (see draftKey), so the
+   * next can repair only what it names. `target`: the rebuilt component as it was, so a repair never applies a
+   * description made before that component changed.
+   */
+  componentDrafts?: Map<string, { args: Record<string, unknown>; target: string | null }>;
   /** Finished calls by call ID: a replayed call returns its first result and changes nothing. */
   replay: Map<string, { args: string; ok: boolean; content: unknown }>;
 }
