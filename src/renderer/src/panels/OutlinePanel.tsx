@@ -3,7 +3,7 @@ import { CircleCheck, Heading1, Info, TriangleAlert } from 'lucide-react';
 import { sameRef } from '@shared/types';
 import type { OutlineHeading } from '@generator/checks';
 import { applyOps, getState, setState, useStore } from '../store';
-import { headingKey, headingLevelOps, headingTarget, headingWords, pageOutline, type OutlineRow } from '../lib/outline';
+import { headingLevelOps, headingTarget, headingWords, pageOutline, type OutlineRow } from '../lib/outline';
 
 const WHERE: Record<string, string> = { header: 'Shared header', footer: 'Shared footer' };
 
@@ -43,10 +43,11 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
    * Give a heading another level. Focus stays in the outline, on the same heading's row once it has its new level,
    * unless the edit did not land or another page is shown by then.
    */
-  const setLevel = (h: OutlineHeading, level: number) => {
+  const setLevel = (row: OutlineRow, level: number) => {
+    const h = row.heading;
     const ops = headingLevelOps(h, level);
     if (!ops) return;
-    const key = headingKey(h);
+    const key = row.key;
     void applyOps(ops, `Make “${headingWords(h)}” Heading ${level}`, undefined, revision).then((done) => {
       if (!done || getState().pageId !== pageId) return;
       requestAnimationFrame(() => document.querySelector<HTMLElement>(`.outline-list .outline-row[data-heading="${CSS.escape(key)}"]`)?.focus());
@@ -61,7 +62,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
         {titleFix && (
           <>
             {' '}
-            <button className="link" disabled={readOnly} onClick={() => setLevel(titleFix.heading, 1)}>
+            <button className="link" disabled={readOnly} onClick={() => setLevel(titleFix, 1)}>
               Make “{headingWords(titleFix.heading)}” Heading 1
             </button>
           </>
@@ -111,7 +112,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
                 <div className="outline-item">
                   <button
                     className={`outline-row${note?.warn ? ' warn' : ''}`}
-                    data-heading={headingKey(h)}
+                    data-heading={r.key}
                     aria-current={sameRef(selection, target) ? 'true' : undefined}
                     aria-label={`Heading ${h.level}, ${words}${note ? `. ${note.text}` : ''}${h.repeated && !r.extraTitle ? '. Shown more than once' : ''}`}
                     title={why || undefined}
@@ -129,7 +130,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
                     )}
                   </button>
                   {r.fix && (
-                    <button className="btn btn-sm outline-fix" disabled={readOnly} title="Changes the heading’s level in the page outline; it looks the same" onClick={() => setLevel(h, r.fix!)}>
+                    <button className="btn btn-sm outline-fix" disabled={readOnly} title="Changes the heading’s level in the page outline; it looks the same" onClick={() => setLevel(r, r.fix!)}>
                       Make Heading {r.fix}
                     </button>
                   )}

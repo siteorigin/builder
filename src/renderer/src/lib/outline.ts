@@ -10,6 +10,8 @@ import { partIdFor } from './model';
 /** One row of the outline. */
 export interface OutlineRow {
   heading: OutlineHeading;
+  /** Names this row across revisions: where its heading is shown, and which of the headings shown there it is. */
+  key: string;
   /** The page's one Heading 1. */
   title?: boolean;
   /** A Heading 1 after the page's first: a second title, unless it is meant to be one. */
@@ -41,7 +43,14 @@ const sourceKey = (h: OutlineHeading) => {
 /** The current page's outline, each row marked with what it asks for. */
 export function pageOutline(state: ProjectState, pageId: string): PageOutline {
   const { outline, review, uninspected } = pageHeadings(state, pageId);
-  const rows: OutlineRow[] = outline.map((heading) => ({ heading }));
+  // Headings a list shows through one placement share a place: their order among them tells them apart.
+  const seen = new Map<string, number>();
+  const rows: OutlineRow[] = outline.map((heading) => {
+    const place = headingKey(heading);
+    const n = seen.get(place) ?? 0;
+    seen.set(place, n + 1);
+    return { heading, key: `${place}#${n}` };
+  });
   // A level chosen once for several headings (a design's choice its headings share, or one heading repeated) is
   // changed for all of them, which the row's fix does not say: those are changed in the Inspector instead.
   const sharing = new Map<string, number>();

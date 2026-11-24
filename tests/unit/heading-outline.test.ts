@@ -197,6 +197,11 @@ describe('headings as the generated site renders them', () => {
     expect(headingWarnings(s).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
     (s.pages[home].nodes.n_old as TextNode).styles = { base: { hidden: true }, tablet: { layout: 'row', hidden: true } };
     expect(headingWarnings(s)).toEqual([]);
+    // Custom CSS shows it only by setting a display; a size's styles that are not an object (a hand-edited file) change nothing.
+    (s.pages[home].nodes.n_old as TextNode).styles = { base: { hidden: true }, phone: { customCss: 'color: red;' }, desktop: 'legacy' as never };
+    expect(headingWarnings(s)).toEqual([]);
+    (s.pages[home].nodes.n_old as TextNode).styles = { base: { hidden: true }, phone: { customCss: 'color: red; display: block;' } };
+    expect(headingWarnings(s).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
     // A container hidden at every size hides the headings inside it.
     s.pages[home].nodes.n_box = { id: 'n_box', kind: 'element', tag: 'div', children: ['n_new'], styles: { base: { hidden: true } } };
     s.pages[home].rootIds = ['n_old', 'n_box'];
@@ -397,12 +402,13 @@ describe('page outline rows and fixes', () => {
     ]);
   });
 
-  it('offers no one-step fix for a level a design also reads to decide what shows', () => {
+  it.each(['h1', 'h2'])('offers no one-step fix for a level a design also reads to decide what shows (shown for %s)', (shownFor) => {
     const s = fresh();
     const home = s.site.homePageId;
+    // Shown now (h1), or shown only once the fix were made (h2).
     const def = projectDef(s, 'p_cond', { level: P.choice('Level', 'h1', [['h1', 'H1'], ['h2', 'H2']]) }, [
       { id: 'root', kind: 'element', tag: 'div', children: ['note', 'title'] },
-      { id: 'note', kind: 'text', tag: 'p', text: 'Shown for a page title only', when: { ref: { $prop: 'level' }, eq: 'h1' } },
+      { id: 'note', kind: 'text', tag: 'p', text: 'Shown for one level only', when: { ref: { $prop: 'level' }, eq: shownFor } },
       { id: 'title', kind: 'text', tag: { $prop: 'level' }, text: 'Second' }
     ]);
     const inst = makeInstance(def, {});
@@ -412,6 +418,26 @@ describe('page outline rows and fixes', () => {
     const row = pageOutline(s, home).rows.find((r) => r.heading.text === 'Second')!;
     expect(row).toMatchObject({ extraTitle: true, heading: { levelConditions: true } });
     expect(row.fix).toBeUndefined();
+  });
+
+  it('keys each row apart, even headings a list shows through one nested placement', () => {
+    const s = fresh();
+    const home = s.site.homePageId;
+    projectDef(s, 'p_card', { t: P.str('Title', 'x') }, [{ id: 'title', kind: 'text', tag: 'h2', text: { $prop: 't' } }]);
+    const list = projectDef(s, 'p_list', { items: P.list('Items', 'Item', { title: P.str('Title', 'x') }, [{ title: 'One' }, { title: 'Two' }]) }, [
+      { id: 'root', kind: 'element', tag: 'div', children: ['each'] },
+      { id: 'each', kind: 'repeat', list: { $prop: 'items' }, children: ['card'] },
+      { id: 'card', kind: 'instance', definitionId: 'p_card', props: { t: { $item: 'title' } } }
+    ]);
+    const inst = makeInstance(list, {});
+    withHeadings(s, home, [{ id: 'n_a', tag: 'h1', text: 'Top' }]);
+    s.pages[home].nodes[inst.id] = inst;
+    s.pages[home].rootIds.push(inst.id);
+    const own = pageOutline(s, home).rows.filter((r) => r.heading.owner.kind === 'page');
+    expect(own.map((r) => r.heading.text)).toEqual(['Top', 'One', 'Two']);
+    expect(new Set(own.map((r) => r.key)).size).toBe(3);
+    // Inside a list, a nested heading selects its placement on the page.
+    expect(own[1].heading.instancePath).toBeUndefined();
   });
 
   it('offers no fix where the level is fixed: rich text, the contact form, an older design', () => {

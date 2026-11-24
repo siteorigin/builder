@@ -1068,13 +1068,22 @@ const levelOf = (tag: unknown) => (typeof tag === 'string' && HEADING.test(tag) 
 const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
 const SIZES = ['phone', 'tablet', 'desktop'] as const;
 
-/**
- * Whether styles hide an element at every size: hidden at the base size, and shown again at none. A size that sets
- * a layout (or custom CSS) without hiding the element itself gives it a display again, which shows it there.
- */
-const hiddenEverywhere = (...layers: Array<ResponsiveStyles | undefined>) =>
-  layers.some((l) => l?.base?.hidden === true) &&
-  !layers.some((l) => SIZES.some((z) => { const at = l?.[z]; return !!at && (at.hidden === false || (at.hidden !== true && ('layout' in at || 'customCss' in at))); }));
+/** Whether one size's styles show an element the base hides: unhidden, or given a display by a layout or custom CSS. */
+function showsAt(at: unknown): boolean {
+  // A hand-edited document may hold anything here; only an object of styles applies.
+  if (!at || typeof at !== 'object' || Array.isArray(at)) return false;
+  const st = at as Record<string, unknown>;
+  if (st.hidden === false) return true;
+  if (st.hidden === true) return false;
+  return st.layout !== undefined || (typeof st.customCss === 'string' && /(^|[;{\s])display\s*:/i.test(st.customCss));
+}
+
+/** Whether styles hide an element at every size: hidden at the base size, and shown again at none. */
+const hiddenEverywhere = (...layers: Array<ResponsiveStyles | undefined>) => {
+  const valid = layers.filter((l): l is ResponsiveStyles => !!l && typeof l === 'object');
+  const base = (l: ResponsiveStyles) => (l.base && typeof l.base === 'object' ? l.base.hidden : undefined);
+  return valid.some((l) => base(l) === true) && !valid.some((l) => SIZES.some((z) => showsAt(l[z])));
+};
 
 /** The tag a text node renders, as the generator decides it: a bound tag's value when it is one of its choice's text tags, else the choice's default. */
 function renderedTag(n: GraphNode & { kind: 'text' }, scope: Scope, def: ComponentDefinition | undefined): { tag: string; levels?: number[] } {
@@ -1185,8 +1194,23 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
       }
     });
   }
-  for (const h of out) if (h.levelSource?.kind === 'prop' && conditions.has(fieldKey(h.owner, h.nodeId, h.levelSource))) h.levelConditions = true;
+  for (const h of out) if (h.levelSource?.kind === 'prop' && (conditions.has(fieldKey(h.owner, h.nodeId, h.levelSource)) || readByDesign(state, h.owner, h.nodeId, h.levelSource))) h.levelConditions = true;
   return { outline: out, uninspected };
+}
+
+/**
+ * Whether the design a placement places reads one of its fields in a condition, whether that node shows now or not:
+ * the walk only sees the conditions of what renders, and changing the field could reveal what does not.
+ */
+function readByDesign(state: ProjectState, owner: OwnerRef, nodeId: string, f: PlacementField): boolean {
+  const tree = owner.kind === 'page' ? state.pages[owner.id] : owner.kind === 'shell' ? state.site.shell[owner.id as 'header' | 'footer'] : undefined;
+  const inst = tree && Object.hasOwn(tree.nodes, nodeId) ? tree.nodes[nodeId] : undefined;
+  const def = inst?.kind === 'instance' && Object.hasOwn(state.components, inst.definitionId) ? state.components[inst.definitionId] : undefined;
+  const reads = (c: unknown) => {
+    const ref = conditionRef(c);
+    return !!ref && (f.itemId ? '$item' in ref && ref.$item === f.field : '$prop' in ref && ref.$prop === f.prop);
+  };
+  return Object.values(def?.tree?.nodes ?? {}).some((n) => reads(n.when) || reads(n.unless));
 }
 
 /**
