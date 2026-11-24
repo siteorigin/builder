@@ -13,15 +13,31 @@ export const itemReachKey = (owner: OwnerRef, placementId: string, itemId: strin
 /** The reach the inspector shows for the card it has open, which can differ from the one remembered (an Undo
  *  removing the card's own styles leaves it showing "This card"). */
 let shown: { key: string; reach: 'all' | 'item' } | null = null;
+let version = 0;
+const listeners = new Set<() => void>();
+const changed = () => {
+  version++;
+  listeners.forEach((f) => f());
+};
 
 /** Say which reach the inspector shows for a card; the returned function takes it back. */
 export function showReach(key: string, reach: 'all' | 'item'): () => void {
   const entry = { key, reach };
   shown = entry;
+  changed();
   return () => {
-    if (shown === entry) shown = null;
+    if (shown !== entry) return;
+    shown = null;
+    changed();
   };
 }
+
+/** For useSyncExternalStore: what changes when the shown reach does. */
+export function subscribeReach(f: () => void): () => void {
+  listeners.add(f);
+  return () => void listeners.delete(f);
+}
+export const reachVersion = () => version;
 
 /** The reach chosen for a card: what the inspector shows for it, else what was last chosen there. */
 export const chosenReach = (key: string) => (shown?.key === key ? shown.reach : reachByItem.get(key));

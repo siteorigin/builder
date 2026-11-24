@@ -16,6 +16,14 @@ const heroNode = (s) => {
   return page.rootIds.map((id) => page.nodes[id]).find((n) => s.state.components[n.definitionId]?.componentId === 'hero.split');
 };
 const applied = (s) => s.history.entries.filter((e) => e.applied).map((e) => e.id);
+/** The snapshot once a save has landed: the project's state shows a change a moment before its history does. */
+const landed = (after, check) =>
+  eventually(async () => {
+    const s = await snap();
+    assert.ok(s.revision > after.revision, 'the save has landed');
+    check(s);
+    return s;
+  }, 15000);
 const hero = frame.locator('section', { has: frame.locator('h1', { hasText: 'Calm, considered spaces' }) }).first();
 const padding = () => hero.evaluate((el) => [Number.parseFloat(getComputedStyle(el).paddingTop), Number.parseFloat(getComputedStyle(el).paddingBottom)]);
 const previews = () => frame.locator('style[data-so-spacing]').count();
@@ -63,8 +71,7 @@ await win.screenshot({ path: join(OUT, 'spacing-drag.png') });
 
 step('release: one edit saves the spacing style for all sizes, and the page keeps showing it');
 await win.mouse.up();
-await eventually(async () => assert.deepEqual(heroNode(await snap()).overrides?.root?.base?.paddingBlock, { token: 'space.lg' }), 15000);
-const saved = await snap();
+const saved = await landed(before, (s) => assert.deepEqual(heroNode(s).overrides?.root?.base?.paddingBlock, { token: 'space.lg' }));
 assert.equal(applied(saved).length, applied(before).length + 1, 'one history entry');
 assert.equal(saved.history.undoLabel, 'Set vertical padding');
 assert.equal(saved.revision, before.revision + 1, 'one revision');
@@ -75,7 +82,8 @@ assert.deepEqual(await padding(), [24, 24], 'the saved style shows on its own');
 assert.equal(await hud.count(), 0, 'the HUD goes with the drag');
 
 step('a release before the page has measured its spacing styles saves where it let go');
-// The page's answer is held back in the editor for a moment, so the release always comes first.
+// The page's answers are held back in the editor for a moment, and the hero is picked again so its handles start
+// with no measurements: the release always comes first.
 await win.evaluate(() => {
   const held = new WeakSet();
   window.addEventListener(
@@ -84,15 +92,21 @@ await win.evaluate(() => {
       if (e.data?.type !== 'spaceMeasured' || held.has(e.data)) return;
       e.stopImmediatePropagation();
       held.add(e.data);
-      setTimeout(() => window.dispatchEvent(new MessageEvent('message', { data: e.data, origin: e.origin, source: e.source })), 800);
+      setTimeout(() => window.dispatchEvent(new MessageEvent('message', { data: e.data, origin: e.origin, source: e.source })), 1200);
     },
     true
   );
 });
+await win.locator('.list-item', { hasText: 'Logo strip' }).first().click();
+await eventually(async () => assert.match(await win.locator('.ov-chip').first().innerText(), /Logo strip/));
+await win.locator('.list-item', { hasText: 'Split hero' }).first().click();
+await eventually(async () => assert.match(await win.locator('.ov-chip').first().innerText(), /Split hero/));
+await handle.waitFor();
 await dragTopTo(47, 1);
 await win.mouse.up();
-await eventually(async () => assert.deepEqual(heroNode(await snap()).overrides?.root?.base?.paddingBlock, { token: 'space.2xl' }), 15000);
-assert.equal(applied(await snap()).length, applied(saved).length + 1, 'one more history entry');
+const quick = await landed(saved, (s) => assert.deepEqual(heroNode(s).overrides?.root?.base?.paddingBlock, { token: 'space.2xl' }));
+assert.equal(applied(quick).length, applied(saved).length + 1, 'one more history entry');
+assert.deepEqual(heroNode(quick).overrides.root, { ...heroNode(saved).overrides.root, base: { ...heroNode(saved).overrides.root.base, paddingBlock: { token: 'space.2xl' } } }, 'only the padding changed');
 await eventually(async () => assert.equal(await previews(), 0), 15000);
 assert.deepEqual(await padding(), [48, 48]);
 await win.locator('[aria-label^="Undo"]').first().click();

@@ -1,16 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ElementRef, ProjectState, ResponsiveScope } from '@shared/types';
 import { scopeForWidth } from '@shared/styles';
 import { api, commitOps, getState, useStore } from '../store';
-import { encodeItemId, type BridgeDesc } from '../lib/model';
+import type { BridgeDesc } from '../lib/model';
 import type { FrameSpacing } from '../lib/payload';
-import { chosenReach } from '../lib/item-reach';
+import { trackApply } from '../lib/pending';
+import { chosenReach, reachVersion, subscribeReach } from '../lib/item-reach';
 import {
   SPACING_HANDLES,
   dragLabel,
   dragValue,
   draggedSize,
-  keptItems,
   planHandle,
   previewDecls,
   previewMedia,
@@ -52,8 +52,6 @@ interface Drag {
   value: DragValue | null;
   raf: number;
   desc: BridgeDesc;
-  /** Copies of a repeated part whose own styles keep them where they are, as the page names their items. */
-  skip: string[];
   /** Settles once the page has said how large its spacing styles are (or did not answer in time). */
   measured: Promise<void>;
   revision: number;
@@ -86,22 +84,51 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
   const [hot, setHot] = useState<string | null>(null);
   const [live, setLive] = useState<{ key: string; text: string } | null>(null);
   const drag = useRef<Drag | null>(null);
+  /** The spacing scale as the page last measured it for this box; null until it first answers. */
+  const known = useRef<SpaceStop[] | null>(null);
+  // The inspector's choice of one card or every card changes what the handles write.
+  useSyncExternalStore(subscribeReach, reachVersion);
   const shown = scopeForWidth(viewport);
   const rtl = spacing.rtl;
   const target = spacingTarget(state, selection, chosenReach);
   const plans = target ? SPACING_HANDLES.flatMap((h) => planHandle(h, target, scope, shown, rtl) ?? []) : [];
 
+  /** Ask the page how large its spacing styles are on this box: no answer in time leaves exact pixels. */
+  const measure = (): Promise<SpaceStop[]> => {
+    const st = getState().snapshot?.state;
+    const tokens = st ? spaceTokens(st).slice(0, 500) : [];
+    return measureSpace(
+      tokens.map((x) => x.cssVar),
+      desc
+    ).then((px) => {
+      if (!px) return known.current ?? [];
+      const stops = tokens.flatMap((x, i) => (px[i] === null ? [] : [{ token: x.token, label: x.label, px: px[i]! }]));
+      known.current = stops;
+      return stops;
+    });
+  };
+  // Measured as the handles appear, so a drag rarely waits for it (and again when one starts, in case the site's
+  // styles changed since).
+  useEffect(() => void measure(), []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Note whether the pointer has gone far enough to be a drag; its travel along the handle's axis. */
+  const advance = (d: Drag): number => {
+    const travel = d.plan.handle.axis === 'y' ? d.at.y - d.y : d.at.x - d.x;
+    if (Math.abs(travel) >= DRAG_START) d.moved = true;
+    return travel;
+  };
+
   /** Work out where a drag has got to and show it on the page. False while there is nothing to show yet. */
   const place = (d: Drag): boolean => {
     const h = d.plan.handle;
-    const travel = h.axis === 'y' ? d.at.y - d.y : d.at.x - d.x;
-    if (Math.abs(travel) >= DRAG_START) d.moved = true;
+    const travel = advance(d);
     // Snapped values wait for the page to say how large its spacing styles are.
     if (!d.moved || (!d.stops && !d.at.exact)) return false;
     const signed = h.box === 'margin';
     const v = dragValue(draggedSize(d.start, travel, d.zoom, h.grow, signed), d.stops ?? [], d.at.exact, signed);
-    if (!d.value || !sameStyleValue(d.value.value, v.value))
-      post('spacingPreview', { drag: d.id, desc: d.desc, skip: d.skip, media: previewMedia(d.scope), decls: previewDecls(d.plan, v.value, d.rtl) });
+    // Preview shows the page as saved: a drag let go just before it shows nothing there.
+    if ((!d.value || !sameStyleValue(d.value.value, v.value)) && getState().mode === 'edit')
+      post('spacingPreview', { drag: d.id, desc: d.desc, media: previewMedia(d.scope), decls: previewDecls(d.plan, v.value, d.rtl) });
     d.value = v;
     return true;
   };
@@ -137,6 +164,7 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
    */
   const finish = async (d: Drag) => {
     const clear = () => post('spacingPreview', { drag: d.id, clear: true });
+    advance(d);
     if (d.moved && !d.stops && !d.at.exact) await d.measured;
     place(d);
     const { property } = d.plan;
@@ -183,7 +211,8 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
       if (d?.pointer !== ev.pointerId) return;
       d.at = { x: ev.clientX, y: ev.clientY, exact: ev.altKey };
       release();
-      void finish(d);
+      // Followed as a save from here, so closing the project or saving waits for it.
+      trackApply(finish(d).then(() => ({ ok: true })));
     };
     const lost = (ev: PointerEvent) => {
       if (drag.current?.pointer === ev.pointerId) cancel();
@@ -218,9 +247,6 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
       el.removeEventListener('lostpointercapture', lost);
     };
     const start = h.box === 'padding' ? spacing.padding[h.side] : spacing.margin[h.side];
-    // A change for every card shows on every card, but for those whose own styles keep them where they are.
-    const prefix = (selection.itemPath ?? []).slice(0, -1).map(encodeItemId);
-    const skip = keptItems(t, plan, shown, rtl).map((item) => [...prefix, encodeItemId(item)].join(','));
     const d: Drag = {
       id,
       pointer: e.pointerId,
@@ -233,25 +259,21 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
       x: e.clientX,
       y: e.clientY,
       zoom,
-      stops: null,
+      stops: known.current,
       at: { x: e.clientX, y: e.clientY, exact: e.altKey },
       moved: false,
       value: null,
       raf: 0,
+      // A change for every card shows on every card.
       desc: t.everyItem ? { ...desc, items: '' } : desc,
-      skip,
       measured: Promise.resolve(),
       revision: s.snapshot.revision,
       opening: s.snapshot.workspaceKey,
       stop
     };
     drag.current = d;
-    const tokens = spaceTokens(st).slice(0, 500);
-    d.measured = measureSpace(
-      tokens.map((x) => x.cssVar),
-      desc
-    ).then((px) => {
-      d.stops = px ? tokens.flatMap((x, i) => (px[i] === null ? [] : [{ token: x.token, label: x.label, px: px[i]! }])) : [];
+    d.measured = measure().then((stops) => {
+      d.stops = stops;
       if (drag.current === d) update();
     });
     onDragging(true);

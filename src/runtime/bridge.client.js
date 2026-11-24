@@ -164,16 +164,20 @@ function spacingOf(el) {
 }
 
 /**
- * Each spacing site style's size as padding on the dragged box would be, in CSS pixels, or null where it has none.
- * Measured on a probe beside the box, in its font size, so lengths in em or percentages come out as they would.
+ * Each spacing site style's size as padding on the dragged box, in CSS pixels, or null where it has none. Measured
+ * on a probe outside the page's body (so its layout and observers never see it), in the box's font, so lengths in
+ * em, ch or lh come out as they would on the box. A percentage is taken of the page's width.
  */
 function measureSpace(vars, desc) {
   const el = desc && typeof desc.ctx === 'string' && typeof desc.node === 'string' ? findAll(desc)[0] : null;
-  const holder = (el && el.parentElement) || document.documentElement;
   const probe = document.createElement('div');
-  probe.style.cssText = 'display:block;position:static;float:none;width:0;height:0;margin:0;border:0;visibility:hidden;pointer-events:none;';
-  if (el) probe.style.fontSize = getComputedStyle(el).fontSize;
-  holder.appendChild(probe);
+  probe.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;margin:0;border:0;visibility:hidden;pointer-events:none;';
+  if (el) {
+    const s = getComputedStyle(el);
+    probe.style.font = s.font;
+    probe.style.lineHeight = s.lineHeight;
+  }
+  document.documentElement.appendChild(probe);
   try {
     return vars.map((v) => {
       if (typeof v !== 'string' || !/^--so-[a-zA-Z0-9-]+$/.test(v)) return null;
@@ -195,10 +199,9 @@ const SPACING_PROPS = new Set(['padding-block-start', 'padding-block-end', 'padd
 const SPACING_VALUE = /^(var\(--so-[a-zA-Z0-9-]+\)|-?\d+(\.\d+)?px|0)$/;
 const SPACING_MEDIA = /^\((min|max)-width: \d+(\.\d+)?px\)( and \((min|max)-width: \d+(\.\d+)?px\))?$/;
 
-function selectorOf(desc, skip) {
+function selectorOf(desc) {
   const items = desc.items ? `[data-so-items="${cssEscape(desc.items)}"]` : '';
-  const not = skip.map((i) => `:not([data-so-items="${cssEscape(i)}"])`).join('');
-  return `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]${items}${not}`;
+  return `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]${items}`;
 }
 
 /** Put the page back for one drag, or for every drag. */
@@ -212,7 +215,7 @@ function clearSpacing(drag) {
   scheduleRects();
 }
 
-function showSpacing(drag, desc, decls, skip, media) {
+function showSpacing(drag, desc, decls, media) {
   const list = Array.isArray(decls) ? decls.filter((d) => Array.isArray(d) && SPACING_PROPS.has(d[0]) && typeof d[1] === 'string' && SPACING_VALUE.test(d[1])) : [];
   if (!desc || typeof desc.ctx !== 'string' || typeof desc.node !== 'string' || !list.length || (media !== null && media !== undefined && !(typeof media === 'string' && SPACING_MEDIA.test(media)))) return clearSpacing(drag);
   let p = spacingShown.get(drag);
@@ -225,9 +228,8 @@ function showSpacing(drag, desc, decls, skip, media) {
     spacingShown.set(drag, p);
   }
   const target = { ctx: desc.ctx, node: desc.node, items: typeof desc.items === 'string' ? desc.items : '' };
-  const left = Array.isArray(skip) ? skip.filter((i) => typeof i === 'string').slice(0, 200) : [];
   const wrap = (rule) => (media ? `@media ${media}{${rule}}` : rule);
-  const sel = selectorOf(target, left);
+  const sel = selectorOf(target);
   // Transitions stay off while it shows, so the page's own value can be read the moment the rule steps aside.
   Object.assign(p, {
     desc: target,
@@ -3307,7 +3309,7 @@ window.addEventListener('message', async (e) => {
           p.deadline = Date.now() + 8000;
           settleSpacing(drag);
         }
-      } else showSpacing(drag, m.payload.desc, m.payload.decls, m.payload.skip, m.payload.media);
+      } else showSpacing(drag, m.payload.desc, m.payload.decls, m.payload.media);
       break;
     }
     case 'inspect': {

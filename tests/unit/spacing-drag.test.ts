@@ -8,7 +8,6 @@ import {
   dragLabel,
   dragValue,
   draggedSize,
-  keptItems,
   onScreen,
   planHandle,
   previewDecls,
@@ -111,8 +110,9 @@ describe('dragValue: snapping to the spacing scale', () => {
   });
 
   it('keeps stops at least half a pixel apart, measured from the last one kept', () => {
-    const close = [8, 8.25, 8.5].map((px) => ({ token: `space.s${px}`, label: String(px), px }));
+    const close = [8, 8.25, 8.49, 8.5].map((px) => ({ token: `space.s${px}`, label: String(px), px }));
     expect(spaceScale(close).map((s) => s.px)).toEqual([8, 8.5]);
+    expect(spaceScale([{ token: 'space.inf', label: 'Inf', px: Infinity }, SCALE[0]]).map((s) => s.token)).toEqual(['space.2xs']);
   });
 
   it('keeps the first of two styles the same size', () => {
@@ -253,7 +253,14 @@ describe('spacingTarget: the styles a drag writes', () => {
     expect(spacingTarget(s, part(s, 'features.grid', 'card', first), chosenReach)).toMatchObject({ itemId: first });
     hide();
     expect(chosenReach(key)).toBe('all');
+    // Taking back an older registration leaves a newer one in place.
+    const older = showReach(key, 'item');
+    const newer = showReach(key, 'all');
+    older();
+    expect(chosenReach(key)).toBe('all');
+    newer();
     reachByItem.delete(key);
+    expect(chosenReach(key)).toBeUndefined();
   });
 
   it('writes nothing for an element inside a section that is not one of its parts', () => {
@@ -329,16 +336,25 @@ describe('planHandle: what each handle writes', () => {
     expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'padding-block-start: 60px' } }))).toBeNull();
     expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'opacity: 0.9; padding-top: 60px' } }))).toBeNull();
     expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'padding: 60px' } }))).toBeNull();
+    expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'padding-block: 60px' } }))).toBeNull();
     expect(plan('padding', 'top', element(EDGES, { phone: { customCss: 'padding-top: 60px' } }), 'base', 'phone')).toBeNull();
     expect(plan('padding', 'bottom', element(EDGES, { base: { customCss: 'padding-top: 60px' } }))).toMatchObject({ property: 'paddingBlockEnd' });
     expect(plan('margin', 'top', element(EDGES, { base: { customCss: 'padding-top: 60px' } }))).toMatchObject({ property: 'marginBlockStart' });
   });
 
-  it('shows no handle for a shared change the outlined card\u2019s own style would keep from it', () => {
-    const shared = (picked: SpacingTarget['styles']) => ({ ...element(['paddingBlock']), everyItem: true, picked });
-    expect(plan('padding', 'top', shared({ phone: { paddingBlock: '48px' } }), 'phone', 'phone')).toBeNull();
-    expect(plan('padding', 'top', shared({ base: { paddingBlock: '48px' } }), 'phone', 'phone')).toBeNull();
-    expect(plan('padding', 'top', shared({ base: { background: '#fff' } }), 'phone', 'phone')).toMatchObject({ property: 'paddingBlock', sides: ['top', 'bottom'] });
+  it('leaves a change to every card to the inspector when some card keeps a moving side of its own', () => {
+    const shared = (items: SpacingTarget['items']) => ({ ...element(['paddingBlock']), everyItem: true, items });
+    expect(plan('padding', 'top', shared({ a: { phone: { paddingBlock: '48px' } } }), 'phone', 'phone')).toBeNull();
+    expect(plan('padding', 'top', shared({ a: { base: { paddingBlock: '48px' } } }), 'phone', 'phone')).toBeNull();
+    // Its own bottom is moved by the pair too.
+    expect(plan('padding', 'top', shared({ a: { base: { paddingBlockEnd: '2px' } } }))).toBeNull();
+    expect(plan('padding', 'top', shared({ a: { base: { customCss: 'padding-bottom: 2px' } } }))).toBeNull();
+    // Nothing of its own on these sides at the size shown, or nothing to do with spacing: the handle stays.
+    expect(plan('padding', 'top', shared({ a: { tablet: { paddingBlock: '9px' } } }), 'base', 'phone')).toMatchObject({ property: 'paddingBlock', sides: ['top', 'bottom'] });
+    expect(plan('padding', 'top', shared({ a: { base: { background: '#fff' } } }))).toMatchObject({ property: 'paddingBlock' });
+    expect(plan('margin', 'top', { ...element(EDGES), everyItem: true, items: { a: { base: { paddingBlock: '4px' } } } })).toMatchObject({ property: 'marginBlockStart' });
+    // A card styled on its own writes its own styles: other cards' values don't matter.
+    expect(plan('padding', 'top', { ...shared({ a: { base: { paddingBlock: '48px' } } }), everyItem: false })).toMatchObject({ property: 'paddingBlock' });
   });
 
   it('moves only the side a pair reaches past a side\u2019s own value', () => {
@@ -369,24 +385,15 @@ describe('previewDecls: what the page shows while dragging', () => {
     const rtlRight = planHandle(handle('padding', 'right'), element(EDGES), 'base', 'desktop', true)!;
     expect(previewDecls(ltrLeft, '8px', false)).toEqual([['padding-inline-start', '8px']]);
     expect(previewDecls(rtlRight, '8px', true)).toEqual([['padding-inline-start', '8px']]);
+    const below = planHandle(handle('margin', 'bottom'), element(EDGES), 'base', 'desktop', false)!;
+    expect(previewDecls(below, { token: 'space.xl' }, false)).toEqual([['margin-block-end', 'var(--so-space-xl)']]);
   });
 
   it('applies only at the size being edited', () => {
     expect(previewMedia('base')).toBeNull();
     expect(previewMedia('phone')).toBe('(max-width: 767.98px)');
+    expect(previewMedia('tablet')).toBe('(min-width: 768px) and (max-width: 1023.98px)');
     expect(previewMedia('desktop')).toBe('(min-width: 1024px)');
-  });
-
-  it('leaves out the cards whose own styles keep the moving sides where they are', () => {
-    const t: SpacingTarget = {
-      ...element(['paddingBlock']),
-      everyItem: true,
-      items: { a: { base: { paddingBlock: '4px' } }, b: { base: { background: '#fff' } }, c: { phone: { customCss: 'padding-bottom: 2px' } }, d: { tablet: { paddingBlock: '9px' } } }
-    };
-    const top = planHandle(handle('padding', 'top'), t, 'base', 'phone', false)!;
-    expect(top.sides).toEqual(['top', 'bottom']);
-    expect(keptItems(t, top, 'phone', false)).toEqual(['a', 'c']);
-    expect(keptItems({ ...t, everyItem: false }, top, 'phone', false)).toEqual([]);
   });
 });
 
@@ -400,6 +407,7 @@ describe('the frame\u2019s spacing report', () => {
     expect(spacingOf({ padding: { ...sides, top: -1 }, border: sides, margin: sides, ...desc })).toBeNull();
     expect(spacingOf({ padding: sides, border: { ...sides, left: -1 }, margin: sides, ...desc })).toBeNull();
     expect(spacingOf({ padding: { ...sides, top: Infinity }, border: sides, margin: sides, ...desc })).toBeNull();
+    expect(spacingOf({ padding: { ...sides, top: 100000 }, border: sides, margin: sides, ...desc })).toBeNull();
     expect(spacingOf({ padding: sides, border: sides, margin: { ...sides, left: 'x' }, ...desc })).toBeNull();
     expect(spacingOf({ padding: sides, border: sides, margin: sides, ctx: 'page:p', node: 'n' })).toBeNull();
     expect(spacingOf(null)).toBeNull();
