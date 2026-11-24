@@ -2623,6 +2623,8 @@ describe('inspect_component (#362)', () => {
     expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: total }), fine.h, 'c7')).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT' } });
     const nothing = host(state, async () => null as unknown as ComponentPreviewResult[]);
     expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), nothing.h, 'c8')).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED' } });
+    // A failed later window names its window, so it never stands for the first one.
+    expect((await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: 1 }), down.h, 'c9')).content).toMatchObject({ offset: 1, definitionId: target.def.id });
   });
 
   it('gives the model each finding with where it is, the card a row for it, and stops with the run (#362)', async () => {
@@ -2657,20 +2659,23 @@ describe('inspect_component (#362)', () => {
     log.recordComponent('b', true, { name: 'Hero', incomplete: true });
     log.recordComponent('c', true, { name: 'Quote' });
     log.recordComponent('d', false, { error: 'VALIDATION_FAILED' });
+    log.recordComponent('f', true, { name: 'Steps', next: { offset: 8, remaining: 2 } });
     expect(log.checks(state)).toEqual([
       { status: 'issue', text: 'Card has 3 problems in its variants or with long or empty content.' },
       { status: 'unverified', text: 'Only part of Hero could be checked in its variants and with long and empty content.' },
       { status: 'pass', text: 'Quote has no layout or readability problems in its variants or with long and empty content.' },
-      { status: 'unverified', text: "Couldn't check a component in its variants and with long and empty content." }
+      { status: 'unverified', text: "Couldn't check a component in its variants and with long and empty content." },
+      // Cases left to measure: not a pass yet.
+      { status: 'unverified', text: 'Only part of Steps could be checked in its variants and with long and empty content.' }
     ]);
     // An edit of one page leaves them, unless the sample was a placement on it; one that reaches every page (a
     // component's design) does not.
     log.recordComponent('e', true, { name: 'Banner', placement: { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' } });
     log.invalidate(new Set(['pg_b']));
-    expect(log.checks(state).map((c) => c.status)).toEqual(['issue', 'unverified', 'pass', 'unverified', 'pass']);
+    expect(log.checks(state).map((c) => c.status)).toEqual(['issue', 'unverified', 'pass', 'unverified', 'unverified', 'pass']);
     log.invalidate(new Set(['pg_a']));
     expect(log.checks(state)[2].status).toBe('pass');
-    expect(log.checks(state)[4].text).toMatch(/, before later changes\.$/);
+    expect(log.checks(state)[5].text).toMatch(/, before later changes\.$/);
     log.invalidate('all');
     expect(log.checks(state)[2]).toEqual({ status: 'unverified', text: 'Quote has no layout or readability problems in its variants or with long and empty content, before later changes.' });
   });

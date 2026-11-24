@@ -103,7 +103,13 @@ function previewComponents(steps: ComponentPreviewStep[], measure?: ComponentPre
       pendingComponentPreviews.delete(requestId);
     };
     // The editor is told, so it starts no more of the batch's steps.
-    const cancel = () => controller.send('component-preview:cancel', { requestId });
+    const cancel = () => {
+      try {
+        controller.send('component-preview:cancel', { requestId });
+      } catch {
+        // A window that has gone has no batch left to stop.
+      }
+    };
     const onAbort = () => {
       settle();
       cancel();

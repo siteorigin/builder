@@ -3121,6 +3121,7 @@ function stackGaps(deadline) {
   const parents = new Set();
   try {
     for (const el of main.querySelectorAll('[data-so-node]')) {
+      if (Date.now() > deadline) return { gaps, incomplete: true };
       const d = descOf(el);
       const base = `${d.ctx}\u0000${d.node}\u0000${d.items}`;
       const n = totals.get(base) || 0;
@@ -3154,7 +3155,12 @@ function stackGaps(deadline) {
         break;
       }
       const boxes = laidOut(parent);
-      for (let i = 1; i < boxes.length && gaps.length < MAX_GAPS; i++) {
+      for (let i = 1; i < boxes.length; i++) {
+        // A list cut short says so: a pair left out could be the one that collapsed.
+        if (gaps.length >= MAX_GAPS || Date.now() > deadline) {
+          incomplete = true;
+          break;
+        }
         const a = boxes[i - 1];
         const b = boxes[i];
         const ea = ends.get(a.el);

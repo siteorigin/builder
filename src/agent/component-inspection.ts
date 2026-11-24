@@ -69,7 +69,7 @@ export interface InspectTarget {
 }
 
 /** A code component's markup says nothing the sweep can read about which text is optional. */
-const codeNote = (def: ComponentDefinition) => (def.kind === 'code' ? ['A code component does not say which of its text is optional, so only its links were left empty.'] : []);
+const codeNote = (def: ComponentDefinition) => (def.kind === 'code' ? ['A code component does not say which of its text is optional, so only its links (if it has any) were left empty.'] : []);
 
 /** The component named by exactly one of a definition ID, a theme component ID, or a placement (owner and nodeId). */
 export function resolveInspectTarget(state: ProjectState, a: InspectArgs): InspectTarget | { error: string } {
@@ -191,7 +191,7 @@ function emptied(schema: ScalarPropSchema): unknown {
   return undefined;
 }
 
-const cutTo = (schema: ScalarPropSchema, text: string) => (schema.type === 'string' && schema.maxLength !== undefined ? text.slice(0, Math.max(1, schema.maxLength)) : text);
+const cutTo = (schema: ScalarPropSchema, text: string) => (schema.type === 'string' && schema.maxLength !== undefined ? text.slice(0, schema.maxLength) : text);
 const SAMPLE_TEXT = 'Sample text';
 
 /**
@@ -274,8 +274,8 @@ export function planComponentInspection(target: InspectTarget): InspectCase[] {
     }
     if (!counts.size) continue;
     fill(def, props);
-    const n = counts.size === 1 ? [...counts][0] : count;
-    add({ label: `${n} item${n === 1 ? '' : 's'}`, variants: { ...target.variants }, props });
+    // Named by the count asked for, and so told apart from the other count's case, whatever a list's limits made of it.
+    add({ label: `${count} item${count === 1 ? '' : 's'}${[...counts].some((n) => n !== count) ? ' (within limits)' : ''}`, variants: { ...target.variants }, props });
   }
 
   // Each other option of each axis, the rest as they start, with the content filled.
@@ -458,6 +458,8 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
   let reached = 0;
   const steps = cases.length * VIEWPORTS.length;
   const gaps = new Map<string, Gap[] | null>();
+  /** The widths each case was measured at without failing. */
+  const widthsMeasured = new Map<string, Set<Viewport>>();
 
   const record = (f: Omit<ComponentFinding, 'in'>, label: string, v: Viewport, key: string) => {
     let g = groups.get(key);
@@ -479,6 +481,7 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
       continue;
     }
     measured++;
+    note(widthsMeasured, c.label, v);
     gaps.set(`${c.label}\u0000${v}`, gapsOf(r));
     for (const check of Object.values(report!.checks ?? {})) {
       totals.unverified += Number(check?.unverified) || 0;
@@ -553,10 +556,16 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
   const complete = Math.floor(reached / VIEWPORTS.length);
   const list = window.all ?? cases;
   const first = window.all ? 0 : window.offset;
-  const nextOffset = reached < steps ? Math.max(window.offset, resumeAt(list, window.offset + complete - first) + first) : window.offset + cases.length;
+  const resumed = resumeAt(list, window.offset + complete - first) + first;
+  // Measured again with the case it is compared with, unless that would start this same window over: then on, so
+  // a sweep always gets further (its spacing then goes unchecked).
+  const nextOffset = reached >= steps ? window.offset + cases.length : resumed > window.offset || !complete ? Math.max(window.offset, resumed) : window.offset + complete;
   const remaining = window.total - nextOffset;
-  const done = cases.slice(0, complete).map((c) => c.label);
-  const half = reached % VIEWPORTS.length ? cases[complete].label : undefined;
+  const done = cases.filter((c) => widthsMeasured.get(c.label)?.size === VIEWPORTS.length).map((c) => c.label);
+  const halves = cases.flatMap((c) => {
+    const w = widthsMeasured.get(c.label);
+    return w && w.size < VIEWPORTS.length ? [`"${c.label}" was measured at ${[...w].join(' and ')} width only.`] : [];
+  });
 
   const parts: string[] = [];
   const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`;
@@ -564,7 +573,7 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
   const problems = all.length + errors.length;
   const clean = !problems && !failed.length && !unchecked.length && !totals.incomplete;
   parts.push(`${def.name}: ${clean ? 'no problems found' : `${plural(problems, 'problem')} found`} in ${plural(done.length, 'case')} at ${widths}.`);
-  if (half) parts.push(`"${half}" was measured at phone width only.`);
+  parts.push(...halves);
   if (failed.length) parts.push(`${plural(reached - measured, 'measurement')} failed and ${reached - measured === 1 ? 'was' : 'were'} not checked.`);
   if (unchecked.length) parts.push(`The spacing with content left empty could not be compared at ${[...new Set(unchecked)].join(' and ')} width.`);
   if (totals.unverified) parts.push(`${plural(totals.unverified, 'text contrast check')} could not be measured without pixels.`);
@@ -586,7 +595,7 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
     ...(target.notes.length ? { notes: target.notes } : {}),
     ...(remaining > 0 ? { next: { offset: nextOffset, remaining } } : {}),
     // Something in this window was not checked: a later check of fewer cases never stands in for this one.
-    ...(failed.length || unchecked.length || half || reached < steps ? { incomplete: true } : {})
+    ...(failed.length || unchecked.length || halves.length || totals.incomplete || reached < steps ? { incomplete: true } : {})
   };
   return { measured, content };
 }

@@ -69,7 +69,7 @@ describe('planning the cases (#362)', () => {
       ['empty', {}],
       ['long text', {}],
       ['1 item', {}],
-      ['4 items', {}],
+      ['5 items (within limits)', {}],
       // One axis changed at a time, never their product.
       ['tone=inverse', { tone: 'inverse' }],
       ['tone=accent', { tone: 'accent' }],
@@ -122,7 +122,8 @@ describe('planning the cases (#362)', () => {
     const def = card();
     def.properties.video = { type: 'string', label: 'Video address', default: '' } as never;
     def.properties.page = { type: 'string', label: 'Page', default: '/about/' } as never;
-    const long = byLabel(planComponentInspection(target(def, { values: { ...target().values, video: 'https://vimeo.com/1', page: '/about/' } })), 'long text').props;
+    def.properties.key = { type: 'string', label: 'Web3Forms access key', default: '' } as never;
+    const long = byLabel(planComponentInspection(target(def, { values: { ...target().values, video: 'https://vimeo.com/1', page: '/about/', key: 'abc123' } })), 'long text').props;
     expect(String(long.heading)).toMatch(/^[A-Za-z]{40}$/);
     expect(String(long.eyebrow).length).toBeGreaterThan(150);
     expect(long.body).toEqual([{ type: 'p', spans: [{ text: expect.stringMatching(/^[A-Za-z]{60}/) }] }]);
@@ -133,6 +134,7 @@ describe('planning the cases (#362)', () => {
     expect(long.more).toEqual({ type: 'url', target: 'https://example.com/' });
     expect(long.video).toBe('https://vimeo.com/1');
     expect(long.page).toBe('/about/');
+    expect(long.key).toBe('abc123');
   });
 
   it('tries one and five items within each list’s limits, with content enough to show, never in a list that fills itself', () => {
@@ -140,10 +142,10 @@ describe('planning the cases (#362)', () => {
     def.properties.steps = { type: 'list', label: 'Steps', itemLabel: 'Step', min: 3, fields: { label: { type: 'string', label: 'Label', default: '' }, link: { type: 'link', label: 'Link', default: NONE } }, default: [] } as never;
     const cases = planComponentInspection(target(def, { values: { ...target().values, steps: [] } }));
     // Lists that come out at different lengths are named by the count asked for.
-    const one = byLabel(cases, '1 item').props;
+    const one = byLabel(cases, '1 item (within limits)').props;
     expect((one.items as unknown[]).length).toBe(1);
     expect(one.steps).toEqual([1, 2, 3].map((i) => ({ id: `sweep${i}`, label: 'Sample text', link: { type: 'url', target: 'https://example.com/' } })));
-    const five = byLabel(cases, '5 items').props;
+    const five = byLabel(cases, '5 items (within limits)').props;
     expect((five.items as Array<{ id: string; title: string }>).map((i) => [i.id, i.title])).toEqual([['sweep1', 'Fast'], ['sweep2', 'Kind'], ['sweep3', 'Fast'], ['sweep4', 'Kind']]);
     expect((five.steps as unknown[]).length).toBe(5);
     for (const c of cases) expect(c.props.latest).toBeUndefined();
@@ -221,11 +223,21 @@ describe('planning the cases (#362)', () => {
     });
   });
 
-  it('resumes a cut-short sweep with the case an empty case is compared with', () => {
+  it('resumes a cut-short sweep with the case an empty case is compared with, in either order', () => {
     const cases = planComponentInspection(target());
     expect(resumeAt(cases, 2)).toBe(1);
     expect(resumeAt(cases, 1)).toBe(1);
     expect(resumeAt(cases, 3)).toBe(3);
+    const bare = planComponentInspection(target(card(), { values: { ...target().values, eyebrow: '', cta: { label: 'Book', link: NONE } } }));
+    expect(resumeAt(bare, 1)).toBe(0);
+  });
+
+  it('fills empty text a visitor reads, and never past a length limit of nothing', () => {
+    const def = card();
+    def.properties.none = { type: 'string', label: 'Spare', default: '', maxLength: 0 } as never;
+    const shown = byLabel(planComponentInspection(target(def, { values: { ...target().values, heading: '', none: '' } })), 'filled').props;
+    expect(shown.heading).toBe('Sample text');
+    expect(shown.none).toBe('');
   });
 
   // Integration: every case planned for every component of every bundled theme is a preview the generator makes.
@@ -334,6 +346,19 @@ describe('the digest (#362)', () => {
     const first = all.slice(0, 8);
     const early = digestComponentInspection(target(), first, resultsFor(first, (_l, w) => ready([], {}, w)).slice(0, 5), { offset: 0, total: 9, all });
     expect(early.content.next).toEqual({ offset: 1, remaining: 8 });
+    // Cut short there again when starting from the filled case: on to the empty case rather than this window again.
+    const again = all.slice(1, 9);
+    const retried = digestComponentInspection(target(), again, resultsFor(again, (_l, w) => ready([], {}, w)).slice(0, 3), { offset: 1, total: 9, all });
+    expect(retried.content.next).toEqual({ offset: 2, remaining: 7 });
+  });
+
+  it('counts a case as measured only at the widths that did not fail', () => {
+    const cases = plan().slice(0, 2);
+    const results = resultsFor(cases, (label, w) => (label === 'filled' && w === 1280 ? { state: 'error', error: 'Timed out loading the component preview.', width: w } : ready([], {}, w)));
+    const d = digestComponentInspection(target(), cases, results, { offset: 0, total: 2 });
+    expect(d.content.cases).toEqual(['defaults']);
+    expect(d.content.summary).toContain('"filled" was measured at phone width only.');
+    expect(d.content.summary).toMatch(/^Offer card: 0 problems found in 1 case /);
   });
 
   it('lists runtime errors once each, told apart by their whole text', () => {
