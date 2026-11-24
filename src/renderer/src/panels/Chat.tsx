@@ -9,6 +9,7 @@ import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDra
 import { nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
 import { PROVIDER_LABELS, turnModelText } from '@shared/turn-model';
 import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
+import { chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId as undoableTurn } from '../lib/result';
@@ -150,6 +151,11 @@ export function Chat() {
   const askMode = chatMode === 'ask';
   const providers = useStore((s) => s.providers);
   const settings = useStore((s) => s.settings);
+  const chatFocus = useStore((s) => s.chatFocus);
+  const dockOpen = useStore((s) => s.dockOpen);
+  // Write with AI before an AI provider is connected: the box still takes the page's copy, which waits there as the
+  // conversation's draft and is sent once a provider is connected.
+  const [draftFirst, setDraftFirst] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const nearBottom = useRef(true);
@@ -301,7 +307,7 @@ export function Chat() {
 
   // A restored draft (after a restart, a retry, or returning to its conversation, or once a question is answered)
   // gets its full height back.
-  useLayoutEffect(() => sizeToFit(taRef.current), [configured, rightTab, conversation?.id, askingKey]);
+  useLayoutEffect(() => sizeToFit(taRef.current), [configured, draftFirst, rightTab, conversation?.id, askingKey]);
   // A draft is measured again when the box changes width (the dock resized), so it neither scrolls early nor keeps
   // the height of a narrower box.
   useEffect(() => {
@@ -315,7 +321,7 @@ export function Chat() {
     });
     watch.observe(ta);
     return () => watch.disconnect();
-  }, [configured, askingKey]);
+  }, [configured, draftFirst, askingKey]);
 
   // One polite status message per phase change, kept outside the (sometimes hidden) dock panel so it is
   // announced wherever focus is. Streamed text is never read out piece by piece. The outcome is announced
@@ -528,6 +534,18 @@ export function Chat() {
   };
   const openSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   const focusComposer = () => requestAnimationFrame(() => taRef.current?.focus());
+  // Write with AI's request for the message box, once the box is ready (see writePageWithAi and chatFocusStep).
+  useLayoutEffect(() => {
+    if (!chatFocus) return;
+    const ta = taRef.current;
+    const step = chatFocusStep(chatFocus, { now: Date.now(), workspaceKey: snap?.workspaceKey, pageId, chatShown: dockOpen && rightTab === 'chat', box: !!ta, boxForced: draftFirst, configured, asking: !!asking });
+    if (step === 'drop') return void setState({ chatFocus: null });
+    if (step === 'show-box') return setDraftFirst(true);
+    if (step === 'wait' || !ta) return;
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    setState({ chatFocus: null });
+  }, [chatFocus, snap?.workspaceKey, pageId, dockOpen, rightTab, configured, asking, draftFirst]);
 
   /** Answer the waiting question, with a choice, an offered picture or the composer's text. Each question takes one answer. */
   const answer = async (q: WaitingQuestion, value: string | ChatImageRef, typed: boolean) => {
@@ -991,7 +1009,7 @@ export function Chat() {
           )}
         </div>
       )}
-      {configured || asking ? (
+      {configured || asking || draftFirst ? (
         // One box, written in first: the text, then one row of what goes with it. Answering, it is one row: the reply
         // and its Send. Anywhere in the box that is not a control puts the caret in the text.
         <div

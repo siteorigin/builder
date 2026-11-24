@@ -265,7 +265,7 @@ await pause(300);
   await pause(300);
   await win.keyboard.type('Kitchen design');
   await pause(300);
-  await shot('add-inside', '.pages-add-form select', BOTH);
+  await shot('add-inside', '#pages-add-inside', BOTH);
   await win.keyboard.press('Escape');
   await pause(300);
 

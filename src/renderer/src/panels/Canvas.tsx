@@ -23,7 +23,8 @@ import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
-import { askAiAbout, canInlineEdit, commitText, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
+import { titleOnlyPage } from '../lib/page-start';
+import { askAiAbout, writePageWithAi, canInlineEdit, commitText, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
@@ -110,6 +111,8 @@ export function Canvas() {
   const showSelection = useStore((s) => s.showSelection);
   const inspectorShown = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const runStatus = useStore((s) => s.runStatus);
+  // A request the AI has started on, before its first status arrives (as Chat counts it).
+  const turnOpen = useStore((s) => !!s.activeRunId && !!s.conversation?.messages.some((m) => m.role === 'assistant' && m.runId === s.activeRunId && !m.result));
   const reading = useStore((s) => s.runMode === 'ask');
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const definitionMode = useStore((s) => s.definitionMode);
@@ -420,6 +423,9 @@ export function Canvas() {
   /** A page with nothing on it (only the shared header and footer, if it shows them): the canvas offers the first
    *  step in the open space below them. `emptyTop` is where that space starts, in page pixels. */
   const emptyPage = mode === 'edit' && !definitionMode && !templateMode && !!page && page.rootIds.length === 0;
+  /** A page with only its title (see titleOnlyPage): the strip offers the same first steps as an empty page. A project
+   *  open read-only takes none of them. */
+  const titleOnly = mode === 'edit' && !definitionMode && !templateMode && !!page && !!state && !snapshot?.readOnly && titleOnlyPage(state, page);
   const [emptyTop, setEmptyTop] = useState<number | null>(null);
   // Cleared only when the page changes or stops being empty, so the card does not blink while the frame is resized.
   useEffect(() => setEmptyTop(null), [pageId, emptyPage]);
@@ -2001,6 +2007,22 @@ export function Canvas() {
     // Into the Insert panel, where the first section is chosen; it goes on this page.
     requestAnimationFrame(() => document.querySelector<HTMLElement>('.side-panel-view:not([hidden]) :is(input, button, [tabindex="0"])')?.focus());
   };
+  // While the AI works, the page's copy waits: a question it asks would take over the message box, and the copy would
+  // become the answer. A project open read-only takes no AI edits.
+  const aiWorking = !!runStatus || turnOpen;
+  const writeWithAi = (className: string) =>
+    snapshot?.readOnly ? null : (
+      <button
+        className={className}
+        disabled={aiWorking}
+        title={runStatus === 'awaiting-input' ? 'Answer the AI’s question in the AI panel first' : aiWorking ? 'Available once the AI finishes' : 'Open the AI panel to paste copy for this page or describe what goes on it'}
+        onClick={() => pageId && writePageWithAi(pageId)}
+      >
+        <Sparkles /> <span>Write with AI</span>
+      </button>
+    );
+  // The strip offers the first steps when there is no room for the card, or on a page that has only its title.
+  const stripStart = !staleFrame && !resizing && !reorder && !insertDrop && !(placement === 'strip' && firstSel) && ((emptyPage && emptyTop !== null && !emptyFits) || titleOnly);
 
   return (
     <main
@@ -2195,12 +2217,13 @@ export function Canvas() {
               </span>
             </span>
             {/* A chip parked in the strip (the shared header selected) takes the strip; Layers keeps its own Add sections. */}
-            {emptyPage && emptyTop !== null && !staleFrame && !emptyFits && !resizing && !reorder && !insertDrop && !(placement === 'strip' && firstSel) && (
-              <div className="frame-status empty" ref={stripLeft} style={{ maxWidth: stripRoom }}>
-                <span>This page has no sections yet</span>
+            {stripStart && (
+              <div className="frame-status empty" ref={stripLeft} style={{ maxWidth: stripRoom }} data-testid="canvas-start-strip">
+                <span>{emptyPage ? 'This page has no sections yet' : 'Start this page'}</span>
                 <button className="link-btn" onClick={addSections}>
-                  <Plus /> Add a section
+                  <Plus /> <span>Add a section</span>
                 </button>
+                {writeWithAi('link-btn')}
               </div>
             )}
             {insertDrop && (
@@ -2347,11 +2370,14 @@ export function Canvas() {
                 <div className="canvas-empty" style={{ top: emptyTop * z + 24 }}>
                   <div className="canvas-card empty-card" role="group" aria-labelledby="canvas-empty-title" data-testid="canvas-empty-page">
                     <h3 id="canvas-empty-title">This page has no sections yet</h3>
-                    <p>Add a first section to start building it. Visitors never see this note.</p>
-                    <button className="btn btn-primary" onClick={addSections}>
-                      <Plus /> Add a section
-                    </button>
-                    <PasteHere className="btn" />
+                    <p>{snapshot?.readOnly ? 'Add a first section to start building it.' : 'Add a first section, or write it with AI.'} Visitors never see this note.</p>
+                    <div className="empty-actions">
+                      <button className="btn btn-primary" onClick={addSections}>
+                        <Plus /> Add a section
+                      </button>
+                      {writeWithAi('btn')}
+                      <PasteHere className="btn" />
+                    </div>
                   </div>
                 </div>
               )}

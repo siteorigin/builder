@@ -244,13 +244,22 @@ const COMPONENT_BUILD_TOOLS = new Set<ToolName>(['read_project', 'read_page', 's
 /** Measures a component's own design: left out where the run cannot change one (a page) or has room only for the small set. */
 const COMPONENT_CHECK: ToolName = 'inspect_component';
 
+/**
+ * The starters the model may create a page with. The brochure starters (Services, About and the rest) fill the page
+ * with the theme's sample text, which reads as a finished page: the model builds those pages from the request instead.
+ */
+const MODEL_PAGE_STARTER = z
+  .enum(['empty', 'intro', 'article'])
+  .optional()
+  .describe('"intro" adds a page introduction section. "article" makes a dated article (news, an announcement): it adds an Article header showing the title, date, byline and excerpt, and a text section for the body.');
+
 /** The operation union the model is shown for a run; the app still checks every operation it receives. `only` narrows it. */
 function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: ReadonlySet<OperationType>) {
   const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
     .filter((t) => !NEVER_OFFERED.has(t) && !NOT_YET_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)) && (!only || only.has(t)))
     .map((t) =>
       t === 'page.create'
-        ? OPERATION_SCHEMAS[t].omit({ pageId: true })
+        ? OPERATION_SCHEMAS[t].omit({ pageId: true }).extend({ starter: MODEL_PAGE_STARTER })
         : t === 'node.insert'
           ? OPERATION_SCHEMAS[t].omit({ newNodeId: true })
           : t === 'node.duplicate'

@@ -682,6 +682,17 @@ export function askAiAbout(ref: ElementRef | null) {
 }
 
 /**
+ * Open the AI chat to write the page on screen: the request is about the whole page (nothing selected), an edit, and
+ * the message box takes focus, ready for pasted copy or a description of the page (see Chat's `chatFocus`).
+ */
+export function writePageWithAi(pageId: string) {
+  const s = getState();
+  if (!s.snapshot || s.pageId !== pageId) return;
+  setState({ selection: null, rightTab: 'chat', dockOpen: true, chatMode: 'edit', chatContextEnabled: { page: true, scope: 'page' }, chatFocus: { workspaceKey: s.snapshot.workspaceKey, pageId, at: Date.now() } });
+  saveLocal({ chatMode: 'edit' });
+}
+
+/**
  * The one way to switch Edit and Preview, so every entry point leaves the same selection and inspector state. Preview
  * selects nothing; back in Edit, what was selected is selected again when the visitor stayed where they were (the
  * page and the place on it the author left; Canvas lets it go when the visitor moves on). It is not scrolled to: the

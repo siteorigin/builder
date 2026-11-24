@@ -14,6 +14,8 @@ import { visitAddress } from './Canvas';
 import { headerMenu as findHeaderMenu, headerMenuSlotUnder } from '@engine/tree';
 import { isDraftPage } from '@generator/index';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
+import { catalogueComponent } from '@catalogue/index';
+import { pageStarterComponents, type PageStarter } from '@engine/page-starters';
 import { headerOrderPlan, inHeaderMenu } from '../lib/page-navigation';
 import { listPageClicks, pageClicks } from '../lib/page-clicks';
 
@@ -38,6 +40,25 @@ function newPageRoute(st: ProjectState, title: string, parent = '/'): { route: s
 }
 
 const levels = (route: string) => route.split('/').filter(Boolean).length;
+
+/** What Add page can start a page with, in the order it offers them. */
+const PAGE_STARTERS: Array<[PageStarter, string]> = [
+  ['empty', 'Blank'],
+  ['intro', 'Page introduction'],
+  ['services', 'Services'],
+  ['about', 'About'],
+  ['contact', 'Contact'],
+  ['pricing', 'Pricing'],
+  ['faq', 'FAQ'],
+  ['article', 'Dated article']
+];
+
+/** The sections a starter places with this theme, by the names Insert shows them under. */
+function starterNote(st: ProjectState, starter: PageStarter): string {
+  if (starter === 'empty') return 'No sections, ready for the first one';
+  const names = pageStarterComponents(st, starter).map((id) => catalogueComponent(st.site.themeId, id)?.name ?? id);
+  return names.length ? names.join(', ') : 'No sections: this theme has none of them';
+}
 /** Is `route` inside the section whose address is `parent`? The home page ("/") is no one's section. */
 const isInside = (route: string, parent: string) => parent !== '/' && route !== parent && route.startsWith(parent);
 
@@ -238,8 +259,9 @@ export function PagesPanel() {
   // The page the new page goes inside (its section), or null for the top level.
   const [parentId, setParentId] = useState<string | null>(null);
   const [addToNav, setAddToNav] = useState(true);
-  // A dated article (news, an announcement) instead of an ordinary page, and its publication date.
-  const [asArticle, setAsArticle] = useState(false);
+  // What the new page starts with (see PAGE_STARTERS): an article is dated (news, an announcement).
+  const [starter, setStarter] = useState<PageStarter>('intro');
+  const asArticle = starter === 'article';
   const [articleDate, setArticleDate] = useState(todayArticleDate);
   // Whether the author chose the menu option themselves: choosing an article or a section then leaves it alone.
   const navChosen = useRef(false);
@@ -524,7 +546,7 @@ export function PagesPanel() {
     addFrom.current = null;
     setTitle('');
     setAdding(false);
-    setAsArticle(false);
+    setStarter('intro');
     setParentId(null);
     // The author's own header-menu choice lasts as long as the form it was made in.
     setAddToNav(true);
@@ -580,7 +602,7 @@ export function PagesPanel() {
     const nav = addToNav && !!headerMenu;
     // Sent against the snapshot the address was previewed on: a project that changed meanwhile previews again
     // rather than taking an address it no longer has free.
-    const kind = asArticle ? { starter: 'article' as const, articleDate } : { starter: 'intro' as const };
+    const kind = asArticle ? { starter, articleDate } : { starter };
     const r = await applyOps(
       [{ type: 'page.create', title: t, route: newRoute, ...kind, ...(placeAfter ? { afterPageId: placeAfter } : {}), addToNavigation: nav || undefined }],
       asArticle ? `Add article ${t}` : `Add page ${t}`,
@@ -903,19 +925,33 @@ export function PagesPanel() {
                 </span>
               </div>
             )}
-            <label className="pages-add-check">
-              <input
-                type="checkbox"
-                checked={asArticle}
+            <div className="pages-add-field">
+              <label className="label" htmlFor="pages-add-starter">
+                Starts with
+              </label>
+              <select
+                id="pages-add-starter"
+                className="select"
+                value={starter}
                 disabled={creating}
+                aria-describedby="pages-add-starter-note"
                 onChange={(e) => {
-                  setAsArticle(e.target.checked);
+                  const next = e.target.value as PageStarter;
+                  setStarter(next);
                   // News items rarely belong in the menu (News lists show them), unless the author said otherwise.
-                  if (!navChosen.current) setAddToNav(!e.target.checked && !parent);
+                  if (!navChosen.current) setAddToNav(next !== 'article' && !parent);
                 }}
-              />
-              Dated article (news or an announcement)
-            </label>
+              >
+                {PAGE_STARTERS.map(([id, label]) => (
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <span className="note" id="pages-add-starter-note">
+                {starterNote(st, starter)}
+              </span>
+            </div>
             {asArticle && (
               <div className="pages-add-field stack">
                 <label className="label" htmlFor="pages-add-date">
