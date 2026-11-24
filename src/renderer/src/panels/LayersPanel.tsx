@@ -1,5 +1,5 @@
 import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, Box, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, Unlink, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Box, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, Unlink, X, LayoutTemplate } from 'lucide-react';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef, slotChildren } from '@shared/types';
@@ -18,6 +18,7 @@ import { besideOf, cannotGroup, extendTo, inGroup, layerRef, NOT_SIBLINGS, toggl
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
 import { describeConditions } from '../lib/conditions';
 import { OutlinePanel } from './OutlinePanel';
+import { templateOwner } from '../lib/template-view';
 
 /*
  * The Layers panel: the current page's outline (shared header, page content, shared footer), or a
@@ -189,7 +190,7 @@ function ownerOfRow(row: HTMLElement): OwnerRef | null {
   const v = row.dataset.owner ?? '';
   const at = v.indexOf(':');
   const kind = v.slice(0, at);
-  return kind === 'page' || kind === 'shell' || kind === 'component' ? { kind, id: v.slice(at + 1) } : null;
+  return kind === 'page' || kind === 'shell' || kind === 'component' || kind === 'template' ? { kind, id: v.slice(at + 1) } : null;
 }
 
 /** Shift (a range) or Cmd/Ctrl (one more, or one less) pick of a layer; a pick that can't join says why. */
@@ -218,7 +219,7 @@ function listName(st: ProjectState, ref: ElementRef): string | null {
   const here = tree && !ref.instancePath.length ? findParent(tree, ref.nodeId) : null;
   if (!tree || !here) return null;
   if (ref.owner.kind === 'shell') return ref.owner.id === 'footer' ? 'the shared footer' : 'the shared header';
-  if (here.parentId === null) return ref.owner.kind === 'component' ? 'the top level of this component' : 'the top level of the page';
+  if (here.parentId === null) return ref.owner.kind === 'component' ? 'the top level of this component' : ref.owner.kind === 'template' ? 'the top level of the layout' : 'the top level of the page';
   const holder = tree.nodes[here.parentId];
   if (!holder) return null;
   const name = layerLabel(st, holder).label;
@@ -238,6 +239,7 @@ export function LayersPanel() {
   const snap = useStore((s) => s.snapshot);
   const pageId = useStore((s) => s.pageId);
   const definitionMode = useStore((s) => s.definitionMode);
+  const templateMode = useStore((s) => s.templateMode);
   const visible = useStore((s) => s.leftTab === 'layers');
   const view = useStore((s) => s.layersView);
   const menu = useMenu();
@@ -344,7 +346,7 @@ export function LayersPanel() {
   }, []);
   // Leaving several layers for one (Esc, the bar's X, a Cmd/Ctrl-click) is said, whichever way it happened.
   // Only when the project is unchanged and the one left is one of them: a delete, an undo or a pick elsewhere is not it.
-  const groupNow = snap && pageId ? liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode }) : null;
+  const groupNow = snap && pageId ? liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode, templateMode }) : null;
   const hadGroup = useRef<{ rev: number; owner: string; ids: string[] } | null>(null);
   useEffect(() => {
     const was = hadGroup.current;
@@ -414,8 +416,10 @@ export function LayersPanel() {
   const page = st.pages[pageId];
   const defOwner: OwnerRef | null = definitionMode ? { kind: 'component', id: definitionMode.definitionId } : null;
   const defTree = defOwner ? st.components[defOwner.id]?.tree : null;
+  // A collection's layout being edited: its layers, between the shared header and footer every entry shows.
+  const layout = !defOwner && templateMode && st.collections[templateMode.collectionId]?.settings.template ? { owner: templateOwner(templateMode), tree: st.collections[templateMode.collectionId].settings.template, name: `${st.collections[templateMode.collectionId].settings.name} layout` } : null;
   // The layers selected together, while the selection is one of them and they still sit side by side here.
-  const picked = liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode });
+  const picked = liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode, templateMode });
 
   /** The page a section (or the sections selected together) can be moved to, at its end; the moved ones are selected there. */
   const pageMenu = (anchor: { x: number; y: number }, plan: LayersPlan | null, pages: Array<{ id: string; title: string }>, what: string, returnTo: HTMLElement | null) =>
@@ -429,7 +433,7 @@ export function LayersPanel() {
     );
 
   /** A Move into destination as a result names it: "the page", "the component", or its full path. */
-  const landing = (d: { parentId: string | null; full: string }) => (d.parentId !== null ? d.full : defOwner ? 'the component' : 'the page');
+  const landing = (d: { parentId: string | null; full: string }) => (d.parentId !== null ? d.full : defOwner ? 'the component' : layout ? 'the layout' : 'the page');
   /** Where focus goes when a follow-on menu is dismissed: back to what opened the first menu (a row, its ⋯, Actions). */
   const openerOf = (el: HTMLElement | { x: number; y: number; returnTo?: HTMLElement }, fallback: string) => (el instanceof HTMLElement ? el : (el.returnTo ?? rowFor(fallback)));
   /** A follow-on menu (Move within…, Move into…, Move to page…) opens under the row or the selection bar it came from, never over the canvas. */
@@ -554,7 +558,8 @@ export function LayersPanel() {
     // Membership is the live group's (as the rows show it): a layer an Undo moved away from the others is not in it.
     if (picked && inGroup(picked, ref)) return openGroupMenu(el, picked);
     setState({ selection: ref });
-    const tree = ref.owner.kind === 'shell' ? st.site.shell[ref.owner.id as 'header' | 'footer'] : ref.owner.kind === 'component' ? st.components[ref.owner.id].tree! : st.pages[ref.owner.id];
+    const tree = treeFor(st, ref.owner);
+    if (!tree) return;
     const node = tree.nodes[ref.instancePath[0] ?? ref.nodeId];
     const partDef = ref.partId && node?.kind === 'instance' ? st.components[node.definitionId] : undefined;
     const isDefRoot = ref.owner.kind === 'component' && !ref.instancePath.length && tree.rootIds[0] === ref.nodeId;
@@ -743,16 +748,16 @@ export function LayersPanel() {
   };
 
   // A page's headings can be shown instead of its layers; a component being edited everywhere has no page outline.
-  const outline = view === 'outline' && !defOwner;
+  const outline = view === 'outline' && !defOwner && !layout;
   return (
     <>
       <div className="panel-head">
         <h3>{outline ? 'Page outline' : 'Layers'}</h3>
-        <span className="context ellipsis" title={defOwner ? `Layers of the ${st.components[defOwner.id]?.name} component` : `${outline ? 'Headings' : 'Layers'} on ${page.title}`}>
-          {defOwner ? st.components[defOwner.id]?.name : page.title}
+        <span className="context ellipsis" title={defOwner ? `Layers of the ${st.components[defOwner.id]?.name} component` : layout ? `Layers of the ${layout.name}` : `${outline ? 'Headings' : 'Layers'} on ${page.title}`}>
+          {defOwner ? st.components[defOwner.id]?.name : layout ? layout.name : page.title}
         </span>
       </div>
-      {!defOwner && (
+      {!defOwner && !layout && (
         <div className="layers-views">
           <div className="segmented full" role="group" aria-label="Show">
             <button aria-pressed={!outline} onClick={() => setState({ layersView: 'layers' })}>
@@ -810,6 +815,24 @@ export function LayersPanel() {
           <>
             <SectionLabel id="layers-sec-component" icon={<Component />} label="Component layers" />
             <TreeList state={st} owner={defOwner} tree={defTree} ids={defTree.rootIds} depth={0} onMenu={openMenu} path={[]} labelledBy="layers-sec-component" />
+          </>
+        ) : layout ? (
+          <>
+            <SectionLabel id="layers-sec-header" icon={<PanelTop />} label="Shared header" />
+            <TreeList state={st} owner={{ kind: 'shell', id: 'header' }} tree={st.site.shell.header} ids={st.site.shell.header.rootIds} depth={0} onMenu={openMenu} path={['Shared header']} labelledBy="layers-sec-header" />
+            <SectionLabel id="layers-sec-layout" icon={<LayoutTemplate />} label="Layout of every entry" />
+            {layout.tree.rootIds.length > 0 ? (
+              <TreeList state={st} owner={layout.owner} tree={layout.tree} ids={layout.tree.rootIds} depth={0} onMenu={openMenu} path={[]} labelledBy="layers-sec-layout" />
+            ) : (
+              <div className="layers-empty" role="none" onKeyDown={(e) => !((e.metaKey || e.ctrlKey) && ['z', 'y', 'v'].includes(e.key.toLowerCase())) && e.stopPropagation()}>
+                <p>No layout content yet</p>
+                <button className="btn btn-sm" onClick={() => setState({ leftTab: 'insert' })}>
+                  <Plus /> Add sections
+                </button>
+              </div>
+            )}
+            <SectionLabel id="layers-sec-footer" icon={<PanelBottom />} label="Shared footer" />
+            <TreeList state={st} owner={{ kind: 'shell', id: 'footer' }} tree={st.site.shell.footer} ids={st.site.shell.footer.rootIds} depth={0} onMenu={openMenu} path={['Shared footer']} labelledBy="layers-sec-footer" />
           </>
         ) : (
           <>

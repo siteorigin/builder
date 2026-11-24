@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Check, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Check, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { applyOps, commitOps, undoAction } from '../store';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
@@ -35,6 +35,7 @@ import { SpacingHandles } from './SpacingHandles';
 import { copyPasteItems, PasteHere } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { isShellPart, showsPart } from '@shared/page-shell';
+import { sampleEntries, shownView, templateOwner, viewAt, viewKey, type TemplateMode } from '../lib/template-view';
 import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourney, stepTarget, type FrameEntry, type VisitorHistory } from '../lib/preview-history';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
@@ -61,6 +62,7 @@ export function Canvas() {
   const runtime = useStore((s) => s.runtime);
   const snapshot = useStore((s) => s.snapshot);
   const pageId = useStore((s) => s.pageId);
+  const templateMode = useStore((s) => s.templateMode);
   const viewport = useStore((s) => s.viewport);
   const zoomSetting = useStore((s) => s.zoom);
   const mode = useStore((s) => s.mode);
@@ -208,7 +210,9 @@ export function Canvas() {
   const origin = url ? new URL(url).origin : null;
   const state = snapshot?.state;
   const page = state && pageId ? state.pages[pageId] : null;
-  const initialSrc = useMemo(() => (url && page ? url + page.route : null), [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
+  // What the frame shows: the page, or a collection's layout on one of its entries (lib/template-view).
+  const view = state ? shownView(state, pageId, templateMode) : null;
+  const initialSrc = useMemo(() => (url && view?.route ? url + view.route : null), [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
   // A new frame (another server, or Try again) is not ready until it says so: nothing is sent to it before then.
   useEffect(() => {
     setState({ frameReady: false });
@@ -251,7 +255,7 @@ export function Canvas() {
   // The panel and the page share the height above the bars: past this the panel scrolls, so it never covers the page.
   const practiceMax = Math.max(120, size.h - practiceBottom - 50 - 160 * zoom);
   // While a restarted page loads, the pill keeps naming the page it is on.
-  const address = journey.at?.address ?? page?.route ?? '';
+  const address = journey.at?.address ?? view?.route ?? '';
   // How many characters the address slot holds. An address that does not fit keeps both of its ends in view.
   const addressRef = useRef<HTMLOutputElement>(null);
   const [addressFit, setAddressFit] = useState(Infinity);
@@ -286,12 +290,13 @@ export function Canvas() {
     const t = setTimeout(() => {
       if (getState().frameReady) return;
       setRetrying(false);
-      const title = getState().snapshot?.state.pages[getState().pageId ?? '']?.title;
-      setFrameError(`${title ? `The ${title} page` : 'The page'} took too long to open.`);
+      const s = getState();
+      const shown = s.snapshot ? shownView(s.snapshot.state, s.pageId, s.templateMode) : null;
+      setFrameError(`${shown?.template ? `The ${shown.title}` : shown ? `The ${shown.title} page` : 'The page'} took too long to open.`);
       markTimedOut(true);
     }, 20000);
     return () => clearTimeout(t);
-  }, [url, session, pageId, frameReady, frameError, retrying, mode, runtime.state]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [url, session, view?.key, frameReady, frameError, retrying, mode, runtime.state]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The page frame is centred, which can put its origin on half a device pixel; it is nudged onto a whole one, so the
   // page and the 1px keylines drawn over it are crisp (the overlay edges are snapped relative to this origin).
@@ -322,7 +327,7 @@ export function Canvas() {
 
   /** A page with nothing on it (only the shared header and footer, if it shows them): the canvas offers the first
    *  step in the open space below them. `emptyTop` is where that space starts, in page pixels. */
-  const emptyPage = mode === 'edit' && !definitionMode && !!page && page.rootIds.length === 0;
+  const emptyPage = mode === 'edit' && !definitionMode && !templateMode && !!page && page.rootIds.length === 0;
   const [emptyTop, setEmptyTop] = useState<number | null>(null);
   // Cleared only when the page changes or stops being empty, so the card does not blink while the frame is resized.
   useEffect(() => setEmptyTop(null), [pageId, emptyPage]);
@@ -438,7 +443,7 @@ export function Canvas() {
           frameAt.current = path;
           // A page loaded in full while the frame was already up (Try again, a load that could not go in place) shows the
           // selection, as an arrival in place does (`navigated`); the first load scrolls to it once the frame is ready.
-          if (ready && getState().mode !== 'preview' && page && samePath(page.route, path)) {
+          if (ready && getState().mode !== 'preview' && view?.route && samePath(view.route, path)) {
             const desc = descFor(getState().selection);
             if (desc) post('scrollTo', { desc });
           }
@@ -461,10 +466,10 @@ export function Canvas() {
             // while it loaded never reached it: it is asked for the page shown now. Try again keeps the preview
             // ready, so the navigate effect does not run for it.
             nav.current.request = null;
-            if (s.pageId) openShownPage();
+            if (viewKey(s)) openShownPage();
             else {
               syncPage(path);
-              followed(nav.current, getState().pageId);
+              followed(nav.current, viewKey(getState()));
             }
           } else if (request) {
             // A new document loaded while the editor's request was on its way (the request's own fallback, or a
@@ -476,9 +481,9 @@ export function Canvas() {
             }
           }
           // A page chosen in the editor that the frame has not been asked for yet wins: the navigate effect opens it.
-          else if (reloaded && s.pageId === nav.current.asked) {
+          else if (reloaded && viewKey(s) === nav.current.asked) {
             syncPage(path);
-            followed(nav.current, getState().pageId);
+            followed(nav.current, viewKey(getState()));
           }
           break;
         }
@@ -494,7 +499,7 @@ export function Canvas() {
           // visitor's own link clicks then move the editor along with them; while editing, the page goes
           // nowhere the editor did not send it.
           const path = String(p.path);
-          if (!followReport(nav.current, path, typeof p.navId === 'number' ? p.navId : null, getState().pageId, getState().mode === 'preview')) break;
+          if (!followReport(nav.current, path, typeof p.navId === 'number' ? p.navId : null, viewKey(getState()), getState().mode === 'preview')) break;
           // The page the frame is showing, so following it below does not send the frame back there (which would
           // drop a #section the visitor's link went to, and its scroll position).
           frameAt.current = path;
@@ -511,7 +516,7 @@ export function Canvas() {
             setRetrying(false);
           }
           syncPage(path);
-          followed(nav.current, getState().pageId);
+          followed(nav.current, viewKey(getState()));
           // What is outlined may be shown through a different placement on this page.
           syncTrack();
           // What the panel said about the last page's sends is not about this one, and nor is a live test's answer.
@@ -581,6 +586,8 @@ export function Canvas() {
             const bound = r.node?.kind === 'text' ? r.node.text : r.node?.kind === 'link' ? r.node.label : undefined;
             // A News card or article header shows a page's article details, changed in that page's settings.
             if (computedAt(st, ref, bound)) toast('This comes from the article’s page settings. Open the article’s page to change its title, date, byline or excerpt.', 'info');
+            else if (ref.owner.kind === 'template' && (r.node?.kind === 'text' || r.node?.kind === 'link'))
+              toast('This shows each entry’s own words, so it is edited in the entry. Choose what it shows in the Inspector.', 'info');
             else if (r.node?.kind === 'text' || r.node?.kind === 'link')
               toast(
                 s.definitionMode && inDefinition(ref, s.definitionMode.definitionId)
@@ -767,8 +774,11 @@ export function Canvas() {
   function syncPage(path: string) {
     const st = getState().snapshot?.state;
     if (!st) return;
-    const match = Object.values(st.pages).find((pg) => pg.route === path || pg.route === path + '/');
-    if (match && match.id !== getState().pageId) setState({ pageId: match.id, selection: null });
+    const s = getState();
+    // While a collection's layout is open, another of its entries keeps it open on that entry; a page closes it.
+    const to = viewAt(st, s.templateMode, path);
+    if (to && 'templateMode' in to) setState({ templateMode: to.templateMode });
+    else if (to && (to.pageId !== s.pageId || s.templateMode)) setState({ pageId: to.pageId, templateMode: null, selection: null });
   }
 
   /** A click in the page is pointer input this window never sees: menus opened from it should not jump to
@@ -838,7 +848,7 @@ export function Canvas() {
     const show = shownFor.current !== showSelection;
     shownFor.current = showSelection;
     const quiet = takeUnscrolled(selection);
-    const desc = ready && page && samePath(page.route, frameAt.current) ? descFor(selection) : null;
+    const desc = ready && view?.route && samePath(view.route, frameAt.current) ? descFor(selection) : null;
     if (desc && (show || !quiet)) post('scrollTo', show ? { desc, show } : { desc });
   }, [ready, selection && refKey(selection), showSelection]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -859,7 +869,7 @@ export function Canvas() {
   }
   useEffect(() => {
     if (ready) syncReveal();
-  }, [ready, revealedItem, mode, inspectorShown, snapshot?.revision, pageId, definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ready, revealedItem, mode, inspectorShown, snapshot?.revision, view?.key, definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (ready) post('mode', { mode });
@@ -916,17 +926,17 @@ export function Canvas() {
   /** Ask the frame for the page the editor shows, unless it is there already or already asked for. */
   function openShownPage() {
     const s = getState();
-    const shown = s.pageId ? s.snapshot?.state.pages[s.pageId] : undefined;
-    if (!shown) return;
+    const shown = s.snapshot ? shownView(s.snapshot.state, s.pageId, s.templateMode) : null;
+    if (!shown?.route) return;
     const request = nav.current.request;
-    if (request && nav.current.asked === shown.id && samePath(shown.route, request.path)) return;
+    if (request && nav.current.asked === shown.key && samePath(shown.route, request.path)) return;
     // The page already went there itself (a link clicked while previewing): leave it where it is.
-    if (samePath(shown.route, frameAt.current)) return void askFrame(nav.current, shown.id, null);
+    if (samePath(shown.route, frameAt.current)) return void askFrame(nav.current, shown.key, null);
     // A page the editor opens while previewing (a new address, a page picked) is where the visitor starts again; Edit
     // no longer returns to a selection on another page.
     if (getState().mode === 'preview') {
       previewFrom.current = null;
-      if (getState().previewReturn && getState().previewReturn?.pageId !== shown.id) setState({ previewReturn: null });
+      if (getState().previewReturn && getState().previewReturn?.pageId !== shown.key) setState({ previewReturn: null });
     }
     // Until the page confirms the navigation, it is "opening", not ready. Focus in the leaving page moves to the
     // canvas, which stays.
@@ -936,14 +946,14 @@ export function Canvas() {
     setFrameError(null);
     setRetrying(false);
     if (document.activeElement === frameRef.current) canvasRef.current?.focus({ preventScroll: true });
-    const navId = askFrame(nav.current, shown.id, shown.route);
+    const navId = askFrame(nav.current, shown.key, shown.route);
     frameAt.current = null;
     post('navigate', { path: shown.route, navId });
   }
   // Navigate when the current page changes.
   useEffect(() => {
-    if (ready && page) openShownPage();
-  }, [pageId, page?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (ready && view?.route) openShownPage();
+  }, [view?.key, view?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * What a pick in the page selects. Normally the selection steps in one level per click (see
@@ -1180,7 +1190,7 @@ export function Canvas() {
     const snap = s.snapshot;
     if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || resizeDrag.current) return false;
     const st = snap.state;
-    const owner: OwnerRef = { kind: 'page', id: s.pageId };
+    const owner: OwnerRef = s.templateMode ? templateOwner(s.templateMode) : { kind: 'page', id: s.pageId };
     const opening = snap.workspaceKey;
     const revision = snap.revision;
     const role = insertRole(st, drag.spec);
@@ -1235,8 +1245,9 @@ export function Canvas() {
       if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
       const id = r.results?.at(-1)?.nodeId as string | undefined;
       const now = getState();
-      // Selected while the author is still on the page it went on, with the arrival cue once the page shows it.
-      if (id && now.pageId === owner.id && now.mode === 'edit' && !now.definitionMode) {
+      // Selected while the author is still on the page (or layout) it went on, with the arrival cue once the page shows it.
+      const here = owner.kind === 'template' ? now.templateMode?.collectionId === owner.id : now.pageId === owner.id && !now.templateMode;
+      if (id && here && now.mode === 'edit' && !now.definitionMode) {
         const ref: ElementRef = { owner, instancePath: [], nodeId: id };
         markArrival(ref);
         setState({ selection: ref, rightTab: 'inspect' });
@@ -1373,7 +1384,7 @@ export function Canvas() {
   });
   // A drag in progress ends with the canvas, and with the page, project or editing it was planned on.
   useEffect(() => () => insertDrag.current?.end(false), []);
-  useEffect(() => insertDrag.current?.end(false), [pageId, mode, session, snapshot?.workspaceKey, !!definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => insertDrag.current?.end(false), [view?.key, mode, session, snapshot?.workspaceKey, !!definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
   // The page now shows a newer version: what a drag measured on it is measured again.
   useEffect(() => insertDrag.current?.remeasure(), [applied]);
 
@@ -1602,7 +1613,7 @@ export function Canvas() {
       {runtimeCard && <div className="canvas-state">{runtimeCard}</div>}
       {/* Said in the strip above the page (see frame-status below), and here for screen readers. */}
       <p className="sr-only" role="status">
-        {opening ? `Opening ${page?.title ?? 'the page'}…` : ''}
+        {opening ? `Opening ${view?.title ?? 'the page'}…` : ''}
       </p>
       <p className="sr-only" role="status">
         {announcement}
@@ -1729,9 +1740,11 @@ export function Canvas() {
             {opening && !resizing && (
               <div className="frame-status" ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
                 <Spinner decorative />
-                <span>Opening {page?.title ?? 'the page'}…</span>
+                <span>Opening {view?.title ?? 'the page'}…</span>
               </div>
             )}
+            {templateMode && mode === 'edit' && state && !opening && !resizing && !insertDrop && !reorder && <TemplateStrip state={state} mode={templateMode} maxWidth={stripRoom} />}
+            {templateMode && state && !view?.route && <TemplateNoEntries state={state} mode={templateMode} />}
             <div className={`frame-width-label${labelMode === 'gone' ? ' gone' : ''}${resizing ? ' live' : ''}`} title={scalePct !== 100 ? `${viewport} px wide, shown at ${scalePct}%` : `${viewport} px wide, shown at actual size`}>
               <b>{viewport}</b>&nbsp;px
               {labelMode === 'mid' && (
@@ -2224,3 +2237,58 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
     </div>
   );
 }
+
+/**
+ * The strip above the page while a collection's layout is edited: whose layout it is, the entry it is shown on (any
+ * of the collection's, to see the layout with other words and pictures), and the way back to the page.
+ */
+function TemplateStrip({ state, mode, maxWidth }: { state: ProjectState; mode: TemplateMode; maxWidth: number }) {
+  const collection = state.collections[mode.collectionId];
+  const samples = sampleEntries(state, mode.collectionId);
+  if (!collection) return null;
+  return (
+    <div className="frame-status template-strip" style={{ maxWidth }} role="group" aria-label={`${collection.settings.name} layout`} data-testid="template-strip">
+      <LayoutTemplate aria-hidden="true" />
+      <span className="template-strip-name">{collection.settings.name} layout</span>
+      {samples.length > 0 && (
+        <label className="template-strip-sample">
+          <span>shown on</span>
+          <select
+            className="select sm"
+            value={mode.entryId ?? ''}
+            aria-label="Entry the layout is shown on"
+            data-testid="template-sample"
+            onChange={(e) => setState({ templateMode: { collectionId: mode.collectionId, entryId: e.target.value } })}
+          >
+            {samples.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.title || e.slug}
+                {e.draft !== false ? ' (draft)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <button className="link-btn" onClick={() => setState({ templateMode: null, selection: null })}>
+        Done
+      </button>
+    </div>
+  );
+}
+
+/** A layout with no entry to show it on: it says so over the page, which stays the one that was open. */
+function TemplateNoEntries({ state, mode }: { state: ProjectState; mode: TemplateMode }) {
+  const name = state.collections[mode.collectionId]?.settings.name ?? 'This collection';
+  return (
+    <div className="template-no-entries" data-testid="template-no-entries">
+      <div className="canvas-card" role="group" aria-labelledby="template-empty-title">
+        <h3 id="template-empty-title">{name} has no entries yet</h3>
+        <p>Its layout is shown on one of its entries. Add an entry to see it here; its layers can be edited in Layers now.</p>
+        <button className="btn btn-sm" onClick={() => setState({ templateMode: null, selection: null })}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+

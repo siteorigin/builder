@@ -75,6 +75,8 @@ import { defaultReach, designContent, designContentOp, forwardedBinding, propDef
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 import { BindingControl, PartSection, PropertiesSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
 import { LivePreview } from './InsertPanel';
+import { EntryBoundNote, EntryFieldsSection } from './EntryFields';
+import { sampleEntries } from '../lib/template-view';
 import { isHeadingLevel, placementOrder, variantStylable, type StyleTarget } from '../lib/component-contract';
 
 type Tokens = ReturnType<typeof effectiveTokens>;
@@ -451,6 +453,7 @@ function InspectorBody() {
   const selection = useStore((s) => s.selection);
   const pageId = useStore((s) => s.pageId);
   const definitionMode = useStore((s) => s.definitionMode);
+  const templateMode = useStore((s) => s.templateMode);
   const tokens = useMemo(() => (snap ? effectiveTokens(snap.state) : []), [snap?.state.tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!snap) return null;
   const st = snap.state;
@@ -476,6 +479,13 @@ function InspectorBody() {
       </div>
     );
   }
+  // A collection's layout with nothing selected: what it is, the entry it is shown on, and the way back.
+  if (!selection && templateMode && st.collections[templateMode.collectionId])
+    return (
+      <div className="panel-body insp" key={`layout:${templateMode.collectionId}`}>
+        <LayoutOverview state={st} collectionId={templateMode.collectionId} entryId={templateMode.entryId} />
+      </div>
+    );
   // Keyed by page: fields being typed in belong to their page, never to the one shown after it.
   if (!selection) return pageId ? <PageSettings key={`${pageId}:${handoff}`} page={st.pages[pageId]} state={st} /> : null;
   const r = resolveRef(st, selection);
@@ -718,6 +728,15 @@ function OwnerScope({ owner, state, aside }: { owner: OwnerRef; state: ProjectSt
         <strong>Component design.</strong> Changes apply everywhere {state.components[owner.id]?.name ?? 'it'} is used.
       </Scope>
     );
+  if (owner.kind === 'template') {
+    const c = state.collections[owner.id];
+    const n = c ? Object.keys(c.entries).length : 0;
+    return (
+      <Scope tone="shared" icon={<Users />} aside={aside}>
+        <strong>{c?.settings.name ?? 'Collection'} layout.</strong> Changes show on {n === 1 ? 'its 1 entry' : `all ${n} of its entries`}.
+      </Scope>
+    );
+  }
   return (
     <Scope tone="local" icon={<FileText />} aside={aside}>
       Only on the {ownerLabel(state, owner)} page
@@ -947,6 +966,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           </Problem>
         ))}
       </Problems>
+      <EntryFieldsSection state={state} owner={owner} node={node} />
       <Section title="Content" id="content" level={LEVEL} remember={fields.length > 0}>
         {fields.length === 0 && <p className="faint insp-note">This section has no content of its own. Add elements inside it from Insert.</p>}
         <FieldHome root={`${owner.kind}:${owner.id}:${node.id}`} alive={nodeAlive(owner, node.id)}>
@@ -956,6 +976,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               // An object's button is flagged at the object, whichever of its fields holds the missing link.
               const found = schema.type === 'object' ? unlinked.find((b) => b.link?.prop === key && b.link.itemId === undefined) : unlinkedField(unlinked, key);
               const own = hideAt(found);
+              // A property showing each entry's own value is chosen in Entry content, not typed here.
+              if (owner.kind === 'template' && isBinding(node.props[key])) return <EntryBoundNote key={key} state={state} owner={owner} value={node.props[key]} label={label ?? schema.label} />;
               return (
                 <PropField
                   key={key}
@@ -1587,8 +1609,10 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
           </Problem>
         )}
       </Problems>
+      <EntryFieldsSection state={state} owner={owner} node={node} />
       <Section title="Content" id="prim-content" level={LEVEL}>
-        {node.kind === 'text' && (
+        <EntryBoundNote state={state} owner={owner} value={node.kind === 'text' ? node.text : node.kind === 'image' ? node.image : undefined} label={node.kind === 'image' ? 'Image' : 'Text'} />
+        {node.kind === 'text' && !isBinding(node.text) && (
           <>
             {!node.rich && !isBinding(node.tag) && <TagField state={state} owner={owner} node={node} onChange={(v) => content('tag', v)} />}
             <div data-field="text" style={{ display: 'contents' }}>
@@ -1613,11 +1637,16 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
         )}
         {node.kind === 'link' && (
           <>
-            <div data-field="label" style={{ display: 'contents' }}>
-              <Field label="Label">
-                <DraftInput value={isBinding(node.label) ? '' : String(node.label)} onCommit={(v) => content('label', v)} />
-              </Field>
-            </div>
+            {isBinding(node.label) ? (
+              <EntryBoundNote state={state} owner={owner} value={node.label} label="Label" />
+            ) : (
+              <div data-field="label" style={{ display: 'contents' }}>
+                <Field label="Label">
+                  <DraftInput value={String(node.label)} onCommit={(v) => content('label', v)} />
+                </Field>
+              </div>
+            )}
+            <EntryBoundNote state={state} owner={owner} value={node.link} label="Link" />
             {!isBinding(node.link) && (
               <div className="field" data-field="link" role="group" aria-labelledby={`${node.id}-dest`}>
                 <div className="field-label" id={`${node.id}-dest`}>
@@ -2552,3 +2581,45 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
     </div>
   );
 }
+
+/** A collection's layout with nothing selected: whose layout it is, what it changes, the entry it is shown on, and Done. */
+function LayoutOverview({ state, collectionId, entryId }: { state: ProjectState; collectionId: string; entryId: string | null }) {
+  const c = state.collections[collectionId];
+  const samples = sampleEntries(state, collectionId);
+  return (
+    <>
+      <Header
+        title={`${c.settings.name} layout`}
+        kind="Collection layout"
+        tone="shared"
+        icon={<FileText />}
+        actions={
+          <button className="btn btn-sm" onClick={() => setState({ templateMode: null, selection: null })}>
+            Done
+          </button>
+        }
+      >
+        <OwnerScope owner={{ kind: 'template', id: collectionId }} state={state} />
+      </Header>
+      <div className="insp-empty">
+        <MousePointerClick aria-hidden="true" />
+        <p>Every entry of {c.settings.name} is shown with this layout, each with its own title, text, pictures and details. Click part of it on the page, or in Layers, to change it for all of them.</p>
+      </div>
+      {samples.length > 0 && (
+        <Section title="Preview" id="layout-preview" level={LEVEL}>
+          <Field label="Shown on" hint="The layout with this entry’s words and pictures. Switch to see it with another." controlId="layout-sample">
+            <select id="layout-sample" className="select" value={entryId ?? ''} onChange={(e) => setState({ templateMode: { collectionId, entryId: e.target.value } })}>
+              {samples.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.title || e.slug}
+                  {e.draft !== false ? ' (draft)' : ''}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </Section>
+      )}
+    </>
+  );
+}
+

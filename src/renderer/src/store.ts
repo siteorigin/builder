@@ -12,6 +12,7 @@ import type { RevealedItem } from './lib/reveal';
 import type { StyleCopy } from './lib/style-copy';
 import type { LayerSet } from './lib/layer-set';
 import { notePlace, type PagePlaces } from './lib/page-place';
+import type { TemplateMode } from './lib/template-view';
 
 export const api = window.builder;
 
@@ -180,6 +181,11 @@ export interface State {
   /** Definition editing mode: the project-owned definition being edited. */
   definitionMode: { definitionId: string; returnPageId: string } | null;
   /**
+   * A collection's layout being edited on the canvas, shown on one of its entries (lib/template-view). The page that
+   * was open stays `pageId`, shown again when the layout is closed; opening a page closes it.
+   */
+  templateMode: TemplateMode | null;
+  /**
    * While editing a component everywhere: the variant option its Style section styles, across the layers the author
    * selects; the base design when null or when it names another component or an option that no longer exists.
    */
@@ -236,6 +242,11 @@ function savedAssetSort(): AssetSort {
  * even of the same layer) selects that one layer, so the layers picked with it are let go.
  */
 const oneSelection = (p: Partial<State>): Partial<State> => ('selection' in p && !('layerSet' in p) ? { ...p, layerSet: null } : p);
+/** Opening a page, or editing a component everywhere, closes a collection's layout: the canvas shows one thing. */
+const oneView = (p: Partial<State>): Partial<State> => {
+  if ('templateMode' in p || !useStore.getState().templateMode) return p;
+  return ('pageId' in p && p.pageId !== useStore.getState().pageId) || p.definitionMode ? { ...p, templateMode: null } : p;
+};
 
 export const useStore = create<State>((set) => ({
   screen: 'welcome',
@@ -273,6 +284,7 @@ export const useStore = create<State>((set) => ({
   modal: null,
   toasts: [],
   definitionMode: null,
+  templateMode: null,
   variantStyle: null,
   conversation: null,
   runStatus: null,
@@ -329,7 +341,7 @@ export const inspectorFocusRequest = (f: Omit<InspectorFocus, 'seq' | 'at'>): In
 export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.runMode === 'ask' ? null : s.runStatus);
 
 export const getState = () => useStore.getState();
-export const setState = (p: Partial<State>) => useStore.setState(oneSelection(scopeFollows(p)));
+export const setState = (p: Partial<State>) => useStore.setState(oneSelection(scopeFollows(oneView(p))));
 
 /**
  * What the next AI message may change starts again from the selected element (or, with none, the page) whenever what
@@ -345,6 +357,7 @@ function scopeFollows(p: Partial<State>): Partial<State> {
   const moved =
     ('pageId' in p && p.pageId !== s.pageId) ||
     ('definitionMode' in p && (p.definitionMode?.definitionId ?? null) !== (s.definitionMode?.definitionId ?? null)) ||
+    ('templateMode' in p && (p.templateMode?.collectionId ?? null) !== (s.templateMode?.collectionId ?? null)) ||
     ('selection' in p && key(p.selection) !== key(s.selection));
   return moved ? { ...p, chatContextEnabled: { ...s.chatContextEnabled, scope: 'selection' } } : p;
 }
