@@ -93,20 +93,17 @@ export async function loadSettings(): Promise<SettingsFile> {
 }
 
 let writes: Promise<void> = Promise.resolve();
-/** Whether the last write failed, so what the settings hold now may not be on disk. */
-let unwritten = false;
+/** Recent-project renames made in the settings, and how many of them a finished write has put on disk. */
+let renames = 0;
+let renamesSaved = 0;
 
 /** One write at a time, each of the latest state, so an older save can never land after a newer one. */
 export function saveSettings(): Promise<void> {
   const run = writes.then(async () => {
     if (!cache) return;
-    try {
-      await atomicWrite(file(), JSON.stringify(cache, null, 2));
-      unwritten = false;
-    } catch (e) {
-      unwritten = true;
-      throw e;
-    }
+    const upTo = renames;
+    await atomicWrite(file(), JSON.stringify(cache, null, 2));
+    renamesSaved = Math.max(renamesSaved, upTo);
   });
   writes = run.catch(() => undefined);
   return run;
@@ -158,12 +155,13 @@ export async function renameRecent(dir: string, name: string) {
   const real = canonicalDir(dir);
   const at = s.recents.findIndex((r) => r.dir === dir || canonicalDir(r.dir) === real);
   if (at < 0) return;
-  if (s.recents[at].name === name) {
-    // Nothing to write when the list already has the name and its last write landed: closing a project never waits on
-    // the disk for nothing. A write still under way is waited for, and one that failed (the rename's, say) is tried again.
-    await writes;
-    if (!unwritten) return;
-  } else s.recents = s.recents.map((r, i) => (i === at ? { ...r, name } : r));
+  if (s.recents[at].name !== name) {
+    s.recents = s.recents.map((r, i) => (i === at ? { ...r, name } : r));
+    renames++;
+  }
+  // Nothing to write, or wait for, once every rename is on disk: closing a project never waits on the disk for nothing
+  // (or on another setting's write). A rename whose write failed, or has not finished, is written again.
+  else if (renamesSaved >= renames) return;
   await saveSettings();
 }
 

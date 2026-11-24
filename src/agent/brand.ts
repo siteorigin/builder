@@ -208,21 +208,16 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   const setProp = (shell: 'header' | 'footer', node: InstanceNode, prop: string, value: unknown) => {
     if (Object.hasOwn(state.components[node.definitionId]?.properties ?? {}, prop) && node.props[prop] !== value) ops.push({ type: 'instance.setProp', owner: { kind: 'shell', id: shell }, nodeId: node.id, prop, value });
   };
-  // A line asked for goes in every footer that holds one. Set before the rename, the rename never grows a line that is
-  // about to be replaced; set again after it, it wins over the line the rename leaves, even when it is the line there now.
-  const copyrightOps: EditOperation[] = [];
-  if (args.copyright !== undefined)
-    for (const id of state.site.shell.footer.rootIds) {
-      const node = Object.hasOwn(state.site.shell.footer.nodes, id) ? state.site.shell.footer.nodes[id] : undefined;
-      if (node?.kind !== 'instance' || !Object.hasOwn(state.components[node.definitionId]?.properties ?? {}, COPYRIGHT_PROP)) continue;
-      if (args.siteName !== undefined || node.props[COPYRIGHT_PROP] !== args.copyright) copyrightOps.push({ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: node.id, prop: COPYRIGHT_PROP, value: args.copyright });
-    }
-  ops.push(...copyrightOps);
+  // A line asked for goes in every footer that holds one. With a rename, the line is cleared first (an empty line names
+  // no site, so the rename never grows a line about to be replaced) and set after it, so it wins as it was asked for.
+  const footers = state.site.shell.footer.rootIds.map((id) => state.site.shell.footer.nodes[id]).filter((n): n is InstanceNode => n?.kind === 'instance' && state.components[n.definitionId]?.properties[COPYRIGHT_PROP]?.type === 'string');
+  const copyright = (value: string): EditOperation[] => footers.filter((n) => args.siteName !== undefined || n.props[COPYRIGHT_PROP] !== value).map((n) => ({ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: n.id, prop: COPYRIGHT_PROP, value }));
+  if (args.copyright !== undefined && args.siteName !== undefined) ops.push(...copyright(''));
   if (args.siteName !== undefined || args.description !== undefined || (args.tagline !== undefined && !state.site.description)) {
     const description = args.description ?? (!state.site.description ? args.tagline : undefined);
     ops.push({ type: 'site.update', ...(args.siteName !== undefined ? { name: args.siteName } : {}), ...(description !== undefined ? { description } : {}) });
-    if (args.siteName !== undefined) ops.push(...copyrightOps);
   }
+  if (args.copyright !== undefined) ops.push(...copyright(args.copyright));
 
   // The rename itself carries the name into the header and footer that showed the old one (shared/site-name.ts);
   // a label of the author's own stays, and the reply says where, so the model can mention it.

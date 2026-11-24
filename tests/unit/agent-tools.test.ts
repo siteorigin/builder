@@ -1717,7 +1717,9 @@ describe('review regressions', () => {
   });
 
   it('puts an asked-for copyright line in every footer, even where the rename could not have grown the old line', async () => {
-    const { session, run } = await setup([() => [call('b', 'update_site_brand', { siteName: 'Acme Studio Group', copyright: '© The team' })], () => finish()], {}, 'business', (s) => {
+    // The line asked for names the old site, as the line there does: the rename would grow either past the limit.
+    const line = `© ${new Date().getFullYear()} Test Studio. Photos by Ana Lee.`;
+    const { session, run } = await setup([() => [call('b', 'update_site_brand', { siteName: 'Acme Studio Group', copyright: line })], () => finish()], {}, 'business', (s) => {
       const tree = s.site.shell.footer;
       const first = tree.nodes[tree.rootIds[0]] as InstanceNode;
       // The footer's line holds at most 40 characters: "© year Acme Studio Group. All rights reserved." would not fit.
@@ -1727,10 +1729,10 @@ describe('review regressions', () => {
       tree.nodes[second.id] = second;
       tree.rootIds.push(second.id);
     });
-    await run('Rename the site to Acme Studio Group, and the copyright to "© The team"');
+    await run('Rename the site to Acme Studio Group, keeping the copyright line about Test Studio');
     expect(session.state.site.name).toBe('Acme Studio Group');
     const tree = session.state.site.shell.footer;
-    expect(tree.rootIds.map((id) => (tree.nodes[id] as InstanceNode).props.copyright)).toEqual(['© The team', '© The team']);
+    expect(tree.rootIds.map((id) => (tree.nodes[id] as InstanceNode).props.copyright)).toEqual([line, line]);
   });
 
   it('nudges for a page that was rejected and never retried, even with no other change', async () => {
