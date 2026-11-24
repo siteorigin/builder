@@ -861,6 +861,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .export-samples-places { list-style: none; margin: 0; padding: 0 0 0 20px; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
 .export-samples-places[hidden] { display: none; }
 .export-samples-places li { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.export-samples-review { display: flex; flex-direction: column; gap: 6px; }
 .export-samples-kept { margin: 0; font-size: 12.5px; }
 .export-note-toggle { align-self: flex-start; margin-left: -9px; padding-left: 5px; }
 @media (min-height: 721px) {

@@ -347,17 +347,42 @@ function matchAt(f: ContentField, part: Part, start: number, end: number): Conte
 
 /** What may stand between the digits of a written telephone number: spaces (\s covers the non-breaking ones), dots, dashes and brackets. */
 const DIAL_GAP = '[\\s().\\u2010\\u2011-]*';
+/** An email address as a whole: the characters a mailbox may have, an @, and every label of its domain. */
+const EMAIL_TOKEN = /(?<![\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-])[\p{L}\p{N}.!#$%&'*+/=?^_`{|}~-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*/gu;
+/** A written telephone number as a whole: from its + or first digit to its last digit, with nothing but spacing between. */
+const PHONE_RUN = new RegExp(`(?<![\\p{L}\\p{N}_+])(?:\\+${DIAL_GAP})?\\d(?:${DIAL_GAP}\\d)*`, 'gu');
 const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const ADDRESS = new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?![\\p{L}\\p{N}_-])`, 'giu');
+
+/** Whether a number dials the sample: its digits, as a telephone link sends them, with or without the leading +. */
+const dialsSample = (t: string) => {
+  const dial = t.replace(/[^+\d]/g, '');
+  return dial === SAMPLE_CONTACT.phoneDial || dial === SAMPLE_CONTACT.phoneDial.replace(/^\+/, '');
+};
+const ranges = (re: RegExp, text: string, keep: (m: string) => boolean = () => true): Array<[number, number]> =>
+  [...text.matchAll(re)].filter((m) => keep(m[0])).map((m) => [m.index ?? 0, (m.index ?? 0) + m[0].length]);
 
 /**
- * Each sample detail as visitors may read it: the whole email address only (myhello@example.com is someone else's),
- * the number with any spacing or punctuation, and the street address with any spacing.
+ * Where each sample detail is in words visitors read. Only a whole address or number counts: myhello@example.com,
+ * o'hello@example.com or +44 20 1555 0134 is someone else's, and replacing part of it would make a wrong one.
  */
-const SAMPLE_PATTERNS: Record<SampleContactKind, RegExp> = {
-  email: new RegExp(`(?<![\\w.+-])${escapeRe(SAMPLE_CONTACT.email)}(?![\\w-]|\\.\\w)`, 'giu'),
-  phone: new RegExp(`(?<![\\w+])\\+?${[...SAMPLE_CONTACT.phoneDial.replace(/\D/g, '')].join(DIAL_GAP)}(?!\\d)`, 'gu'),
-  address: new RegExp(`(?<!\\w)${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?!\\w)`, 'giu')
+const SAMPLE_IN_TEXT: Record<SampleContactKind, (text: string) => Array<[number, number]>> = {
+  email: (t) => ranges(EMAIL_TOKEN, t, (m) => m.toLowerCase() === SAMPLE_CONTACT.email),
+  phone: (t) => ranges(PHONE_RUN, t, dialsSample),
+  address: (t) => ranges(ADDRESS, t)
 };
+
+/**
+ * Where each sample detail is in a destination: an email link whose recipient is the sample address (its subject
+ * and the rest stay as they are), or a telephone link that dials the sample number, as a whole.
+ */
+function sampleInLink(kind: SampleContactKind, type: 'email' | 'tel', target: string): Array<[number, number]> {
+  if (kind === 'email' && type === 'email') {
+    const to = target.split('?')[0];
+    return to.toLowerCase() === SAMPLE_CONTACT.email ? [[0, to.length]] : [];
+  }
+  return kind === 'phone' && type === 'tel' && dialsSample(target) ? [[0, target.length]] : [];
+}
 
 /** The kind of contact a destination reaches, when it reaches one: only email and phone links send anything. */
 function linkKind(f: ContentField, part: Part): 'email' | 'tel' | null {
@@ -382,19 +407,20 @@ export interface SampleContactGroup {
  */
 export function sampleContactMatches(state: ProjectState): SampleContactGroup[] {
   const live = publishedState(state);
-  const fields = contentFields(live);
+  // The fields as Find lists them, so a shared part's reach counts every page one edit changes (a draft too), kept to
+  // those the published website shows.
+  const fields = contentFields(state).filter((f) =>
+    f.owner.kind === 'page' ? Object.hasOwn(live.pages, f.owner.id) : f.owner.kind !== 'shell' || ((f.owner.id === 'header' || f.owner.id === 'footer') && pagesShowing(live, f.owner.id).length > 0)
+  );
   const groups: SampleContactGroup[] = [];
   for (const sample of SAMPLE_CONTACT_VALUES) {
-    const re = SAMPLE_PATTERNS[sample.kind];
     const matches: ContentMatch[] = [];
     for (const f of fields) {
-      for (const part of partsOf(live, f)) {
-        if (part.kind === 'link') {
-          // A destination counts when it sends to the sample: an email link to the address, a phone link to the number.
-          const kind = linkKind(f, part);
-          if (!(kind === 'email' && sample.kind === 'email') && !(kind === 'tel' && sample.kind === 'phone')) continue;
-        }
-        for (const m of part.text.matchAll(re)) matches.push(matchAt(f, part, m.index ?? 0, (m.index ?? 0) + m[0].length));
+      for (const part of partsOf(state, f)) {
+        const type = part.kind === 'link' ? linkKind(f, part) : null;
+        if (part.kind === 'link' && !type) continue;
+        const found = type ? sampleInLink(sample.kind, type, part.text) : SAMPLE_IN_TEXT[sample.kind](part.text);
+        for (const [start, end] of found) matches.push(matchAt(f, part, start, end));
       }
     }
     if (matches.length) groups.push({ ...sample, matches });

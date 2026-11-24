@@ -69,7 +69,11 @@ describe('the blank starter (#15)', () => {
     // The footer keeps what is true of any site: its name, the Home link and the copyright.
     const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
     expect(footer.props).toMatchObject({ siteName: 'Kloof', tagline: '', contact: [] });
-    expect(files.get('src/routes/+layout.svelte')).toContain('Kloof');
+    // The footer still renders, with what is true of any site: the copyright and the Home link.
+    const layout = files.get('src/routes/+layout.svelte')!;
+    expect(layout).toMatch(/<C_foundation_shell_footer_\w+/);
+    expect(layout).toContain(`© ${new Date().getFullYear()} Kloof.`);
+    expect(layout).toMatch(/"label":\s*"Home"/);
   });
 });
 

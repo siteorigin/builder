@@ -122,69 +122,83 @@ function keepSamples(values: string[], keep: boolean) {
  * are reviewed before the website goes out, but never stop it: an author may mean to publish one. Each detail can be
  * opened where it is, replaced everywhere at once, or kept, which this project remembers.
  */
-function SampleContactReview({ groups, kept, disabled, onSettle }: { groups: SampleContactGroup[]; kept: SampleContactGroup[]; disabled: boolean; onSettle: () => void }) {
+function SampleContactReview({ groups, kept, disabled, readOnly, onSettle }: { groups: SampleContactGroup[]; kept: SampleContactGroup[]; disabled: boolean; readOnly: boolean; onSettle: () => void }) {
   const baseId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState<string | null>(null);
   if (!groups.length && !kept.length) return null;
-  const settle = () => requestAnimationFrame(() => document.activeElement === document.body && onSettle());
-  if (!groups.length)
-    return (
-      <p className="export-samples-kept faint" data-testid="export-samples-kept">
-        {kept.length === 1 ? `${kept[0].value} is kept as you chose.` : `${kept.length} sample contact details are kept as you chose.`}{' '}
-        <button className="link-btn" disabled={disabled} onClick={() => (keepSamples(kept.map((g) => g.value), false), settle())}>
-          Review {kept.length === 1 ? 'it' : 'them'} again
-        </button>
-      </p>
-    );
+  // The control pressed goes away with its group: focus moves to what took its place, here or in the dialog.
+  const settle = (next: string) =>
+    requestAnimationFrame(() => {
+      if (document.activeElement && document.activeElement !== document.body) return;
+      const el = rootRef.current?.querySelector<HTMLElement>(next);
+      if (el) el.focus();
+      else onSettle();
+    });
+  const keptLine = kept.length > 0 && (
+    <p className="export-samples-kept faint" data-testid="export-samples-kept">
+      {kept.length === 1 ? `${kept[0].value} is kept as you chose.` : `${kept.length} sample contact details are kept as you chose.`}{' '}
+      <button className="link-btn" disabled={disabled} onClick={() => (keepSamples(kept.map((g) => g.value), false), settle('.export-samples-head .btn'))}>
+        Review {kept.length === 1 ? 'it' : 'them'} again
+      </button>
+    </p>
+  );
   return (
-    <div className="scope-note site export-samples" data-testid="export-sample-contacts">
-      <TriangleAlert />
-      <div className="export-note-body">
-        <strong>The website still shows sample contact details from the starter.</strong>
-        <span>Visitors who use them won’t reach you. Replace them with your own, or keep any you mean to publish.</span>
-        <ul className="export-samples-list">
-          {groups.map((g) => {
-            const listId = `${baseId}-${g.kind}`;
-            const shown = open === g.kind;
-            return (
-              <li key={g.kind} data-testid={`export-sample-${g.kind}`}>
-                <div className="export-samples-head">
-                  <span className="grow" id={`${listId}-name`}>
-                    <strong>{g.value}</strong>{' '}
-                    <span className="faint">
-                      · {g.matches.length === 1 ? '1 place' : `${g.matches.length} places`} on {placesOf(g.matches.map((m) => m.field))}
-                    </span>
-                  </span>
-                  <button className="btn btn-sm" disabled={disabled} aria-describedby={`${listId}-name`} onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
-                    Replace everywhere…
-                  </button>
-                  <button className="btn btn-sm btn-ghost" disabled={disabled} aria-describedby={`${listId}-name`} onClick={() => (keepSamples([g.value], true), settle())}>
-                    Keep it
-                  </button>
-                </div>
-                <button type="button" className="btn btn-sm btn-ghost export-note-toggle" aria-expanded={shown} aria-controls={listId} onClick={() => setOpen(shown ? null : g.kind)}>
-                  <ChevronRight size={14} style={{ transform: shown ? 'rotate(90deg)' : undefined }} /> Show where
-                </button>
-                <ul className="export-samples-places" id={listId} hidden={!shown}>
-                  {g.matches.map((m) => {
-                    const f = m.field;
-                    const path = f.section === f.where || f.label === f.section || f.label.startsWith(`${f.section} › `) ? f.label : `${f.section} › ${f.label}`;
-                    const name = `${f.owner.kind === 'shell' ? `Shared ${f.owner.id}` : f.where} › ${path}`;
-                    return (
-                      <li key={m.id}>
-                        <span className="grow">{name}</span>
-                        <button className="btn btn-sm btn-ghost" disabled={disabled} aria-label={`Open ${name} in the inspector`} onClick={() => openContentMatch(f)}>
-                          Open
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
+    <div ref={rootRef} className="export-samples-review">
+      {groups.length > 0 && (
+        <div className="scope-note site export-samples" data-testid="export-sample-contacts">
+          <TriangleAlert />
+          <div className="export-note-body">
+            <strong>The website still shows sample contact details from the starter.</strong>
+            <span>Visitors who use them won’t reach you. Replace them with your own, or keep any you mean to publish.</span>
+            <ul className="export-samples-list">
+              {groups.map((g) => {
+                const listId = `${baseId}-${g.kind}`;
+                const nameId = `${listId}-name`;
+                const shown = open === g.kind;
+                return (
+                  <li key={g.kind} data-testid={`export-sample-${g.kind}`}>
+                    <div className="export-samples-head">
+                      <span className="grow" id={nameId}>
+                        <strong>{g.value}</strong>{' '}
+                        <span className="faint">
+                          · {g.matches.length === 1 ? '1 place' : `${g.matches.length} places`} on {placesOf(g.matches.map((m) => m.field))}
+                        </span>
+                      </span>
+                      <button className="btn btn-sm" disabled={disabled} aria-describedby={nameId} onClick={() => setState({ modal: { kind: 'find', query: g.value, sample: g.kind } })}>
+                        Replace everywhere…
+                      </button>
+                      {/* A read-only project keeps nothing, and exports nothing either. */}
+                      <button className="btn btn-sm btn-ghost" disabled={disabled || readOnly} aria-describedby={nameId} onClick={() => (keepSamples([g.value], true), settle('.export-samples-head .btn, .export-samples-kept button'))}>
+                        Keep it
+                      </button>
+                    </div>
+                    <button type="button" className="btn btn-sm btn-ghost export-note-toggle" aria-expanded={shown} aria-controls={listId} aria-describedby={nameId} onClick={() => setOpen(shown ? null : g.kind)}>
+                      <ChevronRight size={14} style={{ transform: shown ? 'rotate(90deg)' : undefined }} /> Show where
+                    </button>
+                    <ul className="export-samples-places" id={listId} hidden={!shown}>
+                      {g.matches.map((m) => {
+                        const f = m.field;
+                        const path = f.section === f.where || f.label === f.section || f.label.startsWith(`${f.section} › `) ? f.label : `${f.section} › ${f.label}`;
+                        const name = `${f.owner.kind === 'shell' ? `Shared ${f.owner.id}` : f.where} › ${path}`;
+                        return (
+                          <li key={m.id}>
+                            <span className="grow">{name}</span>
+                            <button className="btn btn-sm btn-ghost" disabled={disabled} aria-label={`Open ${name} in the inspector`} onClick={() => openContentMatch(f)}>
+                              Open
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </div>
+      )}
+      {keptLine}
     </div>
   );
 }
@@ -241,6 +255,7 @@ export function ExportModal() {
   const draftTargets = new Set(draftLinks.map((l) => l.pageId)).size;
   // The starter's sample contact details the website would publish: reviewed, apart from those kept on purpose.
   const keptValues = useStore((s) => s.keptSamples);
+  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   const samples = useMemo(() => (state ? sampleContactMatches(state) : []), [state]);
   const samplesToReview = samples.filter((g) => !keptValues.includes(g.value));
   const samplesKept = samples.filter((g) => keptValues.includes(g.value));
@@ -474,7 +489,7 @@ export function ExportModal() {
                 </div>
               </div>
             )}
-            {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} onSettle={() => firstControl()?.focus()} />}
+            {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} readOnly={readOnly} onSettle={() => firstControl()?.focus()} />}
             {plan && <PagesSummary published={plan.published} drafts={plan.drafts} />}
             <div className="export-format">
               <span className="muted">Save as</span>

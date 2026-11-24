@@ -836,6 +836,9 @@ describe('definition editing operations (§2.5)', () => {
     const section = home(s).rootIds[0];
     s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'heading' }]).state;
     expect(() => applyOperations(s, [{ type: 'component.removeSlot', definitionId: f.id, slot: 'content' }])).toThrow(/has content/);
+    // However much it holds.
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'paragraph', text: 'More' }]).state;
+    expect(() => applyOperations(s, [{ type: 'component.removeSlot', definitionId: f.id, slot: 'content' }])).toThrow(/has content/);
   });
 
   it('binds and unbinds node fields with type checks', () => {

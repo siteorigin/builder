@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext } from '@shared/api';
-import type { ElementRef, InstanceNode, LinkValue, ListItem, ProjectState, PropSchema, TableValue } from '@shared/types';
+import type { ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, ProjectState, PropSchema, TableValue } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent, listThemes } from '@catalogue/index';
 import { Orchestrator } from '@agent/orchestrator';
@@ -50,6 +50,16 @@ const lastResult = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) 
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+/** Place an element on Home inside a layout section, as the page's content is placed. */
+function inSection(s: ProjectState, node: GraphNode) {
+  const home = s.pages[s.site.homePageId];
+  const section = makeInstance(s.components[installComponent(s, 'layout.section')], {});
+  section.slots = { content: [node.id] };
+  home.nodes[section.id] = section;
+  home.nodes[node.id] = node;
+  home.rootIds.push(section.id);
+}
 
 async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, starter: 'business' | 'blank' = 'business', prepare?: (s: ProjectState) => void) {
   const dir = mkdtempSync(join(tmpdir(), 'so-tools-'));
@@ -933,11 +943,7 @@ describe('selection tools', () => {
   });
 
   it('edits a plain text element through the same tool', async () => {
-    const { session, run } = await setup([() => [call('t1', 'update_selected_props', { props: { text: 'Hello there' } })], () => finish()], focused, 'blank', (s) => {
-      const home = s.pages[s.site.homePageId];
-      home.nodes.n_text = { id: 'n_text', kind: 'text', tag: 'p', text: 'Opening soon' };
-      home.rootIds.push('n_text');
-    });
+    const { session, run } = await setup([() => [call('t1', 'update_selected_props', { props: { text: 'Hello there' } })], () => finish()], focused, 'blank', (s) => inSection(s, { id: 'n_text', kind: 'text', tag: 'p', text: 'Opening soon' }));
     const home = pageAt(session.state, '/')!;
     const textId = 'n_text';
     await run('Change this', { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: textId });
@@ -964,10 +970,10 @@ describe('selection tools', () => {
       focused,
       'blank',
       (s) => {
+        inSection(s, { id: 'n_title', kind: 'text', tag: 'h1', text: 'Welcome' });
         const home = s.pages[s.site.homePageId];
-        home.nodes.n_title = { id: 'n_title', kind: 'text', tag: 'h1', text: 'Welcome' };
         home.nodes.n_btn = { id: 'n_btn', kind: 'link', link: { type: 'none', target: '' }, label: 'Button', appearance: 'primary' };
-        home.rootIds.push('n_title', 'n_btn');
+        home.rootIds.push('n_btn');
       }
     );
     const home = pageAt(session.state, '/')!;

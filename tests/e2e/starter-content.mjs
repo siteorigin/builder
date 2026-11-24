@@ -58,6 +58,7 @@ try {
   assert.match(await address.innerText(), /12 Harbour Lane, Millbrook · 1 place on Contact/);
   assert.equal(await review.evaluate((el) => !!el.closest('[role="alert"]')), false, 'a review, not an error');
   assert.equal(await websiteButton.getAttribute('aria-disabled'), null, 'the review never stops the website export');
+  assert.equal(await websiteButton.isDisabled(), false, 'the website export can be started while details are under review');
 
   step('Show where lists each place, and Open goes to that field in the inspector');
   await email.getByRole('button', { name: 'Show where' }).click();
@@ -94,6 +95,7 @@ try {
   await address.getByRole('button', { name: 'Keep it' }).click();
   await review.waitFor({ state: 'detached' });
   const kept = exportDialog.getByTestId('export-samples-kept');
+  await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.textContent?.trim()), 'Review it again', 'focus moves to what took the kept detail’s place'));
   assert.match(await kept.innerText(), /12 Harbour Lane, Millbrook is kept as you chose\./);
   await kept.getByRole('button', { name: 'Review it again' }).click();
   await address.waitFor();
@@ -103,6 +105,16 @@ try {
   await openExport();
   await kept.waitFor();
   assert.equal(await review.count(), 0, 'a kept detail stays kept when the dialog opens again');
+  await closeDialog(exportDialog);
+  // The project remembers it: closed and opened again, the detail is still kept.
+  await win.evaluate(() => window.builder.projects.close());
+  await win.waitForSelector('.welcome');
+  const reopened = await win.evaluate((d) => window.builder.projects.open(d), join(WORK, 'sites', 'kloof-interiors'));
+  assert.ok(reopened.ok, `the project reopens: ${JSON.stringify(reopened)}`);
+  await win.waitForSelector('.editor');
+  await openExport();
+  await kept.waitFor();
+  assert.equal(await review.count(), 0, 'a kept detail stays kept when the project opens again');
 
   step('the exported Contact page sends enquiries to the new details');
   const business = await exportWebsite('business');
