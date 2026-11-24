@@ -118,6 +118,32 @@ describe('redaction', () => {
     ]);
   });
 
+  it('scrubs each piece a field held, longest secret first, and counts every echo', () => {
+    const out = redact(
+      [
+        { role: 'textbox', name: 'Key', ref: 'k', text: 'piece-one', children: ['piece-two', { role: 'text', text: 'piece-three' }] },
+        { role: 'paragraph', ref: 'a', text: 'saw piece-two' },
+        { role: 'paragraph', ref: 'b', text: 'saw piece-three' },
+        { role: 'paragraph', ref: 'c', text: 'prefix abc' }
+      ],
+      { ...none, secretRefs: new Set(['k']), secrets: ['ab', 'abc'] }
+    );
+    expect(out.nodes.slice(1).map((n) => (n as RawNode).text)).toEqual([`saw ${REDACTED}`, `saw ${REDACTED}`, `prefix ${REDACTED}`]);
+    expect(out.echoes).toBe(3);
+  });
+
+  it('scrubs a whole reply, error details included, but never the driver’s own refs or the protocol’s fixed words', () => {
+    const error = { message: 'Nothing is button "edit me"', details: { candidates: [{ ref: 'abcdef:4', role: 'button', name: 'edit me', region: ['toolbar "edit"'] }], reason: 'gone', query: { scope: 'editor' } } };
+    expect(scrubDeep(error, ['ed'])).toEqual({
+      message: `Nothing is button "${REDACTED}it me"`,
+      details: { candidates: [{ ref: 'abcdef:4', role: 'button', name: `${REDACTED}it me`, region: [`toolbar "${REDACTED}it"`] }], reason: 'gone', query: { scope: 'editor' } }
+    });
+    expect(scrubDeep({ context: { mode: 'edit', screen: 'editor', preview: { state: 'ready' } }, more: { continue: { scope: 'editor', offset: 2 } } }, ['ed'])).toEqual({
+      context: { mode: 'edit', screen: 'editor', preview: { state: 'ready' } },
+      more: { continue: { scope: 'editor', offset: 2 } }
+    });
+  });
+
   it('scrubs a whole reply, but never the driver’s own refs and paths', () => {
     const reply = { context: { preview: { path: '/s3cret-page' } }, node: { ref: 'abcdef:1', name: 'Hi s3cret', semantic: { node: 's3cret' } }, refs: ['abcdef:2'], after: 'abcdef:3', screenshots: { editor: { path: '/tmp/s3cret/1.png' } }, query: { name: 's3cret' } };
     const out = scrubDeep(reply, ['s3cret']);
@@ -153,13 +179,19 @@ describe('shaping', () => {
 
   it('folds the editor’s unnamed wrappers and drops what assistive technology does not see', () => {
     const roots = shape(raw, 'editor');
-    expect(roots.map((n) => n.role)).toEqual(['toolbar', 'button', 'text', 'combobox', 'spinbutton', 'main', 'generic']);
+    expect(roots.map((n) => n.role)).toEqual(['toolbar', 'button', 'text', 'combobox', 'spinbutton', 'main', 'generic', 'generic']);
     expect(roots[0].children[0]).toMatchObject({ role: 'button', name: 'Pages', pressed: true, regions: ['toolbar "Panels"'], pwRef: 'b1' });
     expect(roots[1]).toMatchObject({ name: 'Undo', disabled: true });
     expect(roots[2]).toMatchObject({ role: 'text', text: 'px' });
-    // A named wrapper stays; a focused unnamed one (the body, with nothing else focused) is folded too.
-    expect(roots.slice(6).map((n) => [n.pwRef, n.name])).toEqual([['g2', 'Saved']]);
-    expect(focusFrom(roots)).toBeNull();
+    // A named wrapper stays, and so does one focused on purpose; the page's own body, focused when nothing else is,
+    // is folded.
+    expect(roots.slice(6).map((n) => [n.pwRef, n.name, n.focused])).toEqual([
+      ['g2', 'Saved', undefined],
+      ['g3', undefined, true]
+    ]);
+    expect(focusFrom(shape([{ role: 'generic', ref: 'body', active: true, children: [{ role: 'button', name: 'B', ref: 'b' }] }], 'editor'))).toBeNull();
+    // A wrapper with text of its own stays, with its ref.
+    expect(shape([{ role: 'generic', ref: 't', text: 'Saved' }], 'editor')).toEqual([expect.objectContaining({ pwRef: 't', text: 'Saved' })]);
     expect(json(roots)).not.toContain('"h1"');
   });
 
@@ -177,6 +209,9 @@ describe('shaping', () => {
     expect(roots[4]).toMatchObject({ role: 'spinbutton', value: '1280' });
     const [field] = shape([{ role: 'textbox', ref: 't', children: ['ab', { role: 'text', text: 'cd' }] }], 'preview');
     expect(field).toMatchObject({ value: 'abcd', children: [] });
+    // An option alone is not the combobox's value.
+    const [choice] = shape([{ role: 'combobox', ref: 'c', children: [{ role: 'option', name: 'One', ref: 'o', selected: true }] }], 'preview');
+    expect(choice.value).toBeUndefined();
   });
 
   it('stops at an iframe in either scope: its document is a scope of its own', () => {
@@ -280,11 +315,19 @@ describe('finding and context', () => {
     expect(find(page, { role: 'link', name: 'About', region: 'main' }).map((n) => n.pwRef)).toEqual(['a1']);
     expect(find(page, { role: 'link', name: 'about', exact: false }).map((n) => n.pwRef)).toEqual(['a1', 'a2', 'a3']);
     expect(find(page, { name: 'About' }).map((n) => n.pwRef)).toEqual(['a1', 'a2', 'a4']);
+    expect(find(shape([{ role: 'link', name: 'About' }], 'preview'), { role: 'link', name: 'About' })).toEqual([]);
     expect(find(page, { role: 'link', name: 'About', region: 'navigation "Explore"' }).map((n) => n.regions)).toEqual([['contentinfo', 'navigation "Explore"']]);
   });
 
-  it('finds regions to search in, outermost only', () => {
+  it('finds regions to search in, outermost only, by the label their contents carry however long', () => {
     expect(regionNodes(page, 'navigation').map((n) => n.pwRef)).toEqual(['n1', 'n2']);
+    const long = 'N'.repeat(250);
+    const tree = shape([{ role: 'navigation', name: long, ref: 'L', children: [{ role: 'link', name: 'x', ref: 'x' }] }, { role: 'navigation', name: 'Refless' }], 'preview');
+    const [link] = find(tree, { role: 'link' });
+    expect(link.regions).toEqual([`navigation "${long}"`]);
+    expect(regionNodes(tree, link.regions[0]).map((n) => n.pwRef)).toEqual(['L']);
+    expect(regionNodes(tree, long).map((n) => n.pwRef)).toEqual(['L']);
+    expect(regionNodes(tree, 'Refless')).toEqual([]);
     expect(regionNodes(page, 'contentinfo').map((n) => n.pwRef)).toEqual(['c']);
     expect(regionNodes(page, 'Sub').map((n) => n.pwRef)).toEqual(['n3']);
     expect(regionNodes(page, 'nothing')).toEqual([]);
@@ -295,7 +338,7 @@ describe('finding and context', () => {
       [
         { role: 'toolbar', name: 'Row actions', ref: 'x' },
         { role: 'group', name: 'Mode', ref: 'm', children: [{ role: 'button', name: 'Edit', ref: 'e' }, { role: 'button', name: 'Preview', ref: 'p', pressed: true }] },
-        { role: 'main', name: 'Website preview', ref: 'w', active: true, children: [{ role: 'toolbar', name: 'Split hero actions', ref: 't', children: [{ role: 'button', name: 'Move up', ref: 'u', active: true }] }] },
+        { role: 'main', name: 'Website preview', ref: 'w', active: true, children: [{ role: 'toolbar', name: 'Zoom', ref: 'z' }, { role: 'toolbar', name: 'Split hero actions', ref: 't', children: [{ role: 'button', name: 'Move up', ref: 'u', active: true }] }] },
         { role: 'dialog', name: 'Settings', ref: 'd1' },
         { role: 'alertdialog', name: 'Discard?', ref: 'd2' }
       ],
@@ -309,7 +352,7 @@ describe('finding and context', () => {
     expect(modeFrom(shape([{ role: 'button', name: 'Edit', ref: 'x', pressed: true }], 'editor'))).toBeNull();
     expect(selectionToolbar(shape([{ role: 'toolbar', name: 'Row actions', ref: 'x' }], 'editor'))).toBeNull();
     expect(findByPwRef(editor, 'u')?.name).toBe('Move up');
-    expect([...walk(editor)].length).toBe(9);
+    expect([...walk(editor)].length).toBe(10);
   });
 });
 
@@ -319,6 +362,7 @@ describe('refs', () => {
   it('gives the same element in the same document the same ref, and anything else another', () => {
     const r = new RefRegistry();
     const a = r.mint(base);
+    expect(a).toMatch(/^[0-9a-f]{6}:\d+$/);
     expect(looksLikeRef(a)).toBe(true);
     expect(r.mint({ ...base })).toBe(a);
     for (const change of [{ doc: '200.1|/' }, { generation: 2 }, { opening: '/p#2' }, { scope: 'editor' as const }, { pwRef: 'f3e25' }, { role: 'link' }, { name: 'Calmer' }, { semantic: '{"ctx":"a","node":"b"}' }])
@@ -380,7 +424,8 @@ describe('arguments', () => {
       { maxNodes: 1001 },
       { maxNodes: 0 },
       { screenshot: 'yes' },
-      { selector: 'h1' }
+      { selector: 'h1' },
+      { scope: 'preview', after: 'nope' }
     ])
       expect(refused(() => parseSnapshotArgs(bad)), JSON.stringify(bad)).toBe('BAD_REQUEST');
   });
@@ -388,7 +433,7 @@ describe('arguments', () => {
   it('ui.locate takes a ref alone, or a role with a name, region or ref to search in', () => {
     expect(parseLocateArgs({ ref: 'ab12cd:3' })).toEqual({ ref: 'ab12cd:3' });
     expect(parseLocateArgs({ role: 'link', name: 'About', region: 'contentinfo' })).toEqual({ role: 'link', name: 'About', region: 'contentinfo', scope: 'all' });
-    expect(parseLocateArgs({ role: 'button', within: 'ab12cd:9', exact: false, name: 'edit' })).toMatchObject({ within: 'ab12cd:9', exact: false });
+    expect(parseLocateArgs({ role: 'button', within: 'ab12cd:9', exact: false, name: 'edit' })).toEqual({ role: 'button', within: 'ab12cd:9', exact: false, name: 'edit', scope: 'all' });
     for (const bad of [
       {},
       { ref: 'ab12cd:3', role: 'button' },
@@ -406,6 +451,7 @@ describe('arguments', () => {
 
   it('finds the page’s elements by their ids as the bridge does, quoting what needs it', () => {
     expect(semanticSelector({ ctx: 'page:p1|n_2', node: 'heading' })).toBe('[data-so-ctx="page:p1|n_2"][data-so-node="heading"]');
+    expect(semanticSelector({ ctx: 'c', node: 'n', items: 'i1' })).toBe('[data-so-ctx="c"][data-so-node="n"][data-so-items="i1"]');
     expect(semanticSelector({ ctx: 'a"b\\c', node: 'n\nx', items: 'i1,"i2"' })).toBe('[data-so-ctx="a\\"b\\\\c"][data-so-node="n\\a x"][data-so-items="i1,\\"i2\\""]');
   });
 });

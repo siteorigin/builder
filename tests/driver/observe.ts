@@ -58,6 +58,10 @@ export interface ObserveEnv {
   /** Where screenshots are saved, or null when the session has no artifacts folder. */
   artifacts: string | null;
   signal: AbortSignal;
+  /** The provider keys the app has saved in this session's own profile: never returned either. */
+  storedSecrets?: () => Promise<string[]>;
+  /** Told every credential an observation learns, so the session can keep them out of what else it reports. */
+  remember?: (secrets: string[]) => void;
 }
 
 /** The canvas's iframe: the live preview. */
@@ -182,6 +186,29 @@ async function readPreview(page: Page): Promise<{ iframe: boolean; doc: PreviewD
   }
 }
 
+/** The credential values in every frame of the window: the editor's, the preview's and any other (failures skipped). */
+export async function frameSecrets(page: Page): Promise<string[]> {
+  const read = await Promise.all(page.frames().map((f) => f.evaluate(secretsIn, SECRET_INPUTS).catch((): string[] => [])));
+  return read.flat();
+}
+
+/** Whether any known credential (two characters or more) shows in the visible text of any frame. */
+export async function painted(page: Page, secrets: string[]): Promise<boolean> {
+  const list = [...new Set(secrets)].filter((x) => x.length >= 2);
+  if (!list.length) return false;
+  const shown = await Promise.all(
+    page.frames().map((f) =>
+      f
+        .evaluate((all: string[]) => {
+          const text = String((globalThis as Dom).document.body?.innerText ?? '');
+          return all.some((x) => text.includes(x));
+        }, list)
+        .catch(() => false)
+    )
+  );
+  return shown.some(Boolean);
+}
+
 async function readDocs(page: Page): Promise<Docs> {
   const [editor, preview] = await Promise.all([readEditor(page), readPreview(page)]);
   return { editor, preview: preview.doc, iframe: preview.iframe };
@@ -200,9 +227,11 @@ function factOf(el: Dom): ElementFacts {
   if (r.width || r.height) {
     for (let p = el.parentElement; p && p !== w.document.documentElement && !clipped; p = p.parentElement) {
       const o = w.getComputedStyle(p);
-      if (o.overflowX === 'visible' && o.overflowY === 'visible') continue;
       const c = p.getBoundingClientRect();
-      clipped = r.right <= c.left || r.bottom <= c.top || r.left >= c.right || r.top >= c.bottom;
+      // Each axis clips only if its overflow does.
+      const clipsX = o.overflowX !== 'visible';
+      const clipsY = o.overflowY !== 'visible';
+      clipped = (clipsX && (r.right <= c.left || r.left >= c.right)) || (clipsY && (r.bottom <= c.top || r.top >= c.bottom));
     }
   }
   const num = (a: string) => {
@@ -262,7 +291,7 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   aborted(signal);
   const raw = (await page.locator('body').ariaSnapshotJSON({ mode: 'ai', boxes: true, signal })) as unknown as (RawNode | string)[];
   aborted(signal);
-  const docs = await readDocs(page);
+  const [docs, others, stored] = await Promise.all([readDocs(page), frameSecrets(page), env.storedSecrets?.().catch((): string[] => []) ?? Promise.resolve([])]);
   if (docs.editor.token !== first.editor.token) throw changing('The editor reloaded');
   // The editor's document stays the same when another project opens in it: refs would be bound to the wrong one.
   if (docs.editor.opening !== first.editor.opening) throw changing('Another project opened');
@@ -276,7 +305,8 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   const classified = await factsByRef(page, valued);
   const secretRefs = new Set(valued.filter((r) => classified.get(r)?.secret));
   const unknownRefs = new Set(valued.filter((r) => !classified.get(r)));
-  const redacted = redact(raw, { secretRefs, unknownRefs, secrets: [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? [])] });
+  const redacted = redact(raw, { secretRefs, unknownRefs, secrets: [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? []), ...others, ...stored] });
+  env.remember?.(redacted.secrets);
   const editor = shape(raw, 'editor');
   // An iframe Playwright could not enter has no children: its page is not there to observe yet.
   const preview = previewRaw?.children?.length ? shape(previewRaw.children, 'preview') : null;
@@ -286,7 +316,17 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   const mode = modeFrom(editor);
   let previewState: PreviewState = 'ready';
   if (!docs.iframe) previewState = 'absent';
-  else if (!docs.preview || !first.preview || !docs.preview.bridge || (mode && docs.preview.bridge !== mode) || docs.editor.frame !== 'ready' || first.preview.token !== docs.preview.token || !preview)
+  else if (
+    !docs.preview ||
+    !first.preview ||
+    !docs.preview.bridge ||
+    // The page took the editor's mode before the snapshot, and still had it after.
+    first.preview.bridge !== docs.preview.bridge ||
+    (mode && docs.preview.bridge !== mode) ||
+    docs.editor.frame !== 'ready' ||
+    first.preview.token !== docs.preview.token ||
+    !preview
+  )
     previewState = 'loading';
   return { docs, first, editor, preview, previewState, previewIframe, secrets: redacted.secrets, echoes: redacted.echoes };
 }
@@ -525,6 +565,8 @@ function parseSelection(attr: string | null): Semantic | null | undefined {
   }
 }
 
+const json = (v: unknown) => JSON.stringify(v ?? null);
+
 function parseJson(attr: string | null): unknown {
   if (!attr) return undefined;
   try {
@@ -624,9 +666,11 @@ async function snapshotOf(env: ObserveEnv, args: SnapshotArgs, id: number, seen:
   let focus = focusFrom(obs.editor);
   if (focus && focus === obs.previewIframe) focus = obs.preview ? focusFrom(obs.preview) : null;
   const toolbar = selectionToolbar(obs.editor);
-  const selectedNodes = obs.preview ? selectionRefs.map((r) => findByPwRef(obs.preview!, r)).filter((n): n is Shaped => !!n) : [];
-  const extra = [dialog, focus, ...selectedNodes].filter((n): n is Shaped => !!n);
+  const showing = obs.preview ? selectionRefs.map((r) => findByPwRef(obs.preview!, r)).filter((n): n is Shaped => !!n) : [];
+  const extra = [dialog, focus, ...showing].filter((n): n is Shaped => !!n);
   await minter.read([...[...chosen.values()].flatMap((s) => [...s]), ...extra]);
+  // Only elements that still show the selection stand for it.
+  const selectedNodes = showing.filter((n) => selected && json(minter.facts.get(n)?.semantic) === json(selected));
 
   const brief = (n: Shaped | null) => {
     if (!n) return null;
@@ -677,8 +721,11 @@ async function snapshotOf(env: ObserveEnv, args: SnapshotArgs, id: number, seen:
 async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promise<{ editor: Shot | null; preview: Shot | null; withheld?: string }> {
   const { page, signal } = env;
   if (!env.artifacts) throw new DriverError('OP_FAILED', 'This session has no artifacts folder to save screenshots in.');
-  // Masks cover credential fields; a credential showing anywhere else cannot be masked, so nothing is captured.
-  if (obs.echoes) return { editor: null, preview: null, withheld: 'A credential shows on screen outside its own field.' };
+  // Masks cover credential fields; a credential showing anywhere else cannot be masked, so nothing is captured. It
+  // is checked in the observation, and in the visible text of every frame either side of the capture.
+  const withheld = { editor: null, preview: null, withheld: 'A credential shows on screen outside its own field.' };
+  const known = [...obs.secrets, ...(await frameSecrets(page))];
+  if (obs.echoes || (await painted(page, known))) return withheld;
   const dir = join(env.artifacts, 'snapshots');
   const mask = page.frames().map((f) => f.locator(SECRET_INPUTS));
   const vp = await page.evaluate(() => ({ width: (globalThis as Dom).innerWidth as number, height: (globalThis as Dom).innerHeight as number }));
@@ -698,6 +745,7 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
     if (width >= 1 && height >= 1) clip = { x: Math.floor(x), y: Math.floor(y), width: Math.floor(width), height: Math.floor(height) };
   }
   const previewPng = clip ? await page.screenshot({ mask, clip, timeout: 10_000 }) : null;
+  if (await painted(page, [...known, ...(await frameSecrets(page))])) return withheld;
   // A capture that outlived its request leaves nothing behind.
   aborted(signal);
   await mkdir(dir, { recursive: true });
@@ -705,12 +753,12 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   const written: string[] = [];
   try {
     aborted(signal);
-    await writeFile(`${stem}-editor.png`, editorPng);
     written.push(`${stem}-editor.png`);
+    await writeFile(`${stem}-editor.png`, editorPng);
     if (previewPng) {
       aborted(signal);
-      await writeFile(`${stem}-preview.png`, previewPng);
       written.push(`${stem}-preview.png`);
+      await writeFile(`${stem}-preview.png`, previewPng);
     }
     aborted(signal);
   } catch (e) {
@@ -757,8 +805,8 @@ export interface Located {
   node: UiNode;
 }
 
-/** The most elements one search follows up in a scope; past this it answers AMBIGUOUS_TARGET. */
-const MATCH_LIMIT = 300;
+/** The most elements one search follows up in a scope; past this it cannot tell, and says so. */
+const MATCH_LIMIT = 2000;
 /** The most observed nodes of one role a search pairs its matches with; past this the search is incomplete. */
 const CANDIDATE_LIMIT = 3000;
 
@@ -798,7 +846,7 @@ async function locateIn(env: ObserveEnv, args: LocateArgs, seen: string[]): Prom
     throw new DriverError('TARGET_NOT_FOUND', `There is no region "${args.region}" to search.`, { details: { query, hint: 'Take a ui.snapshot to see the regions there are.' } });
   const all = await matchesIn(env, obs, searchable, args);
   aborted(env.signal);
-  if (all === 'too-many') throw new DriverError('AMBIGUOUS_TARGET', `More than ${MATCH_LIMIT} elements are ${args.role}${args.name ? ` "${args.name}"` : ''}: name it, or a region or ref to search within.`, { details: { count: `>${MATCH_LIMIT}`, candidates: [], query, hint: 'Narrow it with "name", "region" or "within" (a ref from ui.snapshot).' } });
+  if (all === 'too-many') throw new DriverError('OP_FAILED', `More than ${MATCH_LIMIT} elements in one scope are ${args.role}${args.name ? ` "${args.name}"` : ''}: too many to place.`, { details: { query, hint: 'Give a name, or search one scope.' } });
   if (all === 'incomplete') throw new DriverError('OP_FAILED', 'Not every match could be placed in the observation (the page changed, or a match is outside the accessibility tree); locate again.', { retryable: true, details: { query, hint: REFRESH_HINT } });
   const found = all.filter((n) => (!args.region || regionMatches(n.regions, args.region)) && (!inside || inside.has(n)));
   if (!found.length) throw new DriverError('TARGET_NOT_FOUND', `Nothing is ${args.role}${args.name ? ` "${args.name}"` : ''}${args.region ? ` in "${args.region}"` : ''}${args.within ? ' within that ref' : ''}.`, { details: { query, preview: obs.previewState, hint: 'Take a ui.snapshot to see what there is.' } });
@@ -860,7 +908,9 @@ async function matchesIn(env: ObserveEnv, obs: Observation, scopes: Scope[], arg
         const at = await m.evaluate((x: Dom, everyone: Dom[]) => everyone.indexOf(x), list).catch(() => -1);
         if (at < 0) return 'incomplete';
         const node = nodes[present[at]];
-        if (!out.includes(node)) out.push(node);
+        // Two matches on one element: the page moved them while they were read, so the count cannot be trusted.
+        if (out.includes(node)) return 'incomplete';
+        out.push(node);
       }
     }
     return out;
@@ -872,6 +922,7 @@ async function matchesIn(env: ObserveEnv, obs: Observation, scopes: Scope[], arg
 async function located(node: Shaped, minter: Minter, args: LocateArgs): Promise<Located> {
   await minter.read([node]);
   const out = minter.describe(node);
+  if (!out.ref) throw new DriverError('OP_FAILED', 'The element was found but could not be read on the page; locate again.', { retryable: true, details: { hint: REFRESH_HINT } });
   // An accessibility snapshot leaves out a name a child repeats; the match itself had it.
   if (!out.name && args.name !== undefined && args.exact !== false) out.name = args.name;
   if (node.children.length && out.ref) out.more = { children: node.children.length, nodes: node.size, continue: { within: out.ref, offset: 0 } };

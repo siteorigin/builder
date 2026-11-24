@@ -54,8 +54,7 @@ try {
   await session.start({ fixture: 'business-v1' });
 
   step('one bounded observation covers the editor and the site in its preview, with context and screenshots');
-  // The fixture is ready once its page is hydrated; the editor's mode reaches the page a moment later.
-  await eventually(async () => assert.equal((await snapshot({ maxNodes: 1 })).context.preview.state, 'ready'), 30000);
+  // The first observation after starting: the fixture waits for the page to take the editor's mode.
   const first = await snapshot({ screenshot: true });
   assert.equal(first.context.screen, 'editor');
   assert.equal(first.context.mode, 'edit');
@@ -108,6 +107,7 @@ try {
   assert.match(both.details.hint, /region/);
   const header = await locate({ role: 'link', name: 'About', region: 'banner' });
   const footer = await locate({ role: 'link', name: 'About', region: 'contentinfo' });
+  assert.notEqual(header.node.ref, footer.node.ref);
   assert.equal(header.node.ref, both.details.candidates[0].ref, 'the header’s candidate is the header’s link');
   assert.equal(footer.node.ref, both.details.candidates[1].ref, 'the footer’s candidate is the footer’s link');
   assert.deepEqual(header.region, both.details.candidates[0].region);
@@ -149,7 +149,16 @@ try {
     return s;
   });
   assert.equal(selected.outlined, true);
-  assert.equal(typeof selected.element?.nodeId, 'string', 'the selection as the editor holds it');
+  assert.equal(selected.element?.owner?.kind, 'page', 'the selection as the editor holds it');
+  assert.equal(typeof selected.element.nodeId, 'string');
+  // With Site styles open the canvas draws no outline, though the selection stays and still has its place.
+  await press((await locate({ role: 'button', name: 'Site styles', region: 'Panels' })).node.ref);
+  await eventually(async () => {
+    const s = (await snapshot({ maxNodes: 20 })).context.selection;
+    assert.equal(s.shown, true);
+    assert.equal(s.outlined, false);
+    assert.deepEqual(s.semantic, heading.node.semantic);
+  });
 
   step('a dialog over the editor, focus in it, and a credential that never comes back');
   const settings = await locate({ role: 'button', name: 'Settings', scope: 'editor' });
@@ -195,7 +204,9 @@ try {
     assert.equal(d?.name, 'Save the API key you entered?');
     return d;
   });
-  assert.deepEqual(leaks(ok(await call('ui.snapshot', { within: asked.ref }), 'the question')), [], 'nor in the question about it');
+  const question = await call('ui.snapshot', { within: asked.ref });
+  ok(question, 'the question');
+  assert.deepEqual(leaks(question), [], 'nor in the question about it');
   await press((await locate({ role: 'button', name: 'Discard', within: asked.ref })).node.ref);
   await eventually(async () => assert.equal((await snapshot()).context.dialog, null, 'the dialogs closed'));
 

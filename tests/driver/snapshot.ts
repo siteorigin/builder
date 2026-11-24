@@ -91,6 +91,8 @@ export interface Shaped {
   placeholder?: string;
   /** The named regions it sits in, outermost first: `toolbar "Panels"`, `navigation "Main"`, `contentinfo`. */
   regions: string[];
+  /** Its own label when it is a region: the same string its descendants carry in `regions`. */
+  label?: string;
   children: Shaped[];
   /** Every node under it. */
   size: number;
@@ -232,6 +234,9 @@ export const REDACTED = '[redacted]';
 
 /** Keys whose values the driver makes itself (refs, its own file paths), never page content: never scrubbed. */
 const DRIVER_KEYS = new Set(['ref', 'refs', 'within', 'after', 'token', 'pwRef', 'screenshots']);
+/** Keys whose values come from a fixed vocabulary the protocol defines (a role, a scope, a mode): never scrubbed, so a
+ *  short secret that happens to occur in one cannot turn a reply into something the protocol does not accept. */
+const VOCABULARY_KEYS = new Set(['role', 'scope', 'mode', 'state', 'reason', 'code', 'screen', 'type', 'op']);
 
 /**
  * A function that replaces every known secret in a string. A secret of two or more characters goes wherever it
@@ -253,7 +258,7 @@ export function scrubDeep<T>(value: T, secrets: string[]): T {
   const scrub = scrubber(secrets);
   if (!secrets.some((x) => !!x)) return value;
   const visit = (v: unknown, key?: string): unknown => {
-    if (typeof v === 'string') return key && DRIVER_KEYS.has(key) ? v : scrub(v);
+    if (typeof v === 'string') return key && (DRIVER_KEYS.has(key) || VOCABULARY_KEYS.has(key)) ? v : scrub(v);
     if (key && DRIVER_KEYS.has(key)) return v;
     if (Array.isArray(v)) return v.map((x) => visit(x));
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, visit(x, k)]));
@@ -311,7 +316,7 @@ export function redact(nodes: (RawNode | string)[], r: Redaction): Redacted {
  * Shape a raw tree. An iframe becomes a leaf: its document is observed as a scope of its own. In the editor, unnamed
  * `generic` wrappers with no text of their own are folded into their parent; aria-hidden nodes are left out.
  */
-export function shape(nodes: (RawNode | string)[] | undefined, scope: Scope, regions: string[] = []): Shaped[] {
+export function shape(nodes: (RawNode | string)[] | undefined, scope: Scope, regions: string[] = [], top = true): Shaped[] {
   const out: Shaped[] = [];
   for (const n of nodes ?? []) {
     if (typeof n === 'string') {
@@ -328,14 +333,14 @@ export function shape(nodes: (RawNode | string)[] | undefined, scope: Scope, reg
     const isValue = VALUE_ROLES.has(n.role);
     // The editor's unnamed wrappers are layout only. The site's are its structure (a section is often a plain element
     // that carries the page's own ids), so the preview keeps them.
-    // A focused one too: focus on a plain wrapper (the page's body, with nothing else focused) says nothing.
-    if (scope === 'editor' && n.role === 'generic' && !norm(n.name) && !norm(n.text)) {
-      out.push(...shape(n.children, scope, regions));
+    // A focused one stays (a summary focused on purpose), except the page's own body: focus there is no focus at all.
+    if (scope === 'editor' && n.role === 'generic' && !norm(n.name) && !norm(n.text) && (!n.active || top)) {
+      out.push(...shape(n.children, scope, regions, false));
       continue;
     }
     const label = regionLabel(n);
     const inner = label ? [...regions, label] : regions;
-    const node: Shaped = { scope, role: n.role, regions, children: [], size: 0 };
+    const node: Shaped = { scope, role: n.role, regions, children: [], size: 0, ...(label ? { label } : {}) };
     if (norm(n.name)) node.name = clip(norm(n.name), LIMITS.name);
     if (n.ref) node.pwRef = n.ref;
     if (n.box) node.box = n.box;
@@ -357,7 +362,7 @@ export function shape(nodes: (RawNode | string)[] | undefined, scope: Scope, reg
       if (value && !node.redacted) node.value = clip(value, LIMITS.value);
       children = (children ?? []).filter((c) => typeof c !== 'string' && c.role !== 'text');
     } else if (norm(n.text)) node.text = clip(norm(n.text), LIMITS.text);
-    if (n.role !== 'iframe') node.children = shape(children, scope, inner);
+    if (n.role !== 'iframe') node.children = shape(children, scope, inner, false);
     node.size = node.children.reduce((s, c) => s + 1 + c.size, 0);
     out.push(node);
   }
@@ -513,8 +518,7 @@ export function regionNodes(roots: Shaped[], filter: string): Shaped[] {
   const out: Shaped[] = [];
   const visit = (nodes: Shaped[]) => {
     for (const n of nodes) {
-      const label = regionLabel(n);
-      if (label && n.pwRef && regionMatches([label], filter)) out.push(n);
+      if (n.label && n.pwRef && regionMatches([n.label], filter)) out.push(n);
       else visit(n.children);
     }
   };
