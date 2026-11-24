@@ -26,7 +26,8 @@ import type { Binding } from '@shared/types';
 import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isBinding, isComparison, slotChildren, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
-import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
+import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
+import { planRouteMove, routeFolder, type RouteMove } from '@shared/page-tree';
 import { LANGUAGE_CODE_ERROR, isLanguageCode, linkedGroup, siteLanguageProblem, translationClash, translationClashMessage, translationGroup, translationMembers } from '@shared/languages';
 import { newId } from '@shared/ids';
 import { checkPublicUrl } from '@shared/public-url';
@@ -42,7 +43,7 @@ import { codeTakesBlocks, effectiveTokens, generateStandaloneComponent, CUSTOM_D
 import { slotsInsideCards } from '@generator/card-links';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
@@ -527,12 +528,8 @@ function routeReserved(state: ProjectState, route: string, forPageId?: string): 
  * numbered suffix when it is taken, kept within the 60-character segment limit. The Pages panel previews new
  * pages' routes the same way.
  */
-function autoRoute(state: ProjectState, title: string, fallback: string, forPageId?: string): string {
-  let slug = slugify(title) || fallback;
-  if (validateRoute(`/${slug}/`)) slug = `${slug.slice(0, 55)}-page`;
-  let route = `/${slug}/`;
-  for (let i = 2; routeReserved(state, route, forPageId); i++) route = `/${slug.slice(0, 60 - `-${i}`.length).replace(/-+$/, '')}-${i}/`;
-  return route;
+function autoRoute(state: ProjectState, title: string, fallback: string, forPageId?: string, folder = '/'): string {
+  return suggestRoute(title, (r) => routeReserved(state, r, forPageId), fallback, folder).route;
 }
 
 /** A page now uses `route`: an old address kept working there stops redirecting, because the page takes it over. */
@@ -599,12 +596,16 @@ function addToHeaderNavigation(state: ProjectState, page: PageDoc): boolean {
   const { node, schema } = menu;
   const list = (node.props.links ?? structuredClone(schema.default)) as Array<Record<string, unknown>>;
   if (schema.max !== undefined && list.length >= schema.max) return false;
-  node.props.links = [...list, normalizeItem(schema, { label: page.navLabel || page.title, link: { type: 'page', target: page.id } }, state, schema.label)];
+  // A page inside another goes under the link to that page, when the menu has one and groups links.
+  const slot = headerMenuSlot(state, list, page.id);
+  const item = normalizeItem(schema, { label: page.navLabel || page.title, link: { type: 'page', target: page.id }, ...(slot.sub ? { sub: true } : {}) }, state, schema.label);
+  node.props.links = [...list.slice(0, slot.index), item, ...list.slice(slot.index)];
   return true;
 }
 
 function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
   const page = own(state.pages, op.pageId) ?? fail(`Page "${op.pageId}" does not exist.`);
+  let moved: RouteMove[] | undefined;
   if (op.title !== undefined) page.title = op.title.trim();
   if (op.route !== undefined) {
     const route = normalizeRoute(op.route);
@@ -612,9 +613,11 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
     if (err) fail(err);
     if (page.id === state.site.homePageId && route !== '/') fail('The Home page always uses "/". Make another page Home first.');
     if (page.id !== state.site.homePageId && route === '/') fail('Only the Home page can use "/".');
-    if (routeTaken(state, route, page.id)) fail(`Another page already uses ${route}.`);
-    page.route = route;
-    claimRoute(state, route);
+    // The pages inside it move with it, and every address left behind keeps working for its page.
+    const plan = planRouteMove(state, page.id, route, validateRoute);
+    if ('error' in plan) fail(plan.error);
+    movePages(state, plan.moves);
+    if (plan.moves.length > 1) moved = plan.moves;
   }
   if (op.navLabel !== undefined) page.navLabel = op.navLabel || undefined;
   if (op.seoTitle !== undefined) page.seo.title = op.seoTitle || undefined;
@@ -650,7 +653,20 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
     else delete page.seo.socialImage;
   }
   applyArticle(page, op);
-  return { route: page.route };
+  return moved ? { route: page.route, moved } : { route: page.route };
+}
+
+/**
+ * Give pages the addresses `moves` plans. Each takes over any old address kept at its new one, and each address
+ * a page left that no page now uses is kept working for it, so old links and bookmarks still arrive (a page moved
+ * again keeps every earlier address leading to where it is now, because kept addresses name the page).
+ */
+function movePages(state: ProjectState, moves: RouteMove[]) {
+  for (const m of moves) state.pages[m.pageId].route = m.to;
+  for (const m of moves) claimRoute(state, m.to);
+  const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
+  const kept = moves.filter((m) => !used.has(m.from.toLowerCase()) && redirectIndex(state, m.from) < 0).map((m) => ({ from: m.from, pageId: m.pageId }));
+  if (kept.length) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), ...kept];
 }
 
 /** Make two pages versions of each other: one joins the other's translations, or the two start a set of their own. */
@@ -772,7 +788,8 @@ function pageDuplicate(state: ProjectState, op: Op<'page.duplicate'>): OpResult 
   const src = own(state.pages, op.pageId) ?? fail(`Page "${op.pageId}" does not exist.`);
   const title = op.title?.trim() || `${src.title} copy`;
   const id = newId('pg');
-  const page: PageDoc = { ...clone(src), id, title, route: autoRoute(state, title, 'page'), rootIds: [], nodes: {} };
+  // A copy sits beside its original, in the same folder.
+  const page: PageDoc = { ...clone(src), id, title, route: autoRoute(state, title, 'page', undefined, routeFolder(src.route) ?? '/'), rootIds: [], nodes: {} };
   // A copy is in the same language until it is translated: it is nobody's translation yet.
   delete page.translationGroup;
   for (const rid of src.rootIds) page.rootIds.push(copySubtree(src, page, rid, state));
@@ -870,8 +887,7 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   return cards.length ? { removedCards: cards.map((u) => u.where) } : {};
 }
 
-/** A page's address before and after an edit. */
-export type RouteMove = { pageId: string; from: string; to: string };
+export type { RouteMove };
 
 /** What making a page Home changes: the addresses that move, and the old address kept working, if any. */
 export type HomeChange = { moved: RouteMove[]; kept?: string };

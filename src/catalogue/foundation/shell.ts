@@ -34,11 +34,23 @@ const HEADER_SOURCE = `<script>
 		class: className = ''
 	} = $props();
 
+	// The item ID of the link whose submenu is open; one at a time.
+	let openSub = $state(null);
 	let header = $state();
 	// The phone menu is a native disclosure, and its open attribute is the menu's only state: the browser opens it
 	// before the site's script runs (or when it never does), and the script keeps whatever the visitor chose.
 	let menu = $state();
 	let toggle = $state();
+	// A link marked to show under the link above joins the submenu of the nearest top-level link before it; one
+	// with none before it stays at the top level.
+	const groups = $derived.by(() => {
+		const out = [];
+		for (const item of Array.isArray(links) ? links : []) {
+			if (item?.sub === true && out.length) out[out.length - 1].children.push(item);
+			else out.push({ item, children: [] });
+		}
+		return out;
+	});
 	// Route IDs ("/about") do not depend on the base path the site is published under.
 	const current = $derived(page.route.id);
 	// The visible name, when there is one to show. Beside it the logo is decorative, so the brand is announced once.
@@ -61,6 +73,22 @@ const HEADER_SOURCE = `<script>
 
 	function closeMenu() {
 		if (menu?.open) menu.open = false;
+	}
+
+	// Arriving on another page closes any open submenu.
+	$effect(() => {
+		void current;
+		openSub = null;
+	});
+
+	/** The submenu toggle and list of the link with this item ID. */
+	const subId = (id) => \`so-sub-\${id}\`;
+	const subToggle = (id) => header?.querySelector(\`[aria-controls="\${subId(id)}"]\`);
+
+	/** Choosing a link closes the menus, including links to the current page or an anchor on it. */
+	function chose() {
+		closeMenu();
+		openSub = null;
 	}
 
 	/**
@@ -205,16 +233,25 @@ const HEADER_SOURCE = `<script>
 		if (active && active !== header.ownerDocument.body && !header.contains(active)) closeMenu();
 	});
 
-	// Escape returns focus to the menu button only from inside the header (or from nowhere), never from the page.
+	// Escape closes an open submenu first, back to its toggle, and then the phone menu, back to its button. Focus goes
+	// back only from inside the header (or from nowhere), never from the page.
 	function onKeydown(event) {
-		if (event.key !== 'Escape' || !menu?.open) return;
+		if (event.key !== 'Escape') return;
 		const active = header?.ownerDocument.activeElement;
 		const inside = !active || active === header?.ownerDocument.body || !!header?.contains(active);
-		closeMenu();
-		if (inside) toggle?.focus();
+		if (openSub !== null) {
+			const id = openSub;
+			openSub = null;
+			if (inside) subToggle(id)?.focus();
+		} else if (menu?.open) {
+			closeMenu();
+			if (inside) toggle?.focus();
+		}
 	}
 
+	// A press outside the open submenu's link and list closes it; one outside the header closes the phone menu.
 	function onPointerdown(event) {
+		if (openSub !== null && !subToggle(openSub)?.closest('li')?.contains(event.target)) openSub = null;
 		if (menu?.open && header && !header.contains(event.target)) closeMenu();
 	}
 
@@ -222,6 +259,12 @@ const HEADER_SOURCE = `<script>
 	// on the control it reached. Moving between the button and the links keeps it open.
 	function onFocusin(event) {
 		if (menu?.open && header && !header.contains(event.target)) closeMenu();
+	}
+
+	// Focus moving to something outside a submenu's link and list closes it. Focus going nowhere (a press on the
+	// page, another window) is left to the press.
+	function onGroupFocusout(event, id) {
+		if (openSub === id && event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) openSub = null;
 	}
 </script>
 
@@ -237,7 +280,7 @@ const HEADER_SOURCE = `<script>
 						href={href(noticeLink)}
 						target={noticeLink.newTab ? '_blank' : undefined}
 						rel={noticeLink.newTab ? 'noopener noreferrer' : undefined}
-						onclick={closeMenu}>{noticeLinkText}</a
+						onclick={chose}>{noticeLinkText}</a
 					>
 				{/if}
 			</p>
@@ -254,8 +297,9 @@ const HEADER_SOURCE = `<script>
 			{/if}
 		</a>
 
-		<!-- The browser announces whether the menu is expanded, so the button's name stays the same either way. -->
-		<details class="so-header__menu" bind:this={menu}>
+		<!-- The browser announces whether the menu is expanded, so the button's name stays the same either way. Opening
+		     or closing it folds any open submenu away. -->
+		<details class="so-header__menu" bind:this={menu} ontoggle={() => (openSub = null)}>
 			<summary bind:this={toggle} class="so-header__toggle" aria-controls="so-site-nav">
 				<span class="so-visually-hidden">Menu</span>
 				<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
@@ -265,20 +309,34 @@ const HEADER_SOURCE = `<script>
 			</summary>
 		</details>
 
-		<!-- Choosing a link closes the menu, including links to the current page or an anchor on it. -->
+		<!-- A link with others under it keeps going to its own page; the button beside it shows and hides them. -->
 		<nav id="so-site-nav" class="so-header__nav" aria-label="Main">
-			<ul>
-				{#each links as item (item.id)}
-					<li>
-						<a
-							href={href(item.link) ?? '#'}
-							download={download(item.link)}
-							target={item.link?.newTab ? '_blank' : undefined}
-							rel={item.link?.newTab ? 'noopener noreferrer' : undefined}
-							aria-current={isCurrent(item.link) ? 'page' : undefined}
-							onclick={closeMenu}>{item.label}</a
-						>
-					</li>
+			<ul class="so-header__list">
+				{#each groups as { item, children } (item.id)}
+					{#if children.length}
+						<li class={['so-header__group', children.some((c) => isCurrent(c.link)) && 'so-header__group--current']} onfocusout={(e) => onGroupFocusout(e, item.id)}>
+							{@render menuLink(item)}
+							<button
+								type="button"
+								class="so-header__sub-toggle"
+								aria-expanded={openSub === item.id}
+								aria-controls={subId(item.id)}
+								onclick={() => (openSub = openSub === item.id ? null : item.id)}
+							>
+								<span class="so-visually-hidden">{item.label} submenu</span>
+								<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+									<path d="M4 6l4 4 4-4" />
+								</svg>
+							</button>
+							<ul id={subId(item.id)} class="so-header__sub" hidden={openSub !== item.id}>
+								{#each children as child (child.id)}
+									<li>{@render menuLink(child)}</li>
+								{/each}
+							</ul>
+						</li>
+					{:else}
+						<li>{@render menuLink(item)}</li>
+					{/if}
 				{/each}
 			</ul>
 			{#if ctaLabel && ctaLink?.href}
@@ -288,12 +346,23 @@ const HEADER_SOURCE = `<script>
 					download={download(ctaLink)}
 					target={ctaLink.newTab ? '_blank' : undefined}
 					rel={ctaLink.newTab ? 'noopener noreferrer' : undefined}
-					onclick={closeMenu}>{ctaLabel}</a
+					onclick={chose}>{ctaLabel}</a
 				>
 			{/if}
 		</nav>
 	</div>
 </header>
+
+{#snippet menuLink(item)}
+	<a
+		href={href(item.link) ?? '#'}
+		download={download(item.link)}
+		target={item.link?.newTab ? '_blank' : undefined}
+		rel={item.link?.newTab ? 'noopener noreferrer' : undefined}
+		aria-current={isCurrent(item.link) ? 'page' : undefined}
+		onclick={chose}>{item.label}</a
+	>
+{/snippet}
 
 <style>
 	.so-header {
@@ -310,19 +379,24 @@ const HEADER_SOURCE = `<script>
 		top: calc(-1 * var(--so-header-notice, 0px));
 	}
 	/* The phone menu takes the header's own background and text colour (see the phone rules), so a colour set on
-	   the header reaches the menu too. */
-	.so-header--surface {
+	   the header reaches the menu too. A submenu's panel, which hangs over the page on wider screens, takes the
+	   header's surface. */
+	.so-header--surface,
+	.so-header--surface .so-header__sub {
 		background: var(--so-color-surface);
 	}
-	.so-header--subtle {
+	.so-header--subtle,
+	.so-header--subtle .so-header__sub {
 		background: var(--so-color-surface-alt);
 	}
-	.so-header--inverse {
+	.so-header--inverse,
+	.so-header--inverse .so-header__sub {
 		background: var(--so-color-inverse);
 		color: var(--so-color-on-inverse);
 	}
 	.so-header--inverse,
-	.so-header--inverse .so-header__nav {
+	.so-header--inverse .so-header__nav,
+	.so-header--inverse .so-header__sub {
 		border-color: transparent;
 	}
 	/* The notice spans the header's full width above the brand row. On a phone its words wrap and push the row
@@ -426,7 +500,7 @@ const HEADER_SOURCE = `<script>
 		min-width: 0;
 		gap: var(--so-space-xl);
 	}
-	.so-header__nav ul {
+	.so-header__list {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
@@ -434,7 +508,7 @@ const HEADER_SOURCE = `<script>
 	}
 	@media (min-width: 768px) and (max-width: 1023.98px) {
 		.so-header__nav,
-		.so-header__nav ul {
+		.so-header__list {
 			gap: var(--so-space-md);
 		}
 	}
@@ -450,7 +524,12 @@ const HEADER_SOURCE = `<script>
 	.so-header__nav ul a[aria-current='page'] {
 		color: inherit;
 	}
-	.so-header__nav ul a[aria-current='page']::after {
+	/* A link with a submenu is marked while one of the pages under it is open. */
+	.so-header__group--current > a {
+		color: inherit;
+	}
+	.so-header__list > li > a[aria-current='page']::after,
+	.so-header__group--current > a::after {
 		content: '';
 		position: absolute;
 		left: 0;
@@ -459,6 +538,74 @@ const HEADER_SOURCE = `<script>
 		height: 2px;
 		border-radius: 2px;
 		background: var(--so-surface-ink, var(--so-color-brand));
+	}
+	/* A link with others under it: the link, then a button that shows them in a panel hanging below it. */
+	.so-header__group {
+		position: relative;
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+	.so-header__sub-toggle {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		margin-right: -6px;
+		padding: 0;
+		border: 0;
+		border-radius: var(--so-radius-sm);
+		background: transparent;
+		color: color-mix(in srgb, currentColor 72%, transparent);
+		cursor: pointer;
+	}
+	.so-header__sub-toggle:hover,
+	.so-header__sub-toggle[aria-expanded='true'] {
+		color: inherit;
+	}
+	.so-header__sub-toggle svg {
+		width: 16px;
+		height: 16px;
+		transition: transform 150ms ease;
+	}
+	.so-header__sub-toggle[aria-expanded='true'] svg {
+		transform: rotate(180deg);
+	}
+	.so-header__sub {
+		position: absolute;
+		top: calc(100% + 12px);
+		left: -14px;
+		z-index: 1;
+		display: flex;
+		flex-direction: column;
+		min-width: 220px;
+		max-width: min(320px, calc(100vw - 2 * var(--so-container-gutter)));
+		padding: 6px;
+		background: var(--so-color-background);
+		color: var(--so-color-text);
+		border: 1px solid var(--so-color-border);
+		border-radius: var(--so-radius-md);
+		box-shadow: var(--so-shadow-md);
+	}
+	.so-header--inverse .so-header__sub {
+		color: var(--so-color-on-inverse);
+		border-color: transparent;
+	}
+	.so-header__sub[hidden] {
+		display: none;
+	}
+	.so-header__nav .so-header__sub a {
+		display: block;
+		padding: 9px 12px;
+		border-radius: var(--so-radius-sm);
+		overflow-wrap: anywhere;
+	}
+	.so-header__nav .so-header__sub a:hover {
+		background: color-mix(in srgb, currentColor 7%, transparent);
+	}
+	.so-header__nav .so-header__sub a[aria-current='page'] {
+		font-weight: 600;
 	}
 	.so-header__cta {
 		min-height: 40px;
@@ -501,19 +648,64 @@ const HEADER_SOURCE = `<script>
 		.so-header__menu[open] ~ .so-header__nav {
 			display: flex;
 		}
-		.so-header__nav ul {
+		.so-header__list {
 			flex-direction: column;
 			align-items: stretch;
 			gap: 0;
 		}
-		.so-header__nav ul a {
+		.so-header__list > li > a {
 			display: block;
 			padding: 14px 0;
 			font-size: 1.05rem;
 			border-bottom: 1px solid var(--so-color-border);
 		}
-		.so-header__nav ul a[aria-current='page']::after {
+		.so-header__list > li > a[aria-current='page']::after,
+		.so-header__group--current > a::after {
 			display: none;
+		}
+		/* In the phone menu a submenu opens in place, indented under its link; its button is finger-sized. */
+		.so-header__group {
+			flex-wrap: wrap;
+			gap: 0;
+			border-bottom: 1px solid var(--so-color-border);
+		}
+		.so-header__list > .so-header__group > a {
+			flex: 1;
+			min-width: 0;
+			border-bottom: 0;
+		}
+		.so-header__sub-toggle {
+			width: 44px;
+			height: 44px;
+			margin-right: -10px;
+		}
+		.so-header__sub {
+			position: static;
+			flex-basis: 100%;
+			min-width: 0;
+			max-width: none;
+			margin: 0 0 10px;
+			padding: 0 0 0 var(--so-space-md);
+			background: transparent;
+			border: 0;
+			border-left: 2px solid var(--so-color-border);
+			border-radius: 0;
+			box-shadow: none;
+		}
+		/* There it takes the menu's own background and text colour, like the links above it. */
+		.so-header__sub,
+		.so-header--surface .so-header__sub,
+		.so-header--subtle .so-header__sub,
+		.so-header--inverse .so-header__sub {
+			background: transparent;
+			color: inherit;
+		}
+		.so-header__nav .so-header__sub a {
+			padding: 11px 0 11px 4px;
+			font-size: 1rem;
+		}
+		.so-header__nav .so-header__sub a:hover {
+			background: none;
 		}
 	}
 </style>
@@ -535,7 +727,13 @@ export const header: ComponentDefinition = {
     siteName: P.str('Site name', 'Studio'),
     logo: P.image('Logo'),
     showSiteName: { ...P.bool('Show site name', true), description: 'With a logo, turn this off to show the logo alone.' },
-    links: P.list('Navigation', 'Link', { label: P.str('Label', 'Page'), link: P.link('Destination') }, [], { titleField: 'label', max: 10 }),
+    // A link can show under the link above it, in that link's submenu: the menu stays one list, so moving links
+    // and adding pages work as they always have.
+    links: P.list('Navigation', 'Link', {
+      label: P.str('Label', 'Page'),
+      link: P.link('Destination'),
+      sub: { ...P.bool('Show under the link above', false), description: 'Puts this link in a submenu under the nearest link above it that is not in one. Where the page itself is kept does not change.' }
+    }, [], { titleField: 'label', max: 10 }),
     ...P.group('Action', {
       ctaLabel: P.str('Action label', ''),
       ctaLink: P.link('Action link'),
