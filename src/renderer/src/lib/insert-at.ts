@@ -65,13 +65,48 @@ export function insertRole(state: ProjectState, spec: InsertSpec): InsertRole {
 }
 
 /**
+ * What Insert reads a selection as. A part of a placed component, or anything inside its design, counts as the
+ * placement, so what is inserted goes into its slot or beside it, as with the placement itself selected: a card
+ * inserted with a Section's Container picked in Layers goes into that Section, not the page's last one.
+ */
+export const placementOf = (ref: ElementRef | null): ElementRef | null => (ref?.instancePath.length ? { owner: ref.owner, instancePath: [], nodeId: ref.instancePath[0] } : ref);
+
+/**
+ * The slot of a placement that a part picked inside it holds (a Section's Container holds its Content), so what is
+ * inserted goes there rather than into the placement's first slot. Only a slot the part shows once, through its own
+ * elements, counts: not one inside a repeat (shown once per item, or never) or handed to a component placed in it
+ * (which may not show it). Of several, the first the component declares, as for the placement itself (slotFor). None
+ * for the placement's own root, for a part that holds no slot, or for anything inside a component placed in its
+ * design, whose slots the page does not fill.
+ */
+export function heldSlot(state: ProjectState, ref: ElementRef | null): string | undefined {
+  if (ref?.instancePath.length !== 1) return undefined;
+  const inst = own(treeFor(state, ref.owner)?.nodes, ref.instancePath[0]);
+  const def = inst?.kind === 'instance' ? own(state.components, inst.definitionId) : undefined;
+  const tree = def?.tree;
+  if (!def || !tree || ref.nodeId === tree.rootIds[0]) return undefined;
+  const held = new Set<string>();
+  const seen = new Set<string>();
+  const walk = (id: string) => {
+    const n = own(tree.nodes, id);
+    if (!n || seen.has(id)) return;
+    seen.add(id);
+    if (n.kind === 'slot') held.add(n.slot);
+    else if (n.kind === 'element') n.children.forEach(walk);
+  };
+  walk(ref.nodeId);
+  return Object.keys(def.slots ?? {}).find((name) => held.has(name));
+}
+
+/**
  * Where something placed as `role` goes in `owner`, relative to `sel` (a node of the owner's own tree, see
  * structuralTarget). An element goes inside a selected container or a placed component's slot, else just after the
  * selection, in its own list; with nothing selected on a page it goes into the last section that holds content. A
  * section goes after the top-level section that holds the selection. `definitionId`: the component being inserted,
- * whose own selected placement asks for another beside it (a second card), never one inside it.
+ * whose own selected placement asks for another beside it (a second card), never one inside it. `held`: the slot of
+ * the selected placement that the selection picked (see heldSlot), in place of its first.
  */
-export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole, sel: ElementRef | null, definitionId?: string): InsertAt | null {
+export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole, sel: ElementRef | null, definitionId?: string, held?: string): InsertAt | null {
   const tree = treeFor(state, owner);
   if (!tree) return null;
   if (sel && sel.owner.kind === owner.kind && sel.owner.id === owner.id) {
@@ -79,7 +114,7 @@ export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole,
     const same = node?.kind === 'instance' && !!definitionId && node.definitionId === definitionId;
     if (role === 'element' && node && !same) {
       if (node.kind === 'element') return { owner, parentId: node.id };
-      const slot = node.kind === 'instance' ? slotFor(state, node.definitionId) : undefined;
+      const slot = node.kind === 'instance' ? (held ?? slotFor(state, node.definitionId)) : undefined;
       if (slot) return { owner, parentId: node.id, slot };
     }
     const info = findParent(tree, sel.nodeId);
@@ -120,6 +155,13 @@ export function insideComponent(state: ProjectState, at: InsertAt | null): Inser
   if (slot) return { owner: at.owner, parentId: node!.id, slot };
   return node?.kind === 'repeat' || node?.kind === 'slot' ? at : null;
 }
+
+/**
+ * Where something placed as `role` goes in `owner`, for the selection as the editor holds it: a part of a placed
+ * component counts as the placement (placementOf), and one that holds a slot of it picks that slot (heldSlot).
+ */
+export const insertAt = (state: ProjectState, owner: OwnerRef, role: InsertRole, from: ElementRef | null, definitionId?: string): InsertAt | null =>
+  insideComponent(state, placeFor(state, owner, role, placementOf(from), definitionId, heldSlot(state, from)));
 
 /**
  * The operations that insert `spec` at `at`, as one change: an element placed on a page's top level goes into a new

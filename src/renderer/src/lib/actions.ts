@@ -14,7 +14,7 @@ import { storedEdit } from './richtext';
 import { showAsset } from './place';
 import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
-import { elementWhere, insertOps, insertRole, insideComponent, nodeBefore, nodeLabel, placeFor, type InsertAt, type InsertRole, type Where } from './insert-at';
+import { elementWhere, insertAt, insertOps, insertRole, nodeBefore, nodeLabel, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
@@ -28,14 +28,13 @@ export function currentOwner(): OwnerRef | null {
 }
 
 /** Only nodes in the owner tree itself (not inside component definitions) can be moved, duplicated or removed.
- *  While a component is edited everywhere its own nodes can, except its root, which is the component itself
- *  (`withRoot` keeps it, for inserting into it). */
-export function structuralTarget(ref: ElementRef | null, { withRoot = false, state }: { withRoot?: boolean; state?: ProjectState } = {}): ElementRef | null {
+ *  While a component is edited everywhere its own nodes can, except its root, which is the component itself. */
+export function structuralTarget(ref: ElementRef | null, { state }: { state?: ProjectState } = {}): ElementRef | null {
   if (!ref) return null;
   const st = state ?? getState().snapshot!.state;
   const b = boundaryOf(st, ref);
   if (b.instancePath.length) return null;
-  if (!withRoot && b.owner.kind === 'component' && st.components[b.owner.id]?.tree?.rootIds[0] === b.nodeId) return null;
+  if (b.owner.kind === 'component' && st.components[b.owner.id]?.tree?.rootIds[0] === b.nodeId) return null;
   return b;
 }
 
@@ -342,13 +341,13 @@ export async function moveToPage(pageId: string, plan = planLayers(), follow = f
 export type { InsertAt, Where } from './insert-at';
 export { elementWhere, nodeBefore, nodeLabel } from './insert-at';
 
-/** Work out where an inserted section or element should go, relative to the selection (or to `from`), in the project
- *  as this window has it (or as `snapshot` has it). `definitionId`: the component being inserted (see placeFor). */
+/** Work out where an inserted section or element should go, relative to the selection (or to `from`; a part of a
+ *  placed component counts as the placement, see insertAt), in the project as this window has it (or as `snapshot`
+ *  has it). `definitionId`: the component being inserted (see placeFor). */
 export function insertionPoint(kind: InsertRole, from: ElementRef | null = getState().selection, snapshot: ProjectSnapshot | null = getState().snapshot, definitionId?: string): InsertAt | null {
   const owner = currentOwner();
   if (!snapshot || !owner) return null;
-  const state = snapshot.state;
-  return insideComponent(state, placeFor(state, owner, kind, structuralTarget(from, { withRoot: true, state }), definitionId));
+  return insertAt(snapshot.state, owner, kind, from, definitionId);
 }
 
 /** Where `spec` goes when its tile is clicked now: how it is placed, and the place. */
@@ -391,8 +390,7 @@ export function imagePlacement(snap: ProjectSnapshot | null = getState().snapsho
   if (!page) return { at: null, reason: 'Open a page to place the image on it.' };
   const sel = s.selection;
   const onPage = sel?.owner.kind === 'page' && sel.owner.id === page.id;
-  const from = onPage && sel.instancePath.length ? { owner: sel.owner, instancePath: [], nodeId: sel.instancePath[0] } : onPage ? sel : null;
-  const at = insertionPoint('element', from, snap);
+  const at = insertionPoint('element', onPage ? sel : null, snap);
   const where = elementWhere(snap.state, at);
   if (!at || !where || at.owner.kind !== 'page') return { at: null, reason: 'Open a page to place the image on it.' };
   // The node it goes after is named by ID: two Galleries side by side share a label, and can trade places.

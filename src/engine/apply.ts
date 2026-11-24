@@ -2480,7 +2480,11 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   }
 
   for (const n of Object.values(defTree.nodes)) {
-    const part = (name: string) => (parts[name] = { nodeId: n.id, label: titleCase(name), ...withControls(n) });
+    // A component made from one element (a heading, an image) is that element: the root part already names it, and an
+    // element is only ever one part. Its content still becomes a property.
+    const part = (name: string) => {
+      if (n.id !== rootCopy) parts[name] = { nodeId: n.id, label: titleCase(name), ...withControls(n) };
+    };
     if (n.kind === 'text' && !isBinding(n.text)) {
       const isHeading = typeof n.tag === 'string' ? /^h\d$/.test(n.tag) : true;
       const name = propName(n.rich ? 'body' : isHeading ? 'heading' : 'text');

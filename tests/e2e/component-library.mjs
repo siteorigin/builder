@@ -242,6 +242,44 @@ await win.evaluate(() => window.builder.project.undo());
 await eventually(async () => assert.deepEqual((await snapshot()).pages[pageId], homeBefore, 'one Undo after the copy puts the section and its content back'));
 assert.equal((await snapshot()).components[hall.id], undefined, 'and removes the component');
 
+step('a single heading becomes a component from its Layers row, with one part, and a second goes beside it (#185)');
+// A second Section after it, so a copy that ignored the selection would land there instead.
+const [{ nodeId: notice }] = await apply(
+  [
+    { type: 'node.insert', owner, parentId: null, componentId: 'layout.section' },
+    { type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }
+  ],
+  'Insert sections'
+);
+const [{ nodeId: floorHeading }] = await apply([{ type: 'node.insert', owner, parentId: notice, slot: 'content', primitive: 'heading', text: 'Floor plan' }], 'Add heading');
+const pageBefore185 = (await snapshot()).pages[pageId];
+await openRail('Layers');
+await win.locator(`[role="tree"] [data-node="${notice}"] .tree-toggle`).click();
+await win.locator(`[role="tree"] [data-node="${floorHeading}"]`).click({ button: 'right' });
+await menu.getByRole('menuitem', { name: /^Create component/ }).click();
+await dialog.getByLabel('Component name').fill('Floor plan title');
+await dialog.getByLabel('Component name').press('Enter');
+await dialog.waitFor({ state: 'detached' });
+await eventually(async () => assert.equal((await library())['Floor plan title'], 1, 'the heading is now a placement of the new component'));
+const titleDef = Object.values((await snapshot()).components).find((d) => d.name === 'Floor plan title');
+assert.deepEqual(Object.keys(titleDef.parts), ['root'], 'the heading is the component itself: one part, not a second on the same element');
+assert.equal(titleDef.insertAs, 'element', 'made inside a section, it inserts as an element');
+const inNotice = async () => (await snapshot()).pages[pageId].nodes[notice].slots.content;
+assert.equal((await snapshot()).pages[pageId].nodes[(await inNotice())[0]].definitionId, titleDef.id, 'the placement takes the heading’s place in its section');
+await eventually(async () => assert.equal(await frame.locator('h2', { hasText: 'Floor plan' }).count(), 1, 'and shows the heading'), 30000);
+await openInsert();
+if (await showAll.count()) await showAll.click();
+await tile('Floor plan title').click();
+await eventually(async () => {
+  const content = await inNotice();
+  assert.equal(content.length, 2, 'a second copy goes into the same section');
+  assert.equal((await snapshot()).pages[pageId].nodes[content[1]].definitionId, titleDef.id);
+  assert.deepEqual((await snapshot()).pages[pageId].rootIds, pageBefore185.rootIds, 'nothing new at the top of the page');
+});
+await win.evaluate(() => window.builder.project.undo());
+await win.evaluate(() => window.builder.project.undo());
+await eventually(async () => assert.deepEqual((await snapshot()).pages[pageId], pageBefore185, 'two Undos put the heading back'));
+
 step('an unplaced component is shown on its own, at any width (#347)');
 /** Show components in isolated preview frames in the editor, step by step, and give back what each reported. */
 const preview = (steps) => withTimeout(win.evaluate((s) => window.builderTest.previewComponent(s), steps), 180000, 'Component preview');

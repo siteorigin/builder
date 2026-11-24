@@ -217,6 +217,69 @@ describe('components', () => {
     expect(inst.props.heading).toBe('Card title');
     expect(generateProject(r.state).get('src/routes/+page.svelte')).toContain('"Card title"');
   });
+
+  describe('a component made from a single leaf element keeps one part per element (#185)', () => {
+    // Each leaf, the properties its content becomes, and the field of the element each one is bound to.
+    const leaves = [
+      { primitive: 'heading', text: 'Opening hours', props: { heading: 'text' } },
+      { primitive: 'paragraph', text: 'Open daily', props: { text: 'text' } },
+      { primitive: 'richtext', text: '- Mornings\n- Evenings', props: { body: 'text' } },
+      { primitive: 'image', props: { image: 'image' } },
+      { primitive: 'button', text: 'Book now', props: { buttonLabel: 'label', buttonLink: 'link' } },
+      { primitive: 'icon', props: { icon: 'icon' } }
+    ] as const;
+    it.each(leaves)('$primitive', ({ primitive, props, ...rest }) => {
+      const base = blankWithSection();
+      const text = 'text' in rest ? { text: rest.text } : {};
+      const ins = applyOperations(base, [{ type: 'node.insert', owner: owner(base), parentId: home(base).rootIds[0], slot: 'content', primitive, ...text }]);
+      const s = ins.state;
+      const source = home(s).nodes[ins.results[0].nodeId as string] as unknown as Record<string, unknown>;
+      const r = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: ins.results[0].nodeId as string, name: 'Lead' }]);
+      const id = r.results[0].definitionId as string;
+      const placed = r.results[0].nodeId as string;
+      const def = r.state.components[id];
+      const rootId = def.tree!.rootIds[0];
+      const root = def.tree!.nodes[rootId] as unknown as Record<string, unknown>;
+      // Its content still becomes properties: the design reads them, they default to what it held, and the placement
+      // fills them in with the same.
+      expect(Object.keys(def.properties).sort()).toEqual(Object.keys(props).sort());
+      for (const [prop, field] of Object.entries(props)) {
+        expect(root[field]).toEqual({ $prop: prop });
+        expect(def.properties[prop].default).toEqual(source[field]);
+        expect((home(r.state).nodes[placed] as InstanceNode).props[prop]).toEqual(source[field]);
+      }
+      // The element is the component itself: its root part, and no second part on the same element.
+      expect(Object.keys(def.parts)).toEqual(['root']);
+      expect(def.parts.root.nodeId).toBe(rootId);
+      // So the part can be renamed, and a placement styled through it.
+      const after = applyOperations(r.state, [
+        { type: 'component.setPart', definitionId: id, partId: 'root', nodeId: rootId, label: 'Lead' },
+        { type: 'node.setStyle', owner: owner(r.state), nodeId: placed, partId: 'root', scope: 'base', property: 'radius', value: '8px' }
+      ]).state;
+      expect(after.components[id].parts.root.label).toBe('Lead');
+      expect((home(after).nodes[placed] as InstanceNode).overrides).toEqual({ root: { base: { radius: '8px' } } });
+      expect(errors(after)).toEqual([]);
+    });
+
+    it('a button inside a design, its label from the list item and its link written in, keeps both and one part', () => {
+      const f = fork(fresh(), 'features.grid');
+      const own = { kind: 'component' as const, id: f.id };
+      const link = { type: 'url' as const, target: 'https://example.com/book' };
+      (f.state.components[f.id].tree!.nodes['card-link'] as { link: unknown }).link = link;
+      const r = applyOperations(f.state, [{ type: 'component.createFromNode', owner: own, nodeId: 'card-link', name: 'Card button' }]);
+      const def = r.state.components[r.results[0].definitionId as string];
+      const root = def.tree!.nodes[def.tree!.rootIds[0]] as unknown as Record<string, unknown>;
+      expect(Object.keys(def.parts)).toEqual(['root']);
+      // The label (and the condition that shows it) read the list field handed in; the link is a property of its own.
+      expect(root.label).toEqual({ $prop: 'linkLabel' });
+      expect(root.when).toEqual({ $prop: 'linkLabel' });
+      expect(root.link).toEqual({ $prop: 'buttonLink' });
+      expect(def.properties.buttonLink).toEqual({ type: 'link', label: 'Button link', default: link });
+      const inst = r.state.components[f.id].tree!.nodes[r.results[0].nodeId as string] as InstanceNode;
+      expect(inst.props).toEqual({ linkLabel: { $item: 'linkLabel' }, buttonLink: link });
+      expect(errors(r.state)).toEqual([]);
+    });
+  });
 });
 
 describe('theme switching (P06, I03)', () => {
