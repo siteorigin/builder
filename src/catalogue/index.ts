@@ -10,6 +10,7 @@ import { contact, cta, faq, pricing } from './foundation/conversion';
 import { footer, header } from './foundation/shell';
 import { contactForm } from './foundation/form';
 import { dataTable } from './foundation/table';
+import { siteSearch } from './foundation/search';
 import { PACK_VERSION } from './dsl';
 import { BUNDLED_FONTS } from './fonts';
 import { makeAltTheme } from './foundation-alt';
@@ -62,6 +63,7 @@ const FOUNDATION: ThemePack = {
     cta,
     contact,
     contactForm,
+    siteSearch,
     container
   ],
   aiProfile: {

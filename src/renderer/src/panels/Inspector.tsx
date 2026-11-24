@@ -1289,6 +1289,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
               : 'The page is still published and anyone with its address can open it; search engines are only asked not to list it.'
           }
         />
+        <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint="Leaves this page out of the results of the site’s own Site search section." />
       </Section>
       {dev && (
         <Section title="Advanced" id="page-adv" defaultOpen={false} level={LEVEL}>

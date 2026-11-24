@@ -37,6 +37,7 @@ import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variant
 import { effectiveItem } from '@shared/page-teasers';
 import { brokenCardKeys, cardKey, isCardLink } from './card-links';
 import { showsPart, type ShellPart } from '@shared/page-shell';
+import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -1768,6 +1769,12 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {})
   files.set(`${RUNTIME_DIR}/icons.js`, iconsJs(state));
   files.set(`${RUNTIME_DIR}/util.js`, UTIL_JS);
   files.set(`${RUNTIME_DIR}/drafts.js`, DRAFTS_JS);
+  // Site search and the pages it finds, while a component of the site searches. Written before the components and
+  // pages that import them, so a preview never loads a component whose search code is not there yet.
+  if (usesSiteSearch(state)) {
+    files.set(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, SEARCH_JS);
+    files.set(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, generateSearchIndex(state));
+  }
   files.set(`${STYLES_DIR}/tokens.css`, generateTokensCss(state));
   files.set(`${STYLES_DIR}/theme.css`, theme.baseCss);
   files.set(`${STYLES_DIR}/components.css`, generateComponentsCss(state));
