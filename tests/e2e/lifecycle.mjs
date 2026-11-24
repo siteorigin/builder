@@ -235,13 +235,19 @@ await openRecent(dirA);
 await win.waitForSelector('.editor');
 assert.equal(await openDir(), realpathSync(dirA), 'the repaired project opens from Welcome');
 
-step('the toolbar mark, pressed from the keyboard, saves the focused field and lands on Welcome (#517)');
+step('the toolbar mark, pressed from the keyboard or clicked, saves the focused field and lands on Welcome (#517)');
 heading = await heroHeading();
 await typeDraft(heading, 'Kept through All projects');
 await mark.focus();
 await win.keyboard.press('Enter');
 await win.waitForSelector('.welcome');
 assert.equal(savedHeading(dirA), 'Kept through All projects', 'the typed heading is on disk');
+await openProject(dirA);
+heading = await heroHeading();
+await typeDraft(heading, 'Kept through clicking All projects');
+await mark.click();
+await win.waitForSelector('.welcome');
+assert.equal(savedHeading(dirA), 'Kept through clicking All projects', 'a click saves the focused field too');
 
 step('closing the window saves the focused field');
 await openProject(dirA);
