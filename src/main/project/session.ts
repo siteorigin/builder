@@ -3316,7 +3316,7 @@ export class ProjectSession extends EventEmitter {
     // the designs it changed that later work may build on.
     const made = new Map<string, { title: string; how: 'added' | 'published' }>();
     const addresses = new Set<string>();
-    const moved = new Set<string>();
+    const moved = new Map<string, string>();
     const designs = new Set<string>();
     let siteBefore: unknown = null;
     for (const v of versions ?? []) {
@@ -3327,7 +3327,7 @@ export class ProjectSession extends EventEmitter {
       if (page && a && typeof a === 'object' && (!b || published)) made.set(page, { title, how: b ? 'published' : 'added' });
       if (page && a && typeof a === 'object' && typeof a.route === 'string') {
         if (!b || published) addresses.add(asRoute(a.route).toLowerCase());
-        else if (b.route !== a.route) moved.add(asRoute(a.route).toLowerCase());
+        else if (b.route !== a.route) moved.set(asRoute(a.route).toLowerCase(), page);
       }
       // A design is what placements show: its name and description are only what the library calls it.
       const design = v.path.match(COMPONENT_DOC)?.[1] ?? Object.values(this.state.components).find((d) => d.sourcePath === v.path)?.id;
@@ -3335,10 +3335,10 @@ export class ProjectSession extends EventEmitter {
       if (design && v.before !== null && v.after !== null && JSON.stringify(shown(v.before)) !== JSON.stringify(shown(v.after))) designs.add(design);
       if (v.path === `${DOC_DIR}/site.json`) siteBefore = v.before;
     }
-    // An address a page moved to is lost by taking the move back only when nothing else answered at it before the
-    // turn: an old address kept for the page still leads there.
-    const kept = new Set(((siteBefore && typeof siteBefore === 'object' ? (siteBefore as SiteDoc) : this.state.site).redirects ?? []).map((r) => (typeof r?.from === 'string' ? asRoute(r.from).toLowerCase() : '')));
-    for (const a of moved) if (!kept.has(a)) addresses.add(a);
+    // An address a page moved to is lost by taking the move back unless an old address kept for that same page answered
+    // there before the turn: one kept for another page would send a later link there instead.
+    const redirects = (siteBefore && typeof siteBefore === 'object' ? (siteBefore as SiteDoc) : this.state.site).redirects ?? [];
+    for (const [a, page] of moved) if (!redirects.some((r) => typeof r?.from === 'string' && asRoute(r.from).toLowerCase() === a && r.pageId === page)) addresses.add(a);
     // A link typed as the site's own address names it by the public URL the site has now, or had before the turn.
     const bases = siteBases(this.state.site, siteBefore && typeof siteBefore === 'object' ? (siteBefore as SiteDoc) : null);
     const pageIds = new Set(made.keys());
@@ -3368,8 +3368,9 @@ export class ProjectSession extends EventEmitter {
       for (const v of own ?? []) {
         if (reason) break;
         const current = now(v.path);
-        const links = (doc: unknown) => linksInto(doc, pageIds, addresses, bases);
-        if (links(v.after) > links(v.before) && links(current) > links(atTurn.get(v.path) ?? null)) {
+        // By where each link goes: one swapped for a link elsewhere into what the turn made is a new link.
+        const [after, before, nowLinks, then] = [v.after, v.before, current, atTurn.get(v.path) ?? null].map((d) => linksInto(d, pageIds, addresses, bases));
+        if ([...after].some(([to, n]) => n > (before.get(to) ?? 0) && (nowLinks.get(to) ?? 0) > (then.get(to) ?? 0))) {
           const one = made.size === 1 ? [...made.values()][0] : null;
           reason = one ? `It adds a link to “${one.title}”, which this turn ${one.how}.` : 'It adds a link to a page this turn added or published.';
           continue;

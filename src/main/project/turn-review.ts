@@ -295,21 +295,25 @@ export function ownAddresses(target: string, bases: readonly URL[]): string[] {
 export const ownAddress = (target: string, bases: readonly URL[]): string | null => ownAddresses(target, bases)[0] ?? null;
 
 /**
- * How many links a document holds into what a turn made: links to one of the pages `pageIds`, and links typed as the
- * site's own web address of one of `addresses` (lowercased routes). Counted per version, so a change that adds one
- * is told from one that only kept it.
+ * The links a document holds into what a turn made, counted by where they go: links to one of the pages `pageIds`,
+ * and links typed as the site's own web address of one of `addresses` (lowercased routes). Counted per version, so a
+ * change that adds one is told from one that only kept it.
  */
-export function linksInto(doc: unknown, pageIds: ReadonlySet<string>, addresses: ReadonlySet<string>, bases: readonly URL[]): number {
-  let n = 0;
+export function linksInto(doc: unknown, pageIds: ReadonlySet<string>, addresses: ReadonlySet<string>, bases: readonly URL[]): Map<string, number> {
+  const out = new Map<string, number>();
+  const count = (to: string) => out.set(to, (out.get(to) ?? 0) + 1);
   const walk = (x: unknown) => {
     if (Array.isArray(x)) return x.forEach(walk);
     if (!isObj(x)) return;
-    if (x.type === 'page' && typeof x.target === 'string' && pageIds.has(x.target)) n++;
-    else if (x.type === 'url' && typeof x.target === 'string' && addresses.size && ownAddresses(x.target, bases).some((a) => addresses.has(a))) n++;
+    if (x.type === 'page' && typeof x.target === 'string' && pageIds.has(x.target)) count(`page:${x.target}`);
+    else if (x.type === 'url' && typeof x.target === 'string' && addresses.size) {
+      const to = ownAddresses(x.target, bases).find((a) => addresses.has(a));
+      if (to) count(`url:${to}`);
+    }
     for (const y of Object.values(x)) walk(y);
   };
   walk(doc);
-  return n;
+  return out;
 }
 
 /**

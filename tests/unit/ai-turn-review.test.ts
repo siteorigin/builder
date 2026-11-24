@@ -390,6 +390,22 @@ describe('reviewing an earlier AI turn (issue 164)', () => {
     expect(review!.revert).toEqual({ ok: true });
   });
 
+  it('treats a later link to an address the turn took over from another page as depending on it', async () => {
+    const { s } = await make();
+    await ok(s.apply({ operations: [{ type: 'site.update', baseUrl: 'https://books.example' }] }, { label: 'Set website address' }));
+    const [, about] = s.state.site.pageOrder;
+    // About's old address /help/ stays kept for About when it moves away.
+    await ok(s.apply({ operations: [{ type: 'page.update', pageId: about, route: '/help/' }] }, { label: 'Move About' }));
+    await ok(s.apply({ operations: [{ type: 'page.update', pageId: about, route: '/about-us/' }] }, { label: 'Move About again' }));
+    await ok(s.apply({ operations: [{ type: 'page.create', pageId: PICKS, title: 'Support', route: '/support/' }] }, { label: 'Add page' }));
+    expect(await s.beginRun('run_take')).toBeNull();
+    await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, route: '/help/' }] }, { label: 'AI', source: 'ai', runId: 'run_take', history: false }));
+    expect(await s.completeRun('AI: Move Support to /help/')).toBe(true);
+    const entryId = s.historyInfo().entries.at(-1)!.id;
+    await linkHero(s, { type: 'url', target: 'https://books.example/help/' });
+    expect((await s.reviewAiEntry(entryId)).review!.later.map((l) => l.relation)).toEqual(['depends']);
+  });
+
   it('counts only links a later change added beyond those the page held when the turn ended', async () => {
     const { s } = await make();
     await ok(s.apply({ operations: [{ type: 'page.create', pageId: PICKS, title: 'Staff picks', route: '/staff-picks/' }] }, { label: 'Add page' }));
