@@ -1167,6 +1167,10 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
     nodes = [structuralNode(state, op.owner, op.primitive, op.bind)];
   } else if (op.primitive) {
     nodes = primitiveNode(state, op.primitive, op.text);
+    // A paragraph or span container holds only inline content, so text inserted there is inline text.
+    const holder = op.parentId && !op.slot && Object.hasOwn(tree.nodes, op.parentId) ? tree.nodes[op.parentId] : undefined;
+    const text = nodes[0];
+    if (holder?.kind === 'element' && (holder.tag === 'p' || holder.tag === 'span') && text.kind === 'text' && !text.rich) text.tag = 'span';
   } else {
     let def: ComponentDefinition;
     if (op.definitionId) def = state.components[op.definitionId] ?? fail(`Component definition "${op.definitionId}" is not installed.`);
@@ -1770,6 +1774,7 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       if (node.kind !== 'text' && node.kind !== 'element') fail('Only text and containers have a tag.');
       if (node.kind === 'text' && node.rich) fail('Rich text keeps its paragraph structure.');
       // A bound tag is the choice's default, which must stay one of the choice's options.
+      if (isBinding(node.tag) && typeof v !== 'string') fail('A tag is the name of one, such as "h2" or "section".');
       if (setBound(node.tag, () => String(v))) return {};
       // Any tag of its kind. Whether it fits where it sits (a list item in a list, only inline content in a
       // paragraph) is judged once the whole batch is applied, so a list and its items can change together.
@@ -3047,7 +3052,9 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
   const retagged = ops.flatMap((op, i) => (op.type === 'node.setContent' && op.field === 'tag' ? [{ op, i }] : []));
   if (retagged.length) {
     const problem = batchTagProblem(state, draft, retagged.map(({ op }) => op.owner));
-    if (problem) throw new EngineError('INVALID_ARGUMENT', ops.length > 1 ? `Operation ${retagged[0].i + 1} (node.setContent): ${problem}` : problem);
+    // Named by the edit that retagged the node out of place, when one did; else it is where the batch leaves it.
+    const by = problem ? retagged.findLast(({ op }) => op.nodeId === problem.nodeId && op.owner.kind === problem.owner.kind && op.owner.id === problem.owner.id) : undefined;
+    if (problem) throw new EngineError('INVALID_ARGUMENT', ops.length > 1 && by ? `Operation ${by.i + 1} (node.setContent): ${problem.message}` : problem.message);
   }
   // A theme update changes no project component, not even this derived field.
   if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };

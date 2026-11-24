@@ -44,3 +44,10 @@ export function tagSelectOptions(kind: 'text' | 'element', current: unknown, fit
   const unknown = groups.some((g) => g.options.some((o) => o.tag === value)) ? null : value;
   return { value, unknown, groups };
 }
+
+/** Why the tags that don't fit can't be chosen, one line per reason with the tags it rules out, for reading beside the select. */
+export function unavailableReasons(groups: ReturnType<typeof tagSelectOptions>['groups']): Array<{ reason: string; names: string[] }> {
+  const out = new Map<string, string[]>();
+  for (const o of groups.flatMap((g) => g.options)) if (o.problem) out.set(o.problem, [...(out.get(o.problem) ?? []), `${o.name} (${o.tag})`]);
+  return [...out].map(([reason, names]) => ({ reason, names }));
+}

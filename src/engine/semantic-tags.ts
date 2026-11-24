@@ -2,16 +2,18 @@
  * Semantic tags (#189): which element and text tags a node can take where it sits. A tag is refused when the HTML it
  * renders would break a nesting rule: one the browser repairs (a block inside a paragraph, a list item inside a list
  * item), which breaks hydration, or one a list, description list, figure or disclosure depends on to mean anything.
- * A plain container or paragraph directly in a list is only a warning: it is how a list is built, one edit at a time,
- * since new containers are always plain.
+ * Content a list or description list is still being built from (a plain container or paragraph directly in it) is
+ * only a warning, since new containers are always plain and new text a heading or paragraph.
  *
  * A node sits where it renders. Through a repeat it sits in the repeat's parent. Content placed in a component's slot
- * sits where the component's design renders that slot, and a placed component renders as its design's root. Beyond
- * that one step nothing is known and nothing is refused (the outside of a component's design, a slot forwarded again,
- * a code component), except inside a paragraph or span container: there only content that is certainly inline may go.
+ * sits wherever the component's design renders that slot (following a slot it forwards into another component), and a
+ * placed managed component renders as its design's root. The outside of a component's design is unknown, as is a code
+ * component's markup: nothing is refused there, except inside a paragraph or span container, where only content that
+ * is certainly inline may go.
  */
 import type { ComponentDefinition, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { ELEMENT_TAGS, TEXT_TAGS, isBinding } from '@shared/types';
+import { isCardLink } from '@generator/card-links';
 import { boundSchema } from './schema';
 import { allTrees, getNode, getTree } from './tree';
 
@@ -35,15 +37,18 @@ const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
 /** Text tags that are inline (phrasing) content. */
 const INLINE_TEXT = ['span', 'small', 'strong', 'cite'];
 const LANDMARK_ENDS = ['header', 'footer'];
+/** Tags a container that is one link can't keep: the link renders in its place, between a list and its items, say. */
+const CARD_BREAKS = ['ul', 'ol', 'li', 'dl', 'dt', 'dd', 'figcaption', 'details', 'summary'];
 
 /** What renders around a tree's roots: a page's sections sit in the layout's `<main>`, the header and footer in `<body>`. */
 const ROOT_PARENT: Record<OwnerRef['kind'], string | null> = { page: 'main', shell: 'body', component: null };
 
+const ownerKey = (o: OwnerRef) => `${o.kind}:${o.id}`;
 const sameOwner = (a: OwnerRef, b: OwnerRef) => a.kind === b.kind && a.id === b.id;
 const some = (tags: readonly string[] | null | undefined, set: readonly string[]) => !!tags && tags.some((t) => set.includes(t));
 const every = (tags: readonly string[] | null | undefined, set: readonly string[]) => !!tags && tags.every((t) => set.includes(t));
 
-/** One tree being read: its nodes, and the parent each child renders under. */
+/** One document being read: its nodes, and the parent each child is held by. */
 interface TreeCtx {
   owner: OwnerRef;
   tree: NodeTree;
@@ -51,25 +56,31 @@ interface TreeCtx {
   parentOf: Map<string, string>;
 }
 
-/** Where a node renders: inside an element of some tree (`id`), or inside the page's own markup (`id` null). */
-interface Parent {
-  tags: readonly string[];
-  ctx: TreeCtx;
-  id: string | null;
+/** An element a node renders inside: one in some document, or the page's own markup around a document's roots. */
+type Around = { ctx: TreeCtx; id: string } | { outer: string };
+
+/**
+ * Where a node renders: the nearest element on each way up (each place a component renders the slot holding it, say),
+ * and `open` when some way leads somewhere unknown first. A slot a design never renders leaves its content nowhere.
+ */
+interface Up {
+  parents: Around[];
+  open: boolean;
 }
 
-/** What a node renders as, for the rules: its kind and possible tags, or nothing known (a slot, a code component). */
-type Rendered = { kind: GraphNode['kind']; tags: readonly string[] | null; rich: boolean } | null;
+const OPEN: Up = { parents: [], open: true };
+const aroundKey = (a: Around) => ('outer' in a ? `outer:${a.outer}` : `${ownerKey(a.ctx.owner)}|${a.id}`);
 
-class Reader {
+/** How a project's documents hold each other: the same whatever tag an edit would set, so shared between candidates. */
+class Structure {
   private ctxs = new Map<string, TreeCtx>();
-  constructor(
-    readonly state: ProjectState,
-    readonly override?: TagOverride
-  ) {}
+  private ups = new Map<string, Up>();
+  private alls = new Map<string, Around[]>();
+  private visiting = new Set<string>();
+  constructor(readonly state: ProjectState) {}
 
   ctx(owner: OwnerRef, tree: NodeTree): TreeCtx {
-    const key = `${owner.kind}:${owner.id}`;
+    const key = ownerKey(owner);
     let c = this.ctxs.get(key);
     if (!c) {
       const parentOf = new Map<string, string>();
@@ -85,10 +96,78 @@ class Reader {
   }
 
   /** A managed definition's tree, read as its own document. */
-  private defCtx(definitionId: string): TreeCtx | null {
+  defCtx(definitionId: string): TreeCtx | null {
     const def = Object.hasOwn(this.state.components, definitionId) ? this.state.components[definitionId] : undefined;
     return def?.kind === 'managed' && def.tree ? this.ctx({ kind: 'component', id: def.id }, def.tree) : null;
   }
+
+  /** Where a node renders, through repeats and into each place a placed component renders the slot holding it. */
+  up(ctx: TreeCtx, id: string): Up {
+    const key = `up|${ownerKey(ctx.owner)}|${id}`;
+    const known = this.ups.get(key);
+    if (known) return known;
+    // A document that holds itself (edited by hand) renders nowhere certain.
+    if (this.visiting.has(key)) return OPEN;
+    this.visiting.add(key);
+    const out = this.climb(ctx, id);
+    this.visiting.delete(key);
+    this.ups.set(key, out);
+    return out;
+  }
+
+  private climb(ctx: TreeCtx, id: string): Up {
+    const at = ctx.parentOf.get(id);
+    if (at === undefined) {
+      const outer = ROOT_PARENT[ctx.owner.kind];
+      return outer && ctx.tree.rootIds.includes(id) ? { parents: [{ outer }], open: false } : OPEN;
+    }
+    const p = Object.hasOwn(ctx.tree.nodes, at) ? ctx.tree.nodes[at] : undefined;
+    if (!p) return OPEN;
+    if (p.kind === 'repeat') return this.up(ctx, p.id);
+    if (p.kind === 'element') return { parents: [{ ctx, id: p.id }], open: false };
+    if (p.kind !== 'instance') return OPEN;
+    const slot = Object.entries(p.slots ?? {}).find(([, ids]) => (ids ?? []).includes(id))?.[0];
+    const inner = this.defCtx(p.definitionId);
+    if (!inner || slot === undefined) return OPEN;
+    const parents = new Map<string, Around>();
+    let open = false;
+    for (const outlet of Object.values(inner.tree.nodes)) {
+      if (outlet.kind !== 'slot' || outlet.slot !== slot) continue;
+      const u = this.up(inner, outlet.id);
+      open ||= u.open;
+      for (const a of u.parents) parents.set(aroundKey(a), a);
+    }
+    return { parents: [...parents.values()], open };
+  }
+
+  /** Every element a node renders inside, on any way up, each once. */
+  ancestors(ctx: TreeCtx, id: string): Around[] {
+    const key = `all|${ownerKey(ctx.owner)}|${id}`;
+    const known = this.alls.get(key);
+    if (known) return known;
+    if (this.visiting.has(key)) return [];
+    this.visiting.add(key);
+    const out = new Map<string, Around>();
+    for (const a of this.up(ctx, id).parents) {
+      out.set(aroundKey(a), a);
+      if (!('outer' in a)) for (const b of this.ancestors(a.ctx, a.id)) out.set(aroundKey(b), b);
+    }
+    this.visiting.delete(key);
+    const list = [...out.values()];
+    this.alls.set(key, list);
+    return list;
+  }
+}
+
+/** What a node renders as, for the rules: its kind and possible tags, or nothing known (a slot, a code component). */
+type Rendered = { node: GraphNode; kind: GraphNode['kind']; tags: readonly string[] | null; rich: boolean } | null;
+
+/** The project read with one node's tag as an edit would set it. */
+class Reader {
+  constructor(
+    readonly structure: Structure,
+    readonly override?: TagOverride
+  ) {}
 
   /** The tags a node can render: its literal tag (its kind's plain tag for one that is not supported), or each option of a bound choice. */
   tags(ctx: TreeCtx, n: GraphNode): readonly string[] | null {
@@ -105,56 +184,27 @@ class Reader {
     return [...new Set([...options, fallback])];
   }
 
-  /** What a node renders as. A placed managed component renders as its design's root; anything else placed is unknown. */
+  around(a: Around): { tags: readonly string[]; node?: GraphNode } {
+    if ('outer' in a) return { tags: [a.outer] };
+    const node = a.ctx.tree.nodes[a.id];
+    return { tags: this.tags(a.ctx, node) ?? ['div'], node };
+  }
+
+  /** What a node renders as. A placed managed component renders as its design's root, through any it places there. */
   rendered(ctx: TreeCtx, n: GraphNode): Rendered {
-    if (n.kind === 'slot') return null;
-    if (n.kind === 'instance') {
-      const inner = this.defCtx(n.definitionId);
+    let at: { ctx: TreeCtx; node: GraphNode } = { ctx, node: n };
+    const seen = new Set<string>();
+    while (at.node.kind === 'instance') {
+      const inner = this.structure.defCtx(at.node.definitionId);
       const rootId = inner?.tree.rootIds.length === 1 ? inner.tree.rootIds[0] : undefined;
       const root = inner && rootId && Object.hasOwn(inner.tree.nodes, rootId) ? inner.tree.nodes[rootId] : undefined;
-      if (!inner || !root || root.kind === 'instance' || root.kind === 'slot' || root.kind === 'repeat') return null;
-      return { kind: root.kind, tags: this.tags(inner, root), rich: root.kind === 'text' && !!root.rich };
+      if (!inner || !root || seen.has(ownerKey(inner.owner))) return null;
+      seen.add(ownerKey(inner.owner));
+      at = { ctx: inner, node: root };
     }
-    return { kind: n.kind, tags: this.tags(ctx, n), rich: n.kind === 'text' && !!n.rich };
-  }
-
-  /** The element a node renders inside, through repeats, and from a slot into the design that renders it. */
-  parent(ctx: TreeCtx, id: string, hop = true): Parent | null {
-    const nodes = ctx.tree.nodes;
-    let at = ctx.parentOf.get(id);
-    let child = id;
-    for (let guard = 0; at !== undefined && guard < 500; guard++) {
-      const p = Object.hasOwn(nodes, at) ? nodes[at] : undefined;
-      if (!p) return null;
-      if (p.kind === 'element') return { tags: this.tags(ctx, p) ?? ['div'], ctx, id: p.id };
-      if (p.kind === 'instance') return hop ? this.outlet(p.definitionId, p.slots ?? {}, child) : null;
-      child = p.id;
-      at = ctx.parentOf.get(p.id);
-    }
-    if (at !== undefined) return null;
-    const outer = ROOT_PARENT[ctx.owner.kind];
-    return outer ? { tags: [outer], ctx, id: null } : null;
-  }
-
-  /** Where a placed component renders the slot holding `child`: the element around that slot in its design. */
-  private outlet(definitionId: string, slots: Record<string, string[]>, child: string): Parent | null {
-    const inner = this.defCtx(definitionId);
-    const slot = Object.entries(slots).find(([, ids]) => (ids ?? []).includes(child))?.[0];
-    if (!inner || slot === undefined) return null;
-    const outlet = Object.values(inner.tree.nodes).find((n) => n.kind === 'slot' && n.slot === slot);
-    // One step only: a slot the design forwards into another placement, or renders at its edge, sits somewhere unknown.
-    return outlet ? this.parent(inner, outlet.id, false) : null;
-  }
-
-  /** The elements a node renders inside, nearest first, as far as they are known. */
-  ancestors(ctx: TreeCtx, id: string): Parent[] {
-    const out: Parent[] = [];
-    let p = this.parent(ctx, id);
-    for (let guard = 0; p && p.id !== null && guard < 500; guard++) {
-      out.push(p);
-      p = this.parent(p.ctx, p.id);
-    }
-    return out;
+    const r = at.node;
+    if (r.kind === 'slot' || r.kind === 'repeat') return null;
+    return { node: r, kind: r.kind, tags: this.tags(at.ctx, r), rich: r.kind === 'text' && !!r.rich };
   }
 }
 
@@ -191,9 +241,12 @@ function inline(r: Rendered): boolean {
   return r.kind === 'text' && !r.rich && every(r.tags, INLINE_TEXT);
 }
 
-/** Every nesting problem in one tree, with `override` standing in for one node's tag. */
+/** A container that renders as one link in place of its own tag: a card with a destination and no click action. */
+const linkCard = (n: GraphNode) => n.kind === 'element' && isCardLink(n) && (n.action === undefined || n.action === null);
+
+/** Every nesting problem in one document, as `reader` reads the project. */
 function treeProblems(reader: Reader, owner: OwnerRef, tree: NodeTree): NestingProblem[] {
-  const ctx = reader.ctx(owner, tree);
+  const ctx = reader.structure.ctx(owner, tree);
   const nodes = tree.nodes;
   const reachable = new Set<string>();
   const visit = (id: string) => {
@@ -209,88 +262,100 @@ function treeProblems(reader: Reader, owner: OwnerRef, tree: NodeTree): NestingP
   for (const id of reachable) {
     const n = nodes[id];
     if (n.kind === 'repeat') continue;
-    const say = (severity: NestingProblem['severity'], rule: string, message: string) => out.push({ severity, nodeId: id, site: `${id}|${rule}`, message: `${subject(n)} ${message}` });
+    const said = new Set<string>();
+    const say = (severity: NestingProblem['severity'], rule: string, message: string) => {
+      if (said.has(rule)) return;
+      said.add(rule);
+      out.push({ severity, nodeId: id, site: `${id}|${rule}`, message: `${subject(n)} ${message}` });
+    };
     const r = reader.rendered(ctx, n);
     const tags = r?.tags ?? null;
-    const p = reader.parent(ctx, id);
-    const anc = reader.ancestors(ctx, id);
-    // A block inside a paragraph closes it, so the browser builds a different page from the one the site's code expects.
-    if (anc.some((a) => some(a.tags, ['p', 'span'])) && !inline(r)) {
-      say('error', 'inline', 'can’t go inside a paragraph or span container, which holds only inline text, buttons, links and icons.');
-      continue;
-    }
-    if (some(tags, ['main'])) {
-      say('error', 'main', 'can’t be a main area: every page already has one, around its sections.');
-      continue;
-    }
-    if (some(tags, ['li']) && p && !every(p.tags, ['ul', 'ol'])) {
-      say('error', 'li', 'is a list item, so it goes directly inside a list (ul or ol).');
-      continue;
-    }
-    // A term and its description may be grouped in one plain container inside the list.
-    const group = p && p.id !== null && every(p.tags, ['div']) ? reader.parent(p.ctx, p.id) : undefined;
-    const inGroup = group !== undefined && group !== null && some(group.tags, ['dl']);
-    if (some(tags, ['dt', 'dd']) && p && !every(p.tags, ['dl']) && !(group === null || (group && every(group.tags, ['dl'])))) {
-      say('error', 'dl-item', 'is a term or description, so it goes inside a description list (dl).');
-      continue;
-    }
-    if (some(tags, ['figcaption']) && p && !every(p.tags, ['figure'])) {
-      say('error', 'figcaption', 'is a caption, so it goes directly inside a figure.');
-      continue;
-    }
-    if (some(tags, ['summary']) && p && !every(p.tags, ['details'])) {
-      say('error', 'summary', 'is a summary, so it goes directly inside a details element.');
-      continue;
-    }
     const element = r?.kind === 'element';
     const plainText = r?.kind === 'text' && !r.rich;
-    if (r && p && some(p.tags, ['ul', 'ol'])) {
-      if (element && every(tags, ['li', 'div']) && !every(tags, ['li'])) say('warning', 'list-item', 'sits directly in a list: make it a list item (li).');
-      else if (!(element && every(tags, ['li']))) say('error', 'list-child', 'can’t go directly inside a list: only list items (li) and containers can.');
-      continue;
+    if (some(tags, ['main'])) say('error', 'main', 'can’t be a main area: every page already has one, around its sections.');
+    if (linkCard(n) && some(reader.tags(ctx, n), CARD_BREAKS))
+      say('error', 'card', 'is one link, which renders in place of its tag, so it can’t be a list, list item, term, caption or disclosure. Link a container inside it instead.');
+
+    const structure = reader.structure;
+    const above = structure.ancestors(ctx, id).map((a) => reader.around(a));
+    // A block inside a paragraph closes it, so the browser builds a different page from the one the site's code expects.
+    if (!inline(r)) {
+      if (above.some((a) => some(a.tags, ['p']))) say('error', 'in-paragraph', 'can’t go inside a paragraph container, which holds only inline text, buttons, links and icons.');
+      else if (above.some((a) => some(a.tags, ['span']))) say('error', 'in-span', 'can’t go inside a span container, which holds only inline text, buttons, links and icons.');
     }
-    if (r && p && (some(p.tags, ['dl']) || inGroup)) {
-      const fits = (element && every(tags, inGroup ? ['dt', 'dd'] : ['dt', 'dd', 'div'])) || (plainText && every(tags, ['dt', 'dd']));
-      const unfinished = (element && every(tags, ['dt', 'dd', 'div'])) || (plainText && every(tags, ['dt', 'dd', 'p']));
-      if (!fits && unfinished) say('warning', 'dl-term', 'sits directly in a description list: make it a term (dt) or description (dd).');
-      else if (!fits) say('error', 'dl-child', 'can’t go directly inside a description list: only terms (dt), descriptions (dd) and containers grouping them can.');
-      continue;
+    if (some(tags, LANDMARK_ENDS) && above.some((a) => some(a.tags, LANDMARK_ENDS))) say('error', 'landmark', 'can’t be a header or footer inside another header or footer.');
+    for (const at of structure.up(ctx, id).parents) {
+      const p = reader.around(at);
+      // A term and its description may be grouped in one plain container inside the list: the container's own parents.
+      const group = !('outer' in at) && p.node?.kind === 'element' && every(p.tags, ['div']) ? structure.up(at.ctx, at.id).parents.map((g) => reader.around(g)) : null;
+      if (some(tags, ['li']) && !every(p.tags, ['ul', 'ol'])) say('error', 'li', 'is a list item, so it goes directly inside a list (ul or ol).');
+      if (some(tags, ['dt', 'dd']) && !every(p.tags, ['dl']) && !(group && group.every((g) => every(g.tags, ['dl']))))
+        say('error', 'dl-item', 'is a term or description, so it goes inside a description list (dl).');
+      if (some(tags, ['figcaption']) && !every(p.tags, ['figure'])) say('error', 'figcaption', 'is a caption, so it goes directly inside a figure.');
+      if (some(tags, ['summary']) && !every(p.tags, ['details'])) say('error', 'summary', 'is a summary, so it goes directly inside a details element.');
+      if (!r) continue;
+      if (some(p.tags, ['ul', 'ol'])) {
+        if (element && every(tags, ['li', 'div']) && !every(tags, ['li'])) say('warning', 'list-item', 'sits directly in a list: make it a list item (li).');
+        else if (!(element && every(tags, ['li']))) say('error', 'list-child', 'can’t go directly inside a list: only list items (li) and containers can.');
+      } else if (some(p.tags, ['dl'])) {
+        const fits = (element && every(tags, ['dt', 'dd', 'div'])) || (plainText && every(tags, ['dt', 'dd']));
+        if (!fits && plainText && every(tags, ['dt', 'dd', 'p'])) say('warning', 'dl-term', 'sits directly in a description list: make it a term (dt) or description (dd).');
+        else if (!fits) say('error', 'dl-child', 'can’t go directly inside a description list: only terms (dt), descriptions (dd) and containers grouping them can.');
+      } else if (group?.some((g) => some(g.tags, ['dl']))) {
+        // In a group, anything else is only waiting to become a term or description, or to move out.
+        if (!((element || plainText) && every(tags, ['dt', 'dd']))) say('warning', 'dl-group', 'sits in a description list’s group: make it a term (dt) or description (dd).');
+      }
     }
-    if (some(tags, LANDMARK_ENDS) && anc.some((a) => some(a.tags, LANDMARK_ENDS))) say('error', 'landmark', 'can’t be a header or footer inside another header or footer.');
   }
   return out;
 }
 
 /** Every nesting problem in one tree, with `override` standing in for one node's tag: what the tree would hold with it. */
 export function nestingProblems(state: ProjectState, owner: OwnerRef, tree: NodeTree, override?: TagOverride): NestingProblem[] {
-  return treeProblems(new Reader(state, override), owner, tree);
+  return treeProblems(new Reader(new Structure(state), override), owner, tree);
 }
+
+type Doc = { owner: OwnerRef; tree: NodeTree; label: string };
 
 /**
- * The documents a tag edit in `owner` can change the HTML of: its own, and for a component's design every document
- * placing it (its root and slots render there). Theme designs are fixed theme data, checked when the theme is built.
+ * The documents a tag edit in `owners` can change the HTML of: each one itself, and for a component's design every
+ * document placing it, directly or through components placing it (its root and slots render there). Theme designs
+ * are fixed theme data, checked when the theme is built.
  */
-function reach(state: ProjectState, owners: readonly OwnerRef[]): Array<{ owner: OwnerRef; tree: NodeTree; label: string }> {
-  const all = allTrees(state).filter((t) => t.owner.kind !== 'component' || state.components[t.owner.id]?.owner !== 'theme');
-  if (owners.some((o) => o.kind === 'component')) return all;
-  return all.filter((t) => owners.some((o) => sameOwner(o, t.owner)));
+function reach(state: ProjectState, owners: readonly OwnerRef[]): Doc[] {
+  const trees = allTrees(state);
+  const reached = new Set(owners.map(ownerKey));
+  const defs = new Set(owners.filter((o) => o.kind === 'component').map((o) => o.id));
+  for (let grew = defs.size > 0; grew; ) {
+    grew = false;
+    for (const t of trees) {
+      if (reached.has(ownerKey(t.owner)) || !Object.values(t.tree.nodes).some((n) => n.kind === 'instance' && defs.has(n.definitionId))) continue;
+      reached.add(ownerKey(t.owner));
+      if (t.owner.kind === 'component') defs.add(t.owner.id);
+      grew = true;
+    }
+  }
+  return trees.filter((t) => reached.has(ownerKey(t.owner)) && (t.owner.kind !== 'component' || state.components[t.owner.id]?.owner !== 'theme'));
 }
 
-const ownerKey = (o: OwnerRef) => `${o.kind}:${o.id}`;
-
-/** The sites of the errors each document `owners` reach has now, by document. */
-function errorSites(state: ProjectState, owners: readonly OwnerRef[]): Map<string, Set<string>> {
-  const reader = new Reader(state);
-  return new Map(reach(state, owners).map((t) => [ownerKey(t.owner), new Set(treeProblems(reader, t.owner, t.tree).filter((p) => p.severity === 'error').map((p) => p.site))]));
+/** The sites of the errors each document `docs` lists has, by document. */
+function errorSites(reader: Reader, docs: readonly Doc[]): Map<string, Set<string>> {
+  return new Map(docs.map((t) => [ownerKey(t.owner), new Set(treeProblems(reader, t.owner, t.tree).filter((p) => p.severity === 'error').map((p) => p.site))]));
 }
 
-/** The first error `after` has in the documents `owners` reach that `before` lacks, named by its document when that is another one. */
-function firstIntroduced(before: Map<string, Set<string>>, after: ProjectState, owners: readonly OwnerRef[], override?: TagOverride): string | null {
-  const now = new Reader(after, override);
-  for (const t of reach(after, owners)) {
+/** An error an edit brings in: its message (named by its document when that is another one), and where it is. */
+export interface IntroducedProblem {
+  message: string;
+  owner: OwnerRef;
+  nodeId: string;
+}
+
+/** The first error `reader` finds in `docs` that `before` lacks. */
+function firstIntroduced(before: Map<string, Set<string>>, reader: Reader, docs: readonly Doc[], owners: readonly OwnerRef[]): IntroducedProblem | null {
+  for (const t of docs) {
     const sites = before.get(ownerKey(t.owner));
-    const found = treeProblems(now, t.owner, t.tree).find((p) => p.severity === 'error' && !sites?.has(p.site));
-    if (found) return owners.some((o) => sameOwner(o, t.owner)) ? found.message : `${t.label}: ${found.message}`;
+    const found = treeProblems(reader, t.owner, t.tree).find((p) => p.severity === 'error' && !sites?.has(p.site));
+    if (found) return { message: owners.some((o) => sameOwner(o, t.owner)) ? found.message : `${t.label}: ${found.message}`, owner: t.owner, nodeId: found.nodeId };
   }
   return null;
 }
@@ -310,14 +375,37 @@ export function tagKindProblem(node: GraphNode, tag: unknown): string | null {
  * so a document with an older problem can still be repaired one edit at a time, and the batch is judged as a whole:
  * a list and its items can change together.
  */
-export function batchTagProblem(before: ProjectState, after: ProjectState, owners: readonly OwnerRef[]): string | null {
-  return owners.length ? firstIntroduced(errorSites(before, owners), after, owners) : null;
+export function batchTagProblem(before: ProjectState, after: ProjectState, owners: readonly OwnerRef[]): IntroducedProblem | null {
+  if (!owners.length) return null;
+  const was = reach(before, owners);
+  return firstIntroduced(errorSites(new Reader(new Structure(before)), was), new Reader(new Structure(after)), reach(after, owners), owners);
+}
+
+/** Disclosures are controls: a linked card around one would put a control inside a link. */
+function cardProblem(structure: Structure, owner: OwnerRef, nodeId: string, tag: string): string | null {
+  if (tag !== 'details' && tag !== 'summary') return null;
+  const ctx = structure.ctx(owner, getTree(structure.state, owner));
+  const inCard = structure.ancestors(ctx, nodeId).some((a) => !('outer' in a) && isCardLink(a.ctx.tree.nodes[a.id]));
+  return inCard ? 'A disclosure can’t go inside a linked card, which can hold nothing interactive.' : null;
+}
+
+/** A checker for one node's candidate tags, sharing what doesn't depend on the tag. */
+function candidates(state: ProjectState, owner: OwnerRef, nodeId: string): (tag: unknown) => string | null {
+  const node = getNode(getTree(state, owner), nodeId);
+  const structure = new Structure(state);
+  const docs = reach(state, [owner]);
+  let before: Map<string, Set<string>> | undefined;
+  return (tag) => {
+    const kind = tagKindProblem(node, tag);
+    if (kind) return kind;
+    before ??= errorSites(new Reader(structure), docs);
+    return cardProblem(structure, owner, nodeId, tag as string) ?? firstIntroduced(before, new Reader(structure, { owner, nodeId, tag: tag as string }), docs, [owner])?.message ?? null;
+  };
 }
 
 /** Why `node` can't take `tag` where it sits, as one edit on its own, or null when it can. */
 export function tagProblem(state: ProjectState, owner: OwnerRef, nodeId: string, tag: unknown): string | null {
-  const node = getNode(getTree(state, owner), nodeId);
-  return tagKindProblem(node, tag) ?? firstIntroduced(errorSites(state, [owner]), state, [owner], { owner, nodeId, tag: tag as string });
+  return candidates(state, owner, nodeId)(tag);
 }
 
 /** Each tag of a node's kind, with why it can't take it where it sits (null when it can, and for the tag it has). */
@@ -325,6 +413,6 @@ export function tagOptions(state: ProjectState, owner: OwnerRef, nodeId: string)
   const node = getNode(getTree(state, owner), nodeId);
   if (node.kind !== 'element' && node.kind !== 'text') return [];
   const tags: readonly string[] = node.kind === 'text' ? TEXT_TAGS : ELEMENT_TAGS;
-  const before = errorSites(state, [owner]);
-  return tags.map((tag) => ({ tag, problem: tag === node.tag ? null : (tagKindProblem(node, tag) ?? firstIntroduced(before, state, [owner], { owner, nodeId, tag })) }));
+  const check = candidates(state, owner, nodeId);
+  return tags.map((tag) => ({ tag, problem: tag === node.tag ? null : check(tag) }));
 }

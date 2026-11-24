@@ -16,7 +16,7 @@ import { applyOperations } from '@engine/apply';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
 import { nestingProblems, tagOptions, tagProblem } from '@engine/semantic-tags';
 import { defFile, generateProject } from '@generator/index';
-import { ELEMENT_TAG_GROUPS, TEXT_TAG_GROUPS, tagSelectOptions } from '../../src/renderer/src/lib/tag-options';
+import { ELEMENT_TAG_GROUPS, TEXT_TAG_GROUPS, tagSelectOptions, unavailableReasons } from '../../src/renderer/src/lib/tag-options';
 
 const { managed } = FOUNDATION;
 const blank = () => createStarterState('blank', 'Blank', false);
@@ -73,11 +73,13 @@ function pageWithRows() {
 describe('text tags (#189)', () => {
   it('takes every plain text tag on a page, and the page renders it', () => {
     const { s, o } = pageWithStack();
-    for (const tag of ['h1', 'h5', 'h6', 'p', 'span', 'small', 'strong', 'blockquote', 'div', 'cite'] as const) {
+    for (const tag of TEXT_TAGS.filter((t) => !['h2', 'dt', 'dd', 'figcaption'].includes(t))) {
       const r = apply(s, [setTag(o, 'n_title01', tag)]);
       expect(home(r).nodes.n_title01).toMatchObject({ tag });
       expect(homeSvelte(r)).toMatch(new RegExp(`<${tag} class=[^>]*>\\{"Our work"\\}</${tag}>`));
       expect(errors(r)).toEqual([]);
+      // And back to a heading.
+      expect(homeSvelte(apply(r, [setTag(o, 'n_title01', 'h2')]))).toMatch(/<h2 class=[^>]*>\{"Our work"\}<\/h2>/);
     }
   });
 
@@ -93,11 +95,15 @@ describe('text tags (#189)', () => {
 describe('element tags (#189)', () => {
   it('changes a container’s tag on a page, and the page renders it', () => {
     const { s, o } = pageWithStack();
-    for (const tag of ['section', 'article', 'aside', 'nav', 'header', 'footer', 'figure', 'blockquote', 'address', 'details', 'div'] as const) {
+    for (const tag of ['section', 'article', 'aside', 'nav', 'header', 'footer', 'figure', 'blockquote', 'address', 'details'] as const) {
       const r = apply(s, [setTag(o, 'n_stack01', tag)]);
       expect(home(r).nodes.n_stack01).toMatchObject({ tag });
-      expect(homeSvelte(r)).toMatch(new RegExp(`<${tag} class=[^>]*>\\s*<h2 class=[^>]*>\\{"Our work"\\}</h2>`));
+      expect(homeSvelte(r)).toMatch(new RegExp(`<${tag} class=[^>]*>\\s*<h2 class=[^>]*>\\{"Our work"\\}</h2>\\s*<p class=[^>]*>\\{"Some words\\."\\}</p>\\s*</${tag}>`));
       expect(errors(r)).toEqual([]);
+      // And back to a plain container.
+      const back = apply(r, [setTag(o, 'n_stack01', 'div')]);
+      expect(home(back).nodes.n_stack01).toMatchObject({ tag: 'div' });
+      expect(homeSvelte(back)).toMatch(/<div class=[^>]*>\s*<h2 class=/);
     }
   });
 
@@ -106,7 +112,7 @@ describe('element tags (#189)', () => {
     const before = structuredClone(s);
     for (const bad of ['h2', 'video', 'script', '', null, ['section']])
       expect(() => apply(s, [setTag(o, 'n_stack01', bad)]), JSON.stringify(bad)).toThrow(/A container’s tag must be one of/);
-    expect(() => apply(s, [setTag(o, 'n_title01', 'h3'), setTag(o, 'n_stack01', 'main')])).toThrow(/Operation 1 \(node\.setContent\).*every page already has one/);
+    expect(() => apply(s, [setTag(o, 'n_title01', 'h3'), setTag(o, 'n_stack01', 'main')])).toThrow(/^Operation 2 \(node\.setContent\): A container can’t be a main area/);
     expect(s).toEqual(before);
   });
 
@@ -171,21 +177,44 @@ describe('lists (#189)', () => {
   });
 
   it('takes terms as text directly in a description list, or grouped in a container', () => {
-    const { s, o } = pageWithRows();
-    const dl = apply(s, [setTag(o, 'n_stack01', 'dl')]);
-    // A container directly in a description list groups a term and its description; the paragraphs in each group
-    // are only waiting to become one.
-    expect(nesting(dl).map((d) => [d.severity, d.nodeId])).toEqual([
-      ['warning', 'n_text0001'],
-      ['warning', 'n_text0002']
+    // A stack holding a group (a row with two paragraphs) and a paragraph of its own.
+    const s0 = blank();
+    const o = pageOwner(s0);
+    const s = apply(s0, [
+      { type: 'node.insert', newNodeId: 'n_stack01', owner: o, parentId: null, primitive: 'stack' },
+      { type: 'node.insert', newNodeId: 'n_group01', owner: o, parentId: 'n_stack01', primitive: 'row' },
+      { type: 'node.insert', newNodeId: 'n_term001', owner: o, parentId: 'n_group01', primitive: 'paragraph', text: 'Price' },
+      { type: 'node.insert', newNodeId: 'n_desc001', owner: o, parentId: 'n_group01', primitive: 'paragraph', text: '$10' },
+      { type: 'node.insert', newNodeId: 'n_term002', owner: o, parentId: 'n_stack01', primitive: 'paragraph', text: 'Size' }
     ]);
-    const grouped = apply(dl, [setTag(o, 'n_text0001', 'dt'), setTag(o, 'n_text0002', 'dd')]);
-    expect(nesting(grouped)).toEqual([]);
-    // Inside a group, a paragraph is only waiting to become a term or description.
-    expect(nesting(apply(grouped, [setTag(o, 'n_text0001', 'p')])).map((d) => d.severity)).toEqual(['warning']);
-    expect(() => apply(grouped, [setTag(o, 'n_text0001', 'h3')])).toThrow(/can’t go directly inside a description list/);
     // A term needs the list around it, or around its group.
-    expect(() => apply(s, [setTag(o, 'n_text0001', 'dt')])).toThrow(/is a term or description, so it goes inside a description list/);
+    expect(() => apply(s, [setTag(o, 'n_term001', 'dt')])).toThrow(/is a term or description, so it goes inside a description list/);
+    const dl = apply(s, [setTag(o, 'n_stack01', 'dl')]);
+    // The paragraphs are only waiting to become terms and descriptions.
+    expect(nesting(dl).map((d) => [d.severity, d.nodeId])).toEqual([
+      ['warning', 'n_term001'],
+      ['warning', 'n_desc001'],
+      ['warning', 'n_term002']
+    ]);
+    const done = apply(dl, [setTag(o, 'n_term001', 'dt'), setTag(o, 'n_desc001', 'dd'), setTag(o, 'n_term002', 'dt')]);
+    expect(nesting(done)).toEqual([]);
+    expect(homeSvelte(done)).toMatch(/<dl class=[^>]*>\s*<div class=[^>]*>\s*<dt class=[^>]*>\{"Price"\}<\/dt>\s*<dd class=[^>]*>\{"\$10"\}<\/dd>\s*<\/div>\s*<dt class=[^>]*>\{"Size"\}<\/dt>\s*<\/dl>/);
+    // A heading directly in the list is refused; in a group it is only unfinished.
+    expect(() => apply(done, [setTag(o, 'n_term002', 'h3')])).toThrow(/A heading can’t go directly inside a description list/);
+    expect(nesting(apply(done, [setTag(o, 'n_term001', 'h3')])).map((d) => [d.severity, d.nodeId])).toEqual([['warning', 'n_term001']]);
+  });
+
+  it('builds a description list around an image, one edit at a time', () => {
+    const s0 = blank();
+    const o = pageOwner(s0);
+    const s = apply(s0, [
+      { type: 'node.insert', newNodeId: 'n_stack01', owner: o, parentId: null, primitive: 'stack' },
+      { type: 'node.insert', newNodeId: 'n_row0001', owner: o, parentId: 'n_stack01', primitive: 'row' },
+      { type: 'node.insert', newNodeId: 'n_image01', owner: o, parentId: 'n_row0001', primitive: 'image' }
+    ]);
+    const dl = apply(s, [setTag(o, 'n_stack01', 'dl')]);
+    expect(nesting(dl).map((d) => [d.severity, d.nodeId])).toEqual([['warning', 'n_image01']]);
+    expect(nesting(apply(dl, [setTag(o, 'n_row0001', 'dd')]))).toEqual([]);
   });
 });
 
@@ -199,8 +228,29 @@ describe('figures, disclosures and landmarks (#189)', () => {
 
     expect(() => apply(s, [setTag(o, 'n_row0002', 'summary')])).toThrow(/is a summary, so it goes directly inside a details element/);
     const details = apply(s, [setTag(o, 'n_stack01', 'details'), setTag(o, 'n_row0002', 'summary')]);
-    expect(homeSvelte(details)).toMatch(/<details class=[^>]*>[\s\S]*<summary class=[^>]*>/);
+    expect(homeSvelte(details)).toMatch(/<details class=[^>]*>(?:(?!<\/details>)[\s\S])*<summary class=[^>]*>\s*<p class=[^>]*>\{"\$10"\}<\/p>\s*<\/summary>\s*<\/details>/);
     expect(errors(details)).toEqual([]);
+  });
+
+  it('keeps disclosures out of a linked card, which holds nothing interactive', () => {
+    const { s, o } = pageWithRows();
+    const card = apply(s, [{ type: 'node.setContent', owner: o, nodeId: 'n_stack01', field: 'link', value: { type: 'url', target: 'https://example.com' } }]);
+    expect(tagOptions(card, o, 'n_row0001').find((x) => x.tag === 'details')?.problem).toMatch(/can’t go inside a linked card/);
+    expect(tagOptions(s, o, 'n_row0001').find((x) => x.tag === 'details')?.problem).toBeNull();
+  });
+
+  it('keeps a linked card from being a list item, which the link would replace', () => {
+    const { s, o } = pageWithRows();
+    const list = apply(s, [setTag(o, 'n_stack01', 'ul'), setTag(o, 'n_row0001', 'li'), setTag(o, 'n_row0002', 'li')]);
+    const link = { type: 'url', target: 'https://example.com' };
+    // Linking the item renders <ul><a>: refused when it is brought in.
+    const linked = apply(list, [{ type: 'node.setContent', owner: o, nodeId: 'n_row0001', field: 'link', value: link }]);
+    expect(introduced(list, linked).map((d) => [d.code, d.nodeId])).toEqual([['TAG_NESTING', 'n_row0001']]);
+    // And a linked container can't become a list item, or a list around items.
+    const card = apply(s, [{ type: 'node.setContent', owner: o, nodeId: 'n_row0001', field: 'link', value: link }]);
+    expect(() => apply(card, [setTag(o, 'n_stack01', 'ul'), setTag(o, 'n_row0001', 'li')])).toThrow(/^Operation 2 \(node\.setContent\): A container is one link/);
+    expect(tagProblem(card, o, 'n_row0001', 'ul')).toMatch(/is one link/);
+    expect(tagProblem(card, o, 'n_row0001', 'section')).toBeNull();
   });
 
   it('keeps a page’s one main area, and a header out of another header', () => {
@@ -209,6 +259,9 @@ describe('figures, disclosures and landmarks (#189)', () => {
     const header = apply(s, [setTag(o, 'n_stack01', 'header')]);
     expect(() => apply(header, [setTag(o, 'n_row0001', 'footer')])).toThrow(/can’t be a header or footer inside another header or footer/);
     expect(home(apply(header, [setTag(o, 'n_row0001', 'nav')])).nodes.n_row0001).toMatchObject({ tag: 'nav' });
+    // However deep inside it.
+    const deep = apply(s, [{ type: 'node.insert', newNodeId: 'n_inner01', owner: o, parentId: 'n_row0001', primitive: 'stack' }, setTag(o, 'n_stack01', 'footer')]);
+    expect(() => apply(deep, [setTag(o, 'n_inner01', 'header')])).toThrow(/can’t be a header or footer inside another/);
   });
 });
 
@@ -216,19 +269,46 @@ describe('paragraph and span containers (#189)', () => {
   it('holds only inline content, so the browser never splits it', () => {
     const { s, o } = pageWithStack();
     // A heading would close the paragraph.
-    expect(() => apply(s, [setTag(o, 'n_stack01', 'p')])).toThrow(/A heading can’t go inside a paragraph or span container/);
+    expect(() => apply(s, [setTag(o, 'n_stack01', 'p')])).toThrow(/A heading can’t go inside a paragraph container/);
+    expect(() => apply(s, [setTag(o, 'n_stack01', 'span')])).toThrow(/A heading can’t go inside a span container/);
     const inline = apply(s, [setTag(o, 'n_title01', 'strong'), setTag(o, 'n_body01', 'span'), setTag(o, 'n_stack01', 'p')]);
     expect(homeSvelte(inline)).toMatch(/<p class=[^>]*>\s*<strong class=[^>]*>\{"Our work"\}<\/strong>\s*<span class=[^>]*>\{"Some words\."\}<\/span>\s*<\/p>/);
     expect(errors(inline)).toEqual([]);
     // Text inside it can't become a block either.
-    expect(() => apply(inline, [setTag(o, 'n_body01', 'div')])).toThrow(/can’t go inside a paragraph or span container/);
-    // A heading or image inserted into it is a new problem, which the session refuses.
+    expect(() => apply(inline, [setTag(o, 'n_body01', 'div')])).toThrow(/A paragraph can’t go inside a paragraph container|Text can’t go inside a paragraph container/);
+    // An image (whose placeholder is a block) or a heading moved into it is a new problem, which the session refuses.
     const withImage = apply(inline, [{ type: 'node.insert', newNodeId: 'n_image01', owner: o, parentId: 'n_stack01', primitive: 'image' }]);
-    expect(introduced(inline, withImage).map((d) => d.code)).toEqual(['TAG_NESTING']);
+    expect(introduced(inline, withImage).map((d) => [d.code, d.nodeId])).toEqual([['TAG_NESTING', 'n_image01']]);
     const moved = apply(inline, [{ type: 'node.insert', newNodeId: 'n_head02', owner: o, parentId: null, primitive: 'heading' }]);
     expect(introduced(moved, apply(moved, [{ type: 'node.move', owner: o, nodeId: 'n_head02', parentId: 'n_stack01', index: 0 }])).map((d) => d.message)).toEqual([
-      expect.stringMatching(/A heading can’t go inside a paragraph or span container/)
+      expect.stringMatching(/A heading can’t go inside a paragraph container/)
     ]);
+    // Text inserted into it from Insert is inline text.
+    const added = apply(inline, [
+      { type: 'node.insert', newNodeId: 'n_head03', owner: o, parentId: 'n_stack01', primitive: 'heading', text: 'More' },
+      { type: 'node.insert', newNodeId: 'n_para03', owner: o, parentId: 'n_stack01', primitive: 'paragraph', text: 'Words' }
+    ]);
+    expect(home(added).nodes.n_head03).toMatchObject({ tag: 'span' });
+    expect(home(added).nodes.n_para03).toMatchObject({ tag: 'span' });
+    expect(introduced(inline, added)).toEqual([]);
+  });
+
+  it('refuses a paragraph around a block an older span already held, which only the paragraph breaks', () => {
+    const { s, o } = pageWithStack();
+    // Written by hand: a span holding a heading, which browsers leave alone.
+    (home(s).nodes.n_stack01 as { tag: string }).tag = 'span';
+    expect(nesting(s).map((d) => d.site)).toEqual(['n_title01|in-span', 'n_body01|in-span']);
+    expect(() => apply(s, [setTag(o, 'n_stack01', 'p')])).toThrow(/A heading can’t go inside a paragraph container/);
+    // And an older main area inside a paragraph can still be repaired one edit at a time.
+    const legacy = blank();
+    const lo = pageOwner(legacy);
+    const t = apply(legacy, [
+      { type: 'node.insert', newNodeId: 'n_stack01', owner: lo, parentId: null, primitive: 'stack' },
+      { type: 'node.insert', newNodeId: 'n_inner01', owner: lo, parentId: 'n_stack01', primitive: 'stack' }
+    ]);
+    Object.assign(home(t).nodes.n_stack01, { tag: 'p' });
+    Object.assign(home(t).nodes.n_inner01, { tag: 'main' });
+    expect(home(apply(t, [setTag(lo, 'n_stack01', 'div')])).nodes.n_stack01).toMatchObject({ tag: 'div' });
   });
 
   it('refuses a slot inside a paragraph container, whose content can’t be known', () => {
@@ -238,11 +318,26 @@ describe('paragraph and span containers (#189)', () => {
       name: 'Inline slot',
       properties: {},
       parts: {},
-      slots: { extra: { label: 'Extra' } },
-      build: (b) => b.el('root', 'div', {}, [b.el('line', 'span', {}, [b.text('lead', 'span', 'Note:')]), b.el('wrap', 'div', {}, [b.slot('extra-slot', 'extra')])])
+      slots: { extra: { label: 'Extra' }, more: { label: 'More' } },
+      build: (b) => b.el('root', 'div', {}, [b.el('line', 'div', {}, [b.slot('more-slot', 'more')]), b.el('wrap', 'div', {}, [b.el('inner', 'span', {}, [b.slot('extra-slot', 'extra')])])])
     });
-    expect(() => apply(s, [setTag(defOwner(def), 'wrap', 'span')])).toThrow(/A slot can’t go inside a paragraph or span container/);
-    expect(() => apply(s, [setTag(defOwner(def), 'root', 'p')])).toThrow(/can’t go inside a paragraph or span container/);
+    expect(() => apply(s, [setTag(defOwner(def), 'line', 'p')])).toThrow(/A slot can’t go inside a paragraph container/);
+    // However deep inside it.
+    expect(() => apply(s, [setTag(defOwner(def), 'wrap', 'p')])).toThrow(/A slot can’t go inside a paragraph container/);
+  });
+
+  it('takes a component whose design is inline, even through another component', () => {
+    const s = blank();
+    const label = addDef(s, { componentId: 'test.label', name: 'Label', properties: {}, parts: {}, build: (b) => b.el('root', 'span', {}, [b.text('t', 'strong', 'New')]) }, false);
+    const wrapped = addDef(s, { componentId: 'test.wrapped', name: 'Wrapped', properties: {}, parts: {}, build: (b) => b.el('root', 'div', {}, []) }, false);
+    // A design whose root is the inline component placed again.
+    const inner = makeInstance(label, {});
+    wrapped.tree = { rootIds: [inner.id], nodes: { [inner.id]: inner } };
+    const { s: page, o } = pageWithStack();
+    page.components[label.id] = label;
+    page.components[wrapped.id] = wrapped;
+    const placed = apply(page, [setTag(o, 'n_title01', 'span'), setTag(o, 'n_body01', 'span'), { type: 'node.insert', newNodeId: 'n_badge01', owner: o, parentId: 'n_stack01', definitionId: wrapped.id }]);
+    expect(home(apply(placed, [setTag(o, 'n_stack01', 'p')])).nodes.n_stack01).toMatchObject({ tag: 'p' });
   });
 });
 
@@ -271,7 +366,51 @@ describe('across documents (#189)', () => {
     expect(() => apply(s, [setTag(o, 'n_inner01', 'li')])).toThrow(/is a list item/);
     expect(home(apply(s, [setTag(o, 'n_inner01', 'section')])).nodes.n_inner01).toMatchObject({ tag: 'section' });
     // The design's item can stop being one only while nothing placed in it needs it.
-    expect(home(apply(s, [setTag(defOwner(def), 'item', 'div')])).nodes.n_inner01).toMatchObject({ tag: 'div' });
+    const plain = apply(s, [setTag(defOwner(def), 'item', 'div')]);
+    expect(plain.components[def.id].tree!.nodes.item).toMatchObject({ tag: 'div' });
+    expect(nesting(plain).map((d) => [d.severity, d.owner?.id, d.nodeId])).toEqual([['warning', def.id, 'item']]);
+    expect(() => apply(apply(s, [setTag(o, 'n_inner01', 'section')]), [])).not.toThrow();
+  });
+
+  it('follows a slot a design forwards into another component, and every place it renders a slot', () => {
+    const s = blank();
+    const inner = addDef(s, {
+      componentId: 'test.inner-list',
+      name: 'Inner list',
+      properties: {},
+      parts: {},
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('root', 'ul', {}, [b.el('item', 'li', {}, [b.slot('body-slot', 'body')])])
+    }, false);
+    const outer = addDef(s, { componentId: 'test.outer', name: 'Outer', properties: {}, parts: {}, slots: { body: { label: 'Body' } }, build: (b) => b.el('root', 'div', {}, []) });
+    // Outer's design places Inner, and renders its own slot inside Inner's.
+    const placedInner = makeInstance(inner, {});
+    const tree = outer.tree!;
+    tree.nodes[placedInner.id] = { ...placedInner, slots: { body: ['outer-slot'] } };
+    tree.nodes['outer-slot'] = { id: 'outer-slot', kind: 'slot', slot: 'body' };
+    (tree.nodes.root as { children: string[] }).children.push(placedInner.id);
+    const o = pageOwner(s);
+    const inst = home(s).rootIds.at(-1)!;
+    const filled = apply(s, [{ type: 'node.insert', newNodeId: 'n_inner01', owner: o, parentId: inst, slot: 'body', primitive: 'stack' }]);
+    expect(errors(filled)).toEqual([]);
+    // Home's content renders inside Inner's list item, two designs down.
+    expect(() => apply(filled, [setTag(o, 'n_inner01', 'li')])).toThrow(/is a list item/);
+
+    // A design that renders one slot in two places: content must fit both.
+    const twice = blank();
+    const def = addDef(twice, {
+      componentId: 'test.twice',
+      name: 'Twice',
+      properties: {},
+      parts: {},
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('root', 'div', {}, [b.el('list', 'ul', {}, [b.slot('a-slot', 'body')]), b.el('item', 'li', {}, [b.slot('b-slot', 'body')])])
+    });
+    const to = pageOwner(twice);
+    const tinst = home(twice).rootIds.at(-1)!;
+    const both = apply(twice, [{ type: 'node.insert', newNodeId: 'n_inner01', owner: to, parentId: tinst, slot: 'body', primitive: 'stack' }]);
+    expect(() => apply(both, [setTag(to, 'n_inner01', 'li')])).toThrow(/is a list item/);
+    expect(def.tree!.nodes.item).toMatchObject({ tag: 'li' });
   });
 
   it('refuses a design change that leaves a placement’s slot content out of place', () => {
@@ -295,6 +434,7 @@ describe('across documents (#189)', () => {
     expect(() => apply(placed, [setTag(defOwner(def), 'root', 'div')])).toThrow(/Home: A container is a list item/);
     expect(tagProblem(placed, defOwner(def), 'root', 'section')).toMatch(/Home: A container is a list item/);
     expect(tagProblem(placed, defOwner(def), 'root', 'ol')).toBeNull();
+    expect(tagOptions(placed, defOwner(def), 'root').filter((x) => x.problem).map((x) => x.tag)).toContain('div');
   });
 
   it('checks a design’s root where each placement puts it', () => {
@@ -316,13 +456,18 @@ describe('across documents (#189)', () => {
     const def = addDef(s, {
       componentId: 'test.bound',
       name: 'Bound',
-      properties: { wrap: P.choice('Wrap', 'div', [['div', 'Div'], ['p', 'Paragraph']]) },
+      properties: { wrap: P.choice('Wrap', 'div', [['div', 'Div'], ['p', 'Paragraph'], ['section', 'Section']]) },
       parts: {},
       build: (b) => b.el('root', 'div', {}, [b.el('box', prop('wrap'), {}, [b.text('t', 'h2', 'Title')])])
     });
-    expect(nesting(s).map((d) => d.message)).toEqual([expect.stringMatching(/Bound: A heading can’t go inside a paragraph or span container/)]);
-    // Its default is still a choice among its options.
-    expect(apply(s, [setTag(defOwner(def), 'box', 'p')]).components[def.id].properties.wrap.default).toBe('p');
+    // The paragraph is neither its default nor its last option.
+    expect(nesting(s).map((d) => [d.message, d.nodeId])).toEqual([[expect.stringMatching(/^Bound: A heading can’t go inside a paragraph container/), 't']]);
+    // Its default is still a choice among its options, and it stays bound.
+    const r = apply(s, [setTag(defOwner(def), 'box', 'section')]);
+    expect(r.components[def.id].properties.wrap.default).toBe('section');
+    expect(r.components[def.id].tree!.nodes.box).toMatchObject({ tag: { $prop: 'wrap' } });
+    // A tag is a name, as it is for a fixed tag.
+    expect(() => apply(s, [setTag(defOwner(def), 'box', ['section'])])).toThrow(/A tag is the name of one/);
   });
 });
 
@@ -354,6 +499,13 @@ describe('the tag select (#189)', () => {
     const options = groups.flatMap((g) => g.options);
     expect(options.find((o) => o.tag === 'li')).toEqual({ tag: 'li', name: 'List item', problem: expect.stringMatching(/list item/) });
     expect(options.find((o) => o.tag === 'section')?.problem).toBeNull();
+    // Spelled out beside the select, one line per reason.
+    const why = 'A container is a list item, so it goes directly inside a list (ul or ol).';
+    const twoWays = tagSelectOptions('element', 'div', new Map([['li', why], ['main', 'Every page has one.'], ['summary', why]]));
+    expect(unavailableReasons(twoWays.groups)).toEqual([
+      { reason: 'Every page has one.', names: ['Main area (main)'] },
+      { reason: why, names: ['List item (li)', 'Disclosure summary (summary)'] }
+    ]);
   });
 });
 
@@ -362,12 +514,17 @@ describe('shipped content (#189)', () => {
     for (const { id } of STARTERS) {
       const s = createStarterState(id, 'Test', false);
       expect(nesting(s), id).toEqual([]);
-      for (const theme of listThemes())
+      for (const theme of listThemes()) {
+        // The whole pack at once, so a design placing another reads that one's root.
+        const st = { ...s, components: { ...s.components, ...Object.fromEntries(theme.components.map((d) => [d.id, d])) } };
+        let checked = 0;
         for (const def of theme.components) {
           if (def.kind !== 'managed' || !def.tree) continue;
-          const st = { ...s, components: { ...s.components, [def.id]: def } };
           expect(nestingProblems(st, defOwner(def), def.tree), `${theme.id} ${def.id}`).toEqual([]);
+          checked++;
         }
+        expect(checked, theme.id).toBeGreaterThan(10);
+      }
     }
   });
 });
