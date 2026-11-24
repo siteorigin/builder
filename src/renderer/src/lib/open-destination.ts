@@ -38,7 +38,7 @@ export function openEditorDestination(dest: EditorDestination) {
   const ref: ElementRef = { owner, instancePath: [], nodeId };
   if (s.mode !== 'edit') setMode('edit');
   if (owner.kind === 'page') selectPage(owner.id, ref);
-  else if (owner.kind === 'template') openLayout(owner.id);
+  else if (owner.kind === 'template') openLayout(owner.id, field.entryId);
   else if (owner.kind === 'component') {
     if (!openComponentStudio(owner.id)) return toast('That form is in a component that can no longer be edited here.', 'info');
   } else {
@@ -50,7 +50,30 @@ export function openEditorDestination(dest: EditorDestination) {
     else if (entry) openLayout(entry.collection.settings.id, entry.entry.id);
     else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
   }
+  if (field.entryBound) {
+    // A layout's setting read from each entry is chosen in Entry content: that choice is focused once it shows.
+    setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true });
+    return revealWhenShown('entry-fields', `#${CSS.escape(`entry-field-${nodeId}-${field.prop}`)}`);
+  }
   // The Inspector of the form takes the request: it opens Content (and a field's row) and focuses the setting once it shows.
   const at = field.itemId ? { itemId: field.itemId, field: field.field } : {};
   setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, inspectorFocus: inspectorFocusRequest({ opening: snap.workspaceKey, owner, nodeId, prop: field.prop, ...at, label: field.label }) });
+}
+
+/** Frames to wait for the Inspector of a new selection to show a control, before giving up quietly. */
+const REVEAL_FRAMES = 60;
+
+/**
+ * Open a section of the Inspector once the new selection's Inspector shows it, then scroll to and focus one control
+ * in it. Nothing happens when it never shows (the selection changed again, say).
+ */
+function revealWhenShown(section: string, control: string) {
+  let frames = 0;
+  const step = () => {
+    if (document.querySelector(`#dock-panel-inspect ${control}`)) return openSection(section, { focus: control });
+    // Opened while waiting: a section closed before shows its controls only once it is open.
+    openSection(section, { scroll: false });
+    if (++frames < REVEAL_FRAMES) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }

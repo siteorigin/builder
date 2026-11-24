@@ -112,9 +112,24 @@ describe('the website’s contact forms visitors cannot send', () => {
     const drafted = apply(blank, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_blank', draft: true }]);
     expect(websiteFormProblems(drafted)).toEqual([]);
     expect(healthForms(drafted).filter((d) => d.owner?.kind === 'template').map((d) => d.message)).toEqual([message]);
+    // Go to form shows the layout on that entry, at the entry content its endpoint reads.
+    const dest = { kind: 'form' as const, owner: { kind: 'template' as const, id: 'posts' }, nodeId: node.id, setting: 'connection' as const };
+    expect(formDestinationField(blank, dest)).toEqual({ prop: 'endpoint', label: 'Form endpoint URL', entryId: 'en_blank', entryBound: true });
     // A page's form has no entry to read from: the binding is exported empty, and the default decides.
     const { s: page, node: pageForm } = lookbook({ endpoint: { $entry: 'excerpt' } });
     expect(healthForms(page).map(at)).toContain(`page:pg_lookbook:${pageForm.id}`);
+  });
+
+  it('never stops Project health over a setting written by hand that cannot be read', () => {
+    const unreadable = { toString: null };
+    const { s, node } = lookbook({ provider: 'web3forms', accessKey: unreadable });
+    expect(() => validateState(s)).not.toThrow();
+    // A layout's form reading its service from each entry, with a key of its own no one can read.
+    const posts = apply(fresh(), [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_soon', title: 'Coming soon', draft: false, excerpt: 'web3forms' }]);
+    place(posts, posts.collections.posts.settings.template!, { provider: { $entry: 'excerpt' }, accessKey: unreadable });
+    expect(() => validateState(posts)).not.toThrow();
+    expect(() => websiteFormProblems(posts)).not.toThrow();
+    expect(node.id).toBeTruthy();
   });
 });
 
@@ -194,6 +209,21 @@ describe('where a Project health finding leads', () => {
     // A form deleted since has nowhere to go.
     delete s.pages.pg_lookbook.nodes[node.id];
     expect(formDestinationField(s, dest)).toBeNull();
+  });
+
+  it('leads each of a form’s field findings to its own row', () => {
+    const { s, node } = lookbook();
+    node.props.fields = [
+      { id: 'f_one', label: 'Pick one', name: 'one', type: 'choice', options: [] },
+      { id: 'f_two', label: 'Pick two', name: 'two', type: 'choice', options: [] }
+    ];
+    const findings = validateState(s).filter((d) => d.code === 'FORM_NO_CHOICES' && d.nodeId === node.id);
+    expect(findings.map((d) => d.site)).toEqual([`${node.id}|fields|f_one`, `${node.id}|fields|f_two`]);
+    const rows = findings.map((d) => formDestinationField(s, destinationForDiagnostic(s, d) as Parameters<typeof formDestinationField>[1])?.itemId);
+    expect(rows).toEqual(['f_one', 'f_two']);
+    // A row deleted since: the first that still has the problem.
+    node.props.fields = [(node.props.fields as unknown[])[1]];
+    expect(formDestinationField(s, destinationForDiagnostic(s, findings[0]) as Parameters<typeof formDestinationField>[1])?.itemId).toBe('f_two');
   });
 });
 

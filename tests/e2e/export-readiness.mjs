@@ -91,6 +91,8 @@ step('a real website folder export with no public URL says both, each with its w
 // The folder chooser is answered with a folder that is there; the export makes its own new folder inside it.
 const exportsDir = join(WORK, 'exports');
 mkdirSync(exportsDir, { recursive: true });
+// From another page, so the result's own Go to form has somewhere to go.
+await openPage(homeTitle, '/');
 await win.getByRole('button', { name: 'Export', exact: true }).click();
 await answerChoosers(app, [{ dialog: 'open', selection: 'folder', paths: [exportsDir] }]);
 await modal.getByRole('button', { name: /Website files, ready to upload/ }).click();

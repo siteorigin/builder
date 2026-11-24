@@ -325,7 +325,7 @@ export type ExportFormat = 'folder' | 'zip';
  * setting is found when it is opened, since the form's service may have changed since), or a field of Site details.
  */
 export type EditorDestination =
-  | { kind: 'form'; owner: OwnerRef; nodeId: string; setting: 'connection' | 'fieldKeys' | 'fieldChoices' | 'formName' }
+  | { kind: 'form'; owner: OwnerRef; nodeId: string; setting: 'connection' | 'fieldKeys' | 'fieldChoices' | 'formName'; itemId?: string }
   | { kind: 'site'; field: 'baseUrl' | 'favicon' | 'socialImage' };
 
 /** One note about an export, in the order the export said it, with where to fix what it describes when it can be fixed. */

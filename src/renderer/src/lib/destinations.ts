@@ -1,9 +1,11 @@
 import type { Diagnostic, EditorDestination, ExportNote } from '@shared/api';
 import type { ComponentDefinition, ListItem, OwnerRef, ProjectState } from '@shared/types';
+import { isEntryBinding } from '@shared/types';
 import { publicUrl } from '@shared/public-url';
-import { formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable } from '@catalogue/foundation/form';
+import { formConnectionProblem, formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable } from '@catalogue/foundation/form';
 import { websiteTrees } from '@engine/validate';
-import { publishedState } from '@generator/index';
+import { publishedState, siteEntries } from '@generator/index';
+import { entryInstanceProps } from '@generator/entry-template';
 import { treeFor } from './model';
 
 type FormDestination = Extract<EditorDestination, { kind: 'form' }>;
@@ -28,31 +30,68 @@ export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): Ed
   if (!d.owner && (d.site === 'favicon' || d.site === 'socialImage')) return { kind: 'site', field: d.site };
   const setting = Object.hasOwn(FORM_SETTINGS, d.code) ? FORM_SETTINGS[d.code] : null;
   if (!setting || !d.owner || !d.nodeId || !['page', 'shell', 'template', 'component'].includes(d.owner.kind)) return null;
-  const dest: EditorDestination = { kind: 'form', owner: d.owner as OwnerRef, nodeId: d.nodeId, setting };
+  // A field finding names its row (`${nodeId}|fields|${itemId}`): each finding leads to its own.
+  const row = d.site?.startsWith(`${d.nodeId}|fields|`) ? d.site.slice(`${d.nodeId}|fields|`.length) : undefined;
+  const dest: EditorDestination = { kind: 'form', owner: d.owner as OwnerRef, nodeId: d.nodeId, setting, ...(row ? { itemId: row } : {}) };
   // A clash found at a placement whose design holds the form has no form settings there: it is shown on the page.
   return formDestinationField(state, dest) ? dest : null;
 }
 
+/** Where a form destination lands, found in the project as it is now (see formDestinationField). */
+export interface FormLanding {
+  /** The Content property to focus. */
+  prop: string;
+  label: string;
+  /** A list row to open, and its field to focus. */
+  itemId?: string;
+  field?: string;
+  /** A collection layout's form: the entry to show it on, the first whose page cannot send. */
+  entryId?: string;
+  /** The property reads each entry's field: chosen in Entry content, not typed in Content. */
+  entryBound?: boolean;
+}
+
 /**
  * The Content field a form destination opens, found in the project as it is now: the setting the form's service needs
- * (or the service itself, when none is chosen), its Netlify form name, or the first of its fields with the problem
- * (that field's name, or its choices), its row opened. Null when the form, or that setting, is no longer there.
+ * (or the service itself, when none is chosen), its Netlify form name, or the field row with the problem (its name,
+ * or its choices), opened. A layout's form whose settings come from each entry is shown on the first entry that
+ * cannot send, at the setting that entry's service needs. Null when the form, or that setting, is no longer there.
  */
-export function formDestinationField(state: ProjectState, dest: FormDestination): { prop: string; label: string; itemId?: string; field?: string } | null {
+export function formDestinationField(state: ProjectState, dest: FormDestination): FormLanding | null {
   const tree = treeFor(state, dest.owner);
   const node = tree && Object.hasOwn(tree.nodes, dest.nodeId) ? tree.nodes[dest.nodeId] : undefined;
   const def = node?.kind === 'instance' && Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
-  if (!node || node.kind !== 'instance' || !isContactForm(def)) return null;
-  const prop = dest.setting === 'fieldKeys' || dest.setting === 'fieldChoices' ? 'fields' : dest.setting === 'formName' ? 'formName' : (formServiceSetup(def, node.props)?.prop ?? 'provider');
-  const schema = Object.hasOwn(def!.properties, prop) ? def!.properties[prop] : undefined;
+  if (!node || node.kind !== 'instance' || !def || !isContactForm(def)) return null;
+  if (dest.setting === 'connection') {
+    // A layout's form reading its service or setting from each entry: judged, and shown, as the entry that cannot send.
+    const collection = dest.owner.kind === 'template' && Object.hasOwn(state.collections ?? {}, dest.owner.id) ? state.collections[dest.owner.id] : undefined;
+    const failing = collection && Object.values(node.props).some(isEntryBinding) ? siteEntries(state).find((e) => e.collection === collection && sendsNot(def, () => entryInstanceProps(state, collection, e.entry, node))) : undefined;
+    const props = failing ? entryInstanceProps(state, collection!, failing.entry, node) : node.props;
+    const prop = formServiceSetup(def, props)?.prop ?? 'provider';
+    const schema = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
+    if (!schema) return null;
+    return { prop, label: schema.label, ...(failing ? { entryId: failing.entry.id } : {}), ...(isEntryBinding(node.props[prop]) ? { entryBound: true } : {}) };
+  }
+  const prop = dest.setting === 'formName' ? 'formName' : 'fields';
+  const schema = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
   if (!schema) return null;
   if (prop !== 'fields') return { prop, label: schema.label };
-  // The row to open: the second of two fields sent under one name (the one to rename), or a question with no choices.
+  // The row to open: the finding's own while it is still there, else the first with that problem (the second of two
+  // fields sent under one name, the one to rename; or a question with no choices). With none, the list itself.
   const items = Array.isArray(node.props.fields) ? (node.props.fields as ListItem[]) : undefined;
-  const sent = formFieldsAsSent(def!, node.props.fields);
+  const sent = formFieldsAsSent(def, node.props.fields);
   const at = dest.setting === 'fieldKeys' ? formKeyClashes(sent)[0]?.indexes[1] : formUnchoosable(sent)[0];
-  const itemId = at === undefined ? undefined : items?.[at]?.id;
+  const itemId = dest.itemId && items?.some((it) => it?.id === dest.itemId) ? dest.itemId : at === undefined ? undefined : items?.[at]?.id;
   return itemId ? { prop, label: schema.label, itemId, field: dest.setting === 'fieldKeys' ? 'name' : 'options' } : { prop, label: schema.label };
+}
+
+/** Whether a form with these settings cannot send; one whose settings cannot be read is not counted. */
+function sendsNot(def: ComponentDefinition, props: () => Record<string, unknown>): boolean {
+  try {
+    return !!formConnectionProblem(def, props());
+  } catch {
+    return false;
+  }
 }
 
 /** What a destination's button says. */
@@ -65,15 +104,16 @@ export function destinationLabel(dest: EditorDestination): string {
  * Whether what an export note describes still holds in the project as it is now: `open` while it does, `fixed` once it
  * was put right after the export, `gone` when the form it names is no longer on the website (removed, or on a page
  * now kept as a draft). Null for a note with nothing to fix. `forms` are the notes for the website's forms visitors
- * cannot send now (websiteFormNotes).
+ * cannot send now (websiteFormNotes), and `trees` what the website shows now (websiteTrees of the published state),
+ * passed in when several notes are read against one project.
  */
-export function noteState(state: ProjectState, note: ExportNote, forms: ExportNote[]): 'open' | 'fixed' | 'gone' | null {
+export function noteState(state: ProjectState, note: ExportNote, forms: ExportNote[], trees?: ReturnType<typeof websiteTrees>): 'open' | 'fixed' | 'gone' | null {
   const dest = note.destination;
   if (!dest) return null;
   if (dest.kind === 'site') return dest.field !== 'baseUrl' ? null : publicUrl(state.site) ? 'fixed' : 'open';
   const { owner, nodeId } = dest;
   // Off the website first: a form on a page made a draft since is not one visitors can send, connected or not.
-  const shown = websiteTrees(publishedState(state)).find((t) => t.owner.kind === owner.kind && t.owner.id === owner.id);
+  const shown = (trees ?? websiteTrees(publishedState(state))).find((t) => t.owner.kind === owner.kind && t.owner.id === owner.id);
   if (!shown || !Object.hasOwn(shown.tree?.nodes ?? {}, nodeId)) return 'gone';
   return forms.some(({ destination: f }) => f?.kind === 'form' && f.owner.kind === owner.kind && f.owner.id === owner.id && f.nodeId === nodeId) ? 'open' : 'fixed';
 }

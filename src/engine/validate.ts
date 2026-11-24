@@ -19,7 +19,7 @@ import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema
 import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
-import { entryNeighbours, materializeTemplate } from '@generator/entry-template';
+import { entryInstanceProps } from '@generator/entry-template';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
@@ -384,16 +384,18 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       // A list bound from outside is only known where it is placed.
       if (namesFormFields(def) && !isBinding(props.fields)) {
         const fields = formFieldsAsSent(def, props.fields);
+        // Which field a finding is about, by its row (the one to change), so each finding leads to its own row.
+        const row = (i: number | undefined) => (i !== undefined && typeof fields[i]?.id === 'string' ? { site: `${n.id}|fields|${fields[i].id}` } : {});
         for (const clash of formKeyClashes(fields)) {
           const what = formFieldTitles(fields, clash.indexes, fields.map((_, i) => i));
           const outcome = formRefusesClashes(def) ? 'so visitors cannot send the form' : 'so the form service cannot tell those answers apart';
           const all = clash.indexes.length === 2 ? 'both' : 'all';
-          out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the contact form's ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id });
+          out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the contact form's ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id, ...row(clash.indexes[1]) });
         }
         for (const i of offersFormChoices(def) ? formUnchoosable(fields) : []) {
           const what = formFieldTitles(fields, [i], fields.map((_, j) => j));
           const outcome = formRefusesUnchoosable(def) ? 'so visitors cannot send the form' : 'so visitors cannot answer it';
-          out.push({ severity: 'warning', code: 'FORM_NO_CHOICES', message: `${label}: the contact form's ${what} field has no choices to pick from, ${outcome}. Add its choices, or change its type.`, owner, nodeId: n.id });
+          out.push({ severity: 'warning', code: 'FORM_NO_CHOICES', message: `${label}: the contact form's ${what} field has no choices to pick from, ${outcome}. Add its choices, or change its type.`, owner, nodeId: n.id, ...row(i) });
         }
       }
     }
@@ -577,19 +579,27 @@ export function formConnectionDiagnostic(state: ProjectState, owner: OwnerRef, l
   if (def?.componentId !== 'contact.form' || def.kind !== 'code') return undefined;
   const found = (problem: string | undefined, where = ''): Diagnostic | undefined =>
     problem ? { severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service${where}, so visitors cannot send it${where ? ' there' : ''}. ${problem}`, owner, nodeId: node.id } : undefined;
+  // A setting written by hand that cannot be read as text is not this check's to report, and must not stop the others.
+  const problemOf = (props: () => Record<string, unknown>) => {
+    try {
+      return formConnectionProblem(def, props());
+    } catch {
+      return undefined;
+    }
+  };
   const collection = owner.kind === 'template' && Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
   if (collection && Object.entries(node.props).some(([k, v]) => FORM_CONNECTION_PROPS.has(k) && isEntryBinding(v))) {
     const failing = siteEntries(state)
       .filter((e) => e.collection === collection)
       .flatMap((e) => {
-        const placed = materializeTemplate(state, collection, e.entry, entryNeighbours(state, owner.id, e.entry.id)).nodes[node.id];
-        const problem = placed?.kind === 'instance' ? formConnectionProblem(def, placed.props) : undefined;
-        return problem ? [{ title: e.entry.title, problem }] : [];
+        const problem = problemOf(() => entryInstanceProps(state, collection, e.entry, node));
+        const title = typeof e.entry.title === 'string' && e.entry.title.trim() ? `the “${e.entry.title.trim()}” entry` : 'an untitled entry';
+        return problem ? [{ title, problem }] : [];
       });
-    return failing.length ? found(failing[0].problem, failing.length === 1 ? ` on the “${failing[0].title}” entry` : ` on ${failing.length} entries`) : undefined;
+    return failing.length ? found(failing[0].problem, failing.length === 1 ? ` on ${failing[0].title}` : ` on ${failing.length} entries`) : undefined;
   }
   // A binding outside a component has nothing to bind to and is exported empty, so the default decides.
-  return found(formConnectionProblem(def, Object.fromEntries(Object.entries(node.props).filter(([, v]) => !isBinding(v)))));
+  return found(problemOf(() => Object.fromEntries(Object.entries(node.props).filter(([, v]) => !isBinding(v)))));
 }
 
 /**

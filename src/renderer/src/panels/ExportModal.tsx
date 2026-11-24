@@ -9,7 +9,8 @@ import { goToShellPart, openAsset, selectPage, openLayout } from '../lib/actions
 import { treeFor } from '../lib/model';
 import { sampleContactMatches, type ContentField, type SampleContactGroup } from '../lib/find-content';
 import { openContentMatch } from './FindReplace';
-import { websiteFormNotes } from '@engine/validate';
+import { websiteFormNotes, websiteTrees } from '@engine/validate';
+import { publishedState } from '@generator/index';
 import { destinationLabel, noteState } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
 
@@ -361,9 +362,9 @@ function fixedSince(note: ExportNote, state: 'fixed' | 'gone'): string {
  * One note about an export. A note about something the author can fix leads to it while it still holds, and once it is
  * fixed says that the files need exporting again: the export itself never changes.
  */
-function NoteLine({ note, project, forms, disabled }: { note: ExportNote; project: ProjectState | undefined; forms: ExportNote[]; disabled: boolean }) {
+function NoteLine({ note, project, forms, trees, disabled }: { note: ExportNote; project: ProjectState | undefined; forms: ExportNote[]; trees: ReturnType<typeof websiteTrees>; disabled: boolean }) {
   const lineId = useId();
-  const now = project ? noteState(project, note, forms) : null;
+  const now = project ? noteState(project, note, forms, trees) : null;
   return (
     <p className="export-note-line">
       <span id={lineId}>{note.message}</span>
@@ -443,6 +444,8 @@ export function ExportModal() {
   const samplesKept = samples.filter((g) => keptValues.includes(g.value));
   // The website's contact forms visitors cannot send, as the website export would name them, and where to fix each.
   const formNotes = useMemo(() => (state ? websiteFormNotes(state) : []), [state]);
+  // What the website shows now, read once for every note about an earlier export.
+  const liveTrees = useMemo(() => (state ? websiteTrees(publishedState(state)) : []), [state]);
   const [busy, setBusy] = useState<ExportKind | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [format, setFormat] = useState<ExportFormat>('folder');
@@ -592,7 +595,7 @@ export function ExportModal() {
                   {/* Not a list: the history's list items are its exports, one each. */}
                   <div className="export-row-notes" id={notesId} hidden={foldNotes && !notesOpen}>
                     {rowNotes.map((note, n) => (
-                      <NoteLine key={n} note={note} project={state} forms={formNotes} disabled={!!busy} />
+                      <NoteLine key={n} note={note} project={state} forms={formNotes} trees={liveTrees} disabled={!!busy} />
                     ))}
                   </div>
                 </div>
