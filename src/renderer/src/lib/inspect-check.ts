@@ -154,6 +154,7 @@ export function attributeFindings(state: ProjectState | undefined, report: unkno
     if (!holder.desc) return;
     const ref = state ? inspectionRef(state, holder.desc) : null;
     delete holder.desc;
+    delete holder.ref;
     if (ref) holder.ref = ref;
   };
   for (const issue of r.issues as InspectionIssue[]) {

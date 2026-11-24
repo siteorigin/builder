@@ -237,6 +237,8 @@ describe('check results', () => {
     // What only pixels could judge is never a pass, and never a failure.
     expect(inspectionChecks(true, withChecks({ ...clean, contrast: count(30, 0, 2) })).slice(1)).toEqual([{ status: 'unverified', text: "Couldn't confirm the contrast of 2 text elements over images or mixed backgrounds at phone width." }]);
     expect(inspectionChecks(true, withChecks({ ...clean, contrast: count(30, 1, 1) })).slice(1).map((c) => c.status)).toEqual(['issue', 'unverified']);
+    // A check that ran out of time (or met markup it could not measure) never yields a pass.
+    expect(inspectionChecks(true, withChecks({ ...clean, contrast: { ...count(30), incomplete: true } })).slice(1)).toEqual([{ status: 'unverified', text: "Couldn't check all of the page's readability at phone width." }]);
     // A report from before these checks keeps its rows as they were.
     expect(inspectionChecks(true, ok())).toEqual([{ status: 'pass', text: 'Fits the screen at phone width.' }]);
   });

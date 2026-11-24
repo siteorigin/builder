@@ -65,16 +65,27 @@ try {
   assert.ok(cards?.length >= 2, 'the features grid has cards');
   const card = cards[1].id;
 
-  const baseline = await inspectUntil((r) => assert.ok(r.checks, 'the report counts the readability checks'), 'baseline');
-  // The page's own content starts readable. The theme's shared header and footer have links under 44px tall at
-  // phone width, reported on the shell where they can be changed; they stay as they are throughout.
-  const shell = findings(baseline);
-  assert.ok(shell.every((f) => f.kind === 'small-tap-target' && f.ref?.owner.kind === 'shell'), `only the shell's links start small:\n${summary(baseline)}`);
-  const atStart = Object.fromEntries(Object.entries(baseline.checks).map(([k, c]) => [k, c.failed]));
-  assert.deepEqual(atStart, { contrast: 0, overlaps: 0, clippedText: 0, tapTargets: shell.length }, summary(baseline));
-  for (const [name, c] of Object.entries(baseline.checks)) assert.equal(c.unverified, 0, `${name} measured everything`);
-  assert.ok(baseline.checks.contrast.checked > 3 && baseline.checks.tapTargets.checked > shell.length, `the checks measured the page:\n${summary(baseline)}`);
-  const ours = (report) => findings(report).filter((f) => f.ref?.owner.kind !== 'shell');
+  // The theme's shared header and footer have links under 44px tall at phone width: reported on the shell, each on
+  // the placement that holds it there.
+  const state = await snapshot();
+  const shellPlacement = (part) => state.site.shell[part].rootIds[0];
+  const withShell = await inspectUntil((r) => assert.ok(r.checks, 'the report counts the readability checks'), 'with the shell');
+  const shell = findings(withShell);
+  assert.ok(shell.length > 0, `the shell's links are measured:\n${summary(withShell)}`);
+  for (const f of shell) {
+    assert.equal(f.kind, 'small-tap-target', summary(withShell));
+    assert.ok(['header', 'footer'].includes(f.ref?.owner.id) && f.ref.owner.kind === 'shell', summary(withShell));
+    assert.equal(f.ref.nodeId, shellPlacement(f.ref.owner.id), `named on the ${f.ref.owner.id}'s placement`);
+    assert.ok(f.ref.match, 'a link inside the shell is named by the part around it, and says so');
+  }
+  assert.equal(withShell.checks.tapTargets.failed, shell.reduce((n, f) => n + (f.count ?? 1), 0), summary(withShell));
+
+  step('without the shell, the page itself starts readable');
+  await apply([{ type: 'page.update', pageId, showHeader: false, showFooter: false }], 'Hide the shell');
+  const baseline = await inspectUntil((r) => assert.deepEqual(findings(r), []), 'the page without its shell is clean');
+  for (const [name, c] of Object.entries(baseline.checks)) assert.deepEqual([c.failed, c.unverified, c.incomplete], [0, 0, undefined], `${name} starts clean:\n${summary(baseline)}`);
+  assert.ok(baseline.checks.contrast.checked > 3 && baseline.checks.tapTargets.checked >= 1, `the checks measured the page:\n${summary(baseline)}`);
+  const ours = findings;
 
   step('each defect is reported on the element to change');
   const style = (nodeId, property, value, extra = {}) => ({ type: 'node.setStyle', owner, nodeId, scope: 'phone', property, value, ...extra });
@@ -101,7 +112,7 @@ try {
   assert.deepEqual(one('small-tap-target').ref, { owner, nodeId: button }, summary(broken));
   assert.deepEqual(
     Object.fromEntries(Object.entries(broken.checks).map(([k, c]) => [k, c.failed])),
-    { contrast: 1, overlaps: 1, clippedText: 1, tapTargets: shell.length + 1 },
+    { contrast: 1, overlaps: 1, clippedText: 1, tapTargets: 1 },
     summary(broken)
   );
 
@@ -111,10 +122,8 @@ try {
     [fix(one('low-contrast'), 'color'), fix(one('clipped-text'), 'height'), fix(one('clipped-text'), 'overflow'), fix(one('overlap'), 'width'), fix(one('small-tap-target'), 'height'), fix(one('small-tap-target'), 'minHeight')],
     'Fix the page'
   );
-  const fixed = await inspectUntil((r) => assert.deepEqual(ours(r), []), 'the fixed page is clean');
-  assert.deepEqual(findings(fixed), shell, summary(fixed));
-  assert.deepEqual(Object.fromEntries(Object.entries(fixed.checks).map(([k, c]) => [k, c.failed])), atStart, summary(fixed));
-  for (const [name, c] of Object.entries(fixed.checks)) assert.equal(c.unverified, 0, `${name} measured everything:\n${summary(fixed)}`);
+  const fixed = await inspectUntil((r) => assert.deepEqual(findings(r), []), 'the fixed page is clean');
+  for (const [name, c] of Object.entries(fixed.checks)) assert.deepEqual([c.failed, c.unverified, c.incomplete], [0, 0, undefined], `${name} is clean again:\n${summary(fixed)}`);
 
   assert.deepEqual(errors, [], 'no page errors');
   console.log('\ninspect-layout: all checks passed');

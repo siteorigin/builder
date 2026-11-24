@@ -91,7 +91,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
   inspect_layout:
-    'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text over an image. No screenshots.',
+    'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text only pixels could judge (over an image). No screenshots.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
   request_clarification:
     'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four short, concrete options in choices; the user can also type their own answer. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
@@ -384,7 +384,7 @@ export function fitInspection<R>(envelope: Record<string, unknown>, report: R): 
     for (const i of issues) byKind.set(String(i.kind), (byKind.get(String(i.kind)) ?? 0) + 1);
     const [kind, n] = [...byKind].sort((a, b) => b[1] - a[1])[0] ?? ['', 0];
     if (n < 2) break;
-    issues.splice(issues.map((i) => i.kind).lastIndexOf(kind), 1);
+    issues.splice(issues.map((i) => String(i.kind)).lastIndexOf(kind), 1);
     omitted++;
   }
   if (omitted) r.omittedIssues = omitted;

@@ -25,6 +25,11 @@ export interface InspectionRef {
   partId?: string;
   itemId?: string;
   match?: 'nearest-part' | 'placement';
+  /**
+   * For an element of a component placed inside a project component's design: the same element in that design,
+   * which changes every placement of the design (the placement's own part, above, changes only this one).
+   */
+  definition?: InspectionRef;
 }
 
 /** The defect classes the readability checks report, one finding per element (see `InspectionChecks`). */

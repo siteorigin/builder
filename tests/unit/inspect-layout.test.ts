@@ -196,6 +196,69 @@ describe('layout inspection readability checks', () => {
     expect(r.issues.find((i) => i.kind === 'heading-structure')).toBeUndefined();
   }, 30000);
 
+  it.skipIf(!browserInstalled)('keeps measuring through form controls that hide the form\'s own properties', async () => {
+    // A control named "children" or "childNodes" replaces form.children or form.childNodes on the form element.
+    const r = await inspect(`<form ${so('form')} style="color:#ccc">Pale words in a form<input name="children" style="display:block;min-height:44px;width:200px"><input name="childNodes" style="display:block;min-height:44px;width:200px"></form>`);
+    expect(r.checks!.contrast.incomplete).toBeUndefined();
+    expect(of(r, 'low-contrast').map((i) => i.desc?.node)).toEqual(['form']);
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('judges gradients between their stops, and stacked or faded layers as only pixels could', async () => {
+    const photo = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#fff"/></svg>');
+    const r = await inspect(`
+      <div ${so('blackOnMix')} style="background:linear-gradient(90deg, red, #009000)"><p ${so('blackText')} style="color:#000">Black passes at both ends, not between</p></div>
+      <div ${so('whiteOnMix')} style="background:linear-gradient(90deg, red, #009000)"><p ${so('whiteText')} style="color:#fff">White fails at both ends, not between</p></div>
+      <div ${so('stacked')} style="background:linear-gradient(#0008, #0008), linear-gradient(#0008, #0008)"><p ${so('stackedText')} style="color:#000">Black under two tints</p></div>
+      <section ${so('hero')} style="background:#000 url('${photo}')"><div ${so('fadedCard')} style="opacity:.5"><div style="background:#fff"><p ${so('fadedText')} style="color:#000;margin:0">A faded card over a photo</p></div></div></section>
+      <a ${so('photoLink')} href="/buy" style="position:relative;display:block;isolation:isolate;background:#000;color:#fff;min-height:44px"><img alt="" src="${photo}" style="position:absolute;inset:0;width:100%;height:100%;z-index:-1">Buy</a>
+      <div ${so('nested')} style="opacity:.5"><div style="opacity:.8"><p ${so('nestedText')} style="color:#000">Black in two fades</p></div></div>
+      <div ${so('wrap')}><span style="display:contents;color:#ddd">Pale words in a wrapper with no box</span></div>
+      <style>.bar,.side{position:relative;height:120px}.bar::before{content:'';position:absolute;left:0;top:0;width:100px;height:24px;background:#000}.side::after{content:'';position:absolute;right:0;top:0;width:30%;height:100%;background:#000}</style>
+      <div class="bar" ${so('bar')}><p ${so('barText')} style="color:#000;margin:0">Black on a black bar</p></div>
+      <div class="side" ${so('side')}><p ${so('sideText')} style="color:#000;margin:0">Hi</p></div>`);
+    const unverified = Object.fromEntries(of(r, 'contrast-unverified').map((i) => [i.desc?.node, i.reason]));
+    expect(unverified).toEqual({ blackText: 'gradient', whiteText: 'gradient', stackedText: 'layers', fadedText: 'image', photoLink: 'image', barText: 'overlay' });
+    const pale = of(r, 'low-contrast');
+    expect(pale.map((i) => i.desc?.node).sort()).toEqual(['nestedText', 'wrap']);
+    // Two fades multiply: black at 40% on white.
+    expect(pale.find((i) => i.desc?.node === 'nestedText')?.ratio).toBeCloseTo(2.85, 1);
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('reads colours the page styles its own elements against', async () => {
+    const r = await inspect(`<style>span, so-color-probe { color: #fff !important }</style><p ${so('dark')} style="color:oklch(0.2 0 0)">Dark text written in oklch</p>`);
+    expect(of(r, 'low-contrast')).toEqual([]);
+    expect(r.checks!.contrast.failed).toBe(0);
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('tells a line cut off at the side from a slide waiting off screen, whatever shortens it', async () => {
+    const r = await inspect(`
+      <div ${so('carousel')} style="overflow:hidden;width:300px"><div style="display:flex;width:600px"><p style="flex:0 0 300px;margin:0">Slide one</p><p style="flex:0 0 300px;margin:0">Slide two</p></div></div>
+      <p ${so('wideLine')} style="width:120px;white-space:nowrap;overflow:hidden;margin:0">A line that runs out of its box</p>
+      <p ${so('tall')} style="height:24px;width:200px;overflow:hidden;text-overflow:ellipsis;margin:0">Several lines of words that wrap well past the height of this short box, ellipsis or not</p>
+      <p ${so('mono')} style="font-family:monospace;width:12ch"><span ${so('s1')} style="display:inline-block">1234567890</span><span ${so('s2')}>123456789012 abc</span><span ${so('s3')}> XYZ</span></p>`);
+    expect(of(r, 'clipped-text').map((i) => [i.desc?.node, i.axis]).sort()).toEqual([['tall', 'vertical'], ['wideLine', 'horizontal']]);
+    // Inline boxes flow as lines: their outer rectangles cross without their text doing so.
+    expect(of(r, 'overlap')).toEqual([]);
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('measures each control on its own box, and only words make a sentence', async () => {
+    const r = await inspect(`
+      <input type="checkbox" id="c1" ${so('far')}><div style="height:80px"></div><label for="c1">I agree, from far away</label>
+      <label ${so('wrapLabel')} style="display:flex;align-items:center;min-height:44px"><input type="checkbox"> I agree to the terms</label>
+      <nav ${so('menu')}><ul><li><span><a ${so('wrapped')} href="/">Go</a></span></li></ul></nav>
+      <p ${so('seps')}><a href="/a">A</a> | <a href="/b">B</a></p>
+      <div role="button" style="width:100px;height:60px"><a ${so('help')} href="/help" style="display:inline-block">?</a></div>`);
+    expect(of(r, 'small-tap-target').map((i) => [i.desc?.node, i.count ?? 1]).sort()).toEqual([['far', 1], ['help', 1], ['seps', 2], ['wrapped', 1]]);
+    const exactly = await inspect(pageWith(['tap']), 768);
+    expect(exactly.checks!.tapTargets.skipped).toBeDefined();
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('shows the worst of a repeated element\'s items', async () => {
+    const colors = ['#999', '#eee', '#bbb'];
+    const r = await inspect(`<ul ${so('list')}>${colors.map((c, i) => `<li ${so('card', `c${i}`)}><p ${so('cardText', `c${i}`)} style="color:${c}">Card ${i}</p></li>`).join('')}</ul>`);
+    expect(of(r, 'low-contrast')).toEqual([expect.objectContaining({ desc: { ctx: 'page:p', node: 'cardText', items: 'c1' }, count: 3, foreground: '#eeeeee' })]);
+  }, 30000);
+
   it.skipIf(!browserInstalled)('names the code component around markup the editor does not know', async () => {
     const r = await inspect(`<div style="display:contents" ${so('code1')} data-so-code="true"><div><p style="color:#ccc">Pale words in a code component</p></div></div>`);
     expect(of(r, 'low-contrast')).toEqual([expect.objectContaining({ desc: { ctx: 'page:p', node: 'code1', items: '', inside: true } })]);

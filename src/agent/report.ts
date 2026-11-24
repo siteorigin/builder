@@ -449,6 +449,8 @@ function readabilityChecks(checks: Partial<InspectionChecks> | undefined, at: st
   if (failed.length) out.push({ status: 'issue', text: `Found ${joinWords(failed)} ${at}.` });
   const unverified = count(checks.contrast, 'unverified');
   if (unverified) out.push({ status: 'unverified', text: `Couldn't confirm the contrast of ${unverified === 1 ? 'text' : `${unverified} text elements`} over images or mixed backgrounds ${at}.` });
+  // A page too large (or odd) to measure in full is never vouched for.
+  if (READABILITY_ROWS.some(([key]) => checks[key]?.incomplete)) out.push({ status: 'unverified', text: `Couldn't check all of the page's readability ${at}.` });
   if (!out.length && READABILITY_ROWS.some(([key]) => count(checks[key], 'checked') > 0)) {
     const applied = READABILITY_ROWS.filter(([key]) => checks[key] && !checks[key]!.skipped).map(([key]) => ({ contrast: 'text contrast', overlaps: 'overlaps', clippedText: 'cut-off text', tapTargets: 'tap targets' })[key]);
     out.push({ status: 'pass', text: `No problems with ${joinWords(applied)} ${at}.` });
