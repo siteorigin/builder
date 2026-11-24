@@ -609,6 +609,12 @@ export interface ComponentDefinition {
   examples?: Array<{ description: string; props: Record<string, unknown> }>;
   /** Icon name used in the insert panel. */
   icon?: string;
+  /**
+   * Where Insert puts a new placement (project components): beside the page's sections, or where an element goes,
+   * inside the selected layout. Create component records where its source sat; copies carry it on. Without it the
+   * editor reads it from the design (lib/insert-at).
+   */
+  insertAs?: 'section' | 'element';
 }
 
 export type ComponentCategory = 'hero' | 'content' | 'social-proof' | 'conversion' | 'media' | 'layout' | 'shell' | 'primitive' | 'custom';

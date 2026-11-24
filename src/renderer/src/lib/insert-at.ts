@@ -1,0 +1,171 @@
+/**
+ * Where Insert puts something new, worked out on a project's state alone: a click on a tile, the Insert panel's line
+ * saying where it goes, and a drop on the canvas all read it from here, so they agree on the place.
+ */
+import type { EditOperation } from '@shared/ops';
+import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import { newId } from '@shared/ids';
+import { childLists, findParent } from '@engine/tree';
+import { ownerLabel, refLabel, treeFor } from './model';
+import type { InsertSpec } from './insert-search';
+
+/** Where an inserted node goes: into a parent's list (or one of an instance's slots), or the owner's top level. */
+export type InsertAt = { owner: OwnerRef; parentId: string | null; slot?: string; index?: number };
+
+/** How a new thing is placed: as one of a page's sections, or as an element inside a layout. */
+export type InsertRole = 'section' | 'element';
+
+const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
+
+/** The slot an element put inside a component goes in: the first one its design shows (a declared slot can be left out
+ *  of the design, and what is put in it is then never seen), else the first declared. None when it has no slots. */
+export function slotFor(state: ProjectState, definitionId: string): string | undefined {
+  const def = own(state.components, definitionId);
+  const names = Object.keys(def?.slots ?? {});
+  const nodes = Object.values(def?.tree?.nodes ?? {});
+  return names.find((name) => nodes.some((n) => n.kind === 'slot' && n.slot === name)) ?? names[0];
+}
+
+/**
+ * Whether a component inserts as one of a page's sections or as an element inside a layout. Create component records
+ * it (a card made inside a grid is an element); copies carry it on. A definition from before that is read from what it
+ * is: a theme's component, or a design whose root is one, is a section, and so is a root that is a section element; a
+ * design rooted in any other element (a card, a paragraph) is an element. Code with nothing to go on stays a section.
+ */
+export function definitionRole(state: ProjectState, definitionId: string, seen = new Set<string>()): InsertRole {
+  const def = own(state.components, definitionId);
+  if (!def || seen.has(def.id)) return 'section';
+  seen.add(def.id);
+  if (def.insertAs === 'section' || def.insertAs === 'element') return def.insertAs;
+  if (def.owner === 'theme') return 'section';
+  const from = def.provenance?.forkedFrom;
+  if (from && own(state.components, from)) return definitionRole(state, from, seen);
+  const root = def.kind === 'managed' && def.tree ? own(def.tree.nodes, def.tree.rootIds[0] ?? '') : undefined;
+  if (!root) return 'section';
+  if (root.kind === 'instance') return definitionRole(state, root.definitionId, seen);
+  if (root.kind === 'element' && root.tag === 'section') return 'section';
+  return 'element';
+}
+
+/** How `spec` is placed: a basic element as an element, a theme section as a section, a project component as it was made. */
+export function insertRole(state: ProjectState, spec: InsertSpec): InsertRole {
+  if (spec.primitive) return 'element';
+  if (spec.definitionId) return definitionRole(state, spec.definitionId);
+  return 'section';
+}
+
+/**
+ * Where something placed as `role` goes in `owner`, relative to `sel` (a node of the owner's own tree, see
+ * structuralTarget). An element goes inside a selected container or a placed component's slot, else just after the
+ * selection, in its own list; with nothing selected on a page it goes into the last section that holds content. A
+ * section goes after the top-level section that holds the selection. `definitionId`: the component being inserted,
+ * whose own selected placement asks for another beside it (a second card), never one inside it.
+ */
+export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole, sel: ElementRef | null, definitionId?: string): InsertAt | null {
+  const tree = treeFor(state, owner);
+  if (!tree) return null;
+  if (sel && sel.owner.kind === owner.kind && sel.owner.id === owner.id) {
+    const node = own(tree.nodes, sel.nodeId);
+    const same = node?.kind === 'instance' && !!definitionId && node.definitionId === definitionId;
+    if (role === 'element' && node && !same) {
+      if (node.kind === 'element') return { owner, parentId: node.id };
+      const slot = node.kind === 'instance' ? slotFor(state, node.definitionId) : undefined;
+      if (slot) return { owner, parentId: node.id, slot };
+    }
+    const info = findParent(tree, sel.nodeId);
+    if (info) {
+      if (role === 'section' && info.parentId) {
+        // After the top-level section holding the selection.
+        let top = sel.nodeId;
+        const seen = new Set<string>();
+        for (let p = findParent(tree, top); p?.parentId && !seen.has(p.parentId); p = findParent(tree, top)) {
+          seen.add(p.parentId);
+          top = p.parentId;
+        }
+        return { owner, parentId: null, index: tree.rootIds.indexOf(top) + 1 };
+      }
+      return { owner, parentId: info.parentId, slot: info.slot, index: info.index + 1 };
+    }
+  }
+  if (role === 'element' && owner.kind === 'page') {
+    // Loose elements go inside the last section that holds content, when there is one.
+    const last = [...tree.rootIds].reverse().map((id) => own(tree.nodes, id)).find((n) => n?.kind === 'instance' && slotFor(state, n.definitionId));
+    if (last?.kind === 'instance') return { owner, parentId: last.id, slot: slotFor(state, last.definitionId) };
+  }
+  return { owner, parentId: null };
+}
+
+/**
+ * A component has one top-level element, the component itself: what would go beside it goes at the end of it, and
+ * nothing can be inserted into one that holds nothing (a paragraph). A design from an older version without its one
+ * root keeps the top level, where an element can be inserted to hold the others.
+ */
+export function insideComponent(state: ProjectState, at: InsertAt | null): InsertAt | null {
+  if (!at || at.owner.kind !== 'component' || at.parentId) return at;
+  const tree = treeFor(state, at.owner);
+  if (tree?.rootIds.length !== 1) return at;
+  const node = own(tree.nodes, tree.rootIds[0]);
+  if (node?.kind === 'element') return { owner: at.owner, parentId: node.id };
+  const slot = node?.kind === 'instance' ? slotFor(state, node.definitionId) : undefined;
+  if (slot) return { owner: at.owner, parentId: node!.id, slot };
+  return node?.kind === 'repeat' || node?.kind === 'slot' ? at : null;
+}
+
+/**
+ * The operations that insert `spec` at `at`, as one change: an element placed on a page's top level goes into a new
+ * Section made for it. What `spec` names is the last one inserted; `nodeId` names it, for operations in the same batch
+ * that fill it.
+ */
+export function insertOps(at: InsertAt, spec: InsertSpec, role: InsertRole, nodeId?: string): EditOperation[] {
+  const named = nodeId ? { newNodeId: nodeId } : {};
+  const what = Object.fromEntries(Object.entries(spec).filter(([, v]) => v !== undefined)) as InsertSpec;
+  if (role === 'element' && at.owner.kind === 'page' && !at.parentId) {
+    const sectionId = newId('n');
+    return [
+      { type: 'node.insert', newNodeId: sectionId, owner: at.owner, parentId: null, index: at.index, componentId: 'layout.section' },
+      { type: 'node.insert', ...named, owner: at.owner, parentId: sectionId, slot: 'content', ...what }
+    ];
+  }
+  return [{ type: 'node.insert', ...named, owner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index, ...what }];
+}
+
+/** Where an insert lands, in words: "after" + "Split hero". `node`: the target is an element, not the page itself.
+ *  `within`: the container it goes into beside `target`, named so the place is plain ("after Card" in "Grid"). */
+export type Where = { lead: string; target: string; node?: boolean; within?: string } | null;
+
+/** The node just before an insertion index, in the list that index counts in. */
+export function nodeBefore(st: ProjectState, owner: OwnerRef, parentId: string | null, slot: string | undefined, index: number | undefined): string | null {
+  if (!index) return null;
+  const tree = treeFor(st, owner);
+  if (!tree) return null;
+  if (!parentId) return tree.rootIds[index - 1] ?? null;
+  const parent = own(tree.nodes, parentId);
+  if (!parent) return null;
+  const lists = childLists(parent);
+  return ((slot ? lists.find((l) => l.slot === slot) : lists[0])?.ids ?? [])[index - 1] ?? null;
+}
+
+export const nodeLabel = (st: ProjectState, owner: OwnerRef, nodeId: string) => refLabel(st, { owner, instancePath: [], nodeId });
+
+/** Where an element inserted at `at` goes. On a page with nowhere to put it, insertOps wraps it in a new section. */
+export function elementWhere(st: ProjectState, at: InsertAt | null): Where {
+  if (!at) return null;
+  const before = nodeBefore(st, at.owner, at.parentId, at.slot, at.index);
+  if (at.owner.kind === 'page' && !at.parentId)
+    return before ? { lead: 'in a new section after', target: nodeLabel(st, at.owner, before), node: true } : { lead: at.index === 0 ? 'in a new section at the top of' : 'in a new section at the end of', target: ownerLabel(st, at.owner) };
+  if (before) return { lead: 'after', target: nodeLabel(st, at.owner, before), node: true, ...(at.parentId ? { within: nodeLabel(st, at.owner, at.parentId) } : {}) };
+  if (at.parentId) return { lead: 'inside', target: nodeLabel(st, at.owner, at.parentId), node: true };
+  return { lead: 'at the end of', target: ownerLabel(st, at.owner) };
+}
+
+/** Where a section inserted at `at` goes: after the section before it, else at the top or end of the page. */
+export function sectionWhere(st: ProjectState, at: InsertAt | null): Where {
+  if (!at) return null;
+  const before = nodeBefore(st, at.owner, at.parentId, at.slot, at.index);
+  if (before) return { lead: 'after', target: nodeLabel(st, at.owner, before), ...(at.parentId ? { within: nodeLabel(st, at.owner, at.parentId) } : {}) };
+  if (at.parentId) return { lead: 'inside', target: nodeLabel(st, at.owner, at.parentId) };
+  return { lead: at.index === 0 ? 'at the top of' : 'at the end of', target: ownerLabel(st, at.owner) };
+}
+
+/** Where something placed as `role` at `at` goes, in words. */
+export const whereFor = (st: ProjectState, at: InsertAt | null, role: InsertRole): Where => (role === 'element' ? elementWhere(st, at) : sectionWhere(st, at));

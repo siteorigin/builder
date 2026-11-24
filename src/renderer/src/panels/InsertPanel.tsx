@@ -8,7 +8,8 @@ import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
-import { elementWhere, insert, insertionPoint, nodeBefore, nodeLabel, selectPage, type InsertSpec, type Where } from '../lib/actions';
+import { insert, insertionPoint, insertPlan, selectPage, type InsertSpec, type Where } from '../lib/actions';
+import { elementWhere, nodeLabel, sectionWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, searchItems } from '../lib/insert-search';
 import { ownerLabel, treeFor } from '../lib/model';
 import { gridKeys, openMenus, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
@@ -550,27 +551,24 @@ function LibraryPeek({ it, def, st, anchor, panel, map, onEnter, onLeave }: { it
     document.body
   );
 }
-/** Where a section or a project component goes, read from the same insertion point insert() uses. */
-function sectionWhere(st: ProjectState): Where {
-  const at = insertionPoint('section');
-  if (!at) return null;
-  const before = nodeBefore(st, at.owner, at.parentId, at.slot, at.index);
-  if (before) return { lead: 'after', target: nodeLabel(st, at.owner, before) };
-  if (at.parentId) return { lead: 'inside', target: nodeLabel(st, at.owner, at.parentId) };
-  return { lead: at.index === 0 ? 'at the top of' : 'at the end of', target: ownerLabel(st, at.owner) };
+/** The places either side of where a new section or component lands, for the preview's map: the page's sections, or
+ *  what is already in the container it goes into. */
+type Neighbours = { owner: string; before: string | null; after: string | null };
+function neighboursAt(st: ProjectState, at: InsertAt | null): Neighbours | null {
+  const tree = at ? treeFor(st, at.owner) : undefined;
+  if (!at || !tree) return null;
+  const parent = at.parentId && Object.hasOwn(tree.nodes, at.parentId) ? tree.nodes[at.parentId] : undefined;
+  if (at.parentId && !parent) return null;
+  const lists = parent ? childLists(parent) : [];
+  const ids = parent ? ((at.slot ? lists.find((l) => l.slot === at.slot) : lists[0])?.ids ?? []) : tree.rootIds;
+  const index = at.index ?? ids.length;
+  const label = (nodeId: string | undefined) => (nodeId ? nodeLabel(st, at.owner, nodeId) : null);
+  return { owner: parent ? nodeLabel(st, at.owner, parent.id) : ownerLabel(st, at.owner), before: label(ids[index - 1]), after: label(ids[index]) };
 }
 
-/** The sections either side of where a new section lands, from the same insertion point, for the preview's page map. */
-type Neighbours = { owner: string; before: string | null; after: string | null };
-function sectionNeighbours(st: ProjectState): Neighbours | null {
-  const at = insertionPoint('section');
-  if (!at || at.parentId) return null;
-  const tree = treeFor(st, at.owner);
-  if (!tree) return null;
-  const index = at.index ?? tree.rootIds.length;
-  const label = (nodeId: string | undefined) => (nodeId ? nodeLabel(st, at.owner, nodeId) : null);
-  return { owner: ownerLabel(st, at.owner), before: label(tree.rootIds[index - 1]), after: label(tree.rootIds[index]) };
-}
+/** A place in words, with the container it is in when that is not the page: "Exhibitor card in Exhibitors grid". */
+const placeText = (w: NonNullable<Where>) => (w.within ? `${w.target} in ${w.within}` : w.target);
+const sameWhere = (a: Where, b: Where) => a === b || (!!a && !!b && a.lead === b.lead && placeText(a) === placeText(b));
 
 /** Saved components shown before "Show all", so a large library never buries the built-in catalogue. */
 const MINE_SHOWN = 4;
@@ -1125,9 +1123,26 @@ export function InsertPanel() {
   const results = searchItems([...mine, ...sections, ...elements], query, shown);
   const current = results[Math.min(active, results.length - 1)];
 
-  const sectionTo = sectionWhere(st);
-  // Project components insert the way sections do.
-  const where: Record<Kind, Where> = { section: sectionTo, element: elementWhere(st, insertionPoint('element')), component: sectionTo };
+  const sectionAt = insertionPoint('section');
+  const elementAt = insertionPoint('element');
+  const sectionTo = sectionWhere(st, sectionAt);
+  const elementTo = elementWhere(st, elementAt);
+  // A project component goes where it was made to go: beside the page's sections, or into the selected layout like an
+  // element (a second card beside the selected one, in its grid).
+  const plans = new Map<string, { role: InsertRole; at: InsertAt | null; where: Where }>();
+  const planOf = (it: Item) => {
+    let p = plans.get(it.key);
+    if (!p) {
+      const { role, at } = it.kind === 'section' ? { role: 'section' as const, at: sectionAt } : it.kind === 'element' ? { role: 'element' as const, at: elementAt } : insertPlan(it.spec, snap);
+      p = { role, at, where: it.kind === 'section' ? sectionTo : it.kind === 'element' ? elementTo : whereFor(st, at, role) };
+      plans.set(it.key, p);
+    }
+    return p;
+  };
+  const whereOf = (it: Item): Where => planOf(it).where;
+  // Components as a group go to one place only when each of them does.
+  const componentTo = mine.length && mine.every((it) => sameWhere(whereOf(it), whereOf(mine[0]))) ? whereOf(mine[0]) : null;
+  const where: Record<Kind, Where> = { section: sectionTo, element: elementTo, component: componentTo };
   const topKind: Kind = mine.length || dev ? 'component' : 'section';
 
   // One insert at a time: a second click or Enter before the first has landed would read the same insertion point
@@ -1138,7 +1153,7 @@ export function InsertPanel() {
     clearTimeout(peekTimer.current);
     setPeek(null);
     try {
-      const to = where[it.kind];
+      const to = whereOf(it);
       const before = getState().selection;
       const prior = getState().snapshot;
       const project = prior?.workspaceKey;
@@ -1332,7 +1347,7 @@ export function InsertPanel() {
     }
   });
   const descId = (it: Item) => `${id}-d-${it.key}`;
-  const describedBy = (it: Item) => `${id}-to-${it.kind}${it.description || it.usage ? ` ${descId(it)}` : ''}`;
+  const describedBy = (it: Item) => `${id}-to-${it.kind === 'component' ? it.key : it.kind}${it.description || it.usage ? ` ${descId(it)}` : ''}`;
   // A saved component's description also says, in full, where it is used: the row shows only the start of it.
   const usageText = (u?: Usage) => (!u ? '' : u.status === 'used' ? `${u.short}: ${u.places.join(', ')}.` : u.status === 'needed' ? 'Not placed, but needed by code.' : 'Not used anywhere.');
   const description = (it: Item) =>
@@ -1432,7 +1447,7 @@ export function InsertPanel() {
     return bands;
   };
   const found = query ? (results.length ? `${results.length} result${results.length === 1 ? '' : 's'} for ${q.trim()}` : `No matches for ${q.trim()}`) : '';
-  const confirmed = added ? `Added ${added.name} ${added.where?.lead ?? ''} ${added.where?.target ?? ''}` : '';
+  const confirmed = added ? `Added ${added.name} ${added.where?.lead ?? ''} ${added.where ? placeText(added.where) : ''}` : '';
 
   // What the strip says next: the item about to be added and where it goes, else where the next one goes.
   // Under a confirmation there is room for one short line, so it names only the place: the tile in view says what.
@@ -1440,17 +1455,22 @@ export function InsertPanel() {
   const aimItem = aim && aim !== 'new' ? byKey.get(aim) : undefined;
   const next = !!added;
   const fallback: Kind = next ? added.kind : query ? 'section' : (scrolled ?? topKind);
-  const kindNow: Kind = aimItem?.kind ?? fallback;
+  // The next one of what was just added goes where that item now goes, from the new selection.
+  const addedItem = added ? byKey.get(added.key) : undefined;
+  const nextTo = next ? (addedItem ? whereOf(addedItem) : where[added.kind]) : null;
+  const aimTo = aimItem ? whereOf(aimItem) : null;
   const line: Line =
     aim === 'new'
       ? { verb: 'Opens the code editor to write a new component' }
-      : next && where[kindNow]
-        ? { verb: `Next: ${where[kindNow]!.lead.replace(/^in a new section /, 'new section ')}`, target: where[kindNow]!.target, full: `The next one goes ${where[kindNow]!.lead} ${where[kindNow]!.target}` }
-        : aimItem && where[aimItem.kind]
-          ? { name: fullName(aimItem), verb: placeLead(where[aimItem.kind]!.lead), target: where[aimItem.kind]!.target, full: `${fullName(aimItem)} goes ${where[aimItem.kind]!.lead} ${where[aimItem.kind]!.target}` }
+      : next && nextTo
+        ? { verb: `Next: ${nextTo.lead.replace(/^in a new section /, 'new section ')}`, target: placeText(nextTo), full: `The next one goes ${nextTo.lead} ${placeText(nextTo)}` }
+        : aimItem && aimTo
+          ? { name: fullName(aimItem), verb: placeLead(aimTo.lead), target: placeText(aimTo), full: `${fullName(aimItem)} goes ${aimTo.lead} ${placeText(aimTo)}` }
           : where[fallback]
-            ? { verb: `${KIND_SUBJECT[fallback]} ${where[fallback]!.lead}`, target: where[fallback]!.target }
-            : { verb: '' };
+            ? { verb: `${KIND_SUBJECT[fallback]} ${where[fallback]!.lead}`, target: placeText(where[fallback]!) }
+            : fallback === 'component' && mine.length
+              ? { verb: 'Point at a component to see where it goes' }
+              : { verb: '' };
 
   const peekItem = peek && byKey.get(peek.key);
   const panelRect = peekItem ? bodyRef.current?.closest('.side-panel')?.getBoundingClientRect() : undefined;
@@ -1666,11 +1686,19 @@ export function InsertPanel() {
         {confirmed}
         {added && added.n % 2 ? '\u00a0' : ''}
       </p>
-      {(['section', 'element', 'component'] as const).map((k) => (
+      {(['section', 'element'] as const).map((k) => (
         <span key={k} id={`${id}-to-${k}`} hidden>
-          {where[k] ? `${KIND_SUBJECT[k]} ${where[k]!.lead} ${where[k]!.target}` : ''}
+          {where[k] ? `${KIND_SUBJECT[k]} ${where[k]!.lead} ${placeText(where[k]!)}` : ''}
         </span>
       ))}
+      {mine.map((it) => {
+        const w = whereOf(it);
+        return (
+          <span key={it.key} id={`${id}-to-${it.key}`} hidden>
+            {w ? `Goes ${w.lead} ${placeText(w)}` : ''}
+          </span>
+        );
+      })}
       <div className="panel-body insert-body" ref={bodyRef} onKeyDown={gridKeys} onFocus={onBodyFocus} onBlur={onBodyBlur} onScroll={onBodyScroll}>
         {query ? (
           results.length ? (
@@ -1798,7 +1826,7 @@ export function InsertPanel() {
           st={st}
           anchor={peek.rect}
           panel={panelRect}
-          map={sectionNeighbours(st)}
+          map={neighboursAt(st, planOf(peekItem).at)}
           onEnter={keepPeek}
           onLeave={searching && document.activeElement === searchRef.current ? keepPeek : () => hidePeek(peek.key)}
         />
@@ -1809,7 +1837,7 @@ export function InsertPanel() {
           anchor={peek.rect}
           panel={panelRect}
           option={showVariants || peekItem.variant ? `${optionLabel(peekItem)}${peekItem.defaults ? ` · ${peekItem.defaults}` : ''}` : null}
-          map={sectionNeighbours(st)}
+          map={neighboursAt(st, sectionAt)}
           onEnter={keepPeek}
           onLeave={searching && document.activeElement === searchRef.current ? keepPeek : () => hidePeek(peek.key)}
         />

@@ -12,8 +12,9 @@ import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAct
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
-import type { InsertSpec, Primitive } from './insert-search';
-import { boundaryOf, computedAt, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
+import type { InsertSpec } from './insert-search';
+import { elementWhere, insertOps, insertRole, insideComponent, nodeBefore, placeFor, type InsertAt, type InsertRole, type Where } from './insert-at';
+import { boundaryOf, computedAt, followsPageAt, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 
@@ -337,131 +338,34 @@ export async function moveToPage(pageId: string, plan = planLayers(), follow = f
   return ids;
 }
 
-/** Where an inserted node goes: into a parent's list (or one of an instance's slots), or the owner's top level. */
-export type InsertAt = { owner: OwnerRef; parentId: string | null; slot?: string; index?: number };
-
-/** The slot an element put inside a component goes in: the first one its design shows (a declared slot can be left out
- *  of the design, and what is put in it is then never seen), else the first declared. None when it has no slots. */
-function slotFor(state: ProjectState, definitionId: string): string | undefined {
-  const def = state.components[definitionId];
-  const names = Object.keys(def?.slots ?? {});
-  const nodes = Object.values(def?.tree?.nodes ?? {});
-  return names.find((name) => nodes.some((n) => n.kind === 'slot' && n.slot === name)) ?? names[0];
-}
+export type { InsertAt, Where } from './insert-at';
+export { elementWhere, nodeBefore, nodeLabel } from './insert-at';
 
 /** Work out where an inserted section or element should go, relative to the selection (or to `from`), in the project
- *  as this window has it (or as `snapshot` has it). */
-export function insertionPoint(kind: 'section' | 'element', from: ElementRef | null = getState().selection, snapshot: ProjectSnapshot | null = getState().snapshot): InsertAt | null {
-  return snapshot ? insideComponent(snapshot.state, placeFor(kind, from, snapshot)) : null;
-}
-
-function placeFor(kind: 'section' | 'element', from: ElementRef | null, snapshot: ProjectSnapshot): InsertAt | null {
+ *  as this window has it (or as `snapshot` has it). `definitionId`: the component being inserted (see placeFor). */
+export function insertionPoint(kind: InsertRole, from: ElementRef | null = getState().selection, snapshot: ProjectSnapshot | null = getState().snapshot, definitionId?: string): InsertAt | null {
   const owner = currentOwner();
-  if (!owner || !snapshot) return null;
+  if (!snapshot || !owner) return null;
   const state = snapshot.state;
-  const tree = treeFor(state, owner);
-  if (!tree) return null;
-  const sel = structuralTarget(from, { withRoot: true, state });
-  if (sel && sel.owner.kind === owner.kind && sel.owner.id === owner.id) {
-    const node = tree.nodes[sel.nodeId];
-    // Elements go inside a selected container or section slot.
-    if (kind === 'element' && node) {
-      if (node.kind === 'element') return { owner, parentId: node.id };
-      const slot = node.kind === 'instance' ? slotFor(state, node.definitionId) : undefined;
-      if (slot) return { owner, parentId: node.id, slot };
-    }
-    const info = findParent(tree, sel.nodeId);
-    if (info) {
-      if (kind === 'section' && info.parentId) {
-        // Insert after the top-level section containing the selection.
-        let top = sel.nodeId;
-        let p = findParent(tree, top);
-        while (p?.parentId) {
-          top = p.parentId;
-          p = findParent(tree, top);
-        }
-        return { owner, parentId: null, index: tree.rootIds.indexOf(top) + 1 };
-      }
-      return { owner, parentId: info.parentId, slot: info.slot, index: info.index + 1 };
-    }
-  }
-  if (kind === 'element' && owner.kind === 'page') {
-    // Put loose elements inside the last flexible section when there is one.
-    const last = [...tree.rootIds].reverse().map((id) => tree.nodes[id]).find((n) => n?.kind === 'instance' && slotFor(state, n.definitionId));
-    if (last?.kind === 'instance') return { owner, parentId: last.id, slot: slotFor(state, last.definitionId) };
-  }
-  return { owner, parentId: null };
+  return insideComponent(state, placeFor(state, owner, kind, structuralTarget(from, { withRoot: true, state }), definitionId));
 }
 
-/**
- * A component has one top-level element, the component itself: what would go beside it goes at the end of it, and
- * nothing can be inserted into one that holds nothing (a paragraph). A design from an older version without its one
- * root keeps the top level, where an element can be inserted to hold the others.
- */
-function insideComponent(state: ProjectState, at: InsertAt | null): InsertAt | null {
-  if (!at || at.owner.kind !== 'component' || at.parentId) return at;
-  const tree = treeFor(state, at.owner);
-  if (tree?.rootIds.length !== 1) return at;
-  const node = tree.nodes[tree.rootIds[0]];
-  if (node?.kind === 'element') return { owner: at.owner, parentId: node.id };
-  const slot = node?.kind === 'instance' ? slotFor(state, node.definitionId) : undefined;
-  if (slot) return { owner: at.owner, parentId: node!.id, slot };
-  return node?.kind === 'repeat' || node?.kind === 'slot' ? at : null;
+/** Where `spec` goes when its tile is clicked now: how it is placed, and the place. */
+export function insertPlan(spec: InsertSpec, snapshot: ProjectSnapshot | null = getState().snapshot): { role: InsertRole; at: InsertAt | null } {
+  const role = snapshot ? insertRole(snapshot.state, spec) : spec.primitive ? 'element' : 'section';
+  return { role, at: insertionPoint(role, getState().selection, snapshot, spec.definitionId) };
 }
 
-/**
- * The operations that insert one element at `at`, as one change: a loose element on a page with no flexible section
- * goes into a new Section made for it. The element is the last one inserted; `nodeId` names it, for operations in
- * the same batch that fill it.
- */
-function elementOps(at: InsertAt, spec: { primitive: Primitive; text?: string }, nodeId?: string): EditOperation[] {
-  const named = nodeId ? { newNodeId: nodeId } : {};
-  if (at.owner.kind === 'page' && !at.parentId) {
-    const sectionId = newId('n');
-    return [
-      { type: 'node.insert', newNodeId: sectionId, owner: at.owner, parentId: null, index: at.index, componentId: 'layout.section' },
-      { type: 'node.insert', ...named, owner: at.owner, parentId: sectionId, slot: 'content', ...spec }
-    ];
-  }
-  return [{ type: 'node.insert', ...named, owner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index, ...spec }];
-}
-
-export async function insert(spec: InsertSpec, label: string) {
-  const isSection = !spec.primitive;
-  const at = insertionPoint(isSection ? 'section' : 'element');
-  if (!at) return;
-  const ops: EditOperation[] = spec.primitive ? elementOps(at, { primitive: spec.primitive, ...(spec.text !== undefined ? { text: spec.text } : {}) }) : [{ type: 'node.insert', owner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index, ...spec }];
-  const r = await applyOps(ops, `Insert ${label}`);
+/** Insert `spec` where its tile says, or at `to` (a drop on the canvas, planned on `revision`), as one change, and
+ *  select it. Returns the new node's ID, or null when nothing was inserted. */
+export async function insert(spec: InsertSpec, label: string, to?: { at: InsertAt; role: InsertRole; revision: number }): Promise<string | null> {
+  const plan = to ?? insertPlan(spec);
+  if (!plan.at) return null;
+  const at = plan.at;
+  const r = await applyOps(insertOps(at, spec, plan.role), `Insert ${label}`, undefined, to?.revision);
   const id = r?.at(-1)?.nodeId as string | undefined;
   if (id) setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
-}
-
-/** Where an insert lands, in words: "after" + "Split hero". `node`: the target is an element, not the page itself. */
-export type Where = { lead: string; target: string; node?: boolean } | null;
-
-/** The node just before an insertion index, in the list that index counts in. */
-export function nodeBefore(st: ProjectState, owner: OwnerRef, parentId: string | null, slot: string | undefined, index: number | undefined): string | null {
-  if (!index) return null;
-  const tree = treeFor(st, owner);
-  if (!tree) return null;
-  if (!parentId) return tree.rootIds[index - 1] ?? null;
-  const parent = tree.nodes[parentId];
-  if (!parent) return null;
-  const lists = childLists(parent);
-  return ((slot ? lists.find((l) => l.slot === slot) : lists[0])?.ids ?? [])[index - 1] ?? null;
-}
-
-export const nodeLabel = (st: ProjectState, owner: OwnerRef, nodeId: string) => refLabel(st, { owner, instancePath: [], nodeId });
-
-/** Where a basic element inserted at `at` goes. On a page with nowhere to put it, insert() wraps it in a new section. */
-export function elementWhere(st: ProjectState, at: InsertAt | null): Where {
-  if (!at) return null;
-  const before = nodeBefore(st, at.owner, at.parentId, at.slot, at.index);
-  if (at.owner.kind === 'page' && !at.parentId)
-    return before ? { lead: 'in a new section after', target: nodeLabel(st, at.owner, before), node: true } : { lead: at.index === 0 ? 'in a new section at the top of' : 'in a new section at the end of', target: ownerLabel(st, at.owner) };
-  if (before) return { lead: 'after', target: nodeLabel(st, at.owner, before), node: true };
-  if (at.parentId) return { lead: 'inside', target: nodeLabel(st, at.owner, at.parentId), node: true };
-  return { lead: 'at the end of', target: ownerLabel(st, at.owner) };
+  return id ?? null;
 }
 
 /** Where Place on page puts a library image (`key` tells two placements apart), or why it can't be placed now. */
@@ -547,7 +451,7 @@ export async function placeAsset(assetId: string, shown: string): Promise<boolea
       const name = asset.name.trim() || 'the image';
       const nodeId = newId('n');
       const owner = p.at.owner;
-      const ops: EditOperation[] = [...elementOps(p.at, { primitive: 'image' }, nodeId), { type: 'node.setContent', owner, nodeId, field: 'image', value: asset.id }];
+      const ops: EditOperation[] = [...insertOps(p.at, { primitive: 'image' }, 'element', nodeId), { type: 'node.setContent', owner, nodeId, field: 'image', value: asset.id }];
       const r = await commitOps(ops, `Place ${name}`, undefined, snap.revision, { replanStale: tries < 2 });
       // Refused, and said why (the AI started, the project changed again): that change's own record reports it.
       if (!r) return false;
