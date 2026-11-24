@@ -329,7 +329,7 @@ function showUse(u: ImageUseRow): (() => void) | undefined {
   if (u.at) return revealUse(u.at.owner, u.at.nodeId, u.field, u.what);
   if (u.setting === 'site') return openSiteStyles;
   const pageId = u.setting?.pageId;
-  return pageId ? () => selectPage(pageId) : undefined;
+  return pageId ? () => selectPage(pageId, null) : undefined;
 }
 
 /**

@@ -526,8 +526,8 @@ export function PagesPanel() {
     if (v.length > TEXT_LIMITS.pageTitle) {
       const commit = (t: string) => void applyOps([{ type: 'page.update', pageId: id, title: t.trim() }], 'Rename page');
       keepRefusedText(`page:${id}:title`, v, { base: from?.snap ?? getState().snapshot, value: was ?? '', commit, ai: from?.ai ?? aiActivity() }, 'Title', TEXT_LIMITS.pageTitle, () => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id));
-      selectPage(id);
-      setState({ selection: null, rightTab: 'inspect', dockOpen: true, keptHandoff: getState().keptHandoff + 1 });
+      selectPage(id, null);
+      setState({ rightTab: 'inspect', dockOpen: true, keptHandoff: getState().keptHandoff + 1 });
       toast(`A page title can be up to ${TEXT_LIMITS.pageTitle} characters, and this one is ${v.length}, so it was not saved. It is in the page’s settings to shorten.`, 'error');
       return;
     }
