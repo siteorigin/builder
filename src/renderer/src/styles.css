@@ -2019,6 +2019,7 @@ button.code-problem:hover { background: var(--active); }
 .insert-where .rl .rel { flex: 0 0 auto; max-width: 75%; overflow: hidden; text-overflow: ellipsis; }
 .insert-where .rl .tgt { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .insert-where-done { color: var(--text); animation: insert-added 200ms ease-out; }
+.insert-where .insert-where-done .txt { display: block; white-space: nowrap; text-overflow: ellipsis; }
 .insert-where .insert-undo { flex: none; height: 24px; padding: 0 7px; gap: 4px; color: var(--accent-text); }
 .insert-panel.narrow .insert-where .insert-undo { width: 24px; padding: 0; }
 .insert-panel.narrow .insert-where .insert-undo .lbl { display: none; }
@@ -2080,12 +2081,74 @@ button.code-problem:hover { background: var(--active); }
 .insert-tile.project strong { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .insert-tile.project small { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A saved component is a component definition, marked plum as in Layers. */
-.insert-tile.project .ico:not(.done), .insert-tile.project:is(:hover, :focus-visible) .ico:not(.done) { background: var(--plum-soft); color: var(--plum); }
 .insert-tile.new { background: transparent; box-shadow: none; border: 1px dashed var(--border-control); color: var(--text-2); }
 .insert-grid.compact .insert-tile.new { padding: 5px 7px; }
 .insert-tile.new:hover { border-color: var(--accent); color: var(--accent-text); box-shadow: none; }
 .insert-tile.new .ico { background: transparent; color: inherit; }
-.insert-empty-note { margin: 0 14px 14px; font-size: 12px; line-height: 1.45; color: var(--text-3); }
+/* The library: each saved component pictured by a sketch of its own design, marked plum as a component (or code), with
+   where it is used on one line. Copies sit one step in under the component they were copied from, and in Variants a
+   component's own options follow it the same way. */
+.insert-grid.managed .insert-tile.project { grid-column: 1; min-height: 48px; padding: 5px 8px 5px 5px; gap: 9px; }
+.insert-grid.managed .insert-manage { grid-column: 2; }
+.insert-lib-pic { position: relative; flex: none; width: 48px; height: 34px; }
+.insert-lib-thumb { display: block; width: 100%; height: 100%; overflow: hidden; border-radius: var(--r-xs); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border-strong); }
+.insert-lib-thumb .sketch { height: 100%; padding: 4px 5px; gap: 2px; border-radius: 0; }
+.insert-lib-thumb .sketch :is(.col-s, .sk-row) { gap: 2px; }
+.insert-lib-thumb .sketch.split { gap: 3px; }
+.insert-lib-thumb .sketch.cols { gap: 2px; }
+.insert-lib-thumb .sketch .col-s.card { padding: 2px; }
+.insert-lib-thumb .sketch.grid3 { gap: 2px; padding: 3px; }
+/* At thumbnail size the silhouette matters most: pictures keep their room, and text is one line each. */
+.insert-lib-thumb .sketch i.l2 { display: none; }
+.insert-lib-thumb .sketch.design i.img { min-height: 12px; }
+/* The marks people recognise a design by keep 3:1 against the sketch: text bars, fields and rules. */
+.insert-lib-thumb .sketch i:not(.hi, .cta, .img, .nest, .slot, .quote) { background: var(--text-3); }
+.insert-lib-thumb .sketch i.hi { background: var(--text-2); }
+.insert-lib-thumb .sketch :is(i.field, i.row-line) { background: transparent; box-shadow: inset 0 0 0 1px var(--text-3); }
+.insert-live-wait .sketch i:not(.hi, .cta, .img, .nest, .slot, .quote) { background: var(--text-3); }
+.insert-live-wait .sketch i.hi { background: var(--text-2); }
+.insert-live-wait .sketch :is(i.field, i.row-line) { background: transparent; box-shadow: inset 0 0 0 1px var(--text-3); }
+/* The add cue a section tile shows on hover and focus; on a row, the mark's check says it was just added. */
+.insert-tile.project.just-added:not(:hover, :focus-visible) .insert-add { opacity: 0; }
+.insert-result .insert-lib-meta { display: flex; min-width: 0; white-space: pre; }
+.sketch.design .sk-row { display: flex; flex: 1 1 auto; gap: 4px; min-height: 0; align-items: stretch; }
+.sketch.design .sk-row > .col-s { flex: 1; }
+.sketch.design .sk-row.inline { flex: none; align-items: center; }
+.sketch.design .sk-row.inline > .col-s:last-child:not(:first-child) { flex: 0 0 30%; }
+.sketch.design .sk-row.inline i { width: 100% !important; }
+.sketch.design i.nest { flex: 1 1 8px; min-height: 6px; align-self: stretch; background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--plum) 70%, var(--panel-2)); }
+.sketch.design i.slot { flex: 1 1 8px; align-self: stretch; background: transparent; outline: 1px dashed color-mix(in srgb, var(--text-3) 80%, var(--panel-2)); outline-offset: -1px; }
+.insert-lib-mark { position: absolute; right: -5px; bottom: -5px; width: 17px; height: 17px; border-radius: 50%; display: grid; place-items: center; background: color-mix(in srgb, var(--plum) 14%, var(--raised)); color: var(--plum); box-shadow: 0 0 0 2px var(--raised); }
+.insert-lib-mark svg { width: 10px; height: 10px; stroke-width: 2.25; }
+.insert-lib-mark.done { background: var(--accent-fill); color: var(--on-accent); }
+.insert-tile.project .insert-lib-meta { display: flex; min-width: 0; margin-top: 1px; white-space: pre; }
+.insert-lib-meta .use { flex: none; }
+.insert-lib-meta .at { display: flex; flex: 0 1 auto; min-width: 0; }
+.insert-lib-meta .at .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.insert-lib-meta .at .more { flex: none; }
+.insert-tile.project .insert-defaults { margin-top: 0; padding: 0; }
+.insert-lib-chip { display: inline-block; padding: 0 5px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border-strong); font-size: 10.5px; line-height: 15px; color: var(--text-2); }
+.insert-tile.project.sub { margin-left: 16px; }
+.insert-lib-branch { position: absolute; left: -16px; top: 50%; width: 13px; height: 13px; margin-top: -9px; color: var(--text-3); pointer-events: none; }
+.insert-grid.managed .insert-tile.project.option { min-height: 34px; padding: 4px 8px 4px 6px; gap: 8px; }
+.insert-lib-opt { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--plum-soft); color: var(--plum); }
+.insert-lib-opt svg { width: 13px; height: 13px; }
+.insert-lib-opt.done { background: var(--accent-fill); color: var(--on-accent); }
+.insert-tile.project.option strong { -webkit-line-clamp: 1; }
+.insert-panel.narrow .insert-lib-pic { width: 36px; height: 26px; }
+.insert-panel.narrow .insert-grid.managed .insert-tile.project { gap: 8px; }
+.insert-panel.narrow .insert-lib-meta .at { display: none; }
+.insert-panel.narrow .insert-lib-meta .use { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.insert-more-note { margin-left: auto; padding-left: 8px; font-weight: 400; color: var(--text-3); }
+.insert-lib-empty { display: flex; align-items: flex-start; gap: 10px; margin: 0 10px 10px; padding: 10px 12px; border-radius: var(--r-md); background: var(--panel-2); font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.insert-lib-empty .ico { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--plum-soft); color: var(--plum); }
+.insert-lib-empty .ico svg { width: 15px; height: 15px; }
+.insert-lib-empty .txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.insert-lib-empty strong { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.insert-lib-empty b { font-weight: 600; color: var(--text); }
+.insert-result .insert-lib-pic { width: 56px; height: 36px; }
+.insert-result .insert-lib-mark { box-shadow: 0 0 0 2px var(--panel); }
+.insert-result.active .insert-lib-mark { box-shadow: none; }
 
 /* Search results: one ranked list; the highlighted row is what Enter adds. */
 .insert-results { display: flex; flex-direction: column; gap: 2px; padding: 2px 10px 10px; }
@@ -2125,6 +2188,20 @@ button.code-problem:hover { background: var(--active); }
 .insert-peek-shot .insert-shot { width: 320px; height: 200px; aspect-ratio: auto; }
 /* A sketch is drawn at tile size and doubled, so its marks keep their proportions. */
 .insert-peek-shot > .sketch { width: 160px; height: 100px; zoom: 2; }
+/* A saved component's preview: the component rendered live at the canvas width and scaled to fit, cropped to the
+   component; its sketch stands in while it loads or when the preview cannot show it. */
+.insert-live { position: relative; display: block; width: 320px; height: 140px; overflow: hidden; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border-strong); transition: height 160ms ease-out; }
+.insert-live iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; pointer-events: none; }
+.insert-live.cropped::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 32px; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--raised) 90%, transparent)); pointer-events: none; }
+.insert-live-wait { position: absolute; inset: 0; }
+.insert-live-wait > .sketch { width: 160px; height: 70px; zoom: 2; border-radius: 0; }
+@media (prefers-reduced-motion: reduce) { .insert-live { transition: none; } }
+.insert-peek-kind { display: flex; align-items: flex-start; gap: 6px; min-width: 0; padding: 0 4px; font-size: 11.5px; color: var(--text-2); }
+.insert-peek-kind svg { width: 12px; height: 12px; flex: none; margin-top: 2px; color: var(--plum); }
+.insert-peek-kind span { min-width: 0; }
+.insert-peek-usage { padding: 0 4px; font-size: 11.5px; color: var(--text-2); }
+.insert-peek.lib .insert-peek-desc { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.insert-peek-usage b { font-weight: 600; color: var(--text); }
 .insert-peek-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 2px 4px 0; }
 .insert-peek-name strong { font-size: 13px; font-weight: 600; color: var(--text); }
 .insert-peek-option { font-size: 12px; color: var(--text-3); }
