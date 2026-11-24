@@ -9,7 +9,11 @@ import { catalogueComponent, listThemes } from '@catalogue/index';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolDefinition } from '@agent/types';
 import { toolsForRun } from '@agent/tools';
-import { checkProps, upsertToolSchema, withStoredFields } from '@agent/macros';
+import { checkProps, newMacroMemory, runUpsert, upsertToolSchema, withStoredFields } from '@agent/macros';
+import { checkAuthority, type Authority } from '@agent/scope';
+import type { ToolHost } from '@agent/tools';
+import { applyOperations } from '@engine/apply';
+import type { EditOperation } from '@shared/ops';
 import { compactPropsSchema, hasOpenSchema, propsJsonSchema } from '@agent/propschema';
 import { propSchemaSummary } from '@agent/context';
 import { P } from '@catalogue/dsl';
@@ -87,8 +91,8 @@ async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, start
     onBusyChange: () => undefined
   });
   const answers: Array<string | { assetId: string }> = [];
-  const run = async (text: string, selection: ElementRef | null = null) => {
-    const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection, selectionLabel: selection ? 'the selection' : null, viewport: 1280 };
+  const run = async (text: string, selection: ElementRef | null = null, extra: Partial<ChatContext> = {}) => {
+    const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection, selectionLabel: selection ? 'the selection' : null, viewport: 1280, ...extra };
     const r = await orch.send(text, ctx);
     expect(r.ok).toBe(true);
     while (orch.busy) await new Promise((res) => setTimeout(res, 5));
@@ -2341,5 +2345,118 @@ describe('validate_project and components that are not reusable yet (#363)', () 
     expect(content.componentWarnings).toHaveLength(8);
     expect(content.componentWarnings![0]).toEqual(expect.objectContaining({ code: 'COMPONENT_UNBOUND_CONTENT', definitionId: 'proj.hero', nodeId: 'fixed0' }));
     expect(content.omittedComponentWarnings).toBe(2);
+  });
+});
+
+describe('a run limited to one page (#513)', () => {
+  const names = (t: ToolDefinition[]) => t.map((x) => x.name);
+
+  it("offers the page tool for that page, without the site's brand, code or wider operations", () => {
+    const state = createStarterState('business', 'Test', false);
+    const base = { state, selection: null, codeEnabled: true, definitionOps: false, page: { route: '/about/' } };
+    const cloud = toolsForRun({ ...base, capabilities: { toolCalling: 'native', contextWindowTokens: 400000 } });
+    expect(cloud.mode).toBe('page');
+    expect(names(cloud.tools)).toEqual(expect.arrayContaining(['upsert_page_with_sections', 'apply_operations', 'read_page', 'inspect_layout', 'request_clarification']));
+    expect(names(cloud.tools)).not.toEqual(expect.arrayContaining(['update_site_brand']));
+    expect(names(cloud.tools)).not.toContain('apply_source_patch');
+    // Operations for the page's sections and its own settings only.
+    const ops = JSON.stringify(cloud.tools.find((t) => t.name === 'apply_operations')!.parameters);
+    for (const t of ['node.insert', 'node.move', 'node.copy', 'instance.setProp', 'page.update', 'component.detachInstance']) expect(ops, t).toContain(`"${t}"`);
+    for (const t of ['token.set', 'site.update', 'page.create', 'page.remove', 'component.makeUnique', 'component.setPropSchema', 'theme.apply']) expect(ops, t).not.toContain(`"${t}"`);
+    // The page tool names the page it may build, and cannot join it to a translation.
+    const upsert = cloud.tools.find((t) => t.name === 'upsert_page_with_sections')!.parameters as { properties: Record<string, { description?: string }> };
+    expect(upsert.properties.slug.description).toBe('This request may build only the page at /about/: use "/about/".');
+    expect(upsert.properties).not.toHaveProperty('translationOf');
+    // A small model gets the page tool and its reads, as a site run gets its own.
+    const local = toolsForRun({ ...base, capabilities: { toolCalling: 'constrained-json', contextWindowTokens: 8000 } });
+    expect([local.mode, local.focused]).toEqual(['page', true]);
+    expect(names(local.tools)).toContain('upsert_page_with_sections');
+    expect(names(local.tools)).not.toContain('apply_operations');
+    expect(names(local.tools)).not.toContain('update_site_brand');
+    // Once widened, the run is a site run again.
+    expect(toolsForRun({ ...base, page: null, definitionOps: true, capabilities: { toolCalling: 'native', contextWindowTokens: 400000 } }).mode).toBe('site');
+  });
+
+  it('adds the menu link it asked for, and refuses the same link sent as a raw operation', async () => {
+    const team = 'pg_team0001';
+    const { session, adapter, run } = await setup(
+      [
+        () => [call('t1', 'upsert_page_with_sections', { slug: '/team/', addToHeaderNav: true, sections: [{ componentId: 'intro.page', props: { heading: 'Our team' } }] })],
+        (req) => {
+          expect(lastResult(req)).toMatchObject({ ok: true, navigation: { header: 'added' } });
+          const footer = session.state.site.shell.footer;
+          return [call('t2', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.listInsert', owner: { kind: 'shell', id: 'footer' }, nodeId: footer.rootIds[0], prop: 'links', item: { label: 'Team', link: { type: 'page', target: team } } }] })];
+        },
+        () => finish()
+      ],
+      {},
+      'business',
+      (s) => applyOperation(s, { type: 'page.create', pageId: team, title: 'Team', route: '/team/' })
+    );
+    const links = (shell: 'header' | 'footer') => ((session.state.site.shell[shell].nodes[session.state.site.shell[shell].rootIds[0]] as InstanceNode).props.links as ListItem[] | undefined) ?? [];
+    const toTeam = (items: ListItem[]) => items.some((i) => (i.link as LinkValue | undefined)?.target === team);
+    expect(toTeam(links('header'))).toBe(false);
+    const { result } = await run('Build this page and add it to the menu', null, { pageId: team, pageTitle: 'Team', scope: 'page' });
+    expect(result?.status).toBe('completed');
+    expect(toTeam(links('header'))).toBe(true);
+    expect(toTeam(links('footer'))).toBe(false);
+    expect(JSON.stringify(adapter.requests[2].items.at(-1))).toMatch(/SCOPE_MISMATCH.*instance\.listInsert changes something outside the Team page/);
+  });
+
+  /** A project session's apply, for one authority, without the rest of a run. */
+  const hostFor = (start: ProjectState, authority: Extract<Authority, { kind: 'page' }> | { kind: 'site' }) => {
+    let state = start;
+    let revision = 0;
+    const applied: EditOperation[][] = [];
+    const host: ToolHost = {
+      state: () => state,
+      revision: () => revision,
+      diagnostics: () => [],
+      apply: async (ops, _rev, _label, _key, grants) => {
+        const denied = checkAuthority(state, ops, authority, grants);
+        if (denied) return { ok: false, revision, error: { code: 'SCOPE_MISMATCH', message: denied } };
+        const r = applyOperations(state, ops);
+        state = r.state;
+        applied.push(ops);
+        return { ok: true, revision: ++revision, results: r.results };
+      },
+      compileAll: async () => [],
+      inspectLayout: async () => ({}),
+      ask: async () => '',
+      pageLimit: () => (authority.kind === 'page' ? { pageId: authority.pageId, label: authority.label } : null)
+    };
+    return { host, state: () => state, applied };
+  };
+
+  it('leaves a link waiting on another page for a run that may change that page', async () => {
+    let state = createStarterState('business', 'Test', false);
+    state = applyOperations(state, [{ type: 'page.create', pageId: 'pg_services1', title: 'Services', route: '/services/' }]).state;
+    const about = pageAt(state, '/about/')!;
+    const banner = about.rootIds.at(-1)!;
+    state = applyOperations(state, [{ type: 'instance.setProp', owner: { kind: 'page', id: about.id }, nodeId: banner, prop: 'primaryLink', value: { type: 'none', target: '' } }]).state;
+    const memory = newMacroMemory();
+    // From an earlier request that reached the whole site: About's button waits for /services/.
+    memory.pendingLinks.push({ route: '/services/', pageId: about.id, nodeId: banner, prop: 'primaryLink' });
+    const { host, state: now } = hostFor(state, { kind: 'page', pageId: 'pg_services1', label: 'the Services page' });
+    const out = await runUpsert({ slug: 'services', sections: [{ componentId: 'intro.page', props: { heading: 'Services' } }] }, host, 'c1', memory);
+    expect(out.ok).toBe(true);
+    expect((now().pages[about.id].nodes[banner] as InstanceNode).props.primaryLink).toEqual({ type: 'none', target: '' });
+    expect(memory.pendingLinks).toEqual([{ route: '/services/', pageId: about.id, nodeId: banner, prop: 'primaryLink' }]);
+    // Never another page, nor a new one: refused before anything is compiled or kept for a repair.
+    const other = await runUpsert({ slug: '/pricing/', sections: [{ componentId: 'intro.page' }] }, host, 'c2', memory);
+    expect(other.content).toMatchObject({ error: { code: 'SCOPE_MISMATCH', message: expect.stringMatching(/limited to the Services page \(\/services\/\).*not \/pricing\//) } });
+    expect(memory.drafts.size).toBe(0);
+    expect(pageAt(now(), '/pricing/')).toBeUndefined();
+  });
+
+  it('empties a page when asked to remove its other sections with none to keep', async () => {
+    const state = createStarterState('business', 'Test', false);
+    const about = pageAt(state, '/about/')!;
+    const { host, state: now } = hostFor(state, { kind: 'page', pageId: about.id, label: 'the About page' });
+    expect((await runUpsert({ slug: '/about/', sections: [], removeOtherSections: true }, host, 'e1', newMacroMemory())).ok).toBe(true);
+    expect(now().pages[about.id].rootIds).toEqual([]);
+    // A new page still needs a section.
+    const site = hostFor(state, { kind: 'site' });
+    expect((await runUpsert({ slug: '/team/', sections: [] }, site.host, 'e2', newMacroMemory())).content).toMatchObject({ fields: [{ field: 'sections', message: 'a new page needs at least one section' }] });
   });
 });

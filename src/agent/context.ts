@@ -241,20 +241,20 @@ export function pageDetail(state: ProjectState, pageId: string) {
 
 /** Most sections a request's first look at its page lists; the rest are counted. */
 const GLANCE_SECTIONS = 12;
-/** Characters of each text a section's glance shows. */
+/** Characters of the text a section's glance shows. */
 const GLANCE_TEXT_CHARS = 64;
-/** Props read first for a section's texts: the words that name it. */
-const GLANCE_TEXT_FIRST = ['eyebrow', 'heading', 'title', 'headline', 'lead', 'subheading', 'text', 'body'];
+/** Props read first for a section's text: the words that name it. */
+const GLANCE_TEXT_FIRST = ['heading', 'title', 'headline', 'eyebrow', 'lead', 'subheading', 'text', 'body'];
 
 /** Characters of `<editor_context>` a page's sections may take for a model with this window: an eighth of it, at most 4096. */
 export const pageGlanceChars = (contextWindowTokens: number) => Math.max(0, Math.min(4096, Math.floor(contextWindowTokens / 8)));
 
-/** One root of a page, briefly: what it is, a couple of its texts and how many items its lists hold. */
+/** One root of a page, briefly: what it is, the words that name it and how many items its lists hold. */
 function sectionGlance(state: ProjectState, tree: NodeTree, id: string, texts: boolean): Record<string, unknown> {
   const n = tree.nodes[id];
   if (!n) return { id, missing: true };
   if (n.kind !== 'instance') {
-    const text = texts && n.kind === 'text' && typeof n.text === 'string' && n.text.trim() ? { text: [clip(n.text.trim(), GLANCE_TEXT_CHARS)] } : {};
+    const text = texts && n.kind === 'text' && typeof n.text === 'string' && n.text.trim() ? { text: clip(n.text.trim().replace(/\s+/g, ' '), GLANCE_TEXT_CHARS) } : {};
     return { id, kind: n.kind, name: displayName(state, n), ...text };
   }
   const def = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
@@ -267,26 +267,24 @@ function sectionGlance(state: ProjectState, tree: NodeTree, id: string, texts: b
   const words = ordered
     .filter((p) => def.properties[p].type === 'string')
     .map((p) => value(p))
-    .filter((v): v is string => typeof v === 'string' && !!v.trim())
-    .slice(0, 2)
-    .map((v) => clip(v.trim().replace(/\s+/g, ' '), GLANCE_TEXT_CHARS));
+    .find((v): v is string => typeof v === 'string' && !!v.trim());
   const lists = props
     .filter((p) => def.properties[p].type === 'list' && Array.isArray(value(p)))
     .slice(0, 2)
     .map((p) => ({ prop: p, items: (value(p) as unknown[]).length }));
-  return { ...out, ...(words.length ? { text: words } : {}), ...(lists.length ? { lists } : {}) };
+  return { ...out, ...(words ? { text: clip(words.trim().replace(/\s+/g, ' '), GLANCE_TEXT_CHARS) } : {}), ...(lists.length ? { lists } : {}) };
 }
 
 /**
  * The page a request starts on, as a short list of its sections in order: enough to tell an empty page, a starter
  * banner and a built page apart, and to name a section by ID, without reading the page first. It fits in `maxChars`
- * of JSON (as `indent` writes it): each section's texts go first, then sections from the end, which `omittedSections`
- * counts. read_page shows any of it whole.
+ * of JSON (as `indent` writes it): each section's text and list sizes go first, then sections from the end, which
+ * `omittedSections` counts. read_page shows any of it whole.
  */
 export function pageGlance(state: ProjectState, pageId: string, maxChars: number, indent?: number): Record<string, unknown> | null {
   const p = Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : null;
   if (!p) return null;
-  const head = { id: p.id, title: p.title, route: p.route, sectionCount: p.rootIds.length };
+  const head = { id: p.id, title: p.title, route: p.route };
   const build = (shown: number, texts: boolean) => ({
     ...head,
     sections: p.rootIds.slice(0, shown).map((id) => sectionGlance(state, p, id, texts)),
