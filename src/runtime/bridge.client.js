@@ -251,6 +251,9 @@ function stopKeeping() {
 for (const type of ['wheel', 'touchstart']) {
   window.addEventListener(type, () => {
     stopKeeping();
+    // A reveal still waiting for its item to show (its list hidden) no longer scrolls the page to it: the author has
+    // gone elsewhere. The item is still brought into its sideways list once that shows.
+    if (revealScroll) revealScroll = false;
     if (selected) scheduleRects();
   }, { capture: true, passive: true });
 }

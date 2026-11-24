@@ -475,5 +475,21 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
       expect(await where('s5')).toMatchObject({ inList: true, inFrame: true });
       await revealSlide(null);
     });
+
+    it('leaves the page where the author scrolled it while the slide waited for its list to show', async () => {
+      await startOver();
+      await inFrame(`${track}.style.display = 'none';`);
+      await settle();
+      await revealSlide('s5');
+      // The author scrolls the page while the list is still hidden.
+      await inFrame(`frames[0].dispatchEvent(new frames[0].WheelEvent('wheel', { deltaY: -100 })); frames[0].scrollTo(0, 0);`);
+      await settle();
+      await inFrame(`${track}.style.display = '';`);
+      await settle();
+      await settle();
+      expect((await state()).scrollY).toBe(0);
+      expect((await where('s5')).inList).toBe(true);
+      await revealSlide(null);
+    });
   });
 });
