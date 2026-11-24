@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ListItem, PageDoc, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { groupFields, listRowTitle } from '@shared/fields';
+import { groupFields, listItemImage, listRowTitle } from '@shared/fields';
 import { locateField } from '@engine/locate';
 import { applyOperations } from '@engine/apply';
 
@@ -44,6 +44,24 @@ describe('locateField', () => {
     hours.label = '';
     const r = locateField(state, { owner: { kind: 'page', id: contact.id }, nodeId: details.id, prop: 'items', itemId: hours.id, field: 'value' });
     expect(r).toMatchObject({ ok: true, path: ['Contact', 'Studio contact', 'Content', 'Contact methods', 'Contact method 4', 'Value'] });
+  });
+
+  it('names a gallery row without a caption by the image it shows (issue #60)', () => {
+    const { state, pageNamed, instanceOf } = business();
+    const home = pageNamed('Home');
+    const gallery = instanceOf(home, 'media.gallery');
+    const rows = gallery.props.images as ListItem[];
+    state.assets.assets.img_swatch = { id: 'img_swatch', name: 'swatch-07.png', file: 'static/assets/swatch-07.png', mime: 'image/png', bytes: 1, hash: 'h', kind: 'image', createdAt: '2026-01-01T00:00:00Z' };
+    rows[1].caption = '';
+    rows[1].image = { assetId: 'img_swatch', alt: '' };
+    const at = (itemId: string) => locateField(state, { owner: { kind: 'page', id: home.id }, nodeId: gallery.id, prop: 'images', itemId, field: 'caption' });
+    expect(at(rows[1].id)).toMatchObject({ ok: true, path: ['Home', 'Gallery', 'Content', 'Images', 'swatch-07.png', 'Caption'] });
+    // A caption of its own wins over the image's name; without an image either, the row goes by its position.
+    rows[0].image = { assetId: 'img_swatch', alt: '' };
+    expect(at(rows[0].id)).toMatchObject({ ok: true, path: ['Home', 'Gallery', 'Content', 'Images', 'Kitchen, Millbrook', 'Caption'] });
+    rows[2].caption = '';
+    rows[2].image = { assetId: null, alt: '' };
+    expect(at(rows[2].id)).toMatchObject({ ok: true, path: ['Home', 'Gallery', 'Content', 'Images', 'Image 3', 'Caption'] });
   });
 
   it('finds a field in the shared header from a page that shows it', () => {
@@ -144,6 +162,20 @@ describe('shared field grouping', () => {
     expect(listRowTitle(schema, { id: 'a', label: '', value: 'x' }, 2)).toBe('Contact method 3');
     expect(listRowTitle({ itemLabel: 'Item' }, { id: 'a', value: 'x' }, 0)).toBe('x');
     expect(listRowTitle({ itemLabel: 'Item' }, { id: 'a' }, 1)).toBe('Item 2');
+  });
+
+  it('names a row without a title by the image it shows, then by position (issue #60)', () => {
+    const schema = { titleField: 'caption', itemLabel: 'Image', fields: { image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } }, caption: { type: 'string', label: 'Caption', default: '' } } } as const;
+    const assets = { img_a: { kind: 'image', name: 'swatch-01.png' }, font_a: { kind: 'font', name: 'Inter.woff2' } };
+    const row = (assetId: string | null, caption: string) => ({ id: 'r', image: { assetId, alt: '' }, caption });
+    expect(listItemImage(schema, row('img_a', ''), assets)?.name).toBe('swatch-01.png');
+    expect(listItemImage(schema, row('img_gone', ''), assets)).toBeUndefined();
+    expect(listItemImage(schema, row('font_a', ''), assets)).toBeUndefined();
+    expect(listItemImage(schema, row(null, ''), assets)).toBeUndefined();
+    expect(listRowTitle(schema, row('img_a', 'Kitchen'), 6, 'swatch-01.png')).toBe('Kitchen');
+    expect(listRowTitle(schema, row('img_a', '  '), 6, 'swatch-01.png')).toBe('swatch-01.png');
+    expect(listRowTitle(schema, row(null, ''), 6, undefined)).toBe('Image 7');
+    expect(listRowTitle(schema, row(null, ''), 6, '  ')).toBe('Image 7');
   });
 
   it('keeps grouping a lone link labelled "Link" under Destination', () => {

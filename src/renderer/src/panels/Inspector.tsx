@@ -53,6 +53,7 @@ import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } fro
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
 import { defaultReach, designContent, designContentOp, forwardedProp, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
+import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 
 type Tokens = ReturnType<typeof effectiveTokens>;
 type Tone = 'local' | 'shared' | 'definition';
@@ -80,7 +81,7 @@ function formServiceHint(service: FormServiceSetup): ReactNode {
 /** A video field's hint, when it has one. */
 const videoHint = (note: VideoFieldNotes['url'] | VideoFieldNotes['title'] | undefined) => (note && 'hint' in note ? note.hint : undefined);
 
-function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): EditOperation {
+function listOps(owner: OwnerRef, nodeId: string, prop: string, op: Exclude<ListOp, { kind: 'pick' }>): EditOperation {
   switch (op.kind) {
     case 'insert':
       return { type: 'instance.listInsert', owner, nodeId, prop, ...(op.item ? { item: op.item } : {}) };
@@ -110,7 +111,35 @@ function readProp(owner: OwnerRef, nodeId: string, prop: string): { value: unkno
   return { value: node.props[prop] ?? schema?.default, revision: snap.revision };
 }
 
+/**
+ * Add library images to a list in the order chosen, replacing the sample rows the author was shown, as one undo
+ * step. It is planned against the project as it is now (see planChoice), and applies only to that revision, so
+ * anything that lands in between refuses it and the picker stays open with the choice. Resolves to the rows it
+ * added and how many it replaced, or null when nothing changed.
+ */
+async function applyPicks(owner: OwnerRef, nodeId: string, prop: string, op: Extract<ListOp, { kind: 'pick' }>): Promise<{ added: string[]; replaced: number } | null> {
+  const snap = getState().snapshot;
+  const node = snap ? treeFor(snap.state, owner)?.nodes[nodeId] : undefined;
+  if (!snap || node?.kind !== 'instance') return null;
+  const def = snap.state.components[node.definitionId];
+  const schema = def?.properties[prop];
+  const field = schema ? pickImagesField(def, prop, schema) : null;
+  const value = node.props[prop] ?? schema?.default;
+  if (schema?.type !== 'list' || !field || !Array.isArray(value)) return null;
+  const plan = planChoice(schema, value as ListItem[], field, op.assetIds, op.replace, snap.state.assets.assets);
+  if ('error' in plan) {
+    toast(plan.error, 'error');
+    return null;
+  }
+  const ops = pickOperations(owner, nodeId, prop, plan.steps);
+  const results = await applyOps(ops, plan.label, undefined, snap.revision);
+  if (!results) return null;
+  const added = ops.flatMap((o, i) => (o.type === 'instance.listInsert' && typeof results[i]?.itemId === 'string' ? [results[i].itemId as string] : []));
+  return { added, replaced: plan.steps.filter((st) => st.kind === 'remove').length };
+}
+
 function applyListOp(owner: OwnerRef, nodeId: string, prop: string, op: ListOp, label: string, coalesceKey?: string) {
+  if (op.kind === 'pick') return applyPicks(owner, nodeId, prop, op);
   if (op.kind === 'repair') return applyOps([listOps(owner, nodeId, prop, op)], op.label, undefined, op.revision);
   return applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, nodeId, prop, op)], label, op.kind === 'field' ? coalesceKey : undefined);
 }
@@ -604,6 +633,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                 error={found ? unlinkedNote({ hide: own?.hide }) : videoNote(key)?.error}
                 action={hideAction(own)}
                 place={schema.type === 'list' ? { ref: selection, list: key } : undefined}
+                pickImages={pickImagesField(def, key, schema)}
               />
             );
           }}
@@ -882,6 +912,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                   linkPairs={schema.type === 'list' ? itemLinkPairs(def, b.prop!) : undefined}
                   {...flagged(b.kind)}
                   place={schema.type === 'list' ? { ref: parent, list: b.prop! } : undefined}
+                  pickImages={pickImagesField(def, b.prop, schema)}
                 />
                 </div>
               );
@@ -1246,6 +1277,7 @@ function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; de
               state={state}
               linkPairs={schema.type === 'list' ? itemLinkPairs(placedDef, key) : undefined}
               everywhere
+              pickImages={pickImagesField(placedDef, key, schema)}
             />
           );
         }}

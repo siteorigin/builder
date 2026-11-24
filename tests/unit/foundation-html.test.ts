@@ -244,6 +244,19 @@ describe('optional headings', () => {
 });
 
 describe('empty wrappers', () => {
+  it('media.gallery leaves out its grid while it has no images (issue #60), and keeps it for one', () => {
+    const grid = classed(nodeClass('media.gallery', 'grid'));
+    const empty = html('media.gallery', {});
+    expect(empty).not.toMatch(grid);
+    expect(empty).not.toContain('<ul');
+    expect(empty).toContain('>Recent projects<');
+    // The same once the author has removed the last image.
+    expect(html('media.gallery', { images: [] })).not.toMatch(grid);
+    const one = html('media.gallery', { images: [{ id: 'a', image: { assetId: null, alt: '' }, caption: 'Kitchen' }] });
+    expect(one).toMatch(grid);
+    expect(one).toContain('>Kitchen</figcaption>');
+  });
+
   it.each(['features.grid', 'team.grid', 'media.gallery'] as const)('%s keeps the heading group for any one of its texts and drops it when all are cleared', (componentId) => {
     const intro = classed(nodeClass(componentId, 'intro'));
     const none = { eyebrow: '', heading: '', lead: '' };

@@ -1,5 +1,5 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus, ImageOff, ImagePlus, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChoiceOption, ChoicesProp, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -14,6 +14,7 @@ import { applyChoiceAction, choiceText, sameChoice, staleRename, type ChoiceActi
 
 const MOVE_PENDING_MS = 3000;
 import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote, type MoveDirection } from '../lib/list-editor';
+import { pickAnnouncement, pickRoom, sampleRows, startingSamples } from '../lib/gallery-picks';
 import { importAndPlace } from '../lib/place';
 import { AssetImage } from '../components/AssetImage';
 import { AssetOrderControls, useAssetSeries } from '../components/AssetOrder';
@@ -24,9 +25,10 @@ import { contactMismatch } from '@shared/contact-links';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { pagesToAdd, teaserFieldNote } from '../lib/page-teasers';
 import { effectiveItem } from '@shared/page-teasers';
-import { groupFields, listRowTitle, type PropGroup } from '@shared/fields';
+import { groupFields, listItemImage, listRowTitle, type PropGroup } from '@shared/fields';
 import type { TableEdit } from '@engine/table';
 import { TableEditor } from './TableEditor';
+import { ImagesPicker, missingKey, pickGridKeys } from './ImagesPicker';
 import { isShellPart, type ShellPart } from '@shared/page-shell';
 import { documentDetails, documentLabels, isLibraryDocument, libraryDocuments } from '../lib/documents';
 import { assetArrived } from '../lib/import-review';
@@ -34,12 +36,6 @@ import { assetArrived } from '../lib/import-review';
 export { groupFields };
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
-
-/** Changes when a picture's files go missing or come back, so a preview that gave up on a file tries it again. */
-const missingKey = (snapshot: { missingAssets: Array<{ assetId: string; original: boolean; variants: unknown[] }> } | null | undefined, id: string) => {
-  const gone = snapshot?.missingAssets.find((m) => m.assetId === id);
-  return gone ? `missing-${gone.original}-${gone.variants.length}` : 'present';
-};
 
 const OTHER_SECTION = '\u0000other';
 
@@ -415,19 +411,6 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
       if (paths.length) void importAndPick(paths);
     }
   };
-  // Arrow keys move between thumbnails; the grid is one tab stop.
-  const gridKeys = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('.insp-pick-tile')];
-    const i = tiles.indexOf(document.activeElement as HTMLElement);
-    if (i < 0) return;
-    const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 3, ArrowUp: -3 }[e.key];
-    const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step !== undefined ? Math.max(0, Math.min(tiles.length - 1, i + step)) : -1;
-    if (to < 0) return;
-    e.preventDefault();
-    // The tiles are the images shown, in order.
-    setRover(shown[to]?.id ?? null);
-    tiles[to].focus();
-  };
   // Until there is an image (or something already set about it), the chooser is the only thing to do.
   const details = !!asset || !!v.alt || !!v.decorative;
   return (
@@ -480,7 +463,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
           {/* Kept while a series is chosen, so it can always be cleared. */}
           {(images.length > 6 || !!series.key) && <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />}
           {shown.length > 0 ? (
-            <div className="insp-pick-grid" role="listbox" aria-label="Your images" onKeyDown={gridKeys}>
+            <div className="insp-pick-grid" role="listbox" aria-label="Your images" onKeyDown={(e) => pickGridKeys(e, (to) => setRover(shown[to]?.id ?? null))}>
               {shown.map((a) => (
                 <button
                   key={a.id}
@@ -993,9 +976,14 @@ export interface ListItemNote {
   action?: FieldAction;
 }
 
-/** An edit to a list: `repair` is an explicit fix the inspector offers, its own undo step under `label`. */
+/**
+ * An edit to a list: `repair` is an explicit fix the inspector offers, its own undo step under `label`. `pick` adds
+ * library images in order and takes away the sample rows in `replace` (those the author was shown), as one undo step;
+ * it resolves to the rows it added and how many it replaced, or null when nothing changed.
+ */
 export type ListOp =
   | { kind: 'insert'; item?: Record<string, unknown> }
+  | { kind: 'pick'; assetIds: string[]; replace: string[] }
   | { kind: 'remove'; itemId: string }
   | { kind: 'move'; itemId: string; index: number }
   | { kind: 'field'; itemId: string; field: string; value: unknown; edit?: PendingEdit }
@@ -1010,7 +998,7 @@ export interface ListReveal {
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onList, onTable, read, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere }: {
+export function PropField({ name, schema, value, onChange, onList, onTable, read, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -1040,8 +1028,10 @@ export function PropField({ name, schema, value, onChange, onList, onTable, read
   place?: ListPlace;
   /** A value in a component's design, shown on every page that places it (see ScalarField). */
   everywhere?: boolean;
+  /** For a list that takes several library images at once (a Gallery): the item field each image goes in. */
+  pickImages?: string | null;
 }) {
-  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} />;
+  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} />;
   if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} />;
   return <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={error} action={action} everywhere={everywhere} />;
   void name;
@@ -1173,7 +1163,7 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
  * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
  * with the reason once the list is full or at its minimum.
  */
-function ListEditor({ name, schema, items, onList, read, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean }) {
+function ListEditor({ name, schema, items, onList, read, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string }) {
   // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
   // now), so the page keeps that item open while the list takes it over.
   const [open, setOpen] = useState<string | null>(() => {
@@ -1187,6 +1177,8 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
   const labelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const after = useRef<{ kind: 'added'; before: string[] } | { kind: 'removed'; focus: string | null } | { kind: 'moved'; id: string; direction: MoveDirection; index: number; from: number; title: string; at: number } | null>(null);
+  // Images added in one pass, named by the rows the change made: focus goes to the first once this list shows it.
+  const [landed, setLanded] = useState<{ ids: string[]; said: string; at: number } | null>(null);
   const [said, setSaid] = useState({ text: '', count: 0 });
   const addNoteId = useId();
   const removeNoteId = useId();
@@ -1225,10 +1217,47 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
       requestAnimationFrame(() => focusRow(a.focus));
     }
   }, [ids]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!landed) return;
+    // Rows that don't show here soon (undone before this list heard of them) claim nothing later, such as a Redo.
+    if (Date.now() - landed.at > MOVE_PENDING_MS) return setLanded(null);
+    const first = landed.ids.find((id) => items.some((x) => x.id === id));
+    if (!first) return;
+    setLanded(null);
+    setSaid((p) => announcementText(landed.said, p.count) ?? p);
+    // Each new row stays closed under its name. Focus moves only from where Add left it: the picker's Add button, or
+    // the page once the picker has closed. An author who has moved on, even within this list, keeps their place.
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (active && active !== document.body && !active.closest('.insp-pick-many')) return;
+      rootRef.current?.querySelector<HTMLElement>(`#list-head-${CSS.escape(first)}`)?.focus();
+    });
+  }, [ids, landed]); // eslint-disable-line react-hooks/exhaustive-deps
   const openId = focusItem ?? open;
   const reveal = useRevealedItem(place, openId ? items.find((x) => x.id === openId) : undefined);
-  // A page list names each card by the title it shows: the page's own while the card has none.
-  const titleOf = (raw: ListItem, i: number) => listRowTitle(schema, effectiveItem(state, schema, raw), i);
+  // A page list names each card by the title it shows: the page's own while the card has none. A row without a
+  // title is named by the image it shows.
+  const imageOf = (raw: ListItem) => listItemImage(schema, effectiveItem(state, schema, raw), state.assets.assets);
+  const titleOf = (raw: ListItem, i: number) => listRowTitle(schema, effectiveItem(state, schema, raw), i, imageOf(raw)?.name);
+  const runtime = useStore((st) => st.runtime);
+  const snapshot = useStore((st) => st.snapshot);
+  const devUrl = runtime.state === 'ready' ? runtime.url : null;
+  const [picking, setPicking] = useState(false);
+  const pickBtn = useRef<HTMLButtonElement>(null);
+  const closePicker = (refocus: boolean) => {
+    setPicking(false);
+    if (refocus) requestAnimationFrame(() => pickBtn.current?.focus());
+  };
+  const addPicks = async (assetIds: string[], replace: string[]) => {
+    const r = (await L({ kind: 'pick', assetIds, replace })) as { added: string[]; replaced: number } | null | undefined;
+    if (!r) return false;
+    setLanded({ ids: r.added, said: pickAnnouncement(r.added.length, r.replaced), at: Date.now() });
+    return true;
+  };
+  // A gallery with nothing of its own yet says how to fill it. Its samples make room for the images that replace them.
+  const samples = pickImages ? sampleRows(schema, items) : [];
+  const samplesOnly = !!pickImages && startingSamples(schema, items);
+  const pickFull = pickRoom(schema, items.length, samples.length) <= 0;
   const currentPageId = useStore((st) => st.pageId);
   // While a page is being added, Add waits until the list changes (or a moment passes, so a request that failed does not
   // block it for good): a second press adds neither a duplicate nor whichever page the picker moves on to.
@@ -1267,14 +1296,34 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
         </span>
       </div>
       <div className="list-editor">
+        {pickImages &&
+          (picking ? (
+            <ImagesPicker schema={schema} items={items} state={state} onAdd={addPicks} onClose={closePicker} />
+          ) : (
+            <>
+              {(items.length === 0 || samplesOnly) && <p className="insp-note muted">{items.length ? `These are sample ${schema.itemLabel.toLowerCase()}s. Choose images from Assets to replace them.` : 'Choose the images for this gallery from Assets.'}</p>}
+              <button ref={pickBtn} className={`btn btn-sm insp-pick-open${items.length === 0 || samplesOnly ? ' btn-primary' : ''}`} aria-disabled={pickFull ? true : undefined} aria-describedby={pickFull && addNote ? addNoteId : undefined} title={pickFull ? (addNote ?? undefined) : undefined} onClick={() => {
+                  if (pickFull) return;
+                  setPicking(true);
+                }}>
+                <Images /> Choose images…
+              </button>
+            </>
+          ))}
         {items.map((it, i) => {
           const note = annotate?.(it, i);
+          const thumb = imageOf(it);
           return (
           <div key={it.id} className={`list-editor-item${focusItem === it.id ? ' focused' : ''}`}>
             <div className="list-editor-head">
               {/* The chevron and title are one disclosure button, so the whole leading area opens the item. */}
               <button className="title" id={`list-head-${it.id}`} aria-expanded={openId === it.id} aria-controls={`list-item-${it.id}`} aria-describedby={note?.error ? `list-flag-${it.id}` : undefined} onClick={() => setOpen(openId === it.id ? null : it.id)}>
                 <ChevronRight size={12} className="faint" style={{ transform: openId === it.id ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }} />
+                {thumb && devUrl && (
+                  <span className="list-editor-thumb" aria-hidden="true">
+                    <AssetImage key={missingKey(snapshot, thumb.id)} asset={thumb} devUrl={devUrl} cover alt="" loading="lazy" />
+                  </span>
+                )}
                 <span className="ellipsis">{titleOf(it, i)}</span>
                 {/* A closed item still shows it needs attention. */}
                 {note?.error && (
