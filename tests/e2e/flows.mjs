@@ -859,6 +859,9 @@ const rowHeads = tableEd.locator('.list-editor-head button.title');
 if ((await rowHeads.nth(3).getAttribute('aria-expanded')) !== 'true') await rowHeads.nth(3).click();
 await tableEd.getByLabel('Day', { exact: true }).fill('Friday');
 await win.keyboard.press('Tab');
+// A cell is one line that wraps: a line break typed or dropped in becomes a space.
+await tableEd.getByLabel('Workshop', { exact: true }).fill('Raku\nfiring');
+assert.equal(await tableEd.getByLabel('Workshop', { exact: true }).inputValue(), 'Raku firing', 'a line break in a cell becomes a space');
 await tableEd.getByLabel('Workshop', { exact: true }).fill('Raku');
 await win.keyboard.press('Tab');
 await tableEd.getByLabel('Start time', { exact: true }).fill('17:00');

@@ -1,4 +1,5 @@
 import { isImeComposing } from '../lib/ime';
+import { oneLine } from '../lib/one-line';
 import { Children, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
@@ -763,6 +764,9 @@ interface DraftInputProps {
   inputRef?: RefObject<HTMLInputElement | HTMLTextAreaElement | null>;
   onLive?: (v: string) => void;
   multiline?: boolean;
+  /** A single line of text that wraps (a post's title, a table cell): all of it shows, Enter saves it as in any
+   *  single-line field, and line breaks, however they arrive, become spaces. Without `multiline`, which keeps lines. */
+  wrap?: boolean;
   className?: string;
   placeholder?: string;
   rows?: number;
@@ -809,6 +813,7 @@ function DraftField({
   onCommit,
   onLive,
   multiline,
+  wrap,
   className = 'input',
   placeholder,
   rows,
@@ -1099,11 +1104,29 @@ function DraftField({
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       edit.current++;
       startedAt.current ??= { base: useStore.getState().snapshot, value: draft, commit: onCommit, ai: aiActivity() };
-      setDraft(e.target.value);
-      mark(e.target.value !== value);
-      if (tooLongRef.current) stash(e.target.value, startedAt.current);
-      onLive?.(e.target.value);
+      // Text that arrived with line breaks (dropped, or put in by an input method) is one line before anything reads
+      // it, and the caret stays where the author was rather than going to the end.
+      const raw = e.target.value;
+      const text = wrap ? oneLine(raw) : raw;
+      if (text !== raw) {
+        const at = Math.min(oneLine(raw.slice(0, e.target.selectionStart ?? raw.length)).length, text.length);
+        e.target.value = text;
+        e.target.setSelectionRange(at, at);
+      }
+      setDraft(text);
+      mark(text !== value);
+      if (tooLongRef.current) stash(text, startedAt.current);
+      onLive?.(text);
     },
+    // Pasted line breaks become spaces where the text lands, so the caret stays where it should.
+    onPaste: wrap
+      ? (e: React.ClipboardEvent) => {
+          const text = e.clipboardData.getData('text/plain');
+          if (!/[\r\n\u2028\u2029]/.test(text)) return;
+          e.preventDefault();
+          document.execCommand('insertText', false, oneLine(text));
+        }
+      : undefined,
     onKeyDown: (e: React.KeyboardEvent) => {
       if (isImeComposing(e)) return;
       if (e.key === 'Escape') {
@@ -1119,14 +1142,14 @@ function DraftField({
         setDraft(value);
         (e.target as HTMLElement).blur();
       }
-      if (e.key === 'Enter' && (!multiline || e.metaKey || e.ctrlKey)) {
+      if (e.key === 'Enter' && (!multiline || wrap || e.metaKey || e.ctrlKey)) {
         // Blur is the single commit path, so one Enter makes one edit.
         e.preventDefault();
         (e.target as HTMLElement).blur();
       }
     }
   };
-  const control = multiline ? <textarea className={className === 'input' ? 'textarea' : className} rows={rows ?? 3} {...common} /> : <input className={className} type={type} {...common} />;
+  const control = multiline || wrap ? <textarea className={className === 'input' ? 'textarea' : className} rows={rows ?? (wrap ? 1 : 3)} {...common} /> : <input className={className} type={type} {...common} />;
   if (!note) return control;
   return (
     <>
