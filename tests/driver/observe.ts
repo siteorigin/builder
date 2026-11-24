@@ -774,12 +774,12 @@ async function snapshotOf(env: ObserveEnv, args: SnapshotArgs, id: number, seen:
     else result.preview = { ...tree, state: obs.previewState, refs: obs.previewState === 'ready' };
   }
 
-  if (args.screenshot) result.screenshots = await screenshots(env, obs, id);
+  if (args.screenshot) result.screenshots = await screenshots(env, obs, id, seen);
   aborted(env.signal);
   return result;
 }
 
-async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promise<Shots> {
+async function screenshots(env: ObserveEnv, obs: Observation, id: number, seen: string[]): Promise<Shots> {
   const { page, signal } = env;
   if (!env.artifacts) throw new DriverError('OP_FAILED', 'This session has no artifacts folder to save screenshots in.');
   // Any screenshot replaces the last one's points, whether or not this one gives any.
@@ -789,7 +789,12 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   const withheld = { editor: null, preview: null, withheld: 'A credential is known in this session, and screenshots could show it.' };
   // Anything that cannot be read counts as a credential.
   const clear = async () => {
-    const known = await Promise.all([frameSecrets(page, { strict: true, found: (v) => env.remember?.(v) }), env.storedSecrets?.(true) ?? Promise.resolve([])]).catch(() => null);
+    // What the check finds is a credential like any other: remembered, and scrubbed from this very reply.
+    const found = (v: string[]) => {
+      env.remember?.(v);
+      seen.push(...v.filter(Boolean));
+    };
+    const known = await Promise.all([frameSecrets(page, { strict: true, found }), env.storedSecrets?.(true) ?? Promise.resolve([])]).catch(() => null);
     return !!known && !known.flat().length && !env.remembered?.().length;
   };
   if (obs.secrets.length || obs.echoes || !(await clear())) return withheld;
@@ -820,20 +825,27 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   if (!(await clear())) return withheld;
   // A capture that outlived its request leaves nothing behind.
   aborted(signal);
-  await mkdir(dir, { recursive: true });
+  // Only inside the artifacts folder the session made: a folder its close has removed is never made again.
+  await mkdir(dir).catch((e: NodeJS.ErrnoException) => {
+    if (e.code !== 'EEXIST') throw e;
+  });
   const base = String(id).padStart(4, '0');
   const stem = join(dir, base);
   const tag = env.evidenceTag ? `${env.evidenceTag}-` : '';
   const digest = (png: Buffer) => ({ bytes: png.length, sha256: createHash('sha256').update(png).digest('hex') });
   const written: string[] = [];
+  // Each image is a new file ('wx'): never through a link, nor over a file, already at its name. Only what this capture
+  // made is taken back if it fails.
+  const create = async (path: string, png: Buffer) => {
+    await writeFile(path, png, { flag: 'wx' });
+    written.push(path);
+  };
   try {
     aborted(signal);
-    written.push(`${stem}-editor.png`);
-    await writeFile(`${stem}-editor.png`, editorPng);
+    await create(`${stem}-editor.png`, editorPng);
     if (previewPng) {
       aborted(signal);
-      written.push(`${stem}-preview.png`);
-      await writeFile(`${stem}-preview.png`, previewPng);
+      await create(`${stem}-preview.png`, previewPng);
     }
     aborted(signal);
   } catch (e) {

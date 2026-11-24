@@ -104,6 +104,8 @@ function main() {
     }
   });
   stdout.on('error', () => void server.end('disconnected'));
+  // A client that stopped reading stderr does not end the session: what would have been logged is lost.
+  process.stderr.on('error', () => undefined);
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, () => void server.end('signal'));
   process.on('disconnect', () => void server.end('disconnected'));
   process.on('exit', () => session.disposeSync());

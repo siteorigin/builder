@@ -131,7 +131,8 @@ export async function readSavedImage(
   const artifacts = await realpath(artifactsDir).catch(() => null);
   const folder = await realpath(dirname(path)).catch(() => null);
   if (!artifacts || !folder || !isInside(artifacts, folder)) throw moved();
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => null);
+  // Non-blocking: something put in its place that is not a file (a FIFO) cannot hold the read up; it fails isFile below.
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0)).catch(() => null);
   if (!file) throw moved();
   try {
     const info = await file.stat();
@@ -598,6 +599,12 @@ export function parseCloseArgs(args: Record<string, unknown> | undefined): Close
   return a as CloseArgs;
 }
 
+/** A reply that hands out a screenshot or an evidence id. */
+function carriesEvidence(op: string, result: unknown): boolean {
+  const r = (result ?? {}) as { data?: unknown; screenshots?: Shots };
+  return (op === 'evidence.read' && typeof r.data === 'string') || (op === 'ui.snapshot' && !!(r.screenshots?.editor || r.screenshots?.preview));
+}
+
 /** An operation that takes no arguments refuses any, as every other refuses one it does not know. */
 function noArgs(request: Request) {
   for (const key of Object.keys(request.args ?? {})) throw new DriverError('BAD_REQUEST', `${request.op} does not take "${key}".`);
@@ -788,7 +795,11 @@ export class Session {
       if (request.op === 'session.start') result = await this.start((request.args ?? {}) as StartArgs, { timeoutMs });
       else if (request.op === 'session.close') result = await this.close(parseCloseArgs(request.args));
       else result = await this.withDeadline(request, spec, timeoutMs, entry);
-      return done(success(request, result, await this.replyContext(began)));
+      const ctx = await this.replyContext(began);
+      // Preparing the reply can wait (a page error's scrub reads the saved keys): a close in that time has the last word
+      // over anything that hands out evidence, which the close has just forgotten.
+      if (this.state !== 'ready' && carriesEvidence(request.op, result)) return done(failure(request, new DriverError('CLOSED', 'The session closed before the reply was sent.'), ctx));
+      return done(success(request, result, ctx));
     } catch (e) {
       return done(failure(request, e, await this.replyContext(began)));
     } finally {
@@ -881,7 +892,14 @@ export class Session {
       case 'ui.snapshot': {
         const args = parseSnapshotArgs(request.args);
         await this.settled();
-        const result = await uiSnapshot(this.observer(this.windowFor(request), signal), args, ++this.observations);
+        let result: Awaited<ReturnType<typeof uiSnapshot>>;
+        try {
+          result = await uiSnapshot(this.observer(this.windowFor(request), signal), args, ++this.observations);
+        } catch (e) {
+          // A capture that failed because the session closed under it (its folder gone) says so.
+          if (args.screenshot && this.state !== 'ready') throw new DriverError('CLOSED', 'The session closed while the screenshots were taken.');
+          throw e;
+        }
         // Nothing is published by a capture that ran out of time, or that finished while the session closed: no id is
         // handed out that evidence.read would not know.
         if (result.screenshots && (result.screenshots.editor || result.screenshots.preview) && this.state !== 'ready') throw new DriverError('CLOSED', 'The session closed while the screenshots were taken.');
@@ -984,6 +1002,8 @@ export class Session {
     // A credential seen here is remembered, frame by frame as each is read, as one an observation sees is: later replies
     // scrub it too, even when another frame could not be read. Saved keys are read whatever the frames do.
     const remember = (values: string[]) => values.forEach((x) => x && this.secrets.add(x));
+    // One already known settles it at once: nothing else need be read first.
+    if (this.secrets.size) return { ...out, withheld: 'A credential is known in this session, and the image could show it.' };
     const clear = async () => {
       const [shown, stored] = await Promise.all([page ? frameSecrets(page, { strict: true, found: remember }) : Promise.resolve([]), this.storedSecrets(true)]);
       return !this.secrets.size && !stored.length && !shown.length;

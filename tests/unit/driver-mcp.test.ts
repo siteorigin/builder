@@ -580,6 +580,9 @@ describe('session hosts, when things go wrong', () => {
     await until(() => host.calls.length === 1);
     h.send({ jsonrpc: '2.0', id: 'dup', method: 'tools/call', params: { name: 'session_close', arguments: {} } });
     h.send({ jsonrpc: '2.0', id: 'dup', method: 'ping' });
+    // Not even an error about its params: that answer would carry the id too.
+    h.send({ jsonrpc: '2.0', id: 'dup', method: 'tools/call', params: null });
+    h.send({ id: 'dup', method: 'ping' });
     await new Promise((r) => setTimeout(r, 20));
     expect(h.out.filter((m) => m.id === 'dup')).toEqual([]);
     finish();
@@ -587,6 +590,43 @@ describe('session hosts, when things go wrong', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(h.out.filter((m) => m.id === 'dup').map((m) => m.result.structuredContent.op)).toEqual(['ui.click']);
     expect(host.calls.map((c) => c.op), 'the reuse never reached the host').toEqual(['ui.click']);
+  });
+
+  it('holds an id until its answer is written, and a number id like a string one', async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    const out: Record<string, any>[] = [];
+    const server = new McpServer({ connect: async () => new FakeHost(), write: async (line) => (await gate, void out.push(JSON.parse(line))) });
+    server.handle(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'ping' }));
+    await new Promise((r) => setTimeout(r, 10));
+    server.handle(JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'ping' }));
+    server.handle(JSON.stringify({ jsonrpc: '2.0', id: '5', method: 'ping' }));
+    open();
+    await until(() => out.length >= 2);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(out.map((m) => m.id)).toEqual([5, '5']);
+  });
+
+  it('a call cancelled before its host died leaves the loss for the next call to report', async () => {
+    let reject!: (e: Error) => void;
+    const hosts: FakeHost[] = [];
+    const h = harness(async () => {
+      const first = hosts.length === 0;
+      const host = new FakeHost((op) => (first && op === 'ui.click' ? new Promise<Reply>((_, r) => (reject = r)) : success(op)));
+      hosts.push(host);
+      return host;
+    });
+    await h.init();
+    h.send({ jsonrpc: '2.0', id: 'c', method: 'tools/call', params: { name: 'ui_click', arguments: { target: { ref: 'a1b2c3:1' } } } });
+    await until(() => hosts[0]?.calls.length === 1);
+    h.send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'c' } });
+    reject(new Error('The session host exited (code null, signal SIGKILL).'));
+    await new Promise((r) => setTimeout(r, 10));
+    const told = (await h.call('ui_snapshot', {})).result;
+    expect([told.structuredContent.error?.code, told.structuredContent.error?.details.outcome]).toEqual(['HOST_LOST', 'not-sent']);
+    expect(told.structuredContent.error.message).toContain('SIGKILL');
+    expect(h.out.some((m) => m.id === 'c')).toBe(false);
+    expect(hosts[0].disconnects).toBe(1);
   });
 
   it('tells the next call a host is gone even when the call it died under still got its answer', async () => {
@@ -747,6 +787,23 @@ describe('the server as a subprocess', () => {
     }, 10_000);
     expect(stderr).toContain('siteorigin mcp: driver-mcp-test connected');
     expect(errors).toEqual([]);
+  }, 60_000);
+
+  it('goes on serving when its client stops reading its stderr', async () => {
+    const child = spawn(process.execPath, ['--no-warnings', MCP_PATH], { stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stderr!.destroy();
+    const lines: string[] = [];
+    createInterface({ input: child.stdout! }).on('line', (l) => lines.push(l));
+    const closed = new Promise<{ code: number | null; signal: string | null }>((r) => child.once('close', (code, signal) => r({ code, signal })));
+    const send = (m: unknown) => child.stdin!.write(`${JSON.stringify(m)}\n`);
+    send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: CLIENT_INFO });
+    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'session_describe', arguments: {} } });
+    await until(() => lines.length >= 2, 30_000);
+    send({ jsonrpc: '2.0', id: 3, method: 'ping' });
+    await until(() => lines.length >= 3, 10_000);
+    child.stdin!.end();
+    expect(await closed).toEqual({ code: 0, signal: null });
+    expect(lines.map((l) => JSON.parse(l).id)).toEqual([1, 2, 3]);
   }, 60_000);
 
   it('writes only JSON-RPC on stdout, one message a line, and exits 0 once its input ends, its host with it', async () => {
@@ -945,6 +1002,15 @@ describe('evidence.read\'s file check', () => {
     await expect(readSavedImage(artifacts, join(artifacts, 'snapshots'), '0006-editor', captured), 'a folder').rejects.toMatchObject({ details: { reason: 'moved' } });
     // Its base64 and the reply around it stay inside the official SDK's 10 MiB line.
     expect(Math.ceil(MAX_EVIDENCE_BYTES / 3) * 4).toBeLessThan(10 * 1024 * 1024 - 64 * 1024);
+  });
+
+  it('is not held up by something put in a screenshot\'s place that is not a file', async () => {
+    const fifo = join(scratch, 'fifo-artifacts');
+    mkdirSync(join(fifo, 'snapshots'), { recursive: true });
+    expect(spawnSync('mkfifo', [join(fifo, 'snapshots', '0008-editor.png')]).status).toBe(0);
+    const read = readSavedImage(fifo, join(fifo, 'snapshots', '0008-editor.png'), '0008-editor', captured);
+    const timer = new Promise((_, r) => setTimeout(() => r(new Error('the read blocked')), 2000));
+    await expect(Promise.race([read, timer])).rejects.toMatchObject({ details: { reason: 'moved' } });
   });
 
   it('returns only the bytes it captured: a file changed since, or a run folder put in its place, is refused', async () => {

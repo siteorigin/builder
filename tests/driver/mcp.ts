@@ -237,10 +237,17 @@ type Message = { jsonrpc: '2.0'; id?: Id; result?: unknown; error?: { code: numb
 
 interface Link {
   ready: Promise<HostConnection>;
-  /** A session.close ran on it: its end is expected. */
-  closed: boolean;
-  /** A call has already reported it lost. */
-  reported: boolean;
+  /**
+   * Set once the host is known to be gone without its session having been closed: the next call that would use it is the
+   * one told, and it moves on (a start, to a new host).
+   */
+  gone: string | null;
+}
+
+/** An answer to send, and the request id it holds while it is worked out and written. */
+interface Answer {
+  message: Message | null;
+  key?: string;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -264,10 +271,8 @@ export class McpServer {
   private ending: Promise<void> | null = null;
   /** Tool calls not yet answered, by request id, and whether the client cancelled them. */
   private readonly calls = new Map<string, { cancelled: boolean }>();
-  /** Request ids still being answered: a client reusing one would make the answers ambiguous. */
+  /** Request ids whose answers are still being worked out or written: one reused meanwhile would be ambiguous. */
   private readonly live = new Set<string>();
-  /** A host that ended by itself, not yet reported by any call: the next call (but a start) is told, once. */
-  private lost: { link: Link; message: string } | null = null;
 
   constructor(opts: ServerOptions) {
     this.opts = opts;
@@ -290,52 +295,58 @@ export class McpServer {
   /** A line longer than MAX_MESSAGE arrived and was dropped unread (readLines). */
   oversized(): void {
     if (this.ending) return;
-    this.track(Promise.resolve(fail(null, INVALID_REQUEST, `A message may be at most ${MAX_MESSAGE} characters; that one was dropped.`)));
+    this.track(Promise.resolve({ message: fail(null, INVALID_REQUEST, `A message may be at most ${MAX_MESSAGE} characters; that one was dropped.`) }));
   }
 
-  private track(answer: Promise<Message | null>) {
+  private track(answer: Promise<Answer>) {
     const work = answer.then(
-      (a) => (a ? this.send(a) : undefined),
+      async ({ message, key }) => {
+        try {
+          if (message) await this.send(message);
+        } finally {
+          // The id is free again only once its answer has been written.
+          if (key) this.live.delete(key);
+        }
+      },
       (e: unknown) => this.log(`a message could not be answered: ${e instanceof Error ? e.message : String(e)}`)
     );
     this.inFlight.add(work);
     void work.finally(() => this.inFlight.delete(work));
   }
 
-  private async receive(line: string): Promise<Message | null> {
-    if (line.length > MAX_MESSAGE) return fail(null, INVALID_REQUEST, `A message may be at most ${MAX_MESSAGE} characters.`);
+  private async receive(line: string): Promise<Answer> {
+    const answer = (message: Message | null): Answer => ({ message });
+    if (line.length > MAX_MESSAGE) return answer(fail(null, INVALID_REQUEST, `A message may be at most ${MAX_MESSAGE} characters.`));
     let msg: unknown;
     try {
       msg = JSON.parse(line);
     } catch {
-      return fail(null, PARSE_ERROR, 'The line is not JSON.');
+      return answer(fail(null, PARSE_ERROR, 'The line is not JSON.'));
     }
-    if (Array.isArray(msg)) return fail(null, INVALID_REQUEST, 'Batches are not supported: send one message per line.');
-    const readable = isRecord(msg) && isId(msg.id) ? msg.id : null;
-    if (!isRecord(msg) || msg.jsonrpc !== '2.0') return fail(readable, INVALID_REQUEST, 'A message is a JSON-RPC 2.0 object ("jsonrpc": "2.0").');
+    if (Array.isArray(msg)) return answer(fail(null, INVALID_REQUEST, 'Batches are not supported: send one message per line.'));
+    if (!isRecord(msg)) return answer(fail(null, INVALID_REQUEST, 'A message is a JSON-RPC 2.0 object ("jsonrpc": "2.0").'));
+    // An id still in use is dropped before anything could be answered under it: every answer would carry the same id as
+    // the first request's.
+    if (isId(msg.id) && this.live.has(idKey(msg.id))) {
+      this.log(`request id ${JSON.stringify(msg.id)} is still in use; the message reusing it was dropped`);
+      return answer(null);
+    }
+    const readable = isId(msg.id) ? msg.id : null;
+    if (msg.jsonrpc !== '2.0') return answer(fail(readable, INVALID_REQUEST, 'A message is a JSON-RPC 2.0 object ("jsonrpc": "2.0").'));
     if (typeof msg.method !== 'string') {
       // An answer to a request: this server sends none, so there is nothing to match it to.
-      if ('result' in msg || 'error' in msg) return null;
-      return fail(readable, INVALID_REQUEST, 'A request or notification has a "method".');
+      if ('result' in msg || 'error' in msg) return answer(null);
+      return answer(fail(readable, INVALID_REQUEST, 'A request or notification has a "method".'));
     }
     if (!('id' in msg)) {
       this.notification(msg.method, msg.params);
-      return null;
+      return answer(null);
     }
-    if (!isId(msg.id)) return fail(null, INVALID_REQUEST, 'A request\'s "id" is a string or an integer.');
-    if (msg.params !== undefined && !isRecord(msg.params)) return fail(msg.id, INVALID_PARAMS, '"params" is an object.');
-    // An id still in use is dropped, not answered: any answer would carry the same id as the first request's.
+    if (!isId(msg.id)) return answer(fail(null, INVALID_REQUEST, 'A request\'s "id" is a string or an integer.'));
     const key = idKey(msg.id);
-    if (this.live.has(key)) {
-      this.log(`request id ${JSON.stringify(msg.id)} is still in use; the request reusing it was dropped`);
-      return null;
-    }
     this.live.add(key);
-    try {
-      return await this.request(msg.id, msg.method, msg.params ?? {});
-    } finally {
-      this.live.delete(key);
-    }
+    if (msg.params !== undefined && !isRecord(msg.params)) return { message: fail(msg.id, INVALID_PARAMS, '"params" is an object.'), key };
+    return { message: await this.request(msg.id, msg.method, msg.params ?? {}), key };
   }
 
   private notification(method: string, params: unknown) {
@@ -402,25 +413,23 @@ export class McpServer {
       const result = await this.forward(op, rest, options, call);
       return call.cancelled ? null : ok(id, result);
     } finally {
-      if (this.calls.get(idKey(id)) === call) this.calls.delete(idKey(id));
+      this.calls.delete(idKey(id));
     }
   }
 
   /** The host the next call goes to, started if there is none. */
   private acquire(): Link {
     if (!this.link) {
-      const link: Link = { ready: this.opts.connect(), closed: false, reported: false };
+      const link: Link = { ready: this.opts.connect(), gone: null };
       this.link = link;
       this.links.add(link);
       link.ready.then(
         (host) =>
           void host.exited?.then((exit) => {
             this.links.delete(link);
-            if (this.ending) return;
-            if (this.link === link) this.link = null;
-            // A host that ends by itself takes its session with it: the next call starts afresh, and is told, unless a
-            // call on it says so first (or its session was closed, and its end expected).
-            if (!link.closed && !link.reported) this.lost = { link, message: `The session host exited by itself (${describeExit(exit)}); its session is gone.` };
+            // Noted on the host, not acted on: a call still waiting on it reports the loss itself, and a close that ran
+            // has already retired it. The next call that would use it is told.
+            link.gone ??= `The session host exited by itself (${describeExit(exit)}); its session is gone.`;
           }),
         () => this.links.delete(link)
       );
@@ -428,35 +437,38 @@ export class McpServer {
     return this.link;
   }
 
-  /** A call has said this host is gone (or its end was expected): nobody else needs telling. */
-  private reported(link: Link) {
-    link.reported = true;
-    if (this.lost?.link === link) this.lost = null;
-  }
-
   /** Calls after this one start a new host. */
   private retire(link: Link) {
     if (this.link === link) this.link = null;
+  }
+
+  /** The host a call goes to, ready; or why there is none. A start moves past one that is gone, to a new one. */
+  private async hostFor(op: string): Promise<{ link: Link; host: HostConnection } | { lost: string }> {
+    // A start moves past one host that is gone; a second gone at once is reported rather than replaced again.
+    for (let tries = 0; ; tries++) {
+      const link = this.acquire();
+      let host: HostConnection;
+      try {
+        host = await link.ready;
+      } catch (e) {
+        this.retire(link);
+        return { lost: `The session host could not be started: ${e instanceof Error ? e.message : String(e)}` };
+      }
+      if (!link.gone) return { link, host };
+      // This call is the first to find the host gone: it says so, and nothing is sent; a start goes on to a new host.
+      const first = this.link === link;
+      this.retire(link);
+      if ((op !== 'session.start' && first) || tries > 0) return { lost: link.gone };
+    }
   }
 
   private async forward(op: string, args: Record<string, unknown>, options: RequestOptions, call: { cancelled: boolean }): Promise<ToolResult> {
     const began = Date.now();
     const closing = 'The MCP server is shutting down.';
     if (this.ending) return hostLost(op, closing, 'not-sent', began);
-    if (this.lost) {
-      const lost = this.lost;
-      this.lost = null;
-      lost.link.reported = true;
-      if (op !== 'session.start') return hostLost(op, lost.message, 'not-sent', began);
-    }
-    const link = this.acquire();
-    let host: HostConnection;
-    try {
-      host = await link.ready;
-    } catch (e) {
-      this.retire(link);
-      return hostLost(op, `The session host could not be started: ${e instanceof Error ? e.message : String(e)}`, 'not-sent', began);
-    }
+    const found = await this.hostFor(op);
+    if ('lost' in found) return hostLost(op, found.lost, 'not-sent', began);
+    const { link, host } = found;
     // The client may have gone, or given up on this call, while the host started: then nothing reaches the host.
     if (this.ending) return hostLost(op, closing, 'not-sent', began);
     if (call.cancelled) return hostLost(op, 'The client cancelled this call before it was sent.', 'not-sent', began);
@@ -464,19 +476,16 @@ export class McpServer {
     try {
       reply = await host.request(op, args, options);
     } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
       // The host can no longer be talked to: told its client has gone, it closes its session and ends the app. This call
-      // reports the loss, so the next is not told again.
-      this.reported(link);
-      this.retire(link);
+      // reports the loss; a cancelled one, whose answer nobody hears, leaves it for the next call to find.
+      if (call.cancelled) link.gone ??= message;
+      else this.retire(link);
       void host.disconnect().catch(() => undefined);
-      return hostLost(op, e instanceof Error ? e.message : String(e), 'unknown', began);
+      return hostLost(op, message, 'unknown', began);
     }
     // A close that ran ends its host (host.ts), however it went; one refused before it ran leaves the session as it was.
-    if (op === 'session.close' && (reply.ok || !REFUSED_CODES.has(reply.error.code))) {
-      link.closed = true;
-      this.reported(link);
-      this.retire(link);
-    }
+    if (op === 'session.close' && (reply.ok || !REFUSED_CODES.has(reply.error.code))) this.retire(link);
     return toolResult(reply);
   }
 
@@ -553,6 +562,9 @@ function main() {
   // Only MCP messages go to stdout: anything a library logs goes to stderr instead.
   console.log = console.info = console.debug = (...args: unknown[]) => console.error(...args);
   let gone = false;
+  // A client that stopped reading stderr does not end the session: lifecycle messages are dropped from then on.
+  let quiet = false;
+  process.stderr.on('error', () => (quiet = true));
   let version = '0.0.0';
   try {
     version = (JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8')) as { version?: string }).version ?? version;
@@ -570,7 +582,9 @@ function main() {
           done();
         }
       }),
-    log: (message) => process.stderr.write(`${message}\n`),
+    log: (message) => {
+      if (!quiet) process.stderr.write(`${message}\n`);
+    },
     version
   });
   const finish = (reason: string) =>
