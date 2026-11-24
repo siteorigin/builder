@@ -70,7 +70,7 @@ import { publicUrl } from '@shared/public-url';
 import { siteVisitorText, visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
-import { asParagraphList, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
+import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
@@ -284,14 +284,25 @@ export function resolveImage(img: ImageValue | null | undefined, ctx: ResolveCon
   return out;
 }
 
-/** Rich text ready to render: page links become their current routes, and a link that cannot resolve is plain text. */
+/**
+ * Rich text ready to render: page links become their current routes, and a link that cannot resolve is plain text.
+ * A picture in an article becomes the image to show (a placeholder when it is no longer a library image) and its caption.
+ */
 export function resolveRichText(value: unknown, ctx: ResolveContext, plainAs?: RichListType) {
   const spans = (list: RichSpan[]) =>
     list.map(({ link, ...s }) => {
       const resolved = link ? resolveLink(link, ctx) : null;
       return resolved ? { ...s, link: resolved } : s;
     });
-  return toRichText(value, plainAs).map((b) => (isListBlock(b) ? { type: b.type, items: b.items.map(spans) } : { type: b.type, spans: spans(b.spans) }));
+  return toRichText(value, plainAs).map((b) => {
+    if (isListBlock(b)) return { type: b.type, items: b.items.map(spans) };
+    if (isImageBlock(b)) {
+      const asset = Object.hasOwn(ctx.state.assets.assets, b.assetId) ? ctx.state.assets.assets[b.assetId] : undefined;
+      const image = resolveImage({ assetId: asset?.kind === 'image' ? b.assetId : null, alt: b.alt, ...(b.decorative ? { decorative: true } : {}) }, ctx);
+      return { type: b.type, image, ...(b.caption ? { caption: b.caption } : {}) };
+    }
+    return { type: b.type, spans: spans(b.spans) };
+  });
 }
 
 /**
@@ -3111,12 +3122,45 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
   head.push(`\t<meta name="twitter:card" content=${js(base && social ? 'summary_large_image' : 'summary')} />`);
   const imports = renderImports(ctx.imports);
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
+  // Section headings and pictures in the entry's text get the article's rules.
+  const article = toRichText(entry.body).some((b) => b.type === 'h2' || isImageBlock(b));
   return (
     HEADER_NOTE(`siteorigin/collections/${collection.settings.id}/entries/${entry.id}.json`) +
     (script ? `<script>\n${script}\n</script>\n\n` : '') +
-    `<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
+    `<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n` +
+    (article ? `\n${ARTICLE_STYLE}` : '')
   );
 }
+
+/**
+ * How an entry's section headings and pictures with a caption look: only an entry's text can hold them, so the rules
+ * reach every rich text without touching any other page's.
+ */
+const ARTICLE_STYLE = `<style>
+	:global(.so-rich h2) {
+		margin-top: 1.5em;
+		font-family: var(--so-text-h2-family, inherit);
+		font-size: var(--so-text-h2-size, 2rem);
+		line-height: var(--so-text-h2-line-height, 1.2);
+		font-weight: var(--so-text-h2-weight, 600);
+		letter-spacing: var(--so-text-h2-tracking, normal);
+	}
+	:global(.so-rich__figure) {
+		margin-block: 1.5em;
+	}
+	:global(.so-rich__figure img) {
+		display: block;
+		width: 100%;
+		height: auto;
+		border-radius: var(--so-radius-md, 0);
+	}
+	:global(.so-rich__figure figcaption) {
+		margin-top: 0.5em;
+		font-size: 0.9em;
+		color: var(--so-color-muted, inherit);
+	}
+</style>
+`;
 
 /** Is the page a draft, left out of the website? The Home page never is, whatever its document says. */
 export function isDraftPage(state: ProjectState, page: PageDoc): boolean {

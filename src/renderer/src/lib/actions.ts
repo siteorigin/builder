@@ -9,6 +9,7 @@ import { pageShowing } from '@shared/page-shell';
 import { applyOperations } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction, useStore } from '../store';
+import { flushOpenPost } from './post-draft';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
@@ -600,6 +601,8 @@ export function openLayout(collectionId: string, entryId?: string) {
  * page already shown selects the page itself too. In Preview nothing is selected.
  */
 export function selectPage(pageId: string, target?: ElementRef | null) {
+  // A page chosen while a post is previewed ends that preview: the canvas goes to the page (see Editor).
+  if (getState().postView === 'preview') setState({ postView: 'write', ...(getState().leftTab === 'posts' ? { leftTab: 'pages' as const } : {}) });
   const s = getState();
   const st = s.snapshot?.state;
   const itself = target === null || (target === undefined && pageId === s.pageId && !s.definitionMode && s.mode === 'edit');
@@ -705,4 +708,15 @@ export function openOutline(pageId?: string | null) {
 export function openSiteStyles() {
   const dm = getState().definitionMode;
   setState(dm ? { definitionMode: null, pageId: dm.returnPageId, selection: null, rightTab: 'styles', dockOpen: true } : { rightTab: 'styles', dockOpen: true });
+}
+
+/**
+ * Open a post in the writer: the Posts panel shows, with the post chosen. `picture` (counted from 1) asks the writer
+ * to bring that picture of its text into view, as Show in Assets does.
+ */
+export async function openPost(collectionId: string, entryId: string, picture?: number): Promise<void> {
+  const s = getState();
+  // Never over text the open post could not save: it stays, with its note above the text.
+  if (s.post?.entryId !== entryId && !(await flushOpenPost())) return void toast('The post you are writing has text that is not saved yet. See the note above its text.', 'error');
+  setState({ modal: null, leftTab: 'posts', post: { collectionId, entryId }, postView: 'write', postReveal: picture ? { entryId, picture, seq: (getState().postReveal?.seq ?? 0) + 1 } : null });
 }

@@ -4,7 +4,7 @@
  * is one replacement of part of the text, so the field can apply it as one step its own Undo can take back.
  */
 import type { LinkValue } from '@shared/types';
-import { cleanBlocks, endsWithBreak, escapeLineStart, isListBlock, linkFromTarget, linkTokens, linkToTarget, parseRichText, sameRichText, targetToMarkdown, type LinkToken, type RichBlock, type RichListType, type RichPages, type RichSpan } from '@shared/richtext';
+import { cleanBlocks, endsWithBreak, escapeLineStart, isImageBlock, isListBlock, linkFromTarget, linkTokens, linkToTarget, parseRichText, sameRichText, targetToMarkdown, type LinkToken, type RichBlock, type RichListType, type RichPages, type RichSpan } from '@shared/richtext';
 
 /** One replacement of `text.slice(from, to)` by `insert`, and the selection to show after it. */
 export interface TextEdit {
@@ -360,7 +360,7 @@ export function linkAt({ text, start, end, plainAs }: TextAt, pages: RichPages):
 function words(line: string, pages: RichPages, plainAs?: RichListType) {
   const strip = (spans: RichSpan[]) => spans.map(({ link: _link, ...rest }) => rest);
   const blocks = parseRichText(line, { markdown: true, link: (t, n) => linkFromTarget(t, pages, n), plainAs });
-  return cleanBlocks(blocks.map((b): RichBlock => (isListBlock(b) ? { type: b.type, items: b.items.map(strip) } : { type: b.type, spans: strip(b.spans) })));
+  return cleanBlocks(blocks.map((b): RichBlock => (isListBlock(b) ? { type: b.type, items: b.items.map(strip) } : isImageBlock(b) ? b : { type: b.type, spans: strip(b.spans) })));
 }
 
 /** One edit that replaces part of a line, if it leaves the line's words, marks and blocks as they were. */

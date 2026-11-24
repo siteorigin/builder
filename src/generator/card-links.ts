@@ -5,7 +5,7 @@
  */
 import type { ComponentDefinition, ElementNode, GraphNode, LinkValue, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding, slotChildren } from '@shared/types';
-import { isListBlock, toRichText, type RichSpan } from '@shared/richtext';
+import { spanRuns, toRichText, type RichSpan } from '@shared/richtext';
 import { allTrees } from '@engine/tree';
 import { boundSchema } from '@engine/schema';
 
@@ -76,7 +76,7 @@ const mergeCards = (a: CardRef[], b: CardRef[]): CardRef[] => {
 
 function richHasLink(value: unknown): boolean {
   const spans = (s: RichSpan[]) => s.some((x) => !!x.link);
-  return toRichText(value).some((b) => (isListBlock(b) ? b.items.some(spans) : spans(b.spans)));
+  return toRichText(value).some((b) => spanRuns(b).some(spans));
 }
 
 function describe(n: GraphNode, def?: ComponentDefinition): string {

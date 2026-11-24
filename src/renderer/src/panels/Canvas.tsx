@@ -58,6 +58,26 @@ export function stepVisitor(dir: 'back' | 'forward'): boolean {
   return visitorStep?.(dir) ?? false;
 }
 
+/** Set while the canvas is shown: opens an address that is no page of the editor's (a post), or the page shown again. */
+let frameVisit: ((path: string | null) => boolean) | null = null;
+/** The address visitAddress asked for, until showEditedPage: a new frame (the preview restarted) opens it again. */
+let visitWanted: string | null = null;
+/**
+ * Show `path` in the preview, as the editor asks for a page: the editor's page stays the one it shows, and asking for
+ * that page again (showEditedPage) overtakes this request even before the frame gets there. False while the preview
+ * is not ready to be asked.
+ */
+export function visitAddress(path: string): boolean {
+  // Wanted either way: a preview still starting opens it once its frame is ready.
+  visitWanted = path;
+  return frameVisit?.(path) ?? false;
+}
+/** Back to the page the editor shows, from an address visitAddress opened. */
+export function showEditedPage(): void {
+  visitWanted = null;
+  frameVisit?.(null);
+}
+
 export function Canvas() {
   const runtime = useStore((s) => s.runtime);
   const snapshot = useStore((s) => s.snapshot);
@@ -417,6 +437,10 @@ export function Canvas() {
   }, [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
   // A new frame (another server, Try again) or another project starts a fresh journey, on the site as it is now.
   useEffect(() => setJourney({ ...NO_HISTORY, site: siteNow() }), [url, session, workspaceKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // An address visited in one opening of a project (a post previewed) is nothing to another.
+  useEffect(() => {
+    visitWanted = null;
+  }, [workspaceKey]);
   useEffect(() => () => endInlineEdit(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Bridge messages
@@ -468,7 +492,9 @@ export function Canvas() {
             // while it loaded never reached it: it is asked for the page shown now. Try again keeps the preview
             // ready, so the navigate effect does not run for it.
             nav.current.request = null;
-            if (viewKey(s)) openShownPage();
+            // An address visitAddress opened (a post previewed) is opened again in the new frame.
+            if (visitWanted) visit(visitWanted);
+            else if (viewKey(s)) openShownPage();
             else {
               syncPage(path);
               followed(nav.current, viewKey(getState()));
@@ -779,6 +805,9 @@ export function Canvas() {
     const s = getState();
     // While a collection's layout is open, another of its entries keeps it open on that entry; a page closes it.
     const to = viewAt(st, s.templateMode, path);
+    // While a post is visited (visitAddress), an entry's page is that visit, not its collection's layout opened for
+    // editing: the editor keeps the page it shows, and Back to writing returns the canvas there.
+    if (to && 'templateMode' in to && visitWanted !== null) return;
     // Another entry of the same collection keeps what is selected in its layout; another collection's starts afresh.
     if (to && 'templateMode' in to) setState({ templateMode: to.templateMode, definitionMode: null, ...(to.templateMode.collectionId === s.templateMode?.collectionId ? {} : { selection: null }) });
     else if (to && (to.pageId !== s.pageId || s.templateMode)) setState({ pageId: to.pageId, templateMode: null, selection: null });
@@ -925,9 +954,41 @@ export function Canvas() {
       visitorStep = null;
     };
   });
+  useEffect(() => {
+    frameVisit = (path) => {
+      if (path === null) {
+        if (ready) openShownPage();
+        return ready;
+      }
+      if (!ready) return false;
+      return visit(path);
+    };
+    return () => {
+      frameVisit = null;
+    };
+  });
+  /** Ask the frame for an address that is no page of the editor's (see visitAddress). */
+  function visit(path: string): boolean {
+    // Already there, with nothing asked for since.
+    if (!nav.current.request && samePath(path, frameAt.current)) return true;
+    // As a page the editor opens: "opening" until the frame says it is there, and a problem reported was about the
+    // address it is leaving. The request is the editor's latest, so a page asked for after it (Back to writing)
+    // overtakes it, and its late report is never followed.
+    setState({ frameReady: false });
+    markTimedOut(false);
+    setFrameError(null);
+    setRetrying(false);
+    if (document.activeElement === frameRef.current) canvasRef.current?.focus({ preventScroll: true });
+    const navId = askFrame(nav.current, viewKey(getState()) ?? '', path);
+    frameAt.current = null;
+    post('navigate', { path, navId });
+    return true;
+  }
 
   /** Ask the frame for the page the editor shows, unless it is there already or already asked for. */
   function openShownPage() {
+    // The editor's page is what the frame shows from now on, not an address visited before.
+    visitWanted = null;
     const s = getState();
     const shown = s.snapshot ? shownView(s.snapshot.state, s.pageId, s.templateMode) : null;
     if (!shown?.route) return;
@@ -953,9 +1014,17 @@ export function Canvas() {
     frameAt.current = null;
     post('navigate', { path: shown.route, navId });
   }
-  // Navigate when the current page changes.
+  // Navigate when the current page changes. A frame that has just become ready while a post is visited (the preview
+  // restarted) stays on the post its 'ready' report asked for again.
+  const shownBefore = useRef<string | null>(null);
   useEffect(() => {
-    if (ready && view?.route) openShownPage();
+    const key = `${view?.key}\n${view?.route}`;
+    const first = shownBefore.current === null;
+    const moved = shownBefore.current !== key;
+    shownBefore.current = key;
+    // Another page chosen is what the frame shows from now on, even before it is ready.
+    if (moved && !first) visitWanted = null;
+    if (ready && view?.route && (moved || !visitWanted)) openShownPage();
   }, [view?.key, view?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**

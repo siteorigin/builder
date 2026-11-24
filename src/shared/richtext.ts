@@ -13,7 +13,8 @@ export interface RichSpan {
   em?: boolean;
   link?: LinkValue;
 }
-export type RichTextBlockType = 'p' | 'h3' | 'h4' | 'blockquote';
+/** `h2` is kept only in collection entries' text, an article's own sections under its title (see normalizeRichText). */
+export type RichTextBlockType = 'p' | 'h2' | 'h3' | 'h4' | 'blockquote';
 export type RichListType = 'ul' | 'ol' | 'check';
 export interface RichTextBlock {
   type: RichTextBlockType;
@@ -23,20 +24,44 @@ export interface RichListBlock {
   type: RichListType;
   items: RichSpan[][];
 }
-export type RichBlock = RichTextBlock | RichListBlock;
+/**
+ * A library picture between the paragraphs of an article, with its own description and an optional caption shown
+ * under it. Kept only in collection entries' text. `alt` is kept while `decorative` is on, so turning it off again
+ * brings the description back; a decorative picture is described as nothing on the page.
+ */
+export interface RichImageBlock {
+  type: 'image';
+  assetId: string;
+  alt: string;
+  caption?: string;
+  decorative?: true;
+}
+export type RichBlock = RichTextBlock | RichListBlock | RichImageBlock;
 export type RichText = RichBlock[];
 
-const TEXT_BLOCKS: readonly string[] = ['p', 'h3', 'h4', 'blockquote'];
+const TEXT_BLOCKS: readonly string[] = ['p', 'h2', 'h3', 'h4', 'blockquote'];
 const LIST_BLOCKS: readonly string[] = ['ul', 'ol', 'check'];
 
 export const isListBlock = (b: RichBlock): b is RichListBlock => LIST_BLOCKS.includes(b.type);
+export const isImageBlock = (b: RichBlock): b is RichImageBlock => b.type === 'image';
+
+/** The runs of text a block holds: one per list item, the block's own, or none for a picture. */
+export const spanRuns = (b: RichBlock): RichSpan[][] => (isListBlock(b) ? b.items : isImageBlock(b) ? [] : [b.spans]);
 
 export function isRichBlock(v: unknown): v is RichBlock {
   if (!v || typeof v !== 'object') return false;
-  const b = v as { type?: unknown; spans?: unknown; items?: unknown };
+  const b = v as { type?: unknown; spans?: unknown; items?: unknown; assetId?: unknown; alt?: unknown; caption?: unknown; decorative?: unknown };
   if (typeof b.type !== 'string') return false;
+  // A picture's fields are each what they claim to be: text damaged by a hand edit is no picture, and is reported.
+  if (b.type === 'image') return typeof b.assetId === 'string' && (b.alt === undefined || typeof b.alt === 'string') && (b.caption === undefined || typeof b.caption === 'string') && (b.decorative === undefined || typeof b.decorative === 'boolean');
   return TEXT_BLOCKS.includes(b.type) ? Array.isArray(b.spans) : LIST_BLOCKS.includes(b.type) && Array.isArray(b.items);
 }
+
+/** Text of a picture's description or caption as a page shows it: one line, spaces collapsed. */
+const oneLine = (v: unknown) =>
+  String(v ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
 
 // ---------------------------------------------------------------------------
 // Canonical spans
@@ -109,7 +134,14 @@ export function cleanSpans(spans: RichSpan[]): RichSpan[] {
 export function cleanBlocks(blocks: RichBlock[]): RichText {
   const out: RichText = [];
   for (const b of blocks) {
-    if (isListBlock(b)) {
+    if (isImageBlock(b)) {
+      if (typeof b.assetId !== 'string' || !b.assetId) continue;
+      const img: RichImageBlock = { type: 'image', assetId: b.assetId, alt: oneLine(b.alt) };
+      const caption = oneLine(b.caption);
+      if (caption) img.caption = caption;
+      if (b.decorative) img.decorative = true;
+      out.push(img);
+    } else if (isListBlock(b)) {
       const items = b.items.map((it) => (Array.isArray(it) ? cleanSpans(it) : [])).filter((it) => it.length);
       if (items.length) out.push({ type: b.type, items });
     } else {
@@ -191,6 +223,8 @@ export interface ParseOptions {
   link?: (target: string, newTab: boolean) => LinkValue | null;
   /** Lines without a block marker become items of this kind of list. */
   plainAs?: RichListType;
+  /** Read "## " as a section heading (h2), as a collection entry's text has them. */
+  articles?: boolean;
 }
 
 const ESCAPABLE = '\\*[]#>+-.)';
@@ -289,7 +323,7 @@ function parseInline(text: string, marks: Partial<RichSpan>, opts: ParseOptions,
 }
 
 // A marker is followed by spaces, never by a line break: a block that starts with a break keeps it.
-const LINE_MARKERS: Array<{ re: RegExp; type: RichBlock['type'] }> = [
+const LINE_MARKERS: Array<{ re: RegExp; type: RichTextBlockType | RichListType }> = [
   { re: /^####[^\S\n]+/, type: 'h4' },
   { re: /^###[^\S\n]+/, type: 'h3' },
   { re: /^>[^\S\n]?/, type: 'blockquote' },
@@ -297,6 +331,8 @@ const LINE_MARKERS: Array<{ re: RegExp; type: RichBlock['type'] }> = [
   { re: /^[-*+][^\S\n]+/, type: 'ul' },
   { re: /^\d+[.)][^\S\n]+/, type: 'ol' }
 ];
+/** An article's own section heading, read only where `articles` is set (see ParseOptions). */
+const H2_MARKER = { re: /^##[^\S\n]+/, type: 'h2' as const };
 
 /** A line ending in an odd run of backslashes (the last one not escaped) goes on in the next, after a line break. */
 const BREAK_AT_END = /(?:^|[^\\])(?:\\\\)*\\$/;
@@ -376,7 +412,7 @@ export function parseRichText(input: string | string[], opts: ParseOptions = {})
   };
   for (const line of lines) {
     const plain = !!opts.markdown && line.startsWith(SEPARATOR);
-    const marker = opts.markdown && !plain ? LINE_MARKERS.find((m) => m.re.test(line)) : undefined;
+    const marker = opts.markdown && !plain ? (opts.articles && H2_MARKER.re.test(line) ? H2_MARKER : LINE_MARKERS.find((m) => m.re.test(line))) : undefined;
     const body = plain ? line.slice(SEPARATOR.length) : marker ? line.replace(marker.re, '') : line;
     const spans = parseInline(body, {}, opts);
     const type = marker?.type ?? (plain ? 'p' : (opts.plainAs ?? 'p'));
@@ -432,9 +468,15 @@ export function mergeLists(blocks: RichText): RichText {
 
 const spansText = (spans: RichSpan[]) => spans.map((s) => s.text).join('');
 
+/** What a picture says in words: its caption, or else its description (none when it is decorative). */
+const imageWords = (b: RichImageBlock) => b.caption || (b.decorative ? '' : b.alt);
+
 /** The words alone, for places that only hold plain text. */
 export function richTextToPlain(blocks: RichText): string {
-  return blocks.map((b) => (isListBlock(b) ? b.items.map(spansText).join('\n') : spansText(b.spans))).join('\n\n');
+  return blocks
+    .map((b) => (isListBlock(b) ? b.items.map(spansText).join('\n') : isImageBlock(b) ? imageWords(b) : spansText(b.spans)))
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 /** A line break inside a block ends its line with a backslash, and the block goes on in the next line. */
@@ -444,7 +486,7 @@ function escapeInline(text: string): string {
 
 /** A line that would read as a block marker keeps its first character literal. */
 export function escapeLineStart(line: string): string {
-  return line.replace(/^(#{3,4}\s|>|[-+]\s)/, '\\$1').replace(/^(\d+)([.)]\s)/, '$1\\$2');
+  return line.replace(/^(#{2,4}\s|>|[-+]\s)/, '\\$1').replace(/^(\d+)([.)]\s)/, '$1\\$2');
 }
 
 /** A link's destination as the text form writes it: in angle brackets when it holds a bracket or a space. */
@@ -467,7 +509,7 @@ function spansToMarkdown(spans: RichSpan[], pages: RichPages): string {
 /** One string per paragraph or list item with ** and * marks: the form older code components were written for. */
 export function richTextToParagraphs(blocks: RichText): string[] {
   const line = (spans: RichSpan[]) => spans.map((s) => (s.strong ? `**${s.text}**` : s.em ? `*${s.text}*` : s.text)).join('');
-  return blocks.flatMap((b) => (isListBlock(b) ? b.items.map(line) : [line(b.spans)]));
+  return blocks.flatMap((b) => (isListBlock(b) ? b.items.map(line) : isImageBlock(b) ? [] : [line(b.spans)]));
 }
 
 /** The small text form the inspector edits and the AI reads; parseRichText with `markdown` reads it back. */
@@ -482,12 +524,17 @@ export function richTextToMarkdown(blocks: RichText, pages: RichPages, plainAs?:
           return b.items.map((it) => `- [x] ${spansToMarkdown(it, pages)}`).join('\n');
         case 'ol':
           return b.items.map((it, i) => `${i + 1}. ${spansToMarkdown(it, pages)}`).join('\n');
+        case 'h2':
+          return `## ${spansToMarkdown(b.spans, pages)}`;
         case 'h3':
           return `### ${spansToMarkdown(b.spans, pages)}`;
         case 'h4':
           return `#### ${spansToMarkdown(b.spans, pages)}`;
         case 'blockquote':
           return `> ${spansToMarkdown(b.spans, pages)}`;
+        case 'image':
+          // For reading only: a picture is placed with the library picker, never typed.
+          return `![${escapeInline(b.decorative ? '' : b.alt)}](asset:${b.assetId}${b.caption ? ` "${b.caption.replace(/"/g, "'")}"` : ''})`;
         default:
           // Where a plain line would become a list item, a paragraph says that it is one.
           return (plainAs ? SEPARATOR : '') + line(b.spans);

@@ -415,6 +415,12 @@ export const MIGRATIONS: Migration[] = [
         settings.template = v12ArticleTemplate(typeof settings.id === 'string' ? settings.id : '');
       }
     }
+  },
+  {
+    id: 'entry-articles',
+    description:
+      'A collection entry\'s text can hold section headings ({ type: "h2" }) and library pictures with a caption ({ type: "image", assetId, alt, caption? }) between its paragraphs. Nothing in the documents changes; the new version only keeps an older editor, which would take such text for damaged and drop its headings and pictures, from opening the project for editing.',
+    migrate() {}
   }
 ];
 

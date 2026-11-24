@@ -9,7 +9,7 @@ import type { Op } from '@shared/ops';
 import { POSTS_COLLECTION_ID, entryRoute, findEntry, isCollectionId, isEntryId, isTermId, routeOwners, type RouteOwner } from '@shared/collections';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
-import { isRichBlock } from '@shared/richtext';
+import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { newId } from '@shared/ids';
 import { EngineError, fail } from './tree';
 import { normalizeRichText, normalizeScalar } from './values';
@@ -627,7 +627,26 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
         if (!fits) out.push({ severity: 'warning', code: 'FIELD_VALUE_INVALID', message: `${what}: its ${f.label} is not a value the field takes.`, owner: eo, site: `values|${k}` });
       }
       out.push(...bodyLinkProblems(state, e.body, what, eo));
+      out.push(...bodyImageProblems(state, e.body, what, eo));
     }
+  }
+  return out;
+}
+
+/**
+ * Pictures in an entry's text that cannot show: no longer in the library, or not a picture. One the author left
+ * undescribed (and did not mark decorative) is said too, as an image on a page is. Numbered as the text shows them.
+ */
+function bodyImageProblems(state: ProjectState, body: RichText, what: string, owner: CollectionDiagnostic['owner']): CollectionDiagnostic[] {
+  const out: CollectionDiagnostic[] = [];
+  let n = 0;
+  for (const b of body) {
+    if (!isImageBlock(b)) continue;
+    n++;
+    const a = typeof b.assetId === 'string' ? own(state.assets.assets, b.assetId) : undefined;
+    if (!a) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${what}: picture ${n} in its text is not in the library.`, owner, site: `body|image|${n}` });
+    else if (a.kind !== 'image') out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${what}: picture ${n} in its text is “${a.name}”, which is a ${a.kind}, not a picture.`, owner, site: `body|image|${n}|${a.id}` });
+    else if (!b.decorative && !String(b.alt ?? '').trim()) out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${what}: picture ${n} in its text has no description.`, owner, site: `body|alt|${n}` });
   }
   return out;
 }

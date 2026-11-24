@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, Grid3x3, ImageDown, ImageIcon, ImageOff, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Type, Upload } from 'lucide-react';
+import { ArrowLeft, Check, ChevronDown, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, Grid3x3, ImageDown, ImageIcon, ImageOff, ImagePlus, Info, MapPin, Newspaper, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Type, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import { isDocumentLink } from '@engine/apply';
 import type { AltReview, AssetRecord, OwnerRef, ProjectState } from '@shared/types';
@@ -11,7 +11,7 @@ import { FontList } from './FontFiles';
 import { inSeries, sortAssets } from '@shared/asset-order';
 import { AssetOrderControls, shortName, useAssetSeries } from '../components/AssetOrder';
 import { Picture, Thumb } from '../components/AssetPicture';
-import { goToShellPart, imagePlacement, openSiteStyles, placeAsset, selectPage, openLayout } from '../lib/actions';
+import { goToShellPart, imagePlacement, openPost, openSiteStyles, placeAsset, selectPage, openLayout } from '../lib/actions';
 import { SHOW_ASSET_EVENT } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
@@ -241,6 +241,8 @@ const revealUse = (owner: OwnerRef, nodeId: string, field?: UseField, label = 'T
 /** Where Show goes for one use of an image: its element and field, its page's settings, or Site styles. */
 function showUse(u: ImageUseRow): (() => void) | undefined {
   if (u.at) return revealUse(u.at.owner, u.at.nodeId, u.field, u.what);
+  const post = u.post;
+  if (post) return () => void openPost(post.collectionId, post.entryId, post.n);
   if (u.setting === 'site') return openSiteStyles;
   const pageId = u.setting?.pageId;
   return pageId ? () => selectPage(pageId, null) : undefined;
@@ -292,7 +294,7 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
   return out;
 }
 
-const PLACE_ICON = { page: FileText, shell: PanelTop, component: Component, site: Globe };
+const PLACE_ICON = { page: FileText, shell: PanelTop, component: Component, site: Globe, post: Newspaper };
 
 /** Arrow keys, Home and End move between tiles by row and column. The grid is one Tab stop: the tile last focused. */
 function gridKeys(e: React.KeyboardEvent<HTMLElement>) {

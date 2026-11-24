@@ -333,7 +333,11 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${label}: an image shows “${asset.name}”, which is a ${asset.kind}, not a picture. Choose an image instead.`, owner, nodeId, site: `${nodeId}|${asset.id}` });
       if (o.type === 'document' && typeof o.target === 'string' && (Object.hasOwn(state.assets.assets, o.target) ? state.assets.assets[o.target] : undefined)?.kind !== 'document')
         out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to a document that is no longer in Assets. Choose another destination for it.`, owner, nodeId });
-      if ('assetId' in o && o.assetId && !o.decorative && !String(o.alt ?? '').trim() && owner.kind !== 'component')
+      // A section heading or a picture between paragraphs belongs to a post's text (an import or a hand edit can put one
+      // in a page's): it shows, but the text's own editors cannot keep it.
+      if ((o.type === 'h2' && Array.isArray(o.spans)) || (o.type === 'image' && typeof o.assetId === 'string' && !('label' in o)))
+        out.push({ severity: 'warning', code: 'ARTICLE_BLOCK', message: `${label}: text holds a ${o.type === 'h2' ? 'section heading' : 'picture'} that only a post's text can hold. Editing that text drops it; change it in the inspector.`, owner, nodeId, site: `${nodeId}|article` });
+      if ('assetId' in o && o.assetId && !o.decorative && typeof o.alt !== 'object' && !String(o.alt ?? '').trim() && owner.kind !== 'component')
         out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${label}: an image has no alternative text.`, owner, nodeId });
       Object.values(o).forEach((x) => walk(x, nodeId, shown));
     };

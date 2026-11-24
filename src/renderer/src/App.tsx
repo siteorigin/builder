@@ -12,6 +12,7 @@ import { handleShortcut } from './Editor';
 import { forgetCopy } from './lib/clipboard';
 import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
+import { runWriterHistory } from './lib/post-draft';
 import { endEditingHold, forgetKeptDrafts, prepareToLeave, projectClosed } from './lib/leave';
 import { keepViewValid } from './lib/model';
 import { placeOn, readPlaces } from './lib/page-place';
@@ -92,6 +93,8 @@ export function App() {
         // While the project is being left, the editor takes no input (see lib/leave.ts).
         if (getState().leaving) return;
         const owner = menuHistoryOwner(historyContext(), fromKey);
+        // The Posts writer's text is the project's: its Undo saves what was typed, then undoes the project.
+        if (owner === 'text' && document.activeElement?.closest('.post-body') && runWriterHistory(action)) return;
         if (owner === 'text') void (action === 'redo' ? api.edit.redo() : api.edit.undo());
         else if (owner === 'project') projectHistory(action);
       }),
@@ -160,6 +163,10 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     selection: placeOn(snap.state, pagePlaces, pageId),
     previewReturn: null,
     mode: 'edit',
+    // The Posts workspace opens on its list: a post of the last project is never this one's.
+    post: null,
+    postView: 'write',
+    postReveal: null,
     definitionMode: null,
     templateMode: null,
     variantStyle: null,

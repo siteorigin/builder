@@ -28,6 +28,9 @@ const has = <T,>(o: Record<string, T> | undefined, k: string): T | undefined => 
 const found = (value: unknown): FieldRead => ({ found: true, value });
 const gone = (what: string): FieldRead => ({ found: false, what });
 
+/** Entry fields `entry.update` can set: each is stored under its own name. */
+const ENTRY_FIELDS = ['title', 'slug', 'publishedAt', 'updatedAt', 'draft', 'author', 'excerpt', 'featuredImage', 'terms', 'values', 'body'] as const;
+
 /** Page fields `page.update` can set, and where each is stored. */
 const PAGE_FIELDS: Record<string, string[]> = {
   title: ['title'],
@@ -112,6 +115,14 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
         read.keptFor = holder?.pageId ?? (holder?.entryId !== undefined ? { entryId: holder.entryId } : null);
       }
       return found(read);
+    }
+    case 'entry.update': {
+      // A post's fields, each as stored: its text is one field, so typing in it never waits on its title or date.
+      const c = has(state.collections, op.collectionId);
+      const entry = c ? has(c.entries, op.entryId) : undefined;
+      if (!entry) return gone('post');
+      const keys = ENTRY_FIELDS.filter((k) => (op as Record<string, unknown>)[k] !== undefined);
+      return found(Object.fromEntries(keys.map((k) => [k, (entry as unknown as Record<string, unknown>)[k]])));
     }
     case 'site.update': {
       const keys = SITE_FIELDS.filter((k) => (op as Record<string, unknown>)[k] !== undefined);
@@ -299,7 +310,7 @@ export function tableRowNameEdit(operations: EditOperation[], base: unknown[], c
 }
 
 /** Keys that say which field an operation writes; every other key is the value written. */
-const TARGET_KEYS = new Set(['owner', 'nodeId', 'pageId', 'prop', 'itemId', 'field', 'partId', 'variant', 'axis', 'scope', 'state', 'property', 'tokenId', 'assetId', 'definitionId', 'action', 'rowId', 'columnId']);
+const TARGET_KEYS = new Set(['owner', 'nodeId', 'pageId', 'collectionId', 'entryId', 'prop', 'itemId', 'field', 'partId', 'variant', 'axis', 'scope', 'state', 'property', 'tokenId', 'assetId', 'definitionId', 'action', 'rowId', 'columnId']);
 
 /** Identifies the fields a batch writes, so a newer edit of the same fields replaces an older held one. */
 export function fieldKey(operations: EditOperation[]): string {
@@ -387,6 +398,7 @@ function conditionText(c: unknown): string | undefined {
 export function placeOf(state: ProjectState, op: EditOperation): string {
   const o = op as Record<string, unknown>;
   if (typeof o.pageId === 'string') return has(state.pages, o.pageId)?.title ?? 'Page';
+  if (typeof o.entryId === 'string' && typeof o.collectionId === 'string') return has(has(state.collections, o.collectionId)?.entries, o.entryId)?.title ?? 'Post';
   if (o.owner && typeof o.owner === 'object') {
     const owner = o.owner as OwnerRef;
     if (owner.kind === 'page') return has(state.pages, owner.id)?.title ?? 'Page';

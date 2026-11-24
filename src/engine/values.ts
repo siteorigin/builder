@@ -1,5 +1,5 @@
 import type { ChoiceOption, ImageValue, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
-import { cleanBlocks, ENTRY_LINK_PREFIX, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText } from '@shared/richtext';
+import { cleanBlocks, ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText, spanRuns } from '@shared/richtext';
 import { collectionRoutes, findEntry } from '@shared/collections';
 import { newId } from '@shared/ids';
 import { fail } from './tree';
@@ -117,6 +117,11 @@ export function normalizeImage(v: unknown, state: ProjectState, label: string, s
 
 const MAX_RICH_CHARS = 20000;
 const MAX_RICH_BLOCKS = 500;
+/** A collection entry's text is a whole article, so it has room for one: a long read with its pictures. */
+export const MAX_ENTRY_CHARS = 100000;
+export const MAX_ENTRY_BLOCKS = 2000;
+/** The longest caption a picture in an article has. */
+export const MAX_CAPTION = 300;
 
 /**
  * Rich text in its stored form, from anything callers may send: a string (one block per line, with **bold**, *italic*,
@@ -140,7 +145,7 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
     if (!out && /^tel:/i.test(t)) fail(`${label}: "${t.slice(4, 44)}" is not a valid telephone number.`);
     return out;
   };
-  const fromText = (s: string) => parseRichText(s, { markdown: true, link, plainAs });
+  const fromText = (s: string) => parseRichText(s, { markdown: true, link, plainAs, articles: !!scope.entries });
   const span = (raw: unknown): RichSpan => {
     if (typeof raw === 'string') return { text: raw };
     if (!raw || typeof raw !== 'object' || typeof (raw as RichSpan).text !== 'string') fail(`${label}: a span needs { text, strong?, em?, link? }.`);
@@ -156,7 +161,29 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
     }
     return out;
   };
-  const block = (raw: RichBlock): RichBlock => (isListBlock(raw) ? { type: raw.type, items: raw.items.map((it) => (Array.isArray(it) ? it : [it]).map(span)) } : { type: raw.type, spans: raw.spans.map(span) });
+  // Section headings and pictures between paragraphs belong to an article: an entry's text has them, and nothing else
+  // shows them yet (a component's text sits under headings of its own).
+  const article = (type: string) => {
+    if (!scope.entries) fail(`${label}: ${type === 'h2' ? 'section headings (h2)' : 'pictures'} can only be placed in a collection entry's text.`);
+  };
+  const figure = (raw: Record<string, unknown>): RichBlock => {
+    article('image');
+    const { assetId, alt, caption, decorative } = raw;
+    if (typeof assetId !== 'string' || !assetId) fail(`${label}: a picture needs the assetId of a library image.`);
+    if (alt !== undefined && typeof alt !== 'string') fail(`${label}: a picture's alt text must be text.`);
+    if (caption !== undefined && caption !== null && typeof caption !== 'string') fail(`${label}: a picture's caption must be text.`);
+    // The library and the description's length, checked as any other picture's are.
+    const img = normalizeImage({ assetId, alt: alt ?? '' }, state, label);
+    const text = String(caption ?? '').trim();
+    if (text.length > MAX_CAPTION) fail(`${label}: a picture's caption: ${tooLongMessage(text.length, MAX_CAPTION)}`);
+    return { type: 'image', assetId: img.assetId!, alt: img.alt, ...(text ? { caption: text } : {}), ...(decorative ? { decorative: true as const } : {}) };
+  };
+  const block = (raw: RichBlock): RichBlock => {
+    if (isImageBlock(raw)) return figure(raw as unknown as Record<string, unknown>);
+    if (isListBlock(raw)) return { type: raw.type, items: raw.items.map((it) => (Array.isArray(it) ? it : [it]).map(span)) };
+    if (raw.type === 'h2') article('h2');
+    return { type: raw.type, spans: raw.spans.map(span) };
+  };
   let blocks: RichBlock[];
   if (typeof v === 'string') blocks = fromText(v);
   else if (Array.isArray(v))
@@ -168,8 +195,8 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
   else fail(`${label}: expected text, paragraphs or rich text blocks.`);
   const out = mergeLists(cleanBlocks(blocks!));
   // Every character counts, the line breaks inside a block included; the gaps between blocks do not.
-  const chars = out.reduce((n, b) => n + (isListBlock(b) ? b.items.flat() : b.spans).reduce((m, sp) => m + sp.text.length, 0), 0);
-  if (out.length > MAX_RICH_BLOCKS || chars > MAX_RICH_CHARS) fail(`${label}: text is too long.`);
+  const chars = out.reduce((n, b) => n + (isImageBlock(b) ? b.alt.length + (b.caption?.length ?? 0) : spanRuns(b).flat().reduce((m, sp) => m + sp.text.length, 0)), 0);
+  if (out.length > (scope.entries ? MAX_ENTRY_BLOCKS : MAX_RICH_BLOCKS) || chars > (scope.entries ? MAX_ENTRY_CHARS : MAX_RICH_CHARS)) fail(`${label}: text is too long.`);
   return out;
 }
 

@@ -7,7 +7,7 @@
 import { LATEST_SCHEMA_VERSION } from './migrations';
 import type { RichListType, RichText } from './richtext';
 
-export type { RichBlock, RichListBlock, RichListType, RichSpan, RichText, RichTextBlock } from './richtext';
+export type { RichBlock, RichImageBlock, RichListBlock, RichListType, RichSpan, RichText, RichTextBlock } from './richtext';
 
 /** The current document format: one more than the number of migrations (see `./migrations`). */
 export const SCHEMA_VERSION = LATEST_SCHEMA_VERSION;

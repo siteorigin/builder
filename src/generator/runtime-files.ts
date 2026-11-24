@@ -295,13 +295,15 @@ export const ACTION_SVELTE = `<script>
 
 export const RICHTEXT_SVELTE = `<script>
 	/**
-	 * Renders structured rich text as plain semantic HTML: paragraphs, headings, quotes and lists of text spans.
+	 * Renders structured rich text as plain semantic HTML: paragraphs, headings, quotes and lists of text spans, and in
+	 * an article, pictures with their captions.
 	 * Text is always escaped; HTML is never interpreted, and a line feed in a span is a line break (<br>) inside its
 	 * block. A block ending with a break gets one more <br>, as a browser needs to show the empty line after it. \`paragraphs\` and \`list\` are the older form, which code components written against it still pass:
 	 * strings with inline **strong** and *emphasis*. With \`list\` the root is the list itself, as it always was, so
 	 * their selectors (\`.x > li\`) keep matching.
 	 */
 	import SoLink from './Link.svelte';
+	import SoImage from './Image.svelte';
 	let { value = undefined, paragraphs = undefined, list = '', class: className = '', ...rest } = $props();
 
 	function segments(text) {
@@ -357,6 +359,13 @@ export const RICHTEXT_SVELTE = `<script>
 				<ol class={LIST_CLASS.ol}>{#each block.items as item, j (j)}<li>{@render inline(item)}</li>{/each}</ol>
 			{:else if block.items}
 				<ul class={LIST_CLASS[block.type]}>{#each block.items as item, j (j)}<li>{@render inline(item)}</li>{/each}</ul>
+			{:else if block.type === 'image'}
+				<figure class="so-rich__figure">
+					<SoImage image={block.image} sizes="(min-width: 48rem) 42rem, 100vw" />
+					{#if block.caption}<figcaption>{block.caption}</figcaption>{/if}
+				</figure>
+			{:else if block.type === 'h2'}
+				<h2>{@render inline(block.spans)}</h2>
 			{:else if block.type === 'h3'}
 				<h3>{@render inline(block.spans)}</h3>
 			{:else if block.type === 'h4'}
@@ -555,11 +564,12 @@ export function richList(value, kind) {
  */
 export function richParagraphs(value, fields) {
 	if (!Array.isArray(value)) return value;
-	const isBlock = (b) => !!b && typeof b === 'object' && (Array.isArray(b.spans) || Array.isArray(b.items));
+	const isBlock = (b) => !!b && typeof b === 'object' && (Array.isArray(b.spans) || Array.isArray(b.items) || b.type === 'image');
 	const line = (spans) => spans.map((s) => (s.strong ? '**' + s.text + '**' : s.em ? '*' + s.text + '*' : s.text)).join('');
 	const item = (it) => !!it && typeof it === 'object' && !Array.isArray(it);
 	if (Array.isArray(fields)) return value.map((it) => (item(it) ? { ...it, ...Object.fromEntries(fields.filter((f) => Object.hasOwn(it, f)).map((f) => [f, richParagraphs(it[f])])) } : it));
-	if (value.length && value.every(isBlock)) return value.flatMap((b) => (b.items ? b.items.map(line) : [line(b.spans)]));
+	// A picture between paragraphs (an article's) has no paragraph string of its own.
+	if (value.length && value.every(isBlock)) return value.flatMap((b) => (b.items ? b.items.map(line) : b.spans ? [line(b.spans)] : []));
 	return value.map((it) => (item(it) ? Object.fromEntries(Object.entries(it).map(([k, v]) => [k, richParagraphs(v)])) : it));
 }
 `;

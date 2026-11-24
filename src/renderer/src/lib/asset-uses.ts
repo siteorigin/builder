@@ -76,13 +76,15 @@ export function describePlace(state: ProjectState, place: ValuePlace, trees = ne
 
 /** One use of an image, as the Assets panel lists it and a replacement in some places chooses it. */
 export interface ImageUseRow extends Omit<PlaceLabel, 'icon'> {
-  icon: PlaceLabel['icon'] | 'site';
+  icon: PlaceLabel['icon'] | 'site' | 'post';
   /** Tells the row apart from every other use of the image, and stays the same while the row is reordered or renamed. */
   key: string;
   /** What a replacement in some places names it by. None for a value reached through a list row with no ID. */
   target: ImageUseTarget | null;
   /** A page's sharing image opens that page; the site's own images open Site styles. */
   setting?: { pageId: string } | 'site';
+  /** A collection entry's featured image or a picture in its text opens that entry in Posts. */
+  post?: { collectionId: string; entryId: string; n?: number };
   /** The alt text it has, and whether it is decorative: an image value's own. */
   alt?: string;
   decorative?: boolean;
@@ -94,6 +96,14 @@ export function imageUseRows(state: ProjectState, assetId: string): ImageUseRow[
   return imageUses(state, assetId).map((u, i): ImageUseRow => {
     const t = u.target;
     const key = t ? useKey(t) : `unnamed:${i}`;
+    if (u.entry) {
+      const e = u.entry;
+      const key = JSON.stringify(['entry', e.collectionId, e.entryId, e.field, e.label ?? '', e.n ?? 0]);
+      const what = e.field === 'featured' ? 'Featured image' : e.field === 'body' ? `Picture ${e.n} in the text` : e.field === 'default' ? `${e.label}: starting picture for new entries` : (e.label ?? 'Picture');
+      // A collection's default is in no one entry: there is no post to open for it.
+      if (e.field === 'default') return { key, target: null, icon: 'post', where: e.title, what };
+      return { key, target: null, icon: 'post', where: e.title, what, post: { collectionId: e.collectionId, entryId: e.entryId, ...(e.n ? { n: e.n } : {}) } };
+    }
     if (!u.place) {
       if (t?.kind === 'pageSharing') return { key, target: t, icon: 'page', where: state.pages[t.pageId].title, what: 'Sharing image', setting: { pageId: t.pageId } };
       return { key, target: t, icon: 'site', where: 'Site', what: t?.kind === 'site' && t.field === 'favicon' ? 'Browser tab icon' : 'Sharing image', setting: 'site' };
