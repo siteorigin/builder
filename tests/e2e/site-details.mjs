@@ -121,6 +121,37 @@ for (const [name, key] of [['Favicon', 'favicon'], ['Social sharing image', 'soc
   await eventually(() => assert.equal(site().socialImage ?? null, null));
 }
 
+step('a wide logo is shown whole in the single-image picker and its preview, while a photo still fills its tile (#558)');
+{
+  const wordmark = join(WORK, 'wordmark.svg');
+  writeFileSync(wordmark, '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="60" viewBox="0 0 400 60"><rect width="400" height="60" fill="none"/><text x="4" y="44" font-size="40" fill="#5d2b8a">Kloof Studio</text></svg>\n');
+  const social = picker('Social sharing image');
+  await answerChoosers(app, [{ dialog: 'open', paths: [wordmark] }]);
+  await social.getByRole('button', { name: 'Choose image…' }).click();
+  await social.getByRole('button', { name: 'Import…' }).click();
+  await eventually(() => assert.ok(site().socialImage, 'the logo is chosen'));
+  const fit = (loc) => loc.evaluate((el) => getComputedStyle(el).objectFit);
+  const loaded = (loc) => loc.evaluate((el) => el.complete && el.naturalWidth > 0);
+  const checker = (loc) => loc.evaluate((el) => getComputedStyle(el).backgroundImage !== 'none');
+  const preview = social.locator('.insp-image-thumb img');
+  await eventually(async () => assert.equal(await loaded(preview), true, 'the chosen logo preview has loaded'));
+  assert.equal(await fit(preview), 'contain', 'the chosen logo preview is shown whole');
+  assert.equal(await checker(preview), true, 'the logo preview sits on the transparency checker');
+  await social.getByRole('button', { name: 'Change…' }).click();
+  const tiles = social.locator('.insp-pick-tile');
+  await tiles.first().waitFor();
+  const logoTile = tiles.filter({ hasText: /wordmark/i }).locator('img');
+  const photoTile = tiles.filter({ hasText: /sunrise/i }).locator('img');
+  await eventually(async () => assert.equal(await loaded(logoTile), true, 'the logo tile has loaded'));
+  assert.equal(await fit(logoTile), 'contain', 'the logo tile is shown whole');
+  assert.equal(await checker(logoTile), true, 'the logo tile sits on the transparency checker');
+  assert.equal(await fit(photoTile), 'cover', 'an ordinary photo still fills its tile');
+  assert.equal(await photoTile.evaluate((el) => getComputedStyle(el).backgroundImage), 'none', 'an opaque photo has no checker');
+  await win.keyboard.press('Escape');
+  await social.getByRole('button', { name: 'Remove social sharing image' }).click();
+  await eventually(() => assert.equal(site().socialImage ?? null, null));
+}
+
 step('a host name typed without https:// stays in the field, unsaved, with the reason and a fix beside it');
 await input('Public URL').fill('kloof.example');
 await input('Public URL').press('Tab');
