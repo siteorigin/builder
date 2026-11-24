@@ -165,8 +165,11 @@ describe('keeping a preview copy up to date', () => {
     expect(existsSync(join(stage, '.siteorigin/cache/dev/isolated'))).toBe(false);
     write(stage, '.siteorigin/cache/dev/isolated/bbbbbbbbbbbbbbbb/src/lib/siteorigin/preview/Preview.svelte', 'the copy’s preview');
     write(dir, 'src/routes/+page.svelte', '<h1>Changed</h1>');
+    write(dir, '.siteorigin/cache/dev/src/routes/+page.svelte', '<h1 data-so-node="n1">Changed</h1>');
     await syncPreviewStage(dir, stage);
     expect(read(stage, 'src/routes/+page.svelte')).toBe('<h1>Changed</h1>');
+    // The rest of the dev cache still follows the project.
+    expect(read(stage, '.siteorigin/cache/dev/src/routes/+page.svelte')).toBe('<h1 data-so-node="n1">Changed</h1>');
     // The copy's own preview is not in the project, and is still there after the copy follows the project.
     expect(read(stage, '.siteorigin/cache/dev/isolated/bbbbbbbbbbbbbbbb/src/lib/siteorigin/preview/Preview.svelte')).toBe('the copy’s preview');
     expect(existsSync(join(stage, '.siteorigin/cache/dev/isolated/aaaaaaaaaaaaaaaa'))).toBe(false);

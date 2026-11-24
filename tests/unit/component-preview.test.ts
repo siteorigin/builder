@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,7 +8,7 @@ import { catalogueComponent } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { installComponent } from '@engine/install';
 import { compile } from 'svelte/compiler';
-import { COMPONENT_PREVIEW_ROUTE, PREVIEW_COMPONENT_STYLES, PREVIEW_KEY, PREVIEW_MODULE, previewKeyOf } from '@shared/component-preview';
+import { COMPONENT_PREVIEW_ROUTE, PREVIEW_COMPONENT_STYLES, PREVIEW_KEY, PREVIEW_META, PREVIEW_MODULE, previewKeyOf } from '@shared/component-preview';
 import { devPlugin } from '@runtime/dev-plugin';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from '../../src/main/runtime/component-preview';
 import { generateComponentPreview, PREVIEW_NODE_ID } from '@generator/preview';
@@ -25,12 +25,14 @@ function preview(state: ProjectState, spec: Parameters<typeof generateComponentP
 
 /** A code component with a variant axis, made through the same operations the editor uses. */
 function withCodeComponent(state: ProjectState) {
-  const source = `<script>\n\tlet { title = 'Hello', variant = 'plain', so_o, class: className = '' } = $props();\n</script>\n\n<p class="sample {className} sample--{variant}">{title}</p>\n`;
+  const source = `<script>\n\tlet { title = 'Hello', variant = 'plain', variant_size = 'small', so_o, class: className = '' } = $props();\n</script>\n\n<p class="sample {className} sample--{variant} sample--{variant_size}">{title}</p>\n`;
   const made = applyOperations(state, [{ type: 'component.createCode', name: 'Sample note', source, properties: { title: { type: 'string', label: 'Title', default: 'Hello' } } }]);
   const id = made.results[0].definitionId as string;
   const withAxis = applyOperations(made.state, [
     { type: 'component.setVariant', definitionId: id, axis: 'tone', axisLabel: 'Tone', variant: 'plain', label: 'Plain', makeDefault: true },
-    { type: 'component.setVariant', definitionId: id, axis: 'tone', variant: 'loud', label: 'Loud' }
+    { type: 'component.setVariant', definitionId: id, axis: 'tone', variant: 'loud', label: 'Loud' },
+    { type: 'component.setVariant', definitionId: id, axis: 'size', axisLabel: 'Size', variant: 'small', label: 'Small', makeDefault: true },
+    { type: 'component.setVariant', definitionId: id, axis: 'size', variant: 'big', label: 'Big' }
   ]);
   return { state: withAxis.state, id };
 }
@@ -63,8 +65,12 @@ describe('isolated component preview files', () => {
     const id = installComponent(state, 'features.grid');
     const base = preview(state, { definitionId: id }).files.get(PREVIEW_MODULE)!;
     const two = preview(state, { definitionId: id, variants: { layout: 'two-columns' } }).files.get(PREVIEW_MODULE)!;
-    const four = preview(state, { definitionId: id, variants: { layout: 'four-columns', tone: Object.keys(state.components[id].variantAxes!.tone.options).at(-1)! } }).files.get(PREVIEW_MODULE)!;
+    const tone = Object.keys(state.components[id].variantAxes!.tone.options).at(-1)!;
+    expect(tone).not.toBe(state.components[id].variantAxes!.tone.default);
+    const four = preview(state, { definitionId: id, variants: { layout: 'four-columns', tone } }).files.get(PREVIEW_MODULE)!;
     expect(base).toContain('variant_layout="default"');
+    expect(base).toContain(`variant_tone=${JSON.stringify(state.components[id].variantAxes!.tone.default)}`);
+    expect(four).toContain(`variant_tone=${JSON.stringify(tone)}`);
     expect(two).toContain('variant_layout="two-columns"');
     expect(four).toContain('variant_layout="four-columns"');
     expect(new Set([base, two, four]).size).toBe(3);
@@ -80,16 +86,21 @@ describe('isolated component preview files', () => {
     placed.state.pages[home].rootIds = [placed.results[0].nodeId as string];
     const page = [...generateProject(placed.state, { instrument: true }).entries()].find(([path]) => path === 'src/routes/+page.svelte')![1];
     const module = preview(placed.state, { definitionId: id, variants: { layout: 'media-end' }, props: { heading: 'Same words' } }).files.get(PREVIEW_MODULE)!;
-    const attrs = (text: string) => [...text.matchAll(/^\s*((?:heading|variant_\w+|image|body)=.*)$/gm)].map((m) => m[1]).sort();
+    const attrs = (text: string) => [...text.matchAll(/^\s*((?:heading|eyebrow|variant_\w+|image|body|so_eager)=.*)$/gm)].map((m) => m[1]).sort();
+    // The first thing on a page loads its images at once, and so does a preview's one component.
+    expect(attrs(module)).toContain('so_eager={true}');
     expect(attrs(module).length).toBeGreaterThan(3);
     expect(attrs(module)).toEqual(attrs(page));
   });
 
   it('shows a code component with its first axis as `variant`, as a placement passes it', () => {
     const { state, id } = withCodeComponent(starter());
-    const loud = preview(state, { definitionId: id, variants: { tone: 'loud' }, props: { title: 'Shout' } });
+    const loud = preview(state, { definitionId: id, variants: { tone: 'loud', size: 'big' }, props: { title: 'Shout' } });
     const module = loud.files.get(PREVIEW_MODULE)!;
     expect(module).toContain('variant="loud"');
+    // An axis the source reads by its own name gets it; one it does not read never lands in its other props.
+    expect(module).toContain('variant_size="big"');
+    expect(module).not.toContain('variant_tone=');
     expect(module).toContain('title={"Shout"}');
     expect(module).toContain('data-so-code="true"');
     expect(loud.files.get(defFile(state.components[id]))).toBe(state.components[id].source);
@@ -102,7 +113,10 @@ describe('isolated component preview files', () => {
     const items = (state.components[id].properties.items as { default: Array<Record<string, unknown>> }).default.map((it, i) => (i === 0 ? { ...it, icon: 'stethoscope' } : it));
     const projectIcons = generateProject(state, { instrument: true }).get(`${RUNTIME_DIR}/icons.js`)!;
     expect(projectIcons).not.toContain('"stethoscope"');
-    expect(preview(state, { definitionId: id, props: { items } }).files.get(`${RUNTIME_DIR}/icons.js`)).toContain('"stethoscope"');
+    const icons = preview(state, { definitionId: id, props: { items } }).files.get(`${RUNTIME_DIR}/icons.js`)!;
+    expect(icons).toContain('"stethoscope"');
+    // The icons the project uses are all still there.
+    for (const used of ['"compass"', '"pen-tool"', '"hammer"']) expect(projectIcons).toContain(used), expect(icons).toContain(used);
   });
 
   it('refuses what a placement could not hold', () => {
@@ -121,13 +135,35 @@ describe('isolated component preview files', () => {
     expect(error({ definitionId: id, props: { nope: 1 } })).toMatch(/no property "nope"/);
     expect(error({ definitionId: id, props: { heading: { $prop: 'heading' } } })).toMatch(/cannot be bound/);
     expect(error({ definitionId: id, props: { headingLevel: 'h9' } })).toMatch(/Heading level|h9/i);
+    state.components[id] = { ...state.components[id], tree: undefined };
+    expect(error({ definitionId: id })).toMatch(/nothing to show/);
+  });
+
+  it('gives a sample form’s new fields keys of their own, as inserting the form does', () => {
+    const state = starter();
+    const fields = [
+      { label: 'Department', type: 'text' },
+      { label: 'Department', type: 'text' }
+    ];
+    const module = preview(state, { componentId: 'contact.form', props: { fields } }).files.get(PREVIEW_MODULE)!;
+    const names = [...module.matchAll(/"name":"([^"]*)"/g)].map((m) => m[1]);
+    expect(names).toEqual(['department', 'department-2']);
+  });
+
+  it('records the site’s language for the preview’s page', () => {
+    const state = starter();
+    state.site.language = 'fr-CA';
+    expect(JSON.parse(preview(state, { componentId: 'content.media' }).files.get(PREVIEW_META)!)).toEqual({ lang: 'fr-CA' });
   });
 
   it('uses the project’s own copy of a catalogue component it already has', () => {
     const state = starter();
     const id = installComponent(state, 'content.media');
-    state.components[id] = { ...state.components[id], name: 'Our media' };
-    expect(preview(state, { componentId: 'content.media' })).toMatchObject({ definitionId: id, name: 'Our media' });
+    const def = state.components[id];
+    state.components[id] = { ...def, name: 'Our media', properties: { ...def.properties, heading: { ...def.properties.heading, default: 'Our own heading' } as never } };
+    const out = preview(state, { componentId: 'content.media' });
+    expect(out).toMatchObject({ definitionId: id, name: 'Our media' });
+    expect(out.files.get(PREVIEW_MODULE)).toContain('heading={"Our own heading"}');
   });
 });
 
@@ -150,7 +186,7 @@ describe('isolated previews stay out of the website', () => {
     expect(previewKeyOf(`${COMPONENT_PREVIEW_ROUTE}${key}/`)).toBe(key);
     expect(previewKeyOf(`${COMPONENT_PREVIEW_ROUTE}${key}/?x=1`)).toBe(key);
     expect(previewKeyOf(`${COMPONENT_PREVIEW_ROUTE}${key}`)).toBe(key);
-    for (const bad of [`${COMPONENT_PREVIEW_ROUTE}../${key}/`, `${COMPONENT_PREVIEW_ROUTE}${key}/x`, `${COMPONENT_PREVIEW_ROUTE}SHORT/`, '/about/', undefined]) expect(previewKeyOf(bad)).toBeNull();
+    for (const bad of [`${COMPONENT_PREVIEW_ROUTE}../${key}/`, `${COMPONENT_PREVIEW_ROUTE}${key}/x`, `${COMPONENT_PREVIEW_ROUTE}${key.toUpperCase()}/`, `${COMPONENT_PREVIEW_ROUTE}abc/`, '/about/', undefined]) expect(previewKeyOf(bad)).toBeNull();
   });
 });
 
@@ -163,8 +199,10 @@ describe('serving an isolated preview', () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'so-isolated-')));
     dirs.push(dir);
     mkdirSync(join(dir, 'src'), { recursive: true });
-    writeFileSync(join(dir, 'src/app.html'), '<!doctype html>\n<html lang="de-AT">\n</html>\n');
-    const made = preview(starter(), { componentId: 'content.media', variants: { layout: 'media-end' } });
+    writeFileSync(join(dir, 'src/app.html'), '<!doctype html>\n<html lang="en">\n</html>\n');
+    const state = starter();
+    state.site.language = 'de-AT';
+    const made = preview(state, { componentId: 'content.media', variants: { layout: 'media-end' } });
     const { key, path } = await writeComponentPreview(dir, made.files);
     const plugin = devPlugin(dir);
     let middleware: ((req: { url?: string; method?: string }, res: ReturnType<typeof response>, next: (e?: unknown) => void) => void) | null = null;
@@ -202,6 +240,10 @@ describe('serving an isolated preview', () => {
     expect(res.headers['cache-control']).toBe('no-store');
     expect(res.body).toContain('<!--transformed-->');
     expect(res.body).toContain('<html lang="de-AT">');
+    expect(res.body).toContain('<meta name="viewport" content="width=device-width, initial-scale=1" />');
+    const head = await request(path, 'HEAD');
+    if (head === 'next') throw new Error('passed on');
+    expect([head.statusCode, head.body, head.headers['content-type']]).toEqual([200, undefined, 'text/html; charset=utf-8']);
     expect(res.body).toContain(`<script type="module" src="/@id/virtual:siteorigin-component-preview/${key}.js"></script>`);
     // No site header, footer or page of the site around it.
     expect(res.body).not.toMatch(/<header|<footer|<main/);
@@ -238,7 +280,7 @@ describe('serving an isolated preview', () => {
     const at = (rel: string) => `${dir}/.siteorigin/cache/dev/isolated/${key}/${rel}`;
     expect(plugin.load(at(PREVIEW_MODULE))).toBe(made.files.get(PREVIEW_MODULE));
     // A reload stamp names the same, unchanging file; a stylesheet derived from it goes to the Svelte plugin.
-    expect(plugin.load(`${at(PREVIEW_MODULE)}?t=1700000000000`)).toBe(made.files.get(PREVIEW_MODULE));
+    for (const stamp of ['t=1700000000000', 'import', 'v=3f9a1c2e', 'import&t=1']) expect(plugin.load(`${at(PREVIEW_MODULE)}?${stamp}`), stamp).toBe(made.files.get(PREVIEW_MODULE));
     expect(plugin.load(`${at(PREVIEW_MODULE)}?svelte&type=style&lang.css`)).toBeNull();
     expect(plugin.load(`${at(PREVIEW_MODULE)}?raw`)).toBeNull();
     expect(plugin.load(`${dir}/.siteorigin/cache/dev/isolated/${key}/../${key}/${PREVIEW_MODULE}`)).toBeNull();
@@ -271,13 +313,90 @@ describe('serving an isolated preview', () => {
     symlinkSync(elsewhere, join(dir, '.siteorigin/cache/dev/isolated'));
     await expect(writeComponentPreview(dir, new Map([[PREVIEW_MODULE, 'x']]))).rejects.toThrow(/not inside the project/);
     expect(readdirSync(elsewhere)).toEqual([]);
+    writeFileSync(join(elsewhere, 'keep.txt'), 'theirs');
     await clearComponentPreviews(dir);
-    expect(existsSync(elsewhere)).toBe(true);
+    // The link goes; what it led to is never touched.
+    expect(existsSync(join(dir, '.siteorigin/cache/dev/isolated'))).toBe(false);
+    expect(readdirSync(elsewhere)).toEqual(['keep.txt']);
+  });
+
+  it('never writes or clears through a linked folder further up the cache', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'so-isolated-')));
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'so-elsewhere-')));
+    dirs.push(dir, elsewhere);
+    mkdirSync(join(elsewhere, 'dev/isolated/aaaaaaaaaaaaaaaa'), { recursive: true });
+    writeFileSync(join(elsewhere, 'dev/isolated/aaaaaaaaaaaaaaaa/keep.txt'), 'theirs');
+    mkdirSync(join(dir, '.siteorigin'), { recursive: true });
+    symlinkSync(elsewhere, join(dir, '.siteorigin/cache'));
+    await expect(writeComponentPreview(dir, new Map([[PREVIEW_MODULE, 'x']]))).rejects.toThrow(/not inside the project/);
+    await removeComponentPreview(dir, 'aaaaaaaaaaaaaaaa');
+    await clearComponentPreviews(dir);
+    expect(readFileSync(join(elsewhere, 'dev/isolated/aaaaaaaaaaaaaaaa/keep.txt'), 'utf8')).toBe('theirs');
+    expect(readdirSync(join(elsewhere, 'dev/isolated'))).toEqual(['aaaaaaaaaaaaaaaa']);
+  });
+
+  it('serves nothing through a preview folder that is a link, even to the editor’s other data in the project', async () => {
+    const { dir, plugin, request } = await served();
+    const linked = 'cccccccccccccccc';
+    mkdirSync(join(dir, '.siteorigin/sessions'), { recursive: true });
+    writeFileSync(join(dir, '.siteorigin/sessions/chat.json'), '{"private":true}');
+    symlinkSync(join(dir, '.siteorigin/sessions'), join(dir, `.siteorigin/cache/dev/isolated/${linked}`));
+    expect(() => plugin.load(`${dir}/.siteorigin/cache/dev/isolated/${linked}/chat.json`)).toThrow(/no longer available/);
+    expect(await request(`/.siteorigin/cache/dev/isolated/${linked}/chat.json`)).not.toBe('next');
+  });
+
+  it('answers a released preview’s modules as gone, and drops what the server kept of them', async () => {
+    const { dir, key, plugin, made } = await served();
+    const other = await writeComponentPreview(dir, made.files);
+    const at = (k: string, rel: string) => `${dir}/.siteorigin/cache/dev/isolated/${k}/${rel}`;
+    const invalidated: string[] = [];
+    const graph = {
+      idToModuleMap: new Map<string, { id: string }>([at(key, PREVIEW_MODULE), at(other.key, PREVIEW_MODULE), `\0virtual:siteorigin-component-preview/${key}.js`, `${dir}/src/routes/+page.svelte`].map((id) => [id, { id }])),
+      invalidateModule: (mod: unknown) => void invalidated.push((mod as { id: string }).id)
+    };
+    let middleware: ((req: { url?: string; method?: string }, res: ReturnType<typeof response>, next: () => void) => void) | null = null;
+    plugin.configureServer({ middlewares: { use: (fn) => (middleware = fn as never) }, transformIndexHtml: async (_url, html) => html, environments: { client: { moduleGraph: graph } } });
+    const ask = (url: string) =>
+      new Promise<number | 'next'>((resolve) => {
+        const res = response(() => resolve(res.statusCode));
+        middleware!({ url, method: 'GET' }, res, () => resolve('next'));
+      });
+    expect(await ask(`/.siteorigin/cache/dev/isolated/${key}/${PREVIEW_MODULE}`)).toBe('next');
+    await removeComponentPreview(dir, key);
+    expect(await ask(`/.siteorigin/cache/dev/isolated/${key}/${PREVIEW_MODULE}?t=1`)).toBe(404);
+    expect(await ask(`/@id/virtual:siteorigin-component-preview/${key}.js`)).toBe(404);
+    expect(await ask(`/@id/__x00__virtual:siteorigin-component-preview/${key}.js`)).toBe(404);
+    expect(invalidated).toEqual([]);
+    // Showing the next preview drops the released one's modules, and only those.
+    expect(await ask(other.path)).toBe(200);
+    expect(invalidated.sort()).toEqual([at(key, PREVIEW_MODULE), `\0virtual:siteorigin-component-preview/${key}.js`].sort());
+  });
+
+  it('resolves what a preview’s files import from the preview first, then from the project', async () => {
+    const { dir, key, plugin } = await served();
+    const at = (rel: string) => `${dir}/.siteorigin/cache/dev/isolated/${key}/${rel}`;
+    const importer = at(PREVIEW_MODULE);
+    // Relative imports and $lib (a project path once Vite has applied the alias) reach the preview's own copy.
+    expect(plugin.resolveId('../runtime/Icon.svelte', importer)).toBe(at('src/lib/siteorigin/runtime/Icon.svelte'));
+    expect(plugin.resolveId(`${dir}/src/lib/siteorigin/runtime/icons.js`, at('src/lib/siteorigin/custom/Note.svelte'))).toBe(at('src/lib/siteorigin/runtime/icons.js'));
+    expect(plugin.resolveId('../runtime/Icon.svelte?svelte&type=style&lang.css', importer)).toBe(`${at('src/lib/siteorigin/runtime/Icon.svelte')}?svelte&type=style&lang.css`);
+    // A file only the project has (a helper a code component imports) comes from the project.
+    mkdirSync(join(dir, 'src/lib/siteorigin/custom'), { recursive: true });
+    writeFileSync(join(dir, 'src/lib/siteorigin/custom/helper.js'), 'export const x = 1;');
+    expect(plugin.resolveId('./helper.js', at('src/lib/siteorigin/custom/Note.svelte'))).toBe(`${dir}/src/lib/siteorigin/custom/helper.js`);
+    // Neither has it, or it is outside src/: Vite resolves it as it would.
+    expect(plugin.resolveId('./missing.js', at('src/lib/siteorigin/custom/Note.svelte'))).toBeNull();
+    expect(plugin.resolveId('svelte', importer)).toBeNull();
+    expect(plugin.resolveId('../../../../../package.json', importer)).toBeNull();
+    // An import from anywhere else is not the preview's business.
+    expect(plugin.resolveId('../runtime/Icon.svelte', `${dir}/src/lib/siteorigin/preview/Preview.svelte`)).toBeNull();
   });
 
   it('keeps only well-formed preview requests', () => {
     expect(previewSpec({ definitionId: 'c1', variants: { tone: 'dark' }, props: { heading: 'Hi' } })).toEqual({ definitionId: 'c1', variants: { tone: 'dark' }, props: { heading: 'Hi' } });
     expect(previewSpec({ componentId: 'content.media' })).toEqual({ componentId: 'content.media' });
-    for (const bad of [null, 'c1', [], { definitionId: 3 }, { definitionId: '' }, { variants: { tone: 2 } }, { props: [] }, { props: { big: 'x'.repeat(300_000) } }]) expect(previewSpec(bad)).toBeNull();
+    expect(previewSpec({ definitionId: 'd'.repeat(200) })).not.toBeNull();
+    expect(previewSpec({ componentId: 'c'.repeat(200) })).not.toBeNull();
+    for (const bad of [null, 'c1', [], { definitionId: 3 }, { definitionId: '' }, { definitionId: 'd'.repeat(201) }, { componentId: 'c'.repeat(201) }, { variants: { tone: 2 } }, { props: [] }, { props: { big: 'x'.repeat(300_000) } }]) expect(previewSpec(bad)).toBeNull();
   });
 });

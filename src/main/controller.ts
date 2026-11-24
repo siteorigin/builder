@@ -796,6 +796,9 @@ export class Controller {
         if (this.prepareAbort === abort) this.prepareAbort = null;
       }
     }
+    // Previews an earlier run left behind (it crashed, or the app did not close) are never shown again: cleared while
+    // the project is this app's to write, ahead of the last look at the lock below, so nothing waits after it.
+    if (!session.readOnly && (await session.stillOwner())) await clearComponentPreviews(session.dir).catch(() => undefined);
     // Read the lock again right before running anything in the folder: a takeover the heartbeat has not seen yet would
     // otherwise get a live preview. A takeover found here has already queued a preview from a copy.
     if (!session.readOnly && !(await session.stillOwner())) return;
@@ -805,9 +808,6 @@ export class Controller {
     const stage = session.readOnly ? await this.stagePreview(session) : null;
     if (session.readOnly && !stage) return;
     // A preview that crashes is started again in the same folder only while that is still this app's to use; a copy is.
-    // Previews an earlier run left behind (it crashed, or the app did not close) are never shown again. The project's
-    // are cleared only while it is this app's to write; a copy is new.
-    if (!stage) await clearComponentPreviews(session.dir).catch(() => undefined);
     const dev: DevServer = new DevServer(stage ?? session.dir, async (): Promise<boolean> => this.dev === dev && (!!stage || (await session.stillOwner())));
     this.dev = dev;
     this.stage = stage;
@@ -896,13 +896,18 @@ export class Controller {
   }
 
   /** Stop the preview, then remove the private copy it ran from (again once its process has really gone). */
+  /** Remove the files of every component preview prepared for the preview server running now. */
+  private async dropComponentPreviews() {
+    const previews = [...this.componentPreviews];
+    this.componentPreviews.clear();
+    await Promise.all(previews.map(([key, root]) => removeComponentPreview(root, key).catch(() => undefined)));
+  }
+
   private async stopPreview() {
     const dev = this.dev;
     const stage = this.stage;
     // Prepared for this preview server alone: a frame showing one fails to load once the server is gone anyway.
-    const previews = [...this.componentPreviews];
-    this.componentPreviews.clear();
-    await Promise.all(previews.map(([key, root]) => removeComponentPreview(root, key).catch(() => undefined)));
+    await this.dropComponentPreviews();
     for (const w of this.stageWatchers) w.close();
     this.stageWatchers = [];
     if (this.stageTimer) clearTimeout(this.stageTimer);
@@ -911,6 +916,8 @@ export class Controller {
     await dev?.stop();
     if (this.dev === dev) this.dev = null;
     if (this.stage === stage) this.stage = null;
+    // One prepared while the server stopped is gone with it too.
+    await this.dropComponentPreviews();
     if (!stage) return;
     await this.stageSync;
     await removePreviewStage(stage).catch(() => undefined);
@@ -926,6 +933,9 @@ export class Controller {
     const session = this.session;
     const dev = this.dev;
     if (!session || !dev || dev.status.state !== 'ready') return { ok: false, message: 'The preview is not running.' };
+    // A project another app took over is previewed from a copy once its preview restarts: nothing is written into its
+    // folder meanwhile.
+    if (!this.stage && session.readOnly) return { ok: false, message: 'The preview is not running.' };
     const spec = previewSpec(request);
     if (!spec) return { ok: false, message: 'That is not a component preview request.' };
     const made = generateComponentPreview(session.state, spec);
@@ -937,8 +947,8 @@ export class Controller {
     } catch (e) {
       return { ok: false, message: `The component preview could not be prepared: ${(e as Error).message}` };
     }
-    // The preview server it was made for stopped meanwhile: its files go with it.
-    if (this.dev !== dev || this.session !== session || (this.stage ?? session.dir) !== root) {
+    // The preview server it was made for stopped (or started stopping) meanwhile: its files go with it.
+    if (this.dev !== dev || dev.status.state !== 'ready' || this.session !== session || (this.stage ?? session.dir) !== root) {
       await removeComponentPreview(root, written.key).catch(() => undefined);
       return { ok: false, message: 'The preview is not running.' };
     }

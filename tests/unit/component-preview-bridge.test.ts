@@ -66,9 +66,20 @@ describe('the bridge in an isolated component preview', () => {
     expect(report.issues.map((i) => i.kind)).not.toContain('heading-structure');
   }, 20000);
 
+  it.skipIf(!browserInstalled)('takes in every root, text with no box of its own, and wrappers inside wrappers', async () => {
+    const body = `<main id="main"><div style="display: contents" data-so-code="true"><span style="display: contents"><b style="display:block;margin-left:30px;width:100px;height:20px">A</b></span>Loose text</div><section style="margin:50px 0 0 200px;width:50px;height:10px"></section></main>`;
+    const { report } = await run(body, { key: 'abcdefabcdefabcdef', mounted: true });
+    const b = report.preview!.bounds!;
+    // The top is the bold block's, inside two wrappers; the loose text below it starts at the left edge; the section
+    // sets the right edge and the foot.
+    expect([b.x, b.y, Math.round(b.x + b.width)]).toEqual([0, 0, 250]);
+    expect(b.height).toBeGreaterThan(20 + 50 + 10);
+    expect(report.preview?.text).toBe('A Loose text');
+  }, 20000);
+
   it.skipIf(!browserInstalled)('says why a component did not mount', async () => {
     const { ready, report } = await run('<main id="main"></main>', { key: 'abcdefabcdefabcdef', mounted: false, error: 'boom' });
     expect(ready.preview).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null, text: '' });
-    expect(report.preview?.mounted).toBe(false);
+    expect(report.preview).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null, text: '' });
   }, 20000);
 });

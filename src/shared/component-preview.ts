@@ -29,6 +29,9 @@ export const ISOLATED_DIR = 'isolated';
  */
 export const PREVIEW_MODULE = 'src/lib/siteorigin/preview/Preview.svelte';
 
+/** What the preview's page needs to know of the site (its language), inside its key's folder. */
+export const PREVIEW_META = 'preview.json';
+
 /** The project stylesheets every preview loads from the project itself, as the site's layout does. */
 export const PREVIEW_PROJECT_STYLES = ['src/lib/siteorigin/styles/tokens.css', 'src/lib/siteorigin/styles/theme.css'];
 /** The component stylesheet, from the preview's own folder: it also has the rules of a catalogue component the project does not have. */

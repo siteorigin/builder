@@ -10,10 +10,6 @@ import { dirname, join } from 'node:path';
 import { COMPONENT_PREVIEW_ROUTE, ISOLATED_DIR, PREVIEW_KEY, type ComponentPreviewSpec } from '@shared/component-preview';
 import type { FileMap } from '@generator/index';
 import { safeJoin } from '../project/fsutil';
-import { realFileInside } from '../../runtime/policy';
-
-/** The folder holding every prepared preview of the preview server running from `root`. */
-export const isolatedRoot = (root: string) => join(root, '.siteorigin', 'cache', 'dev', ISOLATED_DIR);
 
 /** Large enough for a list of sample items with rich text, small enough that a preview never weighs on the editor. */
 const MAX_SPEC_CHARS = 200_000;
@@ -40,14 +36,29 @@ export function previewSpec(v: unknown): ComponentPreviewSpec | null {
 }
 
 /**
+ * The folder holding the prepared previews of the preview server running from `root`, by the project's real path,
+ * while every folder on the way to it (.siteorigin, cache, dev, isolated) is a real folder or not there yet; null
+ * when one is a link or a file. Nothing is ever written or removed through a link planted there.
+ */
+async function isolatedFolder(root: string): Promise<string | null> {
+  let at = await fs.realpath(root);
+  for (const segment of ['.siteorigin', 'cache', 'dev', ISOLATED_DIR]) {
+    at = join(at, segment);
+    const st = await fs.lstat(at).catch(() => null);
+    if (st && (st.isSymbolicLink() || !st.isDirectory())) return null;
+  }
+  return at;
+}
+
+/**
  * Write a preview's files under a new key, all at once: the folder only appears under its key once every file is
  * in it, so the preview server never serves part of one. Returns the key and the address the server shows it at.
  */
 export async function writeComponentPreview(root: string, files: FileMap): Promise<{ key: string; path: string }> {
-  const base = isolatedRoot(root);
-  await fs.mkdir(base, { recursive: true });
+  const base = await isolatedFolder(root);
   // The cache must really be the project's: a link planted there must not make the editor write elsewhere.
-  if (!realFileInside(root, base)) throw new Error('The editor’s preview cache is not inside the project folder.');
+  if (!base) throw new Error('The editor’s preview cache is not inside the project folder.');
+  await fs.mkdir(base, { recursive: true });
   const key = randomBytes(12).toString('hex');
   const draft = await fs.mkdtemp(join(base, '.draft-'));
   try {
@@ -64,18 +75,29 @@ export async function writeComponentPreview(root: string, files: FileMap): Promi
   return { key, path: `${COMPONENT_PREVIEW_ROUTE}${key}/` };
 }
 
-/** Remove one preview's files. */
+/** Remove one preview's files: its folder, or a link left in its place, never what a link leads to. */
 export async function removeComponentPreview(root: string, key: string): Promise<void> {
   if (!PREVIEW_KEY.test(key)) return;
-  await fs.rm(join(isolatedRoot(root), key), { recursive: true, force: true });
+  const base = await isolatedFolder(root).catch(() => null);
+  if (!base) return;
+  const folder = join(base, key);
+  const st = await fs.lstat(folder).catch(() => null);
+  if (!st) return;
+  await fs.rm(folder, { recursive: st.isDirectory() && !st.isSymbolicLink(), force: true });
 }
 
 /** Remove every preview's files: left by a preview server that stopped, or by an app that did not close. */
 export async function clearComponentPreviews(root: string): Promise<void> {
-  const base = isolatedRoot(root);
-  // Only the cache's own folder is cleared, never what a link there leads to.
+  let at = await fs.realpath(root).catch(() => null);
+  if (!at) return;
+  // Only the cache's own folder is cleared: a link on the way, or in its place, is never followed.
+  for (const segment of ['.siteorigin', 'cache', 'dev']) {
+    at = join(at, segment);
+    const st = await fs.lstat(at).catch(() => null);
+    if (!st || st.isSymbolicLink() || !st.isDirectory()) return;
+  }
+  const base = join(at, ISOLATED_DIR);
   const st = await fs.lstat(base).catch(() => null);
   if (!st) return;
-  if (st.isSymbolicLink() || !st.isDirectory()) await fs.rm(base, { force: true });
-  else await fs.rm(base, { recursive: true, force: true });
+  await fs.rm(base, { recursive: st.isDirectory() && !st.isSymbolicLink(), force: true });
 }

@@ -216,6 +216,12 @@ assert.equal(loud.text, 'Loud words');
 assert.ok(loud.bounds.height > plain.bounds.height * 2, `the loud variant is styled as loud (${loud.bounds.height} vs ${plain.bounds.height})`);
 assert.equal(missing.state, 'error');
 assert.match(missing.error, /no component "no-such-component"/);
+const BROKEN = `<script>\n\tlet { class: className = '' } = $props();\n\tthrow new Error('Boom while mounting');\n</script>\n\n<p class={className}>Never shown</p>\n`;
+const [{ definitionId: broken }] = await apply([{ type: 'component.createCode', name: 'Broken note', source: BROKEN }], 'Create a broken component');
+const [failed] = await preview([{ spec: { definitionId: broken }, width: 437 }]);
+assert.equal(failed.state, 'error', 'a component that throws while mounting is reported, not shown');
+assert.match(failed.error, /Boom while mounting/, 'with the reason it gave');
+await apply([{ type: 'component.remove', definitionId: broken }], 'Remove the broken component');
 
 step('a prepared preview never reaches the project source or its exports');
 const projectDir = await win.evaluate(async () => (await window.builder.project.snapshot()).dir);
@@ -248,6 +254,7 @@ for (const [root, what] of [[sourceOut, 'the source export'], [staticOut, 'the s
     }
   }
 }
+for (const out of [sourceOut, staticOut]) assert.equal(existsSync(join(out, '.siteorigin', 'cache', 'dev', 'isolated')), false, `no preview cache in ${out}`);
 await win.evaluate((key) => window.builder.project.releaseComponentPreview(key), prepared.key);
 assert.equal(existsSync(isolated), false, 'a released preview’s files are removed');
 

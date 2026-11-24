@@ -1,4 +1,4 @@
-import type { ComponentPreviewResult, ComponentPreviewSpec, ComponentPreviewStep } from '@shared/component-preview';
+import type { ComponentPreviewResult, ComponentPreviewSpec, ComponentPreviewStep, PreparedComponentPreview } from '@shared/component-preview';
 import { api, getState } from '../store';
 import { acceptMessage, newSessionId, postToFrame, type BridgeMessage } from './bridge';
 import { failedImages, missingImages, missingSections, staleImages } from './inspect-check';
@@ -77,6 +77,8 @@ async function measure(req: { requestId: string; pageId: string; width: number }
 /** How long a component preview gets to load, and then to settle and be measured (as a page's measurement does). */
 const PREVIEW_LOAD_MS = 12000;
 const PREVIEW_MEASURE_MS = 8000;
+/** How long the editor gets to prepare a preview's files. */
+const PREVIEW_PREPARE_MS = 15000;
 
 /** A hidden frame for measuring, `width` CSS pixels wide, kept out of sight, reach and the accessibility tree. */
 function hiddenFrame(sessionId: string, width: number): HTMLIFrameElement {
@@ -112,10 +114,12 @@ export function componentFrame(): ComponentFrame {
   const sessionId = newSessionId();
   let frame: HTMLIFrameElement | null = null;
   let origin: string | null = null;
-  /** The preview the frame shows, and what it was made from (request, project revision, preview server). */
+  /** The preview the frame shows, what it was made from (request, project revision, preview server) and its definition. */
   let shownKey: string | null = null;
   let shownFrom: string | null = null;
-  let definitionId: string | undefined;
+  let shownDefinition: string | undefined;
+  /** Settles a preparation still under way when the frame is removed. */
+  let abandon: (() => void) | null = null;
   /** The address of the preview loading or shown, which the bridge's messages must come from. */
   let address: string | null = null;
   let disposed = false;
@@ -149,7 +153,32 @@ export function componentFrame(): ComponentFrame {
     if (key) void api.project.releaseComponentPreview(key).catch(() => undefined);
   };
 
+  /** Prepare `spec`'s files, or null when that takes too long or the frame is removed meanwhile (a late key is released). */
+  const prepare = (spec: ComponentPreviewSpec) =>
+    new Promise<PreparedComponentPreview | null>((resolve) => {
+      let settled = false;
+      const finish = (v: PreparedComponentPreview | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        abandon = null;
+        resolve(v);
+      };
+      const timer = setTimeout(() => finish(null), PREVIEW_PREPARE_MS);
+      abandon = () => finish(null);
+      api.project.prepareComponentPreview(spec).then(
+        (prepared) => {
+          if (settled) {
+            if (prepared.ok) release(prepared.key);
+          } else finish(prepared);
+        },
+        (e: unknown) => finish({ ok: false, message: `The component preview could not be prepared: ${e instanceof Error ? e.message : String(e)}` })
+      );
+    });
+
   async function show(spec: ComponentPreviewSpec, width: number): Promise<ComponentPreviewResult> {
+    // A request names its own component: one that cannot be prepared is never reported as the one shown before.
+    let definitionId: string | undefined;
     const fail = (error: string): ComponentPreviewResult => ({ state: 'error', error, width, ...(definitionId ? { definitionId } : {}) });
     if (disposed) return fail('The component preview was closed.');
     const s = getState();
@@ -161,17 +190,19 @@ export function componentFrame(): ComponentFrame {
     }
     frame.style.width = `${width}px`;
     const from = JSON.stringify([spec, s.snapshot.revision, runtime.url]);
-    if (from !== shownFrom) {
-      const prepared = await api.project.prepareComponentPreview(spec);
+    if (from === shownFrom) definitionId = shownDefinition;
+    else {
+      const prepared = await prepare(spec);
       if (disposed) {
-        if (prepared.ok) release(prepared.key);
+        if (prepared?.ok) release(prepared.key);
         return fail('The component preview was closed.');
       }
+      if (!prepared) return fail('Timed out preparing the component preview.');
       if (!prepared.ok) return fail(prepared.message);
       const previous = shownKey;
       shownKey = prepared.key;
       shownFrom = null;
-      definitionId = prepared.definitionId;
+      definitionId = shownDefinition = prepared.definitionId;
       origin = new URL(runtime.url).origin;
       address = prepared.path;
       const target = frame;
@@ -216,6 +247,7 @@ export function componentFrame(): ComponentFrame {
       disposed = true;
       window.removeEventListener('message', onMsg);
       waiting?.done(null);
+      abandon?.();
       frame?.remove();
       frame = null;
       release(shownKey);

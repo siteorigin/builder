@@ -6,8 +6,8 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
-import { ISOLATED_DIR, PREVIEW_COMPONENT_STYLES, PREVIEW_KEY, PREVIEW_MODULE, PREVIEW_PROJECT_STYLES, previewKeyOf } from '@shared/component-preview';
+import { join, posix, relative, sep } from 'node:path';
+import { ISOLATED_DIR, PREVIEW_COMPONENT_STYLES, PREVIEW_KEY, PREVIEW_META, PREVIEW_MODULE, PREVIEW_PROJECT_STYLES, previewKeyOf } from '@shared/component-preview';
 import bridgeSource from './bridge.client.js?raw';
 import { realFileInside } from './policy';
 import { isolatedPreviewPath, plainModuleId, projectSrcPath, wholeModuleId } from './paths';
@@ -43,16 +43,6 @@ function editedOutside(dir: string, rel: string): boolean {
 
 /** The virtual module that starts a component preview, followed by its key and ".js". */
 const PREVIEW_ENTRY = 'virtual:siteorigin-component-preview/';
-
-/** The language the site's pages are in, from its app.html, so a preview wraps and hyphenates text as they do. */
-function siteLanguage(dir: string): string {
-  try {
-    const lang = /<html[^>]*\slang="([A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)"/.exec(readFileSync(join(dir, 'src', 'app.html'), 'utf8'))?.[1];
-    return lang ?? 'en';
-  } catch {
-    return 'en';
-  }
-}
 
 /** The page a component preview is shown on: nothing but the module that mounts it. */
 export function previewDocument(key: string, lang: string): string {
@@ -101,6 +91,32 @@ await import('virtual:siteorigin-bridge');
 }
 
 type Middleware = (req: { url?: string; method?: string }, res: { statusCode: number; setHeader(k: string, v: string): unknown; end(body?: string): unknown }, next: (e?: unknown) => void) => void;
+/** What the plugin uses of a Vite module graph: modules by ID, and dropping one's transformed code. */
+type ModuleGraph = { idToModuleMap?: Map<string, unknown>; invalidateModule(mod: unknown): void };
+type PreviewServer = {
+  middlewares: { use(fn: Middleware): unknown };
+  transformIndexHtml(url: string, html: string): Promise<string>;
+  environments?: Record<string, { moduleGraph?: ModuleGraph } | undefined>;
+  moduleGraph?: ModuleGraph;
+};
+
+/** The preview a request of its page's modules belongs to (a file of its folder, or its entry), by key; else null. */
+export function previewModuleKey(url: string | undefined): string | null {
+  const path = (url ?? '').split(/[?#]/)[0];
+  const m = /^\/\.siteorigin\/cache\/dev\/isolated\/([^/]+)\//.exec(path) ?? /^\/@id\/(?:__x00__)?virtual:siteorigin-component-preview\/([^/]+)\.js$/.exec(path);
+  return m && PREVIEW_KEY.test(m[1]) ? m[1] : null;
+}
+
+/** The language a preview's page is in: the site's, as its editor recorded it beside the preview. */
+function previewLanguage(meta: string | null): string {
+  try {
+    if (!meta || statSync(meta).size > 4096) return 'en';
+    const lang = (JSON.parse(readFileSync(meta, 'utf8')) as { lang?: unknown }).lang;
+    return typeof lang === 'string' && /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(lang) ? lang : 'en';
+  } catch {
+    return 'en';
+  }
+}
 
 export function devPlugin(dir: string) {
   const devRoot = join(dir, '.siteorigin', 'cache', 'dev');
@@ -114,22 +130,70 @@ export function devPlugin(dir: string) {
   } catch {
     // The folder is checked again when Vite starts; keep the name it was opened by.
   }
+  /**
+   * The real folder of a prepared preview, only while it and every folder between it and the project are real
+   * folders: a link anywhere on the way (to elsewhere, or to the editor's other data in the project) serves nothing.
+   */
+  const previewFolder = (key: string): string | null => {
+    if (!PREVIEW_KEY.test(key)) return null;
+    try {
+      const folder = join(realpathSync.native(dir), '.siteorigin', 'cache', 'dev', ISOLATED_DIR, key);
+      return realpathSync.native(join(isolatedRoot, key)) === folder ? folder : null;
+    } catch {
+      return null;
+    }
+  };
   /** A file of a prepared preview, only while it is really inside that preview's folder (no link out of it). */
   const previewFile = (key: string, rel: string): string | null => {
-    const folder = join(isolatedRoot, key);
+    const folder = previewFolder(key);
+    if (!folder || rel.split('/').some((seg) => seg === '..' || seg === '.' || seg === '')) return null;
     const file = join(folder, ...rel.split('/'));
-    return existsSync(file) && realFileInside(folder, file) && realFileInside(dir, file) ? file : null;
+    return existsSync(file) && realFileInside(folder, file) ? file : null;
   };
   /** The address the preview server gives a file of a prepared preview: from the project root, as Vite names it. */
   const previewUrl = (key: string) => (rel: string) => '/' + relative(dir, join(isolatedRoot, key, ...rel.split('/'))).split(sep).join('/');
+  /** Vite's module IDs use forward slashes on every platform. */
+  const viteId = (file: string) => file.split(sep).join('/');
   return {
     name: 'siteorigin-editor-instrumentation',
     enforce: 'pre' as const,
-    configureServer(server: { middlewares: { use(fn: Middleware): unknown }; transformIndexHtml(url: string, html: string): Promise<string> }) {
+    configureServer(server: PreviewServer) {
+      /**
+       * Drop what Vite keeps of the modules of previews that were released (their transformed code, sample values
+       * and all), so showing one preview after another does not keep every earlier one in memory.
+       */
+      const forgetReleased = () => {
+        const graphs = Object.values(server.environments ?? {}).flatMap((env) => (env?.moduleGraph ? [env.moduleGraph] : []));
+        if (!graphs.length && server.moduleGraph) graphs.push(server.moduleGraph);
+        const gone = new Map<string, boolean>();
+        const released = (key: string) => gone.get(key) ?? (gone.set(key, !previewFolder(key)), gone.get(key)!);
+        for (const graph of graphs) {
+          for (const [id, mod] of graph.idToModuleMap ?? []) {
+            const key = isolatedPreviewPath(names, id, ISOLATED_DIR, PREVIEW_KEY)?.key ?? previewModuleKey(`/@id/${id.replace(/^\0/, '')}`);
+            if (key && released(key)) {
+              try {
+                graph.invalidateModule(mod);
+              } catch {
+                // Only memory is at stake.
+              }
+            }
+          }
+        }
+      };
       // Registered ahead of Vite's own middleware and SvelteKit's pages: the address is never a page of the site.
       server.middlewares.use((req, res, next) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+        // A module of a released preview is gone, even where Vite still holds what it made of it.
+        const moduleKey = previewModuleKey(req.url);
+        if (moduleKey) {
+          if (previewFolder(moduleKey)) return next();
+          res.statusCode = 404;
+          res.setHeader('Cache-Control', 'no-store');
+          res.end();
+          return;
+        }
         const key = previewKeyOf(req.url);
-        if (!key || (req.method !== 'GET' && req.method !== 'HEAD')) return next();
+        if (!key) return next();
         res.setHeader('Cache-Control', 'no-store');
         if (!previewFile(key, PREVIEW_MODULE)) {
           res.statusCode = 404;
@@ -137,20 +201,34 @@ export function devPlugin(dir: string) {
           res.end('This component preview is no longer available.');
           return;
         }
-        server.transformIndexHtml(req.url!, previewDocument(key, siteLanguage(dir))).then((html) => {
+        forgetReleased();
+        server.transformIndexHtml(req.url!, previewDocument(key, previewLanguage(previewFile(key, PREVIEW_META)))).then((html) => {
           res.statusCode = 200;
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           res.end(req.method === 'HEAD' ? undefined : html);
         }, next);
       });
     },
-    resolveId(id: string) {
+    resolveId(id: string, importer?: string) {
       if (id === VIRTUAL) return '\0' + VIRTUAL + '.js';
       if (id.startsWith(PREVIEW_ENTRY)) {
         const key = id.slice(PREVIEW_ENTRY.length).replace(/\.js$/, '');
         return PREVIEW_KEY.test(key) ? '\0' + PREVIEW_ENTRY + key + '.js' : null;
       }
-      return null;
+      // An import made by a preview's own files (relative, or through $lib, which Vite has made a project path by
+      // now): what the preview has its own copy of comes from that copy, so its pieces fit each other; anything
+      // else, such as a helper a code component imports, from the project, as on a page.
+      const from = importer ? isolatedPreviewPath(names, importer, ISOLATED_DIR, PREVIEW_KEY) : null;
+      if (!from) return null;
+      const q = id.indexOf('?');
+      const path = q < 0 ? id : id.slice(0, q);
+      const query = q < 0 ? '' : id.slice(q);
+      const rel = path.startsWith('./') || path.startsWith('../') ? posix.normalize(posix.join(posix.dirname(from.rel), path)) : projectSrcPath(names, path);
+      if (!rel || !rel.startsWith('src/')) return null;
+      const own = previewFile(from.key, rel);
+      if (own) return viteId(own) + query;
+      const project = join(dir, ...rel.split('/'));
+      return existsSync(project) && realFileInside(dir, project) ? viteId(project) + query : null;
     },
     load(id: string) {
       if (id === '\0' + VIRTUAL + '.js') return bridgeSource;

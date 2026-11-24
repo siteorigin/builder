@@ -3,13 +3,16 @@
  * project or the theme catalogue, rendered on its own with chosen variants and sample property values. Editor-only:
  * the files are written to the dev cache and generateProject never makes any of them.
  */
-import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
-import { PREVIEW_COMPONENT_STYLES, PREVIEW_MODULE, type ComponentPreviewSpec } from '@shared/component-preview';
+import { PREVIEW_COMPONENT_STYLES, PREVIEW_META, PREVIEW_MODULE, type ComponentPreviewSpec } from '@shared/component-preview';
 import { axesOf } from '@shared/variants';
+import { siteLanguage } from '@shared/languages';
 import { catalogueComponent } from '@catalogue/index';
-import { installComponent } from '@engine/install';
+import { namesFormFields } from '@catalogue/foundation/form';
+import { installComponent, makeInstance } from '@engine/install';
 import { normalizeProp } from '@engine/values';
+import { formDefaults, settleFormKeys } from '@engine/form-keys';
 import { RUNTIME_DIR, STYLES_DIR, FONTS_DIR, generateIsolatedInstance, generateLibrary, type FileMap } from './index';
 import { iconsJs } from './runtime-files';
 
@@ -59,20 +62,21 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
     variants[axis] = option;
   }
 
-  // Sample values are checked and stored as an edit to a placement would store them; the rest keep their defaults.
-  const props: Record<string, unknown> = {};
+  // Made as inserting it on a page makes a placement: the defaults with list items of their own, then the sample
+  // values checked and stored as an edit stores them, and the fields of a new form given keys of their own.
+  const node: InstanceNode = { ...makeInstance(def, {}, variants), id: PREVIEW_NODE_ID };
   for (const [name, value] of Object.entries(spec.props ?? {})) {
     const schema = Object.hasOwn(def.properties, name) ? def.properties[name] : undefined;
     if (!schema) return { error: `"${def.name}" has no property "${name}".` };
     if (isBinding(value)) return { error: `${def.name} → ${schema.label}: a sample value cannot be bound to a property.` };
     try {
-      props[name] = normalizeProp(schema, value, shown, `${def.name} → ${schema.label}`);
+      node.props[name] = normalizeProp(schema, value, shown, `${def.name} → ${schema.label}`);
     } catch (e) {
       return { error: (e as Error).message };
     }
   }
+  if (Array.isArray(node.props.fields) && spec.props && 'fields' in spec.props && namesFormFields(def)) node.props.fields = settleFormKeys([], node.props.fields as ListItem[], new Set(), formDefaults(def));
 
-  const node: InstanceNode = { id: PREVIEW_NODE_ID, kind: 'instance', definitionId: def.id, props, ...(Object.keys(variants).length ? { variants } : {}) };
   const files: FileMap = new Map();
   for (const [path, content] of generateLibrary(shown, { instrument: true })) {
     // Tokens, base styles and fonts are the project's own; page styles belong to pages.
@@ -81,5 +85,7 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
   }
   files.set(`${RUNTIME_DIR}/icons.js`, iconsJs(shown, node.props));
   files.set(PREVIEW_MODULE, generateIsolatedInstance(shown, PREVIEW_MODULE, node, previewCtx(def.id)));
+  // What the preview's page needs to know of the site: the language its text is in.
+  files.set(PREVIEW_META, JSON.stringify({ lang: siteLanguage(shown.site) }));
   return { files, definitionId: def.id, name: def.name };
 }

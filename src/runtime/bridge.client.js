@@ -1177,12 +1177,12 @@ function previewState() {
   if (!p || typeof p !== 'object') return undefined;
   const out = { key: String(p.key || ''), mounted: p.mounted === true };
   if (p.error) out.error = String(p.error).slice(0, 2000);
+  // Everything the component puts on the page: its boxes, and text with no box of its own, looking through wrappers
+  // that take no box (a code component's, and any it has inside).
   let bounds = null;
-  const main = document.getElementById('main');
-  for (const el of main ? main.children : []) {
-    const r = rectOf(el);
-    if (!r) continue;
-    if (!bounds) bounds = { ...r };
+  const add = (r) => {
+    if (!r || (!r.width && !r.height)) return;
+    if (!bounds) bounds = { x: r.x, y: r.y, width: r.width, height: r.height };
     else {
       const x2 = Math.max(bounds.x + bounds.width, r.x + r.width);
       const y2 = Math.max(bounds.y + bounds.height, r.y + r.height);
@@ -1191,7 +1191,22 @@ function previewState() {
       bounds.width = x2 - bounds.x;
       bounds.height = y2 - bounds.y;
     }
-  }
+  };
+  const visit = (node) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        if (!child.textContent.trim()) continue;
+        const range = document.createRange();
+        range.selectNodeContents(child);
+        add(range.getBoundingClientRect());
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        if (getComputedStyle(child).display === 'contents') visit(child);
+        else add(child.getBoundingClientRect());
+      }
+    }
+  };
+  const main = document.getElementById('main');
+  if (main) visit(main);
   out.bounds = bounds;
   // What it says, as a reader would read it: evidence of the sample values without a picture of them.
   const text = main ? (main.innerText || '').trim().replace(/\s+/g, ' ') : '';
