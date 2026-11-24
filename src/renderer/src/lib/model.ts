@@ -251,44 +251,70 @@ export function keepPagesValid(state: ProjectState, pageId: string | null, defin
   };
 }
 
-/**
- * The IDs of the items a repeated element of a placed component shows, where they can be told: the placement's own
- * list (or the design's defaults while it has none), or for a News list on a page, the articles it lists there.
- * Undefined for an element outside every list, and wherever the items come from further out (a component placed in
- * another, a design edited everywhere, a list passed down from the placement around it).
- */
-function shownItemIds(state: ProjectState, ref: ElementRef, r: ReturnType<typeof resolveRef>): string[] | undefined {
-  if (ref.owner.kind === 'component' || ref.instancePath.length !== 1 || !r.def || !r.instance) return undefined;
-  const list = listPropFor(r.def, ref.nodeId);
-  const schema = list ? own(r.def.properties, list) : undefined;
-  if (!list || schema?.type !== 'list') return undefined;
-  if (schema.feed) {
-    // The rows a News list shows depend on the page it is shown on: a shared header's or footer's are not one list.
-    if (ref.owner.kind !== 'page') return undefined;
-    const limit = feedLimit(schema);
-    return articleRows(state, schema.feed, ref.owner.id, Number.isFinite(limit) ? limit : undefined).map((row) => row.id);
-  }
-  const stored = own(r.instance.props as Record<string, unknown>, list);
-  const items = stored === undefined ? schema.default : stored;
+/** The IDs of a list's items, or undefined when the value is not a list (one passed down from further out). */
+function idsOf(items: unknown): string[] | undefined {
   if (!Array.isArray(items)) return undefined;
   return items.flatMap((i) => (i && typeof i === 'object' && typeof (i as { id?: unknown }).id === 'string' ? [(i as { id: string }).id] : []));
 }
 
+/** The trees components are placed in: every page, the shared header and footer, and every component's design. */
+function allTrees(state: ProjectState): NodeTree[] {
+  const shell = [state.site.shell.header, state.site.shell.footer];
+  return [...Object.values(state.pages), ...shell, ...Object.values(state.components).map((d) => d.tree)].filter((t): t is NodeTree => !!t);
+}
+
+/**
+ * The IDs of the items a repeated element can be selected in, where they can be told. Through a placement: that
+ * placement's own list (or the design's defaults while it has none), or for a News list, the articles it lists where
+ * it is placed (a shared header or footer lists them for no page in particular). In a design edited everywhere, an
+ * element picked on the canvas is named by an item of the placement it was picked through, so there: the design's
+ * defaults and every placement's own items. Undefined for an element outside every list, and wherever the items come
+ * from further out (a component placed in another, a list passed down from the component around it).
+ */
+function selectableItemIds(state: ProjectState, ref: ElementRef, r: ReturnType<typeof resolveRef>): string[] | undefined {
+  const design = ref.owner.kind === 'component';
+  const def = design ? (ref.instancePath.length ? undefined : own(state.components, ref.owner.id)) : ref.instancePath.length === 1 ? r.def : undefined;
+  if (!def || (!design && !r.instance)) return undefined;
+  const list = listPropFor(def, ref.nodeId);
+  const schema = list ? own(def.properties, list) : undefined;
+  if (!list || schema?.type !== 'list') return undefined;
+  if (schema.feed) {
+    if (design) return undefined;
+    const limit = feedLimit(schema);
+    return articleRows(state, schema.feed, ref.owner.kind === 'page' ? ref.owner.id : undefined, Number.isFinite(limit) ? limit : undefined).map((row) => row.id);
+  }
+  const stored = (n: InstanceNode) => {
+    const v = own(n.props as Record<string, unknown>, list);
+    return v === undefined ? schema.default : v;
+  };
+  if (!design) return idsOf(stored(r.instance!));
+  const ids = new Set(idsOf(schema.default) ?? []);
+  for (const tree of allTrees(state))
+    for (const n of Object.values(tree.nodes)) {
+      if (n.kind !== 'instance' || n.definitionId !== def.id) continue;
+      const placed = idsOf(stored(n));
+      if (!placed) return undefined;
+      placed.forEach((id) => ids.add(id));
+    }
+  return [...ids];
+}
+
 /**
  * Whether a reference still names something the project has: its page, shared header or footer, or component, each
- * component on its path, its element, the part it names and, for an element of a placed component's list, its item.
- * An Undo, a Redo, the AI or the files changing on disk can take any of them away while it stays selected.
+ * component on its path, its element, the part it names and, for an element of a list, its item. An Undo, a Redo, the
+ * AI or the files changing on disk can take any of them away while it stays selected.
  */
 export function refExists(state: ProjectState, ref: ElementRef): boolean {
   const r = resolveRef(state, ref);
-  // A code component has no tree: its parts are the ones its contract declares.
-  if (!r.node) return !!r.instance && r.def?.kind === 'code' && !!ref.partId && own(r.def.parts, ref.partId)?.nodeId === ref.nodeId;
+  // A code component has no tree: its parts are the ones its contract declares, never one item of a list.
+  if (!r.node) return !!r.instance && r.def?.kind === 'code' && !!ref.partId && !ref.itemPath?.length && own(r.def.parts, ref.partId)?.nodeId === ref.nodeId;
   if (r.node.kind === 'instance' && !own(state.components, r.node.definitionId)) return false;
   // A part is named by the component it belongs to: the one placed, or the one edited everywhere.
   const partOf = ref.instancePath.length ? r.def : ref.owner.kind === 'component' ? own(state.components, ref.owner.id) : undefined;
   if (ref.partId && partOf && own(partOf.parts, ref.partId)?.nodeId !== ref.nodeId) return false;
+  // Every reader of an item path names the item by its last ID: the item of the innermost list around the element.
   const itemId = ref.itemPath?.[ref.itemPath.length - 1];
-  const items = itemId === undefined ? undefined : shownItemIds(state, ref, r);
+  const items = itemId === undefined ? undefined : selectableItemIds(state, ref, r);
   return !items || items.includes(itemId!);
 }
 

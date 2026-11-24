@@ -14,7 +14,7 @@ import { dropAt, moveIndex } from '../lib/reorder';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
-import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
+import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, showsInlineText, structuralTarget } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
@@ -733,10 +733,15 @@ export function Canvas() {
       if (!sameRef(getState().selection, ref) || getState().layerSet) setState({ selection: ref });
       void fn();
     };
+    // A menu left open while the project changed (the AI, the files on disk) never selects what has gone since.
+    const live = (target: ElementRef, fn: () => unknown) => () => {
+      const now = getState().snapshot?.state;
+      if (now && refExists(now, target)) void fn();
+    };
     const items = [
         { heading: name },
-        ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: () => setState({ selection: parent }) }] : []),
-        { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys('⌘J'), onSelect: () => askAiAbout(ref) },
+        ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: live(parent, () => setState({ selection: parent })) }] : []),
+        { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys('⌘J'), onSelect: live(ref, () => askAiAbout(ref)) },
         ...(t
           ? [
               ...(reorderable || !locked || create ? [{ separator: true }] : []),

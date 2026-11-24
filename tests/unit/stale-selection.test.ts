@@ -7,7 +7,9 @@ import { applyOperations } from '@engine/apply';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { keepViewValid, listPropFor, refExists } from '../../src/renderer/src/lib/model';
-import { chatContextFor, composerScope } from '../../src/renderer/src/lib/chatTarget';
+import { chatContextFor, composerScope, retryView } from '../../src/renderer/src/lib/chatTarget';
+import { continueContext } from '../../src/renderer/src/lib/result';
+import type { ChatContext } from '@shared/api';
 
 const page = (id: string): OwnerRef => ({ kind: 'page', id });
 const at = (owner: OwnerRef, nodeId: string, more: Partial<ElementRef> = {}): ElementRef => ({ owner, instancePath: [], nodeId, ...more });
@@ -32,17 +34,22 @@ describe('a selection the project no longer has is let go when the project chang
     const inserted = t.apply(t.s, [{ type: 'node.insert', owner: t.owner, parentId: null, index: 0, componentId: 'layout.section' }]);
     const sel = at(t.owner, inserted.results[0].nodeId as string);
     // Still there: nothing changes, and the selection is left as it is (so Layers keeps any layers picked with it).
-    expect(keepViewValid(inserted.state, view(sel, t.home))).toEqual({ pageId: t.home, definitionMode: null });
+    expect(keepViewValid(inserted.state, view(sel, t.home))).toStrictEqual({ pageId: t.home, definitionMode: null });
     // Undone: the snapshot before the insert. The selection goes in the same update.
     expect(refExists(t.s, sel)).toBe(false);
-    expect(keepViewValid(t.s, view(sel, t.home))).toEqual({ pageId: t.home, definitionMode: null, selection: null });
+    expect(keepViewValid(t.s, view(sel, t.home))).toStrictEqual({ pageId: t.home, definitionMode: null, selection: null });
     // Redo brings the section back; nothing selects it again.
-    expect(keepViewValid(inserted.state, view(null, t.home))).toEqual({ pageId: t.home, definitionMode: null });
+    expect(keepViewValid(inserted.state, view(null, t.home))).toStrictEqual({ pageId: t.home, definitionMode: null });
     // The AI composer never offers (or sends) the element that has gone, even before the editor lets it go.
     const scope = composerScope(t.s, view(sel, t.home));
     expect(scope).toMatchObject({ selection: null, selectionLabel: null });
     expect(chatContextFor(t.s, scope, { enabled, viewport: 1280 })).toMatchObject({ pageId: t.home, selection: null, selectionLabel: null });
     expect(composerScope(inserted.state, view(sel, t.home))).toMatchObject({ selection: sel, selectionLabel: 'Section' });
+    // A placement whose component has gone (a hand-edited document) is no target either.
+    const broken = structuredClone(inserted.state);
+    delete broken.components[(broken.pages[t.home].nodes[sel.nodeId] as InstanceNode).definitionId];
+    expect(refExists(broken, sel)).toBe(false);
+    expect(keepViewValid(broken, view(sel, t.home))).toHaveProperty('selection', null);
   });
 
   it('Undo of an element just inserted into a section clears it, and the section around it stays selectable', () => {
@@ -90,6 +97,34 @@ describe('a selection the project no longer has is let go when the project chang
     expect(defaults.length).toBeGreaterThan(0);
     expect(refExists(st, card(defaults[0].id))).toBe(true);
     expect(refExists(st, card('i_not_a_default'))).toBe(false);
+    // A list of its own that is empty shows none of the defaults.
+    inst.props.items = [];
+    expect(refExists(st, card(defaults[0].id))).toBe(false);
+    // A value that is not a list at all (a damaged document) says nothing about the items: the selection stays.
+    inst.props.items = null;
+    expect(refExists(st, card('i_not_a_default'))).toBe(true);
+  });
+
+  it('Undo of a list item inserted while editing everywhere clears a selection of it; a placement’s own items stay', () => {
+    const t = business();
+    const theme = (t.s.pages[t.home].nodes[t.placed('features.grid')] as InstanceNode).definitionId;
+    const forked = t.apply(t.s, [{ type: 'component.fork', definitionId: theme }]);
+    const defId = forked.results[0].definitionId as string;
+    const features = t.placed('features.grid', forked.state);
+    const def = forked.state.components[defId];
+    const added = t.apply(forked.state, [{ type: 'instance.listInsert', owner: t.owner, nodeId: features, prop: 'items', item: { title: 'Late openings' } }]);
+    const itemId = added.results[0].itemId as string;
+    // Picked on the canvas through the placement, the design's own title is named by the placement's item.
+    const title = (items: string[]): ElementRef => ({ owner: { kind: 'component', id: defId }, instancePath: [], nodeId: def.parts.cardTitle.nodeId, partId: 'cardTitle', itemPath: items });
+    const dm = { definitionId: defId, returnPageId: t.home };
+    expect(keepViewValid(added.state, view(title([itemId]), t.home, dm))).toStrictEqual({ pageId: t.home, definitionMode: dm });
+    expect(keepViewValid(forked.state, view(title([itemId]), t.home, dm))).toStrictEqual({ pageId: t.home, definitionMode: dm, selection: null });
+    // The placement's items that were there all along, and the design's own defaults, stay.
+    const placed = (forked.state.pages[t.home].nodes[features] as InstanceNode).props.items as Array<{ id: string }>;
+    const defaults = (def.properties.items as { default: Array<{ id: string }> }).default;
+    expect(refExists(forked.state, title([placed[0].id]))).toBe(true);
+    expect(refExists(forked.state, title([defaults[0].id]))).toBe(true);
+    expect(refExists(forked.state, title(['i_nowhere']))).toBe(false);
   });
 
   it('a News card goes when its article leaves the list, and stays while it is listed', () => {
@@ -102,13 +137,27 @@ describe('a selection the project no longer has is let go when the project chang
     const r = applyOperations(s, [{ type: 'node.insert', owner: page(home), componentId: 'content.news' }]);
     const news = r.results[0].nodeId as string;
     const def = r.state.components[(r.state.pages[home].nodes[news] as InstanceNode).definitionId];
-    // A text part of each card (its title, date or excerpt): inside the list's repeat.
-    const [partId, part] = Object.entries(def.parts).find(([, p]) => def.tree!.nodes[p.nodeId]?.kind === 'text' && !!listPropFor(def, p.nodeId))!;
-    const card: ElementRef = { owner: page(home), instancePath: [news], nodeId: part.nodeId, partId, itemPath: ['pg_spring'] };
+    // Each card's title, inside the list's repeat.
+    expect(listPropFor(def, def.parts.cardTitle.nodeId)).toBe('items');
+    const card: ElementRef = { owner: page(home), instancePath: [news], nodeId: def.parts.cardTitle.nodeId, partId: 'cardTitle', itemPath: ['pg_spring'] };
     expect(refExists(r.state, card)).toBe(true);
+    expect(refExists(r.state, { ...card, itemPath: ['pg_winter'] })).toBe(true);
     const hidden = applyOperations(r.state, [{ type: 'page.update', pageId: 'pg_spring', newsHidden: true }]).state;
     expect(refExists(hidden, card)).toBe(false);
     expect(refExists(hidden, { ...card, itemPath: ['pg_winter'] })).toBe(true);
+    // A list that shows one article shows the newest: the older one's card is not there to select.
+    const one = structuredClone(r.state);
+    (one.components[def.id].properties.items as { max?: number }).max = 1;
+    expect(refExists(one, card)).toBe(true);
+    expect(refExists(one, { ...card, itemPath: ['pg_winter'] })).toBe(false);
+    // In the shared footer, the list shows the same articles on every page.
+    const footer: OwnerRef = { kind: 'shell', id: 'footer' };
+    const inFooter = applyOperations(r.state, [{ type: 'node.insert', owner: footer, parentId: null, componentId: 'content.news' }]);
+    const footerCard: ElementRef = { ...card, owner: footer, instancePath: [inFooter.results[0].nodeId as string] };
+    expect(refExists(inFooter.state, footerCard)).toBe(true);
+    const hiddenThere = applyOperations(inFooter.state, [{ type: 'page.update', pageId: 'pg_spring', newsHidden: true }]).state;
+    expect(refExists(hiddenThere, footerCard)).toBe(false);
+    expect(refExists(hiddenThere, { ...footerCard, itemPath: ['pg_winter'] })).toBe(true);
   });
 
   it('a part the component no longer declares goes; a code component’s declared parts stay', () => {
@@ -125,6 +174,29 @@ describe('a selection the project no longer has is let go when the project chang
     const own: ElementRef = { owner: { kind: 'component', id: defId }, instancePath: [], nodeId: node, partId: 'heading' };
     expect(refExists(forked.state, own)).toBe(true);
     expect(refExists(unpart, own)).toBe(false);
+    // The part moved to another node (an Undo of that change, or its Redo): it no longer names this one.
+    const lead = Object.keys(forked.state.components[defId].tree!.nodes).find((id) => id !== node && forked.state.components[defId].tree!.nodes[id].kind === 'text')!;
+    const moved = t.apply(forked.state, [{ type: 'component.setPart', definitionId: defId, partId: 'heading', nodeId: lead, label: 'Heading' }]).state;
+    expect(refExists(moved, heading)).toBe(false);
+    expect(refExists(moved, own)).toBe(false);
+    expect(refExists(moved, { ...heading, nodeId: lead })).toBe(true);
+    expect(refExists(moved, { ...own, nodeId: lead })).toBe(true);
+
+    // Converted to code: the parts its contract keeps are still selectable, never one item of a list.
+    const features2 = t.placed('features.grid');
+    const coded = t.apply(t.s, [{ type: 'component.convertToCode', owner: t.owner, nodeId: features2, name: 'Features code' }]).state;
+    const codeDef = coded.components[(coded.pages[t.home].nodes[features2] as InstanceNode).definitionId];
+    expect(codeDef.kind).toBe('code');
+    const themeDef = t.s.components[(t.s.pages[t.home].nodes[features2] as InstanceNode).definitionId];
+    const codeHeading: ElementRef = { owner: t.owner, instancePath: [features2], nodeId: themeDef.parts.heading.nodeId, partId: 'heading' };
+    expect(codeDef.parts.heading?.nodeId).toBe(codeHeading.nodeId);
+    expect(refExists(coded, codeHeading)).toBe(true);
+    expect(refExists(coded, { ...codeHeading, nodeId: 'gone' })).toBe(false);
+    expect(refExists(coded, { ...codeHeading, partId: undefined })).toBe(false);
+    const cardOf = (st: ProjectState): ElementRef => ({ owner: t.owner, instancePath: [features2], nodeId: themeDef.parts.cardTitle.nodeId, partId: 'cardTitle', itemPath: [((st.pages[t.home].nodes[features2] as InstanceNode).props.items as Array<{ id: string }>)[0].id] });
+    expect(refExists(t.s, cardOf(t.s))).toBe(true);
+    // One card picked before the conversion, then the conversion redone: a code component has no card of its own.
+    expect(refExists(coded, cardOf(t.s))).toBe(false);
 
     // A code component has no tree to find its parts in: they are what it declares.
     const source = `<script>\n\tlet { title = 'Hello', so_o, class: className = '' } = $props();\n</script>\n\n<p class="sample {className}">{title}</p>\n`;
@@ -148,20 +220,24 @@ describe('a selection the project no longer has is let go when the project chang
     const root = forked.state.components[defId].tree!.rootIds[0];
     const dm = { definitionId: defId, returnPageId: t.about };
     const own = at({ kind: 'component', id: defId }, root);
-    expect(keepViewValid(forked.state, view(own, t.home, dm))).toEqual({ pageId: t.home, definitionMode: dm });
+    expect(keepViewValid(forked.state, view(own, t.home, dm))).toStrictEqual({ pageId: t.home, definitionMode: dm });
+    // While the copy is there, a page it returns to that has gone becomes Home and the mode stays.
+    expect(keepViewValid(forked.state, view(own, t.home, { ...dm, returnPageId: 'pg_gone' }))).toStrictEqual({ pageId: t.home, definitionMode: { ...dm, returnPageId: t.home } });
     // Undone: the copy has gone. The mode ends in the same update, on the page it returns to.
-    expect(keepViewValid(t.s, view(own, t.home, dm))).toEqual({ pageId: t.about, definitionMode: null, selection: null });
+    expect(keepViewValid(t.s, view(own, t.home, dm))).toStrictEqual({ pageId: t.about, definitionMode: null, selection: null });
     // The selection Edit everywhere starts with (through the placement, before the canvas makes it the design's own)
     // still resolves once the placement is the theme's again: it goes with the mode all the same.
     const through: ElementRef = { owner: t.owner, instancePath: [hero], nodeId: root };
     expect(refExists(t.s, through)).toBe(true);
-    expect(keepViewValid(t.s, view(through, t.home, dm))).toEqual({ pageId: t.about, definitionMode: null, selection: null });
+    expect(keepViewValid(t.s, view(through, t.home, dm))).toStrictEqual({ pageId: t.about, definitionMode: null, selection: null });
+    // Entered from Home itself (as the dialog does), it stays on Home.
+    expect(keepViewValid(t.s, view(through, t.home, { ...dm, returnPageId: t.home }))).toStrictEqual({ pageId: t.home, definitionMode: null, selection: null });
     // Nothing selected: nothing to let go.
-    expect(keepViewValid(t.s, view(null, t.home, dm))).toEqual({ pageId: t.about, definitionMode: null });
+    expect(keepViewValid(t.s, view(null, t.home, dm))).toStrictEqual({ pageId: t.about, definitionMode: null });
     // The page it returns to has gone too: Home.
-    expect(keepViewValid(t.s, view(own, t.about, { ...dm, returnPageId: 'pg_gone' }))).toEqual({ pageId: t.home, definitionMode: null, selection: null });
+    expect(keepViewValid(t.s, view(own, t.about, { ...dm, returnPageId: 'pg_gone' }))).toStrictEqual({ pageId: t.home, definitionMode: null, selection: null });
     // Redo brings the copy back; the mode stays closed.
-    expect(keepViewValid(forked.state, view(null, t.about, null))).toEqual({ pageId: t.about, definitionMode: null });
+    expect(keepViewValid(forked.state, view(null, t.about, null))).toStrictEqual({ pageId: t.about, definitionMode: null });
   });
 
   it('a node of the design edited everywhere that an Undo took away goes, and the mode stays', () => {
@@ -188,6 +264,22 @@ describe('a selection the project no longer has is let go when the project chang
     const inHeader = at({ kind: 'shell', id: 'header' }, header.rootIds[0]);
     expect(keepViewValid(t.s, view(inHeader, t.home))).not.toHaveProperty('selection');
     expect(refExists(t.s, at({ kind: 'shell', id: 'header' }, 'n_gone'))).toBe(false);
+  });
+
+  it('a request read back from disk is never retried or continued for an item or element that has gone', () => {
+    const t = business();
+    const features = t.placed('features.grid');
+    const def = t.s.components[(t.s.pages[t.home].nodes[features] as InstanceNode).definitionId];
+    const added = t.apply(t.s, [{ type: 'instance.listInsert', owner: t.owner, nodeId: features, prop: 'items', item: { title: 'Late openings' } }]);
+    const card: ElementRef = { owner: t.owner, instancePath: [features], nodeId: def.parts.cardTitle.nodeId, partId: 'cardTitle', itemPath: [added.results[0].itemId as string] };
+    const ctx: ChatContext = { pageId: t.home, pageTitle: 'Home', selection: card, selectionLabel: 'Card title', viewport: 1280 };
+    const user = { id: 'u', role: 'user' as const, text: 'Continue', time: '', context: ctx };
+    expect(continueContext(user, added.state, 1280)).toEqual({ ctx });
+    expect(continueContext(user, t.s, 1280)).toEqual({ error: 'Card title is no longer in the site. Choose what to change, then send "Continue".' });
+    expect(retryView(t.s, ctx, { pageId: t.home, definitionMode: null })).toMatchObject({ pageId: t.home, selection: null, missing: 'Card title' });
+    // A selection saved damaged (no instance path) is no target: named as missing, never thrown on.
+    const damaged = { ...ctx, selection: { owner: t.owner, nodeId: 'n_x' } as unknown as ElementRef, selectionLabel: 'Section' };
+    expect(retryView(t.s, damaged, { pageId: t.home, definitionMode: null })).toMatchObject({ pageId: t.home, definitionMode: null, selection: null, missing: 'Section' });
   });
 });
 
