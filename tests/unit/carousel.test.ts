@@ -85,6 +85,7 @@ describe('where a carousel is', () => {
     expect(g.status(g.view(at(0)))).toBe('Slide 1 of 4');
     expect(g.step(at(0), 1)).toBeCloseTo(314.7);
     expect(g.status(g.view(at(314.7)))).toBe('Slide 2 of 4');
+    expect(g.step(at(314.7), -1)).toBe(0);
     const last = at(at(0).max);
     expect(g.status(g.view(last))).toBe('Slide 4 of 4');
     expect(g.view(last).forward).toBe(false);
@@ -99,7 +100,20 @@ describe('where a carousel is', () => {
     expect(g.view(laidOut(5, 384, 24, 1200, 815.4))).toMatchObject({ forward: false, last: 4 });
   });
 
+  it('stops at each slide’s own start when the slides differ in width', () => {
+    // 600px showing slides 300, 500, 200, 400 and 300 wide with 20px between them: they start at 0, 320, 840, 1060, 1480.
+    const widths = [300, 500, 200, 400, 300];
+    const slides = widths.map((size, i) => ({ start: widths.slice(0, i).reduce((a, w) => a + w + 20, 0), size }));
+    const m = (at: number) => ({ rtl: false, at, size: 600, max: 1780 - 600, slides });
+    expect(g.step(m(0), 1)).toBe(320);
+    expect(g.step(m(320), 1)).toBe(840);
+    expect(g.step(m(840), -1)).toBe(320);
+    expect(g.status(g.view(m(320)))).toBe('Slide 2 of 5');
+    expect(g.status(g.view(m(840)))).toBe('Slides 3–4 of 5');
+  });
+
   it('jumps to the start and the end', () => {
+    expect(g.step(laidOut(5, 384, 24, 1200, 0), -Infinity)).toBeNull();
     expect(g.step(laidOut(5, 384, 24, 1200, 408), -Infinity)).toBe(0);
     expect(g.step(laidOut(5, 384, 24, 1200, 408), Infinity)).toBe(816);
     expect(g.step(laidOut(5, 384, 24, 1200, 816), Infinity)).toBeNull();
@@ -117,8 +131,10 @@ describe('where a carousel is', () => {
   });
 
   it('counts the slide that shows most when none shows by half, as one wider than the list', () => {
-    const wide = { rtl: false, at: 300, size: 400, max: 1600, slides: [{ start: 0, size: 1000 }, { start: 1000, size: 1000 }] };
-    expect(g.view(wide)).toMatchObject({ first: 0, last: 0 });
+    const wide = (at: number) => ({ rtl: false, at, size: 400, max: 1600, slides: [{ start: 0, size: 1000 }, { start: 1000, size: 1000 }] });
+    expect(g.view(wide(300))).toMatchObject({ first: 0, last: 0 });
+    // 50px of the first and 350px of the second: neither half shows, the second shows most.
+    expect(g.view(wide(950))).toMatchObject({ first: 1, last: 1 });
   });
 
   /** A list measured on the page: its box and scroll, and its slides' boxes, as the browser reports them. */
@@ -134,19 +150,28 @@ describe('where a carousel is', () => {
       clientWidth: 600,
       scrollWidth: 640,
       scrollLeft,
+      offsetWidth: 604,
       getBoundingClientRect: () => ({ left: 100, right: 704, width: 604 }),
       children: [{ getBoundingClientRect: () => box(0) }, { getBoundingClientRect: () => box(1) }, { getBoundingClientRect: () => box(2) }, { getBoundingClientRect: () => box(3, 0) }]
     };
   };
 
+  it('measures a list drawn at half its size as it is laid out', () => {
+    vi.stubGlobal('getComputedStyle', () => ({ direction: 'ltr' }));
+    // Laid out 600px wide with three 200px slides 20px apart, scrolled 100px, and drawn at half that size at x 50.
+    const half = (x: number, w: number) => ({ getBoundingClientRect: () => ({ left: x, right: x + w, width: w }) });
+    const list = { clientLeft: 0, clientWidth: 600, scrollWidth: 640, scrollLeft: 100, offsetWidth: 600, getBoundingClientRect: () => ({ left: 50, right: 350, width: 300 }), children: [half(0, 100), half(110, 100), half(220, 100)] };
+    expect(g.measure(list)).toEqual({ rtl: false, at: 100, size: 600, max: 40, slides: [{ start: 0, size: 200 }, { start: 220, size: 200 }, { start: 440, size: 200 }] });
+  });
+
   it('measures from the side a list starts on, left to right or right to left', () => {
     for (const [direction, scrollLeft] of [
-      ['ltr', 40],
-      ['rtl', -40]
+      ['ltr', 23],
+      ['rtl', -23]
     ] as const) {
       const m = g.measure(fakeList(direction, scrollLeft));
       expect(m.rtl, direction).toBe(direction === 'rtl');
-      expect(m.at, direction).toBe(40);
+      expect(m.at, direction).toBe(23);
       expect(m.max, direction).toBe(40);
       expect(m.size, direction).toBe(600);
       // A slide with no width is not counted.
@@ -184,11 +209,19 @@ describe('the carousel helper', () => {
     expect(CAROUSEL_SVELTE).toMatch(/aria-disabled=\{!shown\.forward\}/);
   });
 
-  it('prints every slide in a stack, without its buttons', () => {
+  it('prints every slide in a stack, without its buttons, unless the design hides the list', () => {
     const print = CAROUSEL_SVELTE.slice(CAROUSEL_SVELTE.indexOf('@media print'));
-    expect(print).toMatch(/\.so-carousel__list \{[^}]*display: grid !important;[^}]*overflow: visible !important;/);
-    expect(print).toMatch(/\.so-carousel__list > :global\(\*\) \{\s*width: auto !important;/);
+    expect(print).toMatch(/:global\(:where\(\.so-carousel__list\)\) \{[^}]*display: grid;[^}]*overflow: visible;/);
+    expect(print).toMatch(/:global\(:where\(\.so-carousel__list\) > \*\) \{\s*width: auto !important;/);
     expect(print).toMatch(/\.so-carousel__controls \{\s*display: none !important;/);
+  });
+
+  it('gives way to whatever the design sets on its list and slides', () => {
+    const css = compile(CAROUSEL_SVELTE, { filename: 'Carousel.svelte', generate: 'client', runes: true }).css!.code;
+    // Weightless rules: a single class of the design's (hiding the list, its overflow, a slide's width) wins.
+    expect(css).toMatch(/:where\(\.so-carousel__list\) \{[^}]*display: flex;[^}]*scroll-snap-type: x mandatory;/);
+    expect(css).toMatch(/:where\(\.so-carousel__list\) > \* \{[^}]*flex: none;[^}]*scroll-snap-align: start;/);
+    expect(css).not.toMatch(/\.so-carousel__list\.svelte-[a-z0-9]+ \{/);
   });
 });
 
@@ -278,7 +311,13 @@ describe('what may be a carousel', () => {
     expect(isCarouselTrack(track({ tag: { $prop: 'tag' } }))).toBe(false);
     expect(isCarouselTrack(track({ link: { type: 'url', target: 'https://example.com' } }))).toBe(false);
     expect(isCarouselTrack(track({ link: { type: 'none', target: '' } }))).toBe(true);
+    expect(isCarouselTrack(track({ link: { type: 'page', target: 'pg_about' } }))).toBe(false);
+    expect(isCarouselTrack(track({ link: { $prop: 'link' } }))).toBe(false);
+    expect(isCarouselTrack(track({ action: 'image' }))).toBe(false);
+    // An action that makes no link leaves it a list.
+    expect(isCarouselTrack(track({ action: 'none' }))).toBe(true);
     expect(isCarouselTrack(track({ carousel: undefined }))).toBe(false);
+    expect(isCarouselTrack({ id: 'x', kind: 'text', tag: 'p', text: 'Hi', carousel: true } as never)).toBe(false);
   });
 
   /** The project's own copy of the Carousel, with its list changed by `change`. */
@@ -299,6 +338,10 @@ describe('what may be a carousel', () => {
     expect(div[0]).toMatchObject({ severity: 'error', nodeId: 'track' });
     expect(div[0].message).toMatch(/“Slides” is marked as a carousel, which only a bulleted list \(ul\) that is not itself a link can be/);
     expect(carouselErrors(ownCopy((t) => ((t.nodes.track as ElementNode).link = { type: 'url', target: 'https://example.com' })))).toHaveLength(1);
+    expect(carouselErrors(ownCopy((t) => ((t.nodes.track as ElementNode).tag = { $prop: 'headingLevel' } as never)))).toHaveLength(1);
+    expect(carouselErrors(ownCopy((t) => ((t.nodes.track as { carousel: unknown }).carousel = 'yes')))).toHaveLength(1);
+    const text = carouselErrors(ownCopy((t) => ((t.nodes.caption as { carousel?: boolean }).carousel = true)));
+    expect(text.map((d) => d.nodeId)).toEqual(['caption']);
   });
 
   it('counts as a control inside a card, so a card around it is reported', () => {

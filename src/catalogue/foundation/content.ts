@@ -309,7 +309,8 @@ export const carousel = managed({
             // A slide with a destination is one link around its picture and caption.
             b.el('slide-card', 'div', { name: 'Slide card', link: item('link'), styles: { layout: 'stack' } }, [
               b.el('figure', 'figure', { name: 'Figure', styles: { layout: 'stack', gap: tok('space.sm') } }, [
-                b.image('image', { $item: 'image' }, { name: 'Image', styles: { aspectRatio: '4/3', radius: tok('radius.md'), objectFit: 'cover' } }),
+                // A decorative or missing picture still says “Slide”, so a slide that links somewhere is never unnamed.
+                b.image('image', { $item: 'image' }, { name: 'Image', fallbackAlt: 'Slide', styles: { aspectRatio: '4/3', radius: tok('radius.md'), objectFit: 'cover' } }),
                 b.text('caption', 'figcaption', { $item: 'caption' }, { name: 'Caption', when: { $item: 'caption' }, styles: { textStyle: tok('text.small'), ...mutedStyles } })
               ])
             ])

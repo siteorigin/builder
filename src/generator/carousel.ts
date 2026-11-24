@@ -13,19 +13,21 @@ export const CAROUSEL_JS = String.raw`/**
 
 /**
  * The list as it is laid out now: where each slide starts and how wide it is, how far the list has scrolled (at),
- * how much of it shows (size) and how far it can scroll (max).
+ * how much of it shows (size) and how far it can scroll (max), all in the list's own units, as it scrolls.
  */
 export function measure(list) {
 	const rtl = getComputedStyle(list).direction === 'rtl';
 	const box = list.getBoundingClientRect();
-	const left = box.left + list.clientLeft;
-	const right = left + list.clientWidth;
+	// A list drawn larger or smaller than it is laid out (a scale on it or around it) is measured as it is laid out.
+	const k = (list.offsetWidth ? box.width / list.offsetWidth : 1) || 1;
+	const left = box.left + list.clientLeft * k;
+	const right = left + list.clientWidth * k;
 	// A right-to-left list scrolls to negative positions.
 	const at = Math.abs(list.scrollLeft);
 	const slides = [];
 	for (const el of list.children) {
 		const r = el.getBoundingClientRect();
-		if (r.width > 0) slides.push({ start: (rtl ? right - r.right : r.left - left) + at, size: r.width });
+		if (r.width > 0) slides.push({ start: (rtl ? right - r.right : r.left - left) / k + at, size: r.width / k });
 	}
 	return { rtl, at, size: list.clientWidth, max: Math.max(0, list.scrollWidth - list.clientWidth), slides };
 }
@@ -103,11 +105,16 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 	let ready = $state(false);
 	let frame = 0;
 	let settle = 0;
+	// Where the step under way is going, so a second press before it arrives goes on from there.
+	let aim = null;
 
 	function update() {
 		frame = 0;
 		if (!list) return;
-		shown = view(measure(list));
+		const m = measure(list);
+		// A step that has arrived is over: the next one goes on from where the list is.
+		if (aim !== null && Math.abs(m.at - aim) <= 1) aim = null;
+		shown = view(m);
 		// The count changes once the list comes to rest, so a screen reader hears where it stopped, not each slide passed.
 		if (!settle) said = status(shown);
 	}
@@ -121,6 +128,7 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 		clearTimeout(settle);
 		settle = setTimeout(() => {
 			settle = 0;
+			aim = null;
 			schedule();
 		}, 150);
 	}
@@ -128,11 +136,13 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 	function go(dir) {
 		if (!list) return;
 		const m = measure(list);
-		const to = step(m, dir);
+		const to = step(aim === null ? m : { ...m, at: aim }, dir);
 		if (to === null) return;
 		// Asked at each step, so a change of the setting applies at once.
 		const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 		list.scrollTo({ left: m.rtl ? -to : to, behavior: reduce ? 'instant' : 'smooth' });
+		aim = reduce ? null : to;
+		if (aim !== null) scrolled();
 	}
 
 	// The arrow keys on the list itself; on a link inside it they keep doing what they do there.
@@ -160,11 +170,14 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 		});
 		watch();
 		slides.observe(el, { childList: true });
+		// A new width can change the space between slides without changing any of their sizes.
+		window.addEventListener('resize', schedule);
 		ready = true;
 		update();
 		return () => {
 			sizes.disconnect();
 			slides.disconnect();
+			window.removeEventListener('resize', schedule);
 			cancelAnimationFrame(frame);
 			clearTimeout(settle);
 			frame = 0;
@@ -210,9 +223,9 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 		min-width: 0;
 		max-width: 100%;
 	}
-	/* One row that scrolls sideways and stops at the start of each slide, with room above and below it for focus
-	   rings, which a scrolling box would otherwise cut off. */
-	.so-carousel__list {
+	/* One row that scrolls sideways and stops at the start of each slide. Weightless, so whatever the design sets on
+	   the list or its slides (hiding them, their overflow) wins. */
+	:global(:where(.so-carousel__list)) {
 		display: flex;
 		min-width: 0;
 		max-width: 100%;
@@ -220,10 +233,8 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 		overflow-y: hidden;
 		overscroll-behavior-x: contain;
 		scroll-snap-type: x mandatory;
-		padding-block: 0.375rem;
-		margin-block: -0.375rem;
 	}
-	.so-carousel__list > :global(*) {
+	:global(:where(.so-carousel__list) > *) {
 		flex: none;
 		min-width: 0;
 		scroll-snap-align: start;
@@ -261,17 +272,16 @@ export const CAROUSEL_SVELTE = String.raw`<script>
 	.so-carousel__step:dir(rtl) svg {
 		transform: scaleX(-1);
 	}
-	/* Printed, every slide shows, one below the other, and the buttons, which only work on screen, are left out. */
+	/* Printed, every slide shows, one below the other, and the buttons, which only work on screen, are left out. A
+	   list the design hides stays hidden; the slides' widths for each screen give way. */
 	@media print {
-		.so-carousel__list {
-			display: grid !important;
+		:global(:where(.so-carousel__list)) {
+			display: grid;
 			gap: 1rem;
-			overflow: visible !important;
+			overflow: visible;
 			scroll-snap-type: none;
-			padding: 0;
-			margin: 0;
 		}
-		.so-carousel__list > :global(*) {
+		:global(:where(.so-carousel__list) > *) {
 			width: auto !important;
 		}
 		.so-carousel__controls {

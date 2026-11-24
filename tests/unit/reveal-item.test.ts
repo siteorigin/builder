@@ -94,14 +94,14 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
   const inFrame = <T>(code: string) => page.evaluate<T>(`(() => { const doc = frames[0].document; ${code} })()`);
   /** Reveal an item, as the editor asks for it: what the FAQ's repeat renders for each item, and where the repeat sits. */
   const FAQ_NODES = ['item', 'summary', 'question', 'answer', 'item-divider'];
-  const reveal = (items: string | null, ctx = 'page:p|faq', opts: { text?: string; textNodes?: string[]; nodes?: string[]; within?: string[]; depth?: number; also?: Record<string, number>; restore?: string[] } = {}) =>
+  const reveal = (items: string | null, ctx = 'page:p|faq', opts: { list?: string; text?: string; textNodes?: string[]; nodes?: string[]; within?: string[]; depth?: number; also?: Record<string, number>; restore?: string[] } = {}) =>
     send('reveal', {
       target:
         items === null
           ? null
           : {
               ctx,
-              list: 'items',
+              list: opts.list ?? 'items',
               items,
               nodes: opts.nodes ?? ['item', 'item-divider'],
               within: { ...Object.fromEntries((opts.within ?? FAQ_NODES).map((n) => [n, opts.depth ?? 0])), ...opts.also },
@@ -352,10 +352,11 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
   describe('a slide of a carousel', () => {
     const slide = (id: string) => `doc.querySelector('li[data-so-ctx="page:p|car"][data-so-items="${id}"]')`;
     const track = `doc.querySelector('ul.track')`;
-    const revealSlide = (id: string | null, text?: string) => reveal(id, 'page:p|car', { nodes: ['slide'], within: ['slide', 'caption'], ...(text === undefined ? {} : { text, textNodes: ['caption'] }) });
-    /** Where the list is scrolled to, whether the slide shows whole inside it and in the frame, and the last outline. */
+    const revealSlide = (id: string | null, text?: string) =>
+      reveal(id, 'page:p|car', { list: 'slides', nodes: ['slide'], within: ['slide', 'caption'], ...(text === undefined ? {} : { text, textNodes: ['caption'] }) });
+    /** Where the list is scrolled to, whether the slide shows whole inside it and in the frame, and the last outlines. */
     const where = (id: string) =>
-      inFrame<{ scrollLeft: number; inList: boolean; inFrame: boolean; outline: unknown; box: unknown }>(`
+      inFrame<{ scrollLeft: number; inList: boolean; inFrame: boolean; outlines: unknown[]; box: { x: number; y: number; width: number; height: number } }>(`
         const r = ${slide(id)}.getBoundingClientRect();
         const t = ${track}.getBoundingClientRect();
         const rects = window.replies.filter((m) => m.type === 'rects');
@@ -363,21 +364,25 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
           scrollLeft: ${track}.scrollLeft,
           inList: r.left >= t.left - 1 && r.right <= t.right + 1,
           inFrame: r.top >= 0 && r.bottom <= frames[0].innerHeight,
-          outline: rects[rects.length - 1].payload.revealed[0],
+          outlines: rects[rects.length - 1].payload.revealed,
           box: { x: r.left, y: r.top, width: r.width, height: r.height }
         };
       `);
-
-    it('scrolls the list sideways to the slide, and the page down to the list, without taking focus', async () => {
+    const startOver = async () => {
       await inFrame(`frames[0].scrollTo(0, 0); ${track}.scrollLeft = 0;`);
       await settle();
+    };
+
+    it('scrolls the list sideways to the slide, and the page down to the list, without taking focus', async () => {
+      await startOver();
       await revealSlide('s5');
       const w = await where('s5');
       expect(w.scrollLeft).toBeGreaterThan(0);
       expect(w.inList).toBe(true);
       expect(w.inFrame).toBe(true);
-      expect(w.outline).toEqual(w.box);
+      expect(w.outlines).toEqual([w.box]);
       const s = await state();
+      expect(s.scrollY).toBeGreaterThan(0);
       expect(s.focused).toBe('field');
       // A slide that already shows leaves the list where it is; one that does not is brought in sideways alone,
       // with the page left where it is.
@@ -392,12 +397,17 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
     it('moves the outline with the list as it scrolls', async () => {
       await revealSlide('s2');
       expect((await where('s2')).box).toMatchObject({ x: 270 });
-      // To where the list stops for the second slide.
+      // To where the list stops for the second slide, and back.
       await inFrame(`${track}.scrollLeft = 270;`);
       await settle();
-      const w = await where('s2');
+      let w = await where('s2');
       expect(w.box).toMatchObject({ x: 0 });
-      expect(w.outline).toEqual(w.box);
+      expect(w.outlines).toEqual([w.box]);
+      await inFrame(`${track}.scrollLeft = 0;`);
+      await settle();
+      w = await where('s2');
+      expect(w.box).toMatchObject({ x: 270 });
+      expect(w.outlines).toEqual([w.box]);
     });
 
     it('brings the slide back into a list the page renders afresh, but leaves the list where the author scrolls it', async () => {
@@ -412,6 +422,40 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
       await inFrame(`const old = ${track}; const fresh = old.cloneNode(true); old.replaceWith(fresh);`);
       await settle();
       expect((await where('s5')).inList).toBe(true);
+      // Scrolled away again by the author, the list stays there through another change to the page.
+      await inFrame(`${track}.scrollLeft = 0;`);
+      await settle();
+      await inFrame(`${slide('s1')}.querySelector('p').textContent = 'Slide one';`);
+      await settle();
+      expect((await where('s5')).scrollLeft).toBe(0);
+      await revealSlide(null);
+      expect((await where('s5')).outlines).toEqual([]);
+    });
+
+    it('follows a slide moved to another place in its list', async () => {
+      await startOver();
+      await revealSlide('s2');
+      expect((await where('s2')).scrollLeft).toBe(0);
+      // Moved to the end of the list, as reordering it in the inspector does.
+      await inFrame(`${track}.append(${slide('s2')});`);
+      await settle();
+      expect(await where('s2')).toMatchObject({ inList: true });
+      expect((await where('s2')).scrollLeft).toBeGreaterThan(0);
+      await inFrame(`${slide('s1')}.after(${slide('s2')});`);
+      await settle();
+      expect((await where('s2')).inList).toBe(true);
+      await revealSlide(null);
+    });
+
+    it('brings the slide in once its list is shown, when it was hidden as the slide was opened', async () => {
+      await startOver();
+      await inFrame(`${track}.style.display = 'none';`);
+      await settle();
+      await revealSlide('s5');
+      await inFrame(`${track}.style.display = '';`);
+      await settle();
+      await settle();
+      expect(await where('s5')).toMatchObject({ inList: true, inFrame: true });
       await revealSlide(null);
     });
   });

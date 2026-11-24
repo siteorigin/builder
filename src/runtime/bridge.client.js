@@ -268,9 +268,10 @@ let revealKey = '';
  */
 let revealScroll = false;
 /**
- * The list that scrolls sideways (a carousel's) the item was last brought into. A list rendered afresh (an update
- * arrived) starts at its beginning again, so the item is brought back into the new one; the same list scrolled away
- * from it by the author stays where they put it.
+ * The list that scrolls sideways (a carousel's) the item was last brought into, and where the item sits in it: { list,
+ * at }. A list rendered afresh (an update arrived) starts at its beginning again, and an item moved inside it
+ * (reordered) is somewhere else, so either way the item is brought in again; the author scrolling the same list
+ * changes neither, so where they put it stays.
  */
 let revealSide = null;
 /** Disclosures opened for the item. Only these are closed again; one the page or the author opened stays open. */
@@ -381,44 +382,61 @@ function reconcileReveal() {
       // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.
       const instant = revealScroll === 'resize' || matchMedia('(prefers-reduced-motion: reduce)').matches;
       revealScroll = false;
-      // An item in a list that scrolls sideways (a carousel's slide) is brought in there, and the page then scrolls
-      // to the list, which leaves the list where it was just put.
+      // An item in a list that scrolls sideways (a carousel's slide) is brought in there, at once, so another item
+      // opened next is measured where it really is; the page then scrolls to the list, which leaves the list as it is.
       const side = sideScroller(el);
-      revealSide = side;
-      if (side) bringInside(side, el, instant);
+      if (side) bringInside(side, el);
+      revealSide = side ? { list: side, at: offsetIn(side, el) } : null;
       const target = side || el;
       const r = target.getBoundingClientRect();
       if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: instant ? 'instant' : 'smooth' });
     }
   } else if (reveal) {
+    // A list rendered afresh, an item moved inside its list, or a list that only now scrolls (shown at last).
     const el = roots.find((r) => r.tagName !== 'HR' && rectOf(r));
     const side = el ? sideScroller(el) : null;
-    if (side && side !== revealSide) {
-      revealSide = side;
-      bringInside(side, el, true);
+    if (side) {
+      const at = offsetIn(side, el);
+      if (!revealSide || revealSide.list !== side || Math.abs(revealSide.at - at) > 1) {
+        bringInside(side, el);
+        revealSide = { list: side, at: offsetIn(side, el) };
+      }
     }
   }
 }
-/** The nearest box around an element that scrolls sideways, such as a carousel's list, or null. */
+/**
+ * The nearest box around an element that scrolls sideways only, such as a carousel's list, or null. A box that also
+ * scrolls up and down is left to the item's own reveal, which scrolls it both ways.
+ */
 function sideScroller(el) {
   for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement; p = p.parentElement) {
-    const x = getComputedStyle(p).overflowX;
-    if ((x === 'auto' || x === 'scroll') && p.scrollWidth > p.clientWidth + 1) return p;
+    const s = getComputedStyle(p);
+    if ((s.overflowX !== 'auto' && s.overflowX !== 'scroll') || p.scrollWidth <= p.clientWidth + 1) continue;
+    return (s.overflowY === 'auto' || s.overflowY === 'scroll') && p.scrollHeight > p.clientHeight + 1 ? null : p;
   }
   return null;
 }
+/** How much larger a box is drawn than it is laid out (a scale on it or around it), as scrolling measures it. */
+const drawnScale = (box) => (box.offsetWidth ? box.getBoundingClientRect().width / box.offsetWidth : 1) || 1;
+/** Where `el` sits along `list`, however far the list is scrolled, in the list's own units. */
+function offsetIn(list, el) {
+  return (el.getBoundingClientRect().left - list.getBoundingClientRect().left) / drawnScale(list) + list.scrollLeft;
+}
 /**
- * Scrolls `list` sideways, and nothing else, until the start of `el` is at the start of what it shows (where a
- * carousel stops), unless all of `el` already shows.
+ * Scrolls `list` sideways, at once and nothing else, by as little as shows all of `el`: its nearer edge to the
+ * list's edge, which in a carousel is where it stops. One wider than the list shows from its start.
  */
-function bringInside(list, el, instant) {
+function bringInside(list, el) {
+  const k = drawnScale(list);
   const l = list.getBoundingClientRect();
   const r = el.getBoundingClientRect();
-  const left = l.left + list.clientLeft;
-  const right = left + list.clientWidth;
-  if (r.left >= left - 1 && r.right <= right + 1) return;
-  const dx = getComputedStyle(list).direction === 'rtl' ? r.right - right : r.left - left;
-  list.scrollBy({ left: dx, behavior: instant ? 'instant' : 'smooth' });
+  const left = l.left + list.clientLeft * k;
+  const right = left + list.clientWidth * k;
+  let dx = 0;
+  if (r.width > right - left + 1) dx = getComputedStyle(list).direction === 'rtl' ? r.right - right : r.left - left;
+  else if (r.left < left - 1) dx = r.left - left;
+  else if (r.right > right + 1) dx = r.right - right;
+  if (dx) list.scrollBy({ left: dx / k, behavior: 'instant' });
 }
 /**
  * Typed text (`value`, or null for none), shown in the given plain text elements in a text node of the bridge's own.
@@ -3129,8 +3147,15 @@ window.addEventListener('message', async (e) => {
   }
 });
 
-// Captured, so a box scrolling inside the page (a carousel's list) moves the outlines of what is in it too.
-window.addEventListener('scroll', scheduleRects, { passive: true, capture: true });
+// Captured, so a box scrolling inside the page (a carousel's list) moves the outlines of what is in it too, while
+// there are any to move.
+window.addEventListener(
+  'scroll',
+  (e) => {
+    if (e.target === document || selected || reveal || (hovered && mode === 'edit')) scheduleRects();
+  },
+  { passive: true, capture: true }
+);
 window.addEventListener('resize', () => {
   // The item is checked at another width: brought back into view if the new layout moved it out. A change of
   // height alone (the editor window resized) leaves the page where the author put it.
@@ -3144,7 +3169,11 @@ window.addEventListener('resize', () => {
   lastWidth = innerWidth;
   scheduleRects();
 });
-new ResizeObserver(scheduleRects).observe(document.documentElement);
+// The page changing size can show the item being revealed at last (its section no longer hidden): it is looked for again.
+new ResizeObserver(() => {
+  if (reveal) revealDirty = true;
+  scheduleRects();
+}).observe(document.documentElement);
 new MutationObserver(() => {
   // The page re-rendered the element being edited away (an update arrived): the edit is over. Text typed into it
   // is handed to the editor as it would be on leaving it, never dropped: the editor checks it against what the

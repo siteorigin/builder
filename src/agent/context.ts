@@ -189,6 +189,7 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
     case 'element':
       base.kind = 'element';
       base.tag = n.tag;
+      if (n.carousel) base.carousel = true;
       if (n.styles) base.styles = n.styles;
       if (n.appear) base.appear = n.appear;
       if (depth < 5) base.children = n.children.map((c) => compactNode(state, tree, c, depth + 1));

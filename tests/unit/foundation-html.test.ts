@@ -924,11 +924,12 @@ describe('media.carousel (issue #381)', () => {
   const list = (out: string) => out.match(/<ul\b([^>]*)>([\s\S]*)<\/ul>/);
 
   it('renders every slide as an item of one list that scrolls, named by the heading and reachable by keyboard', () => {
-    const out = rendered({ heading: 'Featured projects', slides: SLIDES });
+    const out = rendered({ heading: 'Kitchens we have built', slides: SLIDES });
+    expect(out.match(/<ul\b/g)).toHaveLength(1);
     const [, attrs, inner] = list(out)!;
     expect(attrs).toMatch(classed('so-carousel__list'));
     expect(attrs).toMatch(classed(nodeClass('media.carousel', 'track')));
-    expect(attrs).toContain('aria-label="Featured projects"');
+    expect(attrs).toContain('aria-label="Kitchens we have built"');
     expect(attrs).toContain('tabindex="0"');
     // Each slide is a list item holding a figure: its image, and its caption while it has one.
     expect(inner.match(/<li\b/g)).toHaveLength(3);
@@ -944,6 +945,20 @@ describe('media.carousel (issue #381)', () => {
       expect(items[i]).not.toContain('<a');
       expect(items[i]).toMatch(/^\s*<div\b[^>]*>\s*<figure\b/);
     }
+  });
+
+  it('names a linked slide with no caption and a decorative or missing picture, so its link is never empty', () => {
+    const named = (s: ReturnType<typeof slide>) => tags(tags(list(rendered({ slides: [s] }))![2], 'li')[0], 'a')[0];
+    const away = { type: 'url', target: 'https://example.com/a' };
+    bundle.state.assets.assets['as_room'] = { id: 'as_room', name: 'Room', file: 'static/media/room.jpg', mime: 'image/jpeg', bytes: 1, width: 800, height: 600, hash: 'r', kind: 'image', createdAt: '' } as never;
+    const decorative = { ...slide('d', '', away), image: { assetId: 'as_room', alt: '', decorative: true } };
+    // No picture chosen: the placeholder is named.
+    expect(named(slide('p', '', away))).toMatch(/role="img" aria-label="Slide"/);
+    // A decorative picture keeps its empty description and says it as hidden text.
+    expect(named(decorative)).toMatch(/<img\b[^>]*alt=""[\s\S]*<span class="so-visually-hidden">Slide<\/span>/);
+    // Its own description and its caption name it otherwise.
+    expect(named(slide('c', 'Kitchen', away))).toContain('Kitchen</figcaption>');
+    expect(named(slide('a', '', away, 'A calm kitchen'))).toContain('aria-label="A calm kitchen"');
   });
 
   it('has no buttons or count until the page’s script runs, and nothing at all without slides', () => {

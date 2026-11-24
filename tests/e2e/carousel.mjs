@@ -4,7 +4,7 @@
 // keyboard, scrolled by trackpad and swiped by touch, at once for a visitor who asks for reduced motion, printed as a
 // stack and read without JavaScript, never wider than the page. The website is opened in a headless browser.
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
@@ -77,20 +77,37 @@ try {
   const rows = list.locator('.list-editor-head button.title');
   await eventually(async () => assert.equal(await rows.count(), 5, 'the inspector lists the five slides'));
   await rows.nth(4).click();
-  await eventually(async () => assert.deepEqual(await slideShows('s5'), { ...(await slideShows('s5')), inList: true, inFrame: true }, 'the fifth slide shows in its list and in the frame'), 15000);
+  await eventually(async () => {
+    const now = await slideShows('s5');
+    assert.ok(now.inList && now.inFrame, `the fifth slide shows in its list and in the frame (${JSON.stringify(now)})`);
+  }, 15000);
   assert.ok((await slideShows('s5')).scrollLeft > 0, 'its list scrolled sideways to it');
+  // Its caption shows on the canvas as it is typed.
+  const caption = list.locator('.list-editor-body:not([hidden])').getByLabel('Caption', { exact: true });
+  await caption.click();
+  await caption.fill('Fitting day');
+  await eventually(async () => assert.equal(await track.locator('li[data-so-items="s5"] figcaption').innerText(), 'Fitting day', 'the typed caption shows on the slide'));
+  await caption.press('Escape');
   await win.getByRole('button', { name: 'Phone', exact: true }).click();
+  await eventually(async () => assert.equal(await track.evaluate(() => innerWidth), 390, 'the canvas is a phone’s width'), 15000);
   await eventually(async () => assert.equal((await slideShows('s5')).inList, true, 'at phone width the fifth slide is brought back into its list'), 15000);
   await rows.nth(0).click();
   await eventually(async () => assert.equal((await slideShows('s1')).inList, true, 'opening the first slide scrolls its list back'), 15000);
   await win.getByRole('button', { name: 'Desktop', exact: true }).click();
 
-  step('export the website');
+  step('export the source and the website');
   const exportsDir = join(WORK, 'exports');
   mkdirSync(exportsDir, { recursive: true });
   await app.evaluate(({ dialog }, parent) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [parent] });
   }, exportsDir);
+  const src = await withTimeout(win.evaluate(() => window.builder.project.exportSource()), 120000, 'Source export');
+  assert.equal(src.ok, true, `source export succeeds: ${src.message}`);
+  // The developer's copy carries the carousel helper and the code it imports, with nothing of the editor's.
+  for (const file of ['Carousel.svelte', 'carousel.js']) {
+    const code = readFileSync(join(src.path, 'src/lib/siteorigin/runtime', file), 'utf8');
+    assert.ok(code.length > 0 && !/data-so-|__siteorigin/.test(code), `the source export carries a clean ${file}`);
+  }
   const stat = await withTimeout(win.evaluate(() => window.builder.project.exportStatic()), 300000, 'Static export');
   assert.equal(stat.ok, true, `static export succeeds: ${stat.message} ${stat.warnings?.join(' ')}`);
   assert.ok(stat.previewUrl, 'the export starts a preview');
@@ -157,6 +174,11 @@ try {
     assert.ok((await where(c)).overflow <= 0, `${label}: the page is no wider than the screen after stepping`);
     await prev.click();
     await eventually(async () => assert.equal(await status.innerText(), says(last - 1), `${label}: Previous goes back a slide`));
+    if (last - 1 >= 3) {
+      // Two presses before the first step arrives move two slides.
+      await prev.evaluate((b) => (b.click(), b.click()));
+      await eventually(async () => assert.equal(await status.innerText(), says(last - 3), `${label}: two quick presses of Previous go back two slides`));
+    }
 
     // The arrow keys, Home and End on the focused list.
     const ul = c.locator('ul');
@@ -227,7 +249,7 @@ try {
       return ul.scrollLeft;
     });
     assert.equal(await stepNow(), 0, 'without the setting the step glides: nothing has moved yet');
-    await eventually(async () => assert.ok((await where(c)).scrollLeft > 0, 'and it arrives'));
+    await eventually(async () => assert.equal(await c.getByRole('status').innerText(), 'Slides 2–4 of 5', 'and it arrives'));
     await c.locator('ul').evaluate((ul) => ul.scrollTo({ left: 0, behavior: 'instant' }));
     await eventually(async () => assert.equal(await c.getByRole('status').innerText(), 'Slides 1–3 of 5'));
     await page.emulateMedia({ reducedMotion: 'reduce' });
@@ -236,6 +258,11 @@ try {
     await page.waitForTimeout(200);
     assert.equal((await where(c)).scrollLeft, at, 'and stays there');
     assert.deepEqual((await where(c)).showing, [2, 3, 4]);
+    // The setting turned off again: the next step glides once more.
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.waitForTimeout(300);
+    assert.equal(await stepNow(), at, 'without the setting again, the next step glides');
+    await eventually(async () => assert.deepEqual((await where(c)).showing, [3, 4, 5], 'and arrives'));
 
     step('print: every slide, one below the other, and no buttons');
     await page.emulateMedia({ media: 'print' });
@@ -246,13 +273,14 @@ try {
       return {
         display: s.display,
         overflowX: s.overflowX,
+        visible: [el, ul, ...ul.children].every((x) => getComputedStyle(x).visibility === 'visible' && x.getBoundingClientRect().height > 0),
         controls: [...el.querySelectorAll('.so-carousel__controls')].map((x) => getComputedStyle(x).display),
         stacked: boxes.every((b, i) => i === 0 || (b.top >= boxes[i - 1].bottom - 1 && Math.abs(b.left - boxes[0].left) < 1)),
         full: boxes.every((b) => Math.abs(b.width - ul.getBoundingClientRect().width) < 1),
         overflow: document.documentElement.scrollWidth - innerWidth
       };
     });
-    assert.deepEqual(printed, { display: 'grid', overflowX: 'visible', controls: ['none'], stacked: true, full: true, overflow: printed.overflow }, 'the slides print stacked, as wide as the column, without buttons');
+    assert.deepEqual(printed, { display: 'grid', overflowX: 'visible', visible: true, controls: ['none'], stacked: true, full: true, overflow: printed.overflow }, 'every slide prints, stacked, as wide as the column, without buttons');
     assert.ok(printed.overflow <= 0, 'and the printed page is no wider than the sheet');
     await context.close();
   }
