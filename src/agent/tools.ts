@@ -10,7 +10,8 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';
-import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, pageDetail, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
+import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
+import { AUDIT_SEO_ARGS, seoReport } from './seo-report';
 import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
@@ -71,6 +72,7 @@ export const TOOL_ARGS = {
     offset: z.number().int().min(0).optional().describe('Continue a sweep: the offset a previous call returned in next.')
   }),
   validate_project: z.object({ profile: z.enum(['schema', 'component']).optional() }),
+  audit_seo: AUDIT_SEO_ARGS,
   request_clarification: z.object({
     question: z.string().min(1).max(300),
     choices: z.array(z.string().max(80)).max(4).optional(),
@@ -116,6 +118,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   inspect_component:
     'Check one component on its own, off-screen, without changing anything: it is measured at phone (390px) and desktop (1280px) width with every link set and empty text filled, in each option of every variant axis, and with stress content: long text with an unbroken long word, links and optional text left empty, one and five list items. Returns each overflow, cut-off text, low contrast, overlap, small tap target, runtime error and spacing collapse once, with the cases and widths it showed in and where it is in the design: at.nodeId is the node of its design (node.setStyle { owner: { kind: "component", id: definitionId }, nodeId } changes it on every placement) and at.partId the part it belongs to. The design of a theme component changes on a project copy: component.fork it first (one the project does not have yet is added by placing it) and use the definitionId that returns. A clean component gets a one-line summary. Use after building or changing a reusable component, then fix what it finds and check again.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
+  audit_seo:
+    'Audit how well the website can be found, shared and understood by search engines, link previews and AI agents, from the saved project (it changes and measures nothing): its public URL, search settings, browser titles and descriptions (missing, repeated, too short or long), sharing image and icon, link wording, pages no other page links to, and the pictures and headings in collection entries. Returns findings most serious first, each with its code, pillar, whether an edit of yours can fix it (aiFixable) and where it is fixed (fix), why each code matters (why), counts by severity and pillar, and the internal links: how many links lead into and out of each published page, with orphans that nothing else links to. pageId (an ID or route) narrows it to one page: its own findings, and which pages, shared header or footer, or entries link to it. pillar keeps one kind of finding. A long report comes in parts: call again with nextOffset or nextLinkOffset.',
   request_clarification:
     'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four short, concrete options in choices; the user can also type their own answer. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
   locate_field:
@@ -143,6 +147,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   inspect_layout: 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.',
   inspect_component: 'Measure a component on its own at phone and desktop width, in every variant option and with long, empty and repeated content: overflow, cut-off text, contrast, overlaps and collapsed spacing, each with where it is in the design. Changes nothing.',
   validate_project: '"schema" checks references, routes and structure; "component" also compiles every component.',
+  audit_seo: 'Search, sharing and AI-readiness findings, most serious first, with counts, and the links into and out of each published page (orphans flagged). pageId (ID or route) narrows it to one page, pillar to one kind. Changes nothing. More with nextOffset or nextLinkOffset.',
   request_clarification:
     'Ask the user one question and wait for the answer: when they ask you to interview them, ask them something or let them choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short, concrete choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
@@ -303,10 +308,11 @@ const DEFINITION_TOOLS = Object.keys(DEFINITION_ARGS) as DefinitionToolName[];
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
 const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field']);
 /**
- * Everything a read-only question may use: reads of the project, the catalogue and images, finding a field, and a
- * plain question to the author. Nothing that changes the site, measures the live preview or builds the project.
+ * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, finding a
+ * field, and a plain question to the author. Nothing that changes the site, measures the live preview or builds the
+ * project.
  */
-export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'locate_field', 'request_clarification'];
+export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'locate_field', 'request_clarification'];
 export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
@@ -848,6 +854,10 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       // Component reusability findings are listed apart, with their nodes, so other warnings cannot crowd them out.
       return { ok: true, content: { revision: host.revision(), errors: diags.filter((d) => d.severity === 'error').map((d) => d.message), warnings: diags.filter((d) => d.severity === 'warning' && !isReusabilityWarning(d)).slice(0, 20).map((d) => d.message), ...componentWarnings(diags) } };
     }
+    case 'audit_seo': {
+      const report = seoReport(state, host.revision(), args as z.infer<typeof AUDIT_SEO_ARGS>, MAX_RESULT_CHARS - 200);
+      return report.ok ? { ok: true, content: report.content } : { ok: false, content: { error: 'INVALID_ARGUMENT', message: report.message } };
+    }
     case 'locate_field': {
       const a = args as z.infer<(typeof TOOL_ARGS)['locate_field']>;
       const target = { owner: a.owner, nodeId: a.nodeId, prop: a.prop, ...(a.itemId !== undefined ? { itemId: a.itemId } : {}), ...(a.field !== undefined ? { field: a.field } : {}) };
@@ -901,22 +911,12 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
   }
 }
 
-/** Models often pass a route ("/about/") where a page ID is expected; both find the page. */
 /** Whether a rejected batch failed on a page it was creating itself, named by its route or title. */
 function refersToNewPage(ops: EditOperation[], message: string): boolean {
   const ref = message.match(/\bpage "([^"]*)" does not exist/i)?.[1]?.trim();
   if (!ref) return false;
   const asRoute = normalizeRoute(ref);
   return ops.some((o) => o.type === 'page.create' && (normalizeRoute(o.route ?? addressSlug(o.title)) === asRoute || o.title.trim().toLowerCase() === ref.toLowerCase()));
-}
-
-function pageIdFor(state: ProjectState, ref: string): string | null {
-  if (Object.hasOwn(state.pages, ref)) return ref;
-  const trimmed = ref.trim();
-  if (!trimmed) return null;
-  // "/about", "about/" or an address in another script as a browser shows it, spelled as routes are stored.
-  const route = normalizeRoute(trimmed);
-  return Object.values(state.pages).find((p) => p.route === route)?.id ?? null;
 }
 
 export function labelForOps(ops: EditOperation[], state: ProjectState): string {

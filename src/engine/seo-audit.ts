@@ -51,11 +51,22 @@ function readable(state: ProjectState): ProjectState {
   };
 }
 
+/** One run of the audit: its findings, and what its rules read to make them, for a report on the same documents and links. */
+export interface SeoAudit {
+  context: SeoAuditContext;
+  findings: SeoFinding[];
+}
+
 /**
  * Every finding of the baseline rules and of `rules` on `state`: by pillar in their order, then the most serious
  * first, then in the order the rules found them (the site's order). A finding two rules both make is listed once.
  */
 export function runSeoAudit(project: ProjectState, rules: readonly SeoAuditRule[] = []): SeoFinding[] {
+  return auditSeo(project, rules).findings;
+}
+
+/** runSeoAudit, with the context its rules read: the readable project, its published documents and its links. */
+export function auditSeo(project: ProjectState, rules: readonly SeoAuditRule[] = []): SeoAudit {
   const state = readable(project);
   const all = [...BASELINE_SEO_RULES, ...rules];
   const ids = new Set<string>();
@@ -76,5 +87,5 @@ export function runSeoAudit(project: ProjectState, rules: readonly SeoAuditRule[
       found.push(f);
     }
   const rank = (f: SeoFinding) => SEO_PILLARS.indexOf(f.pillar) * 3 + SEVERITY[f.severity];
-  return found.map((f, i) => ({ f, i, r: rank(f) })).sort((a, b) => a.r - b.r || a.i - b.i).map(({ f }) => f);
+  return { context, findings: found.map((f, i) => ({ f, i, r: rank(f) })).sort((a, b) => a.r - b.r || a.i - b.i).map(({ f }) => f) };
 }

@@ -14,6 +14,8 @@ import { notFoundCopy } from '@shared/not-found';
 import { itemStylesOf, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { isLanguageCode, pageLanguage, siteDirection, translationPeers } from '@shared/languages';
 import { ownVisitorTextFor } from '@shared/visitor-text';
+import { normalizeRoute } from '@shared/routes';
+import { seoText } from '@shared/seo';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -123,6 +125,40 @@ function visitorTextSummary(state: ProjectState): { visitorTextSet?: Record<stri
   return Object.keys(set).length ? { visitorTextSet: set } : {};
 }
 
+/** Whether a site setting names an image the library has, as the website's icon and sharing image must. */
+const libraryHasImage = (state: ProjectState, id: unknown) => typeof id === 'string' && Object.hasOwn(state.assets.assets, id) && state.assets.assets[id]?.kind === 'image';
+
+/**
+ * The site's own sharing image and icon (whether it has them) and how many old addresses it keeps. What the audit
+ * makes of them, and of everything else, is audit_seo's to say.
+ */
+function siteSeoSummary(state: ProjectState) {
+  const redirects = Array.isArray(state.site.redirects) ? state.site.redirects.length : 0;
+  return { socialImageSet: libraryHasImage(state, state.site.socialImage), faviconSet: libraryHasImage(state, state.site.favicon), ...(redirects ? { redirectCount: redirects } : {}) };
+}
+
+/**
+ * A page's own search settings, only those it has: a browser title or description of its own (else the defaults are
+ * used), and whether it is kept from search engines or from the site's own search. Nothing when it has none, so a
+ * site with many pages stays small; read_page shows the words.
+ */
+function pageSeoSummary(p: PageDoc): { seo?: Record<string, true> } {
+  const seo = p.seo && typeof p.seo === 'object' ? p.seo : {};
+  const flags = { titleSet: !!seoText(seo.title), descriptionSet: !!seoText(seo.description), noindex: seo.noindex === true, searchHidden: seo.searchHidden === true };
+  const set = Object.fromEntries(Object.entries(flags).filter(([, on]) => on)) as Record<string, true>;
+  return Object.keys(set).length ? { seo: set } : {};
+}
+
+/** Models often pass a route ("/about/") where a page ID is expected; both find the page. */
+export function pageIdFor(state: ProjectState, ref: string): string | null {
+  if (Object.hasOwn(state.pages, ref)) return ref;
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+  // "/about", "about/" or an address in another script as a browser shows it, spelled as routes are stored.
+  const route = normalizeRoute(trimmed);
+  return Object.values(state.pages).find((p) => p?.route === route)?.id ?? null;
+}
+
 export function projectSummary(state: ProjectState, revision: number) {
   const theme = getTheme(state.site.themeId);
   // The page each page is inside, by route (see shared/page-tree.ts).
@@ -136,6 +172,7 @@ export function projectSummary(state: ProjectState, revision: number) {
       // Which way its text runs, and whether that is the author's choice or follows the language.
       direction: { runs: siteDirection(state.site), automatic: state.site.direction !== 'ltr' && state.site.direction !== 'rtl' },
       baseUrl: state.site.baseUrl ?? null,
+      seo: siteSeoSummary(state),
       notFoundPage: notFoundCopy(state.site),
       // Which pieces of visitor text have the author's own wording, by language; their words are not repeated here.
       ...visitorTextSummary(state)
@@ -145,7 +182,7 @@ export function projectSummary(state: ProjectState, revision: number) {
     pages: state.site.pageOrder.map((id) => {
       const p = state.pages[id];
       const parent = parents.get(id);
-      return { id, title: p.title, route: p.route, ...(parent ? { parentPageId: parent } : {}), sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(isDraftPage(state, p) ? { draft: true } : {}), ...pageLanguageSummary(state, p), ...(p.article ? { article: p.article } : {}) };
+      return { id, title: p.title, route: p.route, ...(parent ? { parentPageId: parent } : {}), sections: p.rootIds.length, showHeader: p.showHeader, showFooter: p.showFooter, ...(isDraftPage(state, p) ? { draft: true } : {}), ...pageLanguageSummary(state, p), ...pageSeoSummary(p), ...(p.article ? { article: p.article } : {}) };
     }),
     shell: {
       header: state.site.shell.header.rootIds.map((id) => compactNode(state, state.site.shell.header, id)),
