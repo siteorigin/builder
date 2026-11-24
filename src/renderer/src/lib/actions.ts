@@ -8,7 +8,7 @@ import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
 import { applyOperations } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction } from '../store';
+import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction, useStore } from '../store';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
@@ -307,15 +307,29 @@ export async function moveToPage(pageId: string, plan = planLayers(), follow = f
     // The project refuses it, and says why.
   }
   const name = groupName(st, g);
-  const r = await commitOps(ops, `Move ${plan.several ? groupCount(g) : name} to ${dest.title}`, undefined, plan.snap.revision);
+  const start = getState();
+  let followMove = stillOn(plan) && start.pageId === g.owner.id && !start.definitionMode && start.mode === 'edit';
+  const stopWatching = useStore.subscribe((now, prev) => {
+    if (!followMove) return;
+    if (now.pageId !== start.pageId || now.definitionMode || now.mode !== start.mode || now.snapshot?.workspaceKey !== plan.snap.workspaceKey) {
+      followMove = false;
+    } else if (now.selection !== prev.selection || now.layerSet !== prev.layerSet) {
+      // The move's snapshot clears the old selection before the apply reply supplies the new IDs.
+      followMove =
+        now.snapshot !== prev.snapshot && now.snapshot?.revision === plan.snap.revision + 1 &&
+        prev.selection === plan.selection && prev.layerSet === plan.layerSet && !now.selection && !now.layerSet;
+    }
+  });
+  const r = await commitOps(ops, `Move ${plan.several ? groupCount(g) : name} to ${dest.title}`, undefined, plan.snap.revision).finally(stopWatching);
   if (!r?.ok) return null;
   const ids = (r.results ?? []).slice(0, g.ids.length).map((x) => x.nodeId);
   if (ids.length !== g.ids.length || !ids.every((id): id is string => typeof id === 'string')) return null;
   if (getState().snapshot?.workspaceKey !== r.workspaceKey) return ids;
   // Followed to their page, selected as they were, unless the author has moved on meanwhile.
-  if (stillOn(plan) && getState().pageId === g.owner.id && !getState().definitionMode) {
-    selectPage(pageId);
-    setState(resultSelection(plan, ids, { kind: 'page', id: pageId }));
+  if (followMove) {
+    const { selection, layerSet } = resultSelection(plan, ids, { kind: 'page', id: pageId });
+    selectPage(pageId, selection);
+    setState({ layerSet });
     if (follow) focusSelectedRow();
   }
   const note = broken ? ` ${broken === 1 ? 'A link now goes' : `${broken} links now go`} to a section that isn’t there (moved from ${from}): Project health lists ${broken === 1 ? 'it' : 'them'}.` : '';

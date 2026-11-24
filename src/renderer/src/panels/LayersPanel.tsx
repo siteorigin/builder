@@ -299,15 +299,15 @@ export function LayersPanel() {
   }, [selection, visible, view]);
   // Rows mount and unmount inside branches that open on their own (revealing a canvas selection), which does
   // not re-render the panel: keep exactly one tabbable row whenever the rows change.
-  // The row keyboard focus was last on: when a change removes it (a delete), focus goes to the row now in its place
-  // instead of falling out of the panel.
+  // If a change removes the focused row, focus goes to the row now in its place.
   useEffect(() => {
     const el = treeRef.current;
     if (!el) return;
     let last: { row: HTMLElement; index: number } | null = null;
     const onFocus = (e: FocusEvent) => {
-      const row = (e.target as HTMLElement).closest<HTMLElement>('[role="treeitem"]');
-      if (row) last = { row, index: [...el.querySelectorAll('[role="treeitem"]')].indexOf(row) };
+      const target = e.target;
+      const row = target instanceof HTMLElement && el.contains(target) ? target.closest<HTMLElement>('[role="treeitem"]') : null;
+      last = row ? { row, index: [...el.querySelectorAll('[role="treeitem"]')].indexOf(row) } : null;
     };
     const reconcile = () => {
       const rows = [...el.querySelectorAll<HTMLElement>('[role="treeitem"]')];
@@ -336,10 +336,10 @@ export function LayersPanel() {
     };
     const mo = new MutationObserver(reconcile);
     mo.observe(el, { childList: true, subtree: true });
-    el.addEventListener('focusin', onFocus);
+    document.addEventListener('focusin', onFocus, true);
     return () => {
       mo.disconnect();
-      el.removeEventListener('focusin', onFocus);
+      document.removeEventListener('focusin', onFocus, true);
     };
   }, []);
   // Leaving several layers for one (Esc, the bar's X, a Cmd/Ctrl-click) is said, whichever way it happened.

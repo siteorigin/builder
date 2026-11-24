@@ -29,7 +29,6 @@ await eventually(async () => assert.equal(await h1.innerText(), 'Rooms that work
 
 step('inline rich text: bold, italic and a page link');
 const rich = frame.locator('.so-rich', { hasText: 'That conversation shapes' }).first();
-await rich.scrollIntoViewIfNeeded();
 await rich.click();
 await win.waitForTimeout(300);
 await rich.dblclick();
@@ -489,6 +488,7 @@ const fork = await eventually(async () => {
 });
 const { gridId, headingNode } = fork;
 const headingRow = win.locator(`[role="treeitem"][data-owner="component:${fork.defId}"][data-node="${headingNode}"]`);
+const selectedHeading = headingRow.and(win.locator('[aria-selected="true"]'));
 // The copy's heading as the preview shows it once the copy is built (its class names the copy), not the
 // original's, which a click while the preview catches up would miss.
 const gridHeading = frame.locator(`[data-so-ctx$="|${gridId}"] h2[class*="so-${fork.defId.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase()}__"]`).first();
@@ -496,12 +496,13 @@ await gridHeading.waitFor({ timeout: 30000 });
 // The preview can still be settling after entering the mode: a click the canvas missed is clicked again, and
 // picking in the design selects the same node each time.
 await eventually(async () => {
-  if ((await headingRow.count()) !== 1 || (await headingRow.getAttribute('aria-selected')) !== 'true') await gridHeading.click({ timeout: 3000 });
-  await eventually(async () => assert.equal(await headingRow.getAttribute('aria-selected'), 'true', 'Layers selects the picked node of the design'), 3000);
+  if ((await selectedHeading.count()) !== 1) await gridHeading.click({ timeout: 3000 });
+  await eventually(async () => assert.equal(await selectedHeading.count(), 1, 'Layers selects the picked node of the design'), 3000);
 }, 20000);
 await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'the picked node is outlined'));
 await win.locator('.insp-scope.definition').first().waitFor();
 // And back: Escape shows the overview, then the Layers row outlines that node on the canvas again.
+await win.locator('.canvas').focus();
 await win.keyboard.press('Escape');
 await eventually(async () => assert.equal(await win.locator('.ov-selected').count(), 0, 'Escape clears the selection'));
 await headingRow.click();
@@ -752,17 +753,17 @@ await app.context().unroute('https://forms.e2e.test/**', deliver);
 step('repeatable lists: capacity, and focus after a move to either end');
 if (!(await win.locator('[role="tree"]').first().isVisible())) await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
-const cards = win.locator('#dock-panel-inspect [data-list]').first();
+const cards = win.locator('#dock-panel-inspect [data-list="items"]');
 await cards.waitFor();
 const rows = cards.locator('.list-editor-head button.title');
 const titles = async () => (await rows.allInnerTexts()).map((t) => t.trim());
-const maxOf = async () => Number((await cards.locator('.insp-count').innerText()).split('/')[1]);
-const max = await maxOf();
-assert.ok(max >= (await rows.count()), 'the count shows the maximum from the schema');
+const shownCount = cards.locator('.insp-count [aria-hidden="true"]');
+const max = (await projectSnapshot()).state.components[fork.defId].properties.items.max;
+assert.equal(await shownCount.innerText(), `${await rows.count()} / ${max}`, 'the count shows the maximum from the schema');
 await cards.getByRole('button', { name: /^Add / }).click(); // Four cards, so a middle card can move without reaching an end.
 await eventually(async () => assert.equal(await rows.count(), 4, 'a card is added'));
 const count = 4;
-assert.equal((await cards.locator('.insp-count').innerText()).trim(), `4 / ${max}`, 'the count shows the schema maximum');
+assert.equal(await shownCount.innerText(), `4 / ${max}`, 'the count shows the schema maximum');
 const subject = (await titles())[1];
 const focusedId = () => win.evaluate(() => document.activeElement?.id ?? '');
 const status = () => cards.locator('[role="status"]').innerText();
@@ -813,7 +814,7 @@ await addButton.click({ force: true });
 await win.waitForTimeout(400);
 assert.equal(await rows.count(), max, 'a click at the maximum adds nothing');
 assert.equal(await revision(), before, 'and sends no edit');
-assert.equal((await cards.locator('.insp-count').innerText()).trim(), `${max} / ${max}`);
+assert.equal(await shownCount.innerText(), `${max} / ${max}`);
 
 step('site styles and chat panels');
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();

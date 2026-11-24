@@ -130,7 +130,7 @@ await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data
 step('Rename gives a variant a descriptive name and a description');
 await openInsert();
 await manage('Exhibitor card blue (unique 2)').click();
-await menu.getByRole('menuitem', { name: 'Rename…' }).click();
+await menu.getByRole('menuitem', { name: 'Rename', exact: true }).click();
 const renameField = dialog.getByLabel('Component name');
 assert.equal(await renameField.inputValue(), 'Exhibitor card blue (unique 2)');
 await renameField.fill('Exhibitor card gold sponsor');
@@ -184,7 +184,7 @@ for (const id of [band, ...filled.map((r) => r.nodeId)]) assert.equal(homeNodes[
 assert.equal(hall.tree.nodes[hall.tree.rootIds[0]].slots.content.length, 2, 'the component holds the section’s content');
 await openInsert();
 // The library lists four components until it is asked for the rest; this is the fifth.
-const showAll = panel.getByRole('button', { name: /^Show all \d+ components/ });
+const showAll = panel.getByRole('button', { name: /^Show all \d+ components\b/ });
 if (await showAll.count()) await showAll.click();
 await tile('Hall hours band').click();
 await eventually(async () => assert.equal((await library())['Hall hours band'], 2, 'a second copy is placed from Insert'));
@@ -309,7 +309,6 @@ await apply(
   'Make the card red'
 );
 await openInsert();
-const showAll = panel.getByRole('button', { name: /^Show all \d+ components$/ });
 if (await showAll.isVisible()) await showAll.click();
 // Insert may have shown the card before it was red: its picture is drawn again.
 let redPic;

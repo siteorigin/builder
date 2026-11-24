@@ -100,8 +100,8 @@ const assertToolbarFits = (l, where) => {
 };
 
 /** Drag a splitter by dx pixels in ten steps, the first a fast 10% of the way (over the preview frame). */
-const drag = async (sel, dx) => {
-  const b = await win.locator(sel).boundingBox();
+const drag = async (splitter, dx) => {
+  const b = await splitter.boundingBox();
   const x = b.x + b.width / 2;
   const y = b.y + b.height / 2;
   await win.mouse.move(x, y);
@@ -114,12 +114,12 @@ const panels = async () => {
   const l = await layout();
   return { side: l.side.width, dock: l.dock.width };
 };
-const press = async (sel, key, times = 1) => {
-  await win.locator(sel).focus();
+const press = async (splitter, key, times = 1) => {
+  await splitter.focus();
   for (let i = 0; i < times; i++) await win.keyboard.press(key);
 };
-const LEFT = '.side-panel .resizer';
-const RIGHT = '.dock .resizer';
+const LEFT = win.getByRole('separator', { name: 'Resize sidebar' });
+const RIGHT = win.getByRole('separator', { name: 'Resize right panel' });
 
 step('the native window stops at its declared 1100×700 minimum, and the toolbar fits there');
 const smallest = await app.evaluate(({ BrowserWindow }) => {
@@ -257,12 +257,12 @@ for (const [sel, w] of [
   [LEFT, 200],
   [RIGHT, 412]
 ]) {
-  assert.equal(Number(await win.locator(sel).getAttribute('aria-valuenow')), w, `${sel} reports the width it shows`);
-  assert.equal(Number(await win.locator(sel).getAttribute('aria-valuemax')), w, `${sel} reports its limit`);
+  assert.equal(Number(await sel.getAttribute('aria-valuenow')), w, `${sel} reports the width it shows`);
+  assert.equal(Number(await sel.getAttribute('aria-valuemax')), w, `${sel} reports its limit`);
 }
 await press(RIGHT, 'ArrowRight');
 assert.deepEqual(await panels(), { side: 216, dock: 396 }, 'narrowing the dock gives the sidebar its room back');
-assert.equal(Number(await win.locator(RIGHT).getAttribute('aria-valuemax')), 412, 'the dock can still take the room back');
+assert.equal(Number(await RIGHT.getAttribute('aria-valuemax')), 412, 'the dock can still take the room back');
 await press(RIGHT, 'ArrowLeft');
 assert.deepEqual(await panels(), { side: 200, dock: 412 }, 'the step is taken back');
 
@@ -387,7 +387,7 @@ step('a drag ends when the layout changes under it, instead of jumping');
 {
   // The sidebar is squeezed to 200 (it was given 420). Hiding the dock mid-drag gives it 420 back; the next
   // move must not drag it from the stale 200.
-  const b = await win.locator(LEFT).boundingBox();
+  const b = await LEFT.boundingBox();
   const x = b.x + b.width / 2;
   const y = b.y + b.height / 2;
   await win.mouse.move(x, y);

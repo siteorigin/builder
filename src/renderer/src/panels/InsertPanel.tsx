@@ -373,15 +373,6 @@ function codeMarks(source: string): ReactNode[] {
   return [...doc.body.children].flatMap((c) => walk(c, 0));
 }
 
-/** A saved component's small picture in its row and in search: its sketch, or its theme art for one of its options. */
-function LibraryThumb({ def, st }: { def: ComponentDefinition; st: ProjectState }) {
-  return (
-    <span className="insert-lib-thumb" aria-hidden="true">
-      <DesignSketch def={def} st={st} />
-    </span>
-  );
-}
-
 /**
  * A saved component rendered on its own, as visitors see it, by the editor's isolated preview (never part of the
  * site): prepared for this component and its options, shown in a frame at the canvas width and scaled down to fit,
@@ -1363,11 +1354,8 @@ export function InsertPanel() {
       {justAdded(it) ? <Check /> : <Plus />}
     </span>
   );
-  // A project component is pictured by its thumbnail, drawn while the panel is open.
   const iconFor = (it: Item) =>
-    it.kind === 'component' ? (
-      <ComponentThumb definitionId={it.spec.definitionId!} code={it.code} active={open} done={justAdded(it)} />
-    ) : justAdded(it) ? (
+    justAdded(it) ? (
       <span className="ico done">
         <Check />
       </span>
@@ -1488,7 +1476,7 @@ export function InsertPanel() {
       {!allMine && unusedCount > 0 && <span className="insert-more-note">{unusedCount} not used</span>}
     </button>
   );
-  /** A saved component's picture: its design's sketch (or theme art), marked as a component or code, or as just added. */
+  /** A saved component's picture, marked as a component or code, or as just added. */
   const libraryPic = (it: Item) => {
     const def = st.components[it.spec.definitionId!];
     if (it.variant)
@@ -1499,7 +1487,7 @@ export function InsertPanel() {
       );
     return (
       <span className="insert-lib-pic">
-        {def && <LibraryThumb def={def} st={st} />}
+        {def && <ComponentThumb definitionId={def.id} active={open} fallback={<DesignSketch def={def} st={st} />} />}
         <span className={`insert-lib-mark${justAdded(it) ? ' done' : ''}`} aria-hidden="true">
           {justAdded(it) ? <Check /> : it.code ? <Code /> : <Component />}
         </span>

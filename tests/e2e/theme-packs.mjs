@@ -50,12 +50,17 @@ const frame = await createProject(win, { name: 'Pack Studio', parentDir: join(WO
 const snapshot = () => win.evaluate(async () => (await window.builder.project.snapshot()).state);
 const panel = win.locator('.side-panel-view:not([hidden])');
 
-step('Insert shows a thumbnail of every section, drawn when the pack was built');
+step('Insert shows the pack thumbnails and a layout sketch for the empty Section');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
-const shots = panel.locator('.insert-group[data-kind="section"] .insert-tile.section img.insert-shot');
-await eventually(async () => assert.ok((await shots.count()) >= 18, 'every catalogue section has a thumbnail'), 15000);
+const tiles = panel.locator('.insert-group[data-kind="section"] .insert-tile.section');
+const shots = tiles.locator('img.insert-shot');
+const emptySection = tiles.filter({ has: win.locator('strong', { hasText: /^Section$/ }) });
+await eventually(async () => {
+  assert.ok((await tiles.count()) >= 18, 'the section catalogue is shown');
+  assert.equal(await emptySection.locator('.sparse .sketch').count(), 1, 'the empty Section uses a sketch');
+  assert.equal(await shots.count(), (await tiles.count()) - 1, 'every other section has a thumbnail');
+}, 15000);
 await eventually(async () => assert.ok((await shots.evaluateAll((imgs) => imgs.every((i) => i.complete && i.naturalWidth === 320 && i.src.startsWith('data:image/webp')))), 'each thumbnail is a decoded WebP image'));
-assert.equal(await panel.locator('.insert-group[data-kind="section"] .sketch').count(), 0, 'no hand-drawn sketch is left in place of a thumbnail');
 assert.equal(new Set(await shots.evaluateAll((imgs) => imgs.map((i) => i.src))).size, await shots.count(), 'each section has its own thumbnail');
 await panel.locator('.insert-group[data-kind="section"]').first().screenshot({ path: join(SHOTS, 'theme-packs-insert.png') });
 
@@ -63,10 +68,10 @@ step('Variants lists each option with its own thumbnail, and inserts the option 
 const variants = panel.getByRole('button', { name: 'Variants' });
 await variants.click();
 assert.equal(await variants.getAttribute('aria-pressed'), 'true');
-const darkHero = panel.locator('.insert-tile.section', { has: win.locator('strong', { hasText: /^Split hero$/ }) }).filter({ has: win.locator('.insert-variant', { hasText: /^Dark$/ }) });
+const darkHero = panel.getByRole('button', { name: /^Split hero, Dark(?:,|$)/ });
 await darkHero.waitFor();
 const [plain, dark] = await Promise.all([
-  panel.locator('.insert-tile.section', { has: win.locator('strong', { hasText: /^Split hero$/ }) }).first().locator('img').getAttribute('src'),
+  panel.getByRole('button', { name: /^Split hero, Theme default(?:,|$)/ }).locator('img').getAttribute('src'),
   darkHero.locator('img').getAttribute('src')
 ]);
 assert.ok(dark && dark !== plain, 'the variant has its own thumbnail');

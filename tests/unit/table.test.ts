@@ -22,7 +22,7 @@ import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { selectionTools } from '@agent/selection';
 import { agentProps, compactNode, catalogueIndex } from '@agent/context';
 import { OP_REACH } from '@agent/scope';
-import { checkHeld, fieldKey, readField, shownField, typedText } from '../../src/renderer/src/lib/held';
+import { checkHeld, fieldKey, readField, shownField, tableRowNameEdit, typedText } from '../../src/renderer/src/lib/held';
 import { addColumnNote, addRowNote, focusAfterRemove, readTable, removeColumnNote, rowTitle, tableCount, tableMoveAnnouncement, tableMoveFocus } from '../../src/renderer/src/lib/table-editor';
 import { checkSvelteSource } from '../../src/main/codecheck';
 import { ProjectSession } from '../../src/main/project/session';
@@ -438,6 +438,17 @@ describe('typed table edits held while the AI works', () => {
     const replaced = { ...TIMETABLE, rows: [{ id: 'row_1', cells: { col_day: 'Sunday', col_workshop: 'Raku', col_time: '10:00' } }, ...TIMETABLE.rows.slice(1)] };
     const after = applyOperations(s, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: replaced }]).state;
     expect(checkHeld(after, [cell], base).kind).toBe('changed');
+  });
+
+  it('identifies a row-name edit separately from changes to the cell being typed', () => {
+    const { s, owner, nodeId } = withTable();
+    const time = edit(nodeId, owner, { action: 'setCell', rowId: 'row_1', columnId: 'col_time', value: '11:00' });
+    const day = edit(nodeId, owner, { action: 'setCell', rowId: 'row_1', columnId: 'col_day', value: 'Tuesday' });
+    const base = [(readField(s, time) as { value: unknown }).value];
+    const renamed = applyOperations(s, [day]).state;
+    const edited = applyOperations(renamed, [time]).state;
+    expect(tableRowNameEdit([time], base, [(readField(renamed, time) as { value: unknown }).value])).toEqual(day);
+    expect(tableRowNameEdit([time], base, [(readField(edited, time) as { value: unknown }).value])).toBeNull();
   });
 
   it('reports a removed row or column as gone', () => {

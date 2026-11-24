@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react';
-import { Check, Code } from 'lucide-react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { ComponentThumb as Thumb } from '@shared/component-thumbs';
 import { api, useStore } from '../store';
 
@@ -31,7 +30,7 @@ function thumbState(opening: string | undefined, definitionId: string) {
 }
 
 /** A project component's thumbnail (a data URL), whether it cannot be pictured, asked for while `active`. */
-export function useComponentThumb(definitionId: string, active: boolean): { url: string | null; failed: boolean } {
+function useComponentThumb(definitionId: string, active: boolean): { url: string | null; failed: boolean } {
   const opening = useStore((s) => s.snapshot?.workspaceKey);
   const revision = useStore((s) => s.snapshot?.revision);
   const ready = useStore((s) => s.runtime.state === 'ready');
@@ -76,35 +75,14 @@ export function useComponentThumb(definitionId: string, active: boolean): { url:
   return { url: picture?.url ?? null, failed: broken };
 }
 
-/**
- * A project component's tile picture in Insert: its thumbnail, or a sketch of a card while that is drawn or when
- * the component cannot be pictured (a code component also shows its mark). `done` marks a component just inserted.
- */
-export function ComponentThumb({ definitionId, code, active, done }: { definitionId: string; code?: boolean; active: boolean; done?: boolean }) {
+/** A project component's thumbnail in Insert. Its design sketch stands in while it draws. */
+export function ComponentThumb({ definitionId, active, fallback }: { definitionId: string; active: boolean; fallback: ReactNode }) {
   const { url, failed } = useComponentThumb(definitionId, active);
   const [broken, setBroken] = useState<string | null>(null);
   const shot = url && url !== broken ? url : null;
   return (
-    <span className={`insert-thumb component-thumb${shot ? ' shot' : ''}${failed ? ' failed' : ''}${done ? ' done' : ''}`} aria-hidden="true" data-thumb={shot ? 'ready' : failed ? 'failed' : 'pending'}>
-      {shot ? (
-        <img className="insert-shot" src={shot} alt="" draggable={false} onError={() => setBroken(shot)} />
-      ) : (
-        <span className="sketch">
-          <i className="hi" style={{ width: '55%', height: 4 }} />
-          <i style={{ width: '85%', height: 3 }} />
-          <i style={{ width: '70%', height: 3 }} />
-        </span>
-      )}
-      {code && !shot && (
-        <span className="component-thumb-mark">
-          <Code />
-        </span>
-      )}
-      {done && (
-        <span className="component-thumb-mark done">
-          <Check />
-        </span>
-      )}
+    <span className="insert-lib-thumb component-thumb" aria-hidden="true" data-thumb={shot ? 'ready' : failed ? 'failed' : 'pending'}>
+      {shot ? <img className="insert-shot" src={shot} alt="" draggable={false} onError={() => setBroken(shot)} /> : fallback}
     </span>
   );
 }

@@ -7,7 +7,7 @@ import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, refusedDraftCount, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
-import { checkHeld, fieldKey, placeOf, readFields, shownField, typedText, whereOf } from './lib/held';
+import { checkHeld, fieldKey, placeOf, readFields, shownField, tableRowNameEdit, typedText, whereOf } from './lib/held';
 import type { RevealedItem } from './lib/reveal';
 import type { StyleCopy } from './lib/style-copy';
 import type { LayerSet } from './lib/layer-set';
@@ -549,7 +549,7 @@ export async function commitOps(operations: EditOperation[], label: string, coal
 const HELD_MESSAGE = 'An edit you made has not been saved yet.';
 
 /** The revision each field's latest typed save made, by opening and field (see writeTyped). */
-const ownSaves = new Map<string, number>();
+const ownSaves = new Map<string, { revision: number; text: string | null }>();
 
 /** A typed edit's fields as they were when typing began: what it is checked against before it is written. */
 function typedGuard(base: ProjectSnapshot | null, operations: EditOperation[]): { base: ProjectSnapshot; before: unknown[] } | null {
@@ -596,17 +596,25 @@ async function writeTyped(
       // Changed only by the author's own save of this field, which typing began before this window heard of, and
       // nothing since: nothing they did not see is lost.
       // The only change since the base is that save, so nothing else it reads (a route a link names, say) moved.
-      const own = ownSaves.get(field);
+      const own = ownSaves.get(field)?.revision;
       const ownOnly = own !== undefined && own === base.revision + 1 && own === snap.revision;
+      // Tab can start the next cell before this window hears that it saved the row's first cell.
+      const rowName = check.kind === 'changed' ? tableRowNameEdit(operations, before, current) : null;
+      const rowNameSave = rowName ? ownSaves.get(fieldOf(base.workspaceKey, [rowName])) : undefined;
+      const ownRowName =
+        rowName && rowNameSave && rowNameSave.revision > base.revision && rowNameSave.revision <= snap.revision &&
+        rowNameSave.text === typedText(rowName);
       // Typed over text the page showed before it caught up: written only while the field holds just that text.
       const words = (t: string) => t.replace(/\s+/g, ' ').trim();
       const now = operations.length === 1 ? shownField(operations[0], current[0]) : null;
       const asShown = typed.shown !== undefined && typeof now === 'string' && words(now) === words(typed.shown);
-      if (typed.review ? !asShown : check.kind === 'changed' && !ownOnly) return hold({ phase: 'changed', current });
+      if (typed.review ? !asShown : check.kind === 'changed' && !ownOnly && !ownRowName) return hold({ phase: 'changed', current });
     }
     const r = await api.project.apply({ operations, expectedRevision: expected ?? snap.revision }, { label, coalesceKey, opening: base.workspaceKey });
     if (r.ok) {
-      ownSaves.set(field, r.revision);
+      const [op] = operations;
+      const text = operations.length === 1 && op.type === 'instance.editTable' && op.action === 'setCell' ? typed.text : null;
+      ownSaves.set(field, { revision: r.revision, text });
       return { held: false, result: r };
     }
     const code = r.error?.code;

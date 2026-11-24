@@ -18,7 +18,7 @@ await win.reload();
 await win.waitForSelector('.welcome');
 
 const message = () => win.getByRole('textbox', { name: 'Message' });
-const suggestions = () => win.getByRole('group', { name: 'Suggestions' });
+const suggestions = () => win.getByRole('group', { name: 'Each fills the box below, ready to edit.' });
 const sendButton = () => win.locator('.send-btn');
 const chatTitle = () => win.locator('.chat-title');
 const openAiTab = async () => {
@@ -132,7 +132,8 @@ const contactAbout = 'a short note, how to get in touch and a simple way to send
 // A one-page site: its own page (Blank's Home starts with nothing on it), the page it is missing, and one thing that needs no page.
 assert.deepEqual(await starterTexts(), ['Start the “Home” page: add an introduction and the sections it needs', create('Contact', contactAbout), 'Make the brand color a deep navy blue across the whole site']);
 await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'page.create', title: 'お問い合わせ', starter: 'intro', addToNavigation: true }] }, { label: 'Add page' }));
-await win.locator('.pages-list [role="option"]', { hasText: 'お問い合わせ' }).click();
+await win.locator('.project-title').click();
+await win.getByRole('menuitemradio', { name: /^お問い合わせ/ }).click();
 await eventually(async () => assert.match(await win.locator('.toolbar .project-title').innerText(), /お問い合わせ/, 'the second page is open'));
 // The open page comes first, Home is labelled as another page, and お問い合わせ is the contact page, so About is the page offered.
 const forSecond = [

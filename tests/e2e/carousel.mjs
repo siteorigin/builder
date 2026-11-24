@@ -69,7 +69,11 @@ try {
       const t = ul.getBoundingClientRect();
       return { scrollLeft: ul.scrollLeft, inList: r.left >= t.left - 1 && r.right <= t.right + 1, inFrame: r.top >= 0 && r.bottom <= innerHeight };
     }, id);
-  assert.equal((await slideShows('s5')).inList, false, 'the fifth slide starts out of sight');
+  await eventually(async () => {
+    const initial = await slideShows('s5');
+    assert.equal(initial.scrollLeft, 0, 'the track starts at its first slide');
+    assert.equal(initial.inList, false, 'the fifth slide starts out of sight');
+  });
   await win.locator('.rail [aria-label="Layers"]').click();
   await win.locator(`[role="tree"] .list-item[data-node="${placed.id}"]`).click();
   const list = win.locator('#dock-panel-inspect [data-list="slides"]');
@@ -276,13 +280,13 @@ try {
         wrap: s.flexWrap,
         overflowX: s.overflowX,
         visible: [el, ul, ...ul.children].every((x) => getComputedStyle(x).visibility === 'visible' && x.getBoundingClientRect().height > 0),
-        controls: [...el.querySelectorAll('.so-carousel__controls')].map((x) => getComputedStyle(x).display),
+        visibleControls: [...el.querySelectorAll('.so-carousel__controls')].filter((x) => x.getClientRects().length > 0).length,
         stacked: boxes.every((b, i) => i === 0 || (b.top >= boxes[i - 1].bottom - 1 && Math.abs(b.left - boxes[0].left) < 1)),
         full: boxes.every((b) => Math.abs(b.width - ul.getBoundingClientRect().width) < 1),
         overflow: document.documentElement.scrollWidth - innerWidth
       };
     });
-    assert.deepEqual(printed, { display: 'flex', wrap: 'wrap', overflowX: 'visible', visible: true, controls: ['none'], stacked: true, full: true, overflow: printed.overflow }, 'every slide prints, stacked, as wide as the column, without buttons');
+    assert.deepEqual(printed, { display: 'flex', wrap: 'wrap', overflowX: 'visible', visible: true, visibleControls: 0, stacked: true, full: true, overflow: printed.overflow }, 'every slide prints, stacked, as wide as the column, without buttons');
     assert.ok(printed.overflow <= 0, 'and the printed page is no wider than the sheet');
     await context.close();
   }

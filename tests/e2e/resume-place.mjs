@@ -23,7 +23,7 @@ const cta = s0.pages[home].rootIds.at(-1);
 assert.equal(s0.components[s0.pages[home].nodes[cta].definitionId].componentId, 'cta.banner', 'Home ends with a call to action');
 assert.ok(s0.pages[home].rootIds.length >= 6, 'Home is long enough to scroll');
 
-const crumbs = win.locator('.status-bar nav[aria-label="Selected element"]');
+const crumbs = win.getByRole('navigation', { name: 'Selected element' });
 const pageShown = win.locator('.project-title .page');
 const scrollY = () => frame.locator('html').evaluate(() => Math.round(window.scrollY));
 const scrollTo = (y) => frame.locator('html').evaluate((html, y) => window.scrollTo({ top: y, behavior: 'instant' }), y);
@@ -49,7 +49,7 @@ async function ctaSelected(where) {
   await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${cta}"]`).getAttribute('aria-selected'), 'true', `${where}: Layers selects it`));
 }
 async function nothingSelected(where) {
-  await eventually(async () => assert.equal((await crumbs.innerText()).trim(), '', `${where}: nothing is selected`));
+  await eventually(async () => assert.equal(await crumbs.count(), 0, `${where}: nothing is selected`));
   await showTab('Layers');
   assert.equal(await win.locator('[role="tree"] [aria-selected="true"]').count(), 0, `${where}: no layer is selected`);
 }

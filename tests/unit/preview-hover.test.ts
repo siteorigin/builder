@@ -375,18 +375,19 @@ describe.skipIf(!browserInstalled)('pointer movement and page changes in the pre
     expect(r[0].payload.revealed).toHaveLength(1);
   });
 
-  it('still ends an inline edit whose element an update removed, with nothing outlined', async () => {
+  it('hands back typed text when an update removes the edited element, even with nothing outlined', async () => {
     // Only the page changing can end the edit here: losing focus would end it too.
     await frame.evaluate(`window.noBlur = true`);
     await post('beginTextEdit', { desc: desc(TITLE), editId: 'e1' });
     await expect.poll(async () => (await seen()).some((m) => m.type === 'textEditStarted')).toBe(true);
-    // Typed text: an edit ended any other way would hand it back as a commit.
     await frame.evaluate(`document.getElementById('words').textContent = 'Typed words'`);
     await flushed();
     await reset();
     await frame.evaluate(`document.querySelector('h1').replaceWith(Object.assign(document.createElement('h1'), { textContent: 'Rebuilt' }))`);
     const messages = await flushed();
-    expect(messages.filter((m) => m.type === 'textCancel').map((m) => m.payload.editId)).toEqual(['e1']);
-    expect(messages.map((m) => m.type)).not.toContain('textCommit');
+    expect(messages.filter((m) => m.type === 'textCommit').map((m) => m.payload)).toMatchObject([
+      { editId: 'e1', detached: true, before: 'Heading words and more', text: 'Typed words and more' }
+    ]);
+    expect(messages.map((m) => m.type)).not.toContain('textCancel');
   });
 });

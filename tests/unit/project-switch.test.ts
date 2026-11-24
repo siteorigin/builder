@@ -82,9 +82,9 @@ afterEach(async () => {
 });
 
 /** A project with its website tools in place, as the app leaves it once the preview has run. */
-async function makeProject(name: string): Promise<string> {
+async function makeProject(name: string, starter: 'blank' | 'business' = 'blank'): Promise<string> {
   const dir = temp(name);
-  const created = await ProjectSession.create(dir, createStarterState('blank', name, false));
+  const created = await ProjectSession.create(dir, createStarterState(starter, name, false));
   await created.close();
   const pkg = '{"name":"site","type":"module"}';
   writeFileSync(join(dir, 'package.json'), pkg);
@@ -497,7 +497,7 @@ describe('a new project that is cancelled while another is open', () => {
 
 describe('copying for Paste while another project opens (#240)', () => {
   it('takes a copy only in the opening it was pressed in, never from a duplicate with the same IDs opened meanwhile', async () => {
-    const original = await makeProject('original');
+    const original = await makeProject('original', 'business');
     // Duplicated as the app does: the same documents, so the same page and element IDs, under a new project ID.
     const duplicate = join(temp('duplicate'), 'site');
     cpSync(original, duplicate, { recursive: true, verbatimSymlinks: true });
@@ -508,6 +508,7 @@ describe('copying for Paste while another project opens (#240)', () => {
     const keyA = c.openingKey!;
     const pageId = a.session.state.site.homePageId;
     const nodeId = a.session.state.pages[pageId].rootIds[0];
+    expect(nodeId).toBeTruthy();
     const revision = a.session.revision;
 
     const b = (await openCurrent(c, duplicate)).session;

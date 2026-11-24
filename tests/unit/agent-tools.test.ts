@@ -1207,7 +1207,8 @@ describe('selection tools', () => {
         },
         () => finish()
       ],
-      focused
+      // Leave room for the full catalogue after widening. The compact selection budget is tested separately.
+      { ...focused, contextWindowTokens: 12_000 }
     );
     answers.push('Yes, allow changes beyond the selection');
     const { result } = await run('Add a services page for this', heroRef(session.state));

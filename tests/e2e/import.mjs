@@ -199,7 +199,7 @@ await sharp({ create: { width: 4000, height: 3000, channels: 3, noise: { type: '
   .toFile(camera);
 const plain = join(WORK, 'plain.jpg');
 await sharp({ create: { width: 800, height: 600, channels: 3, background: '#406080' } }).jpeg().toFile(plain);
-const notes = join(WORK, 'notes.txt');
+const notes = join(WORK, 'notes.unsupported');
 writeFileSync(notes, 'not a picture');
 // The native chooser answers with the next batch, and records what it offered.
 await app.evaluate(({ dialog }) => {
@@ -233,7 +233,7 @@ else assert.match(heicRow, /Can’t be added: it is a HEIC photo[^]*JPEG/, 'with
 assert.match(scanRow, /field-scan\.png[^]*PNG · 3,000 × 2,000[^]*web-sized copy instead: JPEG · 2,560 × 1,707/, 'the large PNG is offered a web-sized JPEG');
 assert.ok(await rows.nth(1).locator('input[type="checkbox"]').isChecked(), 'the web-sized copy is chosen by default');
 assert.match(await win.locator('.import-review-rest').innerText(), /One other file is added as it is/);
-assert.match(await win.locator('.import-review-row.refuse', { hasText: 'notes.txt' }).innerText(), /Can’t be added: only JPEG, PNG/, 'the text file is named as one that can’t be added');
+assert.match(await rows.filter({ hasText: 'notes.unsupported' }).innerText(), /Can’t be added: only JPEG, PNG/, 'the unsupported file is named as one that can’t be added');
 // Nothing is written while the author decides.
 assert.deepEqual(Object.keys((await win.evaluate(() => window.builder.project.snapshot())).state.assets.assets).sort(), [...before].sort(), 'nothing is added before the author confirms');
 await win.locator('[data-testid="import-review-add"]').click();
@@ -288,7 +288,7 @@ if (await win.locator('.asset-detail .asset-back').count()) await win.locator('.
 await win.locator(`[data-asset="${original.id}"]`).click();
 const copyButton = win.locator('[data-testid="asset-web-copy"]');
 await copyButton.waitFor({ timeout: 30000 });
-assert.match(await win.locator('[data-testid="asset-large-note"]').innerText(), /A web-sized copy \(JPEG · 2560 × 1920\) keeps it light\. The original stays in Assets\./);
+assert.match(await win.locator('[data-testid="asset-large-note"]').innerText(), /A web-sized copy \(JPEG · 2560 × 1920\) keeps it light\. It’s added to Assets beside the original/);
 await copyButton.click();
 await eventually(async () => assert.equal(await win.locator('.asset-detail h4').innerText(), 'camera (web-sized)'), 60000);
 now = await win.evaluate(() => window.builder.project.snapshot());

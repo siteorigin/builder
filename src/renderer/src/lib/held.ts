@@ -173,7 +173,7 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       // other content under the same ID is not the one the author edited. Other cells may change (another held edit
       // to the same row) without making this a different field.
       const first = (Array.isArray(table?.columns) ? table.columns : []).find((c) => c && typeof c.id === 'string');
-      const name = first && first.id !== column.id ? { name: row.cells?.[first.id] ?? '' } : {};
+      const name = first && first.id !== column.id ? { name: row.cells?.[first.id] ?? '', nameColumnId: first.id } : {};
       return found({ definitionId: node.definitionId, value: row.cells?.[column.id] ?? '', ...name });
     }
     case 'node.setStyle': {
@@ -282,6 +282,16 @@ export function checkHeld(state: ProjectState, operations: EditOperation[], base
   if (missing && !missing.found) return { kind: 'gone', what: missing.what };
   const current = now.map((r) => (r.found ? r.value : undefined));
   return current.every((v, i) => sameValue(v, base[i])) ? { kind: 'apply' } : { kind: 'changed', current };
+}
+
+/** The edit that could account for a table cell's row name changing while the cell itself stayed the same. */
+export function tableRowNameEdit(operations: EditOperation[], base: unknown[], current: unknown[]): EditOperation | null {
+  const [op] = operations;
+  if (operations.length !== 1 || op.type !== 'instance.editTable' || op.action !== 'setCell') return null;
+  const before = base[0] as { name?: string } | undefined;
+  const after = current[0] as { name?: string; nameColumnId?: string } | undefined;
+  if (!before || !after?.nameColumnId || typeof after.name !== 'string' || !sameValue({ ...before, name: after.name }, after)) return null;
+  return { ...op, columnId: after.nameColumnId, value: after.name };
 }
 
 /** Keys that say which field an operation writes; every other key is the value written. */

@@ -12,8 +12,13 @@ const browserInstalled = existsSync(chromium.executablePath());
 
 describe('layout inspection width', () => {
   it.skipIf(!browserInstalled)('measures the full 390px on a tall page, whatever the scrollbar', async () => {
-    // Playwright hides scrollbars by default, which would hide this bug.
-    const browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath(), ignoreDefaultArgs: ['--hide-scrollbars'] });
+    // Require a scrollbar that takes layout space, even when the OS uses overlay scrollbars.
+    const browser = await chromium.launch({
+      headless: true,
+      executablePath: chromium.executablePath(),
+      ignoreDefaultArgs: ['--hide-scrollbars'],
+      args: ['--disable-features=OverlayScrollbar']
+    });
     try {
       const page = await browser.newPage();
       const origin = 'http://inspect.test';
