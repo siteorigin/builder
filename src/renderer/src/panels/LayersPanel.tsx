@@ -12,7 +12,7 @@ import { askAiAbout, deleteLayers, deleteSelection, duplicateLayers, duplicateSe
 import { copySelection } from '../lib/clipboard';
 import { styleCopyItems } from './StylePaste';
 import { everySizeEdits, eyeAction, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type VisibilityEdit } from '../lib/layers';
-import { besideOf, extendTo, inSet, layerRef, toggle, type Group } from '../lib/layer-set';
+import { besideOf, extendTo, inGroup, layerRef, toggle, type Group } from '../lib/layer-set';
 import { treeFor } from '../lib/model';
 import { OutlinePanel } from './OutlinePanel';
 
@@ -240,7 +240,8 @@ export function LayersPanel() {
 
   const openMenu = (el: HTMLElement | { x: number; y: number; returnTo?: HTMLElement }, ref: ElementRef, topLevel: boolean, onRename?: () => void) => {
     // A menu opened on one of several layers selected together is for all of them; on any other layer, for that one.
-    if (picked && inSet(layerSet, ref)) return openGroupMenu(el, picked);
+    // Membership is the live group's (as the rows show it): a layer an Undo moved away from the others is not in it.
+    if (picked && inGroup(picked, ref)) return openGroupMenu(el, picked);
     setState({ selection: ref });
     const tree = ref.owner.kind === 'shell' ? st.site.shell[ref.owner.id as 'header' | 'footer'] : ref.owner.kind === 'component' ? st.components[ref.owner.id].tree! : st.pages[ref.owner.id];
     const node = tree.nodes[ref.instancePath[0] ?? ref.nodeId];

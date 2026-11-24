@@ -107,7 +107,8 @@ export function planLayers(s: EditorPlace = getState()): LayersPlan | null {
   const snap = s.snapshot;
   if (!snap) return null;
   const live = liveGroup(s);
-  if (live) return { snap, group: live, several: true, selection: s.selection, layerSet: s.layerSet, anchor: s.layerSet?.anchor };
+  // The range starts at its anchor while that is still one of them, else at the selection.
+  if (live) return { snap, group: live, several: true, selection: s.selection, layerSet: s.layerSet, anchor: live.ids.includes(s.layerSet?.anchor ?? '') ? s.layerSet!.anchor : s.selection!.nodeId };
   const t = structuralTarget(s.selection, { state: snap.state });
   const tree = t ? treeFor(snap.state, t.owner) : undefined;
   const group = t && tree ? groupOf(tree, t.owner, [t.nodeId]) : null;

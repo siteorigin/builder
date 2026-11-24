@@ -319,6 +319,8 @@ describe('copying several selected together, as Layers and ⌘C/⌘V do', () => 
     const n = entries();
     expect(clipboard.pasteCopy()).toBe(true);
     await vi.waitFor(() => expect(slotIds()).toHaveLength(5));
+    // The change is recorded once it is saved, a moment after the project shows it.
+    await pending;
     expect(entries()).toBe(n + 1);
     const [, , c1, c2] = slotIds();
     expect(slotIds()).toEqual([h1, h2, c1, c2, h3]);
@@ -353,8 +355,27 @@ describe('copying several selected together, as Layers and ⌘C/⌘V do', () => 
     await vi.waitFor(() => expect(getState().toasts.at(-1)?.text).toMatch(/^Copied/));
     clipboard.pasteCopy();
     await vi.waitFor(() => expect(slotIds('n_boxes')).toHaveLength(4));
+    await pending;
     expect(slotIds('n_boxes').slice(0, 2)).toEqual([b1, b2]);
     expect((session.state.pages[homeId()].nodes[b2] as { children: string[] }).children).toEqual([]);
+  });
+
+  it('a paste beside layers selected together refuses, rather than land elsewhere, when the list changed after ⌘V', async () => {
+    const [h1, h2, h3] = await threeHeadings();
+    setState({ selection: ref(home(), h2), layerSet: { owner: home(), ids: [h1, h2], anchor: h1 } });
+    clipboard.copySelection();
+    await vi.waitFor(() => expect(getState().toasts.at(-1)?.text).toMatch(/^Copied/));
+    clipboard.pasteCopy();
+    // Reordered before the paste is applied: the place it was given no longer means "after Two".
+    void bridge.project.apply({ operations: [{ type: 'node.move', owner: home(), nodeId: h3, parentId: 'n_holder', slot: 'content', index: 0 }] }, { label: 'Move' });
+    await vi.waitFor(() => expect(getState().toasts.at(-1)?.text).toBe('The project changed while you were choosing. Choose again.'));
+    expect(slotIds()).toEqual([h3, h1, h2]);
+  });
+
+  it('a range whose anchor has gone starts again at the selection', () => {
+    const { testimonials } = pickGalleryAndTestimonials();
+    setState({ layerSet: { ...getState().layerSet!, anchor: 'n_gone' } });
+    expect((actions.planLayers() as Plan & { anchor?: string }).anchor).toBe(testimonials);
   });
 
   it('pastes two sections on another page, in order, as one change, selected together', async () => {
@@ -365,6 +386,7 @@ describe('copying several selected together, as Layers and ⌘C/⌘V do', () => 
     const before = roots(aboutId()).length;
     clipboard.pasteCopy();
     await vi.waitFor(() => expect(roots(aboutId())).toHaveLength(before + 2));
+    await pending;
     const [g2, t2] = roots(aboutId()).slice(-2);
     expect([sectionOf('media.gallery', aboutId()), sectionOf('testimonials.grid', aboutId())]).toEqual([g2, t2]);
     await vi.waitFor(() => expect(getState().selection).toEqual(ref({ kind: 'page', id: aboutId() }, t2)));

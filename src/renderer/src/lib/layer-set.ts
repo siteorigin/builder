@@ -80,9 +80,9 @@ export function joins(tree: NodeTree, set: { owner: OwnerRef; ids: string[] }, r
   return !!a && !!b && a.list === b.list;
 }
 
-/** Whether `ref` is one of the set's layers. */
-export function inSet(set: LayerSet | null, ref: ElementRef): boolean {
-  return !!set && !ref.instancePath.length && sameOwner(set.owner, ref.owner) && set.ids.includes(ref.nodeId);
+/** Whether `ref` is one of the group's layers, as the project has them now (liveSet), not as they were picked. */
+export function inGroup(g: Group | null, ref: ElementRef): boolean {
+  return !!g && !ref.instancePath.length && sameOwner(g.owner, ref.owner) && g.ids.includes(ref.nodeId);
 }
 
 /** A row's reference, for comparing with the selection. */

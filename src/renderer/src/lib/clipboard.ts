@@ -93,7 +93,10 @@ async function pasteCopied(latest: Copied) {
   if (!entry || !clipboardId || getState().snapshot?.dir !== entry.dir) return;
   const at = places[entry.section ? 'section' : 'element'];
   if (!at) return;
-  const r = await applyOps([{ type: 'node.paste', clipboardId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${entry.label}`);
+  // Beside layers selected together, the place is a position in their list as the project was at the keypress: a
+  // change landing meanwhile makes it refuse rather than land somewhere else.
+  const beside = at === places.element && !!group && group.parentId !== null && !entry.section;
+  const r = await applyOps([{ type: 'node.paste', clipboardId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${entry.label}`, undefined, beside ? s.snapshot?.revision : undefined);
   const id = r?.[0]?.nodeId as string | undefined;
   const ids = Array.isArray(r?.[0]?.nodeIds) ? (r[0].nodeIds as string[]) : id ? [id] : [];
   const here = getState();

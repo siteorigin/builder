@@ -4,7 +4,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { onGonePage } from '../../src/renderer/src/lib/model';
-import { duplicateOps, extendTo, groupOf, liveSet, moveIntoOps, moveStepOps, moveToPageOps, rangeOf, removeOps, toggle, besideOf, type LayerSet, type PickResult } from '../../src/renderer/src/lib/layer-set';
+import { inGroup, duplicateOps, extendTo, groupOf, liveSet, moveIntoOps, moveStepOps, moveToPageOps, rangeOf, removeOps, toggle, besideOf, type LayerSet, type PickResult } from '../../src/renderer/src/lib/layer-set';
 
 /** The Business starter: Home holds hero, logos, features, media, stats, gallery, testimonials, cta. */
 function business() {
@@ -183,7 +183,10 @@ describe('picking several layers in Layers', () => {
     const n = withSlot();
     const set: LayerSet = { owner: n.owner, ids: [n.h1, n.h2, n.h3], anchor: n.h1 };
     const moved = apply(n.s, [{ type: 'node.move', owner: n.owner, nodeId: n.h3, parentId: null, index: 0 }]).state;
-    expect(liveSet(moved.pages[n.homeId], at(n.owner, n.h2), set)?.ids).toEqual([n.h1, n.h2]);
+    const live = liveSet(moved.pages[n.homeId], at(n.owner, n.h2), set);
+    expect(live?.ids).toEqual([n.h1, n.h2]);
+    // Its menu is its own again: the layer moved away is not one of the group, though it was picked with it.
+    expect([inGroup(live, at(n.owner, n.h1)), inGroup(live, at(n.owner, n.h3)), inGroup(live, { ...at(n.owner, n.h1), instancePath: [n.h1] })]).toEqual([true, false, false]);
     // The selection itself moved away: the set no longer applies.
     expect(liveSet(moved.pages[n.homeId], at(n.owner, n.h3), set)).toBeNull();
   });
