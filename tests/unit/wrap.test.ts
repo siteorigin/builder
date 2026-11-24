@@ -96,7 +96,8 @@ describe('Wrap and Ungroup on a page', () => {
     const refusedAfter: Array<[EditOperation, RegExp]> = [
       [{ type: 'node.setContent', owner: o, nodeId: row, field: 'anchor', value: 'actions' }, /by its anchor “actions”/],
       [{ type: 'node.setContent', owner: o, nodeId: row, field: 'ariaLabel', value: 'Actions' }, /accessible name/],
-      [{ type: 'node.setContent', owner: o, nodeId: row, field: 'tag', value: 'nav' }, /is a nav element/]
+      [{ type: 'node.setContent', owner: o, nodeId: row, field: 'tag', value: 'nav' }, /is a nav element/],
+      [{ type: 'node.setContent', owner: o, nodeId: row, field: 'appear', value: 'fade' }, /entrance effect/]
     ];
     for (const [edit, message] of refusedAfter) {
       const marked = apply(w.state, [edit]).state;
@@ -193,6 +194,15 @@ describe('Wrap and Ungroup in a component’s design', () => {
     expect(errors(w.state)).toEqual([]);
     const u = apply(w.state, [{ type: 'node.unwrap', owner: own, nodeIds: [stack] }]);
     expect(JSON.stringify(u.state.components[id])).toBe(before);
+  });
+
+  it('ungroups a group that hides when empty: what it held hides by itself', () => {
+    const { s, id, own } = features();
+    expect(tree(s, id).nodes.intro).toMatchObject({ collapseEmpty: true });
+    const u = apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['intro'] }]);
+    expect((tree(u.state, id).nodes.inner as ElementNode).children).toEqual(['eyebrow', 'heading', 'lead', 'grid']);
+    expect(u.state.components[id].parts.heading.nodeId).toBe('heading');
+    expect(errors(u.state)).toEqual([]);
   });
 
   it('ungroups a plain container right inside the root, and keeps the parts inside it', () => {

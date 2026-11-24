@@ -1418,9 +1418,10 @@ function nodeWrap(state: ProjectState, op: Op<'node.wrap'>): OpResult {
 
 /**
  * Why a node can't be ungrouped, or null when it is a plain container: one that only lays out what it holds, so taking
- * it away loses nothing but its own layout and styles. One that links, shows under a condition, is jumped to, is named
- * for assistive technology, or gives its content meaning by its tag does more, and so does a component's part or a
- * node its variants style (every placement styles those).
+ * it away loses nothing but its own layout and styles (hiding when empty among them: what it held hides by itself). One
+ * that links, shows under a condition, has an entrance, is jumped to, is named for assistive technology, or gives its
+ * content meaning by its tag does more, and so does a component's part or a node its variants style (every placement
+ * styles those).
  */
 function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined, n: GraphNode): string | null {
   const name = `“${displayName(state, n, def)}”`;
@@ -1435,6 +1436,7 @@ function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined
   if (n.anchor) return `Links can jump to ${name} by its anchor “${n.anchor}”, so it can’t be ungrouped. Remove the anchor first.`;
   if (n.ariaLabel !== undefined) return `${name} has an accessible name, so it can’t be ungrouped. Remove it first.`;
   if (n.carousel) return `${name} is a carousel, so it can’t be ungrouped.`;
+  if (n.appear) return `${name} has an entrance effect, which what it holds would lose, so it can’t be ungrouped. Remove the effect first.`;
   if (def) {
     const part = Object.values(def.parts).find((p) => p.nodeId === n.id);
     if (part) return `${name} is the “${part.label}” part of this component, which placements can style, so it can’t be ungrouped. Remove the part first.`;
