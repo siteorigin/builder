@@ -4,7 +4,7 @@ import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { generateComponentPreview } from '@generator/preview';
 import { PREVIEW_MODULE } from '@shared/component-preview';
-import { descOf, listPropFor, refExists, studioCtx, studioDescOf, studioDesignCtx, studioPick, designCtx, type BridgeDesc } from '../../src/renderer/src/lib/model';
+import { descOf, listPropFor, needsStudio, refExists, studioCtx, studioDescOf, studioDesignCtx, studioPick, designCtx, type BridgeDesc } from '../../src/renderer/src/lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec, studioVariants } from '../../src/renderer/src/lib/studio';
 
 const starter = () => createStarterState('blank', 'Studio Test', false);
@@ -96,6 +96,28 @@ describe('Component Studio: the design in the isolated preview', () => {
     // Only the edited component's own references are shown.
     expect(studioDescOf(state, id, { owner: { kind: 'page', id: state.site.homePageId }, instancePath: [], nodeId: root })).toBeNull();
     expect(studioDescOf(state, 'other', { owner: own(id), instancePath: [], nodeId: root })).toBeNull();
+  });
+});
+
+describe('Component Studio: when editing everywhere needs it', () => {
+  it('shows a component the page no longer places on its own, and leaves one placed there on the page', () => {
+    const { state, id } = design('features.grid');
+    // The project's own copy, as Edit everywhere makes one.
+    state.components[id] = { ...state.components[id], owner: 'project' };
+    const theme = state.components[installComponent(state, 'content.media')];
+    const home = state.site.homePageId;
+    const placed = makeInstance(state.components[id]);
+    const page = state.pages[home];
+    expect(needsStudio(state, { definitionId: id, returnPageId: home }, home)).toBe(true);
+    page.nodes[placed.id] = placed;
+    page.rootIds.push(placed.id);
+    expect(needsStudio(state, { definitionId: id, returnPageId: home }, home)).toBe(false);
+    // Already in the studio, not editing, no page, or a theme's original: nothing to do.
+    expect(needsStudio(state, { definitionId: id, returnPageId: home, studio: NEW_STUDIO }, home)).toBe(false);
+    expect(needsStudio(state, null, home)).toBe(false);
+    expect(needsStudio(state, { definitionId: id, returnPageId: home }, null)).toBe(true);
+    expect(theme.owner).toBe('theme');
+    expect(needsStudio(state, { definitionId: theme.id, returnPageId: home }, home)).toBe(false);
   });
 });
 

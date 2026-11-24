@@ -21,8 +21,8 @@ import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { ARRIVAL_MS, arrivalShown, markArrival, takeArrival } from '../lib/arrival';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
-import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
-import { StudioLoads, studioSpec } from '../lib/studio';
+import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
+import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
@@ -1169,6 +1169,13 @@ export function Canvas() {
   useEffect(() => {
     if (definitionMode && state && !state.components[definitionMode.definitionId]) setState({ definitionMode: null, pageId: definitionMode.returnPageId, selection: null });
   }, [definitionMode, state]);
+  // Editing everywhere a component the page no longer places (its last placement there removed or undone): Component
+  // Studio shows it on its own, so the canvas still has it to edit. Not while previewing, where a visitor's link moves
+  // the page on: back in Edit, it is shown there.
+  useEffect(() => {
+    const s = getState();
+    if (state && s.mode === 'edit' && needsStudio(state, s.definitionMode, s.pageId)) setState({ definitionMode: { ...s.definitionMode!, studio: NEW_STUDIO } });
+  }, [definitionMode, state, pageId, mode]);
   // A new component being edited starts without a remembered placement (declared first: it runs before the
   // effect below, which may set one).
   useEffect(() => {

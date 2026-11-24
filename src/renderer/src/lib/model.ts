@@ -740,6 +740,17 @@ export function studioPick(state: ProjectState, definitionId: string, chain: Bri
   return null;
 }
 
+/**
+ * Whether editing a component everywhere has to show it in Component Studio: the page on screen no longer places it
+ * (its last placement there removed or undone), so the canvas would show the page without it. Only a component of
+ * the project's own: a theme's original is never edited.
+ */
+export function needsStudio(state: ProjectState, definitionMode: DefinitionMode, pageId: string | null): boolean {
+  if (!definitionMode || definitionMode.studio) return false;
+  const def = own(state.components, definitionMode.definitionId);
+  return def?.owner === 'project' && !(pageId && placementsOn(state, def.id, pageId).length);
+}
+
 /** The component's placements on a page (its own content, then the shared header and footer it shows). */
 export function placementsOn(state: ProjectState, definitionId: string, pageId: string): ElementRef[] {
   const page = state.pages[pageId];
