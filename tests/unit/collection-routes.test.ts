@@ -324,6 +324,8 @@ describe('a renamed entry in a cached run', () => {
     made();
     s = run(s, rename('en_winter', 'glazing-evenings'));
     expect(made()).toEqual([
+      // The host's 301 rules gain the old address (#581).
+      '_redirects',
       // The collection's index links to the entry at its new address (#397).
       'archive:posts:/blog/',
       'entry:posts:en_spring#clean',
