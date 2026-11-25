@@ -4309,7 +4309,9 @@ button.asset-use:hover svg.go { color: var(--text); }
 .serp-frame-desktop { overflow-x: auto; scrollbar-width: thin; border-radius: var(--r-md); }
 .serp-desktop { box-sizing: border-box; width: calc(480px + 26px); }
 .serp-mobile { box-sizing: border-box; width: calc(256px + 26px); }
-.serp-title-line { display: block; white-space: nowrap; }
+.serp-title-line { display: block; }
+/* A computer's title is one line, which its frame scrolls; a phone's lines still wrap if a script is wider than measured. */
+.serp-desktop .serp-title-line { white-space: nowrap; }
 .serp-device { font-family: var(--font); font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); }
 .serp-site { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .serp-icon { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 24px; height: 24px; overflow: hidden; border: 1px solid var(--border); border-radius: 50%; background: var(--panel); color: var(--text-3); }

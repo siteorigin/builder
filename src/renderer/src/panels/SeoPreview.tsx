@@ -182,7 +182,10 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
   const settled = useRef(false);
   useEffect(() => {
     if (!showing) {
+      // Nothing worked out before stays to be shown again while the next look is worked out (a post's settings
+      // reopened show what they held before React hears of it).
       settled.current = false;
+      setStructured((prev) => (prev ? null : prev));
       return;
     }
     // A look on opening the tab is at once, never at a result left from before; while text is typed it waits for a pause.
