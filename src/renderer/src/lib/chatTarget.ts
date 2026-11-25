@@ -1,13 +1,14 @@
 /**
  * What the AI composer's next message is about. On a page: the selected element, that page, or the whole site from
  * it, as the author chose. While a component is edited everywhere: that component's whole design, or one of its own
- * nodes, never the page the canvas happens to show it on. The chips show it and the message is sent with it, from one
- * place.
+ * nodes, never the page the canvas happens to show it on. While a post is open in the Posts workspace: that post, never
+ * the page under the writer. The chips show it and the message is sent with it, from one place.
  */
 import { CHAT_EDIT_SCOPES, type ChatContext, type ChatEditScope } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { inDefinition, placementsOn, refExists, refLabel, studioRef } from './model';
 import { NEW_STUDIO, type DefinitionMode } from './studio';
+import { postAt, type PostRef } from './posts';
 
 export interface ComposerScope {
   /** The page the editor shows; while a component is edited everywhere, the page it is shown on. */
@@ -17,7 +18,12 @@ export interface ComposerScope {
   /** The element the next message can be limited to, and its label. */
   selection: ElementRef | null;
   selectionLabel: string | null;
+  /** The post open in the Posts workspace (written or previewed), while it is: the next message is about it alone. */
+  post?: { collectionId: string; entryId: string; title: string } | null;
 }
+
+/** How a post is named in the composer and the transcript: its title, or what an untitled one is called. */
+export const postTitle = (title: unknown) => (typeof title === 'string' && title.trim()) || 'Untitled';
 
 // A request's selection is read back from disk, so a malformed one is no target either.
 const resolves = (state: ProjectState, ref: ElementRef) => {
@@ -52,9 +58,13 @@ export function requestComponentId(ctx: ChatContext | undefined): string | null 
   return ctx?.selection?.owner?.kind === 'component' ? ctx.selection.owner.id : null;
 }
 
-export function composerScope(state: ProjectState, view: { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode }): ComposerScope {
+/** `post`: the post the Posts workspace shows (lib/posts postShown), which the next message is about while it is there. */
+export function composerScope(state: ProjectState, view: { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode; post?: PostRef | null }): ComposerScope {
   const p = view.pageId && Object.hasOwn(state.pages, view.pageId) ? state.pages[view.pageId] : null;
   const page = p ? { id: p.id, title: p.title } : null;
+  // The writer covers the canvas: a selection or design behind it is never what the message is about.
+  const entry = postAt(state, view.post);
+  if (entry && view.post) return { page, component: null, selection: null, selectionLabel: null, post: { collectionId: view.post.collectionId, entryId: view.post.entryId, title: postTitle(entry.title) } };
   const def = editableDesign(state, view.definitionMode?.definitionId);
   if (def) {
     // Only the design's own nodes: anything else (a pick the canvas has yet to convert) is not offered.
@@ -78,6 +88,18 @@ export function editScope(scope: Pick<ComposerScope, 'selection'>, chosen: ChatE
 export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: { enabled: { page: boolean; scope: ChatEditScope }; viewport: number; assetIds?: string[]; ask?: boolean }): ChatContext {
   const home = state.site.homePageId;
   const page = opts.enabled.page ? scope.page : null;
+  // A post names itself: no selection, component or scope, so nothing on the page under the writer is its target.
+  if (scope.post)
+    return {
+      pageId: page ? page.id : home,
+      pageTitle: page ? page.title : (state.pages[home]?.title ?? ''),
+      selection: null,
+      selectionLabel: null,
+      post: { ...scope.post },
+      viewport: opts.viewport,
+      ...(opts.assetIds?.length ? { assetIds: [...opts.assetIds] } : {}),
+      ...(opts.ask ? { mode: 'ask' as const } : {})
+    };
   const chosen = editScope(scope, opts.enabled.scope);
   const selection = chosen === 'selection' ? scope.selection : null;
   return {
@@ -99,6 +121,8 @@ export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: 
 /** How a sent message names what it was about: its page, or the component it edited everywhere, then the element. */
 export function targetOf(ctx?: ChatContext | null): string {
   if (!ctx) return '';
+  // A transcript is read back from disk: a malformed post is left out.
+  if (ctx.post && typeof ctx.post === 'object' && typeof ctx.post.title === 'string') return `Post · ${postTitle(ctx.post.title)}`;
   // A transcript is read back from disk: a malformed component is left out.
   const where = typeof ctx.component?.name === 'string' ? `${ctx.component.name} everywhere` : ctx.pageTitle;
   return ctx.selectionLabel ? `${where} → ${ctx.selectionLabel}` : where;
@@ -113,7 +137,7 @@ export function retryView(
   state: ProjectState,
   ctx: ChatContext | undefined,
   now: { pageId: string | null; definitionMode: DefinitionMode }
-): { pageId?: string; definitionMode: DefinitionMode; selection: ElementRef | null; scope: ChatEditScope; missing: string | null } {
+): { pageId?: string; definitionMode: DefinitionMode; selection: ElementRef | null; scope: ChatEditScope; missing: string | null; post?: PostRef | null } {
   const pageOk = !!ctx?.pageId && Object.hasOwn(state.pages, ctx.pageId);
   // The scope it was sent with. One sent before the scope could be chosen kept to its selection, or reached the whole
   // site; one read back damaged keeps to its selection, or its page.
@@ -121,6 +145,12 @@ export function retryView(
   const scope: ChatEditScope = CHAT_EDIT_SCOPES.includes(saved as ChatEditScope) ? (saved as ChatEditScope) : ctx?.selection ? 'selection' : saved === undefined ? 'site' : 'page';
   // Leaving a component edited everywhere goes back to the page it was entered from.
   const leave = now.definitionMode ? { pageId: now.definitionMode.returnPageId } : {};
+  // A request about a post goes back to that post, in the writer, while its collection still has it.
+  const post = ctx?.post && typeof ctx.post === 'object' && typeof ctx.post.collectionId === 'string' && typeof ctx.post.entryId === 'string' ? { collectionId: ctx.post.collectionId, entryId: ctx.post.entryId } : null;
+  if (post) {
+    const there = !!postAt(state, post);
+    return { ...leave, definitionMode: null, selection: null, scope, missing: there ? null : `The post “${postTitle(ctx!.post!.title)}”`, post: there ? post : null };
+  }
   const componentId = requestComponentId(ctx);
   if (ctx && componentId) {
     const def = editableDesign(state, componentId);

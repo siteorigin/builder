@@ -4,7 +4,8 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { locateField } from '@engine/locate';
 import { refExists, resolveRef } from './model';
 import { pageShowing, partName } from '@shared/page-shell';
-import { editableDesign, requestComponentId } from './chatTarget';
+import { editableDesign, postTitle, requestComponentId } from './chatTarget';
+import { postAt } from './posts';
 import { canCarryOn, resultAsSaid, turnState, type TurnHistory } from '@shared/turns';
 
 /** Checks that need attention, read from the wording of results stored before checks carried a status. */
@@ -149,11 +150,20 @@ export function continueContext(user: ChatMessage | undefined, state: ProjectSta
   const ctx = user.context;
   // Requests saved before messages carried a context were about the whole site.
   if (!ctx) return { ctx: { pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId]?.title ?? '', selection: null, selectionLabel: null, viewport } };
+  // A request about a post carries on with that post, whichever one is open now, while its collection still has it.
+  if (ctx.post !== undefined) {
+    const post = ctx.post as unknown as Record<string, unknown> | null;
+    const ok = !!post && typeof post === 'object' && typeof post.collectionId === 'string' && typeof post.entryId === 'string' && typeof post.title === 'string';
+    if (!ok || !postAt(state, { collectionId: post.collectionId as string, entryId: post.entryId as string })) return { error: `${ok ? `The post “${postTitle(post.title)}”` : 'That post'} is no longer in the site. Open a post, then ${next}.` };
+  }
   const pageOk = !!ctx.pageId && Object.hasOwn(state.pages, ctx.pageId);
   // A request about a component edited everywhere carries on with that component, wherever it was shown.
   let page: Pick<ChatContext, 'pageId' | 'pageTitle'> | null = null;
   const componentId = requestComponentId(ctx);
-  if (componentId) {
+  // The page under the writer was never what a post's request was about, so another one does as well.
+  if (ctx.post !== undefined) {
+    if (!pageOk) page = { pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId]?.title ?? '' };
+  } else if (componentId) {
     if (!editableDesign(state, componentId)) return { error: `${ctx.component?.name || ctx.selectionLabel || 'That component'} is no longer in the site. ${choose}` };
     // The page only showed it, so another one does as well.
     if (!pageOk) page = { pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId]?.title ?? '' };

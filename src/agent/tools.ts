@@ -18,6 +18,8 @@ import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
 import { PAGE_SEO_ARGS, PAGE_SEO_BRIEF, PAGE_SEO_DESCRIPTION, pageSeoToolSchema, runPageSeo, runSiteSeo, SITE_SEO_ARGS, SITE_SEO_BRIEF, SITE_SEO_DESCRIPTION, siteSeoToolSchema } from './seo-tools';
+import { collectionToolSchemas, LIST_ENTRIES_ARGS, LIST_ENTRIES_BRIEF, LIST_ENTRIES_DESCRIPTION, READ_ENTRY_ARGS, READ_ENTRY_BRIEF, READ_ENTRY_DESCRIPTION, runListEntries, runReadEntry, runUpsertEntry, UPSERT_ENTRY_ARGS, UPSERT_ENTRY_BRIEF, UPSERT_ENTRY_DESCRIPTION } from './collection-tools';
+import { hasCollections } from '@shared/entry-feed';
 import { MANAGED_COMPONENT_ARGS, MANAGED_COMPONENT_BRIEF, MANAGED_COMPONENT_DESCRIPTION, managedComponentSchema, runManagedComponent } from './managed-component';
 import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
 import { DEFINITION_ARGS, DEFINITION_BRIEFS, DEFINITION_DESCRIPTIONS, definitionAbridged, definitionTools, runDefinitionTool, type DefinitionTarget, type DefinitionToolName } from './definition';
@@ -98,6 +100,9 @@ export const TOOL_ARGS = {
   update_page_seo: PAGE_SEO_ARGS,
   update_site_seo: SITE_SEO_ARGS,
   upsert_managed_component: MANAGED_COMPONENT_ARGS,
+  list_collection_entries: LIST_ENTRIES_ARGS,
+  read_collection_entry: READ_ENTRY_ARGS,
+  upsert_collection_entry: UPSERT_ENTRY_ARGS,
   ...SELECTION_ARGS,
   ...DEFINITION_ARGS
 } as const;
@@ -134,6 +139,9 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   update_page_seo: PAGE_SEO_DESCRIPTION,
   update_site_seo: SITE_SEO_DESCRIPTION,
   upsert_managed_component: MANAGED_COMPONENT_DESCRIPTION,
+  list_collection_entries: LIST_ENTRIES_DESCRIPTION,
+  read_collection_entry: READ_ENTRY_DESCRIPTION,
+  upsert_collection_entry: UPSERT_ENTRY_DESCRIPTION,
   ...SELECTION_DESCRIPTIONS,
   ...DEFINITION_DESCRIPTIONS
 };
@@ -163,6 +171,9 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   update_page_seo: PAGE_SEO_BRIEF,
   update_site_seo: SITE_SEO_BRIEF,
   upsert_managed_component: MANAGED_COMPONENT_BRIEF,
+  list_collection_entries: LIST_ENTRIES_BRIEF,
+  read_collection_entry: READ_ENTRY_BRIEF,
+  upsert_collection_entry: UPSERT_ENTRY_BRIEF,
   ...SELECTION_BRIEFS,
   ...DEFINITION_BRIEFS
 };
@@ -172,7 +183,7 @@ const describe = (name: ToolName) => ({ description: DESCRIPTIONS[name], ...(BRI
 
 /** Operations the assistant never sends: images and component packages are added only by the verified importer,
  *  theme updates by the user, pastes come from the editor's own Copy, and a component's properties are reordered
- *  in Edit everywhere. Collections get tools of their own later. */
+ *  in Edit everywhere. A post is written with upsert_collection_entry, the only way a run reaches a collection. */
 const NEVER_OFFERED = new Set<OperationType>([
   // A whole design in one call reaches the assistant through a tool of its own, never as a raw operation.
   'component.upsert',
@@ -323,11 +334,13 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
 
 /** Tools that take a revision or hash the model read earlier: only one of these can run per turn. */
 export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch']);
-const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand', 'update_page_seo', 'update_site_seo', 'upsert_managed_component'];
+const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand', 'update_page_seo', 'update_site_seo', 'upsert_managed_component', 'upsert_collection_entry'];
+/** Reads of a collection's entries, offered with the tools of a run that has collections to read. */
+const ENTRY_READS: ToolName[] = ['list_collection_entries', 'read_collection_entry'];
 const SELECTION_TOOLS = Object.keys(SELECTION_ARGS) as ToolName[];
 const DEFINITION_TOOLS = Object.keys(DEFINITION_ARGS) as DefinitionToolName[];
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, finding a
  * field, and a plain question to the author. Nothing that changes the site, measures the live preview or builds the
@@ -339,11 +352,11 @@ export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MAC
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export { FOCUSED_WINDOW_TOKENS };
 
-export type ToolMode = 'selection' | 'page' | 'site' | 'definition' | 'general' | 'ask';
+export type ToolMode = 'selection' | 'page' | 'site' | 'definition' | 'general' | 'ask' | 'entry';
 
 export interface RunTools {
   tools: ToolDefinition[];
-  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. definition: a component's own design, on a small model. general: a selection they cannot cover, or a design on a larger model. ask: reading only. */
+  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. definition: a component's own design, on a small model. general: a selection they cannot cover, or a design on a larger model. ask: reading only. entry: one post, open in the Posts workspace. */
   mode: ToolMode;
   /** Only the small tool set is offered. */
   focused: boolean;
@@ -353,8 +366,9 @@ export interface RunTools {
 
 const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameters).includes('"assetId"');
 
-/** The tools of a read-only question: the same small set for every model, with or without a selection. */
-function askTools(codeEnabled: boolean): ToolDefinition[] {
+/** The tools of a read-only question: the same small set for every model, with or without a selection. A project with
+ *  collections can also have its posts read. */
+function askTools(state: ProjectState, codeEnabled: boolean): ToolDefinition[] {
   const names: ToolName[] = [...ASK_TOOLS, ...(codeEnabled ? (['read_source'] as const) : [])];
   const tools = names.map((name): ToolDefinition => {
     // A question can never widen what may change: nothing may.
@@ -365,7 +379,22 @@ function askTools(codeEnabled: boolean): ToolDefinition[] {
     return { name, ...describe(name), ...(name === 'request_clarification' ? { brief: 'Ask the author one short question and wait for the answer, with up to four short, concrete choices; to choose between images, pass assetIds: they see the pictures.' } : {}), parameters: schema };
   });
   // A question reads component contracts alone: a design is read to build a component, which a question never does.
-  return tools.map(contractRead);
+  return [...tools.map(contractRead), ...entryReads(state)];
+}
+
+/** The reads of a collection's entries, while the project has a collection to read. */
+function entryReads(state: ProjectState): ToolDefinition[] {
+  if (!hasCollections(state)) return [];
+  const schemas = collectionToolSchemas(state);
+  return [
+    { name: 'list_collection_entries', ...describe('list_collection_entries'), parameters: schemas.list },
+    { name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: schemas.read }
+  ];
+}
+
+/** The tool that writes a post, while the project has a collection to write one in. */
+function entryWrite(state: ProjectState): ToolDefinition[] {
+  return hasCollections(state) ? [{ name: 'upsert_collection_entry', ...describe('upsert_collection_entry'), parameters: collectionToolSchemas(state).upsert }] : [];
 }
 
 /**
@@ -399,10 +428,26 @@ export function toolsForRun(opts: {
   /** The request typed into the chat asks for a component (see asksForComponent): a small site run is offered the tool
    *  that builds one whole, which it otherwise leaves out to keep its window for pages. */
   componentRequest?: boolean;
+  /** The post a run is limited to (sent from the Posts workspace): it reads and writes only that entry. */
+  entry?: { collectionId: string; entryId: string } | null;
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
-  if (opts.ask) return { tools: askTools(codeEnabled), mode: 'ask', focused };
+  if (opts.ask) return { tools: askTools(state, codeEnabled), mode: 'ask', focused };
+  // One post, for every model: its text read a part at a time and written back, and the author to ask for more. Nothing
+  // names another entry, nor creates one.
+  if (opts.entry) {
+    const pinned = collectionToolSchemas(state, opts.entry);
+    return {
+      tools: [
+        { name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: pinned.read },
+        { name: 'upsert_collection_entry', ...describe('upsert_collection_entry'), parameters: pinned.upsert },
+        plainTool('request_clarification')
+      ],
+      mode: 'entry',
+      focused
+    };
+  }
   // A new component is built with the general tools, which the page and selection tools cannot replace; a small model
   // gets only what building one takes, so the request still fits beside them.
   if (opts.task === 'component') {
@@ -441,14 +486,17 @@ export function toolsForRun(opts: {
     // Its own search settings, by its ID alone; the site's are the whole site's, so they wait for a wider scope.
     const pageId = pageIdFor(state, opts.page.route);
     const seo: ToolDefinition[] = pageId ? [{ name: 'update_page_seo', ...describe('update_page_seo'), parameters: pageSeoToolSchema(pageId) }] : [];
-    return { tools: [upsert, ...seo, ...own], mode: 'page', focused };
+    // A feed of posts is placed with the page tool; the posts themselves can be read, and are changed once widened.
+    return { tools: [upsert, ...seo, ...own, ...entryReads(state)], mode: 'page', focused };
   }
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state) },
     { name: 'update_site_brand', ...describe('update_site_brand'), parameters: brandToolSchema(state) },
     { name: 'update_page_seo', ...describe('update_page_seo'), parameters: pageSeoToolSchema() },
     { name: 'update_site_seo', ...describe('update_site_seo'), parameters: siteSeoToolSchema() },
-    ...(!focused || opts.componentRequest ? [managedComponentTool()] : [])
+    ...(!focused || opts.componentRequest ? [managedComponentTool()] : []),
+    ...entryWrite(state),
+    ...entryReads(state)
   ];
   // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
   // do (styling every card of a selected one, say).
@@ -948,6 +996,12 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       return runPageSeo(args as z.infer<typeof PAGE_SEO_ARGS>, host, callId);
     case 'update_site_seo':
       return runSiteSeo(args as z.infer<typeof SITE_SEO_ARGS>, host, callId);
+    case 'list_collection_entries':
+      return runListEntries(args as z.infer<typeof LIST_ENTRIES_ARGS>, host);
+    case 'read_collection_entry':
+      return runReadEntry(args as z.infer<typeof READ_ENTRY_ARGS>, host);
+    case 'upsert_collection_entry':
+      return runUpsertEntry(args as z.infer<typeof UPSERT_ENTRY_ARGS>, host, callId);
     case 'update_selected_props':
     case 'edit_selected_list':
     case 'edit_selected_table':
