@@ -13,7 +13,7 @@ import { applyOperations } from '@engine/apply';
 
 vi.stubGlobal('window', { builder: { project: { saveLocalState: async () => undefined }, platform: 'darwin' } });
 
-const { activeWorkspace, canvasCovered } = await import('../../src/renderer/src/lib/workspace');
+const { activeWorkspace, canvasCovered, changeWithoutDocument } = await import('../../src/renderer/src/lib/workspace');
 const { waitingPreview } = await import('../../src/renderer/src/lib/posts');
 const { keepSeoSubject, sameSubject, seoDocument, seoDocuments } = await import('../../src/renderer/src/lib/seo-view');
 
@@ -91,6 +91,15 @@ describe('what the editor puts in front of its page', () => {
     expect(canvasCovered('preview')).toBe(false);
     expect(canvasCovered(null)).toBe(false);
   });
+
+  it('holds back a change asked of the AI while the SEO view has no document, never a question or another view', () => {
+    expect(changeWithoutDocument('seo', false, false)).toBe(true);
+    expect(changeWithoutDocument('seo', true, false)).toBe(false);
+    expect(changeWithoutDocument('seo', false, true), 'a question changes nothing').toBe(false);
+    // The writer with no post open targets the page under it, as before.
+    expect(changeWithoutDocument('write', false, false)).toBe(false);
+    expect(changeWithoutDocument(null, false, false)).toBe(false);
+  });
 });
 
 describe('a post’s preview chosen in the toolbar while the writer saves', () => {
@@ -111,6 +120,7 @@ describe('a post’s preview chosen in the toolbar while the writer saves', () =
     expect(waitingPreview({ ...writing, mode: 'edit', leftTab: 'seo' }, 'w#1')).toBe('ends');
     expect(waitingPreview({ ...writing, postView: 'preview' }, 'w#1')).toBe('ends');
     expect(waitingPreview({ ...writing, leftTab: 'seo', workspaceKey: 'w#2' }, 'w#1')).toBe('ends');
+    expect(waitingPreview({ ...writing, workspaceKey: 'w#2' }, 'w#1'), 'another opening, the writer still in front').toBe('ends');
   });
 });
 

@@ -16,7 +16,7 @@ import { auditOnce } from '../lib/seo-health';
 import { headroomWarning, replayedWords, smallToolsCover } from '../lib/chatHeadroom';
 import { openPost, selectPage } from '../lib/actions';
 import { postShown, postWorkspace } from '../lib/posts';
-import { activeWorkspace } from '../lib/workspace';
+import { activeWorkspace, changeWithoutDocument } from '../lib/workspace';
 import { seoDocument } from '../lib/seo-view';
 import { saveOpenPost } from '../lib/post-draft';
 import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, standingNote, undoableId as undoableTurn } from '../lib/result';
@@ -726,6 +726,9 @@ export function Chat() {
     // it. A question changes nothing, so it is still asked.
     const code = !context && !askMode && !ownTarget ? uneditableDesign(st, definitionMode) : null;
     if (code) return (toast(`From Component Studio, the AI can’t be asked to change a code component like ${code} yet. Edit its code, or click Done editing to ask for a change to a page.`, 'info'), false);
+    // A change asked from the SEO view is about the page or post chosen there; with none (or the one chosen gone), it
+    // would reach the page under the view, so it waits for one (#700). The draft stays.
+    if (!context && changeWithoutDocument(workspace, !!seoChosen, askMode)) return (toast('Choose a page or post in the SEO list first: the change is made to the one chosen there.', 'info'), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
     const opening = snap.workspaceKey;
