@@ -350,7 +350,11 @@ export const OPERATION_SCHEMAS = {
     sectionReplacements: z
       .array(z.object({ from: z.string().describe('A section ID on the removed page that links jump to.'), to: z.string().describe('The section ID on the replacement page they jump to instead, or "" for the top of the page.') }))
       .optional()
-      .describe('Where links to sections of the removed page go when the replacement page has no section with that ID. A section the replacement page also has is always kept; any other goes to the top of the replacement page unless chosen here.')
+      .describe('Where links to sections of the removed page go when the replacement page has no section with that ID. A section the replacement page also has is always kept; any other goes to the top of the replacement page unless chosen here.'),
+    newHome: z
+      .literal(true)
+      .optional()
+      .describe('Home page only, instead of replacementPageId: leaves a new, empty, published Home page at "/" in its place. Every link and kept old address of the removed page opens the top of the new Home; no other page moves.')
   }),
   'page.setHome': z.object({
     type: z.literal('page.setHome'),

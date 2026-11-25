@@ -159,7 +159,8 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const where = Array.isArray(cards) ? cards.filter((w): w is string => typeof w === 'string') : [];
         const on = [...new Set(where.map(quoted))];
         const also = on.length ? ` and its card${where.length === 1 ? '' : 's'} on ${joinWords(on)}` : '';
-        return plain(op, `Removed page ${quoted(before.pages[op.pageId]?.title ?? 'page')}${also}`);
+        const blank = op.newHome ? ', leaving a new blank Home page at /' : '';
+        return plain(op, `Removed page ${quoted(before.pages[op.pageId]?.title ?? 'page')}${also}${blank}`);
       }
       case 'page.setHome': {
         // The addresses this promotion moved, from its own result: a later edit in the run may move them again.
