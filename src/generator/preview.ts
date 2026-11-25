@@ -11,7 +11,7 @@ import { siteDirection, siteLanguage } from '@shared/languages';
 import { catalogueComponent } from '@catalogue/index';
 import { namesFormFields } from '@catalogue/foundation/form';
 import { defaultProps, installComponent } from '@engine/install';
-import { declaredState } from '@engine/schema';
+import { declaredState, stateValueFits } from '@engine/schema';
 import { normalizeProp } from '@engine/values';
 import { formDefaults, settleFormKeys } from '@engine/form-keys';
 import { RUNTIME_DIR, STYLES_DIR, FONTS_DIR, generateIsolatedInstance, generateLibrary, type FileMap } from './index';
@@ -87,11 +87,11 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
 
   // UI state previewed at another value (a hidden tab chosen, a drawer open): the preview's own copy of the design
   // starts there, so the component file it generates shows it. The project's design is never changed.
-  const started: Record<string, boolean | string> = {};
+  const started: Record<string, boolean | string | number> = {};
   for (const [name, value] of Object.entries(spec.states ?? {})) {
     const declared = def.kind === 'managed' ? declaredState(def, name) : undefined;
     if (!declared) return { error: `"${def.name}" has no UI state "${name}".` };
-    const fits = declared.type === 'boolean' ? typeof value === 'boolean' : typeof value === 'string' && declared.options.some((o) => o.value === value);
+    const fits = stateValueFits(declared, value);
     if (!fits) return { error: `"${def.name}" → ${declared.label || name}: ${JSON.stringify(value)?.slice(0, 80)} is not one of its values.` };
     if (value !== declared.initial) started[name] = value;
   }

@@ -6,7 +6,7 @@
  * project.
  */
 import type { ComponentDefinition } from '@shared/types';
-import { declaredState } from '@engine/schema';
+import { declaredState, stateValueFits } from '@engine/schema';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
 import { axesOf } from '@shared/variants';
 import { studioSampleProps, type StudioSample } from './studio-samples';
@@ -20,7 +20,7 @@ export interface StudioView {
    * The value each UI state variable is previewed at, by name (a hidden tab chosen, a drawer open); one left out, or
    * naming a value the state no longer has, shows where the design starts it.
    */
-  states?: Record<string, boolean | string>;
+  states?: Record<string, boolean | string | number>;
 }
 
 /** The component edited everywhere, the page that editing returns to, and (in Component Studio) how it is shown. */
@@ -48,14 +48,14 @@ export function studioVariants(def: ComponentDefinition, view: StudioView, style
  * What the studio shows each of the design's UI state variables at, by name: the author's choice while the state can
  * still hold it, else where the design starts it. A declaration a hand edit damaged is left out.
  */
-export function studioStates(def: ComponentDefinition, view: StudioView): Record<string, boolean | string> {
-  const out: Record<string, boolean | string> = {};
+export function studioStates(def: ComponentDefinition, view: StudioView): Record<string, boolean | string | number> {
+  const out: Record<string, boolean | string | number> = {};
   if (def.kind !== 'managed' || !def.state || typeof def.state !== 'object') return out;
   for (const name of Object.keys(def.state)) {
     const declared = declaredState(def, name);
     if (!declared) continue;
     const mine = view.states && Object.hasOwn(view.states, name) ? view.states[name] : undefined;
-    const fits = declared.type === 'boolean' ? typeof mine === 'boolean' : typeof mine === 'string' && declared.options.some((o) => o.value === mine);
+    const fits = stateValueFits(declared, mine);
     out[name] = fits ? mine! : declared.initial;
   }
   return out;

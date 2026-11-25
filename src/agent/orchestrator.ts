@@ -1234,7 +1234,7 @@ export class Orchestrator {
     const ctx = userMsg.context;
     // A grammar-constrained edit with the selection's own tools is not told how operations it does not have would do it.
     const selection = ctx ? describeSelection(readState(), ctx.selection, { operations: !(constrainedJson && current.focused && !ask) }) : null;
-    const examples = authority.kind === 'site' && !ask ? retrieveExamples(session.state, userMsg.text).map(exampleSection) : [];
+    const examples = authority.kind === 'site' && !ask ? retrieveExamples(session.state, userMsg.text, 3, current.focused).map(exampleSection) : [];
     // A component request, with the tool that builds one whole, starts from a worked call or two of that tool.
     const blueprints = current.tools.some((t) => t.name === 'upsert_managed_component') && (componentTask || asksForComponent(requestText)) ? retrieveBlueprints(session.state, requestText).map(blueprintSection) : [];
     /** How the context is written: a grammar-constrained local model reads every byte before its first token, so no indentation for it. */

@@ -75,18 +75,23 @@ const stateAction = z.discriminatedUnion('op', [
   z.object({ state: z.string(), op: z.literal('set'), value: z.union([z.boolean(), z.string()]).describe('true or false for a yes/no state; one of the options of a choice.') }).strict(),
   z.object({ state: z.string(), op: z.literal('toggle') }).strict(),
   z.object({ state: z.string(), op: z.literal('next'), wrap: z.boolean().optional().describe('After the last option, go back to the first.') }).strict(),
-  z.object({ state: z.string(), op: z.literal('prev'), wrap: z.boolean().optional().describe('Before the first option, go round to the last.') }).strict()
+  z.object({ state: z.string(), op: z.literal('prev'), wrap: z.boolean().optional().describe('Before the first option, go round to the last.') }).strict(),
+  z.object({ state: z.string(), op: z.literal('select') }).strict().describe("An item state only, on a button inside a repeat of its list: makes the button's own item the active one.")
 ]);
 const conditionValue = z.union([z.string(), z.number(), z.boolean()]);
 /** A UI state variable as a person or the AI declares it (component.setState, component.upsert); see normalizeUiState. */
 const uiStateDecl = z.object({
-  type: z.enum(['boolean', 'enum']),
+  type: z.enum(['boolean', 'enum', 'item']),
   label: z.string().max(80).optional(),
   options: z
     .array(z.union([z.string(), z.object({ value: z.string(), label: z.string().optional() })]))
     .optional()
     .describe('enum only: 2 to 50 options, in the order next and prev step through.'),
-  initial: z.union([z.boolean(), z.string()]).optional().describe('What every placement starts with: true or false, or one of the options. Defaults to false, or the first option.')
+  list: z.string().optional().describe('item only: the list property whose active item it holds.'),
+  initial: z
+    .union([z.boolean(), z.string(), z.number()])
+    .optional()
+    .describe('What every placement starts with: true or false, one of the options, or (item) the position of the item, counting from 0. Defaults to false, the first option or the first item.')
 });
 /** How a divider's shape is offered: the same words wherever one can be set. */
 export const DIVIDER_SHAPE_TEXT =

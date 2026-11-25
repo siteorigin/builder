@@ -8,7 +8,7 @@
 import type { ComponentDefinition, ElementNode, GraphNode, OverlayMode, StateAction, UiStateSchema } from '@shared/types';
 import { OVERLAY_MODES } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { booleanStateGuard, checkPropName, declaredState, overlayProblem, stateUsers, MAX_UI_STATES } from '@engine/schema';
+import { booleanStateGuard, checkPropName, declaredState, itemScopeProblem, overlayProblem, stateUsers, MAX_UI_STATES } from '@engine/schema';
 
 /** The most options a choice takes (see normalizeUiState). */
 export const MAX_STATE_OPTIONS = 50;
@@ -63,18 +63,47 @@ export function optionLabels(text: string): string[] {
     .filter((t) => t && !seen.has(t.toLowerCase()) && seen.add(t.toLowerCase()));
 }
 
-/** Why a new state cannot be added with these, or null: a label, and for a choice two options or more. */
-export function newStateProblem(def: ComponentDefinition, label: string, type: UiStateSchema['type'], options: string[]): string | null {
+/** The component's list properties an item state can hold the active item of, by name, with their labels. */
+export function itemStateLists(def: ComponentDefinition): Array<{ name: string; label: string }> {
+  return Object.entries(def.properties)
+    .filter(([, p]) => p.type === 'list')
+    .map(([name, p]) => ({ name, label: p.label || name }));
+}
+
+/**
+ * The positions an item state can start at (or be previewed at), named by the items ("2. Design"): one for each of
+ * `items` (the design's own unless a preview shows others), and `current`, the one in use, and the starting position,
+ * even past the end of the list (where it shows the last item).
+ */
+export function itemStatePositions(def: ComponentDefinition, s: Extract<UiStateSchema, { type: 'item' }>, items?: unknown[], current: number = s.initial): Array<{ value: number; label: string }> {
+  const list = def.properties[s.list];
+  const rows = items ?? (list?.type === 'list' && Array.isArray(list.default) ? list.default : []);
+  const titleField = list?.type === 'list' ? list.titleField : undefined;
+  const noun = list?.type === 'list' ? list.itemLabel || 'Item' : 'Item';
+  const label = (i: number) => {
+    const title = titleField ? (rows[i] as Record<string, unknown> | undefined)?.[titleField] : undefined;
+    return typeof title === 'string' && title.trim() ? `${i + 1}. ${title.trim().slice(0, 60)}` : `${noun} ${i + 1}`;
+  };
+  const out = Array.from({ length: Math.min(Math.max(rows.length, 1), 50) }, (_, i) => ({ value: i, label: label(i) }));
+  // The one in use and the one each placement starts at, so a preview can always go back to the start.
+  for (const at of [...new Set([s.initial, current])].sort((a, b) => a - b)) if (at >= out.length) out.push({ value: at, label: label(at) });
+  return out;
+}
+
+/** Why a new state cannot be added with these, or null: a label, for a choice two options or more, and for an item state its list. */
+export function newStateProblem(def: ComponentDefinition, label: string, type: UiStateSchema['type'], options: string[], list?: string): string | null {
   if (!label.trim()) return 'Name the state.';
   if (Object.keys(def.state ?? {}).length >= MAX_UI_STATES) return `A component can have at most ${MAX_UI_STATES} UI states.`;
+  if (type === 'item' && !itemStateLists(def).some((l) => l.name === list)) return 'Choose the list whose active item it holds.';
   if (type === 'enum' && options.length < 2) return 'A choice needs two options or more, separated by commas.';
   if (type === 'enum' && options.length > MAX_STATE_OPTIONS) return `A choice can have at most ${MAX_STATE_OPTIONS} options.`;
   return null;
 }
 
-/** Add a UI state variable: yes/no (starting off), or a choice between options (starting at the first). */
-export function addStateOp(def: ComponentDefinition, label: string, type: UiStateSchema['type'], options: string[]): EditOperation {
+/** Add a UI state variable: yes/no (starting off), a choice between options (starting at the first), or the active item of a list (starting at the first). */
+export function addStateOp(def: ComponentDefinition, label: string, type: UiStateSchema['type'], options: string[], list?: string): EditOperation {
   const name = stateNameFor(def, label);
+  if (type === 'item') return { type: 'component.setState', definitionId: def.id, state: name, schema: { type, label: label.trim(), list } };
   const values = new Set<string>();
   const opts = options.map((l) => {
     const value = optionValueFor(l, values);
@@ -94,8 +123,8 @@ export function renameStateOp(def: ComponentDefinition, name: string, label: str
   return { type: 'component.setState', definitionId: def.id, state: name, schema: { ...s, label: label.trim() } };
 }
 
-/** Where every placement starts: on or off, or one option. */
-export function initialStateOp(def: ComponentDefinition, name: string, initial: boolean | string): EditOperation | null {
+/** Where every placement starts: on or off, one option, or (an item state) the item at one position. */
+export function initialStateOp(def: ComponentDefinition, name: string, initial: boolean | string | number): EditOperation | null {
   const s = declared(def, name);
   if (!s || s.initial === initial) return null;
   return { type: 'component.setState', definitionId: def.id, state: name, schema: { ...s, initial } as UiStateSchema };
@@ -142,7 +171,7 @@ export interface ClickChoice {
   action: StateAction | null;
 }
 
-const optionLabel = (s: UiStateSchema, value: unknown) => (s.type === 'enum' ? (s.options.find((o) => o.value === value)?.label ?? String(value)) : value ? 'on' : 'off');
+const optionLabel = (s: UiStateSchema, value: unknown) => (s.type === 'enum' ? (s.options.find((o) => o.value === value)?.label ?? String(value)) : s.type === 'item' ? `item ${Number(value) + 1}` : value ? 'on' : 'off');
 
 /** A state action in words: "Switch Billing to Annual", "Toggle Details", "Next Slide". */
 export function actionWords(def: ComponentDefinition, action: StateAction): string {
@@ -155,6 +184,11 @@ export function actionWords(def: ComponentDefinition, action: StateAction): stri
       return `Next ${label}`;
     case 'prev':
       return `Previous ${label}`;
+    case 'select': {
+      // A hand-edited action may name no state.
+      const words = String(label ?? 'active item');
+      return `Make its item the ${words.charAt(0).toLowerCase()}${words.slice(1)}`;
+    }
     default:
       return s?.type === 'boolean' ? `Turn ${label} ${action.value ? 'on' : 'off'}` : `Switch ${label} to ${s ? optionLabel(s, action.value) : String(action.value)}`;
   }
@@ -163,16 +197,22 @@ export function actionWords(def: ComponentDefinition, action: StateAction): stri
 /** The key a click choice is known by in the Inspector's list: the same action, the same key, whatever `wrap` says. */
 export const clickKey = (action: StateAction | null | undefined): string => (!action ? '' : JSON.stringify([action.op, action.state, action.op === 'set' ? action.value : null]));
 
-/** Everything a button can do to the component's UI state: each option of each choice, a toggle, on and off, next and previous. */
-export function clickChoices(def: ComponentDefinition): ClickChoice[] {
+/**
+ * Everything a button can do to the component's UI state: each option of each choice, a toggle, on and off, next and
+ * previous, and (for a button in a repeat of an item state's list) making its own item the active one.
+ */
+export function clickChoices(def: ComponentDefinition, nodeId?: string): ClickChoice[] {
   const out: ClickChoice[] = [{ key: '', label: 'Nothing else', action: null }];
   for (const name of Object.keys(def.state ?? {})) {
     const s = declared(def, name);
     if (!s) continue;
+    const selects = s.type === 'item' && nodeId !== undefined && !!def.tree?.nodes[nodeId] && !itemScopeProblem(def, nodeId, name, s, 'selects');
     const actions: StateAction[] =
       s.type === 'boolean'
         ? [{ state: name, op: 'toggle' }, { state: name, op: 'set', value: true }, { state: name, op: 'set', value: false }]
-        : [...s.options.map((o): StateAction => ({ state: name, op: 'set', value: o.value })), { state: name, op: 'next' }, { state: name, op: 'prev' }];
+        : s.type === 'item'
+          ? [...(selects ? [{ state: name, op: 'select' } as StateAction] : []), { state: name, op: 'next' }, { state: name, op: 'prev' }]
+          : [...s.options.map((o): StateAction => ({ state: name, op: 'set', value: o.value })), { state: name, op: 'next' }, { state: name, op: 'prev' }];
     for (const action of actions) out.push({ key: clickKey(action), label: actionWords(def, action), action });
   }
   return out;

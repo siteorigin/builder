@@ -242,7 +242,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       }
       if (Object.hasOwn(n, 'stateAction')) {
         const action = (n as { stateAction?: unknown }).stateAction;
-        const problem = n.kind !== 'link' ? 'changes UI state, which only a button can.' : stateActionProblem(def, action);
+        const problem = n.kind !== 'link' ? 'changes UI state, which only a button can.' : stateActionProblem(def, action, id);
         if (problem) out.push({ severity: 'error', code: 'STATE_ACTION_INVALID', message: `${def.name}: ${nodeLabel(n)} ${problem}`, owner, nodeId: id, site: `${id}|stateAction` });
       }
       // A dialog or drawer that cannot work would show as an ordinary container in its place, so it is refused.

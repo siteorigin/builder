@@ -484,7 +484,7 @@ export function toolsForRun(opts: {
     // Operations only for the page's own sections and settings, and no code edits: a component's source shows on every
     // page. A small model gets the few that address one section by its ID, which the page tool cannot.
     const own = toolDefinitions({ codeEnabled, definitionOps: false, operations: focused ? FOCUSED_PAGE_OPERATIONS : PAGE_OPERATIONS }).filter((t) => t.name !== 'apply_source_patch' && t.name !== COMPONENT_CHECK);
-    const upsert: ToolDefinition = { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, opts.page.route) };
+    const upsert: ToolDefinition = { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, opts.page.route, focused) };
     // Its own search settings, by its ID alone; the site's are the whole site's, so they wait for a wider scope.
     const pageId = pageIdFor(state, opts.page.route);
     const seo: ToolDefinition[] = pageId ? [{ name: 'update_page_seo', ...describe('update_page_seo'), parameters: pageSeoToolSchema(pageId) }] : [];
@@ -492,7 +492,7 @@ export function toolsForRun(opts: {
     return { tools: [upsert, ...seo, ...own, ...entryReads(state)], mode: 'page', focused };
   }
   const macros: ToolDefinition[] = [
-    { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state) },
+    { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, undefined, focused) },
     { name: 'update_site_brand', ...describe('update_site_brand'), parameters: brandToolSchema(state) },
     { name: 'update_page_seo', ...describe('update_page_seo'), parameters: pageSeoToolSchema() },
     { name: 'update_site_seo', ...describe('update_site_seo'), parameters: siteSeoToolSchema() },

@@ -518,6 +518,16 @@ export function boundSchema(def: ComponentDefinition, nodeId: string, b: Binding
 // UI state
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether a UI state can hold a value: true or false for a yes/no state, one of the options of a choice, or (an item
+ * state) the position of an item, counting from 0.
+ */
+export function stateValueFits(s: UiStateSchema, value: unknown): boolean {
+  if (s.type === 'boolean') return typeof value === 'boolean';
+  if (s.type === 'item') return Number.isSafeInteger(value) && (value as number) >= 0;
+  return typeof value === 'string' && s.options.some((o) => o.value === value);
+}
+
 /** At most this many UI state variables per component, and this many options per choice. */
 export const MAX_UI_STATES = 20;
 const MAX_STATE_OPTIONS = 50;
@@ -527,6 +537,8 @@ export const STATE_FIELDS: ReadonlySet<BindField> = new Set<BindField>(['when', 
 
 /** A UI state variable as the yes/no or choice property it behaves like, starting at its initial value. */
 export function stateAsProp(s: UiStateSchema): PropSchema {
+  // An item state reads, inside a repeat of its list, as whether the item is the active one.
+  if (s.type === 'item') return { type: 'boolean', label: s.label, default: false };
   return s.type === 'boolean' ? { type: 'boolean', label: s.label, default: s.initial } : { type: 'enum', label: s.label, default: s.initial, options: s.options };
 }
 
@@ -536,9 +548,14 @@ export function uiStateProblem(def: Pick<ComponentDefinition, 'properties'>, nam
   if (Object.hasOwn(def.properties ?? {}, name)) return `"${name}" is both a property and UI state.`;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return `the UI state "${name}" is not a declaration.`;
   const r = raw as Record<string, unknown>;
-  if (!(UI_STATE_TYPES as readonly unknown[]).includes(r.type)) return `the UI state "${name}" is neither yes/no (boolean) nor a choice (enum).`;
+  if (!(UI_STATE_TYPES as readonly unknown[]).includes(r.type)) return `the UI state "${name}" is neither yes/no (boolean), a choice (enum) nor the active item of a list (item).`;
   if (typeof r.label !== 'string') return `the UI state "${name}" has no label.`;
   if (r.type === 'boolean') return typeof r.initial === 'boolean' ? null : `the UI state "${name}" starts as ${JSON.stringify(r.initial) ?? 'nothing'}; a yes/no state starts as true or false.`;
+  if (r.type === 'item') {
+    const list = typeof r.list === 'string' && Object.hasOwn(def.properties ?? {}, r.list) ? def.properties[r.list] : undefined;
+    if (list?.type !== 'list') return `the UI state "${name}" holds the active item of ${typeof r.list === 'string' ? `"${r.list.slice(0, 40)}", which is not a list property of the component` : 'no list'}.`;
+    return Number.isSafeInteger(r.initial) && (r.initial as number) >= 0 ? null : `the UI state "${name}" starts at ${JSON.stringify(r.initial) ?? 'nothing'}; an item state starts at the position of an item, counting from 0.`;
+  }
   const options = r.options;
   if (!Array.isArray(options) || options.length < 2 || options.length > MAX_STATE_OPTIONS) return `the UI state "${name}" needs 2 to ${MAX_STATE_OPTIONS} options.`;
   const values = new Set<string>();
@@ -587,7 +604,15 @@ export function normalizeUiState(raw: unknown, name: string): UiStateSchema {
     if (r.initial !== undefined && typeof r.initial !== 'boolean') fail(`UI state "${name}" is yes/no: it starts as true or false, not ${JSON.stringify(r.initial)}.`);
     return { type: 'boolean', label, initial: r.initial === true };
   }
-  if (r.type !== 'enum') fail(`UI state "${name}" needs a type of boolean or enum.`);
+  if (r.type === 'item') {
+    if (r.options !== undefined) fail(`UI state "${name}" holds the active item of a list, so it has no options.`);
+    if (typeof r.list !== 'string' || !r.list) fail(`UI state "${name}" needs the list property whose active item it holds ("list").`);
+    if (r.initial !== undefined && !(Number.isSafeInteger(r.initial) && (r.initial as number) >= 0))
+      fail(`UI state "${name}" starts at the position of an item, counting from 0, not ${JSON.stringify(r.initial)}.`);
+    return { type: 'item', label, list: r.list, initial: (r.initial as number | undefined) ?? 0 };
+  }
+  if (r.list !== undefined) fail(`UI state "${name}" is not an item state, so it names no list.`);
+  if (r.type !== 'enum') fail(`UI state "${name}" needs a type of boolean, enum or item.`);
   if (!Array.isArray(r.options) || r.options.length < 2 || r.options.length > MAX_STATE_OPTIONS) fail(`UI state "${name}": a choice needs 2 to ${MAX_STATE_OPTIONS} options.`);
   const seen = new Set<string>();
   const options = r.options.map((o) => {
@@ -609,22 +634,61 @@ export function stateRefProblem(state: ProjectState, def: ComponentDefinition, s
   if (damagedState(def, ref.$state)) return null;
   const declared = declaredState(def, ref.$state);
   if (!declared) return `reads the UI state "${ref.$state}", which the component does not declare.`;
+  if (declared.type === 'item') {
+    if (site.field === 'variant') return `chooses a variant from the active item "${ref.$state}"; only conditions read which item is active.`;
+    if (site.comparison) return `compares the active item "${ref.$state}" with a value; read it plainly, as whether this item is the active one.`;
+    return itemScopeProblem(def, site.node.id, ref.$state, declared, 'reads');
+  }
   return bindingProblem(state, site, stateAsProp(declared), 'state');
 }
 
+/**
+ * What keeps a node from reading or selecting the active item of an item state, or null when it can: it must be
+ * inside a repeat of the state's own list, the only repeat it is inside (where "this item" is one item of that list in
+ * every placement), and that repeat must show every item (no category filter, which could hide the active one).
+ */
+export function itemScopeProblem(def: ComponentDefinition, nodeId: string, name: string, declared: { list: string }, does: 'reads' | 'selects'): string | null {
+  const what = does === 'reads' ? `reads whether its item is the active one of "${name}"` : `selects its item as the active one of "${name}"`;
+  const tree = def.tree;
+  const repeats: GraphNode[] = [];
+  if (tree) {
+    const seen = new Set<string>([nodeId]);
+    for (let at = findParent(tree, nodeId); at?.parentId && !seen.has(at.parentId); at = findParent(tree, at.parentId)) {
+      seen.add(at.parentId);
+      const a = tree.nodes[at.parentId];
+      if (a?.kind === 'repeat') repeats.push(a);
+    }
+  }
+  const listLabel = def.properties?.[declared.list]?.label ?? declared.list;
+  if (!repeats.length) return `${what}, but is not inside a repeat of "${listLabel}".`;
+  if (repeats.length > 1) return `${what} from inside a repeat within another repeat; it needs to be in a repeat of "${listLabel}" alone.`;
+  const r = repeats[0] as GraphNode & { kind: 'repeat' };
+  if (r.list?.$prop !== declared.list) return `${what}, but is inside a repeat of "${def.properties?.[r.list?.$prop]?.label ?? r.list?.$prop}", not of "${listLabel}".`;
+  if (r.filter !== undefined) return `${what} inside a repeat with a category filter, which could hide the active item.`;
+  return null;
+}
+
 /** What is wrong with what a button does to UI state, or null. Shared by load validation and node.setStateAction. */
-export function stateActionProblem(def: ComponentDefinition, action: unknown): string | null {
+export function stateActionProblem(def: ComponentDefinition, action: unknown, nodeId?: string): string | null {
   if (!action || typeof action !== 'object' || Array.isArray(action)) return 'has a UI state action that is not one.';
   const a = action as Record<string, unknown>;
-  if (typeof a.state !== 'string' || !(STATE_ACTION_OPS as readonly unknown[]).includes(a.op)) return 'has a UI state action that names no state, or does something other than set, toggle, next or prev.';
+  if (typeof a.state !== 'string' || !(STATE_ACTION_OPS as readonly unknown[]).includes(a.op)) return 'has a UI state action that names no state, or does something other than set, toggle, next, prev or select.';
   const keys = Object.keys(a).filter((k) => k !== 'state' && k !== 'op');
-  const allowed = a.op === 'set' ? ['value'] : a.op === 'toggle' ? [] : ['wrap'];
+  const allowed = a.op === 'set' ? ['value'] : a.op === 'toggle' || a.op === 'select' ? [] : ['wrap'];
   const extra = keys.filter((k) => !allowed.includes(k));
   if (extra.length) return `has a "${a.op}" UI state action that also says ${extra.map((k) => `"${k}"`).join(', ')}, which only ${extra.includes('value') ? 'set' : extra.includes('wrap') ? 'next and prev' : 'other actions'} take.`;
   if (damagedState(def, a.state)) return null;
   const declared = declaredState(def, a.state);
   if (!declared) return `changes the UI state "${a.state}", which the component does not declare.`;
+  if (declared.type === 'item') {
+    if (a.op === 'set' || a.op === 'toggle') return `${a.op === 'set' ? 'sets' : 'toggles'} the active item "${a.state}"; select a button's own item, or step to the next or previous item.`;
+    if ((a.op === 'next' || a.op === 'prev') && a.wrap !== undefined && typeof a.wrap !== 'boolean') return `steps "${a.state}" with a wrap that is not true or false.`;
+    // Where the button is decides which item it selects; a check made without knowing that leaves it to the one made with it.
+    return a.op === 'select' && nodeId !== undefined ? itemScopeProblem(def, nodeId, a.state, declared, 'selects') : null;
+  }
   switch (a.op) {
+    case 'select':
+      return `selects an item of "${a.state}", which is not the active item of a list; set it to one of its values instead.`;
     case 'toggle':
       return declared.type === 'boolean' ? null : `toggles the choice "${a.state}"; set it, or step it to the next or previous option.`;
     case 'next':
@@ -643,9 +707,9 @@ export function stateActionProblem(def: ComponentDefinition, action: unknown): s
  * Whether a button's state action works in the generated site: the state is declared well formed (one a hand edit
  * damaged is left out of the component, so its buttons do nothing) and the action is one it can make.
  */
-export function stateActionRuns(def: ComponentDefinition, action: unknown): boolean {
+export function stateActionRuns(def: ComponentDefinition, action: unknown, nodeId?: string): boolean {
   const name = action && typeof action === 'object' && !Array.isArray(action) ? (action as { state?: unknown }).state : undefined;
-  return typeof name === 'string' && !!declaredState(def, name) && !stateActionProblem(def, action);
+  return typeof name === 'string' && !!declaredState(def, name) && !stateActionProblem(def, action, nodeId);
 }
 
 /**
@@ -816,6 +880,47 @@ export function stateUsers(def: ComponentDefinition, name: string): Array<{ node
 /** Whether any node of these reads or changes UI state. */
 export function usesState(nodes: GraphNode[]): boolean {
   return nodes.some((n) => (n.kind === 'link' && n.stateAction !== undefined) || bindingSlots(n).some((slot) => isStateRef(slot.field === 'when' || slot.field === 'unless' ? conditionRef(slot.value) : slot.value)));
+}
+
+/**
+ * Every problem of a design's item states (see ItemUiState), keyed by where it is: a declaration whose list is gone or
+ * is no list, and each read or select of one from outside a repeat of its list alone. An edit that adds one (moving a
+ * button out of its repeat, removing or retyping the list, repeating another list) is refused.
+ */
+export function itemStateProblems(def: ComponentDefinition): Map<string, ItemStateProblem> {
+  const out = new Map<string, ItemStateProblem>();
+  const raw = def.state && typeof def.state === 'object' && !Array.isArray(def.state) ? (def.state as Record<string, unknown>) : {};
+  const items = Object.keys(raw).filter((k) => (raw[k] as { type?: unknown } | null)?.type === 'item');
+  if (!items.length || def.kind !== 'managed') return out;
+  for (const name of items) {
+    const problem = uiStateProblem(def, name, raw[name]);
+    if (problem) out.set(`state:${name}`, { message: problem });
+  }
+  if (!def.tree) return out;
+  const names = new Set(items);
+  for (const site of bindingSites(def)) {
+    if (!isStateRef(site.binding) || !names.has(site.binding.$state)) continue;
+    const declared = declaredState(def, site.binding.$state);
+    if (declared?.type !== 'item') continue;
+    const condition = site.field === 'when' || site.field === 'unless';
+    const value = condition ? (site.node as unknown as Record<string, unknown>)[site.field] : undefined;
+    const problem = stateRefProblem({} as ProjectState, def, { node: site.node, field: site.field, prop: site.prop, comparison: isComparison(value) ? value : undefined }, site.binding);
+    if (problem) out.set(JSON.stringify([site.node.id, site.field, site.prop ?? null]), { message: `${nodeName(site.node)} ${problem}`, nodeId: site.node.id });
+  }
+  for (const n of Object.values(def.tree.nodes)) {
+    if (n?.kind !== 'link' || !n.stateAction || !names.has(n.stateAction.state)) continue;
+    const problem = stateActionProblem(def, n.stateAction, n.id);
+    if (problem) out.set(JSON.stringify([n.id, 'stateAction']), { message: `${nodeName(n)} ${problem}`, nodeId: n.id });
+  }
+  return out;
+}
+
+const nodeName = (n: GraphNode) => (typeof n.name === 'string' && n.name.trim() ? `"${n.name.trim()}"` : `The ${n.kind} "${n.id}"`);
+
+/** One item state problem: what is wrong, and the node it is at (none for a declaration's). */
+export interface ItemStateProblem {
+  message: string;
+  nodeId?: string;
 }
 
 /** A copy of a definition with one UI state variable replaced (or removed with `undefined`), for checking a change before making it. */

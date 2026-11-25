@@ -440,7 +440,7 @@ describe('selection-scoped AI runs', () => {
 describe('the AI catalogue signature', () => {
   it('lists each axis with its options', () => {
     const grid = catalogueIndex('foundation').find((c) => c.componentId === 'features.grid')!;
-    expect(grid.variants).toEqual({ tone: ['default', 'muted', 'inverse'], layout: ['default', 'two-columns', 'four-columns'] });
+    expect(grid.variants).toEqual({ tone: ['default', 'muted', 'inverse'], layout: ['default', 'two-columns', 'four-columns', 'sticky-split'] });
     expect(catalogueEntries('foundation').find((c) => c.componentId === 'contact.form')!.axes).toEqual({ tone: ['default', 'muted', 'inverse'] });
   });
 });

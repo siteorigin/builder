@@ -59,6 +59,22 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     props: { eyebrow: 'Our story', heading: 'Started with one van and a good reputation', body: 'We began in 2009 fixing boilers for neighbours.\n\nToday a team of **twelve** looks after homes across the county.', image: NO_IMAGE, actionLabel: 'Meet the team', actionLink: '/about/' }
   },
   {
+    id: 'steps-media-process',
+    componentId: 'content.steps-media',
+    keywords: ['process', 'steps', 'how', 'works', 'stages', 'tour', 'journey', 'approach'],
+    description: 'How it works: steps whose buttons each show their own picture',
+    props: {
+      eyebrow: 'How it works',
+      heading: 'Three steps to a finished garden',
+      lead: 'Choose a step to see what happens and what it looks like.',
+      steps: [
+        { title: 'Survey and ideas', description: 'We visit, measure and talk through how you want to use the space.', image: NO_IMAGE },
+        { title: 'Design and quote', description: 'A drawn plan, planting list and fixed quote, revised until it is right.', image: NO_IMAGE },
+        { title: 'Build and planting', description: 'Our own team builds it, then plants in the right season so it thrives.', image: NO_IMAGE }
+      ]
+    }
+  },
+  {
     id: 'content-text-policy',
     componentId: 'content.text',
     keywords: ['text', 'article', 'policy', 'privacy', 'terms', 'legal', 'paragraphs'],

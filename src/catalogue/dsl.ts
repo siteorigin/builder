@@ -163,6 +163,8 @@ export interface ComponentSpec {
   state?: Record<string, UiStateSchema>;
   build: (b: TreeBuilder) => string;
   examples?: ComponentDefinition['examples'];
+  /** Offered to a small model's page tool only once the project has it (ComponentDefinition.fullListingOnly). */
+  fullListingOnly?: true;
 }
 
 /** The pack-bound helpers a pack's component modules are written with. */
@@ -225,7 +227,8 @@ export function createPack(meta: PackMeta): PackAuthor {
         tree: { rootIds: [rootId], nodes: b.nodes },
         provenance: provenance(spec.componentId),
         license: meta.license,
-        examples: spec.examples
+        examples: spec.examples,
+        ...(spec.fullListingOnly ? { fullListingOnly: true as const } : {})
       };
     },
     adopt(def) {

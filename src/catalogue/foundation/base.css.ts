@@ -34,6 +34,16 @@ const SURFACES = `:where(
 }`;
 
 /**
+ * The Services grid's pinned heading beside its cards (its "sticky-split" layout, whose class the styled elements carry
+ * too), and Steps with pictures' two columns, known by its own layout element and the columns directly inside it (no
+ * :has(), so every browser that prints a site applies them).
+ */
+const PINNED = ends('--layout-sticky-split');
+const PINNED_SPLIT = `${PINNED}${ends('__inner')}`;
+const PINNED_HEADING = `${PINNED}${ends('__intro')}`;
+const STEPS_LAYOUT = ends('__steps-layout');
+
+/**
  * The reset, document defaults and primitive styles every built-in theme shares: the buttons, links and check lists,
  * the colours drawn on dark and brand grounds, the image viewer, the carousel controls, reduced motion and print.
  * A theme's stylesheet starts with its own title line, then this, then any rules of its own.
@@ -249,6 +259,9 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
 
 .so-container { width: 100%; max-width: calc(var(--so-container-content) + 2 * var(--so-container-gutter)); margin-inline: auto; padding-inline: var(--so-container-gutter); }
 
+/* A Services grid with its heading pinned beside the cards, whose heading was cleared, gives the cards the whole row. */
+${PINNED_SPLIT}:has(> ${ends('__grid')}):not(:has(> ${ends('__intro')})) { grid-template-columns: minmax(0, 1fr); }
+
 /* Printed, a page is a handout. */
 @media print {
   /* Colours print as designed. Without their backgrounds, light text on a dark band (the footer, a dark section,
@@ -276,6 +289,13 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
     margin-block-end: 0.5em; font-weight: 600;
   }
   [role='tabpanel'] + [role='tabpanel'] { margin-block-start: 1.5em; }
+  /* What stays in view on screen while content beside it scrolls (a section's heading beside its cards, steps beside
+     their picture) prints in its place, the columns one after the other, however wide the sheet: in any copy of the
+     section, by the option's and the elements' class endings. */
+  ${PINNED_SPLIT}:not(#so-print), ${STEPS_LAYOUT}:not(#so-print) { grid-template-columns: minmax(0, 1fr) !important; }
+  ${PINNED_HEADING}:not(#so-print) { position: static !important; inset: auto !important; }
+  ${STEPS_LAYOUT} > ${ends('__media-stage')}:not(#so-print) { position: static !important; inset: auto !important; }
+  ${STEPS_LAYOUT} > ${ends('__steps-stage')}:not(#so-print) { order: 0 !important; }
   /* Where the sheet has room: a heading, or a section's heading group (eyebrow, heading and lead, in any copy of
      the section), stays with what follows it, and short units (a plan, a contact method, a question and its
      answer, a gallery image and its caption, the contact form) stay whole. */

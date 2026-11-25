@@ -1994,6 +1994,68 @@ describe('ai-profile examples', () => {
   });
 });
 
+describe('sections only a full run lists (fullListingOnly)', () => {
+  type Listing = { properties: { sections: { items: { oneOf: Array<{ properties: { componentId: { enum: string[] }; variant?: { enum: string[] }; variants?: { properties: Record<string, { enum: string[] }> } } }> } } } };
+  const listed = (schema: unknown) => (schema as Listing).properties.sections.items.oneOf.map((o) => o.properties.componentId.enum[0]);
+  const pageTool = (tools: ToolDefinition[]) => tools.find((t) => t.name === 'upsert_page_with_sections')!.parameters;
+  const local = { toolCalling: 'constrained-json' as const, contextWindowTokens: 16000 };
+  const smallNative = { toolCalling: 'native' as const, contextWindowTokens: 8000 };
+  const cloud = { toolCalling: 'native' as const, contextWindowTokens: 400000 };
+
+  it('leaves the marked sections out of a small model’s page tool and offers them to a full run', () => {
+    const state = createStarterState('business', 'Test', false);
+    const marked = listThemes()[0].components.filter((c) => c.fullListingOnly).map((c) => c.componentId);
+    expect(marked).toContain('content.steps-media');
+    const base = { state, codeEnabled: false, definitionOps: false, selection: null };
+    for (const capabilities of [local, smallNative]) {
+      for (const page of [null, { route: '/' }]) {
+        const offered = listed(pageTool(toolsForRun({ ...base, capabilities, page }).tools));
+        expect(offered, `${capabilities.toolCalling} ${page ? 'page' : 'site'}`).toContain('features.grid');
+        for (const id of marked) expect(offered, `${capabilities.toolCalling} ${page ? 'page' : 'site'}`).not.toContain(id);
+      }
+    }
+    // A window too small for the request beside the general tools narrows a large model's run the same way.
+    expect(listed(pageTool(toolsForRun({ ...base, capabilities: cloud, focused: true }).tools))).not.toContain('content.steps-media');
+    for (const page of [null, { route: '/' }]) {
+      const offered = listed(pageTool(toolsForRun({ ...base, capabilities: cloud, page }).tools));
+      for (const id of marked) expect(offered).toContain(id);
+    }
+    expect(listed(upsertToolSchema(state))).toEqual(expect.arrayContaining(marked));
+  });
+
+  it('offers a marked section to a small model once the project has it', () => {
+    const state = createStarterState('business', 'Test', false);
+    expect(listed(upsertToolSchema(state, undefined, true))).not.toContain('content.steps-media');
+    const def = structuredClone(catalogueComponent(state.site.themeId, 'content.steps-media')!);
+    state.components[def.id] = def;
+    expect(listed(upsertToolSchema(state, undefined, true))).toContain('content.steps-media');
+  });
+
+  it('drops a marked layout option from a small model’s choices, never its axis default', () => {
+    const state = createStarterState('business', 'Test', false);
+    const layouts = (schema: unknown) => (schema as Listing).properties.sections.items.oneOf.find((o) => o.properties.componentId.enum[0] === 'features.grid')!.properties.variants!.properties.layout.enum;
+    // The theme's pinned heading is one: a full run offers it, a small model's page tool does not.
+    expect(layouts(upsertToolSchema(state))).toContain('sticky-split');
+    expect(layouts(upsertToolSchema(state, undefined, true))).toEqual(['default', 'two-columns', 'four-columns']);
+    const grid = structuredClone(catalogueComponent(state.site.themeId, 'features.grid')!);
+    grid.variantAxes!.layout.options['four-columns'] = { ...grid.variantAxes!.layout.options['four-columns'], fullListingOnly: true };
+    grid.variantAxes!.layout.options.default = { ...grid.variantAxes!.layout.options.default, fullListingOnly: true };
+    state.components[grid.id] = grid;
+    expect(layouts(upsertToolSchema(state, undefined, true))).not.toContain('four-columns');
+    expect(layouts(upsertToolSchema(state, undefined, true))).toContain('default');
+    expect(layouts(upsertToolSchema(state))).toContain('four-columns');
+    // The definition itself keeps the option.
+    expect(Object.keys(state.components[grid.id].variantAxes!.layout.options)).toContain('four-columns');
+  });
+
+  it('shows a small model no worked example of a section its page tool leaves out', () => {
+    const state = createStarterState('business', 'Test', false);
+    const ask = 'Explain how it works in steps: our process';
+    expect(retrieveExamples(state, ask).map((e) => e.componentId)).toContain('content.steps-media');
+    expect(retrieveExamples(state, ask, 3, true).map((e) => e.componentId)).not.toContain('content.steps-media');
+  });
+});
+
 describe('read_component and installed theme components', () => {
   it('describes a theme component as the project has it installed, so an older copy offers no heading level', async () => {
     const { executeTool } = await import('@agent/tools');
@@ -2043,7 +2105,7 @@ describe('tone and layout in one call (#132)', () => {
     const schema = upsertToolSchema(session.state) as { properties: { sections: { items: { oneOf: Array<{ properties: Record<string, { properties?: Record<string, { enum?: string[] }>; additionalProperties?: boolean }> }> } } } };
     const grid = schema.properties.sections.items.oneOf.find((o) => JSON.stringify(o.properties.componentId).includes('"features.grid"'))!;
     expect(grid.properties.variants.additionalProperties).toBe(false);
-    expect(grid.properties.variants.properties!.layout.enum).toEqual(['default', 'two-columns', 'four-columns']);
+    expect(grid.properties.variants.properties!.layout.enum).toEqual(['default', 'two-columns', 'four-columns', 'sticky-split']);
     expect(grid.properties.variants.properties!.tone.enum).toContain('muted');
   });
 

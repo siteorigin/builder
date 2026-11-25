@@ -46,7 +46,8 @@ interface Placement {
   ownInk?: Ink;
 }
 
-const INNER = "[class$='__inner']";
+// A section's container, wherever its class comes in the list (a layout option that styles it adds its own after it).
+const INNER = ":is([class$='__inner'], [class*='__inner '])";
 /** A part a tone styles carries the tone's class after its own, so its class is matched anywhere in the list. */
 const PANEL = ":is([class$='__panel'], [class*='__panel '])";
 const at = (selector: string, ink: Ink, rich = false): Spot => ({ selector, ink, rich });

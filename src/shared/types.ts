@@ -627,6 +627,8 @@ export interface VariantDef {
   label: string;
   /** Style rules applied when this variant is selected, keyed by definition node ID. */
   styles?: Record<string, ResponsiveStyles>;
+  /** A theme option the assistant's page tool offers only on a full run, as ComponentDefinition.fullListingOnly does a section. Never an axis default. */
+  fullListingOnly?: true;
 }
 
 /** One independent design choice, such as tone or layout. A placement picks one option on every axis. */
@@ -661,7 +663,7 @@ export interface SlotDef {
  * Each placement starts at `initial`, and visitors change it with buttons (`LinkNode.stateAction`); it is never a
  * property placements set.
  */
-export type UiStateSchema = BooleanUiState | EnumUiState;
+export type UiStateSchema = BooleanUiState | EnumUiState | ItemUiState;
 export interface BooleanUiState {
   type: 'boolean';
   label: string;
@@ -674,18 +676,35 @@ export interface EnumUiState {
   options: Array<{ value: string; label: string }>;
   initial: string;
 }
-export const UI_STATE_TYPES: ReadonlyArray<UiStateSchema['type']> = ['boolean', 'enum'];
+/**
+ * Which item of one of the component's own list properties is the active one (a step whose description is open and
+ * whose picture shows). Buttons in a repeat of that list select their own item (`select`) or step through the items
+ * (`next`, `prev`), and content in any repeat of the same list reads `{ $state: name }` as "this item is the active
+ * one", so one list drives both the buttons and what they show. Each placement starts at the item in position
+ * `initial` (counted from 0, the last when the list is shorter) and, once a visitor chooses, keeps that item while the
+ * list changes around it.
+ */
+export interface ItemUiState {
+  type: 'item';
+  label: string;
+  /** The list property whose items it chooses between. */
+  list: string;
+  initial: number;
+}
+export const UI_STATE_TYPES: ReadonlyArray<UiStateSchema['type']> = ['boolean', 'enum', 'item'];
 
 /**
- * What a button does to UI state: `set` it to a value, `toggle` a yes/no state, or step a choice to its `next` or
- * `prev` option, staying at the last (or first) unless `wrap` goes round to the other end.
+ * What a button does to UI state: `set` it to a value, `toggle` a yes/no state, or step a choice (or the active item)
+ * to its `next` or `prev` option, staying at the last (or first) unless `wrap` goes round to the other end. `select`
+ * makes the button's own list item the active one (a button in a repeat of the item state's list).
  */
 export type StateAction =
   | { state: string; op: 'set'; value: boolean | string }
   | { state: string; op: 'toggle' }
-  | { state: string; op: 'next' | 'prev'; wrap?: boolean };
+  | { state: string; op: 'next' | 'prev'; wrap?: boolean }
+  | { state: string; op: 'select' };
 export type StateActionOp = StateAction['op'];
-export const STATE_ACTION_OPS: readonly StateActionOp[] = ['set', 'toggle', 'next', 'prev'];
+export const STATE_ACTION_OPS: readonly StateActionOp[] = ['set', 'toggle', 'next', 'prev', 'select'];
 
 /** The value a definition's UI state starts at in every placement, or undefined when it declares no such state. */
 export function stateInitial(def: Pick<ComponentDefinition, 'state'> | undefined, name: string): unknown {
@@ -724,6 +743,12 @@ export interface ComponentDefinition {
   examples?: Array<{ description: string; props: Record<string, unknown> }>;
   /** Icon name used in the insert panel. */
   icon?: string;
+  /**
+   * A theme section the assistant's page tool lists only on a full run: a small model (grammar-constrained, or a window
+   * too small for the general tools) is offered the catalogue's core sections, which its window has room for, and a
+   * project that already has this one installed. The insert panel and larger models offer every section.
+   */
+  fullListingOnly?: true;
   /**
    * Where Insert puts a new placement (project components): beside the page's sections, or where an element goes,
    * inside the selected layout. Create component records where its source sat; copies carry it on. Without it the

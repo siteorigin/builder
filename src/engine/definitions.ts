@@ -33,6 +33,7 @@ import {
   damagedState,
   normalizeUiState,
   stateActionProblem,
+  uiStateProblem,
   stateRefProblem,
   stateUsers,
   withState,
@@ -638,9 +639,12 @@ export function setState(state: ProjectState, op: Op<'component.setState'>): OpR
   // relabelling a choice never moves every placement to its first option.
   const prev = own(def.state, op.state);
   if ((op.schema.label === undefined || !op.schema.label.trim()) && typeof prev?.label === 'string' && prev.label.trim()) schema.label = prev.label;
-  if (prev && op.schema.initial === undefined && !damagedState(def, op.state) && prev.type === schema.type && (schema.type === 'boolean' || schema.options.some((o) => o.value === prev.initial)))
+  if (prev && op.schema.initial === undefined && !damagedState(def, op.state) && prev.type === schema.type && (schema.type !== 'enum' || schema.options.some((o) => o.value === prev.initial)))
     schema.initial = prev.initial as never;
   const next = withState(def, op.state, schema);
+  // An item state holds an item of one of the component's own lists.
+  const declaration = uiStateProblem(next, op.state, schema);
+  if (declaration) fail(`"${op.state}" cannot change this way: ${declaration}`);
   for (const site of bindingSites(next)) {
     if (!isStateRef(site.binding) || site.binding.$state !== op.state) continue;
     const problem = stateRefProblem(state, next, site, site.binding);
@@ -648,7 +652,7 @@ export function setState(state: ProjectState, op: Op<'component.setState'>): OpR
   }
   for (const n of Object.values(def.tree.nodes)) {
     if (n.kind !== 'link' || n.stateAction?.state !== op.state) continue;
-    const problem = stateActionProblem(next, n.stateAction);
+    const problem = stateActionProblem(next, n.stateAction, n.id);
     if (problem) fail(`"${op.state}" cannot change this way: ${describeNode(n)} ${problem}`);
   }
   def.state = next.state;
@@ -678,7 +682,7 @@ export function nodeSetStateAction(state: ProjectState, op: Op<'node.setStateAct
   }
   const action = clone(op.action) as StateAction;
   if (damagedState(def, action.state)) fail(`The UI state "${action.state}" of "${def.name}" is damaged. Declare it again with component.setState first.`);
-  const problem = stateActionProblem(def, action);
+  const problem = stateActionProblem(def, action, node.id);
   if (problem) fail(`${describeNode(node)} ${problem}`);
   node.stateAction = action;
   return {};

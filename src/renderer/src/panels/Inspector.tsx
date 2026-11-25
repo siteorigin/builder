@@ -2433,7 +2433,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const designUnlinked =
     node.kind === 'link' &&
     !isBinding(node.link) &&
-    !stateActionRuns(def, node.stateAction) &&
+    !stateActionRuns(def, node.stateAction, node.id) &&
     (node.appearance === 'primary' || node.appearance === 'secondary') &&
     typeof node.label === 'string' &&
     !!node.label.trim() &&

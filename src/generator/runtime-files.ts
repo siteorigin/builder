@@ -529,6 +529,38 @@ export function stepState(options, value, by, wrap) {
 }
 
 /**
+ * A list item's ID as part of an element ID: letters, digits and hyphens as they are, every other UTF-16 unit as \`_\`
+ * and four hex digits, so two items never share one, none holds a space, and no ID (a lone surrogate) can throw.
+ */
+export function itemKey(id) {
+	return String(id).replace(/[^A-Za-z0-9-]/g, (c) => '_' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+}
+
+/**
+ * The ID of a list's active item (a component's item state): the one a visitor \`chosen\` while the list still has it,
+ * else the one at position \`start\` (the last when the list is shorter), or null for an empty list. A chosen item
+ * stays active while others are added, moved or removed around it.
+ */
+export function activeItem(items, chosen, start) {
+	const list = Array.isArray(items) ? items : [];
+	if (chosen != null && list.some((item) => item?.id === chosen)) return chosen;
+	return list.length ? (list[Math.min(start, list.length - 1)]?.id ?? null) : null;
+}
+
+/**
+ * The ID of the item a step button makes active: the next (\`by\` 1) or previous (-1) after \`active\`, staying at the last
+ * or first unless \`wrap\` goes round to the other end. An item the list does not have starts again at the first.
+ */
+export function stepItem(items, active, by, wrap) {
+	const list = Array.isArray(items) ? items : [];
+	if (!list.length) return null;
+	const at = list.findIndex((item) => item?.id === active);
+	if (at < 0) return list[0]?.id ?? null;
+	const to = at + by;
+	return list[wrap ? (to + list.length) % list.length : Math.min(Math.max(to, 0), list.length - 1)]?.id ?? null;
+}
+
+/**
  * Moves through a tab list from the keyboard, as a tab's keydown handler: Left and Right go to the previous and next
  * tab (the other way round in right-to-left text), round from one end to the other, and Home and End to the first and
  * last. The tab moved to takes the focus and is chosen, as clicking it would choose it. Other keys are left alone.
