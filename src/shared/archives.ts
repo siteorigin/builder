@@ -60,15 +60,14 @@ export function archivePages(state: ProjectState): ArchivePage[] {
   for (const p of Object.values(state.pages ?? {})) if (typeof p?.route === 'string' && !draftPage(p.id)) held.add(p.route.toLowerCase());
   for (const e of siteEntries(state)) if (!isDraftEntry(e.entry)) held.add(e.route.toLowerCase());
   const kept: unknown = state.site?.redirects;
-  for (const r of Array.isArray(kept) ? (kept as Array<{ from?: unknown; pageId?: unknown; entryId?: unknown; to?: unknown }>) : []) {
+  for (const r of Array.isArray(kept) ? (kept as Array<{ from?: unknown; pageId?: unknown; entryId?: unknown }>) : []) {
     if (typeof r?.from !== 'string') continue;
     // Only an old address the website keeps: one leading to a published page or entry (not a draft, nor one that is gone).
     const page = typeof r.pageId === 'string' && Object.hasOwn(state.pages ?? {}, r.pageId) && !draftPage(r.pageId);
     const entry = typeof r.entryId === 'string' ? findEntry(state, r.entryId) : undefined;
-    // One leading to another address holds its own whatever is there now: where it ends can be an archive page, so
-    // following it here would go round in a circle. The editor never puts one inside a collection's archive folders.
-    const elsewhere = typeof r.to === 'string' && r.pageId === undefined && r.entryId === undefined;
-    if (page || elsewhere || (entry && !isDraftEntry(entry.entry))) held.add(r.from.toLowerCase());
+    // One leading to another address holds nothing here: where it ends can be an archive page, and an archive page
+    // takes its address instead (see shared/redirects.ts), so the series is the same with drafts or without.
+    if (page || (entry && !isDraftEntry(entry.entry))) held.add(r.from.toLowerCase());
   }
   // Each collection's own address is its index's, whichever collection's series comes first.
   const indexes = new Set(

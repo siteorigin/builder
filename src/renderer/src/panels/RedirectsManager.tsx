@@ -1,8 +1,8 @@
-import { useId, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import type { ProjectState, RedirectHost, SiteRedirect } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { isDraftEntry, siteEntries } from '@shared/collections';
-import { redirectRecords } from '@shared/redirects';
+import { redirectRecords, resolveRedirects, type LiveRedirect } from '@shared/redirects';
 import { isDraftPage } from '@generator/index';
 import { redirectHost } from '@generator/host-redirects';
 import { Field } from '../components/ui';
@@ -28,17 +28,21 @@ interface Draft {
   revision?: number;
 }
 
-/** Where a redirect sends visitors, in words, with whether that is a draft the website leaves out. */
-function destination(state: ProjectState, r: SiteRedirect): { text: string; draft: boolean } {
+/**
+ * Where a redirect sends visitors, in words, with whether it ends at a draft the website leaves out: followed to its
+ * end (`live`), so an address, or a chain, that reaches a draft says so too.
+ */
+function destination(state: ProjectState, r: SiteRedirect, live: LiveRedirect | undefined): { text: string; draft: boolean } {
+  const draft = !!live && (live.page ? isDraftPage(state, live.page) : live.entry ? isDraftEntry(live.entry.entry) : false);
   if (r.pageId !== undefined) {
     const page = Object.hasOwn(state.pages, r.pageId) ? state.pages[r.pageId] : undefined;
-    return page ? { text: `${page.title} (${page.route})`, draft: isDraftPage(state, page) } : { text: 'A page that no longer exists', draft: false };
+    return page ? { text: `${page.title} (${page.route})`, draft } : { text: 'A page that no longer exists', draft: false };
   }
   if (r.entryId !== undefined) {
     const entry = siteEntries(state).find((e) => e.entry.id === r.entryId);
-    return entry ? { text: `${entry.entry.title} (${entry.route})`, draft: isDraftEntry(entry.entry) } : { text: 'A post that no longer exists', draft: false };
+    return entry ? { text: `${entry.entry.title} (${entry.route})`, draft } : { text: 'A post that no longer exists', draft: false };
   }
-  return { text: r.to ?? '', draft: false };
+  return { text: r.to ?? '', draft };
 }
 
 /**
@@ -48,14 +52,24 @@ function destination(state: ProjectState, r: SiteRedirect): { text: string; draf
  */
 export function RedirectsFields({ state, problems, revision }: { state: ProjectState; problems: ReadonlyArray<{ site?: string; message: string; severity: string }>; revision?: number }) {
   const uid = useId();
+  const root = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ field: 'from' | 'to'; message: string } | null>(null);
   const list = redirectRecords(state);
+  const live = new Map(resolveRedirects(state).live.map((r) => [r.from, r]));
   const pages = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id)).map((id) => state.pages[id]);
   const posts = siteEntries(state);
   const host = redirectHost(state.site);
   const findings = (from: string) => problems.filter((d) => d.site === `redirect:${from}`);
 
+  /** Focus where the author was once the form goes: the row's Edit button, or Add redirect. */
+  const refocus = (from: string | null) =>
+    requestAnimationFrame(() => (root.current?.querySelector<HTMLElement>(from === null ? '#site-redirects-add' : `[data-from="${CSS.escape(from)}"] .so-redirect-edit`) ?? root.current?.querySelector<HTMLElement>('#site-redirects-add'))?.focus());
+  const close = () => {
+    const from = draft?.from ?? null;
+    setDraft(null);
+    refocus(from);
+  };
   const open = (r: SiteRedirect | null) => {
     setError(null);
     const kind: Kind = !r ? 'page' : r.pageId !== undefined ? 'page' : r.entryId !== undefined ? 'post' : 'path';
@@ -63,15 +77,22 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
   };
   const save = async () => {
     if (!draft) return;
-    const target = draft.kind === 'page' ? { pageId: draft.pageId } : draft.kind === 'post' ? { entryId: draft.entryId } : { to: draft.to.trim().startsWith('/') ? draft.to.trim() : `/${draft.to.trim()}` };
     const typed = draft.typed.trim();
-    if (draft.from === null && !typed) return setError('Type the old address, such as /old-services/.');
+    const to = draft.to.trim();
+    if (draft.from === null && !typed) return setError({ field: 'from', message: 'Type the old address, such as /old-services/.' });
+    // An empty address is never taken for Home.
+    if (draft.kind === 'path' && !to) return setError({ field: 'to', message: 'Type the address it sends visitors to, such as /blog/, or / for Home.' });
+    const target = draft.kind === 'page' ? { pageId: draft.pageId } : draft.kind === 'post' ? { entryId: draft.entryId } : { to: to.startsWith('/') ? to : `/${to}` };
     const op: EditOperation = draft.from === null ? { type: 'redirect.add', from: typed.startsWith('/') ? typed : `/${typed}`, ...target } : { type: 'redirect.update', from: draft.from, ...target };
     // Against the project as it was when the form opened: a redirect removed and made again meanwhile is not changed.
     const done = await applyOps([op], draft.from === null ? 'Add redirect' : 'Change redirect', undefined, draft.revision);
-    if (done) setDraft(null);
+    if (done) close();
+    // Refused, the form stays as typed; saving again checks it against the project as it is now, which the list shows.
+    else setDraft((d) => d && { ...d, revision });
   };
-  const remove = (from: string) => void applyOps([{ type: 'redirect.remove', from }], 'Remove redirect', undefined, revision);
+  const remove = async (from: string) => {
+    if (await applyOps([{ type: 'redirect.remove', from }], 'Remove redirect', undefined, revision)) refocus(null);
+  };
 
   const form = draft && (
     <form
@@ -83,19 +104,19 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
       }}
     >
       {draft.from === null && (
-        <Field label="Old address" controlId={`${uid}-from`} error={error ?? undefined} hint="An address of this site that visitors and search engines still arrive at.">
+        <Field label="Old address" error={error?.field === 'from' ? error.message : undefined} hint="An address of this site that visitors and search engines still arrive at.">
           <input id={`${uid}-from`} className="input" value={draft.typed} placeholder="/old-services/" autoFocus onChange={(e) => (setError(null), setDraft({ ...draft, typed: e.target.value }))} />
         </Field>
       )}
       <div className="so-redirect-kinds" role="radiogroup" aria-label="Sends visitors to">
         {(['page', 'post', 'path'] as const).map((k) => (
           <label key={k} className="so-redirect-kind">
-            <input type="radio" name={`${uid}-to`} checked={draft.kind === k} disabled={k === 'post' && !posts.length} onChange={() => setDraft({ ...draft, kind: k })} /> {k === 'page' ? 'A page' : k === 'post' ? 'A post' : 'An address'}
+            <input type="radio" name={`${uid}-to`} checked={draft.kind === k} disabled={k === 'post' && !posts.length} autoFocus={draft.from !== null && draft.kind === k} onChange={() => (setError(null), setDraft({ ...draft, kind: k }))} /> {k === 'page' ? 'A page' : k === 'post' ? 'A post' : 'An address'}
           </label>
         ))}
       </div>
       {draft.kind === 'page' && (
-        <Field label="Page" controlId={`${uid}-page`} hint="It follows the page wherever it moves.">
+        <Field label="Page" hint="It follows the page wherever it moves.">
           <select id={`${uid}-page`} className="select" value={draft.pageId} onChange={(e) => setDraft({ ...draft, pageId: e.target.value })}>
             {pages.map((p) => (
               <option key={p.id} value={p.id}>
@@ -106,7 +127,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
         </Field>
       )}
       {draft.kind === 'post' && (
-        <Field label="Post" controlId={`${uid}-post`} hint="It follows the post wherever it moves.">
+        <Field label="Post" hint="It follows the post wherever it moves.">
           <select id={`${uid}-post`} className="select" value={draft.entryId} onChange={(e) => setDraft({ ...draft, entryId: e.target.value })}>
             {posts.map((p) => (
               <option key={p.entry.id} value={p.entry.id}>
@@ -117,12 +138,12 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
         </Field>
       )}
       {draft.kind === 'path' && (
-        <Field label="Address" controlId={`${uid}-path`} hint="Another address of this site, such as /blog/: whatever is there.">
-          <input id={`${uid}-path`} className="input" value={draft.to} placeholder="/blog/" onChange={(e) => setDraft({ ...draft, to: e.target.value })} />
+        <Field label="Address" error={error?.field === 'to' ? error.message : undefined} hint="Another address of this site, such as /blog/: whatever is there.">
+          <input id={`${uid}-path`} className="input" value={draft.to} placeholder="/blog/" onChange={(e) => (setError(null), setDraft({ ...draft, to: e.target.value }))} />
         </Field>
       )}
       <div className="so-redirect-actions">
-        <button type="button" className="btn btn-sm" onClick={() => setDraft(null)}>
+        <button type="button" className="btn btn-sm" onClick={close}>
           Cancel
         </button>
         <button type="submit" className="btn btn-sm btn-primary">
@@ -133,7 +154,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
   );
 
   return (
-    <>
+    <div ref={root} className="so-redirects-fields">
       <p className="field-hint">Old addresses that send visitors and search engines on with a permanent redirect (HTTP 301). Moving a page or a post keeps its old address here; add your own for addresses from an earlier website.</p>
       <Field label="Published on" hint={HOST_HINTS[host]}>
         <select id="site-redirect-host" className="select" value={host} onChange={(e) => void applyOps([{ type: 'site.update', redirectHost: e.target.value as RedirectHost }], 'Update site settings')}>
@@ -147,10 +168,10 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
       {list.length ? (
         <ul className="so-redirects" aria-label="Redirects">
           {list.map((r) => {
-            const where = destination(state, r);
+            const where = destination(state, r, live.get(r.from));
             const found = findings(r.from);
             return (
-              <li key={r.from} className={`so-redirect${found.length ? ' has-problem' : ''}`}>
+              <li key={r.from} data-from={r.from} className={`so-redirect${found.length ? ' has-problem' : ''}`}>
                 <div className="so-redirect-main">
                   <div className="so-redirect-route">
                     <code>{r.from}</code> <span aria-hidden="true">→</span>
@@ -168,10 +189,10 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
                 </div>
                 {draft?.from !== r.from && (
                   <div className="so-redirect-buttons">
-                    <button type="button" className="btn btn-sm so-redirect-edit" aria-label={`Change where ${r.from} goes`} onClick={() => open(r)}>
+                    <button type="button" className="btn btn-sm so-redirect-edit" aria-label={`Edit the redirect from ${r.from}`} onClick={() => open(r)}>
                       Edit
                     </button>
-                    <button type="button" className="btn btn-sm" aria-label={`Remove the redirect from ${r.from}`} onClick={() => remove(r.from)}>
+                    <button type="button" className="btn btn-sm" aria-label={`Remove the redirect from ${r.from}`} onClick={() => void remove(r.from)}>
                       Remove
                     </button>
                   </div>
@@ -191,6 +212,6 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
           Add redirect
         </button>
       )}
-    </>
+    </div>
   );
 }

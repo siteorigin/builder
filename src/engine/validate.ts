@@ -11,7 +11,7 @@ import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
 import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldSchema } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
-import { loopText, redirectRecord, resolveRedirects, type RedirectProblem } from '@shared/redirects';
+import { loopText, redirectRecord, redirectTargetProblem, resolveRedirects, type RedirectProblem } from '@shared/redirects';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { variantIdsValid, variantOptions } from '@shared/variants';
 import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds, templateTrees } from './tree';
@@ -97,7 +97,7 @@ const sortedJson = (v: unknown): string =>
 export const redirectPlace = (from: string) => `redirect:${from}`;
 
 /** What keeps an old address from sending visitors straight on, said as Project health and the Redirects list say it. */
-export function redirectDiagnostic(p: RedirectProblem): Diagnostic {
+export function redirectDiagnostic(p: Exclude<RedirectProblem, { kind: 'invalid' }>): Diagnostic {
   const site = redirectPlace(p.from);
   switch (p.kind) {
     case 'self':
@@ -118,7 +118,7 @@ export function redirectDiagnostic(p: RedirectProblem): Diagnostic {
       return {
         severity: 'warning',
         code: 'REDIRECT_CHAIN',
-        message: `The old address ${p.from} reaches ${p.to} through ${listed(p.via)}. The website sends visitors straight to ${p.to}; send ${p.from} there in Site settings, under Redirects, so it keeps arriving if ${p.via.length === 1 ? 'that address changes' : 'one of those addresses changes'}.`,
+        message: `The old address ${p.from} reaches ${p.to} through ${listed(p.hops > p.via.length ? [...p.via, `${p.hops - p.via.length} more`] : p.via)}. The website sends visitors straight to ${p.to}; send ${p.from} there in Site settings, under Redirects, so it keeps arriving if ${p.hops === 1 ? 'that address changes' : 'one of those addresses changes'}.`,
         site
       };
   }
@@ -169,7 +169,6 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   // collection entry or other address of the site.
   const redirects: unknown = state.site.redirects;
   if (redirects !== undefined && !Array.isArray(redirects)) out.push({ severity: 'error', code: 'REDIRECT_INVALID', message: 'The list of old page addresses is damaged.' });
-  const unreadable = new Set<string>();
   for (const r of Array.isArray(redirects) ? (redirects as unknown[]) : []) {
     const record = redirectRecord(r);
     if (!record) {
@@ -181,17 +180,15 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     if (err) out.push({ severity: 'error', code: 'ROUTE_INVALID', message: `Old address ${from}: ${err}` });
     if (typeof pageId === 'string' && !Object.hasOwn(state.pages, pageId)) out.push({ severity: 'error', code: 'REDIRECT_TARGET', message: `The old address ${from} goes to a page that no longer exists.` });
     if (typeof entryId === 'string' && !findEntry(state, entryId)) out.push({ severity: 'error', code: 'REDIRECT_TARGET', message: `The old address ${from} goes to a collection entry that no longer exists.` });
-    const toErr = to === undefined || to === '/' ? null : validateRoute(to);
-    if (toErr) {
-      unreadable.add(from.toLowerCase());
-      out.push({ severity: 'error', code: 'REDIRECT_PATH_INVALID', message: `The old address ${from} sends visitors to ${to}, which is not an address of the site: ${toErr} The website leaves it out until it is corrected in Site settings, under Redirects.`, site: redirectPlace(from) });
-    }
+    const toErr = to === undefined ? null : redirectTargetProblem(to);
+    if (toErr) out.push({ severity: 'error', code: 'REDIRECT_PATH_INVALID', message: `The old address ${from} sends visitors to ${to}, which is not an address of the site: ${toErr} The website leaves it out until it is corrected in Site settings, under Redirects.`, site: redirectPlace(from) });
     const key = from.toLowerCase();
     if (routes.has(key)) out.push({ severity: 'error', code: 'ROUTE_DUPLICATE', message: `${routes.get(key)} and the old address ${from} share ${from}.` });
     routes.set(key, `The old address ${from}`);
   }
   // Where each leads, followed through other old addresses: one that never arrives is left out of the website.
-  for (const p of resolveRedirects(state).problems) if (!unreadable.has(p.from.toLowerCase())) out.push(redirectDiagnostic(p));
+  // One that is not an address of the site is named above, with its redirect.
+  for (const p of resolveRedirects(state).problems) if (p.kind !== 'invalid') out.push(redirectDiagnostic(p));
   // Collections and their entries hold addresses of their own, in the same namespace.
   out.push(...collectionDiagnostics(state, routes));
   for (const id of Object.keys(state.pages)) if (!state.site.pageOrder.includes(id)) out.push({ severity: 'error', code: 'PAGE_ORPHAN', message: `Page ${state.pages[id].title} is not in the page order.` });

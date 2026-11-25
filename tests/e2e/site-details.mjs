@@ -259,7 +259,7 @@ step('Redirects lists, adds, changes and removes old addresses, with the host ru
   assert.match(await row('/old-services/').innerText(), /Contact \(\/contact\/\)[\s\S]*Added by you/);
 
   // Sent to an address instead, and a second redirect leading through it: the chain is named on its row.
-  await row('/old-services/').getByRole('button', { name: 'Change where /old-services/ goes' }).click();
+  await row('/old-services/').getByRole('button', { name: 'Edit the redirect from /old-services/' }).click();
   await row('/old-services/').getByRole('radio', { name: 'An address' }).check();
   await row('/old-services/').getByRole('textbox', { name: 'Address', exact: true }).fill('/about/');
   await row('/old-services/').getByRole('button', { name: 'Save' }).click();
@@ -273,19 +273,24 @@ step('Redirects lists, adds, changes and removes old addresses, with the host ru
   await eventually(() => assert.match(rules(), /^\/studio\/promo\/ \/studio\/about\/ 301$/m, 'the website goes straight to the end of the chain'));
 
   // A loop is refused, and nothing changes.
-  await row('/old-services/').getByRole('button', { name: 'Change where /old-services/ goes' }).click();
+  await row('/old-services/').getByRole('button', { name: 'Edit the redirect from /old-services/' }).click();
   await row('/old-services/').getByRole('textbox', { name: 'Address', exact: true }).fill('/promo/');
   await row('/old-services/').getByRole('button', { name: 'Save' }).click();
   await eventually(async () => assert.match(await win.locator('.toasts .toast.error').last().innerText(), /would make a loop of old addresses/));
+  // An empty address is never taken for Home: the form says what it needs, and nothing is saved.
+  await row('/old-services/').getByRole('textbox', { name: 'Address', exact: true }).fill('');
+  await row('/old-services/').getByRole('button', { name: 'Save' }).click();
+  assert.match(await row('/old-services/').locator('.field-error').innerText(), /Type the address it sends visitors to/);
   await row('/old-services/').getByRole('button', { name: 'Cancel' }).click();
-  assert.deepEqual(site().redirects.map((r) => r.to), ['/about/', '/old-services/'], 'the refused loop changed nothing');
+  await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Edit the redirect from /old-services/', 'focus returns to the row it was editing'));
+  assert.deepEqual(site().redirects.map((r) => r.to), ['/about/', '/old-services/'], 'the refused loop and the empty address changed nothing');
 
   step('the host choice writes Netlify’s forced rules, and removing a redirect undoes and redoes');
   await section().locator('#site-redirect-host').selectOption('netlify');
   await eventually(() => assert.match(rules(), /^\/studio\/old-services\/ \/studio\/about\/ 301!$/m, 'Netlify’s rules are forced past the old address’s page'));
   await row('/promo/').getByRole('button', { name: 'Remove the redirect from /promo/' }).click();
   await eventually(() => assert.equal(site().redirects.length, 1));
-  assert.equal(await row('/promo/').count(), 0, 'its row goes');
+  await eventually(async () => assert.equal(await row('/promo/').count(), 0, 'its row goes'));
   assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true, 'Undo takes the removal back');
   await eventually(() => assert.equal(site().redirects.length, 2));
   await eventually(async () => assert.equal(await row('/promo/').count(), 1, 'its row is back'));

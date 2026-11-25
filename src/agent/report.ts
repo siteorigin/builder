@@ -317,11 +317,12 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       case 'redirect.add':
       case 'redirect.update': {
         const from = typeof res.from === 'string' ? res.from : op.from;
-        const target = op.pageId !== undefined ? quoted(after.pages[op.pageId]?.title ?? op.pageId) : op.entryId !== undefined ? quoted(findEntry(after, op.entryId)?.entry.title ?? findEntry(before, op.entryId)?.entry.title ?? op.entryId) : (op.to ?? '');
-        return plain(op, `${op.type === 'redirect.add' ? 'Kept' : 'Sent'} the old address ${from} ${op.type === 'redirect.add' ? 'working, sending visitors to' : 'to'} ${target}`);
+        // Said as it was kept: the address as routes spell it, and nothing about whether anything is there yet.
+        const target = op.pageId !== undefined ? quoted(after.pages[op.pageId]?.title ?? op.pageId) : op.entryId !== undefined ? quoted(findEntry(after, op.entryId)?.entry.title ?? findEntry(before, op.entryId)?.entry.title ?? op.entryId) : (res.to ?? op.to ?? '');
+        return plain(op, `${op.type === 'redirect.add' ? 'Added a redirect from' : 'Changed the redirect from'} ${from} to ${target}`);
       }
       case 'redirect.remove':
-        return plain(op, `Stopped keeping the old address ${typeof res.from === 'string' ? res.from : op.from} working`);
+        return plain(op, `Removed the redirect from ${typeof res.from === 'string' ? res.from : op.from}`);
       case 'site.update': {
         const render = (d: string[]) => `Changed the site ${d.length ? joinWords(d) : 'settings'}`;
         const fields = Object.keys(SITE_FIELDS).filter((f) => (op as Record<string, unknown>)[f] !== undefined);

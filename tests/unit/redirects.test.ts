@@ -4,7 +4,7 @@
  * each old address's page, and the drafts left out of both.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ProjectState, SiteRedirect } from '@shared/types';
@@ -16,8 +16,10 @@ import { generateProject, liveRedirects, publishedState } from '@generator/index
 import { GenerationCache } from '@generator/cache';
 import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { resolveRedirects } from '@shared/redirects';
+import { archivePages } from '@shared/archives';
 import { validateRoute } from '@shared/routes';
 import { heldAsMedia } from '../../src/main/project/versions';
+import { deliverVercelConfig } from '../../src/main/export';
 import { ProjectSession } from '../../src/main/project/session';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
@@ -66,10 +68,11 @@ describe('following redirects', () => {
       ['/spring/', '/about/', ['/campaign/', '/team/']]
     ]);
     // A chain still arrives, so it is a warning; the website goes straight to the end.
-    expect(codes(state)).toEqual([
-      ['REDIRECT_CHAIN', 'redirect:/campaign/'],
-      ['REDIRECT_CHAIN', 'redirect:/spring/']
+    expect(validateState(state).filter((d) => d.code.startsWith('REDIRECT_')).map((d) => [d.code, d.severity, d.site])).toEqual([
+      ['REDIRECT_CHAIN', 'warning', 'redirect:/campaign/'],
+      ['REDIRECT_CHAIN', 'warning', 'redirect:/spring/']
     ]);
+    expect(generateProject(state).get('src/routes/spring/+page.svelte')).toContain('const to = resolve("/about/");');
     expect(validateState(state).find((d) => d.site === 'redirect:/spring/')!.message).toBe(
       'The old address /spring/ reaches /about/ through /campaign/ and /team/. The website sends visitors straight to /about/; send /spring/ there in Site settings, under Redirects, so it keeps arriving if one of those addresses changes.'
     );
@@ -106,13 +109,63 @@ describe('following redirects', () => {
     // None of them gets a page or a rule; the one that arrives does.
     const files = generateProject(state);
     expect([...files.keys()].filter((f) => /routes\/(self|a|b|into|nowhere|fine)\//.test(f))).toEqual(['src/routes/fine/+page.svelte']);
+    expect(files.get('src/routes/fine/+page.svelte')).toContain('const to = resolve("/contact/");');
     expect(files.get(HOST_REDIRECTS_FILE)).not.toMatch(/\/(self|a|b|into|nowhere)\//);
   });
 
-  it('flags an address that is not one the site can have', () => {
-    const state = withRedirects(site(), [{ from: '/old/', to: '/Not Valid/' }]);
-    expect(codes(state)).toEqual([['REDIRECT_PATH_INVALID', 'redirect:/old/']]);
+  it('flags an address that is not one the site can have, and never sends visitors there', () => {
+    // /BLOG/ names the blog's index only to a case-insensitive file system: as routes spell it, it is not an address.
+    const state = withRedirects(run(site(), { type: 'redirect.add', from: '/x/', to: '/' }), [{ from: '/old/', to: '/Not Valid/' }, { from: '/news/', to: '/BLOG/' }, { from: '/via/', to: '/news/' }]);
+    expect(validateState(state).filter((d) => d.code.startsWith('REDIRECT_')).map((d) => [d.code, d.severity, d.site])).toEqual([
+      ['REDIRECT_PATH_INVALID', 'error', 'redirect:/old/'],
+      ['REDIRECT_PATH_INVALID', 'error', 'redirect:/news/'],
+      ['REDIRECT_PATH_MISSING', 'warning', 'redirect:/via/']
+    ]);
     expect(liveRedirects(state)).toEqual([]);
+    expect(generateHostRedirects(state)).toBeNull();
+  });
+
+  it('names the winning redirect’s problem beside a damaged duplicate', () => {
+    const state = withRedirects(site(), [{ from: '/a/', to: '/a/' }, { from: '/a/', to: '/bad path/' }]);
+    expect(codes(state)).toEqual([
+      ['REDIRECT_PATH_INVALID', 'redirect:/a/'],
+      ['REDIRECT_SELF', 'redirect:/a/']
+    ]);
+  });
+
+  it('follows a chain of any length, naming the first few addresses on the way', () => {
+    const n = 20_000;
+    const redirects: SiteRedirect[] = Array.from({ length: n }, (_, i) => ({ from: `/r${i}/`, to: i === n - 1 ? '/' : `/r${i + 1}/` }));
+    const { live, problems } = resolveRedirects(withRedirects(site(), redirects));
+    expect(live).toHaveLength(n);
+    expect(live[0]).toMatchObject({ to: '/', hops: n - 1 });
+    expect(live[0].via).toEqual(['/r1/', '/r2/', '/r3/', '/r4/', '/r5/', '/r6/', '/r7/', '/r8/', '/r9/', '/r10/']);
+    // Thirteen in a row: the first passes through twelve, and names ten of them.
+    const first = validateState(withRedirects(site(), redirects.slice(-13))).find((d) => d.site === `redirect:/r${n - 13}/`)!;
+    expect(first.message).toContain(`reaches / through /r${n - 12}/, /r${n - 11}/,`);
+    expect(first.message).toContain(`, /r${n - 3}/ and 2 more. The website sends visitors straight to /;`);
+    expect(problems.filter((p) => p.kind === 'chain')).toHaveLength(n - 1);
+  });
+
+  it('sends an address to a page of a category archive however deep, and to the archive page where a draft is kept back', () => {
+    let s = run(
+      site(),
+      { type: 'collection.update', collectionId: 'posts', pageSize: 1 },
+      { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'categories', label: 'News' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring open studio', publishedAt: '2026-03-01', draft: false, body: ['Come in.'] }
+    );
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', terms: { categories: ['news'] } }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', terms: { categories: ['news'] } });
+    s = run(s, { type: 'redirect.add', from: '/older-news/', to: '/blog/category/news/page/2/' });
+    expect(liveRedirects(s).map((r) => [r.from, r.to, r.page, r.entry])).toEqual([['/older-news/', '/blog/category/news/page/2/', undefined, undefined]]);
+    expect(codes(s)).toEqual([]);
+    // A draft made before archive pages, at the blog's second page: the archive page is what the website has there.
+    const kept = withRedirects({ ...s, pages: { ...s.pages, pg_preview01: { ...s.pages.pg_preview01, route: '/blog/page/2/' } } }, [{ from: '/older-posts/', to: '/blog/page/2/' }]);
+    expect(liveRedirects(kept).map((r) => [r.from, r.to, r.page?.id])).toEqual([['/older-posts/', '/blog/page/2/', undefined]]);
+    expect(publishedState(kept).site.redirects).toEqual([{ from: '/older-posts/', to: '/blog/page/2/' }]);
+    // A hand-written redirect at an archive page's address gives way to it, with drafts or without.
+    const taken = withRedirects(s, [{ from: '/blog/page/2/', to: '/preview/' }]);
+    expect(liveRedirects(taken)).toEqual([]);
+    expect(archivePages(publishedState(taken)).map((p) => p.route)).toEqual(archivePages(taken).map((p) => p.route));
   });
 
   it('leaves out of the published website every redirect that ends at a draft, directly or through others', () => {
@@ -120,12 +173,13 @@ describe('following redirects', () => {
     const state = withRedirects(s, [
       { from: '/sneak-peek/', pageId: 'pg_preview01' },
       { from: '/teaser/', to: '/sneak-peek/' },
+      { from: '/peek/', to: '/preview/' },
       { from: '/plans/', entryId: 'en_secret' },
       { from: '/old-winter/', entryId: 'en_winter' },
       { from: '/archive/', to: '/blog/' }
     ]);
     // The editable project keeps them all, for the preview.
-    expect(liveRedirects(state).map((r) => r.from)).toEqual(['/sneak-peek/', '/teaser/', '/plans/', '/old-winter/', '/archive/']);
+    expect(liveRedirects(state).map((r) => r.from)).toEqual(['/sneak-peek/', '/teaser/', '/peek/', '/plans/', '/old-winter/', '/archive/']);
     const live = publishedState(state);
     expect(live.site.redirects).toEqual([
       { from: '/old-winter/', entryId: 'en_winter' },
@@ -143,7 +197,7 @@ describe('following redirects', () => {
         ''
       ].join('\n')
     );
-    expect([...files.keys()].filter((f) => /routes\/(sneak-peek|teaser|plans)\//.test(f))).toEqual([]);
+    expect([...files.keys()].filter((f) => /routes\/(sneak-peek|teaser|peek|plans)\//.test(f))).toEqual([]);
   });
 });
 
@@ -180,6 +234,7 @@ describe('host redirect rules', () => {
     expect(text.split('\n')[1]).toBe('# Written for Netlify by SiteOrigin Builder from siteorigin/site.json.');
     expect(text.split('\n').slice(2)).toEqual(['/team/ /about/ 301!', '/%E3%81%8A%E5%95%8F%E3%81%84%E5%90%88%E3%82%8F%E3%81%9B/ /contact/ 301!', '/studio/old-kiln/ /%E3%81%8A%E7%9F%A5%E3%82%89%E3%81%9B/ 301!', '/home-again/ / 301!', '']);
     expect(generateVercelConfig(s)).toBeNull();
+    expect(generateHostRedirects(run(s, { type: 'site.update', baseUrl: 'https://example.com/studio' }))!.split('\n')[2]).toBe('/studio/team/ /studio/about/ 301!');
     // Back to the default stores nothing.
     expect(run(s, { type: 'site.update', redirectHost: 'cloudflare' }).site.redirectHost).toBeUndefined();
   });
@@ -187,11 +242,18 @@ describe('host redirect rules', () => {
   it('writes vercel.json with HTTP 301 rules once the host is Vercel, under the site’s sub-path', () => {
     const s = run(withPage(moved()), { type: 'site.update', redirectHost: 'vercel', baseUrl: 'https://example.com/studio.v2' });
     const config = JSON.parse(generateVercelConfig(s)!);
-    expect(config.redirects.slice(0, 2)).toEqual([
+    const contact = '/%E3%81%8A%E5%95%8F%E3%81%84%E5%90%88%E3%82%8F%E3%81%9B';
+    const news = '/studio.v2/%E3%81%8A%E7%9F%A5%E3%82%89%E3%81%9B/';
+    expect(config.redirects).toEqual([
       { source: '/studio.v2/team/', destination: '/studio.v2/about/', statusCode: 301 },
-      { source: '/studio.v2/team', destination: '/studio.v2/about/', statusCode: 301 }
+      { source: '/studio.v2/team', destination: '/studio.v2/about/', statusCode: 301 },
+      { source: `/studio.v2${contact}/`, destination: '/studio.v2/contact/', statusCode: 301 },
+      { source: `/studio.v2${contact}`, destination: '/studio.v2/contact/', statusCode: 301 },
+      { source: '/studio.v2/studio/old-kiln/', destination: news, statusCode: 301 },
+      { source: '/studio.v2/studio/old-kiln', destination: news, statusCode: 301 },
+      { source: '/studio.v2/home-again/', destination: '/studio.v2/', statusCode: 301 },
+      { source: '/studio.v2/home-again', destination: '/studio.v2/', statusCode: 301 }
     ]);
-    expect(config.redirects.at(-1)).toEqual({ source: '/studio.v2/home-again', destination: '/studio.v2/', statusCode: 301 });
     expect(config.redirects.every((r: Record<string, unknown>) => !('permanent' in r))).toBe(true);
     // _redirects is still written, as Cloudflare Pages reads it, with no character escaped twice.
     expect(generateHostRedirects(s)).toContain('/studio.v2/team/ /studio.v2/about/ 301\n');
@@ -206,6 +268,10 @@ describe('host redirect rules', () => {
     const files = generateProject(s);
     expect(files.has(HOST_REDIRECTS_FILE)).toBe(false);
     expect(files.has(VERCEL_CONFIG_FILE)).toBe(false);
+    // With redirects, vercel.json is written only for Vercel.
+    const kept = run(site(), { type: 'redirect.add', from: '/team/', to: '/about/' });
+    expect(generateProject(kept).has(VERCEL_CONFIG_FILE)).toBe(false);
+    expect(generateProject(run(kept, { type: 'site.update', redirectHost: 'netlify' })).has(VERCEL_CONFIG_FILE)).toBe(false);
   });
 
   it('makes the rules again when a redirect in the middle of a chain changes, from the cache as from scratch', () => {
@@ -265,6 +331,9 @@ describe('managing redirects', () => {
     expect(refusal(s, { type: 'redirect.add', from: '/x/' })).toBe('Choose where the old address sends visitors: a page, a post, or another address of the site.');
     expect(refusal(s, { type: 'redirect.add', from: '/x/', pageId: 'pg_gone', to: '/' })).toBe('Choose where the old address sends visitors: a page, a post, or another address of the site.');
     expect(refusal(s, { type: 'redirect.add', from: '/x/', pageId: 'pg_gone' })).toBe('The page to send visitors to does not exist.');
+    expect(refusal(s, { type: 'redirect.add', from: '/x/', entryId: 'en_gone' })).toBe('The post to send visitors to does not exist.');
+    expect(refusal(s, { type: 'redirect.add', from: '/b/', to: '/a/' }, { type: 'redirect.add', from: '/c/', to: '/b/' }, { type: 'redirect.update', from: '/a/', to: '/c/' })).toContain('would make a loop of old addresses (/a/ → /c/ → /b/ → /a/)');
+    expect(refusal(run(s, { type: 'redirect.add', from: '/b/', to: '/contact/' }), { type: 'redirect.add', from: '/c/', to: '/b/' }, { type: 'redirect.update', from: '/b/', to: '/c/' })).toContain('(/b/ → /c/ → /b/)');
     const b = run(s, { type: 'redirect.add', from: '/b/', to: '/a/' });
     expect(refusal(b, { type: 'redirect.update', from: '/a/', to: '/b/' })).toBe('Sending /a/ there would make a loop of old addresses (/a/ → /b/ → /a/) that never arrives anywhere. Choose another address.');
     expect(refusal(b, { type: 'redirect.remove', from: '/nope/' })).toBe('/nope/ is not an old address the site keeps.');
@@ -273,6 +342,13 @@ describe('managing redirects', () => {
     expect(codes(later)).toContainEqual(['REDIRECT_PATH_MISSING', 'redirect:/soon/']);
     expect(liveRedirects(later).map((r) => r.from)).not.toContain('/soon/');
     expect(liveRedirects(run(later, { type: 'page.create', title: 'Coming soon', route: '/coming-soon/' })).find((r) => r.from === '/soon/')?.to).toBe('/coming-soon/');
+  });
+
+  it('changes and removes the redirect named exactly, beside one spelled as routes are', () => {
+    const s = withRedirects(site(), [{ from: '/old', to: '/about/' }, { from: '/old/', to: '/contact/' }]);
+    expect(run(s, { type: 'redirect.remove', from: '/old' }).site.redirects).toEqual([{ from: '/old/', to: '/contact/' }]);
+    expect(run(s, { type: 'redirect.update', from: '/old', to: '/' }).site.redirects).toEqual([{ from: '/old', to: '/' }, { from: '/old/', to: '/contact/' }]);
+    expect(run(s, { type: 'redirect.remove', from: '/OLD/' }).site.redirects).toEqual([{ from: '/old', to: '/about/' }]);
   });
 
   it('lets a page take over an author’s redirect, and the redirect lead on to it', () => {
@@ -310,6 +386,7 @@ describe('redirects in the project session', () => {
     expect((await s.undo()).ok).toBe(true);
     expect(s.state.site.redirects).toEqual([{ from: '/team/', custom: true, to: '/contact/' }]);
     expect(readFileSync(rules, 'utf8')).toContain('/team/ /contact/ 301\n');
+    expect(JSON.parse(readFileSync(join(dir, VERCEL_CONFIG_FILE), 'utf8')).redirects[0].destination).toBe('/contact/');
     await s.undo();
     await s.undo();
     expect(s.state.site.redirects).toEqual([{ from: '/team/', custom: true, to: '/about/' }]);
@@ -343,5 +420,36 @@ describe('redirects in the project session', () => {
     expect(s.conflicts.some((c) => c.path === HOST_REDIRECTS_FILE)).toBe(false);
     expect(readFileSync(join(dir, s.savedCopies.find((c) => c.path === HOST_REDIRECTS_FILE)!.file), 'utf8')).toBe(edited);
     await s.close();
+  });
+});
+
+describe('vercel.json in an exported website', () => {
+  const dirs: string[] = [];
+  afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+  const temp = () => {
+    const d = mkdtempSync(join(tmpdir(), 'so-vercel-'));
+    dirs.push(d);
+    return d;
+  };
+
+  it('goes beside the website only when SiteOrigin Builder generated it, and never over a file already there', async () => {
+    const project = temp();
+    const live = run(site(), { type: 'site.update', redirectHost: 'vercel' });
+    const manifest = (files: Record<string, string>) => writeFileSync(join(project, 'siteorigin/generated-manifest.json'), JSON.stringify({ files }));
+    mkdirSync(join(project, 'siteorigin'));
+    writeFileSync(join(project, VERCEL_CONFIG_FILE), '{"redirects":[]}\n');
+    // The author's own vercel.json configures their project, not the website.
+    manifest({});
+    const out = temp();
+    expect(await deliverVercelConfig(project, out, live)).toBeNull();
+    expect(existsSync(join(out, VERCEL_CONFIG_FILE))).toBe(false);
+    manifest({ [VERCEL_CONFIG_FILE]: 'hash' });
+    expect(await deliverVercelConfig(project, out, run(live, { type: 'site.update', redirectHost: 'netlify' }))).toBeNull();
+    expect(existsSync(join(out, VERCEL_CONFIG_FILE))).toBe(false);
+    expect(await deliverVercelConfig(project, out, live)).toBeNull();
+    expect(readFileSync(join(out, VERCEL_CONFIG_FILE), 'utf8')).toBe('{"redirects":[]}\n');
+    writeFileSync(join(out, VERCEL_CONFIG_FILE), '{"own":true}');
+    expect(await deliverVercelConfig(project, out, live)).toBe('static/vercel.json takes the place of the redirect rules SiteOrigin Builder writes for Vercel. Delete or rename it, or choose another host in Site settings under Redirects, then export again.');
+    expect(readFileSync(join(out, VERCEL_CONFIG_FILE), 'utf8')).toBe('{"own":true}');
   });
 });

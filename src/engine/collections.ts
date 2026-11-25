@@ -754,7 +754,8 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
             ? state.pages[o.pageId]?.draft === true || !Object.hasOwn(state.pages, o.pageId)
             : o.entryId !== undefined
               ? !findEntry(state, o.entryId) || draftEntry(o.entryId)
-              : false;
+              : // One leading to another address gives way to the archive page there.
+                true;
     out.push({
       severity: 'warning',
       code: 'ARCHIVE_ADDRESS_TAKEN',

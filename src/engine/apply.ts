@@ -48,7 +48,7 @@ import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
 import { feedRowFields } from '@shared/entry-feed';
 import { archiveRouteOwner, collectionRouteOwner, findEntry, siteEntries } from '@shared/collections';
-import { loopText, resolveRedirects } from '@shared/redirects';
+import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
@@ -839,7 +839,7 @@ function redirectTarget(state: ProjectState, op: Op<'redirect.add'> | Op<'redire
     return { entryId: op.entryId };
   }
   const to = typedSitePath(op.to!, 'Where it goes');
-  const err = to === '/' ? null : validateRoute(to);
+  const err = redirectTargetProblem(to);
   if (err) fail(`${to}: ${err}`);
   if (to.toLowerCase() === from.toLowerCase()) fail(`${from} cannot send visitors to itself. Choose another address.`);
   return { to };
@@ -866,23 +866,34 @@ function redirectAdd(state: ProjectState, op: Op<'redirect.add'>): OpResult {
   const target = redirectTarget(state, op, from);
   state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from, custom: true, ...target } as SiteRedirect];
   refuseRedirectLoop(state, from);
-  return { from };
+  return { from, ...target };
+}
+
+/**
+ * Where the redirect the author named is kept: the one written exactly so first (a hand-written one may not be spelled
+ * as routes are, beside one that is), else the one at that address as routes spell it.
+ */
+function namedRedirect(state: ProjectState, input: string): number {
+  const list: unknown = state.site.redirects;
+  const exact = Array.isArray(list) ? list.findIndex((r) => r?.from === input.trim()) : -1;
+  const i = exact >= 0 ? exact : redirectIndex(state, typedSitePath(input, 'The old address'));
+  if (i < 0) fail(`${input.trim()} is not an old address the site keeps.`);
+  return i;
 }
 
 /** Send an old address somewhere else; it stays the author's own, or recorded by a move, as it was. */
 function redirectUpdate(state: ProjectState, op: Op<'redirect.update'>): OpResult {
-  const i = redirectIndex(state, typedSitePath(op.from, 'The old address'));
-  if (i < 0) fail(`${op.from.trim()} is not an old address the site keeps.`);
+  const i = namedRedirect(state, op.from);
   const was = state.site.redirects![i];
-  state.site.redirects![i] = { from: was.from, ...(was.custom ? { custom: true } : {}), ...redirectTarget(state, op, was.from) } as SiteRedirect;
+  const target = redirectTarget(state, op, was.from);
+  state.site.redirects![i] = { from: was.from, ...(was.custom ? { custom: true } : {}), ...target } as SiteRedirect;
   refuseRedirectLoop(state, was.from);
-  return { from: was.from };
+  return { from: was.from, ...target };
 }
 
 /** Stop keeping an old address working. */
 function redirectRemove(state: ProjectState, input: string): OpResult {
-  const i = redirectIndex(state, typedSitePath(input, 'The old address'));
-  if (i < 0) fail(`${input.trim()} is not an old address the site keeps.`);
+  const i = namedRedirect(state, input);
   const [gone] = state.site.redirects!.splice(i, 1);
   if (!state.site.redirects!.length) delete state.site.redirects;
   return { from: gone.from };

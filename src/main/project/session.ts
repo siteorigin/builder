@@ -1974,7 +1974,7 @@ export class ProjectSession extends EventEmitter {
   private async retireGeneratedLocked(path: string) {
     const abs = safeJoin(this.dir, path);
     const st = await fs.lstat(abs).catch(() => null);
-    if (st && !st.isFile()) throw new Error(`${path} is not a file, so it was not restored. Move it out of static/, then try again.`);
+    if (st && !st.isFile()) throw new Error(`${path} is not a file, so it was not restored. Move it ${path.startsWith('static/') ? 'out of static/' : 'away'}, then try again.`);
     if (st) {
       // Read first, so a list that cannot be added to stops the restore before anything moves.
       const listed = await this.loadSavedCopies({ forWrite: true });
