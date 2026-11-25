@@ -71,7 +71,7 @@ describe('removing Home and leaving a new blank Home', () => {
     expect(next.site.pageOrder).toEqual([id]);
     expect(next.site.homePageId).toBe(id);
     expect(next.pages[home]).toBeUndefined();
-    expect(next.pages[id].route).toBe('/');
+    expect(next.pages[id]).toMatchObject({ route: '/', showHeader: true, showFooter: true, rootIds: [] });
     expect(errors(next)).toEqual([]);
   });
 
@@ -88,12 +88,16 @@ describe('removing Home and leaving a new blank Home', () => {
       expect(next.pages[o].route).toBe(s.pages[o].route);
     }
     expect(next.pages[id].draft).toBeUndefined();
+    expect(next.site.redirects).toEqual([{ from: '/welcome/', pageId: id }]);
   });
 
   it('refuses the blank option off Home, or alongside a replacement page or chosen sections', () => {
     const { s, home } = linkedHome();
     const about = byTitle(s, 'About').id;
     expect(() => applyOperations(s, [{ type: 'page.remove', pageId: about, newHome: true }])).toThrow(/Only the Home page/);
+    // Nor off an unlinked page, which could otherwise go without a replacement.
+    const extra = applyOperations(s, [{ type: 'page.create', pageId: 'pg_team01', title: 'Team' }]).state;
+    expect(() => applyOperations(extra, [{ type: 'page.remove', pageId: 'pg_team01', newHome: true }])).toThrow(/Only the Home page/);
     expect(() => applyOperations(s, [{ type: 'page.remove', pageId: home, newHome: true, replacementPageId: about }])).toThrow(/not both/);
     expect(() => applyOperations(s, [{ type: 'page.remove', pageId: home, newHome: true, sectionReplacements: [{ from: 'welcome', to: '' }] }])).toThrow(/no sections/);
     // An empty replacement is still a replacement: Home's kept addresses are never dropped by one.
@@ -123,7 +127,7 @@ describe('planning a Home deletion in the dialog', () => {
   it('leaves a new blank Home as a single removal, with no sections to choose', () => {
     const { s, home } = linkedHome();
     expect(reviewPageRemoval(s, home, NEW_HOME).missing).toEqual([]);
-    expect(reviewPageRemoval(s, home, NEW_HOME).uses.length).toBeGreaterThan(0);
+    expect(reviewPageRemoval(s, home, NEW_HOME).uses).toHaveLength(pageLinkUses(s, home).filter((u) => !u.card).length);
     expect(planPageRemoval(s, home, NEW_HOME, new Map())).toEqual({ operations: [{ type: 'page.remove', pageId: home, newHome: true }], lost: [] });
     // Only Home can leave one behind.
     expect(planPageRemoval(s, byTitle(s, 'About').id, NEW_HOME, new Map()).operations).toBeNull();
