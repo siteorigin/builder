@@ -8,7 +8,7 @@ import { isBinding, isBindingRef } from '@shared/types';
 import { toRichText, type RichText } from '@shared/richtext';
 import { repeatedPartList } from '@shared/item-styles';
 import { newId } from '@shared/ids';
-import { catalogueComponent } from '@catalogue/index';
+import { catalogueComponent, getTheme } from '@catalogue/index';
 import { EngineError, anchorCapable, findParent } from './tree';
 import { clone } from './install';
 import { normalizeProp, normalizeScalar } from './values';
@@ -365,9 +365,11 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
     else if (decl.max !== undefined && fill.count > decl.max) problems.push(`The “${decl.label}” slot of “${target.name}” holds at most ${decl.max === 1 ? 'one item' : `${decl.max} items`}.`);
     (plan.slots ??= {})[slot] = [...ids];
   }
-  // A design built in the editor may place the slot inside a list this placement leaves empty, which shows nothing.
+  // A design built in the editor may place the slot inside a list this placement leaves empty, which shows nothing:
+  // refused where the old design showed that content.
   const shown = target.kind === 'managed' && target.tree && plan.slots ? shownSlots(target, { ...node, definitionId: target.id, props }) : undefined;
-  for (const slot of Object.keys(plan.slots ?? {})) if (shown && !shown.has(slot)) problems.push(`“${target.name}” would not show the content in its “${own(target.slots, slot)?.label ?? slot}” slot here.`);
+  const wasShown = source.kind === 'managed' && source.tree ? shownSlots(source, node) : undefined;
+  for (const slot of Object.keys(plan.slots ?? {})) if (shown && !shown.has(slot) && (!wasShown || wasShown.has(slot))) problems.push(`“${target.name}” would not show the content in its “${own(target.slots, slot)?.label ?? slot}” slot here.`);
   // The slot it sits in must take the new design too.
   const at = findParent(tree, node.id);
   const parent = at?.parentId ? own(tree.nodes, at.parentId) : undefined;
@@ -378,9 +380,11 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
   }
 
   // In-page links reach the section by its anchor, which only a design built in the editor renders.
-  const anchors = anchorCapable(state, target);
+  // A theme design not yet installed brings the theme's designs it places with it when it is.
+  const designs = own(state.components, target.id) ? state : { ...state, components: { ...Object.fromEntries(getTheme(state.site.themeId).components.map((c) => [c.id, c])), ...state.components } };
+  const anchors = anchorCapable(designs, target);
   const anchor = node.anchor ?? rootAnchor(state, source);
-  const targetAnchor = rootAnchor(state, target);
+  const targetAnchor = rootAnchor(designs, target);
   if (anchor && !anchors) problems.push(`“${target.name}” can’t take the anchor #${anchor} that in-page links use. Clear the anchor first, or pick another design.`);
   // The old design's anchor moves onto the placement, unless the new design gives its root one its own links go to.
   else if (!node.anchor && anchor && targetAnchor !== anchor) {

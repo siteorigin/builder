@@ -11,6 +11,7 @@ import type { ComponentDefinition, InstanceNode, ListItem, OwnerRef, ProjectStat
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent } from '@catalogue/index';
+import { formFieldKey } from '@catalogue/foundation/form';
 import { applyOperations } from '@engine/apply';
 import { planSwap, swapTarget } from '@engine/swap';
 import { validateState } from '@engine/validate';
@@ -329,6 +330,56 @@ describe('instance.swapComponent', () => {
     const copy = applyOperations(s, [{ type: 'component.duplicate', definitionId: 'foundation.hero.split', name: 'Studio hero' }]);
     const defId = copy.results[0].definitionId as string;
     expect(swapChoices(copy.state, hero).find((c) => c.def.id === defId)).toMatchObject({ group: 'Your components', spec: { definitionId: defId } });
+  });
+
+  it('keeps the keys of form fields a placement inherits from its design', () => {
+    const { s } = project();
+    const copy = applyOperations(s, [
+      { type: 'node.insert', owner: owner(s), newNodeId: 'n_form', componentId: 'contact.form' },
+      { type: 'component.duplicate', definitionId: 'foundation.contact.form', name: 'Japanese form' }
+    ]);
+    const defId = copy.results[1].definitionId as string;
+    // A fork of the form: still the theme's contact form contract, with its own default fields.
+    copy.state.components[defId].componentId = 'contact.form';
+    const schema = copy.state.components[defId].properties.fields;
+    if (schema.type === 'list') schema.default = [{ id: 'i_d1', label: '氏名', name: '', type: 'text', options: [], required: false, placeholder: '' }];
+    const node = inst(copy.state, 'n_form');
+    node.definitionId = defId;
+    delete node.props.fields;
+    // Its one field, labelled in words that make no key, is sent under the key its position gives it.
+    const sent = formFieldKey({ name: '', label: '氏名' }, 0);
+    const r = swap(copy.state, 'n_form', { componentId: 'contact.form' }, true);
+    expect((inst(r.state, 'n_form').props.fields as ListItem[]).map((f) => [f.label, f.name])).toEqual([['氏名', sent]]);
+  });
+
+  it('lets slot content its old design already left out stay left out, and previews designs the theme has yet to install', () => {
+    const { s, find } = project();
+    // Two bands that show their content once per row, with no rows here.
+    const made = applyOperations(s, [
+      { type: 'node.insert', owner: owner(s), componentId: 'layout.section' },
+      { type: 'component.duplicate', definitionId: 'foundation.layout.section', name: 'Band' }
+    ]);
+    const band = made.results[1].definitionId as string;
+    const def = made.state.components[band];
+    def.properties.rows = { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { title: { type: 'string', label: 'Title', default: '' } }, default: [] };
+    const slotId = Object.values(def.tree!.nodes).find((n) => n.kind === 'slot')!.id;
+    const holder = Object.values(def.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotId)) as { children: string[] };
+    holder.children = holder.children.map((c) => (c === slotId ? 'n_rows' : c));
+    def.tree!.nodes.n_rows = { id: 'n_rows', kind: 'repeat', list: { $prop: 'rows' }, children: [slotId] };
+    const twin = applyOperations(made.state, [
+      { type: 'component.duplicate', definitionId: band, name: 'Band 2' },
+      { type: 'node.insert', owner: owner(s), newNodeId: 'n_band', definitionId: band },
+      { type: 'node.insert', owner: owner(s), parentId: 'n_band', slot: 'content', newNodeId: 'n_inside', primitive: 'heading', text: 'Inside' }
+    ]);
+    const r = swap(twin.state, 'n_band', { definitionId: twin.results[0].definitionId as string });
+    expect(inst(r.state, 'n_band').slots).toEqual({ content: ['n_inside'] });
+    // A theme design whose root places another theme design takes the anchor, though neither is installed yet.
+    const hero = inst(s, find('hero.split'));
+    hero.anchor = 'welcome';
+    const centered = catalogueComponent(s.site.themeId, 'hero.centered')!;
+    const wrap = { ...structuredClone(centered), id: 'foundation.hero.wrapped', componentId: 'hero.wrapped', tree: { rootIds: ['r'], nodes: { r: { id: 'r', kind: 'instance', definitionId: centered.id, props: {} } } } } as ComponentDefinition;
+    expect(s.components[centered.id]).toBeUndefined();
+    expect(planSwap(s, owner(s), home(s), hero, wrap).problems).toEqual([]);
   });
 
   it('undoes in one step, the component it installed included, and redoes the same change', async () => {

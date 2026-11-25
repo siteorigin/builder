@@ -1324,7 +1324,7 @@ function instanceSwap(state: ProjectState, op: Op<'instance.swapComponent'>): Op
   }
   // A form's fields keep the keys their answers were sent under, and fields new to the form get keys of their own.
   if (namesFormFields(target) && Array.isArray(plan.props.fields))
-    plan.props.fields = settleFormKeys(namesFormFields(def) && Array.isArray(node.props.fields) ? (node.props.fields as ListItem[]) : [], plan.props.fields as ListItem[], new Set(), formDefaults(target));
+    plan.props.fields = settleFormKeys(namesFormFields(def) ? oldFormFields(def, node) : [], plan.props.fields as ListItem[], new Set(), formDefaults(target));
   node.definitionId = target.id;
   node.props = plan.props;
   if (plan.anchor) node.anchor = plan.anchor;
@@ -1340,6 +1340,13 @@ function instanceSwap(state: ProjectState, op: Op<'instance.swapComponent'>): Op
   // Brand text kept through a site rename belongs to the shared header and footer, which are never swapped.
   delete node.keepsText;
   return { nodeId: node.id, from: node.name ?? def.name, definitionId: target.id, kept: plan.kept.map((k) => k.to), dropped: plan.dropped.map((d) => d.label), restyled: plan.restyled };
+}
+
+/** A form placement's fields as it sends them: its own list, or the one its design gives every placement. */
+function oldFormFields(def: ComponentDefinition, node: InstanceNode): ListItem[] {
+  if (Array.isArray(node.props.fields)) return node.props.fields as ListItem[];
+  const schema = def.properties.fields;
+  return schema?.type === 'list' && Array.isArray(schema.default) ? schema.default : [];
 }
 
 /** Slots and repeats belong to component definitions: a slot renders a declared slot, a repeat a list property. */
