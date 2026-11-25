@@ -84,7 +84,7 @@ const row = (nodeId) => win.locator(`[role="tree"] [data-owner="component:${defI
 const cardOnPage = frame.locator(`[data-so-ctx$="|${first}"] [data-so-node="${card}"]`).first();
 // Sent again while the card isn't selected: a click that lands while the preview bridge settles is dropped.
 await eventually(async () => {
-  if ((await row(card).getAttribute('aria-selected').catch(() => null)) !== 'true') await cardOnPage.dispatchEvent('click');
+  if ((await row(card).getAttribute('aria-selected', { timeout: 500 }).catch(() => null)) !== 'true') await cardOnPage.dispatchEvent('click');
   assert.equal(await row(card).getAttribute('aria-selected'), 'true', 'the card of the design is selected');
 }, 20000, 500);
 

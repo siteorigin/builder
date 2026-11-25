@@ -1458,7 +1458,7 @@ export function Canvas() {
               ...(wraps.length ? [...(reorderable ? [{ separator: true }] : []), ...wraps, { separator: true }] : []),
               ...(locked ? [] : [...clipboard, { label: 'Duplicate', icon: <Copy />, shortcut: keys('⌘D'), onSelect: on(duplicateSelection) }]),
               ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: on(() => setState({ modal: { kind: 'create-component' as const, ref: create } })) }] : []),
-              ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: on(() => setState({ modal: { kind: 'repeat-as-list' as const, ref: repeat } })) }] : []),
+              ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: on(() => setState({ modal: { kind: 'repeat-as-list' as const, ref: repeat, workspaceKey: getState().snapshot?.workspaceKey } })) }] : []),
               ...(!definitionMode && detachable(state, ref) ? [{ label: 'Detach component', icon: <Unlink />, onSelect: on(() => detachPlacement(ref)) }] : []),
               // Kept for every project, or sent as a file (#372).
               ...(kept ? [{ label: 'Save to personal library', icon: <BookmarkPlus />, onSelect: live(ref, () => saveToLibrary(kept)) }, { label: 'Export component…', icon: <Download />, onSelect: live(ref, () => exportComponentFile(kept)) }] : []),

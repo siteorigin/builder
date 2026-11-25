@@ -507,4 +507,93 @@ describe('Repeat as list is offered only where it works', () => {
     expect(repeatAsListPreflight(s, plan(s, def, 'card'))).toMatch(/longer than 2000 characters/);
     expect(repeatAsListPreflight(s, plan(s, features(s), 'card'))).toBeNull();
   });
+  it('keeps rich text shared through a nested slot or a component placed in a linking card, not through a slot never shown', () => {
+    const s = fresh();
+    const notes = addDef(s, {
+      componentId: 'test.notes2',
+      name: 'Notes',
+      properties: {},
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.el('note', 'div', {}, [b.text('n-title', 'h3', 'Note'), b.rich('n-body', ['Plain words.'])])])
+    });
+    const richShared = () => plan(s, s.components[notes.id], 'note').fields.every((f) => f.name !== 'description');
+    expect(richShared()).toBe(false);
+    // Placed in another component's design, which a page shows inside its own linking card.
+    const wrapper = addDef(s, {
+      componentId: 'test.wrapper2',
+      name: 'Wrapper',
+      properties: {},
+      parts: {},
+      build: (b) => {
+        const inner = makeInstance(notes, {});
+        inner.id = 'notes';
+        b.nodes.notes = inner;
+        return b.el('root', 'section', {}, ['notes']);
+      }
+    });
+    const placed = makeInstance(wrapper, {});
+    home(s).nodes[placed.id] = placed;
+    home(s).nodes.pcard = { id: 'pcard', kind: 'element', tag: 'div', link: { type: 'url', target: 'https://example.com' }, children: [placed.id] };
+    home(s).rootIds.push('pcard');
+    expect(richShared()).toBe(true);
+
+    // Content of a nested component's slot that its design shows inside a linking card.
+    const t = fresh();
+    const box = addDef(t, {
+      componentId: 'test.linkbox',
+      name: 'Link box',
+      properties: {},
+      parts: {},
+      slots: { body: { label: 'Body' }, hidden: { label: 'Hidden' } },
+      build: (b) => b.el('root', 'div', {}, [b.el('box-card', 'div', { link: { type: 'url', target: 'https://example.com' } }, [b.slot('body-slot', 'body')])])
+    });
+    const outer = addDef(t, {
+      componentId: 'test.outer2',
+      name: 'Outer',
+      properties: {},
+      parts: {},
+      build: (b) => {
+        const inner = makeInstance(box, {});
+        inner.id = 'box';
+        b.nodes.box = inner;
+        const shown = b.el('shown', 'div', {}, [b.text('s-title', 'h3', 'Shown'), b.rich('s-body', ['Words.'])]);
+        const unshown = b.el('unshown', 'div', {}, [b.text('u-title', 'h3', 'Unshown'), b.rich('u-body', ['Words.'])]);
+        inner.slots = { body: [shown], hidden: [unshown] };
+        return b.el('root', 'section', { link: { type: 'url', target: 'https://example.com/outer' } }, ['box']);
+      }
+    });
+    expect(plan(t, outer, 'shown').fields.map((f) => f.name)).toEqual(['title']);
+    // A slot the nested design never shows puts its content nowhere, so no card holds it: nothing is held back.
+    expect(plan(t, outer, 'unshown').fields.map((f) => f.name)).toEqual(['title', 'description']);
+  });
+
+  it('repeats a card whose image sits in a nested component’s slot, which the container around it never opens', () => {
+    const pic = { id: 'a_pic', name: 'Pic', file: 'static/assets/pic.png', mime: 'image/png', bytes: 10, hash: 'h', kind: 'image' as const, createdAt: 'now' };
+    const s = applyOperations(fresh(), [{ type: 'asset.add', asset: pic }]).state;
+    const frame = addDef(s, { componentId: 'test.frame', name: 'Frame', properties: {}, parts: {}, slots: { body: { label: 'Body' } }, build: (b) => b.el('root', 'div', {}, [b.slot('f-slot', 'body')]) });
+    const def = addDef(s, {
+      componentId: 'test.viewer2',
+      name: 'Viewer',
+      properties: {},
+      parts: {},
+      build: (b) => {
+        const inner = makeInstance(frame, {});
+        inner.id = 'frame';
+        b.nodes.frame = inner;
+        inner.slots = { body: [b.image('slotted', { assetId: pic.id, alt: 'Slotted' })] };
+        return b.el('root', 'section', {}, [b.el('viewer', 'div', { name: 'Viewer', action: 'image' }, [b.image('own', { assetId: pic.id, alt: 'Own' }), b.el('card', 'div', {}, [b.text('c-title', 'h3', 'Card'), 'frame'])])]);
+      }
+    });
+    expect(repeatAsListProblem(s, def, 'card')).toBeNull();
+  });
+
+  it('plans and checks a change in a design a hand edit left with a node listed under itself', () => {
+    const s = fresh();
+    const def = features(s);
+    // Detached, and its own child: the design still opens, with a warning.
+    s.components[def.id].tree!.nodes.loop = { id: 'loop', kind: 'element', tag: 'div', children: ['loop'], when: { $item: 'title' } };
+    const p = plan(s, s.components[def.id], 'card');
+    expect(typeof (repeatAsListPreflight(s, p) ?? '')).toBe('string');
+    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'extra', schema: { type: 'string', label: 'Extra', default: '' } }])).not.toThrow();
+  });
 });

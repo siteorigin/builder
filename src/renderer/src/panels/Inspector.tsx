@@ -2368,7 +2368,8 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   // The design's own node, even when it was reached through a placement on the page.
   const create = several ? null : createComponentTarget({ state, readOnly }, { owner, instancePath: [], nodeId: node.id });
   // A container of the design becomes the item of a new list: the same as the canvas and Layers.
-  const repeat = several ? null : repeatAsListTarget({ state, readOnly }, { owner, instancePath: [], nodeId: node.id });
+  // Worked out once for each version of the project, not on every render: it reads the design (and, for rich text, every placement).
+  const repeat = useMemo(() => (several ? null : repeatAsListTarget({ state, readOnly }, { owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: node.id })), [several, state, readOnly, def.id, node.id]);
   // Wrap and Ungroup act on the design's own node, also when it was reached through a placement on the page, or on the
   // layers selected with it in Layers: followed, so the menu is rebuilt when they change.
   useStore((s) => {
@@ -2380,7 +2381,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const designWraps = wrapMenu(designPlan, false);
   const designItems: MenuItem[] = [
     ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
-    ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: () => setState({ modal: { kind: 'repeat-as-list', ref: repeat } }) }] : []),
+    ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: () => setState({ modal: { kind: 'repeat-as-list', ref: repeat, workspaceKey: getState().snapshot?.workspaceKey } }) }] : []),
     ...((create || repeat) && designWraps.length ? [{ separator: true }] : []),
     ...designWraps
   ];

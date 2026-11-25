@@ -18,10 +18,11 @@ const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).jo
  * fills in. The dialog names the list and says what each item will hold, then makes the whole change at once, so one
  * Undo puts the single container back.
  */
-export function RepeatAsListModal({ target }: { target: ElementRef }) {
+export function RepeatAsListModal({ target, workspaceKey }: { target: ElementRef; workspaceKey?: string }) {
   const snap = useStore((s) => s.snapshot);
   // The project opening this dialog was opened in: another one (or this project opened again) is not where it acts.
-  const [workspace] = useState(() => snap?.workspaceKey);
+  // Named by the menu that opened it, since the dialog can outlive a close and mount again in the next opening.
+  const [workspace] = useState(() => workspaceKey ?? snap?.workspaceKey);
   const [own] = useState(() => getState().modal);
   const sameOpening = !!snap && snap.workspaceKey === workspace;
   const st = sameOpening ? snap.state : undefined;

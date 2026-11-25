@@ -79,12 +79,19 @@ function readsState(n: GraphNode): boolean {
   return n.kind === 'instance' && Object.values(n.variants ?? {}).some(readsStateRef);
 }
 
-/** Whether a component's design, or one placed in it, carries an anchor of its own: every copy would share it. */
-function designAnchored(state: ProjectState, defId: string, seen = new Set<string>()): boolean {
-  if (seen.has(defId)) return false;
-  seen.add(defId);
+/**
+ * Whether a component's design, or one placed in it, carries an anchor of its own: every copy would share it. `known`
+ * holds the answers worked out so far, so each design is read once.
+ */
+function designAnchored(state: ProjectState, defId: string, known: Map<string, boolean>): boolean {
+  const had = known.get(defId);
+  if (had !== undefined) return had;
+  // Until it is answered, a design that (through a hand-edited loop) places itself adds nothing.
+  known.set(defId, false);
   const def = own(state.components, defId);
-  return Object.values(def?.tree?.nodes ?? {}).some((n) => n.anchor !== undefined || (n.kind === 'instance' && designAnchored(state, n.definitionId, seen)));
+  const anchored = Object.values(def?.tree?.nodes ?? {}).some((n) => n.anchor !== undefined || (n.kind === 'instance' && designAnchored(state, n.definitionId, known)));
+  known.set(defId, anchored);
+  return anchored;
 }
 
 /** The elements around a node, nearest first, each once (a tree damaged by hand can list one under itself). */
@@ -101,16 +108,21 @@ function ancestors(tree: NodeTree, nodeId: string): Array<{ node: GraphNode; slo
 
 /**
  * Whether a node of a tree is shown inside a card that links somewhere: one of the elements around it is, or it is
- * content of a nested component's slot that the nested design shows inside one.
+ * content of a nested component's slot that the nested design shows inside one. Content of a slot the nested design
+ * doesn't show is shown nowhere.
  */
 function insideCard(state: ProjectState, tree: NodeTree, nodeId: string, seen = new Set<string>()): boolean {
-  return ancestors(tree, nodeId).some(({ node, slot }) => {
+  for (const { node, slot } of ancestors(tree, nodeId)) {
     if (isCardLink(node)) return true;
-    if (node.kind !== 'instance' || slot === undefined || seen.has(node.definitionId)) return false;
-    seen.add(node.definitionId);
+    if (node.kind !== 'instance' || slot === undefined) continue;
     const inner = own(state.components, node.definitionId)?.tree;
-    return !!inner && Object.values(inner.nodes).some((n) => n.kind === 'slot' && n.slot === slot && insideCard(state, inner, n.id, seen));
-  });
+    const shownBy = Object.values(inner?.nodes ?? {}).filter((n) => n.kind === 'slot' && n.slot === slot);
+    if (!shownBy.length) return false;
+    if (seen.has(node.definitionId)) continue;
+    seen.add(node.definitionId);
+    if (shownBy.some((n) => insideCard(state, inner!, n.id, seen))) return true;
+  }
+  return false;
 }
 
 /** Whether a component's design is shown inside a card that links somewhere, wherever it is placed. */
@@ -142,15 +154,17 @@ export function repeatAsListProblem(state: ProjectState, def: ComponentDefinitio
   const around = ancestors(tree, nodeId).map((a) => a.node);
   if (around.some((a) => a.kind === 'repeat')) return `${name} is already repeated by a list.`;
   const sub = subtree(def, nodeId);
+  const anchors = new Map<string, boolean>();
   for (const n of sub) {
     if (n.kind === 'repeat') return `${name} holds a list of its own.`;
     if (n.kind === 'slot') return `${name} shows a slot’s content, which every item would repeat.`;
-    if (n.anchor !== undefined || (n.kind === 'instance' && designAnchored(state, n.definitionId))) return `${name} holds an anchor, which every item would share. Remove the anchor first.`;
+    if (n.anchor !== undefined || (n.kind === 'instance' && designAnchored(state, n.definitionId, anchors))) return `${name} holds an anchor, which every item would share. Remove the anchor first.`;
     if (Object.hasOwn(n, 'overlay') && (n as { overlay?: unknown }).overlay !== undefined) return `${name} holds a dialog or drawer, which every item would share.`;
     if (readsState(n)) return `${name} holds tabs, panels or buttons that change what the component shows, which only work outside a list.`;
   }
-  // A container that opens its image full size finds it among its own elements, never inside a list.
-  const viewer = sub.some((n) => n.kind === 'image') ? around.find((a) => a.kind === 'element' && (a.action === 'image' || isBinding(a.action))) : undefined;
+  // A container that opens its image full size finds it among its own elements (not in a nested component's slot), never
+  // inside a list.
+  const viewer = holdsImage(tree, nodeId) ? around.find((a) => a.kind === 'element' && (a.action === 'image' || isBinding(a.action))) : undefined;
   if (viewer) return `${name} holds the image that “${viewer.name?.trim() || nodeWord(viewer)}” opens full size, which it can’t find inside a list.`;
   const parent = own(tree.nodes, at.parentId);
   // A group that hides when empty would test whether the list has items instead of the container's own conditions.
@@ -164,6 +178,15 @@ export function repeatAsListProblem(state: ProjectState, def: ComponentDefinitio
   if (!fields.length) return `${name} has no text, images, icons or links of its own to repeat.`;
   if (fields.length > MAX_FIELDS) return `${name} holds ${fields.length} texts, images, icons and links; a list item can have at most ${MAX_FIELDS}.`;
   return null;
+}
+
+/** Whether an image is among a container's own elements, the way a container that opens its image looks for one. */
+function holdsImage(tree: NodeTree, nodeId: string, seen = new Set<string>()): boolean {
+  const n = own(tree.nodes, nodeId);
+  if (!n || seen.has(nodeId)) return false;
+  seen.add(nodeId);
+  if (n.kind === 'image') return true;
+  return n.kind === 'element' && n.children.some((c) => holdsImage(tree, c, seen));
 }
 
 /** The node and everything below it in the design, the content placed in nested components' slots included. */
@@ -288,9 +311,14 @@ export function repeatAsListPreflight(state: ProjectState, plan: RepeatPlan): st
   } catch (e) {
     return (e as Error).message.replace(/^Operation \d+ \([^)]*\): /, '');
   }
-  const saving = (st: ProjectState) => validateState(st, { sectionLinks: false }).filter(blocksSaving);
-  const introduced = introducedDiagnostics(saving(state), saving(next));
-  return introduced.length ? introduced.map((d) => d.message).join(' ') : null;
+  try {
+    const saving = (st: ProjectState) => validateState(st, { sectionLinks: false }).filter(blocksSaving);
+    const introduced = introducedDiagnostics(saving(state), saving(next));
+    return introduced.length ? introduced.map((d) => d.message).join(' ') : null;
+  } catch {
+    // A project these checks can't read is the project's own to refuse when the change is applied.
+    return null;
+  }
 }
 
 /**

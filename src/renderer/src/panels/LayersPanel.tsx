@@ -653,7 +653,7 @@ export function LayersPanel() {
             ...copyPasteItems({ copy: ref.owner.kind === 'page' && !definitionMode ? () => void copySelection(plan) : null, paste: pasteAfter }),
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: create } }) }] : []),
-            ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: () => setState({ modal: { kind: 'repeat-as-list' as const, ref: repeat } }) }] : []),
+            ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: () => setState({ modal: { kind: 'repeat-as-list' as const, ref: repeat, workspaceKey: getState().snapshot?.workspaceKey } }) }] : []),
             ...(!definitionMode && detachable(st, ref) ? [{ label: 'Detach component', icon: <Unlink />, onSelect: () => void detachPlacement(ref) }] : []),
             // Kept for every project, or sent as a file (#372).
             ...(kept ? [{ label: 'Save to personal library', icon: <BookmarkPlus />, onSelect: () => void saveToLibrary(kept) }, { label: 'Export component…', icon: <Download />, onSelect: () => void exportComponentFile(kept) }] : []),

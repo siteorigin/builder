@@ -247,8 +247,11 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
 
 function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): string | null {
   const tree = def.tree!;
+  // A tree damaged by hand can list a node under itself: each parent is visited once.
+  const seen = new Set<string>([nodeId]);
   let cur = findParent(tree, nodeId);
-  while (cur?.parentId) {
+  while (cur?.parentId && !seen.has(cur.parentId)) {
+    seen.add(cur.parentId);
     const p = tree.nodes[cur.parentId];
     if (p?.kind === 'repeat') return p.list.$prop;
     cur = findParent(tree, cur.parentId);
