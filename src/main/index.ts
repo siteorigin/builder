@@ -366,6 +366,15 @@ function registerIpc() {
       ? controller.undoEntry(entryId, key)
       : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: false } }
   );
+  handle('project:reviewAiTurn', (entryId: unknown, key: unknown) =>
+    typeof entryId === 'string' && typeof key === 'string' ? controller.reviewAiTurn(entryId, key) : { ok: false, message: 'Nothing to review.' }
+  );
+  handle('project:revertAiTurn', (entryId: unknown, expected: unknown, key: unknown) => {
+    const { revision, history } = (expected ?? {}) as { revision?: unknown; history?: unknown };
+    return typeof entryId === 'string' && typeof key === 'string' && Number.isInteger(revision) && typeof history === 'string'
+      ? controller.revertAiTurn(entryId, { revision: revision as number, history }, key)
+      : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: false } };
+  });
   handle('project:redo', () => controller.session?.redo());
   // What History showed: the revision it stood at and how many changes the step takes.
   const shown = (v: unknown): v is { revision: number; count: number } => {

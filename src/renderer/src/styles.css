@@ -3014,6 +3014,26 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .history-said { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); }
 .history-said.failed { color: var(--red-ink); }
 .history-tabs { margin-bottom: 12px; }
+/* An AI turn reviewed in History (issue 164): what it changed, what came after it, and the two ways back. */
+.turn-review { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); font-size: 13px; }
+.turn-review h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 600; outline-offset: 2px; }
+.turn-review h3:focus-visible { outline: 2px solid var(--focus); border-radius: var(--r-sm); }
+.turn-review h3 svg { width: 14px; height: 14px; flex: none; color: var(--plum); }
+.turn-review h4 { margin: 4px 0 0; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.turn-review p { margin: 0; }
+.turn-review ul, .turn-review ol { margin: 0; padding-inline-start: 18px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.turn-review-later { list-style: none; padding-inline-start: 0 !important; gap: 8px !important; }
+.turn-review-later > li { display: flex; flex-direction: column; gap: 2px; }
+.turn-review-label { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.turn-review-label > svg { width: 13px; height: 13px; flex: none; color: var(--text-3); }
+.turn-review-later ul { color: var(--text-2); padding-inline-start: 39px; }
+.turn-review-reason { color: var(--text-2); font-size: 12px; }
+.turn-review-later .turn-review-reason { padding-inline-start: 21px; }
+.turn-review-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
+.turn-review-action { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 4px 10px; }
+.turn-review-action > p { align-self: center; color: var(--text-2); font-size: 12px; }
+.turn-review-action > ol { grid-column: 2; color: var(--text-2); font-size: 12px; }
+.turn-review-standing { font-size: 12px; }
 .version-save { display: flex; gap: 8px; margin: 0 0 12px; }
 .version-save .input { flex: 1; min-width: 0; }
 .version-save + .scope-note { margin-bottom: 12px; }

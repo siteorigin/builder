@@ -4,7 +4,7 @@ import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } fro
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ComponentExportResult, ComponentImportResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
+import type { AiTurnReview, ComponentExportResult, ComponentImportResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -1465,6 +1465,22 @@ export class Controller {
     if (!this.session || !key || this.workspaceKey !== key)
       return Promise.resolve({ ok: false, revision: this.session?.revision ?? 0, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.', recoverable: false } });
     return this.session.undoEntry(entryId);
+  }
+
+  /** What an AI turn's History step changed and what came after it (see ProjectSession.reviewAiEntry), in the opening `key`. */
+  async reviewAiTurn(entryId: string, key: string): Promise<{ ok: boolean; message?: string; review?: AiTurnReview }> {
+    const s = this.openedAs(key);
+    if (!s) return { ok: false, message: 'That project is no longer open.' };
+    return s.reviewAiEntry(entryId);
+  }
+
+  /** Take an AI turn back on its own as reviewed (see ProjectSession.revertAiEntry), in the opening `key` only. */
+  revertAiTurn(entryId: string, expected: { revision: number; history: string }, key: string): Promise<ApplyResult> {
+    if (!this.session || !key || this.workspaceKey !== key)
+      return Promise.resolve({ ok: false, revision: this.session?.revision ?? 0, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.', recoverable: false } });
+    // The AI owns the project from the moment it starts, before its run takes the session's write lock.
+    if (this.aiBusy()) return Promise.resolve({ ok: false, revision: this.session.revision, error: { code: 'BUSY', message: 'Stop the AI before undoing.', recoverable: true } });
+    return this.session.revertAiEntry(entryId, expected);
   }
 
   /**

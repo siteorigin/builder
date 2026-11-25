@@ -92,6 +92,8 @@ export function standingNote(m: Pick<ChatMessage, 'runId' | 'result' | 'text'>, 
   if (!unfinished) return undefined;
   if (turn.standing === 'undone') {
     if (!last) return undefined;
+    // Taken back on its own by a later step (issue 164): undoing that step puts them back.
+    if (history?.entries.some((e) => e.applied && e.revertsRunId === m.runId)) return 'These changes were reverted, so this request can only be continued once that revert is undone.';
     const redoable = !!history?.entries.some((e) => e.runId === m.runId && !e.applied);
     return redoable ? 'These changes were undone, so this request can only be continued once they are redone.' : `These changes were undone.${again}`;
   }
@@ -107,6 +109,24 @@ export function undoableId(messages: ChatMessage[], history: (TurnHistory & { ca
   if (!history?.canUndo) return undefined;
   const top = [...history.entries].reverse().find((e) => e.applied)?.runId;
   return top ? messages.find((m) => m.role === 'assistant' && m.runId === top && !!m.result && resultAsSaid(m.result, m.text).result.canUndo)?.id : undefined;
+}
+
+/**
+ * The History step an AI turn's card offers to review there (issue 164): the turn's own step, while History still
+ * holds it, on every card that does not offer Undo turn. A turn that changed nothing has none.
+ */
+export function reviewEntryId(m: Pick<ChatMessage, 'role' | 'runId' | 'result' | 'text'>, history: { entries: ReadonlyArray<{ id: string; runId?: string }> } | null | undefined, undoable: boolean): string | undefined {
+  if (undoable || m.role !== 'assistant' || !m.runId || !m.result || !resultAsSaid(m.result, m.text).result.canUndo) return undefined;
+  return history?.entries.find((e) => e.runId === m.runId)?.id;
+}
+
+/**
+ * Why the latest card no longer offers Undo turn, when its turn is in the site but later changes came after it: the
+ * card says so beside Review in history, so the button going is never a mystery (issue 164).
+ */
+export function reviewNote(m: Pick<ChatMessage, 'runId' | 'result' | 'text'>, history: TurnHistory | null | undefined, latest: boolean, reviewable: boolean): string | undefined {
+  if (!latest || !reviewable || turnState(m, history)?.standing !== 'applied') return undefined;
+  return 'Changes were made after this turn, so it can no longer be undone from here. Review it in History to see what undoing it would take back.';
 }
 
 /**

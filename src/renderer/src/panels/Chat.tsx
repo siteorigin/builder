@@ -12,7 +12,7 @@ import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditab
 import { chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId as undoableTurn } from '../lib/result';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
@@ -296,6 +296,10 @@ export function Chat() {
     if (taRef.current) focusComposer();
     else el.focus({ preventScroll: true });
   };
+
+  /** Open History at an earlier turn's step, with what it changed and what came after it (issue 164). */
+  // Only in the opening it was asked in: a review left open across a reopen never acts on another opening.
+  const reviewTurn = (entryId: string) => setState({ modal: { kind: 'history', entryId, review: true, opening: getState().snapshot?.workspaceKey } });
 
   /** Undo a turn, then say so: the card shows it as undone once project history reports it. */
   const undoTurn = async (runId: string) => {
@@ -859,10 +863,12 @@ export function Chat() {
               live={m.runId === activeRunId && running}
               awaiting={waiting}
               undoable={m.id === undoableId}
+              reviewEntry={reviewEntryId(m, history, m.id === undoableId)}
               latest={i === msgs.length - 1}
               canCompose={configured}
               asking={asking}
               onUndo={undoTurn}
+              onReview={reviewTurn}
               continueNote={configured && notice ? noticeId : undefined}
               onContinue={m.id === resumable && !sending && configured ? () => continueRequest(msgs[i - 1]) : undefined}
               onRetry={m.id === retryable && !sending && configured ? () => retryRequest(msgs[i - 1]) : undefined}
@@ -1278,10 +1284,12 @@ function AssistantMessage({
   live,
   awaiting,
   undoable,
+  reviewEntry,
   latest,
   canCompose,
   asking,
   onUndo,
+  onReview,
   onContinue,
   onRetry,
   continueNote
@@ -1290,10 +1298,13 @@ function AssistantMessage({
   live: boolean;
   awaiting: boolean;
   undoable: boolean;
+  /** The turn's History step, which the card offers to review there. */
+  reviewEntry?: string;
   latest: boolean;
   canCompose: boolean;
   asking: WaitingQuestion | null;
   onUndo: (runId: string) => void;
+  onReview: (entryId: string) => void;
   onContinue?: () => void;
   onRetry?: () => void;
   continueNote?: string;
@@ -1342,7 +1353,7 @@ function AssistantMessage({
       {!r && answers}
       {/* A finished turn is one card that leads with its result; what was asked and answered on the way sits inside it. */}
       {r && (
-        <ResultCard m={m} undoable={undoable} latest={latest} canCompose={canCompose} onUndo={onUndo} onContinue={onContinue} onRetry={onRetry} continueNote={continueNote}>
+        <ResultCard m={m} undoable={undoable} reviewEntry={reviewEntry} latest={latest} canCompose={canCompose} onUndo={onUndo} onReview={onReview} onContinue={onContinue} onRetry={onRetry} continueNote={continueNote}>
           {answers.length > 0 ? answers : null}
         </ResultCard>
       )}
@@ -1407,9 +1418,11 @@ function openChange(c: ChatChange) {
 function ResultCard({
   m,
   undoable,
+  reviewEntry,
   latest,
   canCompose,
   onUndo,
+  onReview,
   onContinue,
   onRetry,
   continueNote,
@@ -1417,9 +1430,11 @@ function ResultCard({
 }: {
   m: ChatMessage;
   undoable: boolean;
+  reviewEntry?: string;
   latest: boolean;
   canCompose: boolean;
   onUndo: (runId: string) => void;
+  onReview: (entryId: string) => void;
   onContinue?: () => void;
   onRetry?: () => void;
   /** The note Continue and Try again are read with: what goes with them, when that is news to the model. */
@@ -1435,8 +1450,10 @@ function ResultCard({
   const stepsId = useId();
   /** Project history holds the turn's change as undone now, from chat, the toolbar or History alike (issue 276). */
   const reverted = turn.standing === 'undone';
-  // Only the conversation's latest turn is ever continued, so only it is told how.
-  const note = standingNote(m, history, latest);
+  // Only the conversation's latest turn is ever continued, so only it is told how. Its Undo turn going once later
+  // changes came after it is said too, beside the way to review it (issue 164).
+  const note = standingNote(m, history, latest) ?? reviewNote(m, history, latest, !!reviewEntry);
+  const reviewId = useId();
   const head = turn.undoneEarlier ? { icon: <RotateCcw />, label: 'Undone earlier' } : outcome(r);
   const steps = m.activities ?? [];
   const stopped = r.status === 'cancelled';
@@ -1589,7 +1606,7 @@ function ResultCard({
               </div>
             )}
             {/* Whether it can still be continued is about the site now, so it is not tucked away with the old report. */}
-            {note && <p className="result-standing">{note}</p>}
+            {note && <p id={reviewId} className="result-standing">{note}</p>}
             <button className="checks-toggle report-toggle" aria-expanded={showReport} onClick={() => setShowReport(!showReport)}>
               Before the undo
               <ChevronDown aria-hidden="true" />
@@ -1601,7 +1618,7 @@ function ResultCard({
         <div className="result-summary">
           <Md text={summaryOf({ ...r, summary: summaryNow(turn) })} />
         </div>
-        {!reverted && note && <p className="result-standing">{note}</p>}
+        {!reverted && note && <p id={reviewId} className="result-standing">{note}</p>}
         {locations.length > 0 && (
           <ul className="locations" aria-label="Where to change it">
             {locations.map((l, i) => (
@@ -1706,7 +1723,7 @@ function ResultCard({
         {children && <div className="result-answers">{children}</div>}
       </div>
       {/* Retrying puts the request back in the composer, so it is offered only while there is one to write in. */}
-      {((r.canUndo && undoable) || retryable || repair || onContinue || onRetry) && (
+      {((r.canUndo && undoable) || reviewEntry || retryable || repair || onContinue || onRetry) && (
         <div className="result-foot">
           {onContinue && (
             // Continue sends a new message at once: what goes with it, when that is news to the model, is read with it.
@@ -1734,6 +1751,12 @@ function ResultCard({
           {r.canUndo && undoable && (
             <button className="btn btn-sm" onClick={() => onUndo(m.runId!)}>
               <RotateCcw /> Undo turn
+            </button>
+          )}
+          {/* An earlier turn is reviewed in History: what it changed, what came after it, and the safe way to undo it. */}
+          {reviewEntry && (
+            <button className="btn btn-sm" onClick={() => onReview(reviewEntry)} aria-describedby={note ? reviewId : undefined}>
+              <History /> Review in history
             </button>
           )}
           {retryable && (

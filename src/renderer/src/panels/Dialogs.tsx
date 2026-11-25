@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, CircleAlert, CircleMinus, Component, CornerDownRight, FileText, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import type { AiTurnReview, ProjectSnapshot } from '@shared/api';
+import type { ApplyResult } from '@shared/ops';
 import { newId } from '@shared/ids';
 import { displayName, placesOf } from '@engine/tree';
 import { planHomeChange } from '@engine/apply';
@@ -8,7 +10,7 @@ import { uniqueCopyName } from '@engine/definitions';
 import type { LinkHolder, PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
-import { applyOps, api, commitOps, errorText, getState, projectHistory, saveLocal, setState, stepHistory, toast, useStore } from '../store';
+import { applyOps, api, commitOps, errorText, getState, projectHistory, revertAiTurn, saveLocal, setState, stepHistory, toast, useStore } from '../store';
 import { Field, Modal, openMenus, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
@@ -18,6 +20,7 @@ import { planPageRemoval, reviewPageRemoval, withoutCards } from '../lib/page-re
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { HistoryTabs, SavedVersionsModal } from './SavedVersions';
 import { appliedCount, historyStep } from '../lib/history-steps';
+import { reviewPlan, stepChangeText, turnName } from '../lib/turn-review';
 
 /** The longest name a component can have. */
 const NAME_MAX = 60;
@@ -1408,6 +1411,159 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
   );
 }
 
+/**
+ * An AI turn reviewed in History (issue 164): what its step changed, with the values it had and was given; every
+ * change made after it, and whether it depends on the turn; and the two ways back, each saying what it takes and
+ * keeps. Undoing the turn on its own keeps every later change, and is offered only when none depends on it. History's
+ * step to it is always offered: it takes back every change in between, newest first, and they can be redone.
+ */
+function TurnReview({
+  entryId,
+  snap,
+  locked,
+  focusRef,
+  onStep,
+  onRevert
+}: {
+  entryId: string;
+  snap: ProjectSnapshot;
+  locked: boolean;
+  focusRef: (el: HTMLElement | null) => void;
+  onStep: (index: number) => void;
+  onRevert: (reviewed: { revision: number; history: string }, done: string) => void;
+}) {
+  const headId = useId();
+  const revertNote = useId();
+  const stepNote = useId();
+  const headRef = useRef<HTMLElement | null>(null);
+  const head = useCallback(
+    (el: HTMLElement | null) => {
+      headRef.current = el;
+      focusRef(el);
+    },
+    [focusRef]
+  );
+  // An action taken goes with what it changed (the turn is undone): focus comes back to the review, never the page.
+  const acted = useRef(false);
+  useEffect(() => {
+    if (!acted.current || (document.activeElement && document.activeElement !== document.body)) return;
+    acted.current = false;
+    headRef.current?.focus();
+  });
+  const entries = snap.history.entries;
+  // Worked out again whenever the project or History moves: what was shown before is never acted on.
+  const key = `${snap.workspaceKey}|${entryId}|${snap.revision}|${entries.map((e) => `${e.id}:${e.applied ? 1 : 0}`).join(',')}`;
+  const [got, setGot] = useState<{ key: string; review?: AiTurnReview; message?: string } | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.project.reviewAiTurn(entryId, snap.workspaceKey).then(
+      (r) => live && setGot({ key, ...(r.ok && r.review ? { review: r.review } : { message: r.message ?? 'This turn can’t be reviewed.' }) }),
+      (e: unknown) => live && setGot({ key, message: errorText(e) })
+    );
+    return () => {
+      live = false;
+    };
+    // The key says everything the review depends on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  const review = got?.review;
+  // Answered for the project as shown: a review queued behind a change that has not reached the editor yet waits.
+  const current = got?.key === key && (!review || review.revision === snap.revision);
+  const plan = review ? reviewPlan(review, entries) : null;
+  const off = locked || !current;
+  const name = review ? turnName(review.label) : '';
+  return (
+    <section
+      className="turn-review"
+      aria-labelledby={headId}
+      aria-busy={!current || undefined}
+      // A key held down from the card that opened History repeats here too: only a fresh press acts.
+      onKeyDown={(e) => e.repeat && (e.key === 'Enter' || e.key === ' ') && e.preventDefault()}
+    >
+      <h3 id={headId} ref={head} tabIndex={-1} data-autofocus>
+        <Sparkles aria-hidden="true" /> {review ? `AI turn: ${name}` : 'AI turn'}
+      </h3>
+      {!got ? (
+        <p className="muted">Looking at what this turn changed…</p>
+      ) : !review ? (
+        <p className="muted">{got.message}</p>
+      ) : (
+        <>
+          <p className="muted turn-review-standing">
+            {review.revertedBy ? `Undone on its own by “${review.revertedBy.label}”.` : review.applied ? 'In the site now.' : 'Undone.'}
+          </p>
+          <h4>What it changed</h4>
+          {review.changes.length ? (
+            <ul className="turn-review-changes" aria-label="What this turn changed">
+              {review.changes.map((c, i) => (
+                <li key={i}>{stepChangeText(c)}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">{review.detailsLost ? 'History no longer holds what it changed.' : 'Nothing it changed can be described here.'}</p>
+          )}
+          {review.later.length > 0 && (
+            <>
+              <h4>Changes made after it</h4>
+              <ul className="turn-review-later" aria-label="Changes made after this turn">
+                {review.later.map((l) => (
+                  <li key={l.entryId}>
+                    <span className="turn-review-label">
+                      {l.source === 'ai' ? <Sparkles aria-hidden="true" /> : <User aria-hidden="true" />}
+                      <span className="grow">{l.label}</span>
+                      {l.relation === 'depends' ? <span className="badge amber">Depends on this turn</span> : plan?.revert.ok ? <span className="badge green">Kept</span> : null}
+                    </span>
+                    {l.reason && <span className="turn-review-reason">{l.reason}</span>}
+                    {l.changes.length > 0 && (
+                      <ul>
+                        {l.changes.map((c, i) => (
+                          <li key={i}>{stepChangeText(c)}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {plan && (
+            <div className="turn-review-actions">
+              {plan.revert.ok ? (
+                <div className="turn-review-action">
+                  <button className="btn btn-sm btn-primary" disabled={off} aria-describedby={revertNote} onClick={() => ((acted.current = true), onRevert({ revision: review.revision, history: review.history }, `Undid “${name}” on its own.`))}>
+                    <Undo2 /> Undo this turn only
+                  </button>
+                  <p id={revertNote}>
+                    {plan.revert.text}
+                    {plan.revert.lost ? ` ${plan.revert.lost}` : ''}
+                  </p>
+                </div>
+              ) : (
+                <p className="turn-review-reason">It can’t be undone on its own. {plan.revert.reason}</p>
+              )}
+              {plan.step && (
+                <div className="turn-review-action">
+                  <button className="btn btn-sm" disabled={off} aria-label={plan.step.name} aria-describedby={stepNote} onClick={() => ((acted.current = true), onStep(plan.step!.index))}>
+                    {plan.step.direction === 'undo' ? <Undo2 /> : <Redo2 />} {plan.step.text}
+                  </button>
+                  <p id={stepNote}>{plan.step.note}</p>
+                  {plan.step.count > 1 && (
+                    <ol aria-label={plan.step.direction === 'undo' ? 'Undone, in this order' : 'Redone, in this order'}>
+                      {plan.step.takes.map((t, i) => (
+                        <li key={i}>{t}</li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 export function HistoryModal() {
   const versions = useStore((s) => s.modal?.kind === 'history' && s.modal.tab === 'versions');
   return versions ? <SavedVersionsModal /> : <ChangesModal />;
@@ -1418,6 +1574,9 @@ function ChangesModal() {
   // Opened from a notification whose change could not be undone on its own: show that change, with focus on it.
   // Otherwise focus starts where History stands now.
   const focusId = useStore((s) => (s.modal?.kind === 'history' ? s.modal.entryId : undefined));
+  // Opened from an AI turn's card to review it (issue 164): its review leads, and focus starts on it, never on a row
+  // that would step History at a key press.
+  const reviewing = useStore((s) => (s.modal?.kind === 'history' && s.modal.review && s.modal.opening === s.snapshot?.workspaceKey ? s.modal.entryId : undefined));
   const all = snap?.history.entries ?? [];
   const cursor = appliedCount(all);
   // Newest first, each with its place in History, which is oldest first.
@@ -1436,9 +1595,9 @@ function ChangesModal() {
   const locked = busy || !!snap?.aiBusy;
   const listRef = useRef<HTMLOListElement>(null);
   // Focus starts on the list's Tab stop, and stays there while the menu that opened History finishes closing.
-  const startRef = useRef<HTMLButtonElement | null>(null);
+  const startRef = useRef<HTMLElement | null>(null);
   useHeldFocus(startRef);
-  const start = useCallback((el: HTMLButtonElement | null) => {
+  const start = useCallback((el: HTMLElement | null) => {
     startRef.current = el;
     el?.scrollIntoView({ block: 'nearest' });
   }, []);
@@ -1448,16 +1607,16 @@ function ChangesModal() {
     if (stop && !all.some((e) => e.id === stop) && (!document.activeElement || document.activeElement === document.body))
       listRef.current?.querySelector<HTMLElement>('.history-step[tabindex="0"]')?.focus();
   });
-  const go = (i: number) => {
+  /** Make one change to History (`run`), saying `done` once it is made or why it could not be. */
+  const act = (run: (snap: ProjectSnapshot) => Promise<ApplyResult>, done: string) => {
     if (!snap || stepping.current || locked) return;
-    const step = historyStep(all, i);
     const key = snap.workspaceKey;
     stepping.current = true;
     setWaitFor(Infinity);
-    stepHistory(all[i].id, step.direction, step.count, snap).then(
+    run(snap).then(
       (r) => {
         if (getState().snapshot?.workspaceKey !== key) return;
-        setSaid(r.ok ? { text: step.done, failed: false } : { text: r.error?.message ?? 'That step could not be made.', failed: true });
+        setSaid(r.ok ? { text: done, failed: false } : { text: r.error?.message ?? 'That step could not be made.', failed: true });
         setWaitFor(r.ok ? r.revision : null);
       },
       (e: unknown) => {
@@ -1465,6 +1624,10 @@ function ChangesModal() {
         setWaitFor(null);
       }
     ).finally(() => (stepping.current = false));
+  };
+  const go = (i: number) => {
+    const step = historyStep(all, i);
+    act((at) => stepHistory(all[i].id, step.direction, step.count, at), step.done);
   };
   // Up and Down move between the rows (Home and End to the newest and oldest); Enter or Space steps to one.
   const onKeyDown = (e: React.KeyboardEvent<HTMLOListElement>) => {
@@ -1503,6 +1666,16 @@ function ChangesModal() {
       }
     >
       <HistoryTabs tab="changes" busy={busy} />
+      {reviewing && snap && (
+        <TurnReview
+          entryId={reviewing}
+          snap={snap}
+          locked={locked}
+          focusRef={start}
+          onStep={go}
+          onRevert={(reviewed, done) => act((at) => revertAiTurn(reviewing, reviewed, at), done)}
+        />
+      )}
       <p className="muted" style={{ marginTop: 0 }}>
         Your last 100 changes, newest first. Choose one to undo it and every change after it, or to redo every change up to it. Anything undone can be redone until you make a new change. To keep a version of the site for longer, save it in Saved versions.
       </p>
@@ -1520,10 +1693,10 @@ function ChangesModal() {
             return (
               <li key={e.id} className={`${e.applied ? '' : 'undone'}${e.id === focusId ? ' focus' : ''}`}>
                 <button
-                  ref={e.id === tabId ? start : undefined}
+                  ref={e.id === tabId && !reviewing ? start : undefined}
                   className="history-step"
                   tabIndex={e.id === tabId ? 0 : -1}
-                  data-autofocus={e.id === tabId && !stop ? true : undefined}
+                  data-autofocus={e.id === tabId && !stop && !reviewing ? true : undefined}
                   aria-label={step.name}
                   aria-describedby={meta}
                   aria-current={current ? 'step' : undefined}

@@ -4,10 +4,10 @@ import { promises as fs, constants as fsConstants, existsSync, type BigIntStats,
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import type { ComponentDefinition, PageDoc, ProjectState } from '@shared/types';
+import type { ComponentDefinition, PageDoc, ProjectState, SiteDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch, EditOperation } from '@shared/ops';
-import type { FileText, RestoreVersionResult, SavedCopy, StorageInfo, VersionReview, VersionsInfo } from '@shared/api';
+import type { AiTurnReview, FileText, RestoreVersionResult, SavedCopy, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
@@ -15,20 +15,24 @@ import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
+import { pageLinkUses } from '@engine/page-links';
+import { codeNeeds } from '@engine/definitions';
+import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { defFile, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
+import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
 import { sendsFormMessages, type ComponentImport } from '@engine/component-package';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { ownServerHook } from './server-hook';
 import { checkSvelteSource, componentSources } from '../codecheck';
+import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
-import { collectionPathOf, collectionsFromDocs, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -284,6 +288,11 @@ export interface HistoryEntry {
   docs: Record<string, { before: string | null; after: string | null }>;
   coalesceKey?: string;
   runId?: string;
+  /**
+   * The AI run whose change this entry took back on its own, keeping the edits made after it (issue 164): while this
+   * entry is applied, that run's turn reads as undone. Never on the AI run's own entry, which `runId` names.
+   */
+  revertsRunId?: string;
 }
 
 interface HistoryFile {
@@ -381,6 +390,8 @@ export interface CommitOptions {
   coalesceKey?: string;
   /** Skip history (used for provisional AI batches and undo/redo themselves). */
   history?: boolean;
+  /** The AI run this change takes back on its own (see HistoryEntry.revertsRunId). */
+  revertsRunId?: string;
 }
 
 export interface SessionEvent {
@@ -2110,7 +2121,8 @@ export class ProjectSession extends EventEmitter {
         revision,
         docs,
         coalesceKey: opts.coalesceKey,
-        runId: opts.runId
+        runId: opts.runId,
+        ...(opts.revertsRunId ? { revertsRunId: opts.revertsRunId } : {})
       });
     }
     const pruned = h.entries.length > HISTORY_LIMIT;
@@ -2565,7 +2577,7 @@ export class ProjectSession extends EventEmitter {
       canRedo: h.cursor < h.entries.length && !this.activeRun,
       undoLabel: h.entries[h.cursor - 1]?.label,
       redoLabel: h.entries[h.cursor]?.label,
-      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, applied: i < h.cursor, runId: e.runId })),
+      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, applied: i < h.cursor, runId: e.runId, ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}) })),
       ...(h.droppedRuns ? { droppedRuns: { ...h.droppedRuns } } : {})
     };
   }
@@ -3201,6 +3213,269 @@ export class ProjectSession extends EventEmitter {
     return { ok: true, revision: this.revision, changed: ev.changedDocs, entryId: ev.entryId };
   }
 
+  /**
+   * What an AI turn's History step changed, the changes applied after it and how each stands with it, and whether the
+   * turn can be taken back on its own (issue 164). It never writes.
+   */
+  reviewAiEntry(entryId: string): Promise<{ ok: boolean; message?: string; review?: AiTurnReview }> {
+    // Queued behind any save, so it reads a settled project and History.
+    return this.serialize(async () => {
+      const r = await this.aiTurnReview(entryId);
+      return 'error' in r ? { ok: false, message: r.error } : { ok: true, review: r.review };
+    }, false);
+  }
+
+  /**
+   * Take an AI turn back on its own, as reviewed at `expected.revision` (see reviewAiEntry): each document its step
+   * wrote goes back to how the step found it, as one new change that can itself be undone, and every change made
+   * after it stays. Refused, changing nothing, when a later change depends on the turn, the result would break
+   * something, or the project has changed since the review.
+   */
+  revertAiEntry(entryId: string, expected: { revision?: number; history?: string } = {}): Promise<ApplyResult> {
+    return this.serialize(async () => {
+      if (this.activeRun) return { ok: false, revision: this.revision, error: { code: 'BUSY', message: 'Stop the AI before undoing.', recoverable: true } };
+      const blocked = await this.writeBlocked();
+      if (blocked) return blocked;
+      // Reviewed at this revision and History as it was then: an AI step recorded since, or one let go, changes what
+      // the review said would be kept or no longer redoable, even at the same revision.
+      if ((expected.revision !== undefined && expected.revision !== this.revision) || (expected.history !== undefined && expected.history !== historyKey(this.history)))
+        return { ok: false, revision: this.revision, error: { code: 'STALE_REVISION', message: 'The project changed. Review the turn again.', recoverable: true } };
+      const r = await this.aiTurnReview(entryId);
+      if ('error' in r) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: r.error, recoverable: false } };
+      const { review, next, entry } = r;
+      if (!review.revert.ok || !next) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: review.revert.ok ? 'This turn can’t be undone on its own.' : review.revert.reason, recoverable: false } };
+      // As in travel: an edit made outside the app that has not been loaded yet would slip past the checks.
+      const unloaded = await this.unloadedEdit(new Set(Object.keys(entry.docs)));
+      if (unloaded) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot undo “${entry.label}” yet: ${unloaded} changed outside the app. Try again in a moment.`, recoverable: true } };
+      let ev: SessionEvent;
+      try {
+        ev = await this.persist(next, { label: `Undo AI turn: ${entry.label.replace(/^AI(?: \(partial\))?: /, '')}`, source: 'user', revertsRunId: entry.runId });
+      } catch (e) {
+        if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
+        throw e;
+      }
+      return { ok: true, revision: this.revision, changed: ev.changedDocs, entryId: ev.entryId };
+    });
+  }
+
+  /**
+   * A step's documents, each version parsed (authored code stays text, and a document that is not JSON is its text);
+   * null when History no longer holds one. Absent is only ever a version the step recorded as none.
+   */
+  private async stepVersions(entry: HistoryEntry): Promise<DocVersions[] | null> {
+    const read = async (path: string, hash: string | null) => {
+      if (hash === null) return null;
+      const text = await this.getBlob(hash);
+      if (!path.endsWith('.json')) return text;
+      try {
+        return (JSON.parse(text) as unknown) ?? text;
+      } catch {
+        return text;
+      }
+    };
+    try {
+      const out: DocVersions[] = [];
+      for (const [path, d] of Object.entries(entry.docs)) out.push({ path, before: await read(path, d.before), after: await read(path, d.after) });
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
+  /** A document by what it holds, as the review names it. */
+  private docName(path: string): string {
+    const page = path.match(PAGE_DOC)?.[1];
+    if (page) return this.state.pages[page]?.title ?? 'a page';
+    if (path === `${DOC_DIR}/site.json`) return 'the site settings, header or footer';
+    if (path === `${DOC_DIR}/tokens.json` || path === `${DOC_DIR}/theme-lock.json`) return 'the site styles';
+    if (path === `${DOC_DIR}/assets.json`) return 'the library';
+    const component = Object.values(this.state.components).find((d) => componentDocPath(d.id) === path || d.sourcePath === path);
+    return component ? component.name : path;
+  }
+
+  /**
+   * The review of AI step `entryId`, and the project with it taken back on its own when that can be done: each of the
+   * step's documents as the step found it, every other document as it is now. A later applied step depends on the
+   * turn when it changed one of the turn's documents (taking the turn back would take that change with it, or leave it
+   * on something the turn made), added a link to a page the turn made (by the page, or typed as the site's own web
+   * address), or changed a placement of a component whose design the turn changed. With none depending, the result is
+   * still refused when it would break something: a check the project fails that it passes now, a link left to a page
+   * that would be gone or no longer published, or code that needs a component the turn added.
+   */
+  private async aiTurnReview(entryId: string): Promise<{ error: string } | { review: AiTurnReview; next?: ProjectState; entry: HistoryEntry & { runId: string } }> {
+    const h = this.history;
+    const at = h.entries.findIndex((e) => e.id === entryId);
+    const found = h.entries[at];
+    if (!found) return { error: 'That change is no longer in History.' };
+    if (found.source !== 'ai' || !found.runId) return { error: 'That change was not made by the AI.' };
+    const entry = found as HistoryEntry & { runId: string };
+    const versions = await this.stepVersions(entry);
+    const applied = at < h.cursor;
+    const reverter = h.entries.slice(0, h.cursor).find((e) => e.revertsRunId === entry.runId);
+    // What the turn made or published that taking it back takes away (by page, and by the address it answers at), and
+    // the designs it changed that later work may build on.
+    const made = new Map<string, { title: string; how: 'added' | 'published' }>();
+    const addresses = new Set<string>();
+    const moved = new Map<string, string>();
+    const designs = new Set<string>();
+    let siteBefore: unknown = null;
+    for (const v of versions ?? []) {
+      const page = v.path.match(PAGE_DOC)?.[1];
+      const [b, a] = [v.before as Partial<PageDoc> | null, v.after as Partial<PageDoc> | null];
+      const title = a && typeof a === 'object' && typeof a.title === 'string' ? a.title : 'a page';
+      const published = !!b && typeof b === 'object' && b.draft === true && !!a && typeof a === 'object' && a.draft !== true;
+      if (page && a && typeof a === 'object' && (!b || published)) made.set(page, { title, how: b ? 'published' : 'added' });
+      if (page && a && typeof a === 'object' && typeof a.route === 'string') {
+        if (!b || published) addresses.add(asRoute(a.route).toLowerCase());
+        else if (b.route !== a.route) moved.set(asRoute(a.route).toLowerCase(), page);
+      }
+      // A design is what placements show: its name and description are only what the library calls it.
+      const design = v.path.match(COMPONENT_DOC)?.[1] ?? Object.values(this.state.components).find((d) => d.sourcePath === v.path)?.id;
+      const shown = (d: unknown) => (d && typeof d === 'object' ? { ...d, name: undefined, description: undefined, tags: undefined, category: undefined } : d);
+      if (design && v.before !== null && v.after !== null && JSON.stringify(shown(v.before)) !== JSON.stringify(shown(v.after))) designs.add(design);
+      if (v.path === `${DOC_DIR}/site.json`) siteBefore = v.before;
+    }
+    // An address a page moved to is lost by taking the move back unless an old address kept for that same page answered
+    // there before the turn: one kept for another page would send a later link there instead.
+    const redirects = (siteBefore && typeof siteBefore === 'object' ? (siteBefore as SiteDoc) : this.state.site).redirects ?? [];
+    for (const [a, page] of moved) if (!redirects.some((r) => typeof r?.from === 'string' && asRoute(r.from).toLowerCase() === a && r.pageId === page)) addresses.add(a);
+    // A link typed as the site's own address names it by the public URL the site has now, or had before the turn.
+    const bases = siteBases(this.state.site, siteBefore && typeof siteBefore === 'object' ? (siteBefore as SiteDoc) : null);
+    const pageIds = new Set(made.keys());
+    /** A document as it is now, read the way stepVersions reads a step's. */
+    const now = (path: string): unknown => {
+      const text = this.docs.get(path);
+      if (text === undefined || !path.endsWith('.json')) return text ?? null;
+      try {
+        return (JSON.parse(text) as unknown) ?? text;
+      } catch {
+        return text;
+      }
+    };
+    // Each document as it was when the turn ended, before any later step changed it: a link it already held then is no
+    // later change's doing, whatever later steps added and took away around it.
+    const atTurn = new Map<string, unknown>();
+    const later: TurnLaterChange[] = [];
+    for (const e of h.entries.slice(at + 1, h.cursor)) {
+      const own = await this.stepVersions(e);
+      for (const v of own ?? []) if (!atTurn.has(v.path)) atTurn.set(v.path, v.before);
+      const paths = Object.keys(e.docs).filter((p) => Object.hasOwn(entry.docs, p));
+      const shared = paths.find((p) => entry.docs[p].before === null && entry.docs[p].after !== null) ?? paths[0];
+      let reason: string | undefined;
+      if (shared) reason = entry.docs[shared].before === null ? `It changes ${this.docName(shared)}, which this turn added.` : `It changes ${this.docName(shared)}, which this turn changed too.`;
+      // Only what this change itself added, and what of it is still there, counts: a link it kept or that a later
+      // change took out again, or a placement it left alone or deleted, is no reason.
+      for (const v of own ?? []) {
+        if (reason) break;
+        const current = now(v.path);
+        // By where each link goes: one swapped for a link elsewhere into what the turn made is a new link.
+        const [after, before, nowLinks, then] = [v.after, v.before, current, atTurn.get(v.path) ?? null].map((d) => linksInto(d, pageIds, addresses, bases));
+        if ([...after].some(([to, n]) => n > (before.get(to) ?? 0) && (nowLinks.get(to) ?? 0) > (then.get(to) ?? 0))) {
+          const one = made.size === 1 ? [...made.values()][0] : null;
+          reason = one ? `It adds a link to “${one.title}”, which this turn ${one.how}.` : 'It adds a link to a page this turn added or published.';
+          continue;
+        }
+        const [was, became, stays] = [placementsOf(v.before, designs), placementsOf(v.after, designs), placementsOf(current, designs)];
+        if ([...became].some(([id, text]) => stays.has(id) && was.get(id) !== text)) {
+          const names = [...designs].map((id) => this.state.components[id]?.name).filter(Boolean);
+          reason = `It changes where ${names.length === 1 ? `“${names[0]}”` : 'a component'} is used, after this turn changed its design.`;
+        }
+      }
+      later.push({ entryId: e.id, label: e.label, source: e.source, time: e.time, changes: own ? stepChanges(own, this.state) : [], relation: reason ? 'depends' : 'separate', ...(reason ? { reason } : {}) });
+    }
+    const review: AiTurnReview = {
+      entryId: entry.id,
+      runId: entry.runId,
+      label: entry.label,
+      revision: this.revision,
+      history: historyKey(h),
+      applied,
+      ...(reverter ? { revertedBy: { entryId: reverter.id, label: reverter.label } } : {}),
+      changes: versions ? stepChanges(versions, this.state) : [],
+      ...(versions ? {} : { detailsLost: true }),
+      later,
+      redoable: h.entries.length - h.cursor,
+      revert: { ok: true }
+    };
+    const refuse = (reason: string) => {
+      review.revert = { ok: false, reason };
+      return { review, entry };
+    };
+    if (reverter) return refuse(`It was already undone on its own by “${reverter.label}”. Undo that change to bring the turn back.`);
+    if (!applied) return refuse('It is already undone.');
+    if (!versions) return refuse('History no longer holds what it changed.');
+    const depends = later.filter((l) => l.relation === 'depends');
+    if (depends.length) return refuse(`${depends.length === 1 ? 'A later change depends' : `${depends.length} later changes depend`} on it, so it can only be undone together with ${depends.length === 1 ? 'that change' : 'them'}.`);
+    // Every one of its documents is still as it left them: no later step touched one, so only a change made outside
+    // History (none is ever made without a step) could tell them apart.
+    const docs = new Map(this.docs);
+    for (const [path, d] of Object.entries(entry.docs)) {
+      const cur = docs.get(path);
+      if ((cur === undefined ? null : sha(cur)) !== d.after) return refuse(`${this.docName(path)} has changed since.`);
+      if (d.before === null) docs.delete(path);
+      else docs.set(path, await this.getBlob(d.before));
+    }
+    // The same gates as an Undo (see travel): a project that could not be saved or opened again is never made.
+    const restored = collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)]));
+    if (restored.orphans.length) return refuse(`${restored.orphans[0]} would have no collection.`);
+    if (restored.duplicates.length) return refuse(`${restored.duplicates[0]} would share its entry ID with another entry.`);
+    const next = docsToState(docs, this.state);
+    const pin = themePinProblem(next);
+    if (pin) return refuse(pin);
+    const problem = (why: string) => refuse(`Undoing it on its own would leave a problem: ${why}`);
+    // Anything the project would newly fail, warnings aside: a broken link is as much a reason as a page left out of
+    // the page order.
+    const broken = introducedDiagnostics(validateState(this.state), validateState(next), { byNode: true }).filter((d) => d.severity === 'error');
+    if (broken.length) return problem(broken[0].message);
+    // Links to a page that would be gone, counted rather than told apart by message, so one already broken nearby
+    // never hides another.
+    for (const id of Object.keys(this.state.pages)) {
+      if (next.pages[id]) continue;
+      const use = pageLinkUses(next, id)[0];
+      if (use) return problem(`${use.where}: “${use.label}” links to ${this.state.pages[id].title}, which would no longer be there.`);
+    }
+    const gone = siteAddresses(this.state);
+    for (const a of siteAddresses(next)) gone.delete(a);
+    const url = ownUrlLinks(next, new Set([...gone].map((a) => a.toLowerCase())), siteBases(this.state.site, next.site))[0];
+    if (url) return problem(`${url.where} links to ${url.url}, which would no longer be there.`);
+    // A published page left linking to one the turn published, now a draft again, would stop the website export. A
+    // typed address is read on the public URL the site has now too, when the turn is what set it. Told apart by where
+    // the link is and where it goes, not by its words.
+    const where = (l: { owner: object; nodeId: string; inText: boolean; pageId?: string; entryId?: string; anchor?: string }) => JSON.stringify([l.owner, l.nodeId, l.inText, l.pageId, l.entryId, l.anchor]);
+    const stranded = new Set(publicationPlan(this.state).draftLinks.map(where));
+    const withBase = next.site.baseUrl === this.state.site.baseUrl ? next : { ...next, site: { ...next.site, baseUrl: this.state.site.baseUrl } };
+    const draft = [...publicationPlan(next).draftLinks, ...(withBase === next ? [] : publicationPlan(withBase).draftLinks)].find((l) => !stranded.has(where(l)));
+    if (draft) return problem(`a published page would link to a draft${draft.label ? ` (“${draft.label}”)` : ''}, which stops the website export.`);
+    // Code that needs a component the turn added, which nothing above reads.
+    for (const id of Object.keys(this.state.components)) {
+      if (next.components[id]) continue;
+      const needs = Object.values(next.components).find((d) => codeNeeds(this.state, d, id));
+      if (needs) return problem(`“${needs.name}” needs “${this.state.components[id].name}”, which this turn added.`);
+    }
+    // Code the turn changed comes back as it was, and must still build with the components there are now: one it
+    // imported may have been deleted since. Only the site's own components are looked for; the rest of src/lib is
+    // the app's, there whatever was undone.
+    const resolve = componentSources(next.components);
+    const generated = new Set(Object.values(next.components).map(defFile));
+    const modules = (spec: string) => {
+      // A Vite query (?raw) asks for the same file.
+      const path = spec.replace(/[?#].*$/, '');
+      if (path.startsWith('src/lib/siteorigin/custom/')) return resolve(path) !== undefined;
+      // A component's generated file is there only while the component is; other generated modules are the app's.
+      if (path.startsWith(`${GENERATED_DIR}/`) && path.includes('.svelte')) return generated.has(path);
+      return true;
+    };
+    for (const def of Object.values(next.components)) {
+      if (def.kind !== 'code' || def.source === undefined || def.source === this.state.components[def.id]?.source) continue;
+      const bad = (await checkSvelteSource(def.source, { filename: def.sourcePath, resolve, modules })).filter((p) => p.severity === 'error');
+      if (bad.length) return problem(`the code for “${def.name}” would have problems: ${bad[0].message}`);
+    }
+    // Nor may restored code close a loop with code changed since, a component that ends up rendering itself.
+    const loop = componentCycle(next);
+    if (loop && !componentCycle(this.state)) return problem(`${loop.map((id) => next.components[id]?.name ?? id).join(' → ')} would each render the next, without end.`);
+    return { review, next, entry };
+  }
+
   // -------------------------------------------------------------------------
   // AI runs
   // -------------------------------------------------------------------------
@@ -3730,20 +4005,34 @@ function usableHistory(file: HistoryFile | null): HistoryFile {
   return h;
 }
 
+/** History as it stands, as a review is worked out at: its steps and where it is among them. */
+function historyKey(h: HistoryFile): string {
+  return `${h.cursor}:${h.entries.map((e) => e.id).join(',')}`;
+}
+
 /** A format version before this one: the first format had none. */
 function olderFormat(v: unknown): boolean {
   return v === undefined || (Number.isInteger(v) && (v as number) > 0 && (v as number) < SCHEMA_VERSION);
 }
 
-/** Note in `h` each AI step of `dropped`, which History is letting go, as standing `status` (see HistoryFile.droppedRuns). */
+/**
+ * Note in `h` each AI step of `dropped`, which History is letting go, as standing `status` (see HistoryFile.droppedRuns).
+ * A step that took an AI run back on its own (issue 164) and goes while applied leaves that run undone; one let go
+ * undone took nothing back, so its run stands as its own step or note says.
+ */
 function noteDropped(h: HistoryFile, dropped: Array<HistoryEntry | null | undefined>, status: DroppedRun) {
-  const runs = dropped.flatMap((e) => (e && typeof e === 'object' && typeof e.runId === 'string' && e.runId ? [e.runId] : []));
+  const runs = dropped.flatMap((e): Array<[string, DroppedRun]> => {
+    if (!e || typeof e !== 'object') return [];
+    if (typeof e.runId === 'string' && e.runId) return [[e.runId, status]];
+    return status === 'applied' && typeof e.revertsRunId === 'string' && e.revertsRunId ? [[e.revertsRunId, 'undone']] : [];
+  });
   if (!runs.length) return;
   const map: Record<string, DroppedRun> = { ...h.droppedRuns };
-  for (const runId of runs) {
+  // In History's order, so a revert let go with the run it took back has the last word.
+  for (const [runId, standing] of runs) {
     // The newest standing goes last, so the oldest are the first let go past the limit.
     delete map[runId];
-    map[runId] = status;
+    map[runId] = standing;
   }
   const ids = Object.keys(map);
   for (const runId of ids.slice(0, Math.max(0, ids.length - DROPPED_RUN_LIMIT))) delete map[runId];

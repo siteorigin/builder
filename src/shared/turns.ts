@@ -4,7 +4,7 @@ import type { ChatMessage, HistoryInfo } from './api';
 type TurnResult = NonNullable<ChatMessage['result']>;
 
 /** The part of History a turn's standing is read from. */
-export type TurnHistory = { entries: ReadonlyArray<Pick<HistoryInfo['entries'][number], 'runId' | 'applied'>>; droppedRuns?: HistoryInfo['droppedRuns'] };
+export type TurnHistory = { entries: ReadonlyArray<Pick<HistoryInfo['entries'][number], 'runId' | 'applied' | 'revertsRunId'>>; droppedRuns?: HistoryInfo['droppedRuns'] };
 
 /** Applied: the change is in the site. Undone: it is not. Unknown: History has no record of the turn's step. */
 export type TurnStanding = 'applied' | 'undone' | 'unknown';
@@ -23,9 +23,13 @@ export function resultAsSaid(r: TurnResult, text?: string): { result: TurnResult
   return { result: { ...r, summary: r.summary.slice(0, -UNDONE_MARK.length), canUndo: true }, undoneOnce: true };
 }
 
-/** Where a run's step stands: from History's step while it holds one, else from what it noted when letting it go. */
+/**
+ * Where a run's step stands: from History's step while it holds one, else from what it noted when letting it go. A
+ * later step that took the run back on its own (issue 164) leaves it undone while that step is applied.
+ */
 export function runStanding(runId: string | undefined, history: TurnHistory | null | undefined): TurnStanding {
   if (!runId || !history) return 'unknown';
+  if (history.entries.some((e) => e.applied && e.revertsRunId === runId)) return 'undone';
   for (let i = history.entries.length - 1; i >= 0; i--) if (history.entries[i].runId === runId) return history.entries[i].applied ? 'applied' : 'undone';
   const dropped = history.droppedRuns && Object.hasOwn(history.droppedRuns, runId) ? history.droppedRuns[runId] : undefined;
   return dropped === 'applied' || dropped === 'undone' ? dropped : 'unknown';
