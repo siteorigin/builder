@@ -795,9 +795,10 @@ export interface ComponentDefinition {
    */
   fullListingOnly?: true;
   /**
-   * Where Insert puts a new placement (project components): beside the page's sections, or where an element goes,
-   * inside the selected layout. Create component records where its source sat; copies carry it on. Without it the
-   * editor reads it from the design (lib/insert-at).
+   * Where Insert puts a new placement: beside the page's sections, or where an element goes, inside the selected
+   * layout. Create component records where its source sat; copies carry it on. A theme's block (a feature card, a stat
+   * card) ships with `element`; a theme component without it is a section. Without it a project component's role is
+   * read from its design (engine/insert-role).
    */
   insertAs?: 'section' | 'element';
 }

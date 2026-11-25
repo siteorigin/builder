@@ -172,6 +172,11 @@ export interface ComponentSpec {
   examples?: ComponentDefinition['examples'];
   /** Offered to a small model's page tool only once the project has it (ComponentDefinition.fullListingOnly). */
   fullListingOnly?: true;
+  /**
+   * A block made to sit inside a layout (a column, a Bento cell, a component's slot) rather than stand as one of a
+   * page's sections: Insert puts it into the selected layout like an element (ComponentDefinition.insertAs).
+   */
+  insertAs?: 'element';
 }
 
 /** The pack-bound helpers a pack's component modules are written with. */
@@ -235,7 +240,8 @@ export function createPack(meta: PackMeta): PackAuthor {
         provenance: provenance(spec.componentId),
         license: meta.license,
         examples: spec.examples,
-        ...(spec.fullListingOnly ? { fullListingOnly: true as const } : {})
+        ...(spec.fullListingOnly ? { fullListingOnly: true as const } : {}),
+        ...(spec.insertAs ? { insertAs: spec.insertAs } : {})
       };
     },
     adopt(def) {
