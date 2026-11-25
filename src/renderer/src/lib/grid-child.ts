@@ -8,7 +8,7 @@ import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { cascadeStyles, type StyleLayer, type StylePropDef } from '@shared/styles';
 import { designLayers, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
-import { findParent } from '@engine/tree';
+import { enclosingRepeatProp, findParent } from '@engine/tree';
 import { isCardLink, isCarouselTrack } from '@generator/card-links';
 import { treeFor } from './model';
 
@@ -31,8 +31,8 @@ export type EditedLook = { axis: string; variant: string };
 interface Walk {
   state: ProjectState;
   look?: EditedLook;
-  /** The selected list item, whose own part styles apply to the boxes around it. */
-  itemId?: string;
+  /** The selected list item, outermost list first, whose own part styles and fields shape the boxes around it. */
+  itemPath?: string[];
 }
 
 const MAX_DEPTH = 64;
@@ -45,12 +45,23 @@ function inside(walk: Walk, outer: Frame, placement: InstanceNode): Frame | null
   return def?.kind === 'managed' && def.tree ? { tree: def.tree, def, placement, outer } : null;
 }
 
-/** What a property of a placed design holds here: the placement's own value, followed outward while it passes one on. */
-function propIn(frame: Frame, binding: { $prop: string; field?: string }, depth = 0): unknown {
+/**
+ * What a property of a design holds here: the placement's own value, followed outward while it passes on one of the
+ * design's around it or a field of the selected list item, or the default where there is neither.
+ */
+function propIn(walk: Walk, frame: Frame, binding: { $prop: string; field?: string }, depth = 0): unknown {
   const { def, placement, outer } = frame;
-  if (!def || !placement || depth > MAX_DEPTH) return undefined;
-  const own = Object.hasOwn(placement.props, binding.$prop) ? placement.props[binding.$prop] : undefined;
-  const value = isBinding(own) && '$prop' in own && outer ? propIn(outer, own, depth + 1) : own;
+  if (!def || depth > MAX_DEPTH) return undefined;
+  let value: unknown = placement && Object.hasOwn(placement.props, binding.$prop) ? placement.props[binding.$prop] : undefined;
+  if (placement && outer && isBinding(value)) {
+    if ('$prop' in value) value = propIn(walk, outer, value, depth + 1);
+    else if ('$item' in value) {
+      const list = outer.def ? enclosingRepeatProp(outer.def, placement.id) : undefined;
+      const rows = list ? propIn(walk, outer, { $prop: list }, depth + 1) : undefined;
+      const row = Array.isArray(rows) ? (rows as Array<Record<string, unknown>>).find((r) => walk.itemPath?.includes(r.id as string)) : undefined;
+      value = row?.[value.$item];
+    }
+  }
   return propBindingValue(value, binding) ?? propBindingSchema(def.properties, binding)?.default;
 }
 
@@ -62,45 +73,55 @@ function chosenIn(walk: Walk, frame: Frame): InstanceNode['variants'] {
   if (!chosen || !outer) return chosen;
   return Object.fromEntries(
     Object.entries(chosen).map(([axis, v]) => {
-      const bound = isBinding(v) && '$prop' in v ? propIn(outer, v) : undefined;
+      const bound = isBinding(v) && '$prop' in v ? propIn(walk, outer, v) : undefined;
       return [axis, typeof bound === 'string' ? bound : v];
     })
   );
 }
 
+/**
+ * Where a design's block comes in the components' stylesheet, which writes each in turn by ID: between rules of one
+ * weight from two designs the later block wins at every size. Less than the step between weights.
+ */
+function blockOrder(state: ProjectState, defId: string): number {
+  const ids = Object.keys(state.components).sort((a, b) => a.localeCompare(b));
+  return ids.indexOf(defId) / (ids.length + 1) / 10;
+}
+
 /** What a placement's own changes add to one node of its design. */
 function placementLayers(walk: Walk, frame: Frame, nodeId: string): StyleLayer[] {
-  const { def, placement } = frame;
+  const { def, placement, outer } = frame;
   if (!def || !placement) return [];
-  // A part that is itself a placed component is written two classes heavier, so it beats that placement's own changes.
-  const extra = def.tree?.nodes[nodeId]?.kind === 'instance' ? 1 : 0;
+  // A placement inside a design is written in that design's block. One on a page is written after every design's, and
+  // two classes heavier on a part that is itself a placed component, so it beats that placement's own changes.
+  const within = outer?.def;
+  const base = within ? 3 + blockOrder(walk.state, within.id) : def.tree?.nodes[nodeId]?.kind === 'instance' ? 4 : 3;
   const out: StyleLayer[] = [];
   for (const [partId, styles] of Object.entries(placement.overrides ?? {})) {
     const target = partId === 'root' ? def.tree?.rootIds[0] : def.parts[partId]?.nodeId;
-    if (target === nodeId) out.push({ styles, strength: 3 + extra, wideColumns: true });
+    if (target === nodeId) out.push({ styles, strength: base, wideColumns: true });
   }
-  if (walk.itemId) {
+  const itemId = walk.itemPath?.[walk.itemPath.length - 1];
+  if (itemId) {
     for (const [partId, part] of Object.entries(def.parts)) {
-      const styles = part.nodeId === nodeId ? itemStylesOf(def, placement, partId, walk.itemId) : undefined;
-      if (styles) out.push({ styles, strength: 4 + extra, wideColumns: true });
+      const styles = part.nodeId === nodeId ? itemStylesOf(def, placement, partId, itemId) : undefined;
+      if (styles) out.push({ styles, strength: base + 1, wideColumns: true });
     }
   }
   return out;
 }
 
-/** The style rules on one element of a frame's tree, weakest first. */
+/** The style rules on one element of a frame's tree. */
 function boxLayers(walk: Walk, frame: Frame, node: GraphNode): StyleLayer[] {
   const { def, outer } = frame;
   if (!def) return [{ styles: node.styles, strength: 1 }];
-  const design = designLayers(def, node.id, chosenIn(walk, frame));
+  const order = blockOrder(walk.state, def.id);
+  const design = designLayers(def, node.id, chosenIn(walk, frame)).map((l) => ({ ...l, strength: l.strength + order }));
   const own = placementLayers(walk, frame, node.id);
   // A design's root also carries what the tree around it gives the placement: that design's rules for it, and its
-  // own placement's changes to it. Two designs' rules of one weight go by the stylesheet's order, which is by ID.
-  if (def.tree?.rootIds[0] !== node.id || !frame.placement || !outer?.def) return [...design, ...own];
-  const placed = nodeOf(outer.tree, frame.placement.id);
-  if (!placed) return [...design, ...own];
-  const around = boxLayers(walk, outer, placed);
-  return outer.def.id.localeCompare(def.id) < 0 ? [...around, ...design, ...own] : [...design, ...around, ...own];
+  // own placement's changes to it.
+  const placed = def.tree?.rootIds[0] === node.id && frame.placement && outer?.def ? nodeOf(outer.tree, frame.placement.id) : undefined;
+  return placed ? [...boxLayers(walk, outer!, placed), ...design, ...own] : [...design, ...own];
 }
 
 /** Whether the element that renders directly around a node is a grid at any of `sizes`. */
@@ -158,7 +179,7 @@ function wrapped(state: ProjectState, tree: NodeTree, node: GraphNode, depth = 0
 export function isGridChild(state: ProjectState, ref: ElementRef, scope: ResponsiveScope, look?: EditedLook): boolean {
   const tree = treeFor(state, ref.owner);
   if (!tree) return false;
-  const walk: Walk = { state, look, itemId: ref.itemPath?.[ref.itemPath.length - 1] };
+  const walk: Walk = { state, look, itemPath: ref.itemPath };
   const owner = ref.owner.kind === 'component' && Object.hasOwn(state.components, ref.owner.id) ? state.components[ref.owner.id] : undefined;
   let frame: Frame = { tree, def: owner };
   for (const id of ref.instancePath) {

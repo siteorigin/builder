@@ -255,6 +255,51 @@ describe('whether content is a grid item through designs nested in one another',
     expect(isGridChild(s.state, s.at('tile'), 'base')).toBe(true);
   });
 
+  it('gives the later design’s block the say between two designs, whatever size the earlier one’s rule is for', () => {
+    const s = nested();
+    // The outer design's stylesheet block comes after the inner's, so its rule for All sizes beats a desktop one there.
+    s.state.components['a.inner'].tree!.nodes.root.styles = { desktop: { layout: 'stack' } };
+    s.outer.tree!.nodes.nest.styles = { base: { layout: 'grid' } };
+    expect(isGridChild(s.state, s.at('tile'), 'desktop')).toBe(true);
+  });
+
+  it('weighs changes made inside designs alike, a part that is a placed component or not', () => {
+    const s = nested();
+    const top = { ...structuredClone(s.outer), id: 'b.top', componentId: 'b.top', parts: {}, tree: { rootIds: ['q'], nodes: { q: { id: 'q', kind: 'instance', definitionId: 'z.outer', props: {}, overrides: { box: { base: { layout: 'stack' } } } } } } } as unknown as ComponentDefinition;
+    s.state.components['b.top'] = top;
+    s.placed.definitionId = 'b.top';
+    s.nest.overrides = { root: { base: { layout: 'grid' } } };
+    // Both are three classes; the later design's block (z.outer after b.top) wins.
+    expect(isGridChild(s.state, { ...s.at('tile'), instancePath: ['placed', 'q'] }, 'base')).toBe(true);
+  });
+
+  it('reads the property’s default in the design edited on its own', () => {
+    const s = nested();
+    s.outer.properties = { shape: { type: 'enum', label: 'Shape', default: 'bento', options: [{ value: 'list', label: 'List' }, { value: 'bento', label: 'Bento' }] } };
+    s.nest.variants = { shape: { $prop: 'shape' } };
+    expect(isGridChild(s.state, { owner: { kind: 'component', id: 'z.outer' }, instancePath: [], nodeId: 'tile' }, 'base')).toBe(true);
+  });
+
+  it('reads a property a design takes from the selected list item', () => {
+    const s = nested();
+    const shape = { type: 'enum', label: 'Shape', default: 'list', options: [{ value: 'list', label: 'List' }, { value: 'bento', label: 'Bento' }] };
+    s.outer.properties = { shape } as ComponentDefinition['properties'];
+    s.nest.variants = { shape: { $prop: 'shape' } };
+    const top = {
+      ...structuredClone(s.outer),
+      id: 'b.top',
+      componentId: 'b.top',
+      parts: {},
+      properties: { rows: { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { kind: shape }, default: [{ id: 'one', kind: 'bento' }, { id: 'two', kind: 'list' }] } },
+      tree: { rootIds: ['wrap'], nodes: { wrap: { id: 'wrap', kind: 'element', tag: 'div', children: ['each'] }, each: { id: 'each', kind: 'repeat', list: { $prop: 'rows' }, children: ['q'] }, q: { id: 'q', kind: 'instance', definitionId: 'z.outer', props: { shape: { $item: 'kind' } } } } }
+    } as unknown as ComponentDefinition;
+    s.state.components['b.top'] = top;
+    s.placed.definitionId = 'b.top';
+    const tile = { ...s.at('tile'), instancePath: ['placed', 'q'] };
+    expect(isGridChild(s.state, { ...tile, itemPath: ['one'] }, 'base')).toBe(true);
+    expect(isGridChild(s.state, { ...tile, itemPath: ['two'] }, 'base')).toBe(false);
+  });
+
   it('reads a variant a nested placement takes from a property of the design around it', () => {
     const s = nested();
     s.outer.properties = { shape: { type: 'enum', label: 'Shape', default: 'list', options: [{ value: 'list', label: 'List' }, { value: 'bento', label: 'Bento' }] } };
