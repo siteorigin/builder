@@ -347,6 +347,14 @@ describe('posts in site search', () => {
     const post = buildSearchIndex(noBody).at(-1)!;
     expect(post.route).toBe('/blog/spring-pottery-classes/');
     expect(post.text).toBe('Spring wheel classes open for bookings: six weeks of throwing, trimming and glazing.');
+    // In a cached run, the layout's change makes the index again.
+    const searching = (s: ProjectState) => run(s, { type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, componentId: 'site.search' });
+    const cache = new GenerationCache();
+    expect(generateProject(searching(state), {}, cache).get('src/lib/siteorigin/runtime/search-index.js')).toContain('Every student leaves with a set.');
+    const warm = generateProject(searching(noBody), {}, cache);
+    expect(cache.made).toContain('search-index.js');
+    expect(warm).toEqual(generateProject(searching(noBody)));
+    expect(warm.get('src/lib/siteorigin/runtime/search-index.js')).not.toContain('Every student leaves with a set.');
   });
 
   it('leaves out a post hidden from site search, but not one hidden only from search engines, and follows a rename', () => {
