@@ -52,10 +52,12 @@ const sent = (e: JournalEntry) => e.class === 'input' && e.outcome?.ok === true;
 const looked = (e: JournalEntry) => e.class === 'observation' && e.outcome?.ok === true;
 const summary = (e: JournalEntry) => (e.outcome?.summary ?? {}) as Record<string, unknown>;
 /** The element an input went to: what the app reported reaching, else the search that found it. */
-function target(e: JournalEntry): { role?: string; name?: string } {
-  const reached = summary(e).target as { role?: string; name?: string } | undefined;
+function target(e: JournalEntry): { role?: string; name?: string; tag?: string } {
+  const reached = summary(e).target as { role?: string; name?: string; tag?: string } | undefined;
   const t = e.targets?.find((d) => d.at === 'target') ?? e.targets?.[0];
-  return { role: reached?.role ?? t?.role, name: reached?.name ?? t?.name };
+  // A key sent to whatever has the focus reports the element by its tag and name: a text field is a textbox.
+  const role = reached?.role ?? t?.role ?? (reached?.tag === 'textarea' || reached?.tag === 'input' ? 'textbox' : undefined);
+  return { role, name: reached?.name ?? t?.name, tag: reached?.tag };
 }
 const reaches = (e: JournalEntry, role: string | RegExp, name: RegExp) => {
   const t = target(e);

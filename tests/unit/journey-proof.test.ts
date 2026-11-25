@@ -15,7 +15,8 @@ const input = (op: string, args: Record<string, unknown>, role?: string, name?: 
 const click = (role: string, name: string) => input('ui.click', { target: { ref: 'e1' } }, role, name);
 const look = (op: string, args: Record<string, unknown>, summary: Record<string, unknown> = {}): Step => ({ op, class: 'observation', args, outcome: { ok: true, summary } });
 const press = (key: string, role?: string, name?: string): Step => ({ op: 'ui.press', class: 'input', args: { key }, outcome: { ok: true, summary: { dispatched: 'complete', ...(role ? { target: { surface: 'editor', role, name } } : {}) } } });
-const enter = press('Enter', 'textbox', 'Message');
+/** Enter sent to the composer that has the focus: the driver reports it by tag and name, with no role. */
+const enter: Step = { op: 'ui.press', class: 'input', args: { key: 'Enter' }, outcome: { ok: true, summary: { dispatched: 'complete', target: { surface: 'editor', name: 'Message', tag: 'textarea' } } } };
 const inPreview = (name: string) => look('wait.for', { condition: 'ui.present', role: 'link', name, scope: 'preview' }, { condition: 'ui.present', met: true });
 
 const EXPECT = { edit: 'Harbour light in every season', oldName: 'Harbour Lane Studio', newName: 'Quayside Rooms', answer: 'It says the heading.' };

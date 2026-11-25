@@ -189,8 +189,9 @@ try {
   assert.ok(site.find.matches.some((m) => m.file === 'index.html'), `the home page has the heading: ${JSON.stringify(site.find)}`);
   const named = await ok('exports.inspect', { path: exported.export.path, file: 'index.html', find: NEW_NAME });
   assert.ok(named.find.matches.length > 0, 'and the site’s new name');
-  // Closed by its own button: an untargeted Escape would go wherever the dialog has just put the focus.
-  await click(editor('button', 'Close', { region: 'Export your website' }));
+  // Escape on the dialog itself: untargeted, it would go wherever the dialog has just put the focus (its result), and the
+  // dialog's two Close buttons share their name.
+  await ok('ui.press', { key: 'Escape', target: { ref: (await find(editor('dialog', 'Export your website'))).ref } });
   await until('ui.context', { dialog: null });
 
   step('principal journey: closed and opened again, the project still holds both');
