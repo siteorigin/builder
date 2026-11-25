@@ -185,7 +185,8 @@ export function planSlotRemoval(state: ProjectState, definitionId: string, slot:
   try {
     after = applyOperations(state, operations).state;
   } catch (e) {
-    return { rows, items: 0, problem: e instanceof Error ? e.message : `The “${label}” slot can’t be removed with its content.` };
+    // Said as the engine says it, without the step of the batch it came from.
+    return { rows, items: 0, problem: e instanceof Error ? e.message.replace(/^Operation \d+ \([\w.]+\): /, '') : `The “${label}” slot can’t be removed with its content.` };
   }
   const designs = new Set([def.id, ...[...byOwner.values()].flatMap((o) => (o.owner.kind === 'component' ? [o.owner.id] : []))]);
   const hidden = hiddenElsewhere(state, after, designs, { defId: def.id, slot, label });

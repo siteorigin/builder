@@ -296,6 +296,19 @@ describe('removing a slot with what placements hold in it (#663)', () => {
     const both = planSlotRemoval(shared, c.id, c.slot)!;
     expect(both.operations).toBeUndefined();
     expect(both.problem).toMatch(/What the “Buttons” slot holds on Home \(in Section · 2 of 2\) is damaged/);
+    // Damage the planner can't see is refused as the engine refuses it: two cards holding each other leave the slot
+    // filled once the rest of its content is planned to go.
+    const looped = structuredClone(twice.state);
+    const other = twice.results[0].nodeId as string;
+    const third = run(looped, [{ type: 'node.insert', owner: c.home, parentId: c.section, slot: 'content', definitionId: c.id }]);
+    const cyc = structuredClone(third.state);
+    const nodes = cyc.pages[c.home.id].nodes;
+    (nodes[c.card] as InstanceNode).slots = { buttons: [other] };
+    (nodes[other] as InstanceNode).slots = { buttons: [c.card] };
+    (nodes[third.results[0].nodeId as string] as InstanceNode).slots = { buttons: [words] };
+    const refused = planSlotRemoval(cyc, c.id, c.slot)!;
+    expect(refused.operations).toBeUndefined();
+    expect(refused.problem).toMatch(/^The "Buttons" slot has content in 2 places \(Home\)\. Move or remove it first\./);
   });
 
   it('removes a slot no placement fills on its own, and plans nothing for a slot that is not there', () => {
