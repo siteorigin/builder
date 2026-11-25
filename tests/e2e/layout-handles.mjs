@@ -57,6 +57,21 @@ const hero = frame.locator('section', { has: frame.locator('h1', { hasText: 'Cal
 const actions = hero.locator('a', { hasText: 'Start a project' }).locator('xpath=..');
 const container = hero.locator(':scope > div').first();
 const gapOf = (loc) => loc.evaluate((el) => Number.parseFloat(getComputedStyle(el).columnGap));
+const rowGapOf = (loc) => loc.evaluate((el) => Number.parseFloat(getComputedStyle(el).rowGap));
+/** Where a page box is on screen, in the window: the frame is drawn scaled to fit the canvas. */
+const onScreen = async (loc) => {
+  const r = await loc.evaluate((el) => {
+    const b = el.getBoundingClientRect();
+    return { left: b.left, right: b.right, top: b.top, bottom: b.bottom };
+  });
+  const f = await win.locator('.frame-box iframe').boundingBox();
+  const z = await zoom();
+  return { left: f.x + r.left * z, right: f.x + r.right * z, top: f.y + r.top * z, bottom: f.y + r.bottom * z };
+};
+const centre = async (testId) => {
+  const b = await win.getByTestId(testId).boundingBox();
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+};
 const edges = (loc) =>
   loc.evaluate((el) => {
     const r = el.getBoundingClientRect();
@@ -74,11 +89,17 @@ try {
   const originalOverrides = heroNode(before).overrides ?? {};
   const startGap = await gapOf(actions);
   assert.equal(startGap, 12, 'the buttons start a Small gap apart');
+  // The handle sits in the gap between the two buttons, level with them.
+  const [first, second] = [await onScreen(actions.locator('a').first()), await onScreen(actions.locator('a').nth(1))];
+  const g = await centre('layout-gap-x-0');
+  assert.ok(g.x >= first.right - 1 && g.x <= second.left + 1 && g.y > first.top && g.y < first.bottom, `the gap handle is between the buttons: ${JSON.stringify([first, second, g])}`);
 
   step('drag the gap toward 25px: it snaps to Large (24px) as it moves, and nothing is saved yet');
   await dragBy('layout-gap-x-0', 25 - startGap);
   await eventually(async () => assert.match(await hud.innerText(), /Gap\s*Large · 24px/));
   await eventually(async () => assert.equal(await gapOf(actions), 24, 'the page shows the snapped gap while dragging'));
+  // Gap sets both gaps: the space between wrapped lines of buttons shows the change too.
+  assert.equal(await rowGapOf(actions), 24, 'and the row gap with it');
   const held = await snap();
   assert.equal(held.revision, before.revision, 'nothing is saved mid-drag');
   await win.screenshot({ path: join(OUT, 'gap-drag.png') });
@@ -101,8 +122,13 @@ try {
   const startBox = await edges(container);
   assert.ok(startBox.width > 800, `the container starts wide: ${JSON.stringify(startBox)}`);
 
+  // Each handle sits on its edge of the box.
+  const contBox = await onScreen(container);
+  assert.ok(Math.abs((await centre('layout-width-left')).x - contBox.left) < 2 && Math.abs((await centre('layout-width-right')).x - contBox.right) < 2, 'the handles sit on the box\u2019s edges');
+
   step('Escape mid-drag puts the width back and saves nothing');
-  await dragBy('layout-width-right', -100);
+  // The left edge, dragged inward (to the right), narrows the box from both sides.
+  await dragBy('layout-width-left', 100);
   await eventually(async () => assert.ok((await edges(container)).width < startBox.width - 150, 'the page shows the narrower box while dragging'));
   await win.keyboard.press('Escape');
   await eventually(async () => assert.deepEqual(await edges(container), startBox, 'the width is back where it was'));
@@ -146,6 +172,10 @@ try {
   const tracks = () => grid.evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').map((v) => Number.parseFloat(v)));
   const [a, b] = await tracks();
   assert.ok(Math.abs(a - b) < 1, `the columns start equal: ${[a, b]}`);
+  // On the gutter between the columns, near the grid's top.
+  const [c1, c2] = [await onScreen(frame.locator(`[data-so-node="${gridId}"] > *`).first()), await onScreen(frame.locator(`[data-so-node="${gridId}"] > *`).nth(1))];
+  const d0 = await centre('layout-split-0');
+  assert.ok(d0.x > c1.right - 1 && d0.x < c2.left + 1 && d0.y >= c1.top && d0.y < (c1.top + c1.bottom) / 2, `the divider sits on the gutter: ${JSON.stringify([c1, c2, d0])}`);
   const beforeSplit = await snap();
 
   step('drag the divider a third of the way across: the columns preview at 1:2, and release saves 1fr 2fr');

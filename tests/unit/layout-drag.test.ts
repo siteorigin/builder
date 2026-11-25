@@ -8,6 +8,7 @@ import {
   RATIO_STOPS,
   WIDE_MEDIA,
   columnBoxes,
+  freeSpot,
   gapDecls,
   gutters,
   planGap,
@@ -108,6 +109,38 @@ describe('gutters: where gap handles sit', () => {
     // The first column is on the right: the first gutter is the one nearer the right.
     expect(gutters(grid, { padding: pad, border: NONE }, true).filter((x) => x.axis === 'x').map((x) => x.rect.x)).toEqual([652, 324]);
     expect(columnBoxes(grid, { padding: pad, border: NONE }, true)!.map((c) => c.x)).toEqual([676, 348, 20]);
+  });
+
+  it('numbers a row’s gutters in the order the items show, whatever order the page holds them in', () => {
+    const row = layout({ kind: 'flex', items: [{ x: 120, y: 0, width: 100, height: 40 }, { x: 0, y: 0, width: 100, height: 40 }, { x: 240, y: 0, width: 100, height: 40 }] });
+    expect(gutters(row, EDGES, false).map((g) => [g.index, g.rect.x])).toEqual([
+      [0, 100],
+      [1, 220]
+    ]);
+  });
+
+  it('spans only where two wrapped neighbours overlap across their line, and the whole way between two on one line', () => {
+    const items = [{ x: 0, y: 0, width: 100, height: 40 }, { x: 120, y: 20, width: 100, height: 40 }];
+    expect(gutters(layout({ kind: 'flex', wrap: true, items }), EDGES, false)[0].rect).toEqual({ x: 100, y: 20, width: 20, height: 20 });
+    // Aligned to opposite ends of one line, so they do not overlap across it: still neighbours.
+    const apart = [{ x: 0, y: 0, width: 100, height: 20 }, { x: 120, y: 80, width: 100, height: 20 }];
+    expect(gutters(layout({ kind: 'flex', items: apart }), EDGES, false)[0].rect).toEqual({ x: 100, y: 0, width: 20, height: 100 });
+    expect(gutters(layout({ kind: 'flex', wrap: true, items: apart }), EDGES, false)).toEqual([]);
+  });
+
+  it('runs a packed grid’s gutters only across its tracks, not its spare room', () => {
+    const g = gutters(layout({ kind: 'grid', columnGap: 24, rowGap: 16, cols: [200, 200], rows: [40, 40], box: { x: 0, y: 0, width: 1000, height: 300 } }), EDGES, false);
+    expect(g.map((x) => [x.axis, x.rect])).toEqual([
+      ['x', { x: 200, y: 0, width: 24, height: 96 }],
+      ['y', { x: 0, y: 40, width: 424, height: 16 }]
+    ]);
+  });
+
+  it('places none for a gap the page could not size', () => {
+    const items = [{ x: 0, y: 0, width: 100, height: 40 }, { x: 120, y: 0, width: 100, height: 40 }];
+    expect(gutters(layout({ kind: 'flex', columnGap: null, items }), EDGES, false)).toEqual([]);
+    const g = gutters(layout({ kind: 'grid', columnGap: null, rowGap: 16, cols: [488, 488], rows: [40, 40] }), EDGES, false);
+    expect(g.map((x) => x.axis)).toEqual(['y']);
   });
 
   it('places no column gutters where alignment spreads a grid’s spare room, as their places are not certain', () => {
@@ -217,6 +250,12 @@ describe('max width handles', () => {
     expect(widthDragValue(-50, WIDTHS, true, reach)).toEqual({ value: '0', px: 0 });
   });
 
+  it('never take a style wider than the container short of its edge, where the box would not show it', () => {
+    // An uncapped box filling 1000px, 6px in from each side: Content width (1200px) would leave it 1000px wide.
+    expect(widthDragValue(988, WIDTHS, false, { most: 1000, max: null })).toEqual({ value: '992px', px: 992 });
+    expect(widthDragValue(1000, WIDTHS, false, { most: 1000, max: 900 })).toMatchObject({ value: { token: 'container.content' } });
+  });
+
   it('leave a box that already fills its container as it is when dragged out past it', () => {
     expect(widthDragValue(1100, WIDTHS, false, { most: 1000, max: 1200 })).toMatchObject({ keep: true });
     expect(widthDragValue(1100, WIDTHS, false, { most: 1000, max: null })).toMatchObject({ keep: true });
@@ -246,10 +285,11 @@ function withSection(overrides?: Record<string, unknown>) {
   const n = s.pages[s.site.homePageId].nodes[id] as InstanceNode;
   return { s, n, t: spacingTarget(s, partRef(s, n, 'container'))! };
 }
-const grid = (cols: number[]) => layout({ kind: 'grid', cols, rows: [80], columnGap: 24 });
+/** A grid of these columns, `gap` apart, as wide as they make it. */
+const grid = (cols: number[], gap = 24) => layout({ kind: 'grid', cols, rows: [80], columnGap: gap, box: { x: 0, y: 0, width: cols.reduce((a, b) => a + b, 0) + gap * (cols.length - 1), height: 80 } });
 
 describe('planSplit: column dividers', () => {
-  it('reads the columns a grid shows from its column count or its column sizes, through its design', () => {
+  it('reads the columns a grid shows from its column count or its column sizes', () => {
     const { s, t } = withSection({ layout: 'grid', columns: 2 });
     expect(shownShares(s, t, 'desktop')).toEqual([1, 1]);
     const sized = withSection({ layout: 'grid', columns: 2, gridTemplate: '1fr 2fr' });
@@ -260,37 +300,63 @@ describe('planSplit: column dividers', () => {
     expect(shownShares(fixed.s, fixed.t, 'desktop')).toBeNull();
   });
 
-  it('shows dividers on a two-column Section container at tablet and desktop, writing Column sizes', () => {
-    const { s, t } = withSection({ layout: 'grid', columns: 2 });
-    expect(planSplit(s, t, 'base', 'desktop', grid([488, 488]))).toEqual({ property: 'gridTemplate', label: 'Column sizes', shares: [1, 1] });
-    expect(planSplit(s, t, 'tablet', 'tablet', grid([300, 300]))).toMatchObject({ shares: [1, 1] });
-    // Phones keep their own layout; another size than the canvas shows edits nothing here.
-    expect(planSplit(s, t, 'base', 'phone', grid([300, 300]))).toBeNull();
-    expect(planSplit(s, t, 'phone', 'phone', grid([300, 300]))).toBeNull();
-    expect(planSplit(s, t, 'desktop', 'tablet', grid([300, 300]))).toBeNull();
+  it('reads them through the design, where the placement sets none of its own', () => {
+    const { s, n, t } = withSection();
+    const designed = structuredClone(s);
+    const def = designed.components[n.definitionId];
+    const inner = def.tree!.nodes[def.parts.container.nodeId];
+    inner.styles = { ...inner.styles, base: { ...inner.styles?.base, layout: 'grid', gridTemplate: '1fr 3fr' } };
+    expect(t.styles?.base?.gridTemplate).toBeUndefined();
+    expect(shownShares(designed, t, 'desktop')).toEqual([1, 3]);
+    expect(planSplit(designed, t, 'base', 'desktop', grid([244, 732]), EDGES)).toMatchObject({ shares: [1, 3] });
   });
 
-  it('shows none where Column sizes is not offered, or the page does not split the columns as they say', () => {
+  it('shows dividers on a two-column Section container at tablet and desktop, writing Column sizes', () => {
+    const { s, t } = withSection({ layout: 'grid', columns: 2 });
+    expect(planSplit(s, t, 'base', 'desktop', grid([488, 488]), EDGES)).toEqual({ property: 'gridTemplate', label: 'Column sizes', shares: [1, 1] });
+    expect(planSplit(s, t, 'tablet', 'tablet', grid([300, 300]), EDGES)).toMatchObject({ shares: [1, 1] });
+    // Under All sizes, phones keep their own layout; another size than the canvas shows edits nothing here.
+    expect(planSplit(s, t, 'base', 'phone', grid([300, 300]), EDGES)).toBeNull();
+    expect(planSplit(s, t, 'desktop', 'tablet', grid([300, 300]), EDGES)).toBeNull();
+  });
+
+  it('shows dividers for Phone’s own column sizes while Phone is edited and shown', () => {
+    const { s, n } = withSection({ layout: 'grid' });
+    const phone = applyOperations(s, [{ type: 'node.setStyle', owner: homeOwner(s), nodeId: n.id, partId: 'container', scope: 'phone', property: 'gridTemplate', value: '1fr 2fr' }]).state;
+    const t = spacingTarget(phone, partRef(phone, n, 'container'))!;
+    expect(planSplit(phone, t, 'phone', 'phone', grid([100, 200]), EDGES)).toMatchObject({ shares: [1, 2] });
+    expect(planSplit(phone, t, 'base', 'phone', grid([100, 200]), EDGES)).toBeNull();
+    expect(splitMedia('phone')).toBe('(max-width: 767.98px)');
+  });
+
+  it('shows none where Column sizes is not offered, or the page does not show the columns as wide as their shares make them', () => {
     const s = fresh();
     const features = placed(s, 'features.grid');
     const cards = spacingTarget(s, partRef(s, features, 'grid'))!;
     expect(cards.offered).toContain('columns');
     expect(cards.offered).not.toContain('gridTemplate');
-    expect(planSplit(s, cards, 'base', 'desktop', grid([300, 300, 300]))).toBeNull();
+    expect(planSplit(s, cards, 'base', 'desktop', grid([300, 300, 300]), EDGES)).toBeNull();
     const { s: s2, t } = withSection({ layout: 'grid', columns: 2 });
-    expect(planSplit(s2, t, 'base', 'desktop', grid([300, 300, 300]))).toBeNull();
-    expect(planSplit(s2, t, 'base', 'desktop', grid([200, 400]))).toBeNull();
-    expect(planSplit(s2, t, 'base', 'desktop', layout({ cols: [300, 300] }))).toBeNull();
+    expect(planSplit(s2, t, 'base', 'desktop', grid([300, 300, 300]), EDGES)).toBeNull();
+    expect(planSplit(s2, t, 'base', 'desktop', grid([200, 400]), EDGES)).toBeNull();
+    expect(planSplit(s2, t, 'base', 'desktop', layout({ cols: [300, 300] }), EDGES)).toBeNull();
+    // Split evenly, but 200px each where 1fr 1fr would make them 500px: something else sizes them (Custom CSS in the design).
+    expect(planSplit(s2, t, 'base', 'desktop', layout({ kind: 'grid', cols: [200, 200], rows: [80], columnGap: 0, box: { x: 0, y: 0, width: 1000, height: 80 } }), EDGES)).toBeNull();
+    // A gap the page could not say the size of leaves the columns' places unknown.
+    expect(planSplit(s2, t, 'base', 'desktop', { ...grid([488, 488]), columnGap: null }, EDGES)).toBeNull();
+    // Inside the grid's padding.
+    const pad = { top: 0, right: 20, bottom: 0, left: 20 };
+    expect(planSplit(s2, t, 'base', 'desktop', { ...grid([488, 488]), box: { x: 0, y: 0, width: 1040, height: 80 } }, { padding: pad, border: NONE })).not.toBeNull();
   });
 
   it('shows none under All sizes where the size shown has column sizes of its own, or Custom CSS sets them', () => {
     const { s, t } = withSection({ layout: 'grid', columns: 2 });
     const own = { ...t, styles: { ...t.styles, desktop: { gridTemplate: '1fr 1fr' } } };
-    expect(planSplit(s, own, 'base', 'desktop', grid([488, 488]))).toBeNull();
-    expect(planSplit(s, own, 'desktop', 'desktop', grid([488, 488]))).toMatchObject({ shares: [1, 1] });
+    expect(planSplit(s, own, 'base', 'desktop', grid([488, 488]), EDGES)).toBeNull();
+    expect(planSplit(s, own, 'desktop', 'desktop', grid([488, 488]), EDGES)).toMatchObject({ shares: [1, 1] });
     // A column count of the size shown gives way to column sizes for All sizes, as the stylesheet writes them.
-    expect(planSplit(s, { ...t, styles: { ...t.styles, desktop: { columns: 2 } } }, 'base', 'desktop', grid([488, 488]))).not.toBeNull();
-    expect(planSplit(s, { ...t, styles: { ...t.styles, base: { ...t.styles?.base, customCss: 'grid-template-columns: 1fr 1fr' } } }, 'base', 'desktop', grid([488, 488]))).toBeNull();
+    expect(planSplit(s, { ...t, styles: { ...t.styles, desktop: { columns: 2 } } }, 'base', 'desktop', grid([488, 488]), EDGES)).not.toBeNull();
+    expect(planSplit(s, { ...t, styles: { ...t.styles, base: { ...t.styles?.base, customCss: 'grid-template-columns: 1fr 1fr' } } }, 'base', 'desktop', grid([488, 488]), EDGES)).toBeNull();
   });
 
   it('saves one valid edit for the Section container that the page then shows', () => {
@@ -314,21 +380,34 @@ describe('splitDragValue: where a divider gets to', () => {
     expect(RATIO_STOPS).toHaveLength(9);
   });
 
+  it('puts the columns back as they were when the divider comes back to where it started', () => {
+    // 7fr 9fr 4fr: the first divider starts at 43.75% of its pair, between the 40% and 50% stops.
+    expect(splitDragValue([7, 9, 4], 0, 350, 450, 0, false, false)?.value).toBe('7fr 9fr 4fr');
+    expect(splitDragValue([7, 9, 4], 0, 350, 450, 10, false, false)?.value).toBe('7fr 9fr 4fr');
+    expect(splitDragValue([7, 9, 4], 0, 350, 450, -30, false, false)?.value).toBe('6.4fr 9.6fr 4fr');
+    expect(splitDragValue([1, 1], 0, 500, 500, 0.3, true, false)?.value).toBe('1fr 1fr');
+  });
+
   it('follows the pointer in hundredths with Alt, and never takes a column below its least share', () => {
-    expect(splitDragValue([1, 1], 0, 500, 500, -130, true, false)?.value).toBe('1fr 1.7fr');
+    expect(splitDragValue([1, 1], 0, 500, 500, -110, true, false)?.value).toBe('1fr 1.56fr');
     expect(splitDragValue([1, 1], 0, 500, 500, 2000, true, false)?.value).toBe('19fr 1fr');
   });
 
   it('moves the other way on a right-to-left page, where the first column is on the right', () => {
     expect(splitDragValue([1, 1], 0, 500, 500, 167, false, true)?.value).toBe('1fr 2fr');
+    expect(splitDragValue([1, 1, 2], 1, 250, 500, -125, false, true)?.value).toBe('1fr 1.5fr 1.5fr');
   });
 
-  it('keeps the pair’s share and the other columns when there are more than two', () => {
+  it('keeps the pair’s share, its ratio and the other columns when there are more than two', () => {
     // The first divider of 1fr 1fr 2fr, a quarter of the way across its pair: 1:3.
     expect(splitDragValue([1, 1, 2], 0, 250, 250, -125, false, false)).toEqual({ value: '0.5fr 1.5fr 2fr', shares: [0.5, 1.5, 2] });
-    expect(splitDragValue([1, 1, 2], 1, 250, 500, 0, false, false)?.value).toBe('1fr 1fr 2fr');
+    expect(splitDragValue([1, 1, 2], 0, 250, 250, -250 / 3, false, false)?.value).toBe('0.6667fr 1.3333fr 2fr');
+    // The second divider, from a third of its pair to half.
+    expect(splitDragValue([1, 1, 2], 1, 250, 500, 125, false, false)?.value).toBe('1fr 1.5fr 1.5fr');
+    // Small shares keep their total and the ratio exactly.
+    expect(splitDragValue([0.125, 0.125, 0.75], 0, 125, 125, -62.5, false, false)?.value).toBe('0.0625fr 0.1875fr 0.75fr');
     // Two columns that do not fill the grid keep their total.
-    expect(splitDragValue([0.25, 0.25], 0, 100, 100, -50, false, false)?.value).toBe('0.13fr 0.37fr');
+    expect(splitDragValue([0.25, 0.25], 0, 100, 100, -50, false, false)?.value).toBe('0.125fr 0.375fr');
   });
 
   it('counts returning to where a drag began as no change', () => {
@@ -346,6 +425,28 @@ describe('splitDragValue: where a divider gets to', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Keeping handles apart
+// ---------------------------------------------------------------------------
+
+describe('freeSpot: handles never cover each other', () => {
+  it('takes the place it prefers when nothing is there', () => {
+    expect(freeSpot([], { x: 10, y: 20, axis: 'x' }, { along: 'y', from: 0, to: 100 })).toEqual({ x: 10, y: 20, axis: 'x' });
+  });
+
+  it('slides a divider down its gutter, clear of the top padding’s handle on the same spot', () => {
+    // Two columns with equal side padding: the gutter's middle is the box's, where the top padding handle sits.
+    const padding = { x: 500, y: 100, axis: 'y' as const };
+    expect(freeSpot([padding], { x: 500, y: 112, axis: 'x' }, { along: 'y', from: 100, to: 180 })).toEqual({ x: 500, y: 120, axis: 'x' });
+  });
+
+  it('gives up when the whole stretch is taken, and keeps within it', () => {
+    expect(freeSpot([{ x: 500, y: 100, axis: 'y' }], { x: 500, y: 104, axis: 'x' }, { along: 'y', from: 100, to: 110 })).toBeNull();
+    expect(freeSpot([], { x: 10, y: 500, axis: 'x' }, { along: 'y', from: 0, to: 100 })).toEqual({ x: 10, y: 100, axis: 'x' });
+    expect(freeSpot([], { x: 10, y: 5, axis: 'y' }, { along: 'x', from: 40, to: 60 })).toEqual({ x: 40, y: 5, axis: 'y' });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // What the page reports
 // ---------------------------------------------------------------------------
 
@@ -359,11 +460,16 @@ describe('layoutOf: the selected box’s layout from the page', () => {
     rows: [100],
     packedCols: true,
     packedRows: true,
-    width: { centered: true, max: 800, content: false, basis: 960 }
+    width: { centered: true, max: 800, content: true, basis: 960 }
   };
 
   it('reads a grid’s report', () => {
     expect(layoutOf(report)).toEqual({ ...report, kind: 'grid', column: false, wrap: false, spread: false, items: [] });
+    expect(layoutOf({ ...report, width: { ...report.width, content: false } })?.width?.content).toBe(false);
+  });
+
+  it('keeps a gap the page could not size as unknown', () => {
+    expect(layoutOf({ ...report, rowGap: null })).toMatchObject({ rowGap: null, columnGap: 24 });
   });
 
   it('drops a malformed track list whole, and a malformed report altogether', () => {
@@ -372,7 +478,17 @@ describe('layoutOf: the selected box’s layout from the page', () => {
     expect(layoutOf({ ...report, width: { centered: true, max: -1, basis: 960 } })?.width).toBeNull();
     expect(layoutOf({ ...report, kind: 'table' })).toBeNull();
     expect(layoutOf({ ...report, rowGap: Number.NaN })).toBeNull();
+    expect(layoutOf({ ...report, rowGap: undefined })).toBeNull();
     expect(layoutOf(null)).toBeNull();
+  });
+
+  it('drops a list with holes in it', () => {
+    const sparse: unknown[] = new Array(2);
+    sparse[0] = 138;
+    expect(layoutOf({ ...report, cols: sparse })?.cols).toEqual([]);
+    const items: unknown[] = new Array(2);
+    items[0] = { x: 0, y: 0, width: 10, height: 10 };
+    expect(layoutOf({ ...report, kind: 'flex', items })?.items).toEqual([]);
   });
 
   it('keeps a stack’s items, and comes with the spacing report (null when the page sends none)', () => {
@@ -393,8 +509,12 @@ describe('the scales a layout drag snaps to', () => {
     expect(groupSignature(s, 'container')).not.toBe(groupSignature(s, 'space'));
   });
 
-  it('writes a scope the edit can carry', () => {
+  it('writes the size being edited', () => {
     const { t } = withSection();
-    for (const scope of ['base', 'tablet', 'desktop'] as ResponsiveScope[]) expect(validateOperation(spacingOp(t, scope, 'maxWidth', { token: 'container.reading' })).ok).toBe(true);
+    for (const scope of ['base', 'tablet', 'desktop'] as ResponsiveScope[]) {
+      const op = spacingOp(t, scope, 'maxWidth', { token: 'container.reading' });
+      expect(validateOperation(op).ok).toBe(true);
+      expect(op).toMatchObject({ scope, partId: 'container', property: 'maxWidth' });
+    }
   });
 });

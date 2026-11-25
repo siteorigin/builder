@@ -26,16 +26,36 @@ import {
   type SpacingHandle,
   type SpacingTarget
 } from '../lib/spacing-drag';
-import { columnBoxes, gapDecls, gutters, planGap, planSplit, planWidth, sameSplit, splitDecls, splitDragValue, splitMedia, widthDecls, widthDragValue, widthReach, type SplitPlan } from '../lib/layout-drag';
+import {
+  columnBoxes,
+  contentBox,
+  freeSpot,
+  gapDecls,
+  gutters,
+  planGap,
+  planSplit,
+  planWidth,
+  sameSplit,
+  splitDecls,
+  splitDragValue,
+  splitMedia,
+  widthDecls,
+  widthDragValue,
+  widthReach,
+  type Spot,
+  type SplitPlan
+} from '../lib/layout-drag';
 
 /** Screen pixels a press must travel before it is a drag rather than a click. */
 const DRAG_START = 3;
 const altName = api.platform === 'darwin' ? 'Option' : 'Alt';
 
-/** Where a measured scale is taken: spacing styles on the page, gaps in the box, widths in its container. */
-type Scale = 'space' | 'gap' | 'width';
-const SCALE_GROUP: Record<Scale, TokenGroup> = { space: 'space', gap: 'space', width: 'container' };
-const SCALE_BASIS: Record<Scale, 'page' | 'box' | 'parent'> = { space: 'page', gap: 'box', width: 'parent' };
+/** Where a measured scale is taken: spacing styles on the page, a column gap against the box's width and a row gap
+ *  against its height (as percentages of each are), widths in its container. */
+type Scale = 'space' | 'gapX' | 'gapY' | 'width';
+type Basis = 'page' | 'box' | 'boxHeight' | 'parent';
+const SCALE_GROUP: Record<Scale, TokenGroup> = { space: 'space', gapX: 'space', gapY: 'space', width: 'container' };
+const SCALE_BASIS: Record<Scale, Basis> = { space: 'page', gapX: 'box', gapY: 'boxHeight', width: 'parent' };
 
 type Rect = { left: number; top: number; width: number; height: number };
 
@@ -107,7 +127,7 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
   spacing: FrameSpacing;
   zoom: number;
   post: (type: string, payload?: unknown) => void;
-  measureSpace: (vars: string[], desc: BridgeDesc, basis: 'page' | 'box' | 'parent') => Promise<Array<number | null> | null>;
+  measureSpace: (vars: string[], desc: BridgeDesc, basis: Basis) => Promise<Array<number | null> | null>;
   onDragging: (on: boolean) => void;
   focusCanvas: () => void;
 }) {
@@ -116,13 +136,21 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
   const [hot, setHot] = useState<string | null>(null);
   const [live, setLive] = useState<{ id: string; text: string } | null>(null);
   const drag = useRef<Drag | null>(null);
-  /** Each scale as the page last measured it for this box, with the site styles it was measured for. */
+  /** Each scale as the page last measured it for this box, with what it was measured for. */
   const known = useRef<Partial<Record<Scale, { sig: string; stops: SpaceStop[] }>>>({});
-  /** The last scale measured, while the site styles it is made of are still what it was measured for. */
-  const current = (scale: Scale): SpaceStop[] | null => {
+  /** What a scale is measured for: the site styles it is made of, and the width a percentage of them is taken of. */
+  const signature = (scale: Scale): string | null => {
     const st = getState().snapshot?.state;
+    if (!st) return null;
+    const layout = spacing.layout;
+    const inner = layout && contentBox(layout, spacing);
+    const basis = scale === 'gapX' ? inner?.width : scale === 'gapY' ? inner?.height : scale === 'width' ? layout?.width?.basis : 0;
+    return `${groupSignature(st, SCALE_GROUP[scale])}|${Math.round(basis ?? -1)}`;
+  };
+  /** The last scale measured, while what it was measured for still holds. */
+  const current = (scale: Scale): SpaceStop[] | null => {
     const k = known.current[scale];
-    return st && k?.sig === groupSignature(st, SCALE_GROUP[scale]) ? k.stops : null;
+    return k && k.sig === signature(scale) ? k.stops : null;
   };
   // The inspector's choice of one card or every card changes what the handles write.
   useSyncExternalStore(subscribeReach, reachVersion);
@@ -136,7 +164,7 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     const st = getState().snapshot?.state;
     const group = SCALE_GROUP[scale];
     const tokens = st ? groupTokens(st, group).slice(0, 500) : [];
-    const sig = st ? groupSignature(st, group) : '';
+    const sig = signature(scale) ?? '';
     return measureSpace(
       tokens.map((x) => x.cssVar),
       desc,
@@ -206,78 +234,32 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     const onScreen = (r: FrameRect): Rect => ({ left: sx(r.x), top: sy(r.y), width: r.width * z, height: r.height * z });
     const edges = { padding: pd, border: bd };
     const all = gutters(layout, edges, rtl);
+    // Each layout handle takes the nearest place along its gutter or edge that leaves every handle already drawn
+    // reachable: padding and margin first, then dividers, gaps and widths. One with no room left is not drawn.
+    const placed: Spot[] = out.map((g) => ({ ...g.at, axis: g.axis }));
+    const put = (grip: Omit<Grip, 'at'>, prefer: { x: number; y: number }, slide: { along: 'x' | 'y'; from: number; to: number }) => {
+      const at = freeSpot(placed, { ...prefer, axis: grip.axis }, slide);
+      if (!at) return;
+      placed.push(at);
+      out.push({ ...grip, at: { x: at.x, y: at.y } });
+    };
     // A divider being dragged keeps its columns while its own preview resizes them (the page no longer shows the split
     // they say), so it is drawn where its gutter has moved to.
-    const split = planSplit(state, t, scope, shown, layout) ?? drag.current?.grip.split ?? null;
-    for (const axis of ['x', 'y'] as const) {
-      const plan = planGap(axis, t, scope, shown);
-      const mine = all.filter((g) => g.axis === axis);
-      if (!plan || !mine.length) continue;
-      const start = axis === 'x' ? layout.columnGap : layout.rowGap;
-      const bands = mine.map((g) => onScreen(g.rect));
-      for (const g of mine) {
-        const r = onScreen(g.rect);
-        // In a grid's column gutter the divider sits at the top: the gap handle keeps clear of it, below.
-        const clearOf = split && axis === 'x' ? Math.max(r.top + r.height / 2, r.top + 26) : null;
-        if (clearOf !== null && clearOf > r.top + r.height) continue;
-        out.push({
-          id: `layout-gap-${axis}-${g.index}`,
-          kind: 'gap',
-          label: plan.label,
-          property: plan.property,
-          axis,
-          at: { x: r.left + r.width / 2, y: clearOf ?? r.top + r.height / 2 },
-          bands,
-          scale: 'gap',
-          start,
-          reach: (travel, zm, stops, exact) => dragValue(draggedSize(start, travel, zm, 1), stops, exact),
-          decls: (v) => gapDecls(plan, v),
-          media: previewMedia(scope),
-          unchanged: stored(plan.property),
-          text: dragLabel
-        });
-      }
-    }
-    const width = planWidth(t, scope, shown, layout);
-    const wr = width && widthReach(layout, edges);
-    if (width && wr) {
-      const y = box.top + Math.min(box.height / 4, 40);
-      for (const side of ['left', 'right'] as const) {
-        const grow = side === 'right' ? 1 : -1;
-        out.push({
-          id: `layout-width-${side}`,
-          kind: 'width',
-          label: width.label,
-          property: width.property,
-          axis: 'x',
-          at: { x: side === 'left' ? box.left : box.left + box.width, y },
-          bands: [],
-          scale: 'width',
-          start: wr.start,
-          // Centred: both edges move, so the width changes twice as far as the pointer goes.
-          reach: (travel, zm, stops, exact) => widthDragValue(draggedSize(wr.start, travel * 2, zm, grow), stops, exact, wr),
-          decls: widthDecls,
-          media: previewMedia(scope),
-          unchanged: stored(width.property),
-          text: dragLabel
-        });
-      }
-    }
+    const split = planSplit(state, t, scope, shown, layout, edges) ?? drag.current?.grip.split ?? null;
     const cols = split && columnBoxes(layout, edges, rtl);
     if (split && cols) {
-      all
-        .filter((g) => g.axis === 'x')
-        .forEach((g) => {
-          const i = g.index;
-          const r = onScreen(g.rect);
-          const [a, b] = [layout.cols[i], layout.cols[i + 1]];
-          out.push({
+      for (const g of all.filter((x) => x.axis === 'x')) {
+        const i = g.index;
+        const r = onScreen(g.rect);
+        const [a, b] = [layout.cols[i], layout.cols[i + 1]];
+        // Near the top of its gutter, below the top padding's handle where that is in the way.
+        put(
+          {
             id: `layout-split-${i}`,
             kind: 'split',
             label: split.label,
             property: split.property,
             axis: 'x',
-            at: { x: r.left + r.width / 2, y: r.top },
             bands: [onScreen(cols[i]), onScreen(cols[i + 1])],
             scale: null,
             start: 0,
@@ -290,8 +272,67 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
             unchanged: (v) => sameSplit(gridTemplateShares(v), split.shares),
             text: (v) => String(v.value),
             split
-          });
-        });
+          },
+          { x: r.left + r.width / 2, y: r.top + 12 },
+          { along: 'y', from: r.top, to: r.top + r.height }
+        );
+      }
+    }
+    for (const axis of ['x', 'y'] as const) {
+      const plan = planGap(axis, t, scope, shown);
+      const start = axis === 'x' ? layout.columnGap : layout.rowGap;
+      const mine = all.filter((g) => g.axis === axis);
+      if (!plan || start === null || !mine.length) continue;
+      const bands = mine.map((g) => onScreen(g.rect));
+      for (const g of mine) {
+        const r = onScreen(g.rect);
+        put(
+          {
+            id: `layout-gap-${axis}-${g.index}`,
+            kind: 'gap',
+            label: plan.label,
+            property: plan.property,
+            axis,
+            bands,
+            scale: axis === 'x' ? 'gapX' : 'gapY',
+            start,
+            reach: (travel, zm, stops, exact) => dragValue(draggedSize(start, travel, zm, 1), stops, exact),
+            decls: (v) => gapDecls(plan, v),
+            media: previewMedia(scope),
+            unchanged: stored(plan.property),
+            text: dragLabel
+          },
+          { x: r.left + r.width / 2, y: r.top + r.height / 2 },
+          axis === 'x' ? { along: 'y', from: r.top, to: r.top + r.height } : { along: 'x', from: r.left, to: r.left + r.width }
+        );
+      }
+    }
+    const width = planWidth(t, scope, shown, layout);
+    const wr = width && widthReach(layout, edges);
+    if (width && wr) {
+      for (const side of ['left', 'right'] as const) {
+        const grow = side === 'right' ? 1 : -1;
+        put(
+          {
+            id: `layout-width-${side}`,
+            kind: 'width',
+            label: width.label,
+            property: width.property,
+            axis: 'x',
+            bands: [],
+            scale: 'width',
+            start: wr.start,
+            // Centred: both edges move, so the width changes twice as far as the pointer goes.
+            reach: (travel, zm, stops, exact) => widthDragValue(draggedSize(wr.start, travel * 2, zm, grow), stops, exact, wr),
+            decls: widthDecls,
+            media: previewMedia(scope),
+            unchanged: stored(width.property),
+            text: dragLabel
+          },
+          { x: side === 'left' ? box.left : box.left + box.width, y: box.top + Math.min(box.height / 4, 40) },
+          { along: 'y', from: box.top, to: box.top + box.height }
+        );
+      }
     }
     return out;
   };
@@ -316,7 +357,12 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     // Snapped values wait for the page to say how large its site styles are.
     if (!d.moved || (!d.stops && !d.at.exact)) return false;
     const v = d.grip.reach(travel, d.zoom, d.stops ?? [], d.at.exact);
-    if (!v) return false;
+    if (!v) {
+      // Nowhere this drag can go (a column with no share left): the page goes back, and a release saves nothing.
+      if (d.value && !d.value.keep) post('spacingPreview', { drag: d.id, clear: true });
+      d.value = null;
+      return false;
+    }
     // Preview shows the page as saved: a drag let go just before it shows nothing there.
     if ((!d.value || !!d.value.keep !== !!v.keep || !sameStyleValue(d.value.value, v.value)) && getState().mode === 'edit')
       post('spacingPreview', v.keep ? { drag: d.id, clear: true } : { drag: d.id, desc: d.desc, media: d.grip.media, decls: d.grip.decls(v.value) });

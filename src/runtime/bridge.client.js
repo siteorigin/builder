@@ -243,23 +243,64 @@ const pxOf = (v) => {
   const x = Number.parseFloat(v);
   return Number.isFinite(x) ? x : 0;
 };
+const PX = /^\d+(\.\d+)?px$/;
+const PCT = /^(\d+(\.\d+)?)%$/;
+const isGrid = (display) => /(^|\s|-)grid$/.test(display);
 /** The element that lays a box out, past any laid out as its children. */
 function layoutParent(el) {
   let p = el.parentElement;
   while (p && getComputedStyle(p).display === 'contents') p = p.parentElement;
   return p;
 }
-/** A box's content width: inside its padding, border and scrollbar. */
+/** A box's content width and height: inside its padding, border and scrollbar. */
 const contentWidth = (el, s = getComputedStyle(el)) => Math.max(0, el.clientWidth - pxOf(s.paddingLeft) - pxOf(s.paddingRight));
-/** A grid's resolved track sizes, in order; null for anything but a plain list of pixel sizes (line names left out). */
-function trackSizes(text) {
+const contentHeight = (el, s = getComputedStyle(el)) => Math.max(0, el.clientHeight - pxOf(s.paddingTop) - pxOf(s.paddingBottom));
+/** A computed gap in pixels: `normal` is none, a percentage is of the content box along it; null for anything else. */
+function usedGap(v, along) {
+  if (v === 'normal') return 0;
+  if (PX.test(v)) return pxOf(v);
+  const m = PCT.exec(v);
+  return m ? (Number.parseFloat(m[1]) / 100) * along : null;
+}
+/**
+ * A grid's resolved track sizes, in order, without the empty tracks as many as fit leaves (they and their gaps take no
+ * room); null for anything but a plain list of pixel sizes (line names left out), or one too long to read.
+ */
+function trackSizes(text, max) {
+  const t = String(text);
+  if (t.length > 4000) return null;
   const out = [];
-  for (const t of String(text).replace(/\[[^\]]*\]/g, ' ').trim().split(/\s+/)) {
-    if (!t) continue;
-    if (!/^\d+(\.\d+)?px$/.test(t)) return null;
-    out.push(Number.parseFloat(t));
+  for (const part of t.replace(/\[[^\]]*\]/g, ' ').trim().split(/\s+/)) {
+    if (!part) continue;
+    if (!PX.test(part)) return null;
+    const n = Number.parseFloat(part);
+    if (n > 0) out.push(n);
+    if (out.length > max) return null;
   }
   return out;
+}
+/**
+ * A box's children as it lays them out, in the page's order, past any laid out as their own children, leaving out
+ * those taken out of the flow (which take no gap): at most `max`, looking at no more than four times that many
+ * elements. Null for a box that holds more.
+ */
+function flowChildren(el, max) {
+  const out = [];
+  let looked = 0;
+  const walk = (p) => {
+    for (const c of childrenOf(p)) {
+      if (++looked > max * 4) return false;
+      const cs = getComputedStyle(c);
+      if (cs.display === 'contents') {
+        if (!walk(c)) return false;
+      } else if (cs.display !== 'none' && !/^(absolute|fixed)$/.test(cs.position)) {
+        out.push(c);
+        if (out.length > max) return false;
+      }
+    }
+    return true;
+  };
+  return walk(el) ? out : null;
 }
 /** Whether a computed margin is `auto`, as authored, rather than the length the page worked out for it. */
 function autoMargin(el, prop) {
@@ -273,36 +314,39 @@ function autoMargin(el, prop) {
 
 /**
  * What the gap, max width and column handles need of the selected box, in CSS pixels: how it lays out what it holds
- * (a stack's items, a grid's tracks, its gaps) and how wide it may be in its container. Only the selected box and its
- * own children are read, in the pass that has just measured it.
+ * (a stack's items, a grid's tracks, its gaps) and how wide it may be in its container. Only the selected box and a
+ * bounded number of its own children are read, in the pass that has just measured it. Nothing inside a box whose
+ * contents the page skips (content-visibility: hidden) is read, since reading it would lay it out.
  */
 function layoutReport(el) {
   const s = getComputedStyle(el);
   const box = rectOf(el);
   if (!box) return null;
   const flex = /(^|\s|-)flex$/.test(s.display);
-  const grid = /(^|\s|-)grid$/.test(s.display);
-  const out = { box, kind: flex ? 'flex' : grid ? 'grid' : 'block', rowGap: pxOf(s.rowGap), columnGap: pxOf(s.columnGap) };
+  const grid = isGrid(s.display);
+  const out = { box, kind: flex ? 'flex' : grid ? 'grid' : 'block', rowGap: usedGap(s.rowGap, contentHeight(el, s)), columnGap: usedGap(s.columnGap, contentWidth(el, s)) };
+  const open = s.contentVisibility !== 'hidden';
   if (flex) {
     out.column = s.flexDirection.startsWith('column');
     out.wrap = s.flexWrap !== 'nowrap';
     out.spread = /^space-/.test(s.justifyContent);
-    // In the order the page holds them; laid out as their children, theirs; one taken out of the flow takes no gap.
-    const kids = boxChildren(el).filter((c) => !/^(absolute|fixed)$/.test(getComputedStyle(c).position));
-    out.items = kids.length > LAYOUT_ITEMS ? [] : kids.map(rectOf).filter(Boolean);
+    const kids = open ? flowChildren(el, LAYOUT_ITEMS) : null;
+    out.items = kids ? kids.map(rectOf).filter(Boolean) : [];
   } else if (grid) {
-    const cols = trackSizes(s.gridTemplateColumns);
-    const rows = trackSizes(s.gridTemplateRows);
-    out.cols = cols && cols.length <= 12 ? cols : [];
-    out.rows = rows && rows.length <= LAYOUT_ITEMS ? rows : [];
-    const packed = (v) => /^(normal|stretch|start|flex-start)$/.test(v) || (v === 'left' && s.direction !== 'rtl') || (v === 'right' && s.direction === 'rtl');
+    out.cols = (open && trackSizes(s.gridTemplateColumns, 12)) || [];
+    out.rows = (open && trackSizes(s.gridTemplateRows, LAYOUT_ITEMS)) || [];
+    const packed = (v) => /^((un)?safe )?(normal|stretch|start|flex-start)$/.test(v) || (v === 'left' && s.direction !== 'rtl') || (v === 'right' && s.direction === 'rtl');
     out.packedCols = packed(s.justifyContent);
     out.packedRows = packed(s.alignContent);
   }
   const parent = layoutParent(el);
-  if (parent) {
-    const max = /^\d+(\.\d+)?px$/.test(s.maxWidth) ? pxOf(s.maxWidth) : null;
-    out.width = { centered: autoMargin(el, 'margin-left') && autoMargin(el, 'margin-right'), max, content: s.boxSizing === 'content-box', basis: contentWidth(parent) };
+  const ps = parent && getComputedStyle(parent);
+  // A grid item's container is its grid area, whose width the page does not report: no width for it.
+  if (parent && !isGrid(ps.display)) {
+    const basis = contentWidth(parent, ps);
+    const pct = PCT.exec(s.maxWidth);
+    const max = PX.test(s.maxWidth) ? pxOf(s.maxWidth) : pct ? (Number.parseFloat(pct[1]) / 100) * basis : null;
+    out.width = { centered: autoMargin(el, 'margin-left') && autoMargin(el, 'margin-right'), max, content: s.boxSizing === 'content-box', basis };
   }
   return out;
 }
@@ -310,24 +354,27 @@ function layoutReport(el) {
 /**
  * Each site style's size as padding on the dragged box, in CSS pixels, or null where it has none. Measured on a probe
  * outside the page's body (so its layout and observers never see it), in the box's font, so lengths in em, ch or lh
- * come out as they would on the box. A percentage is taken of the page's width; or, with `basis` 'box' (a gap), of
- * the box's own content width, or with 'parent' (a max width), of the width its container gives it.
+ * come out as they would on the box. A percentage is taken of the page's width; or, with `basis` 'box' or 'boxHeight'
+ * (a gap), of the box's own content width or height, or with 'parent' (a max width), of the width its container
+ * gives it. Probe and host are elements of the bridge's own, sized inline, so the page's rules for divs leave them be.
  */
 function measureSpace(vars, desc, basis) {
   // The box the editor outlines: the first copy that shows, as the spacing report takes it.
   const el = desc && typeof desc.ctx === 'string' && typeof desc.node === 'string' ? findAll(desc).find((e) => rectOf(e)) : null;
-  const probe = document.createElement('div');
-  probe.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;margin:0;border:0;visibility:hidden;pointer-events:none;';
+  const fixed = 'display:block;margin:0;border:0;box-sizing:content-box;min-width:0;max-width:none;min-height:0;max-height:none;visibility:hidden;pointer-events:none;';
+  const probe = document.createElement('so-measure');
+  probe.style.cssText = `position:absolute;left:0;top:0;width:0;height:0;${fixed}`;
   let host = probe;
   if (el) {
     const s = getComputedStyle(el);
     probe.style.font = s.font;
     probe.style.lineHeight = s.lineHeight;
-    const from = basis === 'box' ? el : basis === 'parent' ? layoutParent(el) : null;
-    if (from) {
+    const parent = basis === 'parent' ? layoutParent(el) : null;
+    const width = basis === 'box' ? contentWidth(el, s) : basis === 'boxHeight' ? contentHeight(el, s) : parent ? contentWidth(parent) : null;
+    if (width !== null) {
       // A box as wide as the one a percentage is taken of, holding the probe.
-      host = document.createElement('div');
-      host.style.cssText = `position:absolute;left:0;top:0;width:${contentWidth(from)}px;height:0;margin:0;padding:0;border:0;visibility:hidden;pointer-events:none;`;
+      host = document.createElement('so-measure');
+      host.style.cssText = `position:absolute;left:0;top:0;width:${width}px;height:0;padding:0;${fixed}`;
       probe.style.position = 'static';
       host.appendChild(probe);
     }
@@ -363,15 +410,17 @@ const SPACING_PROPS = new Map([
 ]);
 const SPACING_MEDIA = /^\((min|max)-width: \d+(\.\d+)?px\)( and \((min|max)-width: \d+(\.\d+)?px\))?$/;
 /**
- * Whether two computed values show the same: the same words, and each number within half a pixel. Every number counts,
- * so a column list whose first column matches but whose second does not differs, and `none` never matches a length.
+ * Whether two computed values show the same: the same words and units, each pixel length within half a pixel and every
+ * other number exactly. Every number counts, so a column list whose first column matches but whose second does not
+ * differs, `none` never matches a length, and 5% is not 5.4%.
  */
 function sameShown(a, b) {
-  const nums = (v) => (v.match(/-?\d*\.?\d+(e[+-]?\d+)?/gi) || []).map(Number);
-  const words = (v) => v.replace(/-?\d*\.?\d+(e[+-]?\d+)?/gi, '#').replace(/\s+/g, ' ').trim();
-  const x = nums(a);
-  const y = nums(b);
-  return words(a) === words(b) && x.length === y.length && x.every((n, i) => Math.abs(n - y[i]) < 0.5);
+  const NUM = /(-?\d*\.?\d+(?:e[+-]?\d+)?)(px)?/gi;
+  const parts = (v) => [...v.matchAll(NUM)].map((m) => ({ n: Number(m[1]), px: !!m[2] }));
+  const words = (v) => v.replace(NUM, (_, n, px) => (px ? '#px' : '#')).replace(/\s+/g, ' ').trim();
+  const x = parts(a);
+  const y = parts(b);
+  return words(a) === words(b) && x.length === y.length && x.every((p, i) => Math.abs(p.n - y[i].n) < (p.px ? 0.5 : 1e-6));
 }
 
 function selectorOf(desc) {

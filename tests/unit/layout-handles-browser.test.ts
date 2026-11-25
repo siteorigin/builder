@@ -20,9 +20,21 @@ body{margin:0;font:16px/20px sans-serif}
 #grid p{margin:0;height:40px}
 #row{display:flex;column-gap:20px;margin:0 24px}
 #row span{display:block;width:100px;height:40px}
+#pct{display:grid;grid-template-columns:[a] minmax(0,1fr) [b] minmax(0,1fr) [c];grid-template-rows:80px 80px;height:216px;column-gap:10%;row-gap:10%;justify-content:safe start;max-width:50%;margin-left:auto;margin-right:24px}
+#fit{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));column-gap:20px;width:680px}
+#cards{display:grid;grid-template-columns:400px 600px}
+#item{max-width:200px;margin-inline:auto}
+#flat{display:flex;column-gap:8px}
+#flat span{display:block;width:50px;height:20px}
+/* A page rule that would size anything put straight into the document: the bridge's measuring box keeps its own size. */
+html > :not(head):not(body){max-width:300px;padding:7px}
 </style><style id="site"></style></head><body><div id="wrap">
 <div id="grid" data-so-ctx="page:p" data-so-node="grid"><p>a</p><p>b</p><p>c</p></div>
 <div id="row" data-so-ctx="page:p" data-so-node="row"><span>1</span><span>2</span><span style="position:absolute">x</span><span>3</span></div>
+<div id="pct" data-so-ctx="page:p" data-so-node="pct"><i>a</i><i>b</i></div>
+<div id="fit" data-so-ctx="page:p" data-so-node="fit"><i>a</i><i>b</i></div>
+<div id="cards"><div id="item" data-so-ctx="page:p" data-so-node="item">x</div></div>
+<div id="flat" data-so-ctx="page:p" data-so-node="flat"><span>1</span><div style="display:contents"><span>2</span><span style="position:fixed">f</span><span>3</span></div></div>
 </div><script type="module" src="/bridge.js"></script></body></html>`;
 
 const HOST = `<!doctype html><title>host</title>
@@ -136,5 +148,83 @@ describe.skipIf(!browserInstalled)('the page’s side of the layout handles', ()
     await settle();
     expect(await previews()).toBe(0);
     expect(await tracks()).toEqual([188, 94, 470]);
+  });
+
+  it('works out percentage gaps and max widths in pixels, each gap along its own side', async () => {
+    await send('track', { selected: sel('pct'), hovered: null });
+    const { layout } = (await lastReply('rects')).spacing;
+    // 50% of the 1000px container: 500px wide, 216px tall; 10% gaps are 50px across and 21.6px down.
+    expect(layout.box).toMatchObject({ width: 500, height: 216 });
+    expect(layout.columnGap).toBeCloseTo(50, 1);
+    expect(layout.rowGap).toBeCloseTo(21.6, 1);
+    // Named lines are read past, and "safe start" keeps the columns at the start.
+    expect(layout.cols.map(Math.round)).toEqual([225, 225]);
+    expect(layout.packedCols).toBe(true);
+    // An auto margin on one side alone does not centre it.
+    expect(layout.width).toEqual({ centered: false, max: 500, content: true, basis: 1000 });
+  });
+
+  it('leaves out the empty columns as many as fit collapses, and the width of a grid\u2019s own item', async () => {
+    await send('track', { selected: sel('fit'), hovered: null });
+    expect((await lastReply('rects')).spacing.layout.cols.map(Math.round)).toEqual([330, 330]);
+    await send('track', { selected: sel('item'), hovered: null });
+    expect((await lastReply('rects')).spacing.layout.width).toBeUndefined();
+  });
+
+  it('reports items laid out as a wrapper\u2019s children, and none taken out of the flow', async () => {
+    await send('track', { selected: sel('flat'), hovered: null });
+    const { layout } = (await lastReply('rects')).spacing;
+    expect(layout.items.map((r: { x: number }) => Math.round(r.x - layout.box.x))).toEqual([0, 58, 116]);
+  });
+
+  it('measures in a box of its own, whatever the page\u2019s rules say, and never inside the page\u2019s body', async () => {
+    await inFrame(`win.__bodyChanges = 0; win.__watch = new win.MutationObserver((r) => (win.__bodyChanges += r.length)); win.__watch.observe(doc.body, { childList: true, subtree: true });`);
+    await send('measureSpace', { requestId: 'iso', vars: ['--so-container-half'], desc: sel('grid'), basis: 'parent' });
+    expect((await lastReply('spaceMeasured')).px).toEqual([500]);
+    expect(await inFrame<number>(`win.__watch.disconnect(); return win.__bodyChanges;`)).toBe(0);
+  });
+
+  it('shows no preview under a media query a drag never sends', async () => {
+    await preview('d', 'grid', [['column-gap', '0']], 'screen and (min-width: 1px)');
+    expect(await previews()).toBe(0);
+  });
+
+  it('keeps a preview until the page has the saved revision, even when the page already shows the same', async () => {
+    await send('revision', { revision: 10 });
+    await preview('d', 'grid', [['grid-template-columns', 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr)']], '(min-width: 768px)');
+    await send('spacingPreview', { drag: 'd', handoff: 12 });
+    await settle();
+    expect(await previews()).toBe(1);
+    await send('revision', { revision: 12 });
+    await settle();
+    expect(await previews()).toBe(0);
+  });
+
+  it('reads the selected stack\u2019s children and never the hovered box\u2019s, and nothing while the pointer rests on one element', async () => {
+    await send('track', { selected: sel('row'), hovered: null });
+    await inFrame(`
+      const orig = win.Element.prototype.getBoundingClientRect;
+      win.__reads = new win.Map();
+      win.__orig = orig;
+      win.Element.prototype.getBoundingClientRect = function () { win.__reads.set(this, (win.__reads.get(this) || 0) + 1); return orig.call(this); };
+    `);
+    const readsOf = (selector: string) => inFrame<number>(`return [...doc.querySelectorAll(${JSON.stringify(selector)})].reduce((n, el) => n + (win.__reads.get(el) || 0), 0);`);
+    try {
+      await send('track', { selected: sel('row'), hovered: sel('grid') });
+      expect(await readsOf('#row > span')).toBeGreaterThan(0);
+      expect(await readsOf('#grid > p')).toBe(0);
+      // The pointer comes to rest on one element: once it is there, moving on it reads nothing and reports nothing.
+      const move = () => inFrame(`doc.querySelector('#row > span').dispatchEvent(new win.MouseEvent('mousemove', { bubbles: true }));`);
+      await move();
+      await settle();
+      await inFrame(`win.__reads.clear();`);
+      const reports = await page.evaluate(`window.replies.filter((m) => m.type === 'rects').length`);
+      for (let i = 0; i < 3; i++) await move();
+      await settle();
+      expect(await inFrame<number>(`return [...win.__reads.values()].reduce((a, b) => a + b, 0);`)).toBe(0);
+      expect(await page.evaluate(`window.replies.filter((m) => m.type === 'rects').length`)).toBe(reports);
+    } finally {
+      await inFrame(`win.Element.prototype.getBoundingClientRect = win.__orig;`);
+    }
   });
 });

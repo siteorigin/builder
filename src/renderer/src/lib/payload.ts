@@ -60,9 +60,9 @@ const MAX_COLUMNS = 12;
 export interface FrameLayout {
   box: FrameRect;
   kind: 'flex' | 'grid' | 'block';
-  /** The gaps the page uses now (0 for `normal`). */
-  rowGap: number;
-  columnGap: number;
+  /** The gaps the page uses now, in pixels (0 for `normal`); null where it could not say (one worked out with calc()). */
+  rowGap: number | null;
+  columnGap: number | null;
   /** A stack: its items run top to bottom, and may wrap onto more lines. */
   column: boolean;
   wrap: boolean;
@@ -84,22 +84,31 @@ export interface FrameLayout {
 }
 
 const size = (n: unknown): n is number => finite(n) && n >= 0 && n < 100000;
-const sizes = (v: unknown, max: number): number[] | null => (Array.isArray(v) && v.length <= max && v.every(size) ? [...v] : null);
+// Array.from visits holes too (every and map would skip them, and let a sparse list through).
+const list = (v: unknown, max: number): unknown[] | null => (Array.isArray(v) && v.length <= max ? Array.from(v) : null);
+const sizes = (v: unknown, max: number): number[] | null => {
+  const l = list(v, max);
+  return l && l.every(size) ? (l as number[]) : null;
+};
+const gapOf = (v: unknown): number | null | undefined => (v === null ? null : size(v) ? v : undefined);
 
 /** The layout the frame reports for the selection; null for anything malformed. A malformed list is dropped whole:
  *  one column left out would put every handle after it on the wrong gap. */
 export function layoutOf(v: unknown): FrameLayout | null {
   if (!v || typeof v !== 'object') return null;
   const r = v as Record<string, unknown>;
-  if (!isRect(r.box) || (r.kind !== 'flex' && r.kind !== 'grid' && r.kind !== 'block') || !size(r.rowGap) || !size(r.columnGap)) return null;
-  const items = Array.isArray(r.items) && r.items.length <= MAX_LAYOUT_ITEMS && r.items.every(isRect) ? r.items.map((i: FrameRect) => ({ x: i.x, y: i.y, width: i.width, height: i.height })) : [];
+  const rowGap = gapOf(r.rowGap);
+  const columnGap = gapOf(r.columnGap);
+  if (!isRect(r.box) || (r.kind !== 'flex' && r.kind !== 'grid' && r.kind !== 'block') || rowGap === undefined || columnGap === undefined) return null;
+  const listed = list(r.items, MAX_LAYOUT_ITEMS);
+  const items = listed && listed.every(isRect) ? (listed as FrameRect[]).map((i) => ({ x: i.x, y: i.y, width: i.width, height: i.height })) : [];
   const w = r.width && typeof r.width === 'object' ? (r.width as Record<string, unknown>) : null;
   const width = w && size(w.basis) && (w.max === null || size(w.max)) ? { centered: w.centered === true, max: w.max as number | null, content: w.content === true, basis: w.basis } : null;
   return {
     box: { x: r.box.x, y: r.box.y, width: r.box.width, height: r.box.height },
     kind: r.kind,
-    rowGap: r.rowGap,
-    columnGap: r.columnGap,
+    rowGap,
+    columnGap,
     column: r.column === true,
     wrap: r.wrap === true,
     spread: r.spread === true,
