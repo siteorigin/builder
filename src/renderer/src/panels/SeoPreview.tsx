@@ -1,13 +1,15 @@
 import './SeoPreview.css';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { Globe } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Globe, Search } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { createSeoResolver } from '@generator/seo-metadata';
-import { useStore } from '../store';
+import { SERP_LAYOUT, type SerpDevice } from '@shared/serp';
+import { setSerpView, useStore } from '../store';
+import { FILLER_RESULTS, PHONE_BEZEL, SAMPLE_QUERY, SERP_MARGIN, serpPageWidth, serpScale, type FillerResult } from '../lib/serp-page';
 import { postPreviewHandoff } from '../lib/actions';
 import { AssetImage } from '../components/AssetImage';
-import { Tabs } from '../components/ui';
+import { Segmented, Switch, Tabs } from '../components/ui';
 import { lengthMeter, previewDocument, structuredPreview, withTypedSeo, type DocumentPreview, type LengthMeter as Meter, type StructuredPreview, type TypedSeo } from '../lib/seo-preview';
 import { openSiteSharing, SharingPreview } from './SharingPreview';
 import { previewHandoff } from '../lib/seoHandoff';
@@ -86,31 +88,138 @@ function SiteIcon({ state }: { state: ProjectState }) {
   return <span className="serp-icon">{icon && devUrl ? <AssetImage asset={icon} devUrl={devUrl} cover alt="" /> : <Globe aria-hidden="true" />}</span>;
 }
 
-/** The document as a computer's and a phone's search results list it. */
+/**
+ * A results page laid out at its real size, so text wraps where it would there, then scaled down as a whole when the
+ * place it shows in is narrower: never scrolled sideways, and never re-wrapped. A transform takes no room of its own,
+ * so the slot around the page is given the size the page shows at.
+ */
+function ScaledPage({ device, children }: { device: SerpDevice; children: ReactNode }) {
+  const fit = useRef<HTMLDivElement>(null);
+  const page = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ room: 0, height: 0 });
+  const measure = useRef(() => {
+    const room = fit.current?.clientWidth ?? 0;
+    const height = page.current?.offsetHeight ?? 0;
+    // Hidden, there is nothing to measure: what was measured last stands until it shows again.
+    if (!room || !height) return;
+    // A title line the browser sets wider than it was measured (a script the width table only estimates) is narrowed
+    // to its column, so it keeps the line break and the "…" it was measured with.
+    for (const line of page.current!.querySelectorAll<HTMLElement>('.serp-title-text')) {
+      const column = line.parentElement!.clientWidth;
+      line.style.transform = line.offsetWidth > column ? `scaleX(${column / line.offsetWidth})` : '';
+    }
+    setSize((s) => (s.room === room && s.height === height ? s : { room, height }));
+  }).current;
+  // After every change to what shows, before it is painted.
+  useLayoutEffect(measure);
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(fit.current!);
+    ro.observe(page.current!);
+    return () => ro.disconnect();
+  }, [measure]);
+  const width = serpPageWidth(device);
+  const scale = serpScale(size.room, device);
+  return (
+    <div className="serp-fit" ref={fit}>
+      <div className="serp-slot" style={{ width: width * scale, height: size.height ? size.height * scale : undefined }}>
+        <div className="serp-scaled" ref={page} style={{ width, transform: scale < 1 ? `scale(${scale})` : undefined }} data-scale={scale}>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The site's name and address trail over a result, beside its icon. */
+function ResultSite({ icon, name, url }: { icon: ReactNode; name: string; url: string }) {
+  return (
+    <div className="serp-site">
+      {icon}
+      <span className="serp-site-text">
+        <span className="serp-site-name">{name}</span>
+        <span className="serp-url">{url}</span>
+      </span>
+    </div>
+  );
+}
+
+/** Another site's result, made up: there to be read against, and not read out. */
+function Filler({ result }: { result: FillerResult }) {
+  return (
+    <div className="serp-result serp-filler" aria-hidden="true">
+      <ResultSite
+        icon={
+          <span className="serp-icon">
+            <Globe />
+          </span>
+        }
+        name={result.site}
+        url={result.url}
+      />
+      <div className="serp-title">{result.title}</div>
+      <div className="serp-desc">{result.description}</div>
+    </div>
+  );
+}
+
+/**
+ * The document on a sample results page, a computer's or a phone's, among placeholder results. The page has its own
+ * light and dark colours, whatever the editor looks like.
+ */
 function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPreview }) {
   const { address } = doc;
+  const { device, dark } = useStore((s) => s.serpView);
+  const darkId = useId();
+  const r = doc.serp[device];
+  const [first, ...rest] = FILLER_RESULTS;
   return (
     <div className="serp-previews">
-      {(['desktop', 'mobile'] as const).map((device) => {
-        const r = doc.serp[device];
-        return (
-          // Each result is laid out at its screen's width, in proportion to the widths it is measured against, so a line
-          // breaks where it would there; a computer's is wider than the Inspector, which scrolls it sideways.
-          <div key={device} className={`serp-frame serp-frame-${device}`} tabIndex={device === 'desktop' ? 0 : undefined} role="group" aria-label={device === 'desktop' ? 'Search result on a computer' : 'Search result on a phone'}>
-            <div className={`serp serp-${device}`} data-device={device}>
-              <div className="serp-device">{device === 'desktop' ? 'Computer' : 'Phone'}</div>
-              <div className="serp-site">
-                <SiteIcon state={state} />
-                <span className="serp-site-text">
-                  <span className="serp-site-name">{doc.siteName || address.host || 'Your site'}</span>
-                  <span className="serp-url">{[address.host ?? 'No public URL', ...address.trail].join(' › ')}</span>
-                </span>
-              </div>
+      <div className="serp-controls">
+        <Segmented<SerpDevice>
+          radio
+          label="Results screen"
+          value={device}
+          onChange={(v) => setSerpView({ device: v })}
+          options={[
+            { value: 'desktop', label: 'Computer' },
+            { value: 'mobile', label: 'Phone' }
+          ]}
+        />
+        <span className="serp-theme">
+          <label id={`${darkId}-l`} htmlFor={darkId}>
+            Dark results
+          </label>
+          <Switch id={darkId} checked={dark} onChange={(v) => setSerpView({ dark: v })} labelledBy={`${darkId}-l`} />
+        </span>
+      </div>
+      <div role="group" aria-label={device === 'desktop' ? 'Search result on a computer' : 'Search result on a phone'}>
+        <ScaledPage device={device}>
+          <div
+            className={`serp-page serp-page-${device}`}
+            data-serp-theme={dark ? 'dark' : 'light'}
+            style={
+              {
+                '--serp-margin': `${SERP_MARGIN}px`,
+                '--serp-bezel': `${PHONE_BEZEL}px`,
+                '--serp-title-size': `${SERP_LAYOUT.titleFont}px`,
+                '--serp-desc-size': `${SERP_LAYOUT.descriptionFont}px`
+              } as CSSProperties
+            }
+          >
+            <div className="serp-search" aria-hidden="true">
+              <Search />
+              <span>{SAMPLE_QUERY}</span>
+            </div>
+            <Filler result={first} />
+            <div className={`serp-result serp serp-${device}`} data-device={device}>
+              <ResultSite icon={<SiteIcon state={state} />} name={doc.siteName || address.host || 'Your site'} url={[address.host ?? 'No public URL', ...address.trail].join(' › ')} />
               <div className={`serp-title${r.title.text ? '' : ' none'}`}>
                 {r.title.lines.length
                   ? r.title.lines.map((line, i) => (
                       <span key={i} className="serp-title-line">
-                        {line}
+                        <span className="serp-title-text">{line}</span>
                       </span>
                     ))
                   : 'No title'}
@@ -120,11 +229,14 @@ function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPrevi
                 {r.description.text || 'No description: search engines pick words from the page.'}
               </div>
             </div>
+            {rest.map((f) => (
+              <Filler key={f.url} result={f} />
+            ))}
           </div>
-        );
-      })}
+        </ScaledPage>
+      </div>
       <p className="field-hint serp-note">
-        Where results likely cut the title and description short, from their width in the type search results use. Search engines may still choose other words.
+        Where results likely cut the title and description short, from their width in the type search results use. The other results are placeholders. Search engines may still choose other words.
         {!address.host && (
           <>
             {' '}
@@ -173,7 +285,7 @@ function StructuredData({ structured }: { structured: StructuredPreview | null |
 }
 
 /**
- * A page's or a post's Search & sharing previews, in tabs: its search result on a computer and a phone, the card a
+ * A page's or a post's Search & sharing previews, in tabs: its search result on a computer or a phone, the card a
  * shared link makes, and its structured data with where it is published. `shown` says whether the previews are on
  * screen: the structured data, which reads the whole website, is worked out only while its tab shows. `typed` is the
  * text typed into the document's fields and not saved yet, which `overlay` lays over the project. Optimize with AI

@@ -232,6 +232,8 @@ await eventually(() => assert.equal(pageFile(kitchens).seo.socialImage, 'a_kitch
 step('the search result and the title meter follow the browser title as it is typed, before it is saved (#597)');
 const tab = (name) => section().getByRole('tab', { name });
 const result = (device) => section().locator(`.serp-${device}`);
+/** Chooses whose results show. Pressing it takes focus from a field, which saves it: choose before typing. */
+const resultsOn = (name) => section().getByRole('radio', { name, exact: true }).click();
 const meter = (kind) => section().locator(`.seo-meter[data-meter="${kind}"]`);
 const titleBox = () => field('Browser title').getByRole('textbox');
 await openPage('Kitchens');
@@ -243,12 +245,31 @@ assert.match(await meter('description').innerText(), /^From the fallback: \d+ ch
 const longTitle = 'Kitchens in oak, steel and stone, designed and built by hand in our Harbour Lane workshop';
 await titleBox().fill(longTitle);
 await eventually(async () => assert.match(await result('desktop').locator('.serp-title').innerText(), /^Kitchens in oak, .*…$/, 'the title being typed is cut short with an ellipsis'));
-assert.match(await result('mobile').locator('.serp-title').innerText(), /…$/, 'on a phone too');
 assert.equal(await meter('title').innerText(), `${longTitle.length} characters · likely cut short on computers and phones`);
 assert.equal(await meter('title').getAttribute('data-tone'), 'cut');
 assert.equal(pageFile(kitchens).seo.title, undefined, 'nothing is saved while it is typed');
 await titleBox().press('Escape');
 await eventually(async () => assert.match(await meter('title').innerText(), /^Default title:/, 'Escape puts the default back'));
+await resultsOn('Phone');
+await titleBox().fill(longTitle);
+await eventually(async () => assert.match(await result('mobile').locator('.serp-title').innerText(), /…$/, 'cut short on a phone too'));
+await titleBox().press('Escape');
+await eventually(async () => assert.match(await meter('title').innerText(), /^Default title:/));
+assert.equal(pageFile(kitchens).seo.title, undefined, 'nothing was saved while it was typed');
+await resultsOn('Computer');
+// The Inspector is narrower than a computer's results: the page is scaled to fit it, and follows its height when the
+// previews come back from another tab.
+const fitted = () =>
+  section().evaluate((el) => {
+    const fit = el.querySelector('.serp-fit').getBoundingClientRect();
+    const slot = el.querySelector('.serp-slot').getBoundingClientRect();
+    const box = el.querySelector('.serp-scaled').getBoundingClientRect();
+    return { scaled: box.width < 640, width: el.querySelector('.serp-page').offsetWidth, fits: box.left >= fit.left - 0.5 && box.right <= fit.right + 0.5, slotHolds: Math.abs(slot.height - box.height) <= 1 && box.height > 0 };
+  });
+await eventually(async () => assert.deepEqual(await fitted(), { scaled: true, width: 640, fits: true, slotHolds: true }, 'a computer’s results fit the Inspector'));
+await tab('Link preview').click();
+await tab('Search result').click();
+await eventually(async () => assert.deepEqual(await fitted(), { scaled: true, width: 640, fits: true, slotHolds: true }, 'and still do when they show again'));
 assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Kitchens · Harbour Lane Studio');
 const descriptionBox = () => field('Description').getByRole('textbox');
 await descriptionBox().fill('Oak, steel and stone kitchens, drawn and built by hand.');
