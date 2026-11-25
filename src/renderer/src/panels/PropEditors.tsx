@@ -1470,8 +1470,11 @@ export interface ListFill {
   note: string | null;
   /** Why there is nothing to do now (the list already holds what it would bring), or null when there is. */
   blocked: string | null;
-  /** Make the change: settles once it has been applied or refused. */
-  run: () => Promise<unknown>;
+  /**
+   * Make the change: settles once it has been applied or refused. Just before it is made, `refused()` says whether
+   * a row's field keeps text it refused (and points the author at it), so the change waits for that to be settled.
+   */
+  run: (refused: () => boolean) => Promise<unknown>;
 }
 
 export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill }: {
@@ -2173,13 +2176,16 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
               onClick={() => {
                 if (fill.blocked || filling) return;
                 // Text a row's field refused would go with the rows it replaces: it is corrected or discarded first.
-                const refused = rootRef.current && refusedWithin(rootRef.current);
-                if (refused) {
-                  toast(`${refused.message} Correct it or press Escape in it, then ${fill.label.toLowerCase()} again.`, 'error');
-                  return refused.field.focus();
-                }
+                const refused = () => {
+                  const kept = rootRef.current && refusedWithin(rootRef.current);
+                  if (!kept) return false;
+                  toast(`${kept.message} Correct it or press Escape in it, then ${fill.label.toLowerCase()} again.`, 'error');
+                  kept.field.focus();
+                  return true;
+                };
+                if (refused()) return;
                 setFilling(true);
-                void fill.run().finally(() => setFilling(false));
+                void fill.run(refused).finally(() => setFilling(false));
               }}
             >
               <Copy /> {fill.label}

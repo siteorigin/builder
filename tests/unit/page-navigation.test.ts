@@ -452,6 +452,24 @@ describe('the footer’s links copied from the header menu (#575)', () => {
     expect(footerCopyPlan(after)!.matches).toBe(true);
   });
 
+  it('counts a section link on the same page written with its # as the same once copied', () => {
+    let s = scratchSite();
+    s = apply(s, [{ type: 'instance.listInsert', owner: shell('header'), nodeId: menuOf(s, 'header').id, prop: 'links', item: { label: 'Team', link: { type: 'anchor', target: 'team' } } }]).state;
+    s = structuredClone(s);
+    (links(s, 'header')[3].link as Record<string, unknown>).target = '#team';
+    const after = apply(s, [footerCopyPlan(s)!.op]).state;
+    expect(links(after, 'footer')[3].link).toEqual({ type: 'anchor', target: 'team' });
+    expect(footerCopyPlan(after)!.matches).toBe(true);
+  });
+
+  it('never counts a footer link written outside the app that goes nowhere as its header link', () => {
+    const s = scratchSite();
+    const copied = structuredClone(apply(s, [footerCopyPlan(s)!.op]).state);
+    // A page ID with a space after it names no page: the copy can put it right.
+    (links(copied, 'footer')[1].link as Record<string, unknown>).target = 'pg_about001 ';
+    expect(footerCopyPlan(copied)!.matches).toBe(false);
+  });
+
   it('reads a header without a list of its own, and a link without a label, as the header shows them', () => {
     const s = structuredClone(scratchSite());
     const header = menuOf(s, 'header');

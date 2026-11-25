@@ -179,11 +179,19 @@ export interface FooterCopyPlan {
   matches: boolean;
 }
 
-/** A link as the engine saves it, so two that go to the same place compare equal however they were written. */
-const linkKey = (v: unknown): string => {
+/**
+ * A link's type, target, section and new-tab choice, for comparing: as the engine would save it (`saved`, for the
+ * header link a copy is made from) or exactly as it is stored (for the footer's own link), so a footer link written
+ * outside the app that goes nowhere never passes for its header link.
+ */
+const linkKey = (v: unknown, saved: boolean): string => {
   if (!v || typeof v !== 'object') return JSON.stringify(v ?? null);
   const l = v as Partial<LinkValue>;
-  return JSON.stringify([l.type ?? 'none', String(l.target ?? '').trim(), l.anchor ? String(l.anchor).replace(/^#/, '') : '', l.newTab === true]);
+  const type = l.type ?? 'none';
+  const raw = String(l.target ?? '');
+  const target = !saved ? raw : type === 'none' ? '' : type === 'anchor' ? raw.trim().replace(/^#/, '') : raw.trim();
+  const anchor = l.anchor ? (saved ? String(l.anchor).replace(/^#/, '') : String(l.anchor)) : '';
+  return JSON.stringify([type, target, anchor, l.newTab === true]);
 };
 
 /**
@@ -205,7 +213,7 @@ export function footerCopyPlan(state: ProjectState): FooterCopyPlan | null {
   const shown = (it: MenuItem, menu: NonNullable<ReturnType<typeof shellMenu>>, key: 'label' | 'link') => (Object.hasOwn(it, key) ? it[key] : (menu.schema.fields[key] as { default?: unknown }).default);
   const copied = top.slice(0, footer.schema.max ?? top.length).map((it) => ({ label: structuredClone(shown(it, header, 'label')), link: structuredClone(shown(it, header, 'link')) }));
   if (footer.schema.min !== undefined && copied.length < footer.schema.min) return null;
-  const same = (want: (typeof copied)[number], have: MenuItem) => !!have && typeof have === 'object' && want.label === shown(have, footer, 'label') && linkKey(want.link) === linkKey(shown(have, footer, 'link'));
+  const same = (want: (typeof copied)[number], have: MenuItem) => !!have && typeof have === 'object' && want.label === shown(have, footer, 'label') && linkKey(want.link, true) === linkKey(shown(have, footer, 'link'), false);
   return {
     op: { type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: footer.node.id, prop: 'links', value: copied },
     count: copied.length,

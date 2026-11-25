@@ -167,24 +167,32 @@ function footerCopyFill(state: ProjectState): ListFill | undefined {
   };
 }
 
-/** A copy on its way: asked for again (from a list editor shown again meanwhile), it is the same copy. */
-let copying: Promise<void> | null = null;
+/** A copy on its way, by the opening of its project: asked for again there (from a list editor shown again
+ *  meanwhile), it is the same copy. */
+let copying: { key: string; run: Promise<void> } | null = null;
 
 /**
  * Copy the header menu into the footer's links. A row edit saved as the author left it for the button lands first;
- * the copy is then planned on the project as it is and applied only to it.
+ * the copy is then planned on the project as it is and applied only to it, and never to a project opened meanwhile.
+ * A row's field that has refused its text by then keeps the rows as they are (see ListFill).
  */
-function copyHeaderMenuToFooter(): Promise<void> {
-  copying ??= (async () => {
+function copyHeaderMenuToFooter(refused: () => boolean): Promise<void> {
+  const key = getState().snapshot?.workspaceKey ?? '';
+  if (copying?.key === key) return copying.run;
+  const run: Promise<void> = (async () => {
     await appliesLanded();
     const now = getState().snapshot;
-    const plan = now && footerCopyPlan(now.state);
-    if (!now || !plan || plan.matches) return;
+    if (!now || now.workspaceKey !== key || refused()) return;
+    const plan = footerCopyPlan(now.state);
+    if (!plan || plan.matches) return;
     const r = await commitOps([plan.op], COPY_HEADER_MENU, undefined, now.revision);
     if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
     toast(`The footer now lists the header menu’s ${linkCount(plan.count)}.`, 'info', undoAction(r));
-  })().finally(() => (copying = null));
-  return copying;
+  })().finally(() => {
+    if (copying?.run === run) copying = null;
+  });
+  copying = { key, run };
+  return run;
 }
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: Exclude<ListOp, { kind: 'pick' }>): EditOperation {
