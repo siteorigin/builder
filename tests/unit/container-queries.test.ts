@@ -314,6 +314,9 @@ describe('the stylesheet', () => {
       { type: 'node.setStyle', owner: owner(site.s), nodeId: site.columns.sideCard.id, partId: 'title', scope: 'cq-narrow', property: 'customCss', value: 'display: block' }
     ]);
     expect(markdown(t)).not.toContain('Sidebar column');
+    // A container rule that hides is no show.
+    const u = apply(site.s, [{ type: 'node.setStyle', owner: owner(site.s), nodeId: site.columns.sideCard.id, partId: 'title', scope: 'cq-narrow', property: 'customCss', value: 'display: none' }]);
+    expect(markdown(u)).not.toContain('Sidebar column');
   });
 
   it('leaves an item that sets no display of its own to a shared container layout', () => {

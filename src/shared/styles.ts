@@ -1914,7 +1914,7 @@ export function containerVisibilityKept(layers: StyleLayer[], result: Responsive
 }
 const CONTAINER_SCOPES_LIST = ['cq-narrow', 'cq-medium', 'cq-wide'] as const;
 /** The display one rule for a container range writes: its custom CSS's, else its layout's (a show). */
-const rangeDisplay = (r: StyleProps | undefined): 'none' | 'shown' | undefined => (r && typeof r === 'object' ? (customDisplay(r.customCss) ?? (r.layout !== undefined ? 'shown' : undefined)) : undefined);
+export const rangeDisplay = (r: StyleProps | undefined): 'none' | 'shown' | undefined => (r && typeof r === 'object' ? (customDisplay(r.customCss) ?? (r.layout !== undefined ? 'shown' : undefined)) : undefined);
 /** Whether layers, weakest first, show the element at `size` inside a container of width `range`. */
 function shownIn(layers: StyleLayer[], size: Size, range: ContainerScope): boolean {
   let best: { shown: boolean; rank: number[] } | undefined;
