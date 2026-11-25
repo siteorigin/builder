@@ -911,6 +911,11 @@ document.addEventListener(
   },
   true
 );
+// The site's Light/Dark switch asks the canvas to preview the other palette (generator/color-scheme.ts), so the
+// canvas's own Light and Dark and the switch never disagree.
+window.addEventListener('siteorigin:color-scheme', (e) => {
+  if (e.detail === 'light' || e.detail === 'dark') send('colorScheme', { scheme: e.detail });
+});
 // The layout held every submission until this bridge was running; from here the listener above decides.
 window.__siteoriginBridge = true;
 if (typeof window.__siteoriginHold === 'function') {

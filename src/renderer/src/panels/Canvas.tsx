@@ -723,6 +723,10 @@ export function Canvas() {
           if (at) setJourney(observe(journeyRef.current, at, getState().mode === 'preview'));
           break;
         }
+        case 'colorScheme':
+          // The site's Light/Dark switch, pressed in the preview: the canvas previews that palette, as its own control would.
+          if ((p.scheme === 'light' || p.scheme === 'dark') && hasDarkPalette(st?.tokens)) setState({ previewScheme: p.scheme });
+          break;
         case 'navigated': {
           if (showsStudio()) break;
           // Only the report for the page the editor last asked for counts while that request is on its way: a late

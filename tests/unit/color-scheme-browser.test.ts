@@ -17,7 +17,7 @@ import type { ColorSchemeMode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { STYLES_DIR, effectiveTokens, generateProject, pageFile } from '@generator/index';
-import { THEME_STORAGE_KEY, themeToggleJs } from '@generator/color-scheme';
+import { themeStorageKey, themeToggleJs } from '@generator/color-scheme';
 import { contrastBetween } from '@shared/contrast';
 import { parseColor } from '@shared/color';
 
@@ -155,8 +155,9 @@ describe.each(ENGINES)('visitor palettes in %s', { timeout: 30_000 }, (name, eng
     const site = sites[mode];
     const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, colorScheme: 'light', ...contextOptions });
     if (noStorage) await context.addInitScript(`Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('Storage is turned off', 'SecurityError'); } });`);
-    else if (stored) await context.addInitScript(`try { if (!sessionStorage.getItem('seeded')) { localStorage.setItem(${JSON.stringify(THEME_STORAGE_KEY)}, ${JSON.stringify(stored)}); sessionStorage.setItem('seeded', '1'); } } catch {}`);
-    const run = script && mode === 'toggle' ? `<script type="module">${themeToggleJs()}\nwindow.__stop = startThemeToggle(() => 'Dark mode');\nwindow.__ready = true;</script>` : '';
+    const key = themeStorageKey(site.state);
+    if (!noStorage && stored) await context.addInitScript(`try { if (!sessionStorage.getItem('seeded')) { localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(stored)}); sessionStorage.setItem('seeded', '1'); } } catch {}`);
+    const run = script && mode === 'toggle' ? `<script type="module">${themeToggleJs(key)}\nwindow.__stop = startThemeToggle(() => 'Dark mode');\nwindow.__ready = true;</script>` : '';
     const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">${site.head}<style>${site.css}</style></head><body>${site.body}${run}</body></html>`;
     await context.route(`${ORIGIN}/**`, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: html }));
     const page = await context.newPage();
@@ -173,7 +174,7 @@ describe.each(ENGINES)('visitor palettes in %s', { timeout: 30_000 }, (name, eng
     expect(site.css).not.toContain('prefers-color-scheme');
     const { page, close } = await open('single', { colorScheme: 'dark' });
     try {
-      expect(await colors(page)).toMatchObject({ background: site.light.background, text: site.light.text, theme: null });
+      expect(await colors(page)).toMatchObject({ background: site.light.background, text: site.light.text, theme: null, scheme: 'normal' });
       expect((await toggle(page)).count).toBe(0);
     } finally {
       await close();
@@ -204,18 +205,44 @@ describe.each(ENGINES)('visitor palettes in %s', { timeout: 30_000 }, (name, eng
       await page.click('.so-theme-toggle');
       expect(await colors(page)).toMatchObject({ background: site.dark.background, text: site.dark.text, theme: 'dark' });
       expect((await toggle(page)).pressed).toBe('true');
-      expect(await page.evaluate(`localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)})`)).toBe('dark');
+      expect(await page.evaluate(`localStorage.getItem(${JSON.stringify(themeStorageKey(site.state))})`)).toBe('dark');
       // From the keyboard too.
       await page.focus('.so-theme-toggle');
       await page.keyboard.press('Enter');
       expect(await colors(page)).toMatchObject({ background: site.light.background, theme: 'light' });
+      expect(await page.evaluate(`localStorage.getItem(${JSON.stringify(themeStorageKey(site.state))})`)).toBe('light');
       await page.keyboard.press('Space');
       expect((await toggle(page)).pressed).toBe('true');
-      // The next page arrives in the chosen palette before any of the site's own script runs.
+      // A header drawn afresh gets the switch back.
+      await page.evaluate(`(() => { const h = document.querySelector('header.so-header'); const fresh = h.cloneNode(true); fresh.querySelector('.so-theme-toggle').remove(); h.replaceWith(fresh); })()`);
+      await page.waitForFunction(`!!document.querySelector('header.so-header .so-theme-toggle')`);
+      expect((await toggle(page)).count).toBe(1);
       await page.evaluate('window.__stop()');
       expect((await toggle(page)).count).toBe(0);
     } finally {
       await close();
+    }
+  });
+
+  it('in the editor, asks the canvas for the other palette instead of switching or remembering', async () => {
+    const site = sites.toggle;
+    const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, colorScheme: 'light' });
+    try {
+      const page = await context.newPage();
+      const run = `<script type="module">window.__siteoriginBridge = true; window.__asked = []; addEventListener('siteorigin:color-scheme', (e) => window.__asked.push(e.detail));\n${themeToggleJs('k', true)}\nstartThemeToggle(() => 'Dark mode');\nwindow.__ready = true;</script>`;
+      await context.route(`${ORIGIN}/**`, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><style>${site.css}</style></head><body>${site.body}${run}</body></html>` }));
+      await page.goto(`${ORIGIN}/`, { waitUntil: 'domcontentloaded' });
+      await page.waitForFunction('window.__ready === true');
+      await page.click('.so-theme-toggle');
+      expect(await page.evaluate('window.__asked')).toEqual(['dark']);
+      expect(await colors(page)).toMatchObject({ background: site.light.background, theme: null });
+      // The canvas switches its frame to dark: the page and the switch follow.
+      await page.emulateMedia({ colorScheme: 'dark' });
+      expect(await colors(page)).toMatchObject({ background: site.dark.background, theme: null });
+      await page.waitForFunction(`document.querySelector('.so-theme-toggle').getAttribute('aria-pressed') === 'true'`);
+      expect(await page.evaluate('localStorage.length')).toBe(0);
+    } finally {
+      await context.close();
     }
   });
 
@@ -246,20 +273,24 @@ describe.each(ENGINES)('visitor palettes in %s', { timeout: 30_000 }, (name, eng
   it('follows the device, and switches for the page, when the browser keeps nothing', async () => {
     const site = sites.toggle;
     const { page, close } = await open('toggle', { noStorage: true, colorScheme: 'dark' });
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
     try {
       expect(await colors(page)).toMatchObject({ background: site.dark.background, theme: null });
       expect((await toggle(page)).pressed).toBe('true');
       await page.click('.so-theme-toggle');
       expect(await colors(page)).toMatchObject({ background: site.light.background, theme: 'light' });
+      expect((await toggle(page)).pressed).toBe('false');
+      expect(errors).toEqual([]);
     } finally {
       await close();
     }
   });
 
   it('prints in the light palette, dark bands still legible and the switch left out, whatever was chosen', async () => {
-    for (const mode of ['system', 'toggle'] as const) {
+    for (const [mode, stored] of [['system', undefined], ['toggle', 'dark'], ['toggle', undefined]] as const) {
       const site = sites[mode];
-      const { page, close } = await open(mode, { colorScheme: 'dark', stored: mode === 'toggle' ? 'dark' : undefined });
+      const { page, close } = await open(mode, { colorScheme: 'dark', stored });
       try {
         expect((await colors(page)).background).toBe(site.dark.background);
         await page.emulateMedia({ media: 'print', colorScheme: 'dark' });
@@ -288,6 +319,9 @@ describe.each(ENGINES)('visitor palettes in %s', { timeout: 30_000 }, (name, eng
       expect(box.h).toBeGreaterThanOrEqual(44);
       // Just before the menu button, never under it.
       expect(box.right).toBeLessThanOrEqual(box.menuLeft + 1);
+      expect(box.right - box.w).toBeGreaterThanOrEqual(0);
+      await page.click('.so-theme-toggle');
+      expect((await toggle(page)).pressed).toBe('true');
     } finally {
       await close();
     }

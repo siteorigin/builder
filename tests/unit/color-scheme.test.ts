@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { compile } from 'svelte/compiler';
-import type { ProjectState } from '@shared/types';
+import type { ProjectState, TokenDef } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { getTheme } from '@catalogue/index';
@@ -13,9 +13,10 @@ import { findTokenCycle } from '@engine/tokens';
 import { validateState } from '@engine/validate';
 import { RUNTIME_DIR, STYLES_DIR, effectiveTokens, generateProject, generateTokensCss } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
-import { THEME_BOOTSTRAP, THEME_TOGGLE_FILE } from '@generator/color-scheme';
+import { THEME_TOGGLE_FILE, themeBootstrap, themeStorageKey, themeToggleJs } from '@generator/color-scheme';
 import { colorSchemeMode, deriveDarkPalette, withDarkPalette } from '@shared/color-scheme';
-import { evaluatePairs } from '@shared/contrast';
+import { evaluatePairs, type ContrastPair } from '@shared/contrast';
+import { parseColor, rgbToOklab } from '@shared/color';
 import { tokensSummary } from '../../src/agent/context';
 import { fieldKey } from '../../src/renderer/src/lib/held';
 
@@ -47,6 +48,27 @@ describe('the dark palette made from the light one', () => {
     expect(failing(on, 'dark')).toEqual([]);
   });
 
+  it('turns the colors of a theme with roles of its own dark too, and keeps each hue', () => {
+    const theme: TokenDef[] = [
+      { id: 'color.paper', label: 'Paper', group: 'color', value: '#ffffff' },
+      { id: 'color.ink', label: 'Ink', group: 'color', value: '#222222' },
+      { id: 'color.sea', label: 'Sea', group: 'color', value: '#1f6fbf' }
+    ];
+    const pairs: ContrastPair[] = [{ id: 'ink', use: 'Ink on paper', fg: 'color.ink', bg: 'color.paper', state: 'rest', group: 'ink' }];
+    const dark = deriveDarkPalette(theme, theme, pairs);
+    const L = (id: string) => rgbToOklab(parseColor(String(dark[id]))!)[0];
+    expect(L('color.paper')).toBeLessThan(0.3);
+    expect(L('color.ink')).toBeGreaterThan(0.7);
+    expect(evaluatePairs(withDarkPalette(theme, dark), pairs).every((r) => r.status === 'pass')).toBe(true);
+    // A blue stays blue.
+    const [, a, b] = rgbToOklab(parseColor(String(dark['color.sea']))!);
+    const [, a0, b0] = rgbToOklab(parseColor('#1f6fbf')!);
+    expect(Math.abs(Math.atan2(b, a) - Math.atan2(b0, a0))).toBeLessThan(0.15);
+    // A color of the site's own keeps its light value.
+    const own: TokenDef = { id: 'color.custom-x', label: 'X', group: 'color', value: '#123456' };
+    expect(deriveDarkPalette([...theme, own], theme, pairs)).not.toHaveProperty('color.custom-x');
+  });
+
   it('keeps a role that follows another following it, within the dark palette', () => {
     const s = run(fresh(), { type: 'token.set', tokenId: 'color.brand-strong', value: { token: 'color.brand' } });
     const on = withMode(s, 'system');
@@ -69,6 +91,8 @@ describe('choosing the palettes', () => {
     const off = withMode(edited, 'single');
     expect(off.tokens).not.toHaveProperty('colorSchemeMode');
     expect(off.tokens.darkOverrides?.['color.background']).toBe('#000000');
+    // Turned on straight to the switch, it is made too.
+    expect(withMode(s, 'toggle').tokens.darkOverrides).toEqual(on.tokens.darkOverrides);
     // Back on (either way), as it was left.
     expect(withMode(off, 'toggle').tokens.darkOverrides?.['color.background']).toBe('#000000');
     const remade = run(edited, { type: 'token.setColorScheme', mode: 'system', regenerate: true });
@@ -83,6 +107,10 @@ describe('choosing the palettes', () => {
     expect(() => run(on, { type: 'token.set', tokenId: 'space.md', value: '20px', scheme: 'dark' })).toThrow(/Only colors/);
     expect(() => run(on, { type: 'token.set', tokenId: 'color.text', value: 'red; x', scheme: 'dark' })).toThrow();
     expect(() => run(on, { type: 'token.set', tokenId: 'color.text', value: { token: 'space.md' }, scheme: 'dark' })).toThrow(/color style/);
+    // A link must lead to a color further along too.
+    const dangling = structuredClone(on);
+    dangling.tokens.darkOverrides!['color.accent'] = { token: 'color.gone' };
+    expect(() => run(dangling, { type: 'token.set', tokenId: 'color.focus', value: { token: 'color.accent' }, scheme: 'dark' })).toThrow(/does not exist/);
     const linked = run(on, { type: 'token.set', tokenId: 'color.focus', value: { token: 'color.accent' }, scheme: 'dark' });
     expect(linked.tokens.darkOverrides?.['color.focus']).toEqual({ token: 'color.accent' });
     // The light palette is untouched by dark edits.
@@ -107,7 +135,7 @@ describe('choosing the palettes', () => {
     // A hand-edited loop is reported.
     const hand = structuredClone(on);
     hand.tokens.darkOverrides!['color.accent'] = { token: 'color.brand' };
-    expect(findTokenCycle(hand)).not.toBeNull();
+    expect(['color.brand', 'color.accent']).toContain(findTokenCycle(hand));
   });
 
   it('keeps the dark palette right when one of your own colors is replaced or removed', () => {
@@ -115,6 +143,11 @@ describe('choosing the palettes', () => {
     const created = applyOperations(s, [{ type: 'token.create', group: 'color', label: 'Sea green', value: '#2e8b57' }]);
     const sea = created.results[0].tokenId as string;
     s = run(created.state, { type: 'token.set', tokenId: sea, value: '#9fe0bb', scheme: 'dark' }, { type: 'token.set', tokenId: 'color.focus', value: { token: sea }, scheme: 'dark' });
+    // Used only by the dark palette, it still needs a replacement or its value kept.
+    expect(() => run(s, { type: 'token.remove', tokenId: sea })).toThrow(/is used 1 time/);
+    // Named in a dark color's CSS, it cannot be removed at all until that changes.
+    const mixed = run(s, { type: 'token.set', tokenId: 'color.muted', value: `color-mix(in srgb, var(--so-${sea.replace('.', '-')}) 50%, white)`, scheme: 'dark' });
+    expect(() => run(mixed, { type: 'token.remove', tokenId: sea, detach: true })).toThrow(/dark palette's "color\.muted"/);
     // Replaced: the dark palette's link moves with every other use.
     const replaced = run(s, { type: 'token.remove', tokenId: sea, replacementTokenId: 'color.accent' });
     expect(replaced.tokens.darkOverrides?.['color.focus']).toEqual({ token: 'color.accent' });
@@ -132,7 +165,9 @@ describe('choosing the palettes', () => {
     const home = s.pages[s.site.homePageId];
     const styled = run(s, { type: 'node.setStyle', owner: { kind: 'page', id: home.id }, nodeId: home.rootIds[0], scope: 'base', property: 'color', value: { token: sea } } as EditOperation);
     expect(() => run(styled, { type: 'token.remove', tokenId: sea, detach: true })).toThrow(/different color in the dark palette/);
-    expect(run(withMode(styled, 'single'), { type: 'token.remove', tokenId: sea, detach: true }).tokens.custom.some((t) => t.id === sea)).toBe(false);
+    // So too while the dark palette is turned off: turning it back on must find the page as it was.
+    expect(() => run(withMode(styled, 'single'), { type: 'token.remove', tokenId: sea, detach: true })).toThrow(/kept for when it is turned back on/);
+    expect(run(withMode(styled, 'single'), { type: 'token.remove', tokenId: sea, replacementTokenId: 'color.brand' }).tokens.custom.some((t) => t.id === sea)).toBe(false);
   });
 });
 
@@ -167,6 +202,7 @@ describe('what the site gets in each mode', () => {
     expect(css).toContain('\tcolor-scheme: light;\n}');
     expect(css).toContain('@media screen and (prefers-color-scheme: dark) {\n\t:root {\n\t\tcolor-scheme: dark;');
     expect(css).toContain(`\t\t--so-color-background: ${s.tokens.darkOverrides!['color.background']};`);
+    expect(css).toContain(`\t\t--so-color-text: ${s.tokens.darkOverrides!['color.text']};`);
     expect(css).toContain('@media print {\n\t:root {\n\t\tcolor-scheme: light;');
     expect(css).not.toContain('data-so-theme');
     // Only the stylesheet changes: no switch, no script.
@@ -177,13 +213,14 @@ describe('what the site gets in each mode', () => {
   it('adds the switch, its rules and the remembered choice for a site whose visitors switch', () => {
     const s = run(withMode(fresh(), 'toggle'), { type: 'token.set', tokenId: 'color.focus', value: { token: 'color.accent' }, scheme: 'dark' });
     const css = tokensCss(s);
-    expect(css).toContain('\t:root:not([data-so-theme="light"]) {');
+    expect(css).toContain('@media screen and (prefers-color-scheme: dark) {\n\t:root:not([data-so-theme="light"]) {');
     expect(css).toContain('@media screen {\n\t:root[data-so-theme="dark"] {');
     expect(css).toContain('\t\t--so-color-focus: var(--so-color-accent);');
     expect(css).toContain('\t.so-theme-toggle {\n\t\tdisplay: none !important;');
     const clean = files(s);
     const layout = clean.get('src/routes/+layout.svelte')!;
-    expect(layout).toContain(`<svelte:head>\n\t${THEME_BOOTSTRAP}`);
+    expect(layout).toContain(`<svelte:head>\n\t${themeBootstrap(themeStorageKey(s))}`);
+    expect(themeStorageKey(s)).toBe(`so-theme:${s.manifest.projectId}`);
     expect(layout).toContain(`import { startThemeToggle } from '../lib/siteorigin/runtime/${THEME_TOGGLE_FILE}';`);
     expect(layout).toContain('return startThemeToggle(() => text().themeToggle);');
     expect(clean.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).toContain('localStorage.setItem(KEY, next)');
@@ -193,6 +230,9 @@ describe('what the site gets in each mode', () => {
     const dev = files(s, true);
     expect(dev.get('src/routes/+layout.svelte')).not.toContain('localStorage');
     expect(dev.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).not.toContain('localStorage');
+    // Its presses ask the canvas for the other palette, which the bridge passes on.
+    expect(dev.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).toContain("new CustomEvent('siteorigin:color-scheme'");
+    expect(themeToggleJs('k', true)).toEqual(dev.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)!.replace(JSON.stringify(themeStorageKey(s)), '"k"'));
     expect(dev.get('src/routes/+layout.svelte')).toContain('startThemeToggle');
     for (const [path, source] of [...clean, ...dev])
       if (path.endsWith('.svelte')) for (const generate of ['server', 'client'] as const) expect(() => compile(source, { filename: path, generate, runes: true }), path).not.toThrow();
@@ -200,18 +240,24 @@ describe('what the site gets in each mode', () => {
 
   it('never writes an unsafe or broken dark declaration from a hand-edited document', () => {
     const s = withMode(fresh(), 'toggle');
-    s.tokens.darkOverrides = { 'color.text': '#fff; } body { visibility: hidden', 'color.muted': { token: 'space.md' }, 'space.md': '99px', 'color.border': 12 as never, 'color.nope': '#000' };
+    s.tokens.darkOverrides = { 'color.text': '#fff; } body { visibility: hidden', 'color.muted': { token: 'space.md' }, 'space.md': '99px', 'color.border': 12 as never, 'color.nope': '#000', 'color.focus': { token: 'color.gone' }, 'color.accent': '12px' };
     const css = generateTokensCss(s);
     expect(css).not.toContain('visibility');
     expect(css).not.toMatch(/--so-color-muted: var\(--so-space/);
     expect(css).not.toMatch(/\t\t--so-space-md/);
     expect(css).not.toContain('--so-color-border: 12');
     expect(css).not.toContain('--so-color-nope');
+    expect(css).not.toContain('color-gone');
+    expect(css).not.toContain('--so-color-accent: 12px');
     // Each one left out is said.
-    const warnings = validateState(s).filter((d) => d.severity === 'warning' && d.message.includes('dark palette')).map((d) => d.message);
-    expect(warnings).toHaveLength(4);
-    expect(warnings.join('\n')).toMatch(/"space\.md", which is not a color/);
-    expect(warnings.join('\n')).toMatch(/"color\.muted" follows "space\.md"/);
+    const said = validateState(s).filter((d) => d.message.includes('dark palette'));
+    expect(said.filter((d) => d.severity === 'warning')).toHaveLength(5);
+    expect(said.map((d) => d.message).join('\n')).toMatch(/"space\.md", which is not a color/);
+    // A link that leads nowhere is an error, as in the light palette, so no edit can bring one in.
+    expect(said.filter((d) => d.severity === 'error').map((d) => d.message)).toEqual([
+      `The dark palette's "color.muted" follows "space.md", which is not a color style.`,
+      `The dark palette's "color.focus" follows "color.gone", which does not exist.`
+    ]);
   });
 
   it('makes again only what a change of palettes reaches, the same bytes as a full run', () => {
@@ -223,6 +269,9 @@ describe('what the site gets in each mode', () => {
     }
     s = run(s, { type: 'token.set', tokenId: 'color.text', value: '#fafafa', scheme: 'dark' });
     expect([...generateProject(s, {}, cache)]).toEqual([...generateProject(s)]);
+    // A page reads no token, so a dark color leaves it as it was.
+    expect(cache.made).toContain('tokens.css');
+    expect(cache.made.some((k) => k.startsWith('page:'))).toBe(false);
   });
 });
 
@@ -233,11 +282,14 @@ describe('the assistant and held edits', () => {
     const text = tokensSummary(s).find((t) => t.id === 'color.text');
     expect(text).toMatchObject({ darkValue: s.tokens.darkOverrides!['color.text'], darkOverridden: true });
     expect(tokensSummary(s).find((t) => t.id === 'space.md')).not.toHaveProperty('darkValue');
+    const reset = run(s, { type: 'token.set', tokenId: 'color.text', value: null, scheme: 'dark' });
+    expect(tokensSummary(reset).find((t) => t.id === 'color.text')).toMatchObject({ darkValue: effectiveTokens(reset).find((t) => t.id === 'color.text')?.value, darkOverridden: false });
   });
 
   it('keeps a dark color and its light one as different fields', () => {
     const light: EditOperation = { type: 'token.set', tokenId: 'color.brand', value: '#000000' };
     expect(fieldKey([light])).not.toBe(fieldKey([{ ...light, scheme: 'dark' } as EditOperation]));
+    expect(fieldKey([{ ...light, scheme: 'dark' } as EditOperation])).toContain('["scheme","dark"]');
     expect(fieldKey([{ ...light, scheme: 'dark' } as EditOperation])).toBe(fieldKey([{ ...light, value: '#ffffff', scheme: 'dark' } as EditOperation]));
   });
 });

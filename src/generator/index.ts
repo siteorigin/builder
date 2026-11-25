@@ -57,6 +57,7 @@ import {
   textLinkLeadsToText,
   textStyleValue,
   tokenVar,
+  validateStyleValue,
   wideOnlyStyle,
   withColumnSizes
 } from '@shared/styles';
@@ -96,7 +97,7 @@ import { createSeoResolver, entryMetadata, pageMetadata, type SeoMetadata } from
 import { ogLocale, twitterHandle, type EffectiveSeo } from '@shared/seo';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
-import { THEME_BOOTSTRAP, THEME_TOGGLE_CSS, THEME_TOGGLE_FILE, themeToggleJs, usesThemeToggle } from './color-scheme';
+import { THEME_TOGGLE_CSS, THEME_TOGGLE_FILE, themeBootstrap, themeStorageKey, themeToggleJs, usesThemeToggle } from './color-scheme';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { notFoundSectionRoutes } from './checks';
@@ -529,7 +530,7 @@ function darkPaletteCss(state: ProjectState, mode: 'system' | 'toggle', light: T
     const v = darkValue(dark[t.id]);
     // A link must name a colour token, as the light palette's do; anything else (a hand edit) is left out.
     const target = v && typeof v === 'object' ? light.find((x) => x.id === v.token) : null;
-    if (v === null || (typeof v === 'object' && target?.group !== 'color')) continue;
+    if (v === null || (typeof v === 'object' && target?.group !== 'color') || (typeof v === 'string' && validateStyleValue('color', v))) continue;
     const decl = `${tokenVar(t.id)}: ${tokenCssValue(v)}`;
     if (safeDecl(decl)) decls.push(`\t\t${decl};`);
   }
@@ -3132,7 +3133,7 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const toggleStart = toggle
     ? `\n\t// The visitor's Light/Dark switch, in the shared header while the page shows it.\n\t$effect(() => {\n\t\tif (!showHeader) return;\n\t\treturn startThemeToggle(() => text().themeToggle);\n\t});`
     : '';
-  const bootstrap = toggle && !opts.instrument ? `\n\t${THEME_BOOTSTRAP}` : '';
+  const bootstrap = toggle && !opts.instrument ? `\n\t${themeBootstrap(themeStorageKey(state))}` : '';
   const devBridge = opts.instrument
     ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tif (typeof window !== 'undefined' && !window.__siteoriginBridge && !window.__siteoriginHold) {\n\t\twindow.__siteoriginHold = (e) => (e.preventDefault(), e.stopImmediatePropagation());\n\t\tdocument.addEventListener('submit', window.__siteoriginHold, true);\n\t}\n\tonMount(() => {\n\t\timport('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => window.dispatchEvent(new CustomEvent('siteorigin:navigated')));`
     : '';
@@ -3869,7 +3870,7 @@ function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, 
   // starts it is written after it. Like search, asked of the plain state: it decides only whether the file exists.
   if (usesAppear(state)) files.set(`${RUNTIME_DIR}/${APPEAR_FILE}`, appearJs(!!opts.instrument));
   // The visitor's Light/Dark switch, while the site's palettes have one; the layout that starts it is written after it.
-  if (usesThemeToggle(state)) files.set(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`, themeToggleJs(!!opts.instrument));
+  if (usesThemeToggle(state)) files.set(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`, themeToggleJs(themeStorageKey(state), !!opts.instrument));
   files.set(`${RUNTIME_DIR}/not-found.js`, NOT_FOUND_JS);
   files.set(`${STYLES_DIR}/tokens.css`, file('tokens.css', generateTokensCss));
   const fontNotice = file('fonts/NOTICE.txt', (s) => generateFontNotice(s) ?? '');

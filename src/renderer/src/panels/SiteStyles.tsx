@@ -810,14 +810,15 @@ export function SiteStyles() {
             <ChevronRight />
           </button>
         )}
-        <ColorPick value={value} disabled={!!follows} onPick={(next) => setShown(t.id, next, 'picker')} label={`${t.label}${darkShown ? ' dark' : ''} color`} />
+        {/* Each palette has its own picker and field: a pick or a draft under way never carries over to the other. */}
+        <ColorPick key={palette} value={value} disabled={!!follows} onPick={(next) => setShown(t.id, next, 'picker')} label={`${t.label}${darkShown ? ' dark' : ''} color`} />
         <div className="ss-color-text">
           <div className="ss-name">
             <NameWithReset
-              label={compact ? `${t.label} color` : t.label}
+              label={compact ? `${t.label}${darkShown ? ' (dark colors)' : ''} color` : t.label}
               reset={
                 shownChanged(t.id) &&
-                (darkShown ? <ResetDot label={`${t.label} (dark colors)`} from="light" theme={`color, ${hex(t.id)}`} onReset={() => setShown(t.id, null)} /> : <ResetDot label={t.label} theme={`color, ${themeHex(t.id)}`} onReset={() => set(t.id, null)} />)
+                (darkShown ? <ResetDot label={`${t.label} (dark colors)`} from="light" theme={refOf(byId(t.id)?.value) ? `color, ${show('color', null, byId(t.id)?.value)} in the dark colors` : `color, ${hex(t.id)}`} onReset={() => setShown(t.id, null)} /> : <ResetDot label={t.label} theme={`color, ${themeHex(t.id)}`} onReset={() => set(t.id, null)} />)
               }
             />
           </div>
@@ -828,7 +829,7 @@ export function SiteStyles() {
             {value || '—'}
           </span>
         ) : (
-          <DraftInput className="input sm mono ss-hex" value={value} onCommit={(v) => (v.trim() ? setShown(t.id, v.trim()) : false)} ariaLabel={`${t.label}${darkShown ? ' dark' : ''} color value`} />
+          <DraftInput key={palette} className="input sm mono ss-hex" value={value} onCommit={(v) => (v.trim() ? setShown(t.id, v.trim()) : false)} ariaLabel={`${t.label}${darkShown ? ' dark' : ''} color value`} />
         )}
         {/* Below the row, under the name: what it follows, and what is unreadable. Never squeezed beside the value. */}
         {follows && (

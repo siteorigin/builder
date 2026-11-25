@@ -984,8 +984,12 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     for (const [id, v] of Object.entries(dark)) {
       const ref = darkValue(v);
       if (groupOf.get(id) !== 'color') out.push({ severity: 'warning', code: 'TOKEN_MISSING', message: `The dark palette has a color for "${id}", which is not a color of this site, so it is left out.` });
-      else if (ref === null) out.push({ severity: 'warning', code: 'TOKEN_MISSING', message: `The dark palette's color for "${id}" is not a color, so it shows its light color.` });
-      else if (typeof ref === 'object' && groupOf.get(ref.token) !== 'color') out.push({ severity: 'warning', code: 'TOKEN_MISSING', message: `The dark palette's "${id}" follows "${ref.token}", which is not a color of this site, so it shows its light color.` });
+      else if (ref === null || (typeof ref === 'string' && validateStyleValue('color', ref)))
+        out.push({ severity: 'warning', code: 'TOKEN_MISSING', message: `The dark palette's color for "${id}" is not a color, so it shows its light color.` });
+      // A link that leads nowhere is an error, as one in the light palette is: an edit (a theme without the color it
+      // follows) cannot bring one in.
+      else if (typeof ref === 'object' && !tokenIds.has(ref.token)) out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `The dark palette's "${id}" follows "${ref.token}", which does not exist.` });
+      else if (typeof ref === 'object' && groupOf.get(ref.token) !== 'color') out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `The dark palette's "${id}" follows "${ref.token}", which is not a color style.` });
     }
   const cycle = findTokenCycle(state);
   if (cycle) out.push({ severity: 'error', code: 'TOKEN_CYCLE', message: `The site style "${cycle}" refers back to itself through other styles.` });

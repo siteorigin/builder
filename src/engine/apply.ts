@@ -2449,6 +2449,8 @@ function literalTokenUses(state: ProjectState, tokenId: string): string[] {
   }
   for (const [id, v] of [...Object.entries(state.tokens.overrides), ...state.tokens.custom.map((c) => [c.id, c.value] as const)])
     if (id !== tokenId && typeof v === 'string' && re.test(v)) out.add(`the site style "${id}"`);
+  // The dark palette's colours too, kept while it is turned off, so turning it back on finds nothing missing.
+  for (const [id, v] of Object.entries(state.tokens.darkOverrides ?? {})) if (id !== tokenId && typeof v === 'string' && re.test(v)) out.add(`the dark palette's "${id}"`);
   return [...out];
 }
 
@@ -2485,16 +2487,18 @@ function tokenRemove(state: ProjectState, op: Op<'token.remove'>): OpResult {
     // colour that follows it keeps each palette's value in that palette.
     const dark = t.group === 'color' && state.tokens.darkOverrides ? resolvedTokenValue(state, t.id, 'dark') : literal;
     const differs = JSON.stringify(dark) !== JSON.stringify(literal);
-    if (differs && hasDarkPalette(state.tokens)) {
+    // Kept while the dark palette is turned off too: turning it back on must find each use as it was.
+    if (differs) {
       let direct = 0;
       forEachTokenRef(state, (id, site) => id === t.id && site.kind === 'style' && direct++);
-      if (direct) fail(`"${t.label}" has a different color in the dark palette, so the places that use it cannot keep one color for both. Choose a replacement color.`);
+      if (direct)
+        fail(`"${t.label}" has a different color in the dark palette${hasDarkPalette(state.tokens) ? '' : ' (kept for when it is turned back on)'}, so the places that use it cannot keep one color for both. Choose a replacement color.`);
     }
     const darkMap = state.tokens.darkOverrides;
     forEachTokenRef(state, (id, site) => {
       if (id !== t.id) return;
       // A colour whose light value followed it, and has no dark value of its own, followed it in the dark palette too.
-      if (differs && darkMap && site.kind === 'token' && site.scheme === 'light' && site.tokenId && !Object.hasOwn(darkMap, site.tokenId)) darkMap[site.tokenId] = clone(dark) as string;
+      if (differs && darkMap && typeof dark === 'string' && site.kind === 'token' && site.scheme === 'light' && site.tokenId && !Object.hasOwn(darkMap, site.tokenId)) darkMap[site.tokenId] = dark;
       site.replace(clone(site.scheme === 'dark' ? dark : literal));
     });
   }

@@ -571,6 +571,10 @@ describe('collections format', () => {
     expect(r).toMatchObject({ from: 7, to: 16, applied: ['collections', 'ui-state', 'style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters', 'style-strength', 'color-schemes'] });
     expect(r.state.collections.posts.settings.schemaVersion).toBe(16);
     expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(16);
+    expect(r.state.tokens.schemaVersion).toBe(16);
+    // The palettes step changes nothing in the tokens document but its version.
+    expect(r.state.tokens).not.toHaveProperty('colorSchemeMode');
+    expect(r.state.tokens).not.toHaveProperty('darkOverrides');
     // Nothing else changes.
     expect({ ...r.state.collections.posts.entries.en_spring, schemaVersion: 7 }).toEqual(s.collections.posts.entries.en_spring);
     expect({ ...r.state.collections.posts.settings, schemaVersion: 7 }).toEqual(s.collections.posts.settings);

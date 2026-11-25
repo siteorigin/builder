@@ -97,24 +97,33 @@ function madeColor(L: number, from: { h: number; c: number } | null, chroma: num
   return toHex6({ r, g, b, a: 1 });
 }
 
+/** A theme colour of no known role: mirrored in lightness, so a light ground turns dark and dark ink turns light. */
+const mirrored = (L: number) => Math.min(0.96, Math.max(0.12, 1.1 - L));
+
 /**
  * A dark palette made from the light one: each common colour role at its dark lightness, keeping the hue of the
- * colour it has now (the theme's, when the site's own cannot be read). A role that follows another colour keeps
- * following it, where that still reads well. Colours of the site's own and roles the theme does not have keep their
- * light value. The result is checked against the theme's contrast pairs: when a kept link or a strong hue spoils
- * one, the palette is made again without links, then without hue. Pure and deterministic, so the same light palette
- * always makes the same dark one.
+ * colour it has now (the theme's, when the site's own cannot be read). Any other colour of the theme is mirrored in
+ * lightness. A colour that follows another keeps following it, where that still reads well. Colours of the site's
+ * own keep their light value. The result is checked against the theme's contrast pairs: when a kept link or a strong
+ * hue spoils one, the palette is made again without links, then without hue; what still fails shows in Site styles.
+ * Pure and deterministic, so the same light palette always makes the same dark one.
  */
 export function deriveDarkPalette(light: readonly TokenDef[], themeDefaults: readonly TokenDef[], pairs: readonly ContrastPair[] = []): Record<string, DarkColorValue> {
-  const colors = light.filter((t) => t.group === 'color');
-  const ids = new Set(colors.map((t) => t.id));
+  const themeIds = new Set(themeDefaults.filter((t) => t.group === 'color').map((t) => t.id));
+  const colors = light.filter((t) => t.group === 'color' && themeIds.has(t.id));
+  /** The lightness a theme colour gets: its role's, or its own mirrored; none for one that cannot be read. */
+  const lightness = (id: string): number | undefined => {
+    if (Object.hasOwn(ROLE_LIGHTNESS, id)) return ROLE_LIGHTNESS[id];
+    const rgb = parseColor(resolvedCss(light, id) ?? resolvedCss(themeDefaults, id) ?? '');
+    return rgb ? mirrored(rgbToOklab(rgb)[0]) : undefined;
+  };
   const attempt = (keepLinks: boolean, chroma: number): Record<string, DarkColorValue> => {
     const out: Record<string, DarkColorValue> = {};
     for (const t of colors) {
-      const L = Object.hasOwn(ROLE_LIGHTNESS, t.id) ? ROLE_LIGHTNESS[t.id] : undefined;
+      const L = lightness(t.id);
       if (L === undefined) continue;
       const ref = refOf(t.value);
-      if (keepLinks && ref && ids.has(ref) && Object.hasOwn(ROLE_LIGHTNESS, ref)) continue;
+      if (keepLinks && ref && themeIds.has(ref)) continue;
       out[t.id] = madeColor(L, hueOf(resolvedCss(light, t.id)) ?? hueOf(resolvedCss(themeDefaults, t.id)), chroma);
     }
     return out;
