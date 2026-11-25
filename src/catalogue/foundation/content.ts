@@ -266,6 +266,8 @@ export const tabsShowcase = managed({
   category: 'content',
   tags: ['tabs', 'tabbed', 'showcase', 'services', 'features', 'process', 'steps', 'switcher', 'product tour'],
   icon: 'layout-panel-top',
+  // Six tabs of image, copy and action cost a small model's page tool about 1.3 KB: offered there once a project has it.
+  fullListingOnly: true,
   properties: {
     ...P.group('Text', {
       eyebrow: P.str('Eyebrow', 'How we work'),

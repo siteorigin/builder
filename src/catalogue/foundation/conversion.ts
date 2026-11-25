@@ -90,6 +90,9 @@ export const pricingToggle = managed({
   category: 'conversion',
   tags: ['pricing', 'plans', 'subscription', 'monthly', 'annual', 'yearly', 'billing', 'toggle', 'switch', 'membership'],
   icon: 'toggle-right',
+  // Its plans, two periods' prices and the switch cost a small model's page tool about 1.1 KB: offered there once a
+  // project has it.
+  fullListingOnly: true,
   properties: {
     ...P.group('Text', {
       eyebrow: P.str('Eyebrow', 'Memberships'),
