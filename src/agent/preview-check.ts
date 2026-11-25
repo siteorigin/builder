@@ -98,6 +98,8 @@ const LOOK: Record<OperationType, Look> = {
   'component.removeVariant': 'shared',
   'component.setSlot': 'shared',
   'component.removeSlot': 'shared',
+  // The design's container becomes a slot and every placement gets its children, or loses them.
+  'component.containerToSlot': 'shared',
   'component.setState': 'shared',
   'component.removeState': 'shared',
   'theme.apply': 'shared',
