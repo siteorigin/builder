@@ -5,6 +5,7 @@
  * container they read. Detaching, copying, dropping and image sizes read them too.
  */
 import { describe, expect, it } from 'vitest';
+import { compile } from 'svelte/compiler';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import type { AssetRecord, ComponentDefinition, ElementNode, InstanceNode, ProjectState } from '@shared/types';
@@ -17,6 +18,7 @@ import { defFile, generateProject, nodeClass } from '@generator/index';
 import { incomingOrder } from '../../src/renderer/src/lib/insert-drop';
 import { captureStyle, planStylePaste } from '../../src/renderer/src/lib/style-copy';
 import { insertOps } from '../../src/renderer/src/lib/insert-at';
+import { checkSvelteSource } from '../../src/main/codecheck';
 import { containerSite, mediaCard } from './container-queries';
 
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -230,6 +232,20 @@ describe('the stylesheet', () => {
     // A container rule that only paints changes nothing.
     const u = applyOperations(r.state, [{ type: 'node.setStyle', owner: owner0, nodeId: grid, scope: 'cq-wide', property: 'background', value: '#eeeeee' }]).state;
     expect(sizes(u)).toBe('(min-width: 1024px) 300px, (min-width: 768px) 100vw, 100vw');
+  });
+});
+
+describe('code converted from a placement', () => {
+  it('keeps its container rules, in a stylesheet Svelte compiles and checks clean', async () => {
+    const site = containerSite();
+    const s = apply(site.s, [{ type: 'node.setStyle', owner: owner(site.s), nodeId: site.columns.sideCard.id, partId: 'root', scope: 'phone', property: 'hidden', value: true }]);
+    const r = applyOperations(s, [{ type: 'component.convertToCode', owner: owner(s), nodeId: site.columns.sideCard.id }]);
+    const code = r.state.components[r.results[0].definitionId as string];
+    const source = code.source!;
+    expect(source).toContain(`@container ${CONTAINER_QUERIES['cq-narrow']}`);
+    expect(source).toMatch(/flex-direction: column/);
+    expect(() => compile(source, { filename: code.sourcePath, generate: 'server', runes: true })).not.toThrow();
+    expect((await checkSvelteSource(source, { filename: code.sourcePath })).filter((p) => p.severity === 'error')).toEqual([]);
   });
 });
 
