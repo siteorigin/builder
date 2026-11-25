@@ -406,7 +406,8 @@ describe('Optimize with AI on a picked document', () => {
       async () => (saves.push('flush'), true),
       async () => {
         saves.push('all');
-        // What the writer held lands in the project before the question is worked out.
+        // What the writer held lands in the project a moment later, before the question is worked out.
+        await new Promise((r) => setTimeout(r, 0));
         view.setState({ snapshot: snap(withExcerpt('en_spring', 'Evening wheel classes.'), 2) });
         return true;
       },
@@ -417,12 +418,14 @@ describe('Optimize with AI on a picked document', () => {
     expect(saves).toEqual(['all']);
     expect(h?.text).toContain('Excerpt: Evening wheel classes.');
     // A refused save still asks, from what the project holds: the writer says what could not be saved.
+    view.setState({ snapshot: snap(withExcerpt('en_spring', 'Saved before.'), 3) });
     const refused = writer.setOpenWriter(
-      async () => false,
-      async () => false,
+      async () => (saves.push('refused text'), false),
+      async () => (saves.push('refused'), false),
       { collectionId: 'posts', entryId: 'en_spring' }
     );
-    expect((await handoff.postPreviewHandoff(spring, {}, 'view'))?.mode).toBe('ask');
+    expect((await handoff.postPreviewHandoff(spring, {}, 'view'))?.text).toContain('Excerpt: Saved before.');
+    expect(saves).toEqual(['all', 'refused']);
     refused();
     off();
   });
@@ -456,11 +459,30 @@ describe('Optimize with AI on a picked document', () => {
       land();
       expect(await asked).toBeNull();
     }
+    // Away and back to the same post before the save lands: another request may have been made meanwhile.
+    view.setState({ leftTab: 'seo', modal: null, snapshot: snap(blog), seoSubject: spring });
+    asked = handoff.postPreviewHandoff(spring, {}, 'view');
+    await Promise.resolve();
+    view.setState({ seoSubject: winter });
+    view.setState({ seoSubject: spring });
+    land();
+    expect(await asked).toBeNull();
     off();
-    // Not the view's document, or gone from the project: nothing is asked or saved.
+    // Not the view's document: nothing is asked.
     view.setState({ leftTab: 'seo', modal: null, snapshot: snap(blog), seoSubject: winter });
     expect(await handoff.postPreviewHandoff(spring, {}, 'view')).toBeNull();
-    expect(await handoff.postPreviewHandoff({ ...spring, entryId: 'en_gone' }, {}, 'view')).toBeNull();
+    // Gone from the project while chosen and held in the writer: nothing is asked, and nothing saved.
+    const gone: Entry = { ...spring, entryId: 'en_gone' };
+    const saves: string[] = [];
+    const held = writer.setOpenWriter(
+      async () => (saves.push('flush'), true),
+      async () => (saves.push('all'), true),
+      { collectionId: 'posts', entryId: 'en_gone' }
+    );
+    view.setState({ seoSubject: gone });
+    expect(await handoff.postPreviewHandoff(gone, {}, 'view')).toBeNull();
+    expect(saves).toEqual([]);
+    held();
   });
 
   it('from the writer, asks only while the writer is in front on that post', async () => {
@@ -471,23 +493,22 @@ describe('Optimize with AI on a picked document', () => {
       { collectionId: 'posts', entryId: 'en_spring' }
     );
     expect((await handoff.postPreviewHandoff(spring, { title: 'Spring wheel classes' }, 'writer'))?.text).toContain('Search title now: Spring wheel classes');
+    // About another post than the one in front: nothing.
+    expect(await handoff.postPreviewHandoff(winter, {}, 'writer')).toBeNull();
     // The writer's previews are not the view's: with the view in front they ask nothing.
     view.setState({ leftTab: 'seo' });
     expect(await handoff.postPreviewHandoff(spring, {}, 'writer')).toBeNull();
     off();
   });
 
-  it('opens the chat about a page picked in the view and leaves the view in front', async () => {
+  it('opens the page picked in the view, out of the view, with the request about it in the chat', async () => {
     view.setState({ seoSubject: { kind: 'page', pageId: about }, mode: 'preview' });
     const h = previewHandoff(blog, { kind: 'page', pageId: about })!;
     expect(await handoff.openSeoChat(h)).toBe(true);
     const s = view.getState();
-    expect([s.leftTab, s.pageId, s.mode, s.rightTab, s.dockOpen, s.chatMode]).toEqual(['seo', home, 'preview', 'chat', true, 'edit']);
+    // The page is on the canvas, so the request stays with it whatever the view shows next.
+    expect([s.leftTab, s.pageId, s.mode, s.rightTab, s.dockOpen, s.chatMode]).toEqual(['pages', about, 'edit', 'chat', true, 'edit']);
     expect(s.chatContextEnabled).toEqual({ page: true, scope: 'page' });
     expect(s.chatDrafts).toEqual({ c_1: h.text });
-    // About another page than the one chosen there (a finding's Fix with AI), the page opens as before.
-    view.setState({ seoSubject: { kind: 'page', pageId: contact }, chatDrafts: {} });
-    expect(await handoff.openSeoChat(h)).toBe(true);
-    expect([view.getState().leftTab, view.getState().pageId, view.getState().mode]).toEqual(['pages', about, 'edit']);
   });
 });

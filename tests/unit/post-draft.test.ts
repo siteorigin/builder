@@ -310,8 +310,9 @@ describe('saving the open post from elsewhere', () => {
       winter
     );
     expect(openWriterPost()).toEqual(winter);
-    // Another post is held: left alone.
+    // Another post is held, or one of the same ID in another collection: left alone.
     expect(await savePostIfOpen(spring)).toBe(true);
+    expect(await savePostIfOpen({ collectionId: 'news', entryId: 'en_winter' })).toBe(true);
     expect(saved).toEqual([]);
     // That post: everything it holds, its fields too, and what could not be saved says so.
     expect(await savePostIfOpen(winter)).toBe(false);

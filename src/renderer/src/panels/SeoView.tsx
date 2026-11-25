@@ -5,6 +5,7 @@ import type { ProjectState } from '@shared/types';
 import { setState, useStore } from '../store';
 import { seoDocument, seoDocuments, seoSubjectKey, type SeoDocument } from '../lib/seo-view';
 import { SeoPreview, useDocumentPreview, useTypedSeo } from './SeoPreview';
+import type { TypedSeo } from '../lib/seo-preview';
 
 /**
  * The SEO view's list (#700), in the sidebar: every page of the site in its page order, then each collection's entries
@@ -92,14 +93,28 @@ function kindOf(d: SeoDocument, collectionName: string | undefined): string {
 
 /**
  * The chosen document's previews at the view's width (#701): its search result, link preview and structured data,
- * picked with the surface selector above them, read from the same answers as the previews beside its settings. Text
- * typed into its fields and not saved yet is laid over the saved settings, as there. One per document and opening (see
- * SeoView's key), so nothing of one document (its surface, its typed text, its structured data) shows for another.
+ * picked with the surface selector above them, read from the same answers as the previews beside its settings, with
+ * `typed` (text typed into its fields and not saved yet) laid over the saved settings, as there.
  */
-function SeoDocumentPreviews({ state, doc, shown }: { state: ProjectState; doc: SeoDocument; shown: boolean }) {
-  const { typed } = useTypedSeo(doc.key);
+function SeoViewPreviews({ state, doc, typed, shown }: { state: ProjectState; doc: SeoDocument; typed: TypedSeo; shown: boolean }) {
   const { overlay, doc: preview } = useDocumentPreview(state, doc.subject, typed);
   return <SeoPreview state={state} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} place="view" />;
+}
+
+/**
+ * One document in the view, which holds what is typed for it and not saved yet: one per document and opening (see
+ * SeoView's key), so nothing of one document (its surface, its typed text, its structured data) shows for another. Its
+ * fields will report through `on` what they show (useTypedSeo).
+ */
+function SeoViewDocument({ state, doc, collection, shown }: { state: ProjectState; doc: SeoDocument; collection: string | undefined; shown: boolean }) {
+  const { typed } = useTypedSeo(doc.key);
+  return (
+    <div className="seo-doc" data-seo-doc={doc.key}>
+      <p className="seo-doc-kind">{kindOf(doc, collection)}</p>
+      {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published.</p>}
+      <SeoViewPreviews state={state} doc={doc} typed={typed} shown={shown} />
+    </div>
+  );
 }
 
 /**
@@ -133,11 +148,7 @@ export function SeoView({ shown }: { shown: boolean }) {
       </div>
       <div className="seo-scroll">
         {doc && state && snap ? (
-          <div className="seo-doc" key={`${snap.workspaceKey}\n${doc.key}`} data-seo-doc={doc.key}>
-            <p className="seo-doc-kind">{kindOf(doc, collection)}</p>
-            {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published.</p>}
-            <SeoDocumentPreviews state={state} doc={doc} shown={shown} />
-          </div>
+          <SeoViewDocument key={`${snap.workspaceKey}\n${doc.key}`} state={state} doc={doc} collection={collection} shown={shown} />
         ) : (
           <div className="seo-none">
             <Search aria-hidden="true" />
