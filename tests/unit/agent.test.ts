@@ -3476,6 +3476,22 @@ describe('search and AI-agent settings (#598)', () => {
     });
   }
 
+  it('applies a page and a site call sent together in one reply, each on the revision the other left', async () => {
+    const env = await setup([
+      () => [calls(['t1', 'update_page_seo', { pageId: '/about/', description: 'Who we are.' }], ['t2', 'update_site_seo', { description: 'A neighbourhood bakery.', llmsFull: true }])],
+      (req) => {
+        const results = req.items.filter((i) => (i as { kind?: string }).kind === 'tool_result').map((i) => JSON.parse((i as { content: string }).content));
+        expect(results.map((r) => r.ok)).toEqual([true, true]);
+        return finish('Done.');
+      }
+    ]);
+    const { result } = await env.run('Describe the About page and the site');
+    expect(result?.status).toBe('completed');
+    expect(env.session.state.pages[routeId(env.session.state, '/about/')].seo.description).toBe('Who we are.');
+    expect(env.session.state.site).toMatchObject({ description: 'A neighbourhood bakery.', llmsFull: true });
+    expect(env.session.revision).toBe(2);
+  });
+
   it('clears with "" and null, and resets a crawler to its base with "default"', async () => {
     let middle: ProjectState | null = null;
     const env = await setup([
