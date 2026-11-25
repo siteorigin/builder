@@ -20,6 +20,9 @@ export type RuntimeStatus =
   | { state: 'ready'; url: string }
   | { state: 'error'; message: string; detail?: string };
 
+/** How long a save waits for the preview to say it holds its updates before it goes ahead without. */
+export const HOLD_ACK_MS = 500;
+
 function workerPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), 'runtime-worker.js');
 }
@@ -253,6 +256,9 @@ export class DevServer {
   private stopped = false;
   /** Ends a start still waiting for its process: a stopped server has nothing left to wait for. */
   private settleStart: (() => void) | null = null;
+  /** Holds asked of the worker, answered when it holds its updates. */
+  private holdAcks = new Map<string, () => void>();
+  private holdCount = 0;
 
   /** `mayRestart` is asked before a process that stopped unexpectedly is started again in the same folder. */
   constructor(
@@ -296,10 +302,11 @@ export class DevServer {
         clearTimeout(timer);
         resolve();
       };
-      proc.on('message', (m: { type: string; url?: string; message?: string; level?: string }) => {
+      proc.on('message', (m: { type: string; url?: string; message?: string; level?: string; id?: string }) => {
         // A process that has been stopped or replaced no longer speaks for this server.
         if (this.proc !== proc) return;
-        if (m.type === 'ready') {
+        if (m.type === 'held') this.holdAcks.get(String(m.id))?.();
+        else if (m.type === 'ready') {
           clearTimeout(timer);
           this.restarts = 0;
           this.set({ state: 'ready', url: m.url! });
@@ -341,6 +348,44 @@ export class DevServer {
 
   notifyRevision(revision: number) {
     this.proc?.postMessage({ type: 'revision', revision });
+  }
+
+  /**
+   * Ask the preview to hold its hot updates while a batch of files lands, so the page takes the batch as one update
+   * (src/runtime/publication-gate.ts). Resolves once the preview holds them, or has not said so in time, with the call
+   * that hands it the files the batch changed (project-relative). Nothing is held while no preview is running.
+   */
+  async hold(): Promise<(files: string[]) => void> {
+    const proc = this.proc;
+    if (!proc || this.status.state !== 'ready') return () => {};
+    const id = String(++this.holdCount);
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(done, HOLD_ACK_MS);
+      const acks = this.holdAcks;
+      function done() {
+        clearTimeout(timer);
+        acks.delete(id);
+        resolve();
+      }
+      acks.set(id, done);
+      try {
+        proc.postMessage({ type: 'hold', id });
+      } catch {
+        done();
+      }
+    });
+    let released = false;
+    return (files) => {
+      if (released) return;
+      released = true;
+      // A worker stopped or replaced meanwhile held nothing of this server's; one that ends its holds on its own.
+      if (this.proc !== proc) return;
+      try {
+        proc.postMessage({ type: 'release', id, files });
+      } catch {
+        /* the process is gone */
+      }
+    };
   }
 
   private stopping: Promise<void> | null = null;

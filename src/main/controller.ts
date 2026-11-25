@@ -854,6 +854,12 @@ export class Controller {
       if (!this.stage) void this.dev?.stop();
       void this.startRuntime().catch(() => undefined);
     });
+    // A save's files reach the preview as one update (#735). A preview of a private copy holds while the copy is
+    // brought up to date instead (syncStage).
+    session.previewHold = async () => {
+      const dev = this.session === session && !this.stage ? this.dev : null;
+      return dev ? dev.hold() : () => {};
+    };
     // The Recent projects entry follows a rename as soon as it is made, and an undo of one, or one made outside. A
     // working copy keeps its own name through them (#176).
     let listedName = projectDisplayName(session.state);
@@ -1008,7 +1014,15 @@ export class Controller {
       .then(async () => {
         if (!stage || this.stage !== stage || this.session !== session || this.stageTicket !== ticket) return;
         const revision = session.revision;
-        await syncPreviewStage(session.dir, stage);
+        // The copy's files reach its preview as one update, as a save's do.
+        const dev = this.dev;
+        const release = dev ? await dev.hold() : null;
+        let copied: string[] = [];
+        try {
+          copied = await syncPreviewStage(session.dir, stage);
+        } finally {
+          release?.(copied);
+        }
         this.filesChangedAt = Date.now();
         if (this.stage === stage) this.dev?.notifyRevision(revision);
       })
