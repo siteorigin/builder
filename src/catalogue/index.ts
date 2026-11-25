@@ -69,6 +69,10 @@ export function themePinProblem(state: { site: { themeId: string }; themeLock?: 
   // An installed pack is only used with the exact release the project recorded (theme.apply records it).
   if (pack.source === 'user' && !lock?.digest)
     return `This project uses the installed theme "${id}", but its theme lock does not record which copy. Switch to the theme again in a version of the project that records it, or restore siteorigin/theme-lock.json.`;
+  // A project made with an installed pack whose ID a theme that ships with the app now has: the built-in theme is
+  // another design under the same name, so it never stands in for the installed one.
+  if (lock?.digest && pack.source !== 'user')
+    return `This project uses an installed theme "${id}" ${lock.version}, but SiteOrigin Builder now has a built-in theme with that ID, which is a different design. Open the project in the version of SiteOrigin Builder it was made with and switch it to another theme to edit it here.`;
   if (lock?.digest && pack.version === lock.version && pack.digest !== lock.digest)
     return `This project uses the theme "${id}" ${lock.version}, but the installed pack with that version is a different copy. Reinstall the copy the site was made with, or a newer version, and restart SiteOrigin Builder to edit it.`;
   return null;

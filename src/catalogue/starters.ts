@@ -2,8 +2,9 @@ import type { GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, PageDoc,
 import { SCHEMA_VERSION, GENERATOR_VERSION } from '@shared/types';
 import { installComponent, makeInstance } from '@engine/install';
 import { newId } from '@shared/ids';
-import { getTheme, themeLockEntry } from './index';
+import { defaultTheme, findTheme, getTheme, themeLockEntry } from './index';
 import { canonicalRich } from './dsl';
+import { contractConflicts } from '@engine/theme-updates';
 import { TEMPLATE_VERSION } from './fonts';
 
 export type StarterId = 'business' | 'blank';
@@ -45,9 +46,9 @@ function page(id: string, title: string, route: string, nodes: GraphNode[], seo:
   return { schemaVersion: SCHEMA_VERSION, id, title, route, seo, showHeader: true, showFooter: true, rootIds, nodes: map };
 }
 
-function emptyState(name: string, themeId = 'foundation'): ProjectState {
+function emptyState(name: string, themeId?: string): ProjectState {
   // The theme the site records is the one it is made with, even when the one asked for is not installed here.
-  const theme = getTheme(themeId);
+  const theme = themeId === undefined ? defaultTheme() : getTheme(themeId);
   return {
     manifest: {
       schemaVersion: SCHEMA_VERSION,
@@ -88,8 +89,51 @@ function tree(node: InstanceNode): NodeTree {
   return { rootIds: [node.id], nodes: { [node.id]: node } };
 }
 
-export function createStarterState(starter: StarterId, siteName: string, withSampleImages: boolean): ProjectState {
-  const s = emptyState(siteName);
+/**
+ * Why a new project cannot start from `starter` on this theme (the default theme without one), or null when it can.
+ * Only built-in themes are certain to have every section a starter places; an installed pack may lack some.
+ */
+export function starterProblem(starter: StarterId, themeId?: string): string | null {
+  const theme = themeId === undefined ? defaultTheme() : findTheme(themeId);
+  if (!theme) return `The theme "${themeId}" is not installed. Choose another theme.`;
+  const name = STARTERS.find((s) => s.id === starter)?.name ?? starter;
+  const problem = (why: string) => `The ${theme.name} theme cannot make the ${name}: ${why} Choose another theme or starter.`;
+  try {
+    createStarterState(starter, 'Check', false, theme.id);
+  } catch (e) {
+    return problem((e as Error).message);
+  }
+  // The starters are written for Foundation's contracts: each section they place must take what they set in it, as a
+  // switch from Foundation to this theme would require (the properties, lists and variant options they fill in).
+  const reference = findTheme('foundation') ?? defaultTheme();
+  if (reference.id === theme.id) return null;
+  let made: ProjectState;
+  try {
+    made = createStarterState(starter, 'Check', false, reference.id);
+  } catch {
+    // Nothing to compare with (a fallback theme without this starter's sections): the dry run above is the check.
+    return null;
+  }
+  try {
+    for (const tree of [...Object.values(made.pages), made.site.shell.header, made.site.shell.footer])
+      for (const n of Object.values(tree.nodes)) {
+        if (n.kind !== 'instance') continue;
+        const def = made.components[n.definitionId];
+        const next = theme.components.find((c) => c.componentId === def.componentId);
+        if (!next) return problem(`it has no ${def.name}.`);
+        const conflicts = contractConflicts(made, def, next);
+        if (conflicts.length) return problem(conflicts[0]);
+      }
+  } catch (e) {
+    // A pack whose definitions cannot even be compared is refused, never allowed to stop the others being offered.
+    return problem(`its sections could not be read (${(e as Error).message}).`);
+  }
+  return null;
+}
+
+/** A new project's state from a starter, on `themeId` (the default theme when it is not given or not installed). */
+export function createStarterState(starter: StarterId, siteName: string, withSampleImages: boolean, themeId?: string): ProjectState {
+  const s = emptyState(siteName, themeId);
   const A = (id: string) => (withSampleImages ? id : null);
   const alt = (id: string) => STARTER_ASSETS.find((a) => a.id === id)?.alt ?? '';
 

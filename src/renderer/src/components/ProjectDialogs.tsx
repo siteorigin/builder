@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Check, CircleAlert, CloudAlert, CloudDownload, Copy, FileArchive, FolderOpen, Info, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
 import type { DuplicateProjectResult, ProgressEvent, WebsiteTools } from '@shared/api';
 import { MAX_COPY_NAME, projectDisplayName, projectFolderName } from '@shared/project-name';
-import { getTheme } from '@catalogue/index';
+import { defaultTheme, getTheme, listThemes } from '@catalogue/index';
+import { starterProblem } from '@catalogue/starters';
 import { isImeComposing } from '../lib/ime';
 import { endEditingHold } from '../lib/leave';
 import { api, errorText, toast, useStore } from '../store';
@@ -75,9 +76,6 @@ function PathReadout({ path, pending, id, className = '' }: { path: string; pend
 
 type StarterId = 'business' | 'blank';
 
-/** The theme every new project starts from (`emptyState` in the catalogue's starters). */
-const STARTER_THEME = 'foundation';
-
 type PageSketch = { name: string; sections: Array<{ id: string; variant?: string; whole?: boolean }> };
 
 /**
@@ -101,8 +99,8 @@ const STARTERS: Array<{ id: StarterId; name: string; blurb: string }> = [
 const pagesOf = (id: StarterId) => STARTER_PAGES[id].map((p) => p.name);
 
 /** The site's own colours, from the theme it starts with, so the sketch around the thumbnails matches them. */
-function siteColours(): CSSProperties {
-  const tokens = getTheme(STARTER_THEME).tokens;
+function siteColours(themeId: string): CSSProperties {
+  const tokens = getTheme(themeId).tokens;
   const read = (id: string) => {
     const v = tokens.find((t) => t.id === id)?.value;
     return typeof v === 'string' ? v : undefined;
@@ -119,13 +117,13 @@ function siteColours(): CSSProperties {
 }
 
 /** One section's thumbnail, cropped to where its content ends, as the Insert panel shows it. */
-function SectionShot({ id, variant, whole, onReady }: { id: string; variant?: string; whole?: boolean; onReady: (ready: boolean) => void }) {
-  const shots = getTheme(STARTER_THEME).previews?.[id];
+function SectionShot({ themeId, id, variant, whole, onReady }: { themeId: string; id: string; variant?: string; whole?: boolean; onReady: (ready: boolean) => void }) {
+  const shots = getTheme(themeId).previews?.[id];
   // A variant is an option on one of the section's axes (a tone, a layout); its own thumbnail when the pack drew one.
   const file = (variant && Object.values(shots?.variants ?? {}).find((axis) => axis[variant])?.[variant]) || shots?.default;
-  const url = usePackPreview(file ? STARTER_THEME : undefined, file);
+  const url = usePackPreview(file ? themeId : undefined, file);
   // Cropped where its content ends, unless that content is drawn too close to the page colour to be told from it.
-  const measured = usePreviewExtent(file && !whole ? STARTER_THEME : undefined, file, url);
+  const measured = usePreviewExtent(file && !whole ? themeId : undefined, file, url);
   const extent = whole ? 1 : measured;
   const ready = !file || !!url;
   useEffect(() => onReady(ready), [ready, onReady]);
@@ -138,7 +136,7 @@ function SectionShot({ id, variant, whole, onReady }: { id: string; variant?: st
 }
 
 /** A page of the site: its header (with the name being typed, as the site's own header has it) and its sections. */
-function PageSheet({ page, nav, siteName, className, onReady }: { page: PageSketch; nav: string[]; siteName: string; className: string; onReady: (key: string, ready: boolean) => void }) {
+function PageSheet({ themeId, page, nav, siteName, className, onReady }: { themeId: string; page: PageSketch; nav: string[]; siteName: string; className: string; onReady: (key: string, ready: boolean) => void }) {
   return (
     <div className={`sheet ${className}`}>
       <div className="sheet-head">
@@ -154,7 +152,7 @@ function PageSheet({ page, nav, siteName, className, onReady }: { page: PageSket
       {page.sections.length ? (
         <div className="sheet-page">
           {page.sections.map((s) => (
-            <SectionShot key={s.id} id={s.id} variant={s.variant} whole={s.whole} onReady={(r) => onReady(`${page.name}:${s.id}`, r)} />
+            <SectionShot key={s.id} themeId={themeId} id={s.id} variant={s.variant} whole={s.whole} onReady={(r) => onReady(`${page.name}:${s.id}`, r)} />
           ))}
         </div>
       ) : (
@@ -178,7 +176,7 @@ function PageSheet({ page, nav, siteName, className, onReady }: { page: PageSket
  * real section thumbnails in the order the starter builds it, and each other page beside it, showing its top. A
  * blank site is its one empty page, at the same scale.
  */
-function StarterArt({ starter, siteName }: { starter: StarterId; siteName: string }) {
+function StarterArt({ starter, siteName, themeId }: { starter: StarterId; siteName: string; themeId: string }) {
   const keys = () => STARTER_PAGES[starter].flatMap((p) => p.sections.map((s) => `${p.name}:${s.id}`));
   const [waiting, setWaiting] = useState<Set<string>>(() => new Set(keys()));
   const onReady = useRef((key: string, ready: boolean) =>
@@ -194,12 +192,12 @@ function StarterArt({ starter, siteName }: { starter: StarterId; siteName: strin
   const name = siteName.trim() || 'Your site';
   const nav = pagesOf(starter);
   return (
-    <div className={`starter-art ${starter}`} aria-hidden="true" data-loading={waiting.size ? '' : undefined} style={siteColours()}>
-      <PageSheet page={home} nav={nav} siteName={name} className="home" onReady={onReady} />
+    <div className={`starter-art ${starter}`} aria-hidden="true" data-loading={waiting.size ? '' : undefined} data-theme={themeId} style={siteColours(themeId)}>
+      <PageSheet key={themeId} themeId={themeId} page={home} nav={nav} siteName={name} className="home" onReady={onReady} />
       {rest.length > 0 && (
         <div className="sheet-side">
           {rest.map((p) => (
-            <PageSheet key={p.name} page={p} nav={[p.name]} siteName={name} className="side" onReady={onReady} />
+            <PageSheet key={`${themeId}:${p.name}`} themeId={themeId} page={p} nav={[p.name]} siteName={name} className="side" onReady={onReady} />
           ))}
         </div>
       )}
@@ -561,6 +559,13 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [parent, setParent] = useState('');
   const [starter, setStarter] = useState<StarterId>('business');
+  // The themes each starter can start with, the default first: development fixtures are only for switching, and an
+  // installed pack must have every section the starter places. A starter the chosen theme cannot make shows the first
+  // that can.
+  const eligible = useMemo(() => new Map(STARTERS.map((s) => [s.id, listThemes().filter((t) => !t.devOnly && !starterProblem(s.id, t.id))])), []);
+  const themes = eligible.get(starter) ?? [];
+  const [themeId, setThemeId] = useState(() => defaultTheme().id);
+  const theme = themes.find((t) => t.id === themeId) ?? themes[0] ?? getTheme(themeId);
   const [images, setImages] = useState(true);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
@@ -662,7 +667,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
     setProgress({ step: 'files', message: 'Preparing project files…' });
     let r: { ok: boolean; message?: string };
     try {
-      r = await api.projects.create({ name: name.trim(), parentDir: parent, starter, sampleImages: images, attempt: id });
+      r = await api.projects.create({ name: name.trim(), parentDir: parent, starter, sampleImages: images, themeId: theme.id, attempt: id });
     } catch (e) {
       r = { ok: false, message: `The project could not be created: ${errorText(e)}` };
     } finally {
@@ -721,7 +726,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
       >
         {status}
         <div className={`setup${cancelling && !lastStep ? ' stopping' : ''}`}>
-          <StarterArt starter={starter} siteName={name} />
+          <StarterArt starter={starter} siteName={name} themeId={theme.id} />
           <div className="setup-main">
             <ol id="setup-steps" className="progress-steps">
               {STEPS.map((s, i) => {
@@ -852,7 +857,21 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
             <div className="field-label" id="new-project-starter-label">
               Start from
             </div>
-            <span className="np-theme">Previews show the Foundation theme · change it any time in Site styles</span>
+            {themes.length > 1 ? (
+              <span className="np-theme">
+                <label htmlFor="new-project-theme">Theme</label>
+                <select id="new-project-theme" className="select sm" value={theme.id} title={theme.description} aria-describedby="new-project-theme-hint" onChange={(e) => setThemeId(e.target.value)}>
+                  {themes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <span id="new-project-theme-hint">change it any time in Site styles</span>
+              </span>
+            ) : (
+              <span className="np-theme">Previews show the {theme.name} theme · change it any time in Site styles</span>
+            )}
           </div>
           <div
             className="starter-grid"
@@ -879,7 +898,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
                   tabIndex={on ? 0 : -1}
                   onClick={() => setStarter(s.id)}
                 >
-                  <StarterArt starter={s.id} siteName={name} />
+                  <StarterArt starter={s.id} siteName={name} themeId={theme.id} />
                   <span className="copy">
                     <span className="title-row">
                       <span className="mark" aria-hidden="true">

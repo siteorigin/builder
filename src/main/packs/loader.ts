@@ -430,6 +430,19 @@ export async function loadPackDir(dir: string, root: PackRoot, reviewed: Readonl
 }
 
 /**
+ * A bundled folder's packs in the order the app ships them (BUNDLED_PACK_IDS), not by name: the first that is not a
+ * development fixture is the default theme, and "editorial" would otherwise come before "foundation". Folders the
+ * list does not name follow, by name.
+ */
+function bundledOrder(names: string[]): string[] {
+  const rank = (name: string) => {
+    const i = BUNDLED_PACK_IDS.indexOf(name);
+    return i < 0 ? BUNDLED_PACK_IDS.length : i;
+  };
+  return [...names].sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
  * Load every pack under these folders, in order. IDs are unique: a pack the person installed cannot replace one
  * shipped with the app, and when two installed packs claim one ID, neither loads.
  */
@@ -439,7 +452,7 @@ export async function loadPacks(roots: PackRoot[]): Promise<{ packs: LoadedPack[
   const reviewed = new Set<string>();
   for (const root of [...roots.filter((r) => r.source === 'bundled'), ...roots.filter((r) => r.source !== 'bundled')]) {
     const names = await fs.readdir(root.dir).catch(() => [] as string[]);
-    for (const name of names.sort()) {
+    for (const name of root.source === 'bundled' ? bundledOrder(names) : names.sort()) {
       if (name.startsWith('.')) continue;
       const dir = join(root.dir, name);
       try {

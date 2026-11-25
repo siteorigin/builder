@@ -8,14 +8,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import type { ComponentDefinition } from '@shared/types';
-import type { AuthoredPack, PackManifest } from '@catalogue/pack';
+import { BUNDLED_PACK_IDS, type AuthoredPack, type PackManifest } from '@catalogue/pack';
 import { createPack } from '@catalogue/dsl';
-import { FOUNDATION_PACK } from '@catalogue/builtin';
+import { EDITORIAL_PACK, FOUNDATION_ALT_PACK, FOUNDATION_PACK } from '@catalogue/builtin';
 import { buildPack, fileSource, registerBuiltinPacks, writeRelease } from '../../src/main/packs/build';
 import { loadPackDir, loadPacks, type PackRoot } from '../../src/main/packs/loader';
 import { readPackFile, registerPackFiles } from '../../src/main/packs/files';
 import { loadInstalledPacks, packPreview } from '../../src/main/packs/installed';
-import { findTheme } from '@catalogue/index';
+import { defaultTheme, findTheme, registerPacks } from '@catalogue/index';
 import { sha } from '../../src/main/project/fsutil';
 
 const dirs: string[] = [];
@@ -354,10 +354,35 @@ describe('loading every installed pack', () => {
 
   it("keeps the built-in IDs for the app even when its own releases are missing", async () => {
     const mine = tmp();
-    const theirs = [await release(mine, studio('foundation')), await release(mine, studio('foundation-alt'))];
+    expect(BUNDLED_PACK_IDS).toEqual(['foundation', 'editorial', 'foundation-alt']);
+    const theirs = [];
+    for (const id of BUNDLED_PACK_IDS) theirs.push(await release(mine, studio(id)));
     const { packs, refused } = await loadPacks([{ dir: tmp(), source: 'bundled' }, user(mine)]);
     expect(packs).toEqual([]);
-    expect(refused).toEqual(theirs.map((dir, i) => ({ dir, packId: ['foundation', 'foundation-alt'][i], reason: expect.stringMatching(/ships with SiteOrigin Builder/) })));
+    // Installed packs load by folder name, so the refusals follow it.
+    expect(refused).toEqual(expect.arrayContaining(theirs.map((dir, i) => ({ dir, packId: BUNDLED_PACK_IDS[i], reason: expect.stringMatching(/ships with SiteOrigin Builder/) }))));
+    expect(refused).toHaveLength(BUNDLED_PACK_IDS.length);
+  });
+
+  it('loads the packs the app ships in their own order, not by name, so Foundation stays the default (#390)', async () => {
+    const bundled = tmp();
+    for (const authored of [EDITORIAL_PACK, FOUNDATION_PACK]) {
+      const { pack, files } = buildPack(authored);
+      writeRelease(join(bundled, pack.id), pack, files);
+    }
+    // A folder the list does not name comes after the ones it does.
+    const { pack, files } = buildPack(studio('aardvark'));
+    writeRelease(join(bundled, 'aardvark'), pack, files);
+    // The development fixtures' folder follows, as packaged builds list it.
+    const fixtures = tmp();
+    const alt = buildPack(FOUNDATION_ALT_PACK);
+    writeRelease(join(fixtures, 'foundation-alt'), alt.pack, alt.files);
+    const { packs, refused } = await loadPacks([{ dir: bundled, source: 'bundled' }, { dir: fixtures, source: 'bundled' }]);
+    expect(refused).toEqual([]);
+    expect(packs.map((p) => p.pack.id)).toEqual(['foundation', 'editorial', 'aardvark', 'foundation-alt']);
+    registerPacks(packs.map((p) => p.pack));
+    expect(defaultTheme().id).toBe('foundation');
+    registerBuiltinPacks();
   });
 
   it("lets an installed pack reuse the app's own code unchanged, and only then", async () => {

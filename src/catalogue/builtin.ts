@@ -15,6 +15,7 @@ import { dataTable } from './foundation/table';
 import { siteSearch } from './foundation/search';
 import { video } from './foundation/video';
 import { makeAltPack } from './foundation-alt';
+import { makeEditorialPack } from './editorial';
 
 export const FOUNDATION_PACK: AuthoredPack = FOUNDATION.define([
   header,
@@ -48,8 +49,11 @@ export const FOUNDATION_PACK: AuthoredPack = FOUNDATION.define([
   container
 ]);
 
+/** Editorial: the same contracts with magazine typography, hairline rules and asymmetric layouts. */
+export const EDITORIAL_PACK: AuthoredPack = makeEditorialPack(FOUNDATION_PACK);
+
 /** Development-only: an alternate implementation of the same contracts, for exercising theme switches. */
 export const FOUNDATION_ALT_PACK: AuthoredPack = makeAltPack(FOUNDATION_PACK);
 
 /** Shipped packs, then development fixtures. */
-export const BUILTIN_PACKS: AuthoredPack[] = [FOUNDATION_PACK, FOUNDATION_ALT_PACK];
+export const BUILTIN_PACKS: AuthoredPack[] = [FOUNDATION_PACK, EDITORIAL_PACK, FOUNDATION_ALT_PACK];

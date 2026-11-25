@@ -3017,6 +3017,32 @@ function visuallyHidden(el, s = getComputedStyle(el)) {
   return /inset\(\s*50%/.test(s.clipPath);
 }
 
+/**
+ * Whether `el` shows only through an ancestor that clips to a pixel or less, as the visually hidden pattern does (a
+ * form's spam trap, a screen-reader-only label): whatever its own size, nothing of it is there to see or tap.
+ */
+function clippedAway(el) {
+  // Which ancestors clip the box being walked up from: all of them while it is in flow; for an absolute box, its
+  // containing block (positioned, transformed, filtered or contained) and what is above it; for a fixed one, only a
+  // transformed, filtered or contained containing block and what is above that, or none (the viewport holds it).
+  let placed = getComputedStyle(el).position === 'fixed' ? 'fixed' : getComputedStyle(el).position === 'absolute' ? 'absolute' : 'flow';
+  for (let e = parentOf(el); e && e.nodeType === 1 && e !== document.body; e = parentOf(e)) {
+    const s = getComputedStyle(e);
+    // A box that makes no box of its own (display: contents) neither clips nor holds anything.
+    if (s.display === 'contents') continue;
+    const holdsFixed = s.transform !== 'none' || s.filter !== 'none' || s.perspective !== 'none' || /paint|layout|strict|content/.test(s.contain || '');
+    const holds = placed === 'flow' || (placed === 'absolute' ? s.position !== 'static' || holdsFixed : holdsFixed);
+    if (holds && (s.overflowX !== 'visible' || s.overflowY !== 'visible')) {
+      // Only an axis that clips can hide what it holds.
+      const r = boxRect(e);
+      if ((s.overflowX !== 'visible' && r.width <= 1) || (s.overflowY !== 'visible' && r.height <= 1)) return true;
+    }
+    if (s.position === 'fixed' || s.position === 'absolute') placed = s.position;
+    else if (holds) placed = 'flow';
+  }
+  return false;
+}
+
 const boxOf = (r) => ({ x: r.left, y: r.top, width: r.width, height: r.height });
 /** How far two boxes cross on each axis (negative when they do not). */
 const crossing = (a, b) => ({ w: Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x), h: Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) });
@@ -3491,7 +3517,7 @@ function readability(vw, deadline) {
         const going = each(checks.tapTargets, () => {
           if (!drawn(el) || el.closest(':disabled, [aria-disabled="true"]')) return;
           const s = getComputedStyle(el);
-          if (visuallyHidden(el, s) || inSentence(el, s)) return;
+          if (visuallyHidden(el, s) || clippedAway(el) || inSentence(el, s)) return;
           let r = rectOf(el);
           if (!r) return;
           if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {

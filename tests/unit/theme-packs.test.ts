@@ -9,10 +9,12 @@ import { join } from 'node:path';
 import type { ProjectState } from '@shared/types';
 import type { AuthoredPack, ThemePack } from '@catalogue/pack';
 import { P, createPack } from '@catalogue/dsl';
-import { BUILTIN_PACKS, FOUNDATION_ALT_PACK, FOUNDATION_PACK } from '@catalogue/builtin';
+import { BUILTIN_PACKS, EDITORIAL_PACK, FOUNDATION_ALT_PACK, FOUNDATION_PACK } from '@catalogue/builtin';
 import { defaultTheme, findTheme, getTheme, listThemes, registerPacks, themeLockEntry, themePinProblem } from '@catalogue/index';
-import { createStarterState } from '@catalogue/starters';
+import { createStarterState, starterProblem } from '@catalogue/starters';
 import { applyOperations, assetUsages } from '@engine/apply';
+import { contractConflicts } from '@engine/theme-updates';
+import { validateState } from '@engine/validate';
 import { FONTS_DIR, generateProject, packFileCopies } from '@generator/index';
 import { buildPack, fileSource, registerBuiltinPacks, writeRelease } from '../../src/main/packs/build';
 import { loadPackDir } from '../../src/main/packs/loader';
@@ -96,6 +98,7 @@ describe('authoring a pack', () => {
     }
     expect(BUILTIN_PACKS.map((p) => [p.id, !!p.devOnly])).toEqual([
       ['foundation', false],
+      ['editorial', false],
       ['foundation-alt', true]
     ]);
   });
@@ -124,18 +127,137 @@ describe('a pack release', () => {
 
 describe('the pack registry', () => {
   it('finds packs by ID, falls back to the default theme, and refuses two packs with one ID', () => {
-    expect(listThemes().map((t) => t.id)).toEqual(['foundation', 'foundation-alt']);
+    expect(listThemes().map((t) => t.id)).toEqual(['foundation', 'editorial', 'foundation-alt']);
     expect(defaultTheme().id).toBe('foundation');
     expect(findTheme('nope')).toBeUndefined();
     expect(getTheme('nope').id).toBe('foundation');
     expect(getTheme('foundation-alt').id).toBe('foundation-alt');
     expect(findTheme('foundation-alt')?.devOnly).toBe(true);
     expect(() => registerPacks([...listThemes(), listThemes()[0]])).toThrow(/Two packs have the ID "foundation"/);
-    // A fixture is never the default, even listed first.
+    // A fixture is never the default, even listed first: the first pack that is not one is.
     registerPacks([...listThemes()].reverse());
-    expect(defaultTheme().id).toBe('foundation');
+    expect(defaultTheme().id).toBe('editorial');
+    expect(getTheme('nope').id).toBe('editorial');
     registerPacks([]);
     expect(() => getTheme('foundation')).toThrow(/No theme packs are loaded/);
+  });
+});
+
+describe('the Editorial pack (#390)', () => {
+  const pairs = () => FOUNDATION_PACK.components.map((f, i) => [f, EDITORIAL_PACK.components[i]] as const);
+  /** A definition with its styles left out: what it is, rather than how it looks. */
+  const shape = (c: (typeof FOUNDATION_PACK.components)[number]) => {
+    const nodes = Object.fromEntries(Object.entries(c.tree?.nodes ?? {}).map(([id, n]) => [id, { ...n, styles: undefined }]));
+    const variantAxes = Object.fromEntries(Object.entries(c.variantAxes ?? {}).map(([axis, a]) => [axis, { ...a, options: Object.fromEntries(Object.entries(a.options).map(([id, o]) => [id, { ...o, styles: undefined }])) }]));
+    return { ...c, id: '', provenance: {}, tree: { rootIds: c.tree?.rootIds, nodes }, variantAxes };
+  };
+
+  it('implements every Foundation contract under its own identity, node for node', () => {
+    expect(EDITORIAL_PACK.components.map((c) => c.componentId)).toEqual(FOUNDATION_PACK.components.map((c) => c.componentId));
+    const state = createStarterState('business', 'Contracts', false);
+    for (const [f, e] of pairs()) {
+      expect([e.id, e.provenance?.pack, e.provenance?.packVersion, e.license]).toEqual([`editorial.${e.componentId}`, 'editorial', '0.1.0', 'GPL-3.0-or-later']);
+      // Same properties and defaults, parts, slots, variant options, UI state and nodes: only styles differ.
+      expect(JSON.stringify(shape(e)), e.componentId).toBe(JSON.stringify(shape(f)));
+      expect(contractConflicts(state, f, e), e.componentId).toEqual([]);
+      expect(contractConflicts(state, e, f), e.componentId).toEqual([]);
+    }
+    // And it is a theme of its own: at least twelve sections are laid out differently.
+    expect(pairs().filter(([f, e]) => JSON.stringify(f.tree) !== JSON.stringify(e.tree) || JSON.stringify(f.variantAxes) !== JSON.stringify(e.variantAxes)).length).toBeGreaterThanOrEqual(12);
+  });
+
+  it('sets copy and pictures in asymmetric columns, and its services as an open, numbered index', () => {
+    const def = (id: string) => EDITORIAL_PACK.components.find((c) => c.componentId === id)!;
+    expect(def('hero.split').tree!.nodes.grid.styles?.desktop).toMatchObject({ gridTemplate: '2fr 3fr' });
+    expect(def('hero.split').tree!.nodes.grid.styles?.desktop).not.toHaveProperty('columns');
+    expect(def('hero.split').variantAxes!.layout.options['media-start'].styles?.grid?.desktop).toEqual({ gridTemplate: '3fr 2fr' });
+    expect(def('content.media').tree!.nodes.grid.styles?.desktop).toMatchObject({ gridTemplate: '3fr 2fr' });
+    for (const id of ['content.text', 'faq.list']) expect(def(id).tree!.nodes.inner.styles?.desktop, id).toMatchObject({ gridTemplate: '1fr 2fr' });
+    const card = def('features.grid').tree!.nodes.card.styles!.base!;
+    expect(card).toMatchObject({ borderBlockStart: '1px solid currentColor', paddingInline: '0' });
+    for (const gone of ['background', 'border', 'radius', 'color']) expect(card, gone).not.toHaveProperty(gone);
+    expect(EDITORIAL_PACK.baseCss).toMatch(/\.so--d-editorial-features-grid__card\)::before \{\s*content: counter\(so-index, decimal-leading-zero\);/);
+    // Hover states use the style scopes a page can set too.
+    expect(def('blog.grid').tree!.nodes.card.styles?.['base:hover']).toEqual({ borderBlockStart: '1px solid var(--so-color-brand)' });
+  });
+
+  it('has square corners, hairline rules, no shadows, and its own type over Foundation’s tokens and fonts', () => {
+    const value = (id: string) => EDITORIAL_PACK.tokens.find((t) => t.id === id)?.value;
+    expect(EDITORIAL_PACK.tokens.map((t) => [t.id, t.group])).toEqual(FOUNDATION_PACK.tokens.map((t) => [t.id, t.group]));
+    for (const t of EDITORIAL_PACK.tokens.filter((t) => t.group === 'radius')) expect(Number.parseFloat(String(t.value)), t.id).toBeLessThanOrEqual(2);
+    for (const t of EDITORIAL_PACK.tokens.filter((t) => t.group === 'shadow')) expect(t.value, t.id).toBe('none');
+    expect(value('border.default')).toBe('1px solid var(--so-color-border)');
+    expect(EDITORIAL_PACK.fonts.slice(0, 2).map((f) => f.name)).toEqual(['Playfair Display', 'Space Grotesk']);
+    expect(String(value('font.display'))).toMatch(/^'Playfair Display Variable'/);
+    expect(String(value('font.body'))).toMatch(/^'Space Grotesk Variable'/);
+    // Every font a Foundation site can choose ships with Editorial too, so a switch never stops at a font.
+    expect(EDITORIAL_PACK.fonts.map((f) => f.family).sort()).toEqual(FOUNDATION_PACK.fonts.map((f) => f.family).sort());
+    expect(EDITORIAL_PACK.aiProfile.guidance.join(' ')).toMatch(/asymmetric/);
+    // Its stylesheet sets the same colours against each other as Foundation's, so it declares the same pairs.
+    expect(EDITORIAL_PACK.contrastPairs!.map((p) => p.id)).toEqual(FOUNDATION_PACK.contrastPairs!.map((p) => p.id));
+  });
+
+  it('starts a new project of either starter, recording Editorial and placing only its sections', () => {
+    for (const starter of ['business', 'blank'] as const) {
+      const s = createStarterState(starter, 'Magazine', false, 'editorial');
+      expect(s.site.themeId).toBe('editorial');
+      expect(s.themeLock.theme).toEqual({ id: 'editorial', version: '0.1.0' });
+      const placed = [...Object.values(s.pages), s.site.shell.header, s.site.shell.footer].flatMap((t) => Object.values(t.nodes)).filter((n) => n.kind === 'instance');
+      expect(placed.length).toBeGreaterThan(starter === 'business' ? 10 : 1);
+      for (const n of placed) expect(n.definitionId).toMatch(/^editorial\./);
+      expect(validateState(s).filter((d) => d.severity === 'error'), starter).toEqual([]);
+    }
+    // Without a choice, a project starts on the default theme.
+    expect(createStarterState('blank', 'Plain', false).site.themeId).toBe('foundation');
+  });
+
+  it('keeps its numbered index and colours to its own services grid, not another theme’s kept in a project component', () => {
+    const css = EDITORIAL_PACK.baseCss;
+    expect(css).toContain(':is(.so-editorial-features-grid__card, .so--d-editorial-features-grid__card)::before');
+    expect(css).not.toMatch(/\[class\$='-features-grid__card'\]/);
+    // Its hover ring has no weight of its own, so a shadow a design or a page gives a button wins.
+    expect(css).toContain(':where(:is(a, button).so-btn--secondary:hover) { box-shadow: inset 0 0 0 1px currentColor; }');
+  });
+
+  it('says before anything is made when a theme cannot make a starter', () => {
+    expect(starterProblem('business', 'editorial')).toBeNull();
+    expect(starterProblem('blank')).toBeNull();
+    expect(starterProblem('business', 'nope')).toMatch(/"nope" is not installed/);
+    // An installed pack without the split hero can make a blank site, but not the Business starter.
+    const { components, ...meta } = FOUNDATION_PACK;
+    const author = createPack({ ...meta, id: 'sparse', name: 'Sparse', version: '1.0.0', license: 'MIT' });
+    registerPacks([...listThemes(), buildPack(author.define(components.filter((c) => c.componentId !== 'hero.split').map((c) => author.adopt(c)))).pack]);
+    expect(starterProblem('blank', 'sparse')).toBeNull();
+    expect(starterProblem('business', 'sparse')).toMatch(/^The Sparse theme cannot make the Business starter: Unknown component "hero\.split"/);
+    // One with every section, but a header without the navigation the starters fill in.
+    const bare = createPack({ ...meta, id: 'bare', name: 'Bare', version: '1.0.0', license: 'MIT' });
+    const headless = components.map((c) => {
+      const d = bare.adopt(c);
+      if (d.componentId === 'shell.header') delete d.properties.links;
+      return d;
+    });
+    registerPacks([...listThemes(), buildPack(bare.define(headless)).pack]);
+    expect(starterProblem('blank', 'bare')).toMatch(/^The Bare theme cannot make the Blank site: Header: property "links" is not compatible\./);
+    // And one whose image section lost the layout the Business starter chooses for it.
+    const plain = createPack({ ...meta, id: 'plain', name: 'Plain', version: '1.0.0', license: 'MIT' });
+    const fixed = components.map((c) => {
+      const d = plain.adopt(c);
+      if (d.componentId === 'content.media') delete d.variantAxes!.layout.options['media-end'];
+      return d;
+    });
+    registerPacks([...listThemes(), buildPack(plain.define(fixed)).pack]);
+    expect(starterProblem('blank', 'plain')).toBeNull();
+    expect(starterProblem('business', 'plain')).toMatch(/^The Plain theme cannot make the Business starter: Content with image: layout variant "media-end" is missing\./);
+    // A pack whose definitions cannot be compared is refused on its own; the others are still offered.
+    const broken = createPack({ ...meta, id: 'broken', name: 'Broken', version: '1.0.0', license: 'MIT' });
+    const odd = components.map((c) => {
+      const d = broken.adopt(c);
+      if (d.componentId === 'shell.header') (d.properties.ctaStyle as { options: unknown[] }).options.unshift(null);
+      return d;
+    });
+    registerPacks([...listThemes(), buildPack(broken.define(odd)).pack]);
+    expect(starterProblem('blank', 'broken')).toMatch(/^The Broken theme cannot make the Blank site: its sections could not be read/);
+    expect(starterProblem('blank', 'editorial')).toBeNull();
   });
 });
 
@@ -155,6 +277,12 @@ describe('pinning an installed pack', () => {
     expect(next.themeLock.theme).toEqual({ id: 'studio', version: '1.0.0', digest: 'd1' });
     // Back to a bundled theme, the pin goes.
     expect(applyOperations(next, [{ type: 'theme.apply', themeId: 'foundation' }]).state.themeLock.theme).toEqual({ id: 'foundation', version: '0.1.0' });
+  });
+
+  it('never lets a built-in theme stand in for an installed pack that had its ID (#390)', () => {
+    // Editorial became a built-in theme: a project made with an installed "editorial" pack records its digest.
+    for (const version of ['0.1.0', '2.0.0']) expect(themePinProblem({ site: { themeId: 'editorial' }, themeLock: { theme: { id: 'editorial', version, digest: 'd1' } } }), version).toMatch(/built-in theme with that ID, which is a different design/);
+    expect(themePinProblem({ site: { themeId: 'editorial' }, themeLock: { theme: { id: 'editorial', version: '0.1.0' } } })).toBeNull();
   });
 
   it('notices a missing pack or another copy of the same version, but lets a new version through', () => {

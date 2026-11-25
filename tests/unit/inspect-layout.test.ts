@@ -182,6 +182,31 @@ describe('layout inspection readability checks', () => {
     expect(of(narrowest, 'small-tap-target')).toHaveLength(1);
   }, 30000);
 
+  it.skipIf(!browserInstalled)('leaves out a control that shows only through a box clipped to a pixel, as a form’s spam trap does (#390)', async () => {
+    const box = 'position:absolute;inset-inline-start:-10000px;width:1px;height:1px';
+    // The contact form's traps: a text field in a label, or (for Web3Forms) a checkbox.
+    const trap = (style: string, control: string) => `<form ${so('form')}><div style="${style}" aria-hidden="true">${control}</div></form>`;
+    for (const control of ['<label>Leave this field empty <input type="text" name="trap" tabindex="-1"></label>', '<input type="checkbox" name="trap" tabindex="-1">'])
+      expect(of(await inspect(trap(`${box};overflow:hidden`, control)), 'small-tap-target'), control).toEqual([]);
+    // A box that does not clip shows the control at its own size, wherever it sits.
+    expect(of(await inspect(trap(box, '<input type="text" name="trap" tabindex="-1" style="height:20px">')), 'small-tap-target')).toHaveLength(1);
+    // Hidden from assistive technology and out of the tab order, a visible control can still be tapped.
+    expect(of(await inspect(`<div ${so('hidden')} aria-hidden="true"><button tabindex="-1" style="width:20px;height:20px;padding:0">+</button></div>`), 'small-tap-target')).toHaveLength(1);
+    // A clipping box that makes no box of its own clips nothing; a fixed control, or an absolute one placed against a
+    // box outside the clip, shows past it.
+    const small = (style = '') => `<button style="width:20px;height:20px;padding:0;${style}">+</button>`;
+    for (const html of [
+      `<div ${so('contents')} style="display:contents;overflow:hidden">${small()}</div>`,
+      `<div ${so('fixed')} style="height:0;overflow:hidden">${small('position:fixed;top:40px;left:20px')}</div>`,
+      `<div ${so('placed')} style="position:relative"><div style="height:0;overflow:hidden">${small('position:absolute;top:40px;left:20px')}</div></div>`
+    ])
+      expect(of(await inspect(html), 'small-tap-target'), html).toHaveLength(1);
+    // A transformed box holds a fixed control, so its clip hides it like any other.
+    expect(of(await inspect(`<div ${so('held')} style="width:1px;height:1px;overflow:hidden;transform:translateZ(0)">${small('position:fixed;top:40px;left:20px')}</div>`), 'small-tap-target')).toEqual([]);
+    // A box that clips one way only hides nothing the other way.
+    expect(of(await inspect(`<div ${so('oneway')} style="height:0;overflow-x:clip;overflow-y:visible">${small()}</div>`), 'small-tap-target')).toHaveLength(1);
+  }, 30000);
+
   it.skipIf(!browserInstalled)('counts a repeated element once with its items, and keeps every kind under the cap', async () => {
     const cards = Array.from({ length: 6 }, (_, i) => `<li ${so('card', `c${i}`)}><p ${so('cardText', `c${i}`)} style="color:#bbb">Card ${i}</p></li>`).join('');
     const pale = Array.from({ length: 50 }, (_, i) => `<p ${so(`pale${i}`)} style="color:#ccc">Pale ${i}</p>`).join('');
