@@ -12,6 +12,7 @@ import { readRegularFile } from '../packs/files';
 import { sanitizeSvg } from './svg';
 import { fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng, type ImageProblem } from './media';
 import { createVariantClient, MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type WebCopyResult } from './media-client';
+import type { SiteIconRenderer } from './site-icons';
 
 export { WEB_EDGE, webCopySize };
 import { addCredits, cleanPhoto, hasCredits, sniffImageType, textCreditsAsTiff } from './photo-metadata';
@@ -730,9 +731,19 @@ function workerEnv(): Record<string, string> {
 }
 
 /** Decoding and resizing happen in a utility process: on the main process a large photo freezes the window. */
-const mediaWorker = createVariantClient(() =>
-  utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), 'media-worker.js'), [], { serviceName: 'SiteOrigin media', env: workerEnv() })
-);
+const spawnMediaWorker = () => utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), 'media-worker.js'), [], { serviceName: 'SiteOrigin media', env: workerEnv() });
+const mediaWorker = createVariantClient(spawnMediaWorker);
+/**
+ * The website's icons (see site-icons.ts) are drawn by a worker of their own: a save that needs new ones never waits
+ * behind the photos of an import in progress. It starts when icons are first needed and stops once idle.
+ */
+const iconWorker = createVariantClient(spawnMediaWorker);
 
-/** Stop the media worker (when the app quits). */
-export const stopMediaWorker = () => mediaWorker.stop();
+/** Draws the website's icons in the media worker: the renderer the app registers with setSiteIconRenderer. */
+export const renderSiteIconsInWorker: SiteIconRenderer = (data, mime, icons) => iconWorker.icons(data, mime, icons);
+
+/** Stop the media workers (when the app quits). */
+export const stopMediaWorker = () => {
+  mediaWorker.stop();
+  iconWorker.stop();
+};

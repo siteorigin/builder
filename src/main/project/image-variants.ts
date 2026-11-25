@@ -4,7 +4,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import sharp from 'sharp';
-import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type VariantReply, type VariantRequest } from './media-client';
+import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type IconSpec, type VariantReply, type VariantRequest } from './media-client';
 import { isAnimatedPng } from './media';
 
 /**
@@ -115,11 +115,44 @@ export async function isOpaque(buf: Buffer): Promise<boolean> {
   return (await img.stats()).isOpaque;
 }
 
+/**
+ * The website's square PNG icons from a picture (the favicon, or the monogram's SVG), one for each of `icons`: turned
+ * the way its orientation says, its first frame if it moves, fitted whole inside the square (enlarged when it is
+ * smaller) and centred. An icon with a background has every see-through pixel filled with it, as the one iOS shows
+ * must be; the others keep their transparency. An SVG is drawn at the size of the largest icon, never enlarged from a
+ * small raster. Written as sRGB without metadata; the same picture always makes the same bytes here.
+ */
+export async function renderSiteIcons(buf: Buffer, mime: string, icons: IconSpec[]): Promise<Buffer[]> {
+  let density: number | undefined;
+  if (mime === 'image/svg+xml') {
+    const meta = await sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error' }).metadata();
+    const edge = Math.max(meta.width ?? 0, meta.height ?? 0);
+    const largest = Math.max(...icons.map((i) => i.size));
+    // 72 dpi draws the SVG at its own size; librsvg takes no more than this.
+    if (edge > 0) density = Math.min(2400, Math.max(72, Math.ceil((72 * largest) / edge)));
+  }
+  const out: Buffer[] = [];
+  for (const icon of icons) {
+    const clear = { r: 0, g: 0, b: 0, alpha: 0 };
+    let img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', pages: 1, page: 0, ...(density ? { density } : {}) })
+      .autoOrient()
+      .resize(icon.size, icon.size, { fit: 'contain', position: 'centre', background: icon.background ?? clear });
+    if (icon.background) img = img.flatten({ background: icon.background });
+    out.push(await img.toColourspace('srgb').png().toBuffer());
+  }
+  return out;
+}
+
 /** What the media worker does with one request; the worker process only carries messages to and from it. */
 export async function handleVariantRequest(m: VariantRequest): Promise<VariantReply> {
   try {
     const buf = m.path ? await readFile(m.path) : Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength);
     if (m.kind === 'opaque') return { id: m.id, ok: true, variants: [], opaque: await isOpaque(buf) };
+    if (m.kind === 'icons') {
+      if (!(await isReadable(buf, m.mime))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
+      const icons = await renderSiteIcons(buf, m.mime, m.icons ?? []);
+      return { id: m.id, ok: true, variants: [], icons: icons.map((d) => new Uint8Array(d.buffer, d.byteOffset, d.byteLength)) };
+    }
     if (m.kind === 'web') {
       // A picture the decoder refuses is said to be unreadable; anything failing after that is the copy failing.
       if (!(await isReadable(buf, m.path ? 'image/tiff' : m.mime))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };

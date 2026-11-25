@@ -1105,6 +1105,8 @@ export class Controller {
   private async checkAssetFiles(session: ProjectSession): Promise<void> {
     const changed = await session.refreshAssetFiles().catch(() => false);
     if (changed && this.session === session) this.broadcast();
+    // The website's icons follow a favicon file put back or replaced in the folder.
+    await session.refreshSiteIcons().catch(() => null);
   }
 
   /**
@@ -2463,8 +2465,11 @@ export class Controller {
    * build configuration the user trusted, because the build runs the copy. The state returned is the one the
    * files were copied from, so everything said about the export describes this snapshot.
    */
-  private snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
+  private async snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
     const stop = (message: string) => ({ ok: false as const, message });
+    // The website's icons follow a favicon file changed with no document changing (put back by Locate, replaced in the
+    // folder), so the export never carries icons of another picture than its favicon.
+    const icons = await s.refreshSiteIcons();
     return s.exclusive(async () => {
       // The native dialog and the queue for the lock both give the project time to change.
       if (this.session !== s) return stop('The project was closed before the export started.');
@@ -2479,6 +2484,10 @@ export class Controller {
       const rival = await rivalHookStop(s.dir, publishedState(s.state));
       if (rival) return stop(rival);
       await copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) });
+      // A favicon replaced since its icons were made would go out beside icons of the picture it replaced. While icons
+      // cannot be made at all, those the project has go out as they are.
+      const iconSource = await s.siteIconSource(dest);
+      if (iconSource !== s.siteIconsMade && iconSource !== icons) return stop('The project changed on disk while it was being exported. Export again.');
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
       await leaveOutDrafts(dest, s.state);
       if (opts.forBuild) {

@@ -29,6 +29,7 @@ import { sendsFormMessages, type ComponentImport } from '@engine/component-packa
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
+import { SITE_ICON_PATHS, SiteIconMaker } from './site-icons';
 import { ownServerHook } from './server-hook';
 import { checkSvelteSource, codeContractNames, componentSources } from '../codecheck';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
@@ -479,6 +480,8 @@ export class ProjectSession extends EventEmitter {
   private untouched = new Set<string>();
   /** The hash of each generated file's latest content, by absolute path, so unchanged content is not hashed again. */
   private contentHashes = new Map<string, { content: string | Buffer; hash: string }>();
+  /** The website's PNG icons, made from the favicon or the monogram, kept while nothing they are made from changes. */
+  private siteIcons = new SiteIconMaker();
   /**
    * How long a file must have been left alone before its stat alone is trusted to show a later change: well past the
    * coarsest timestamps (two seconds on FAT), so a change in the same tick as the last one is never missed.
@@ -1156,11 +1159,42 @@ export class ProjectSession extends EventEmitter {
     return all;
   }
 
-  /** What SiteOrigin Builder generates for a file now: the clean source, or a theme file copied from its pack. */
+  /**
+   * What SiteOrigin Builder generates for a file now: the clean source, a theme file copied from its pack, or one of
+   * the website's icons (undefined while they cannot be made).
+   */
   private async generatedContent(path: string): Promise<string | Buffer | undefined> {
     const clean = this.generate(this.state, false);
     const copy = packFileCopies(this.state).find((c) => c.path === path);
+    if (!clean.has(path) && !copy && SITE_ICON_PATHS.includes(path)) return (await this.siteIcons.make(this.dir, this.state)).files?.get(path);
     return clean.get(path) ?? (copy ? await readPackFile(copy.pack, copy.file) : undefined);
+  }
+
+  /**
+   * Make the website's icons again when what they are made from changed with no document changing (a favicon file put
+   * back or replaced in the folder), publishing them as any save does. Gives the key of what they are made from now
+   * (see siteIconSource), or null when the project is not this app's to write.
+   */
+  refreshSiteIcons(): Promise<string | null> {
+    return this.serialize(async () => {
+      if (this.readOnly || !(await this.stillOwner())) return null;
+      const key = await this.siteIconSource();
+      if (key === this.siteIcons.key) return key;
+      const before = this.conflicts.length;
+      const changedFiles = await this.publishGenerated(false);
+      if (changedFiles.length || this.conflicts.length !== before) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles, label: 'Update site icons', source: 'system' } satisfies SessionEvent);
+      return key;
+    });
+  }
+
+  /** The key naming what the website's icons are made from now, read from the project or from a copy of it in `dir`. */
+  async siteIconSource(dir = this.dir): Promise<string> {
+    return (await this.siteIcons.input(dir, this.state)).key;
+  }
+
+  /** The key of the icons made last (and published with them), or null before any could be made. */
+  get siteIconsMade(): string | null {
+    return this.siteIcons.key;
   }
 
   /**
@@ -1622,6 +1656,18 @@ export class ProjectSession extends EventEmitter {
         if (h === null) nextFiles[c.path] = prev[c.path] ?? inflight[c.path];
         else if (ours(c.path, h) && h === packFileInfo(c.pack, c.file)?.sha256) nextFiles[c.path] = h;
       }
+    }
+    // The website's icons are drawn from the favicon (or the monogram) beside the generated text, under the same rules.
+    // A set that cannot be made now costs the icons' update, not the save: icons already claimed stay, still claimed,
+    // so they are neither replaced nor removed as obsolete. A file of someone else's at an icon's path is still named.
+    const icons = await this.siteIcons.make(this.dir, this.state);
+    for (const path of SITE_ICON_PATHS) {
+      if (authored.has(path) || clean.has(path)) continue;
+      const made = icons.files?.get(path);
+      if (made) copies.set(path, made);
+      else if (known(path)) nextFiles[path] = prev[path] ?? inflight[path];
+      else if (!initial && (await lookAt(safeJoin(this.dir, path))) !== 'missing')
+        this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
     }
     // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.
     const project = [...copies, ...clean].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(this.dir, path) }));
@@ -3835,6 +3881,7 @@ export class ProjectSession extends EventEmitter {
     this.generation.clear();
     this.seenOnDisk.clear();
     this.contentHashes.clear();
+    this.siteIcons.clear();
   }
 }
 

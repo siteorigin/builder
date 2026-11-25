@@ -73,7 +73,7 @@ const ROLE_LIGHTNESS: Record<string, number> = {
 const MAX_CHROMA = 0.1;
 
 /** A colour token's CSS in `tokens`, links followed; null for a dangling or circular link. */
-function resolvedCss(tokens: readonly TokenDef[], id: string): string | null {
+export function resolvedCss(tokens: readonly TokenDef[], id: string): string | null {
   const byId = new Map(tokens.map((t) => [t.id, t]));
   const seen = new Set<string>();
   for (let cur: string | null = id; cur; ) {
