@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as Reac
 import { Bold, Eye, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Send, Unlink, Undo2 } from 'lucide-react';
 import type { EntrySeo, ImageValue, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
+import type { SeoSubject } from '@shared/seo';
 import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
@@ -24,6 +25,7 @@ import { articleProblem, blockAtCaret, caretIn, figureElement, fillFigure, inser
 import { MAX_POST_TITLE, postAt } from '../lib/posts';
 import { setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
+import { LengthMeter, SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
 
 const MAX_EXCERPT = 320;
 /** How long before an action a field's refusal still stops it: the blur its button press caused. */
@@ -513,6 +515,12 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const featured = entry.featuredImage && state.assets.assets[entry.featuredImage]?.kind === 'image';
   const inheritedImage = featured ? 'The featured image' : state.site.socialImage ? 'The site’s sharing image' : 'None';
   const seoScope = seoSummary(seo);
+  // The search result, link card and meters follow the post's title, description and canonical URL as they are typed.
+  const seoSubject = useMemo<SeoSubject>(() => ({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }), [post.collectionId, post.entryId]);
+  const { typed: seoTyped, on: seoOn } = useTypedSeo(subjectKey(seoSubject));
+  const { overlay: seoOverlay, doc: seoDoc } = useDocumentPreview(state, seoSubject, seoTyped);
+  // Its structured data reads the whole website: it is worked out only while the settings are open on screen.
+  const [seoOpen, setSeoOpen] = useState(false);
   const blockLabel = { p: 'Paragraph', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', blockquote: 'Quote' } as Record<string, string>;
   const tools: Array<{ id: string; label: string; icon: React.ReactNode; on?: boolean; run: () => void; gap?: boolean }> = [
     { id: 'p', label: 'Paragraph', icon: <Pilcrow />, on: pressed.block === 'p' || pressed.block === 'div', run: () => block('p') },
@@ -606,17 +614,34 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               </Field>
             </div>
           </details>
-          <details className="post-details post-seo">
+          <details className="post-details post-seo" onToggle={(e) => setSeoOpen(e.currentTarget.open)}>
             <summary>Search & sharing{seoScope ? ` · ${seoScope}` : ''}</summary>
             <div className="post-fields">
+              <SeoPreview state={state} subject={seoSubject} overlay={seoOverlay} doc={seoDoc} shown={seoOpen && !hidden} />
               <div data-entry-field="seoTitle" style={{ display: 'contents' }}>
-                <Field label="Browser title" hint={`Leave empty to use “${defaultTitle}”.`}>
-                  <DraftInput value={seo.title ?? ''} limit={TEXT_LIMITS.seoTitle} placeholder={defaultTitle} onCommit={(v) => (v.trim() !== (seo.title ?? '') ? update({ seoTitle: v.trim() }, 'Change post browser title') : undefined)} />
+                <Field
+                  label="Browser title"
+                  hint={
+                    <>
+                      Leave empty to use “{defaultTitle}”.
+                      <LengthMeter kind="title" doc={seoDoc} />
+                    </>
+                  }
+                >
+                  <DraftInput value={seo.title ?? ''} limit={TEXT_LIMITS.seoTitle} placeholder={defaultTitle} onDirty={seoOn.title} onCommit={(v) => (v.trim() !== (seo.title ?? '') ? update({ seoTitle: v.trim() }, 'Change post browser title') : undefined)} />
                 </Field>
               </div>
               <div data-entry-field="seoDescription" style={{ display: 'contents' }}>
-                <Field label="Description" hint="Shown by search engines and link previews. Leave empty to use the excerpt.">
-                  <DraftInput multiline rows={3} value={seo.description ?? ''} limit={TEXT_LIMITS.pageDescription} placeholder={entry.excerpt || state.site.description || 'Describe this post'} onCommit={(v) => (v.trim() !== (seo.description ?? '') ? update({ description: v.trim() }, 'Change post description') : undefined)} />
+                <Field
+                  label="Description"
+                  hint={
+                    <>
+                      Shown by search engines and link previews. Leave empty to use the excerpt.
+                      <LengthMeter kind="description" doc={seoDoc} />
+                    </>
+                  }
+                >
+                  <DraftInput multiline rows={3} value={seo.description ?? ''} limit={TEXT_LIMITS.pageDescription} placeholder={entry.excerpt || state.site.description || 'Describe this post'} onDirty={seoOn.description} onCommit={(v) => (v.trim() !== (seo.description ?? '') ? update({ description: v.trim() }, 'Change post description') : undefined)} />
                 </Field>
               </div>
               <Field label="Sharing image" controlId={`${uid}-sharing`} hint="The picture link previews show.">
@@ -630,7 +655,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
                   ))}
                 </select>
               </Field>
-              <CanonicalUrlField value={seo.canonical} ownUrl={ownUrl} what="post" onCommit={(url) => update({ canonical: url }, url ? 'Change post canonical URL' : 'Clear post canonical URL')} />
+              <CanonicalUrlField value={seo.canonical} ownUrl={ownUrl} what="post" onTyped={seoOn.canonical} onCommit={(url) => update({ canonical: url }, url ? 'Change post canonical URL' : 'Clear post canonical URL')} />
               <SwitchRow
                 checked={!!seo.noindex}
                 onChange={(v) => void update({ noindex: v }, v ? 'Hide post from search engines' : 'Show post to search engines')}

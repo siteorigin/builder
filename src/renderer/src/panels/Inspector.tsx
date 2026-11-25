@@ -80,7 +80,9 @@ import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } 
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
 import { searchSummary, sharingView } from '../lib/sharing';
-import { openSiteSharing, SharingPreview } from './SharingPreview';
+import type { SeoSubject } from '@shared/seo';
+import { openSiteSharing } from './SharingPreview';
+import { LengthMeter, SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
 import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 import { BindingControl, PartSection, PropertiesSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
@@ -2573,6 +2575,10 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
   const dev = useStore((s) => !!s.settings?.developerMode);
   const [titleError, setTitleError] = useState<string | null>(null);
+  // The search result, link card and meters follow the title, description and canonical URL as they are typed.
+  const subject = useMemo<SeoSubject>(() => ({ kind: 'page', pageId: page?.id ?? '' }), [page?.id]);
+  const { typed, on: typedOn } = useTypedSeo(subjectKey(subject));
+  const { overlay, doc: seoDoc } = useDocumentPreview(state, subject, typed);
   if (!page) return null;
   // History says which page each setting was changed on: "Change browser title (About)".
   const upd = (patch: Record<string, unknown>, label = 'Update page settings') => void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], `${label} (${page.title})`);
@@ -2658,12 +2664,28 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         <p className="insp-note field-hint">For this page only; other pages keep their own choice. Editing the header or footer changes it on every page that shows it.</p>
       </Section>
       <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(page)}>
-        <SharingPreview state={state} page={page} />
-        <Field label="Browser title" hint={`Leave empty to use “${isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.`}>
-          <DraftInput id="page-seo-title" limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
+        <SeoPreview state={state} subject={subject} overlay={overlay} doc={seoDoc} />
+        <Field
+          label="Browser title"
+          hint={
+            <>
+              Leave empty to use “{isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.
+              <LengthMeter kind="title" doc={seoDoc} />
+            </>
+          }
+        >
+          <DraftInput id="page-seo-title" limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} onDirty={typedOn.title} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
         </Field>
-        <Field label="Description" hint="Shown by search engines. About 150 characters.">
-          <DraftInput id="page-seo-description" multiline limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v }, 'Change page description')} />
+        <Field
+          label="Description"
+          hint={
+            <>
+              Shown by search engines and link previews.
+              <LengthMeter kind="description" doc={seoDoc} />
+            </>
+          }
+        >
+          <DraftInput id="page-seo-description" multiline limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onDirty={typedOn.description} onCommit={(v) => upd({ description: v }, 'Change page description')} />
         </Field>
         {/* The page's own choice, or the site's while it has none: the picker shows both, and Use the site’s image returns to it. */}
         <div className="col" style={{ gap: 4 }} data-seo-field="socialImage">
@@ -2691,7 +2713,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           }
         />
         <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint={draft ? 'Once published, leaves this page out of the site’s own Site search results.' : 'Leaves this page out of the site’s own Site search results.'} />
-        <CanonicalUrlField id="page-seo-canonical" value={page.seo.canonical} ownUrl={ownUrl} what="page" onCommit={(url) => upd({ canonical: url }, url ? 'Change canonical URL' : 'Clear canonical URL')} />
+        <CanonicalUrlField id="page-seo-canonical" value={page.seo.canonical} ownUrl={ownUrl} what="page" onTyped={typedOn.canonical} onCommit={(url) => upd({ canonical: url }, url ? 'Change canonical URL' : 'Clear canonical URL')} />
         <RevisionDateField
           id="page-seo-updated"
           label="Last revised"

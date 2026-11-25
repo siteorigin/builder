@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useCallback, useId, useRef, useState } from 'react';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isArticleDate } from '@shared/articles';
 import { DraftInput, Field, type DraftProblem } from './ui';
@@ -14,11 +14,34 @@ function canonicalProblem(text: string): DraftProblem | null {
  * published elsewhere. Text that is no full http(s) address stays in the field as an unsaved draft, with the reason,
  * until it is corrected or discarded (Escape). A saved value that can't be used (written by hand) is pointed out in
  * the hint, not as the field's error: nothing typed here is waiting to be saved, so it never holds up a Publish.
+ * `onTyped` hears the address typed and not saved yet, as it would be saved ("" clears it), while it is one that can
+ * be; undefined while the field shows the saved value or text that can't be used.
  */
-export function CanonicalUrlField({ id, value: saved, ownUrl, what, onCommit }: { id?: string; value: unknown; ownUrl: string | null; what: 'page' | 'post'; onCommit: (url: string) => unknown }) {
+export function CanonicalUrlField({
+  id,
+  value: saved,
+  ownUrl,
+  what,
+  onCommit,
+  onTyped
+}: {
+  id?: string;
+  value: unknown;
+  ownUrl: string | null;
+  what: 'page' | 'post';
+  onCommit: (url: string) => unknown;
+  onTyped?: (url: string | undefined) => void;
+}) {
   const value = typeof saved === 'string' ? saved : '';
   const [problem, setProblem] = useState<DraftProblem | null>(null);
   const [dirty, setDirty] = useState(false);
+  const typedTo = useRef(onTyped);
+  typedTo.current = onTyped;
+  const dirtied = useCallback((d: boolean, draft: string) => {
+    setDirty(d);
+    const c = checkCanonicalUrl(draft);
+    typedTo.current?.(d && c.ok ? c.url : undefined);
+  }, []);
   const hint = `Only when this ${what} was first published at another address: search engines are pointed there instead. Leave empty to use its own address.`;
   // What is wrong with the saved value describes the field only while it shows that value.
   const stored = !problem && value && !dirty ? canonicalProblem(value) : null;
@@ -30,7 +53,7 @@ export function CanonicalUrlField({ id, value: saved, ownUrl, what, onCommit }: 
   );
   return (
     <Field label="Canonical URL" hint={stored ? `${stored.message} The ${what}’s own address is used until it is corrected.` : hint} error={error}>
-      <DraftInput id={id} value={value} placeholder={ownUrl ?? 'https://example.com/original/'} check={canonicalProblem} onProblem={setProblem} onDirty={setDirty} onCommit={(v) => (v.trim() !== value ? onCommit(v.trim()) : undefined)} />
+      <DraftInput id={id} value={value} placeholder={ownUrl ?? 'https://example.com/original/'} check={canonicalProblem} onProblem={setProblem} onDirty={dirtied} onCommit={(v) => (v.trim() !== value ? onCommit(v.trim()) : undefined)} />
     </Field>
   );
 }
