@@ -98,6 +98,8 @@
   /* One tab idiom: a short accent underline, as in dialog tabs. */
   .dock-tab[aria-selected='true']::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: -7px; height: 2px; border-radius: 2px; background: var(--accent); }
   .dock-tab[aria-selected='true'] svg { color: var(--accent-text); }
+  /* The AI tab's icon keeps the accent while another view is open: the one quiet mark that sets the assistant apart. */
+  #dock-tab-chat svg { color: var(--accent-text); }
   /* The AI tab's run mark sits in the tab's corner, so the tabs don't shift while a run starts and ends. It
      differs by shape as well as motion: a solid dot that pulses while the AI works, a still ring while it waits
      for an answer. */
