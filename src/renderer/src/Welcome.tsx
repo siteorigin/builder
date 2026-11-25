@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Pin, Plus, Search, Settings, Sun, X } from 'lucide-react';
 import type { RecentProject } from '@shared/api';
 import { api, errorText, setState, toast, useStore } from './store';
@@ -23,7 +23,7 @@ export function BrandMark() {
  * editor is drawn in (System resolved to this computer's) and saves the other one as the Appearance; System stays a
  * choice in Settings. The editor redraws from the saved setting (lib/appearance.ts).
  */
-export function AppearanceToggle() {
+export function AppearanceToggle({ disabled = false }: { disabled?: boolean }) {
   const scheme = useEditorScheme();
   const dark = scheme === 'dark';
   const toggle = async () => {
@@ -35,7 +35,7 @@ export function AppearanceToggle() {
     }
   };
   return (
-    <button type="button" className="icon-btn appearance-toggle no-drag" role="switch" aria-checked={dark} aria-label="Dark appearance" title={dark ? 'Switch to light appearance' : 'Switch to dark appearance'} onClick={() => void toggle()}>
+    <button type="button" className="icon-btn appearance-toggle no-drag" role="switch" aria-checked={dark} aria-label="Dark appearance" title={dark ? 'Switch to light appearance' : 'Switch to dark appearance'} disabled={disabled} onClick={() => void toggle()}>
       {dark ? <Moon aria-hidden="true" /> : <Sun aria-hidden="true" />}
     </button>
   );
@@ -56,8 +56,12 @@ function timeAgo(iso: string): string {
   }
   if (days === 1) return 'yesterday';
   if (days < 7) return `${days} days ago`;
-  return then.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  // The year only when it is not this one: a column of dates reads by day and month.
+  return then.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(then.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }) });
 }
+
+/** A time standing on its own, as in the rows' date column: "Yesterday", "Just now". */
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /**
  * A path short enough to read on a card: its first folder or two, an ellipsis, and the folder itself, plus any
@@ -118,6 +122,21 @@ export function Welcome() {
   const [filter, setFilter] = useState('');
   const filterInput = useRef<HTMLInputElement>(null);
   const filterSeen = useRef(false);
+  const sparse = useRef<'one' | 'few' | 'many' | null>(null);
+  const [brokenIcons, setBrokenIcons] = useState<ReadonlySet<string>>(() => new Set());
+  // While the filter has focus, the result Enter would open is marked.
+  const [filterFocused, setFilterFocused] = useState(false);
+  // Times such as "just now" are drawn again each minute, and when the window comes back, so they never go stale.
+  const [, setClock] = useState(0);
+  useEffect(() => {
+    const tick = () => setClock(Date.now());
+    const timer = window.setInterval(tick, 60000);
+    window.addEventListener('focus', tick);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', tick);
+    };
+  }, []);
   const results = useRef<HTMLDivElement>(null);
   // Set when a filter is cleared, so the status line can say the whole list is back.
   const [cleared, setCleared] = useState(false);
@@ -205,11 +224,16 @@ export function Welcome() {
   };
 
   const filtering = filter.trim().toLowerCase();
-  // Pinned projects above the rest (#259), each once; `shown` is every card in the order on screen.
-  const groups = recents ? recentGroups(recents, filtering) : null;
-  const shown = groups ? [...groups.pinned, ...groups.recent] : null;
-  // The project to come back to: the newest, in the full, unfiltered list (a missing one too, with its Find folder).
-  const latest = recents && !filtering ? recents[0]?.dir : null;
+  // The project to come back to: the newest, in the full, unfiltered list (a missing one too, with its Find folder),
+  // pinned or not. It leads the list on its own, so the first thing on the screen answers "what was I working on".
+  const latestProject = recents && !filtering ? recents[0] : undefined;
+  const latest = latestProject?.dir ?? null;
+  // Then the pinned projects above the rest (#259), each once; `shown` is every card in the order on screen.
+  const groups = recents ? recentGroups(latest ? recents.filter((r) => r.dir !== latest) : recents, filtering) : null;
+  const shown = groups ? [...(latestProject ? [latestProject] : []), ...groups.pinned, ...groups.recent] : null;
+  // A short list is set in a narrower column, in the upper third of the pane rather than along its top edge, and one
+  // project narrower still. Decided on the first reading for the whole visit, so removing a project never moves the rest.
+  if (recents && recents.length > 0 && sparse.current === null) sparse.current = recents.length === 1 ? 'one' : recents.length <= 3 ? 'few' : 'many';
   // Once shown, the filter stays for this visit while there are projects, so removing one can never take away the
   // field that has focus or leave a list filtered with no way to clear it.
   if (recents && recents.length > FILTER_FROM) filterSeen.current = true;
@@ -219,12 +243,27 @@ export function Welcome() {
     setCleared(true);
     filterInput.current?.focus();
   };
-  const filterNote = filtering ? (shown?.length === 0 ? 'No projects match' : shown?.length === 1 ? '1 project matches' : `${shown?.length} projects match`) : cleared && recents ? `Showing all ${countOf(recents.length)}` : '';
   const labels = recents ? whereLabels(recents) : new Map<string, string>();
+  // With matches, it also says what Enter would do from the field, as the ↵ on the first result shows it.
+  const first = filtering ? shown?.[0] : undefined;
+  const firstTwin = !!first && (recents ?? []).some((x) => x !== first && x.name === first.name);
+  const enterNote = first ? ` Enter ${first.missing ? 'finds the folder of' : 'opens'} ${first.name}${firstTwin ? ` (${labels.get(first.dir) ?? first.dir})` : ''}.` : '';
+  const filterNote = filtering ? (shown?.length === 0 ? 'No projects match' : (shown?.length === 1 ? '1 project matches.' : `${shown?.length} projects match.`) + enterNote) : cleared && recents ? `Showing all ${countOf(recents.length)}` : '';
   // A new query starts the results from the top, so the best matches (and, once cleared, the newest project) are in view.
   useEffect(() => {
     results.current?.scrollTo({ top: 0 });
   }, [filtering]);
+  const moveBetweenCards = (e: KeyboardEvent<HTMLElement>) => {
+    if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    const target = e.target as HTMLElement;
+    if (!target.classList.contains('recent-card')) return;
+    const cards = [...(results.current?.querySelectorAll<HTMLElement>('.recent-card') ?? [])];
+    const at = cards.indexOf(target);
+    const next = e.key === 'ArrowDown' ? cards[at + 1] : at === 0 ? filterInput.current : cards[at - 1];
+    if (!next) return;
+    e.preventDefault();
+    next.focus();
+  };
   const removeProject = async (r: RecentProject) => {
     if (!recents || !shown) return;
     // Where focus goes is settled now, so a Pin pressed while this is saved takes over from it: the latest of a
@@ -252,7 +291,10 @@ export function Welcome() {
     }
   };
 
-  /** One project's card, with its Remove and Pin buttons, in whichever group it is shown. */
+  /**
+   * One project's card, with its Pin and Remove buttons, in whichever group it is shown. The newest project's card
+   * (`latest`) is the larger one that leads the list; every other card is a row of the list's one column.
+   */
   const card = (r: RecentProject) => {
     const busy = opening === r.dir;
     const isLatest = r.dir === latest;
@@ -261,14 +303,20 @@ export function Welcome() {
     const where = labels.get(r.dir) ?? r.dir;
     // The description is said as the card's description, not as part of its name, which stays short.
     const descId = r.description ? `recent-desc-${(recents ?? []).indexOf(r)}` : undefined;
+    const when = timeAgo(r.openedAt);
+    // An icon file that cannot be drawn (cut short, say) gives way to the initials, never a broken image.
+    const icon = r.icon && !r.missing && !brokenIcons.has(r.dir) ? r.icon : undefined;
+    // The result Enter in the filter opens: the first one shown.
+    const enterTarget = !!filtering && filterFocused && !opening && shown?.[0]?.dir === r.dir;
     return (
-      <li key={r.dir} className={`recent-item${r.missing ? ' missing' : ''}${isLatest ? ' latest' : ''}`}>
+      <li key={r.dir} className={`recent-item${r.missing ? ' missing' : ''}${isLatest ? ' latest' : ''}${icon ? ' has-icon' : ''}${enterTarget ? ' enter-target' : ''}`}>
         {/* A missing project's card finds it: the picker opens, and the same project found elsewhere takes over this entry (#217). */}
         <button className="recent-card" disabled={!!opening} aria-busy={busy || undefined} title={r.description ? `${r.name}\n${r.description}\n${r.dir}` : `${r.name}\n${r.dir}`} aria-describedby={descId} onClick={() => void (r.missing ? open(undefined, { folder: true, replaces: r.dir }) : open(r.dir))}>
-          <div className="recent-thumb" aria-hidden="true">
-            {busy ? <Spinner decorative /> : initials(r.name)}
-          </div>
-          <div className="recent-meta">
+          {/* The site's own icon, as its visitors' phones show it; its initials while it has none, or its folder is gone. */}
+          <span className="recent-thumb" aria-hidden="true">
+            {busy ? <Spinner decorative /> : icon ? <img src={icon} alt="" draggable={false} onError={() => setBrokenIcons((b) => new Set(b).add(r.dir))} /> : initials(r.name)}
+          </span>
+          <span className="recent-meta">
             <strong>{r.name}</strong>
             {/* The project brief's description (#518): the author's own words for what the project is, cut short to fit. */}
             {r.description && (
@@ -276,6 +324,7 @@ export function Welcome() {
                 {r.description}
               </span>
             )}
+            <span className="recent-line">
             <span className="where">
               <Folder aria-hidden="true" />
               {r.missing ? (
@@ -284,18 +333,22 @@ export function Welcome() {
                   <span className="path-full" aria-hidden="true">
                     {pathBreaks(compactPath(where, twins, 64))}
                   </span>
-                  <span className="sr-only">{where}</span>
+                  <span className="sr-only">{r.dir}</span>
                 </>
               ) : (
                 <>
+                  {/* Shortened at whole folders; past even that, clipped from the start, so the folder itself stays. */}
                   <span className="ellipsis" style={{ direction: 'rtl', textAlign: 'left' }}>
-                    <bdi aria-hidden="true">{compactPath(where, twins)}</bdi>
+                    <bdi aria-hidden="true">{compactPath(where, twins, isLatest ? 84 : 78)}</bdi>
                   </span>
-                  <span className="sr-only">{where}</span>
+                  <span className="sr-only">{r.dir}</span>
                 </>
               )}
             </span>
-            {r.missing ? (
+            {/* The newest project says when it was last opened beside its folder, missing or not: that is why it leads. */}
+            {isLatest && <span className={`when${busy && !r.missing ? ' busy' : ''}`}>{busy && !r.missing ? 'Opening…' : `Last opened ${when}`}</span>}
+            </span>
+            {r.missing && (
               <span className="recent-status">
                 {busy ? (
                   <span className="busy">Finding folder…</span>
@@ -304,40 +357,57 @@ export function Welcome() {
                     <span className="label">
                       <CircleAlert aria-hidden="true" /> Folder not found
                     </span>
-                    <span className="find">Find folder…</span>
+                    {!isLatest && <span className="find">Find folder…</span>}
                   </>
                 )}
               </span>
-            ) : (
-              <span className={`when${busy ? ' busy' : ''}`}>{busy ? 'Opening…' : `${isLatest ? 'Last opened' : 'Opened'} ${timeAgo(r.openedAt)}`}</span>
             )}
-          </div>
-          {isLatest && !busy && !r.missing && (
-            <span className="recent-go">
-              Open <ArrowRight aria-hidden="true" />
+          </span>
+          {/* The rows' dates line up in a column of their own, so a list is read by name down one edge and by time down the other. */}
+          {!isLatest && (
+            <span className={`when${busy && !r.missing ? ' busy' : ''}`}>
+              {busy && !r.missing ? (
+                'Opening…'
+              ) : (
+                <>
+                  {enterTarget && (
+                    <kbd className="kbd recent-enter" aria-hidden="true" title="Enter opens this project">
+                      ↵
+                    </kbd>
+                  )}
+                  <span className="sr-only">Opened </span>
+                  {sentence(when)}
+                </>
+              )}
             </span>
           )}
+          {isLatest && !busy && (
+            // A missing project's action is finding it, said where Open would be.
+            <span className="recent-go">{r.missing ? 'Find folder…' : <>Open <ArrowRight aria-hidden="true" /></>}</span>
+          )}
         </button>
-        <button
-          className="icon-btn remove"
-          aria-label={twin ? `Remove ${r.name} (${where}) from recent projects` : `Remove ${r.name} from recent projects`}
-          title={r.missing ? 'Remove from this list' : 'Remove from this list (the folder is not deleted)'}
-          disabled={!!opening}
-          onClick={() => void removeProject(r)}
-        >
-          <X />
-        </button>
-        {/* Pinned, a project stays listed above the rest however many others are opened after it (#259). */}
-        <button
-          className="icon-btn pin"
-          aria-label={twin ? `Pin ${r.name} (${where})` : `Pin ${r.name}`}
-          aria-pressed={r.pinned === true}
-          title={r.pinned ? 'Unpin' : 'Pin to the top of this list'}
-          disabled={!!opening}
-          onClick={() => void pinProject(r)}
-        >
-          <Pin />
-        </button>
+        <span className="recent-tools">
+          {/* Pinned, a project stays listed above the rest however many others are opened after it (#259). */}
+          <button
+            className="icon-btn pin"
+            aria-label={twin ? `Pin ${r.name} (${where})` : `Pin ${r.name}`}
+            aria-pressed={r.pinned === true}
+            title={r.pinned ? 'Unpin' : 'Pin to the top of this list'}
+            disabled={!!opening}
+            onClick={() => void pinProject(r)}
+          >
+            <Pin />
+          </button>
+          <button
+            className="icon-btn remove"
+            aria-label={twin ? `Remove ${r.name} (${where}) from recent projects` : `Remove ${r.name} from recent projects`}
+            title={r.missing ? 'Remove from this list' : 'Remove from this list (the folder is not deleted)'}
+            disabled={!!opening}
+            onClick={() => void removeProject(r)}
+          >
+            <X />
+          </button>
+        </span>
       </li>
     );
   };
@@ -414,8 +484,8 @@ export function Welcome() {
           <p>Free and open source, from the makers of Page Builder by SiteOrigin.</p>
         </footer>
       </aside>
-      <main className="welcome-main">
-        <AppearanceToggle />
+      <main className={`welcome-main${sparse.current === 'one' || sparse.current === 'few' ? ` sparse ${sparse.current}` : ''}`}>
+        <AppearanceToggle disabled={!!opening} />
         <div className="sr-only" role="status">
           {openingNote}
         </div>
@@ -445,10 +515,11 @@ export function Welcome() {
             </ol>
           </section>
         ) : (
-          <>
+          <section className="recents" aria-labelledby="recents-title">
             <header className="welcome-head">
+              <div className="recent-column">
               <div>
-                <h2>Recent projects</h2>
+                <h2 id="recents-title">Recent projects</h2>
                 <p className="muted">{filtering ? `${shown.length} of ${countOf(recents.length)}` : 'Pick up where you left off.'}</p>
               </div>
               {showFilter && (
@@ -468,11 +539,25 @@ export function Welcome() {
                       setCleared(filter.trim() !== '' && e.target.value.trim() === '');
                       setFilter(e.target.value);
                     }}
+                    onFocus={() => setFilterFocused(true)}
+                    onBlur={() => setFilterFocused(false)}
                     onKeyDown={(e) => {
+                      // Keys that finish composing a character (Japanese, Chinese, accents) are the input method's.
+                      if (e.nativeEvent.isComposing) return;
                       if (e.key === 'Escape' && filter) {
                         e.preventDefault();
                         e.stopPropagation();
                         clearFilter();
+                      }
+                      // Enter opens the best match, as a quick-open field does; Down moves into the results.
+                      const first = filtering ? shown?.[0] : undefined;
+                      if (e.key === 'Enter' && first && !opening) {
+                        e.preventDefault();
+                        void (first.missing ? open(undefined, { folder: true, replaces: first.dir }) : open(first.dir));
+                      }
+                      if (e.key === 'ArrowDown' && shown?.length) {
+                        e.preventDefault();
+                        results.current?.querySelector<HTMLElement>('.recent-card')?.focus();
                       }
                     }}
                   />
@@ -483,13 +568,16 @@ export function Welcome() {
                   )}
                 </div>
               )}
+              </div>
             </header>
             {showFilter && (
               <p className="sr-only" role="status">
                 {filterNote}
               </p>
             )}
-            <div ref={results} className="recent-scroll scroll">
+            {/* Up and Down move between projects, as in a list; Up from the first goes back to the filter. */}
+            <div ref={results} className="recent-scroll scroll" onKeyDown={moveBetweenCards}>
+            <div className="recent-column">
             {shown.length === 0 ? (
               <div className="recent-none">
                 <p>
@@ -501,10 +589,15 @@ export function Welcome() {
               </div>
             ) : (
               <>
+                {latestProject && (
+                  <ul className="recent-grid recent-continue" aria-label="Last opened project">
+                    {card(latestProject)}
+                  </ul>
+                )}
                 {groups.pinned.length > 0 && (
                   <section className="recent-group" aria-labelledby="recent-pinned">
                     <h3 id="recent-pinned" className="recent-group-title">
-                      <Pin aria-hidden="true" /> Pinned
+                      Pinned
                     </h3>
                     <ul className="recent-grid" aria-label="Pinned projects">
                       {groups.pinned.map(card)}
@@ -528,7 +621,8 @@ export function Welcome() {
               </>
             )}
             </div>
-          </>
+            </div>
+          </section>
         )}
       </main>
       {creating && <NewProjectModal onClose={() => setCreating(false)} />}

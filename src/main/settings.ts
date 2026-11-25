@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { AppSettings, LocalCheck, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
 import { PROVIDER_LABELS } from '@shared/turn-model';
 import { BRIEF_FILE, storedBriefDescription } from '@shared/brief';
+import { APPLE_TOUCH_ICON } from '@shared/site-icons';
 import { atomicWrite } from './project/fsutil';
 import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
@@ -259,10 +260,32 @@ export async function recents(): Promise<RecentProject[]> {
     s.recents.map(async (r) => {
       const missing = !existsSync(join(r.dir, MANIFEST));
       // Read from the folder each time, so a card says what the project's brief says now, however it was changed.
-      const description = missing ? '' : await briefDescription(r.dir);
-      return { ...withPin(r, r.pinned === true), missing, ...(description ? { description } : {}) };
+      const [description, icon] = missing ? ['', ''] : await Promise.all([briefDescription(r.dir), siteIcon(r.dir)]);
+      return { ...withPin(r, r.pinned === true), missing, ...(description ? { description } : {}), ...(icon ? { icon } : {}) };
     })
   );
+}
+
+/** The most of an icon a card reads: the 180px PNG every save draws is a small fraction of this. */
+const MAX_ICON_BYTES = 256 * 1024;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * The site's home-screen icon in `dir` as a PNG data URL, or '' when there is none that can be used. Every save draws
+ * it, opaque, from the favicon or the site's monogram (main/project/site-icons.ts), so a card shows the site as its
+ * visitors' phones do. Only a regular file that starts as a PNG is read: not a link, not a folder, nothing oversized.
+ */
+async function siteIcon(dir: string): Promise<string> {
+  try {
+    const file = join(dir, 'static', APPLE_TOUCH_ICON);
+    const st = await fs.lstat(file);
+    if (!st.isFile() || st.size > MAX_ICON_BYTES) return '';
+    const bytes = await fs.readFile(file);
+    if (bytes.length > MAX_ICON_BYTES || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) return '';
+    return `data:image/png;base64,${bytes.toString('base64')}`;
+  } catch {
+    return '';
+  }
 }
 
 /** The most of a brief a card reads: a brief within its limits is far smaller. */

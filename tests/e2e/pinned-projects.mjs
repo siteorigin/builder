@@ -18,6 +18,8 @@ let { app, win, errors } = await launch(WORK);
 const allErrors = [];
 const pinnedCards = () => win.getByRole('list', { name: 'Pinned projects' }).locator('.recent-card');
 const recentCards = () => win.getByRole('list', { name: 'Recent projects' }).locator('.recent-card');
+/** The newest project's card, which leads the list on its own, pinned or not. */
+const latestCard = () => win.getByRole('list', { name: 'Last opened project' }).locator('.recent-card');
 /** The folders of a group's cards, in the order shown. */
 const folders = async (cards) => (await cards.evaluateAll((els) => els.map((e) => e.title))).map((t) => t.split('\n')[1]);
 const filterInput = () => win.locator('.recent-filter input');
@@ -44,12 +46,14 @@ assert.equal(await pinnedCards().count(), 0, 'nothing is pinned yet');
 const pin = win.getByRole('button', { name: 'Pin Longstanding client' });
 assert.equal(await pin.getAttribute('aria-pressed'), 'false');
 await pin.click();
-await eventually(async () => assert.deepEqual(await folders(pinnedCards()), [longstanding]));
 await eventually(async () => assert.equal(await pin.getAttribute('aria-pressed'), 'true'));
+// The newest project leads the list on its own, pinned or not, so it is not repeated under Pinned.
+assert.deepEqual(await folders(latestCard()), [longstanding]);
+assert.equal(await pinnedCards().count(), 0);
 await eventually(async () =>
   assert.deepEqual(
     await win.evaluate(() => [document.activeElement?.getAttribute('aria-label'), document.activeElement?.closest('ul')?.getAttribute('aria-label')]),
-    ['Pin Longstanding client', 'Pinned projects']
+    ['Pin Longstanding client', 'Last opened project']
   )
 );
 allErrors.push(...errors);
@@ -80,8 +84,9 @@ file.recents = [...seeded, ...file.recents, { dir: gone, name: 'Old brochure sit
 writeFileSync(settingsFile, JSON.stringify(file, null, 2));
 await launchAgain();
 assert.deepEqual(await folders(pinnedCards()), [longstanding, gone], 'both pinned projects are listed');
-assert.deepEqual(await folders(recentCards()), seeded.map((r) => r.dir), 'the twenty newer ones follow, newest first');
-assert.deepEqual(await folders(win.locator('.recent-card')), [longstanding, gone, ...seeded.map((r) => r.dir)], 'the pinned ones are shown first');
+assert.deepEqual(await folders(latestCard()), [seeded[0].dir], 'the newest leads');
+assert.deepEqual(await folders(recentCards()), seeded.slice(1).map((r) => r.dir), 'the rest of the twenty newer ones follow, newest first');
+assert.deepEqual(await folders(win.locator('.recent-card')), [seeded[0].dir, longstanding, gone, ...seeded.slice(1).map((r) => r.dir)], 'then the pinned ones, then the rest');
 const brochure = win.getByRole('list', { name: 'Pinned projects' }).locator('.recent-item', { hasText: 'Old brochure site' });
 assert.match(await brochure.innerText(), /Folder not found/);
 assert.match(await brochure.innerText(), /Find folder…/);
@@ -119,12 +124,13 @@ const beforeRotation = await folders(recentCards());
 await createProject(win, { name: 'Client 21', parentDir: clients, starter: 'blank', sampleImages: false });
 await closeProject();
 const client21 = realpathSync(join(clients, 'client-21'));
-await eventually(async () => assert.deepEqual(await folders(recentCards()), [client21, ...beforeRotation.slice(0, 19)]));
+await eventually(async () => assert.deepEqual(await folders(latestCard()), [client21]));
+assert.deepEqual(await folders(recentCards()), [seeded[0].dir, ...beforeRotation.slice(0, 18)], 'the oldest unpinned one rotated off');
 assert.deepEqual(await folders(pinnedCards()), [longstanding, gone]);
 assert.equal(await win.locator('.recent-card').count(), 22, 'twenty-two projects are listed: two pinned and twenty more');
 
 step('Longstanding client is reopened through Open project…: it takes no other client’s place');
-const beforeReopen = await folders(recentCards());
+const beforeReopen = [...(await folders(latestCard())), ...(await folders(recentCards()))];
 const since = await desktopCursor(app);
 const [answer] = await answerChoosers(app, [{ dialog: 'open', paths: [process.platform === 'darwin' ? longstanding : join(longstanding, 'siteorigin.project.json')] }]);
 await win.locator('.welcome-action', { hasText: 'Open project…' }).click();
@@ -137,14 +143,15 @@ assert.deepEqual(
 );
 assert.equal(await win.evaluate(() => window.builder.project.snapshot().then((s) => s?.dir ?? null)), longstanding);
 await closeProject();
-await eventually(async () => assert.deepEqual(await folders(pinnedCards()), [longstanding, gone]));
+await eventually(async () => assert.deepEqual(await folders(latestCard()), [longstanding]));
+assert.deepEqual(await folders(pinnedCards()), [gone], 'the other pinned project keeps its place');
 assert.deepEqual(await folders(recentCards()), beforeReopen, 'every other client is still listed, in the same order');
 assert.equal(await win.locator('.recent-item.latest .recent-card').getAttribute('title'), `Longstanding client\n${longstanding}`, 'it is the project to come back to');
 
 step('the filter finds projects by name or folder in both groups');
 await filterInput().fill('longstanding');
 await eventually(async () => assert.deepEqual(await folders(win.locator('.recent-card')), [longstanding]));
-await eventually(async () => assert.equal(await filterStatus().innerText(), '1 project matches'));
+await eventually(async () => assert.equal(await filterStatus().innerText(), '1 project matches. Enter opens Longstanding client.'));
 await filterInput().fill('mill road');
 await eventually(async () => assert.deepEqual((await folders(win.locator('.recent-card'))).sort(), [millDelivered, millHarbour].sort()));
 await filterInput().fill('harbour');
@@ -161,8 +168,10 @@ await eventually(async () => assert.equal(await filterStatus().innerText(), 'Sho
 
 step('unpinned, Longstanding client goes back among the rest, newest first');
 await win.getByRole('button', { name: 'Pin Longstanding client' }).click();
-await eventually(async () => assert.deepEqual(await folders(pinnedCards()), [gone]));
-assert.deepEqual(await folders(recentCards()), [longstanding, ...beforeReopen]);
+await eventually(async () => assert.equal(await win.getByRole('button', { name: 'Pin Longstanding client' }).getAttribute('aria-pressed'), 'false'));
+assert.deepEqual(await folders(latestCard()), [longstanding], 'unpinned, it still leads as the newest');
+assert.deepEqual(await folders(pinnedCards()), [gone]);
+assert.deepEqual(await folders(recentCards()), beforeReopen);
 await eventually(async () =>
   assert.deepEqual(
     await win.evaluate(() => [document.activeElement?.getAttribute('aria-label'), document.activeElement?.getAttribute('aria-pressed')]),
@@ -181,7 +190,7 @@ await win.getByRole('button', { name: 'Pin Old brochure site' }).click();
 await eventually(async () => assert.equal(await win.getByRole('list', { name: 'Pinned projects' }).count(), 0));
 assert.equal(await kept.evaluate((e) => e.isConnected), true, 'the other cards are not drawn anew');
 assert.equal(await win.locator('.recent-group-title').count(), 0, 'one list needs no titles');
-assert.equal(await recentCards().count(), 22);
+assert.equal(await win.locator('.recent-card').count(), 22);
 await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Pin Old brochure site'));
 
 allErrors.push(...errors);

@@ -31,6 +31,11 @@ export interface RecentProject {
    * the settings. Absent when the project has none, or its folder is missing.
    */
   description?: string;
+  /**
+   * The site's home-screen icon (static/apple-touch-icon.png, drawn from its favicon or monogram on every save) as a
+   * PNG data URL, read from the folder when the list is asked for. Absent when the folder is missing or has none.
+   */
+  icon?: string;
 }
 
 export interface AppSettings {
