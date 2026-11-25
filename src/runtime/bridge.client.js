@@ -4842,6 +4842,8 @@ if (import.meta.hot) {
       requestAnimationFrame(() => {
         settleDrafts();
         send('revisionApplied', { revision: applied });
+        // The preview server waits for this before the editor replaces the files of the next save.
+        import.meta.hot.send('siteorigin:applied', { revision: applied });
       })
     );
   });

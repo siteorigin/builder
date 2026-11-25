@@ -1794,7 +1794,7 @@ export function Canvas() {
   function startInsertDrag(drag: InsertDrag, start: { x: number; y: number; pointerId: number }): boolean {
     const s = getState();
     const snap = s.snapshot;
-    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current || pageBehind()) return false;
+    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current) return false;
     const st = snap.state;
     const owner: OwnerRef = s.templateMode ? templateOwner(s.templateMode) : { kind: 'page', id: s.pageId };
     const role = insertRole(st, drag.spec);
@@ -2086,7 +2086,7 @@ export function Canvas() {
   function startAssetDrag(drag: AssetDrag, start: { x: number; y: number; pointerId: number }): boolean {
     const s = getState();
     const snap = s.snapshot;
-    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || s.templateMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current || pageBehind()) return false;
+    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || s.templateMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current) return false;
     const st = snap.state;
     const opening = snap.workspaceKey;
     const revision = snap.revision;

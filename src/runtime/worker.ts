@@ -22,9 +22,15 @@ type Msg =
 const port = (process as unknown as { parentPort: { on: (e: string, cb: (ev: { data: Msg }) => void) => void; postMessage: (m: unknown) => void } }).parentPort;
 const post = (m: unknown) => port.postMessage(m);
 
-let server: { close: () => Promise<void>; ws: { send: (p: unknown) => void }; httpServer: unknown } | null = null;
+type Ws = { send: (p: unknown) => void; on: (event: string, fn: (data: unknown) => void) => void; clients: Set<unknown> };
+let server: { close: () => Promise<void>; ws: Ws; httpServer: unknown } | null = null;
 /** Holds the preview's hot updates while the editor publishes a batch of files (see publication-gate). */
 let gate: PublicationGate | null = null;
+/**
+ * How long a new batch waits for the pages to show the one before (fetch its modules, apply them, say so), so it
+ * replaces nothing they are still reading. Under the editor's own wait for the answer (HOLD_ACK_MS).
+ */
+const CATCH_UP_MS = 600;
 
 async function loadVite(dir: string) {
   const req = createRequire(join(dir, 'package.json'));
@@ -86,6 +92,10 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
   } as never);
   held.attach(s as unknown as GateServer);
   gate = held;
+  const ws = (s as unknown as { ws: Ws }).ws;
+  // The bridge says which revision its page shows once it has applied it; a page that loads shows what is on disk.
+  ws.on('siteorigin:applied', (data) => held.applied(Number((data as { revision?: unknown } | null)?.revision)));
+  ws.on('connection', () => held.connected());
   await s.listen();
   server = s as never;
   const addr = (s.httpServer as { address(): { port: number } | string | null } | null)?.address();
@@ -162,12 +172,15 @@ port.on('message', async (ev) => {
     // The editor waits for this, so it never runs ahead of the batch's own update.
     else if (m.type === 'revision') {
       const send = () => server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision } });
-      if (gate) gate.afterBatch(send);
+      if (gate) gate.revision(m.revision, send);
       else send();
     }
-    // Answered once held, so the editor replaces no file before the watcher's events wait here.
+    // Answered once held, so the editor replaces no file before the watcher's events wait here; and once the pages
+    // show the batch before, so it replaces nothing they are still fetching for that one.
     else if (m.type === 'hold') {
-      gate?.hold(m.id);
+      const held = gate;
+      if (held) await held.caughtUp(CATCH_UP_MS, () => server?.ws.clients.size ?? 0);
+      held?.hold(m.id);
       post({ type: 'held', id: m.id });
     } else if (m.type === 'release') gate?.release(m.id, Array.isArray(m.files) ? m.files : []);
     else if (m.type === 'build') {

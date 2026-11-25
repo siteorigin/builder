@@ -1065,7 +1065,8 @@ export class ProjectSession extends EventEmitter {
    * folder first); "keep" accepts the external file, but only when the project is still valid with it.
    */
   resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }> {
-    return this.serialize(async () => {
+    // A code component's source put back reaches the preview with the files generated from it, as one update.
+    return this.serialize(() => this.publishing(async () => {
       if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
       if (this.activeRun) return { ok: false, message: 'Stop the AI before resolving conflicts.' };
       if (this.migrationFailed) return { ok: false, message: 'This project could not be updated to the current format. Close and reopen it.' };
@@ -1098,6 +1099,7 @@ export class ProjectSession extends EventEmitter {
           await unchanged();
           await this.removeCanonical(path);
         } else await atomicWrite(abs, builder, { beforeReplace: unchanged });
+        this.landing?.add(path);
         this.releaseConflict(path);
       } else {
         const overlay = new Map(this.pending);
@@ -1138,7 +1140,7 @@ export class ProjectSession extends EventEmitter {
       await this.saveLocalState();
       this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'Resolve conflict', source: 'user' } satisfies SessionEvent);
       return { ok: true };
-    });
+    }));
   }
 
   // -------------------------------------------------------------------------

@@ -89,16 +89,21 @@ describe('holding the preview while a save lands (#735)', () => {
   it('releases a hold when the save stops part way', async () => {
     const { dir, s } = await make();
     const about = s.state.site.pageOrder[1];
-    const { steps } = record(dir, s);
+    const { steps, released } = record(dir, s);
     const rename = fsp.rename as unknown as ReturnType<typeof vi.fn>;
     const real = rename.getMockImplementation()!;
     let n = 0;
     rename.mockImplementation(async (from: string, to: string) => {
-      if (String(to).includes(`${sep}src${sep}`) && ++n === 2) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+      // The second file the save replaces that the preview watches (not a document or an editor variant).
+      if (watched(relative(dir, String(to)).split(sep).join('/')) && ++n === 2) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
       return real(from, to);
     });
     await expect(s.apply({ operations: [{ type: 'page.duplicate', pageId: about, title: 'Our team' }] }, { label: 'Duplicate page' })).rejects.toThrow('disk full');
     expect(steps.filter((step) => /^(held|released) /.test(step))).toEqual(['held 1', 'released 1']);
+    // What did land is handed over, so the preview shows the files as they are on disk.
+    const landed = steps.filter((step) => step.startsWith('write ')).map((step) => step.slice('write '.length));
+    expect(landed.length).toBeGreaterThan(0);
+    expect(released[0]).toEqual(expect.arrayContaining(landed));
   });
 
   it('saves as before with no preview to hold', async () => {

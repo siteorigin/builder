@@ -20,17 +20,19 @@ const UPDATE_EVENTS = new Set(['add', 'change', 'unlink']);
 
 export const GATE_LIMITS = {
   /** A hold the editor never releases (it stopped part way) ends on its own after this. */
-  holdMs: 15000,
+  holdMs: 60000,
   /** How long a released batch waits for the watcher to report files it has not reported yet. */
   settleMs: 1000,
-  /** How long the updates of a batch's files are gathered before what has arrived is sent. */
-  collectMs: 3000
+  /** How long the updates of a batch's files are gathered before the page is reloaded instead. */
+  collectMs: 3000,
+  /** How often a new hold looks again whether the batch before it has reached the page. */
+  pollMs: 10
 };
 
 type Emit = (event: string | symbol, ...args: unknown[]) => boolean;
 type Send = (...args: unknown[]) => void;
-type Payload = { type?: unknown; updates?: unknown; path?: unknown };
-type Update = { type: string; path: string; acceptedPath: string; timestamp: number };
+type Payload = { type?: unknown; updates?: unknown; path?: unknown; triggeredBy?: unknown };
+type Update = { type: string; path: string; acceptedPath: string; timestamp: number; isWithinCircularImport?: boolean };
 
 /** What the gate uses of a Vite dev server. */
 export type GateServer = {
@@ -39,22 +41,28 @@ export type GateServer = {
 };
 type Hmr = (environment: never) => Promise<void>;
 
+/** A reload of whatever page is open: what a batch the gate could not gather whole is shown with. */
+const RELOAD = { type: 'full-reload', path: '*' };
+
 /**
  * Many sends of one environment as few as say the same: every update in one message (the page then applies them
- * together), a full reload in place of everything when any file needs one, and anything else after, in order.
+ * together), and anything else after, in order. A reload of every page (or of a module runner's entries) stands in
+ * for everything; a reload of one HTML page applies only on that page, so it goes beside the updates, never in place
+ * of them.
  */
 export function mergeHotPayloads(sent: unknown[][]): unknown[][] {
   const payload = (args: unknown[]): Payload | null => (args.length === 1 && args[0] && typeof args[0] === 'object' ? (args[0] as Payload) : null);
   const reloads = sent.filter((args) => payload(args)?.type === 'full-reload');
-  const rest = sent.filter((args) => {
-    const type = payload(args)?.type;
-    return type !== 'full-reload' && type !== 'update';
+  const whole = reloads.filter((args) => {
+    const path = payload(args)!.path;
+    return typeof path !== 'string' || !path.endsWith('.html');
   });
-  if (reloads.length) {
-    const first = payload(reloads[0])!;
-    const paths = new Set(reloads.map((args) => payload(args)!.path));
-    // A reload of one page when every file asked for that page, else of whatever page is open.
-    return [[{ ...first, path: paths.size === 1 ? first.path : '*' }], ...rest.filter((args) => payload(args)?.type !== 'error')];
+  if (whole.length) {
+    const first = payload(whole[0])!;
+    // Reloaded for files of its own, a runner goes over every entry again.
+    const by = new Set(whole.map((args) => payload(args)!.triggeredBy));
+    const { triggeredBy: _, ...rest } = first;
+    return [[{ ...rest, path: '*', ...(by.size === 1 && first.triggeredBy !== undefined ? { triggeredBy: first.triggeredBy } : {}) }]];
   }
   // The same module updated for two files of the batch is fetched once, at the later timestamp.
   const updates = new Map<string, Update>();
@@ -64,14 +72,26 @@ export function mergeHotPayloads(sent: unknown[][]): unknown[][] {
     for (const u of p.updates as Update[]) {
       const key = JSON.stringify([u.type, u.path, u.acceptedPath]);
       const was = updates.get(key);
-      if (!was || u.timestamp > was.timestamp) updates.set(key, u);
+      const circular = !!was?.isWithinCircularImport || !!u.isWithinCircularImport;
+      const kept = !was || u.timestamp > was.timestamp ? u : was;
+      updates.set(key, circular ? { ...kept, isWithinCircularImport: true } : kept);
     }
   }
+  const seenReloads = new Set<string>();
+  const rest = sent.filter((args) => {
+    const p = payload(args);
+    if (p?.type === 'update') return false;
+    if (p?.type !== 'full-reload') return true;
+    const key = String(p.path);
+    return !seenReloads.has(key) && !!seenReloads.add(key);
+  });
   return [...(updates.size ? [[{ type: 'update', updates: [...updates.values()] }]] : []), ...rest];
 }
 
 export function createPublicationGate(opts: { root: string; ignored: (path: string) => boolean }) {
   const holds = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Releases that arrived before their hold (the editor stopped waiting for it): that hold is never opened. */
+  const releasedEarly = new Set<string>();
   /** Watcher events waiting while a batch is held or settling, in the order the watcher sent them. */
   let buffer: Array<[string | symbol, ...unknown[]]> = [];
   /** Paths the waiting events name. */
@@ -80,11 +100,16 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
   const expected = new Set<string>();
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   /**
-   * While the updates of handed-over events are gathered: how many of them are still on their way, the updates that
-   * have arrived (theirs, and any other file's that arrives meanwhile), and the holds they cover (every hold opened
-   * before they were handed over).
+   * The waiting events are not a whole batch: a hold ran out, or files the batch changed were never reported. The page
+   * is then reloaded once they are handed over, rather than shown part of a batch.
    */
-  type Collecting = { due: number; ready: Array<() => void>; timer: ReturnType<typeof setTimeout>; covers: number };
+  let partial = false;
+  /**
+   * While the updates of handed-over events are gathered: how many of them are still on their way, the updates that
+   * have arrived (theirs, and any other file's that arrives meanwhile), the holds they cover (every hold opened before
+   * they were handed over), and whether the page is reloaded instead.
+   */
+  type Collecting = { due: number; ready: Array<() => void>; timer: ReturnType<typeof setTimeout>; covers: number; reload: boolean };
   let collecting: Collecting | null = null;
   /**
    * Which handing-over an update comes from: Vite works on each file asynchronously from the watcher's event, so the
@@ -97,6 +122,9 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
   let delivered = 0;
   /** What waits for the holds opened before it to reach the page, in order. */
   const after: Array<{ fn: () => void; holds: number }> = [];
+  /** The latest revision sent to the pages, and the latest a page has said it shows. */
+  let sentRevision = 0;
+  let appliedRevision = 0;
   let server: GateServer | null = null;
   let emit: Emit | null = null;
 
@@ -105,6 +133,8 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
    * to reach the page: the watcher's events wait, in order, behind it.
    */
   const closed = () => holds.size > 0 || settleTimer !== null || buffer.length > 0;
+  /** Nothing held, gathered or waiting to be sent. */
+  const idle = () => !closed() && !collecting && delivered >= opened && !after.length;
 
   function runAfter() {
     while (after.length && after[0].holds <= delivered) {
@@ -116,23 +146,36 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
     }
   }
 
+  function reloadPage() {
+    try {
+      server?.environments.client?.hot.send(RELOAD);
+    } catch {
+      // A page that cannot be told keeps what it shows.
+    }
+  }
+
   /** Every file of the released batches has been reported (or waited for long enough): hand the events to Vite. */
   function settle() {
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = null;
+    // Reported, or waited for long enough: a file still missing makes the batch partial.
+    if (expected.size) partial = true;
     expected.clear();
-    seen.clear();
     // One batch's updates at a time: the next waits for the page to get this one.
     if (collecting || holds.size) return;
+    seen.clear();
     const events = buffer;
     buffer = [];
+    const reload = partial;
+    partial = false;
     const due = events.filter(([event]) => typeof event === 'string' && UPDATE_EVENTS.has(event)).length;
     if (!due || !emit || !server) {
       if (emit) for (const args of events) emit(...args);
+      if (reload) reloadPage();
       delivered = opened;
       return runAfter();
     }
-    const c: Collecting = { due, ready: [], timer: setTimeout(() => sendUpdates(), GATE_LIMITS.collectMs), covers: opened };
+    const c: Collecting = { due, ready: [], timer: setTimeout(() => ((c.reload = true), sendUpdates()), GATE_LIMITS.collectMs), covers: opened, reload };
     collecting = c;
     for (const args of events) {
       const event = args[0];
@@ -153,9 +196,9 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
     if (!c) return;
     clearTimeout(c.timer);
     collecting = null;
-    const envs = Object.values(server?.environments ?? {}).filter((env): env is { hot: { send: Send } } => !!env?.hot);
+    const envs = Object.entries(server?.environments ?? {}).filter((e): e is [string, { hot: { send: Send } }] => !!e[1]?.hot);
     const sent = new Map<object, unknown[][]>();
-    const sends = envs.map((env) => {
+    const sends = envs.map(([, env]) => {
       const own = env.hot.send;
       sent.set(env, []);
       env.hot.send = (...args: unknown[]) => void sent.get(env)!.push(args);
@@ -164,20 +207,26 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
     try {
       for (const run of c.ready) run();
     } finally {
-      envs.forEach((env, i) => (env.hot.send = sends[i]));
+      envs.forEach(([, env], i) => (env.hot.send = sends[i]));
     }
-    envs.forEach((env, i) => {
-      for (const args of mergeHotPayloads(sent.get(env)!)) sends[i].apply(env.hot, args);
+    envs.forEach(([name, env], i) => {
+      // Part of a batch is never applied to the page: it loads the whole batch from disk instead.
+      const payloads = c.reload && name === 'client' ? [[RELOAD]] : mergeHotPayloads(sent.get(env)!);
+      for (const args of payloads) sends[i].apply(env.hot, args);
     });
     delivered = Math.max(delivered, c.covers);
     runAfter();
-    // Events held for the next batch while this one was gathered.
-    if (!holds.size && (buffer.length || expected.size)) maybeSettle();
+    // Events held for the next batch while this one was gathered, or a batch released with nothing to hand over.
+    if (!holds.size) maybeSettle();
   }
 
   function release(id: string, files: string[]) {
     const timer = holds.get(id);
-    if (timer === undefined) return;
+    if (timer === undefined) {
+      releasedEarly.add(id);
+      if (releasedEarly.size > 100) releasedEarly.delete(releasedEarly.values().next().value!);
+      return;
+    }
     clearTimeout(timer);
     holds.delete(id);
     for (const rel of files) {
@@ -217,15 +266,25 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
           }
           return true;
         }
+        // A file a plugin reports while working on one handed over (a dependency it read): its update is due too.
+        const c = collecting;
+        if (c && typeof event === 'string' && UPDATE_EVENTS.has(event) && handedOver.getStore() === c) c.due++;
         return own(event, ...args);
       };
     },
 
     /** Hold the watcher's events until `release(id)`; a hold never released ends after GATE_LIMITS.holdMs. */
     hold(id: string) {
-      if (holds.has(id)) return;
+      if (holds.has(id) || releasedEarly.delete(id)) return;
       opened++;
-      holds.set(id, setTimeout(() => release(id, []), GATE_LIMITS.holdMs));
+      holds.set(
+        id,
+        setTimeout(() => {
+          // Ran out with the batch maybe still landing: what it holds is not a whole batch.
+          partial = true;
+          release(id, []);
+        }, GATE_LIMITS.holdMs)
+      );
     },
 
     /** The batch is on disk: `files` (project-relative, `/`-separated) are the ones it wrote, removed or touched. */
@@ -235,6 +294,39 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
     afterBatch(fn: () => void) {
       after.push({ fn, holds: opened });
       runAfter();
+    },
+
+    /** Send `revision` to the pages with `send`, once every batch held so far has reached them. */
+    revision(revision: number, send: () => void) {
+      this.afterBatch(() => {
+        sentRevision = Math.max(sentRevision, revision);
+        send();
+      });
+    },
+
+    /** A page says it shows `revision`. */
+    applied(revision: number) {
+      if (Number.isSafeInteger(revision)) appliedRevision = Math.max(appliedRevision, revision);
+    },
+
+    /** A page connected: it loaded what is on disk now, so it shows every revision sent so far. */
+    connected() {
+      appliedRevision = Math.max(appliedRevision, sentRevision);
+    },
+
+    /**
+     * Resolves once the batches before have reached the pages and a page shows their revision (or none is open to),
+     * or after `capMs`: a new batch then replaces no file the page may still be fetching for the last one.
+     */
+    caughtUp(capMs: number, pages: () => number): Promise<void> {
+      const end = Date.now() + capMs;
+      return new Promise<void>((resolve) => {
+        const look = () => {
+          if ((idle() && (appliedRevision >= sentRevision || pages() === 0)) || Date.now() >= end) return resolve();
+          setTimeout(look, GATE_LIMITS.pollMs);
+        };
+        look();
+      });
     },
 
     /** Let everything through: the server is stopping. */

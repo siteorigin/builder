@@ -20,8 +20,11 @@ export type RuntimeStatus =
   | { state: 'ready'; url: string }
   | { state: 'error'; message: string; detail?: string };
 
-/** How long a save waits for the preview to say it holds its updates before it goes ahead without. */
-export const HOLD_ACK_MS = 500;
+/**
+ * How long a save waits for the preview to say it holds its updates (after showing the save before, see
+ * src/runtime/worker.ts CATCH_UP_MS) before it goes ahead without.
+ */
+export const HOLD_ACK_MS = 1000;
 
 function workerPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), 'runtime-worker.js');
