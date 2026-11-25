@@ -516,17 +516,34 @@ export function refExists(state: ProjectState, ref: ElementRef): boolean {
 }
 
 /**
- * For a part picked in one repeated item (one card of three): which item it is ("2 of 3"), and the same part in the
- * item before and after it, which the selection chip's Previous and Next select. Null at the first and last item: the
- * steps never wrap. Stepping names another item only, so it never changes the list.
+ * For a part picked in one repeated item (one card of three): which item it is ("2 of 3"), read from the list as the
+ * placement shows it (its own items, the design's while it has none, or the pages a computed list shows; `sample` is
+ * the entry a collection's layout is shown on), and the same part in every item of it, which the selection chip's
+ * Previous and Next item step through (see stepItem). `parts` is null when stepping can't be offered: an item of a list
+ * inside another item names more than one item, and the next outer item has its own inner items. Naming another item
+ * never changes the list.
  */
-export function itemStep(state: ProjectState, ref: ElementRef): { n: number; count: number; prev: ElementRef | null; next: ElementRef | null } | null {
+export function itemStep(state: ProjectState, ref: ElementRef, sample?: { entryId: string | null }): { n: number; count: number; parts: Array<ElementRef | null> | null } | null {
   const itemId = ref.itemPath?.[0];
   if (!itemId || !ref.instancePath.length) return null;
   const inst = resolveRef(state, { owner: ref.owner, instancePath: [], nodeId: ref.instancePath[0] }).node;
   if (inst?.kind !== 'instance') return null;
-  for (const [key, prop] of Object.entries(state.components[inst.definitionId]?.properties ?? {})) {
-    const list = prop.type === 'list' ? (inst.props as Record<string, unknown> | undefined)?.[key] : null;
+  const def = own(state.components, inst.definitionId);
+  if (!def) return null;
+  const props = (inst.props ?? {}) as Record<string, unknown>;
+  const one = ref.itemPath!.length === 1;
+  // One item: the list repeating the node (or the component holding it) where the placement is. Items of lists inside
+  // items: the outermost item, wherever it is.
+  const enclosing = one ? listPropFor(def, ref.instancePath.length > 1 ? ref.instancePath[1] : ref.nodeId) : undefined;
+  const keys = one ? (enclosing ? [enclosing] : []) : Object.keys(def.properties ?? {});
+  for (const key of keys) {
+    const schema = own(def.properties ?? {}, key);
+    if (schema?.type !== 'list') continue;
+    const list = schema.feed
+      ? placedFeedRows(state, schema, ref.owner, def.properties, props, ref.owner.kind === 'template' && sample ? { entryId: sample.entryId, nodeId: ref.instancePath[0] } : undefined)
+      : one && !Object.hasOwn(props, key)
+        ? schema.default
+        : props[key];
     if (!Array.isArray(list)) continue;
     const idAt = (i: number) => {
       const it = list[i] as { id?: unknown } | null | undefined;
@@ -534,12 +551,24 @@ export function itemStep(state: ProjectState, ref: ElementRef): { n: number; cou
     };
     const n = list.findIndex((_, i) => idAt(i) === itemId);
     if (n < 0) continue;
-    const at = (i: number): ElementRef | null => {
-      const id = i >= 0 && i < list.length ? idAt(i) : null;
-      return id ? { ...ref, itemPath: [id, ...ref.itemPath!.slice(1)] } : null;
-    };
-    return { n: n + 1, count: list.length, prev: at(n - 1), next: at(n + 1) };
+    const parts = one
+      ? list.map((_, i) => {
+          const id = idAt(i);
+          return id ? { ...ref, itemPath: [id] } : null;
+        })
+      : null;
+    return { n: n + 1, count: list.length, parts };
   }
+  return null;
+}
+
+/**
+ * The part a Previous (-1) or Next (1) item step from item `n` (1-based) selects: the same part in the nearest item that
+ * way the page shows it in. `shown` says whether the page shows the part in an item (undefined while unknown, which
+ * counts as shown): a rule can hide it in some (a button whose link is left empty). Null at either end: never wraps.
+ */
+export function stepItem(parts: Array<ElementRef | null>, n: number, dir: -1 | 1, shown?: ReadonlyArray<boolean | undefined>): ElementRef | null {
+  for (let i = n - 1 + dir; i >= 0 && i < parts.length; i += dir) if (parts[i] && shown?.[i] !== false) return parts[i];
   return null;
 }
 
