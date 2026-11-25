@@ -147,6 +147,20 @@ describe('a slot that names the components it takes', () => {
     expect(() => applyOperations(s, [{ type: 'instance.swapComponent', owner: page, nodeId: placed, componentId: 'features.grid' }])).toThrow(/takes “Feature card” and “.*”, not “Services grid” \(a content component\)/);
   });
 
+  it('refuses making a placement in the slot unique when the slot names the original, which the copy is not', () => {
+    const { s: base, page, section, card, grid } = bento();
+    const s = applyOperations(base, [
+      { type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: [card] },
+      { type: 'node.insert', owner: page, parentId: grid, slot: 'content', definitionId: card }
+    ]).state;
+    const placed = slotOf(s, grid)[0];
+    expect(() => applyOperations(s, [{ type: 'component.makeUnique', owner: page, nodeId: placed }])).toThrow(/“Cards” slot of “Section” takes “Feature card”, not a copy of “Feature card”/);
+    // Taken by its category instead, the copy goes too.
+    const open = applyOperations(s, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: null, categories: ['custom'] }]).state;
+    const r = applyOperations(open, [{ type: 'component.makeUnique', owner: page, nodeId: placed }]);
+    expect(errors(r.state)).toEqual([]);
+  });
+
   it('offers the canvas’s Add list inside the slot only the components it names', () => {
     const { s: base, page, section, card, grid } = bento();
     const s = applyOperations(base, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: [card] }]).state;

@@ -77,7 +77,7 @@ import { editTable } from './table';
 import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, itemStateProblems, normalizeProperties, usesState } from './schema';
 import { declaredTokens, findTokenCycle, findTokenCycleIn, forEachTokenRef, tokenPropUsageCounts, tokenUsageCounts } from './tokens';
 import { deriveDarkPalette, hasDarkPalette } from '@shared/color-scheme';
-import { slotDecl, slotFill, slotLandingProblem } from './slots';
+import { slotAccepts, slotDecl, slotFill, slotLandingProblem, takesComponent } from './slots';
 import { formDefaults, settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import { addPageStarter } from './page-starters';
@@ -3090,8 +3090,14 @@ export function ensureProjectOwned(state: ProjectState, defId: string): string {
 }
 
 function makeUnique(state: ProjectState, op: Op<'component.makeUnique'>): OpResult {
-  const { node, def } = instanceTarget(state, op.owner, op.nodeId);
+  const { node, def, tree } = instanceTarget(state, op.owner, op.nodeId);
   const copy = copyDefinition(state, def, op.name?.trim() || uniqueCopyName(state, def.name));
+  // The slot it sits in must take the copy too: one that names the original by its ID takes only the original.
+  const at = findParent(tree, node.id);
+  const holder = at?.parentId && Object.hasOwn(tree.nodes, at.parentId) ? tree.nodes[at.parentId] : undefined;
+  const decl = holder?.kind === 'instance' && at?.slot !== undefined ? slotDecl(state, holder, at.slot) : undefined;
+  if (decl && !takesComponent(decl, copy))
+    fail(`The “${decl.label}” slot of “${state.components[(holder as InstanceNode).definitionId]?.name ?? 'its component'}” takes ${slotAccepts(decl, state)}, not a copy of “${def.name}”. Move it out of the slot first.`);
   node.definitionId = copy.id;
   return { definitionId: copy.id };
 }
