@@ -112,6 +112,16 @@ function refusal(s: ProjectState, ops: EditOperation[]): string {
   }
 }
 
+/** The node a refusal names in its details, for the editor and the assistant to point at. */
+function refusedAt(s: ProjectState, ops: EditOperation[]): unknown {
+  try {
+    applyOperations(s, ops);
+    return null;
+  } catch (e) {
+    return (e as { details?: { nodeId?: unknown } }).details?.nodeId;
+  }
+}
+
 async function renderHome(s: ProjectState): Promise<string> {
   mkdirSync(resolve('.tmp'), { recursive: true });
   const dir = mkdtempSync(join(resolve('.tmp'), 'item-state-'));
@@ -176,15 +186,17 @@ describe('reading and selecting the active item', () => {
     expect(refusal(s, [when('loose')])).toMatch(/not inside a repeat of "Steps"/);
     expect(refusal(s, [when('other-text')])).toMatch(/inside a repeat of "Other", not of "Steps"/);
     expect(refusal(s, [when('pic-text', { eq: true })])).toMatch(/read it plainly/);
+    expect(refusal(s, [when('pic-text', { ne: false })])).toMatch(/read it plainly/);
     expect(refusal(s, [when('pic-text')])).toBe('');
     // A repeat with a category filter could hide the active item, and one inside another repeat is not one item each.
     const filtered = structuredClone(def);
     (filtered.tree!.nodes.rows as { filter?: unknown }).filter = { field: 'title' };
-    expect([...itemStateProblems(filtered).values()].join(' ')).toMatch(/category filter, which could hide the active item/);
+    // Each read and each select in the filtered repeat is its own problem, at its own node.
+    expect([...itemStateProblems(filtered).values()].map((p) => [p.nodeId, /category filter, which could hide the active item/.test(p.message)])).toEqual([['body', true], ['pick', true]]);
     const nested = structuredClone(def);
     nested.tree!.nodes['other-row'] = { ...nested.tree!.nodes['other-row'], children: ['other-text', 'other-pick', 'list'] } as never;
     (nested.tree!.nodes.root as { children: string[] }).children = (nested.tree!.nodes.root as { children: string[] }).children.filter((c) => c !== 'list');
-    expect([...itemStateProblems(nested).values()].join(' ')).toMatch(/inside a repeat within another repeat/);
+    expect([...itemStateProblems(nested).values()].map((p) => [p.nodeId, /inside a repeat within another repeat/.test(p.message)])).toEqual([['body', true], ['pick', true]]);
   });
 
   it('selects from a button in a repeat of its list, steps from anywhere, and is never set or toggled', () => {
@@ -207,6 +219,7 @@ describe('reading and selecting the active item', () => {
     // Moving the select button out of its repeat.
     const unbound = { type: 'node.setBinding', owner: owner(def), nodeId: 'pick', field: 'label', binding: null } as EditOperation;
     expect(refusal(s, [unbound, { type: 'node.move', owner: owner(def), nodeId: 'pick', parentId: 'root', index: 0 }])).toMatch(/Steps: .*selects its item.*not inside a repeat of "Steps"/);
+    expect(refusedAt(s, [unbound, { type: 'node.move', owner: owner(def), nodeId: 'pick', parentId: 'root', index: 0 }])).toBe('pick');
     // Repeating another list where the pictures show for the active step.
     expect(refusal(s, [{ type: 'node.setBinding', owner: owner(def), nodeId: 'pics', field: 'list', binding: { $prop: 'other' } }])).toMatch(/inside a repeat of "Other", not of "Steps"/);
     // Removing the list an unused item state holds the active item of.
@@ -237,10 +250,11 @@ describe('reading and selecting the active item', () => {
     tree.nodes.loose.when = { $state: 'active' };
     const codes = errors(s).map((d) => [d.code, d.nodeId]);
     expect(codes).toEqual(expect.arrayContaining([['STATE_ACTION_INVALID', 'pick'], ['BINDING_INVALID', 'loose']]));
-    expect(itemStateProblems(def).size).toBe(2);
+    expect([...itemStateProblems(def).values()].map((p) => p.nodeId).sort()).toEqual(['loose', 'pick']);
     // What was already wrong does not block an unrelated edit, but a new problem beside it is still refused.
     expect(refusal(s, [{ type: 'node.setContent', owner: owner(def), nodeId: 'next', field: 'label', value: 'Onwards' } as EditOperation])).toBe('');
     expect(refusal(s, [{ type: 'node.setBinding', owner: owner(def), nodeId: 'pics', field: 'list', binding: { $prop: 'other' } }])).toMatch(/inside a repeat of "Other", not of "Steps"/);
+    expect(refusedAt(s, [{ type: 'node.setBinding', owner: owner(def), nodeId: 'pics', field: 'list', binding: { $prop: 'other' } }])).toBe('pic');
     // A declaration whose list is gone.
     delete def.properties.spare;
     def.state!.lost = { type: 'item', label: 'Lost', list: 'spare', initial: 0 };
@@ -274,10 +288,12 @@ describe('the generated site', () => {
     def.properties.encodeURIComponent = P.str('Encode', 'e');
     home(s).rootIds = [];
     const node = place(s, def);
-    node.props.steps = [{ id: 'a b', title: 'Spaced', body: 'Spaced body', pic: '' }, { id: '\ud800', title: 'Lone', body: 'Lone body', pic: '' }, { id: 'a_0020b', title: 'Lookalike', body: 'Lookalike body', pic: '' }];
+    node.props.steps = [{ id: 'a b', title: 'Spaced', body: 'Spaced body', pic: '' }, { id: '\ud800', title: 'Lone', body: 'Lone body', pic: '' }, { id: 'a_0020b', title: 'Lookalike', body: 'Lookalike body', pic: '' }, { id: 'tab\there', title: 'Tabbed', body: 'Tabbed body', pic: '' }];
     const html = await renderHome(s);
     const ids = [...html.matchAll(/ id="([^"]*\.panel\.body\.[^"]*)"/g)].map((m) => m[1].split('.panel.body.')[1]);
-    expect(ids).toEqual(['a_0020b', '_d800', 'a_005f0020b']);
+    expect(ids).toEqual(['a_0020b', '_d800', 'a_005f0020b', 'tab_0009here']);
+    // The buttons name the same IDs their panels carry.
+    expect([...html.matchAll(/aria-controls="([^"]*)"/g)].map((m) => m[1].split(' ')[0].split('.panel.body.')[1])).toEqual(ids);
   });
 
   it('compiles without a warning, in the site and the editor', () => {
@@ -348,7 +364,7 @@ describe('the generated site', () => {
     // A choice stays while items move or are added; once it is removed, the starting position again.
     expect([activeItem(rows('c', 'a', 'b'), 'c', 1), activeItem(rows('x', 'c'), 'c', 0), activeItem(rows('a', 'b'), 'c', 1)]).toEqual(['c', 'c', 'b']);
     expect([stepItem(rows('a', 'b', 'c'), 'a', 1, false), stepItem(rows('a', 'b', 'c'), 'c', 1, false), stepItem(rows('a', 'b', 'c'), 'c', 1, true), stepItem(rows('a', 'b', 'c'), 'a', -1, true)]).toEqual(['b', 'c', 'a', 'c']);
-    expect([stepItem(rows('a', 'b'), 'gone', 1, true), stepItem([], 'a', 1, true)]).toEqual(['a', null]);
+    expect([stepItem(rows('a', 'b'), 'gone', 1, true), stepItem([], 'a', 1, true), stepItem(rows('a', 'b', 'c'), 'a', -1, false)]).toEqual(['a', null, 'a']);
   });
 
   it('checks a page the way the site renders it: only the starting item’s content shows at first', () => {
@@ -363,6 +379,12 @@ describe('the generated site', () => {
     expect(content.filter((c) => c.defNodeId === 'pic-text').map((c) => c.value)).toEqual(['Pic two']);
     expect(words).not.toContain('First body');
     expect(words).not.toContain('Third body');
+    // A placement with fewer items starts at its last.
+    const short = fresh();
+    home(short).rootIds = [];
+    const node = place(short, stepsDef(short));
+    node.props.steps = [{ id: 'x', title: 'Only', body: 'Only body', pic: 'Only pic' }];
+    expect(renderedContent(short, home(short)).filter((c) => c.defNodeId === 'pic-text').map((c) => c.value)).toEqual(['Only pic']);
   });
 });
 
@@ -395,6 +417,9 @@ describe('the editor and Component Studio', () => {
     expect(itemStatePositions(def, def.state!.active as never)).toEqual([{ value: 0, label: '1. One' }, { value: 1, label: '2. Two' }, { value: 2, label: '3. Three' }]);
     // A position past the design's items (set by the assistant) is listed as the one in use, and a preview's own items name theirs.
     expect(itemStatePositions(def, { type: 'item', label: 'Far', list: 'steps', initial: 50 }).at(-1)).toEqual({ value: 50, label: 'Step 51' });
+    // Previewing another position keeps the one each placement starts at in the list, to go back to.
+    expect(itemStatePositions(def, { type: 'item', label: 'Far', list: 'steps', initial: 4 }, undefined, 0).map((o) => o.value)).toEqual([0, 1, 2, 4]);
+    expect(itemStatePositions(def, { type: 'item', label: 'Far', list: 'steps', initial: 0 }, undefined, 6).map((o) => o.value)).toEqual([0, 1, 2, 6]);
     expect(itemStatePositions(def, def.state!.active as never, [{ title: 'A' }, { title: 'B' }, { title: 'C' }, { title: 'D' }]).map((o) => o.label)).toEqual(['1. A', '2. B', '3. C', '4. D']);
   });
 
@@ -452,7 +477,8 @@ describe('the Foundation layouts', () => {
 
   it('prints pinned columns in their place, one after the other', () => {
     const print = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media print'));
-    expect(print).toContain(":is([class$='--layout-sticky-split'], [class*='--layout-sticky-split ']):is([class$='__intro'], [class*='__intro ']):not(#so-print),");
+    expect(print).toContain(":is([class$='--layout-sticky-split'], [class*='--layout-sticky-split ']):is([class$='__intro'], [class*='__intro ']):not(#so-print) { position: static !important; inset: auto !important; }");
+    expect(print).toContain(":is([class$='__steps-layout'], [class*='__steps-layout ']):has(> :is([class$='__media-stage'], [class*='__media-stage '])) > :is([class$='__steps-stage'], [class*='__steps-stage ']):not(#so-print) { order: 0 !important; }");
     expect(print).toContain("{ position: static !important; inset: auto !important; }");
     expect(print).toContain("{ grid-template-columns: minmax(0, 1fr) !important; }");
   });

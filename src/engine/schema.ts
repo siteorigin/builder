@@ -887,14 +887,14 @@ export function usesState(nodes: GraphNode[]): boolean {
  * is no list, and each read or select of one from outside a repeat of its list alone. An edit that adds one (moving a
  * button out of its repeat, removing or retyping the list, repeating another list) is refused.
  */
-export function itemStateProblems(def: ComponentDefinition): Map<string, string> {
-  const out = new Map<string, string>();
+export function itemStateProblems(def: ComponentDefinition): Map<string, ItemStateProblem> {
+  const out = new Map<string, ItemStateProblem>();
   const raw = def.state && typeof def.state === 'object' && !Array.isArray(def.state) ? (def.state as Record<string, unknown>) : {};
   const items = Object.keys(raw).filter((k) => (raw[k] as { type?: unknown } | null)?.type === 'item');
   if (!items.length || def.kind !== 'managed') return out;
   for (const name of items) {
     const problem = uiStateProblem(def, name, raw[name]);
-    if (problem) out.set(`state:${name}`, problem);
+    if (problem) out.set(`state:${name}`, { message: problem });
   }
   if (!def.tree) return out;
   const names = new Set(items);
@@ -905,20 +905,23 @@ export function itemStateProblems(def: ComponentDefinition): Map<string, string>
     const condition = site.field === 'when' || site.field === 'unless';
     const value = condition ? (site.node as unknown as Record<string, unknown>)[site.field] : undefined;
     const problem = stateRefProblem({} as ProjectState, def, { node: site.node, field: site.field, prop: site.prop, comparison: isComparison(value) ? value : undefined }, site.binding);
-    if (problem) out.set(`${site.node.id}|${site.field}|${site.prop ?? ''}`, `${nodeName(site.node)} ${problem}`);
+    if (problem) out.set(JSON.stringify([site.node.id, site.field, site.prop ?? null]), { message: `${nodeName(site.node)} ${problem}`, nodeId: site.node.id });
   }
   for (const n of Object.values(def.tree.nodes)) {
     if (n?.kind !== 'link' || !n.stateAction || !names.has(n.stateAction.state)) continue;
     const problem = stateActionProblem(def, n.stateAction, n.id);
-    if (problem) out.set(`${n.id}|stateAction`, `${nodeName(n)} ${problem}`);
+    if (problem) out.set(JSON.stringify([n.id, 'stateAction']), { message: `${nodeName(n)} ${problem}`, nodeId: n.id });
   }
   return out;
 }
 
 const nodeName = (n: GraphNode) => (typeof n.name === 'string' && n.name.trim() ? `"${n.name.trim()}"` : `The ${n.kind} "${n.id}"`);
 
-/** The node an item state problem (keyed as itemStateProblems keys it) is at, or undefined for a declaration's. */
-export const itemProblemNode = (key: string): string | undefined => (key.startsWith('state:') ? undefined : key.split('|')[0]);
+/** One item state problem: what is wrong, and the node it is at (none for a declaration's). */
+export interface ItemStateProblem {
+  message: string;
+  nodeId?: string;
+}
 
 /** A copy of a definition with one UI state variable replaced (or removed with `undefined`), for checking a change before making it. */
 export function withState(def: ComponentDefinition, name: string, schema: UiStateSchema | undefined): ComponentDefinition {

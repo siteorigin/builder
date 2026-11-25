@@ -41,7 +41,8 @@ function project(): ProjectState {
   const after = home.rootIds.slice(-1);
   // A second pinned grid whose heading group was cleared, which then has nothing to pin.
   const cleared = add('features.grid', { items: cards.slice(0, 3), eyebrow: '', heading: '', lead: '' }, { layout: 'sticky-split' });
-  home.rootIds = [add('content.steps-media'), add('content.steps-media'), add('features.grid', { items: cards }, { layout: 'sticky-split' }), cleared, ...after];
+  // The second Steps placement shows its picture first on wide screens; print puts its steps first again.
+  home.rootIds = [add('content.steps-media'), add('content.steps-media', {}, { layout: 'media-first' }), add('features.grid', { items: cards }, { layout: 'sticky-split' }), cleared, ...after];
   return s;
 }
 
@@ -233,18 +234,19 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
       await page.emulateMedia({ media: 'print' });
       const printed = (await site.evaluate(`(() => {
         const shown = (sel) => [...document.querySelectorAll(sel)].filter((e) => getComputedStyle(e).display !== 'none').length;
-        const layout = document.querySelector('[class*="steps-media__steps-layout"]');
-        const stage = layout.querySelector('[class*="__media-stage"]');
         const root = document.querySelector('[class*="features-grid--layout-sticky-split"][class*="__root"]');
         const intro = root.querySelector('[class*="features-grid__intro"]');
         return {
           details: shown('[class*="__step-details"]'),
           figures: shown('[class*="steps-media__media-stage"] figure'),
-          stage: [getComputedStyle(stage).position, stage.getBoundingClientRect().top >= layout.querySelector('ol').getBoundingClientRect().bottom - 1],
+          stage: [...document.querySelectorAll('[class*="steps-media__steps-layout"]')].map((layout) => {
+            const stage = layout.querySelector('[class*="__media-stage"]');
+            return [getComputedStyle(stage).position, stage.getBoundingClientRect().height > 0 && stage.getBoundingClientRect().top >= layout.querySelector('ol').getBoundingClientRect().bottom - 1];
+          }),
           intro: [getComputedStyle(intro).position, getComputedStyle(root.querySelector('[class*="features-grid__inner"]')).gridTemplateColumns.split(' ').length, root.querySelector('li').getBoundingClientRect().top >= intro.getBoundingClientRect().bottom - 1]
         };
-      })()`)) as { details: number; figures: number; stage: [string, boolean]; intro: [string, number, boolean] };
-      expect(printed).toEqual({ details: 6, figures: 6, stage: ['static', true], intro: ['static', 1, true] });
+      })()`)) as { details: number; figures: number; stage: Array<[string, boolean]>; intro: [string, number, boolean] };
+      expect(printed).toEqual({ details: 6, figures: 6, stage: [['static', true], ['static', true]], intro: ['static', 1, true] });
       // Back on screen, the step chosen before printing is still the one showing.
       await page.emulateMedia({ media: 'screen' });
       expect((await steps(site))[0].shown).toEqual(['Layouts, materials a']);

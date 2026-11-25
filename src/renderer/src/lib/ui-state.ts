@@ -72,8 +72,8 @@ export function itemStateLists(def: ComponentDefinition): Array<{ name: string; 
 
 /**
  * The positions an item state can start at (or be previewed at), named by the items ("2. Design"): one for each of
- * `items` (the design's own unless a preview shows others), and `current`, the one in use, even past the end of the
- * list (where it shows the last item).
+ * `items` (the design's own unless a preview shows others), and `current`, the one in use, and the starting position,
+ * even past the end of the list (where it shows the last item).
  */
 export function itemStatePositions(def: ComponentDefinition, s: Extract<UiStateSchema, { type: 'item' }>, items?: unknown[], current: number = s.initial): Array<{ value: number; label: string }> {
   const list = def.properties[s.list];
@@ -85,7 +85,8 @@ export function itemStatePositions(def: ComponentDefinition, s: Extract<UiStateS
     return typeof title === 'string' && title.trim() ? `${i + 1}. ${title.trim().slice(0, 60)}` : `${noun} ${i + 1}`;
   };
   const out = Array.from({ length: Math.min(Math.max(rows.length, 1), 50) }, (_, i) => ({ value: i, label: label(i) }));
-  if (current >= out.length) out.push({ value: current, label: label(current) });
+  // The one in use and the one each placement starts at, so a preview can always go back to the start.
+  for (const at of [...new Set([s.initial, current])].sort((a, b) => a - b)) if (at >= out.length) out.push({ value: at, label: label(at) });
   return out;
 }
 

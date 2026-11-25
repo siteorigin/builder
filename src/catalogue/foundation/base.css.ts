@@ -259,7 +259,7 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
 .so-container { width: 100%; max-width: calc(var(--so-container-content) + 2 * var(--so-container-gutter)); margin-inline: auto; padding-inline: var(--so-container-gutter); }
 
 /* A Services grid with its heading pinned beside the cards, whose heading was cleared, gives the cards the whole row. */
-${PINNED_SPLIT}:not(:has(> ${ends('__intro')})) { grid-template-columns: minmax(0, 1fr); }
+${PINNED_SPLIT}:has(> ${ends('__grid')}):not(:has(> ${ends('__intro')})) { grid-template-columns: minmax(0, 1fr); }
 
 /* Printed, a page is a handout. */
 @media print {
@@ -291,8 +291,11 @@ ${PINNED_SPLIT}:not(:has(> ${ends('__intro')})) { grid-template-columns: minmax(
   /* What stays in view on screen while content beside it scrolls (a section's heading beside its cards, steps beside
      their picture) prints in its place, the columns one after the other, however wide the sheet: in any copy of the
      section, by the option's and the elements' class endings. */
-  ${PINNED_SPLIT}:not(#so-print), ${STEPS_LAYOUT}:not(#so-print) { grid-template-columns: minmax(0, 1fr) !important; }
-  ${PINNED_HEADING}:not(#so-print), ${STEPS_LAYOUT} > ${ends('__media-stage')}:not(#so-print) { position: static !important; inset: auto !important; }
+  ${PINNED_SPLIT}:not(#so-print) { grid-template-columns: minmax(0, 1fr) !important; }
+  ${PINNED_HEADING}:not(#so-print) { position: static !important; inset: auto !important; }
+  /* Rules of their own, so a browser without :has() still keeps the ones above. */
+  ${STEPS_LAYOUT}:not(#so-print) { grid-template-columns: minmax(0, 1fr) !important; }
+  ${STEPS_LAYOUT} > ${ends('__media-stage')}:not(#so-print) { position: static !important; inset: auto !important; }
   ${STEPS_LAYOUT} > ${ends('__steps-stage')}:not(#so-print) { order: 0 !important; }
   /* Where the sheet has room: a heading, or a section's heading group (eyebrow, heading and lead, in any copy of
      the section), stays with what follows it, and short units (a plan, a contact method, a question and its
