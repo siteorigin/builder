@@ -10,8 +10,8 @@
  */
 import { z } from 'zod';
 import type { EditOperation, Op } from '@shared/ops';
-import type { PropSchema, ProjectState, TokenGroup } from '@shared/types';
-import { APPEAR_PRESETS, COMPONENT_CATEGORIES, ELEMENT_ACTIONS, SLOT_PRIMITIVES } from '@shared/types';
+import type { ComponentDefinition, PropSchema, ProjectState, TokenGroup, UiStateSchema } from '@shared/types';
+import { APPEAR_PRESETS, COMPONENT_CATEGORIES, ELEMENT_ACTIONS, OVERLAY_MODES, SLOT_PRIMITIVES } from '@shared/types';
 import { TABLE_LIMITS } from '@engine/table';
 import { MAX_CHOICES } from '@engine/values';
 import { STYLE_PROP_MAP } from '@shared/styles';
@@ -22,7 +22,7 @@ import { STYLE_TOKEN_REF, validateOperation } from '@shared/ops';
 import { sha256Hex } from '@shared/sha256';
 import { applyOperations } from '@engine/apply';
 import type { EngineError } from '@engine/tree';
-import { acceptedTypes, checkPropName, isProtoKey, normalizePropSchema, type BindField } from '@engine/schema';
+import { MAX_UI_STATES, acceptedTypes, checkPropName, declaredState, isProtoKey, normalizePropSchema, normalizeUiState, stateActionProblem, stateUsers, type BindField } from '@engine/schema';
 import { normalizeLink } from '@engine/values';
 import { fieldError, type FieldIssue, type MacroMemory } from './macros';
 import type { JsonSchema } from './propschema';
@@ -48,7 +48,31 @@ const BINDING = [
 ] as const;
 /** A literal, or the property ({"$prop"}) or list item field ({"$item"}) it shows. */
 const bindable = <T extends z.ZodType>(literal: T) => z.union([literal, ...BINDING]);
-const CONDITION = z.union([...BINDING, z.object({ ref: z.union(BINDING), eq: SCALAR }).strict(), z.object({ ref: z.union(BINDING), ne: SCALAR }).strict()]);
+/** What a condition reads: a property, a list item field, or one of the component's own UI state variables. */
+const CONDITION_REF = [...BINDING, z.object({ $state: z.string() }).strict()] as const;
+const CONDITION = z.union([...CONDITION_REF, z.object({ ref: z.union(CONDITION_REF), eq: SCALAR }).strict(), z.object({ ref: z.union(CONDITION_REF), ne: SCALAR }).strict()]);
+/** What clicking a button does to the component's UI state. */
+const STATE_ACTION = z
+  .discriminatedUnion('op', [
+    z.object({ op: z.literal('set'), state: z.string(), value: z.union([z.string(), z.boolean()]).describe('true or false for a yes/no state; an option value of a choice.') }).strict(),
+    z.object({ op: z.literal('toggle'), state: z.string() }).strict(),
+    z.object({ op: z.literal('next'), state: z.string(), wrap: z.boolean().optional() }).strict(),
+    z.object({ op: z.literal('prev'), state: z.string(), wrap: z.boolean().optional() }).strict()
+  ])
+  .describe('Sets a state, toggles a yes/no one, or steps a choice to its next or prev option (wrap: round to the other end).');
+/** One UI state variable: yes/no, or a choice between options. */
+const STATE = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('boolean'), name: NAME.describe('camelCase, such as "open"; not a property name.'), label: z.string().min(1).max(80), initial: z.boolean().optional().describe('Defaults to false.') }).strict(),
+  z
+    .object({
+      type: z.literal('enum'),
+      name: NAME.describe('camelCase, such as "tab" or "billing"; not a property name.'),
+      label: z.string().min(1).max(80),
+      options: z.array(z.object({ value: z.string().min(1).max(60), label: z.string().min(1).max(80) }).strict()).min(2).max(50),
+      initial: z.string().optional().describe('An option value; defaults to the first.')
+    })
+    .strict()
+]);
 const STYLE_FIELDS = {
   property: z.string().describe('A style property such as layout, gap, columns, paddingBlock, background, color, textStyle, radius.'),
   value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF]),
@@ -57,7 +81,7 @@ const STYLE_FIELDS = {
 };
 const STYLES = z.array(z.object(STYLE_FIELDS).strict()).max(80).optional();
 const CONDITIONS = {
-  when: CONDITION.optional().describe('Shown only while the property or item field is set, or compared with eq / ne.'),
+  when: CONDITION.optional().describe('Shown only while the property, item field or UI state ({"$state": name}) is set (a yes/no state on), or compared with eq / ne.'),
   unless: CONDITION.optional().describe('Hidden while it is set, or while the comparison holds.')
 };
 const CHILDREN = z.array(NODE_ID).max(200).optional().describe('IDs of the nodes inside it, in order.');
@@ -77,6 +101,10 @@ const NODE = z.discriminatedUnion('kind', [
       action: bindable(z.enum(ELEMENT_ACTIONS as unknown as [string, ...string[]])).optional().describe('What clicking it does: none, image (open its image full size) or link.'),
       carousel: z.literal(true).optional().describe('A list whose items scroll sideways as a carousel.'),
       appear: APPEAR,
+      overlay: z
+        .enum(OVERLAY_MODES as unknown as [string, ...string[]])
+        .optional()
+        .describe('A div below the root shown only while a yes/no state is on (its one condition): a dialog or drawer over the page, opened and closed by that state\'s buttons.'),
       styles: STYLES,
       ...CONDITIONS
     })
@@ -103,6 +131,7 @@ const NODE = z.discriminatedUnion('kind', [
       appearance: bindable(z.enum(APPEARANCES)).optional().describe('Button style; defaults to primary.'),
       icon: bindable(z.string()).optional(),
       ariaLabel: bindable(z.string()).optional(),
+      stateAction: STATE_ACTION.optional(),
       styles: STYLES,
       ...CONDITIONS
     })
@@ -232,6 +261,11 @@ export const MANAGED_COMPONENT_ARGS = z
       )
       .max(4)
       .optional(),
+    state: z
+      .array(STATE)
+      .max(MAX_UI_STATES)
+      .optional()
+      .describe('UI state each placement holds and its buttons change (stateAction), read by when/unless as {"$state": name}: tabs, a toggle, a dialog. Placements never set it.'),
     placeOnPage: z
       .object({ pageId: z.string().describe('A page ID or route.'), index: z.number().int().min(0).optional().describe('Among its sections; omit for the end.') })
       .strict()
@@ -261,10 +295,10 @@ export function managedComponentSchema(): JsonSchema {
 }
 
 export const MANAGED_COMPONENT_DESCRIPTION =
-  'Create a reusable managed component, or rebuild one (definitionId), in one call: its properties (what authors fill in on each placement), its design as a flat list of nodes that name their children by ID, the parts authors can style, slots and variant options. Bind a node to a property with {"$prop": name} ({"$prop": name, "field": f} for one field of an object property); inside a repeat of a list property, bind to each item\'s field with {"$item": field}. Style with site tokens such as {"token": "space.lg"} and add phone/tablet/desktop rules with scope. A rebuild replaces the whole design; placements keep the values the new properties still take. placeOnPage places it on a page in the same step. If anything is invalid nothing is applied and the error names each field by its path: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
+  'Create a reusable managed component, or rebuild one (definitionId), in one call: its properties (what authors fill in on each placement), its design as a flat list of nodes that name their children by ID, the parts authors can style, slots, variant options and UI state. Bind a node to a property with {"$prop": name} ({"$prop": name, "field": f} for one field of an object property); inside a repeat of a list property, bind to each item\'s field with {"$item": field}. Style with site tokens such as {"token": "space.lg"} and add phone/tablet/desktop rules with scope. Interactive parts work in the published site with no code: declare UI state (a choice such as "plan" with options, or a yes/no "open"), give buttons a stateAction and link "", and show content only for one value with when. Tabs: a div holding nothing but one button per option (stateAction {"op": "set", "state": "plan", "value": option}), and one div panel per option with when {"ref": {"$state": "plan"}, "eq": option}. A toggle: a button with stateAction {"op": "toggle", "state": "open"} and content with when {"$state": "open"}; add overlay "dialog" or "drawer-end" to that div to show it over the page. A rebuild replaces the whole design and its UI state; placements keep the values the new properties still take. placeOnPage places it on a page in the same step. If anything is invalid nothing is applied and the error names each field by its path: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
 
 export const MANAGED_COMPONENT_BRIEF =
-  'A whole reusable component in one call: properties authors fill in, nodes (a flat list; children name node IDs; one root element), parts, slots and variant options; definitionId rebuilds one whole. Bind with {"$prop": name}, or {"$item": field} inside a repeat of a list. Style with tokens such as {"token":"space.lg"}; scope adds phone/tablet/desktop rules. placeOnPage also places it. On an error nothing is applied: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
+  'A whole reusable component in one call: properties authors fill in, nodes (a flat list; children name node IDs; one root element), parts, slots, variant options and UI state; definitionId rebuilds one whole. Bind with {"$prop": name}, or {"$item": field} inside a repeat of a list. Tabs: declare an enum state; a div holding only one button per option (stateAction set to the option, link ""); one div panel per option with when {"ref":{"$state":name},"eq":option}. A toggle: a toggle button and when {"$state":name}; overlay makes that div a dialog or drawer. Style with tokens such as {"token":"space.lg"}; scope adds phone/tablet/desktop rules. placeOnPage also places it. On an error nothing is applied: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
 
 // ---------------------------------------------------------------------------
 // Running the tool
@@ -540,6 +574,57 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     }
   });
 
+  // UI state: each variable settled as the engine will store it, so a problem is named by its row.
+  const uiState: Record<string, UiStateSchema> = {};
+  // Rows refused here are reported once, on the row: not again by every node that uses them.
+  const refusedStates = new Set<string>();
+  (args.state ?? []).forEach((st, i) => {
+    const at = `state[${i}]`;
+    if (reservedKey(st.name, `${at}.name`, issues)) return refusedStates.add(st.name);
+    if (Object.hasOwn(uiState, st.name)) return issues.push({ field: `${at}.name`, message: `"${st.name}" is listed twice` });
+    if (Object.hasOwn(properties, st.name)) {
+      refusedStates.add(st.name);
+      return issues.push({ field: `${at}.name`, message: `"${st.name}" is already a property. UI state needs a name of its own` });
+    }
+    try {
+      checkPropName(st.name, 'State');
+    } catch (e) {
+      refusedStates.add(st.name);
+      return issues.push({ field: `${at}.name`, message: (e as Error).message });
+    }
+    try {
+      uiState[st.name] = normalizeUiState(st, st.name);
+    } catch (e) {
+      refusedStates.add(st.name);
+      const message = (e as Error).message;
+      issues.push({ field: /starts as/.test(message) ? `${at}.initial` : /option/.test(message) ? `${at}.options` : at, message });
+    }
+  });
+  // Left out of a rebuild, the component keeps the state its design does not use, which the new design may read; state
+  // its design uses must be described again, so working tabs or toggles are never dropped unseen.
+  const known: Record<string, UiStateSchema> = args.state !== undefined ? uiState : {};
+  if (args.state === undefined && was?.state && typeof was.state === 'object' && !Array.isArray(was.state)) {
+    const used = Object.keys(was.state).filter((name) => stateUsers(was, name).length);
+    if (used.length) issues.push({ field: 'state', message: `"${was.name}" has UI state its design reads or its buttons change (${used.join(', ')}). Send state again with the rebuild; an empty list removes it` });
+    for (const name of Object.keys(was.state)) {
+      const kept = declaredState(was, name);
+      if (kept && !Object.hasOwn(properties, name)) known[name] = kept;
+    }
+  }
+  const stateNames = () => (Object.keys(known).length ? ` (${Object.keys(known).join(', ')})` : '. Declare it in state');
+  /** A condition that reads UI state: state the call declares, compared (if at all) with a value it can hold. */
+  const checkStateCondition = (v: unknown, name: string, at: string, id: string) => {
+    const s = Object.hasOwn(known, name) ? known[name] : undefined;
+    if (refusedStates.has(name)) return;
+    if (!s) return issues.push({ field: at, message: `"${id}" reads the UI state "${name}", which is not one of the state${stateNames()}` });
+    if (!isRecord(v) || !('ref' in v)) return;
+    const key = 'eq' in v ? 'eq' : 'ne';
+    const value = v[key];
+    if (s.type === 'boolean' && typeof value !== 'boolean') issues.push({ field: `${at}.${key}`, message: `"${name}" is yes/no: compare it with true or false` });
+    if (s.type === 'enum' && !(typeof value === 'string' && s.options.some((o) => o.value === value)))
+      issues.push({ field: `${at}.${key}`, message: `${JSON.stringify(value)} is not one of the options of "${name}" (${s.options.map((o) => o.value).join(', ')})` });
+  };
+
   // The design: one tree under one root, every node in one place.
   const byId = new Map<string, number>();
   nodes.forEach((n, i) => {
@@ -634,8 +719,14 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     for (const c of ['when', 'unless'] as const) {
       const v = n[c];
       if (v === undefined) continue;
-      const ref = isRecord(v) && 'ref' in v ? (v.ref as Parameters<typeof checkBinding>[0]) : (v as Parameters<typeof checkBinding>[0]);
-      checkBinding(ref, `${at}.${c}`, n.id);
+      const ref: unknown = isRecord(v) && 'ref' in v ? v.ref : v;
+      if (isRecord(ref) && typeof ref.$state === 'string') checkStateCondition(v, ref.$state, `${at}.${c}`, n.id);
+      else checkBinding(ref as Parameters<typeof checkBinding>[0], `${at}.${c}`, n.id);
+    }
+    // A button's state action changes state the call declares, in a way that state can change.
+    if (n.kind === 'link' && n.stateAction && !refusedStates.has(n.stateAction.state)) {
+      const problem = stateActionProblem({ state: known, properties: {} } as unknown as ComponentDefinition, n.stateAction);
+      if (problem) issues.push({ field: `${at}.stateAction`, message: `"${n.id}" ${problem}` });
     }
     if (n.kind === 'repeat') {
       const p = props.get(n.list)?.schema;
@@ -729,7 +820,9 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     nodes: designNodes as Op<'component.upsert'>['nodes'],
     ...(args.parts !== undefined ? { parts: parts as Op<'component.upsert'>['parts'] } : {}),
     ...(args.slots !== undefined ? { slots: slots as Op<'component.upsert'>['slots'] } : {}),
-    ...(args.variantAxes !== undefined ? { variantAxes: variantAxes as Op<'component.upsert'>['variantAxes'] } : {})
+    ...(args.variantAxes !== undefined ? { variantAxes: variantAxes as Op<'component.upsert'>['variantAxes'] } : {}),
+    // Left out, a rebuild keeps state its design does not use; an empty list removes it.
+    ...(args.state !== undefined ? { state: uiState } : {})
   };
   if (place) place.definitionId = definitionId;
   return { op, place, index: sourceIndex(args) };
@@ -872,6 +965,7 @@ function sourceIndex(args: ManagedComponentArgs): SourceIndex {
     names.push([a.name, `variantAxes[${i}]`]);
     a.options.forEach((o, j) => names.push([o.id, `variantAxes[${i}].options[${j}]`]));
   });
+  (args.state ?? []).forEach((st, i) => names.push([st.name, `state[${i}]`]));
   return {
     locate(message: string, details?: unknown) {
       const node = isRecord(details) && isRecord(details.owner) && details.owner.kind === 'component' && typeof details.nodeId === 'string' ? details.nodeId : undefined;

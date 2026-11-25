@@ -5,7 +5,7 @@ import { parseColor } from '@shared/color';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { variantOptions } from '@shared/variants';
 import { childLists } from './tree';
-import { boundSchema } from './schema';
+import { boundSchema, stateActionRuns } from './schema';
 import type { Diagnostic } from './validate';
 
 /**
@@ -170,7 +170,10 @@ export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens
       const button = label ? `the ${quoted(label)} ${heading ? 'link' : 'button'}` : `${`the button ${layer(n, '')}`.trimEnd()}`;
       if (label && !isMicroLabel(label, heading))
         push('COMPONENT_UNBOUND_CONTENT', n, ['content', 'label'], `the ${heading ? 'link text' : 'button label'} ${quoted(label)} is written into the design, so ${every} shows it. Bind it to ${where('text')}, ${optOut}`);
-      if (!isBinding(n.link))
+      // A button that changes the component's UI state and goes nowhere (a tab, a toggle) is a control every placement
+      // shares, not a destination a placement chooses.
+      const control = goesNowhere(n.link) && stateActionRuns(def, n.stateAction);
+      if (!isBinding(n.link) && !control)
         push(
           'COMPONENT_UNBOUND_CONTENT',
           n,

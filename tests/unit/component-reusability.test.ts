@@ -152,6 +152,34 @@ describe('content written into a design', () => {
     expect(message('title-link')).toContain('the link text “Garden Studio” is written into the design');
   });
 
+  it('leaves a button that changes the component’s UI state and goes nowhere alone: it is a control, not a destination (#377)', () => {
+    const s = fresh();
+    const def = addDef(s, {
+      name: 'Plan switch',
+      properties: {},
+      parts: {},
+      state: {
+        plan: { type: 'enum', label: 'Plan', options: [{ value: 'monthly', label: 'Monthly' }, { value: 'annual', label: 'Annual' }], initial: 'monthly' },
+        open: { type: 'boolean', label: 'Details', initial: false },
+        broken: { type: 'boolean', label: 'Broken', initial: 'yes' as never }
+      },
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.link('monthly', { type: 'none', target: '' }, 'Monthly', 'secondary', { stateAction: { state: 'plan', op: 'set', value: 'monthly' } }),
+          b.link('next', { type: 'none', target: '' }, 'Next', 'secondary', { stateAction: { state: 'plan', op: 'next', wrap: true } }),
+          b.link('details', { type: 'none', target: '' }, 'Details', 'text', { stateAction: { state: 'open', op: 'toggle' } }),
+          // State a hand edit damaged is left out of the component, so this one does nothing and goes nowhere.
+          b.link('dead', { type: 'none', target: '' }, 'More', 'text', { stateAction: { state: 'broken', op: 'toggle' } }),
+          // A state action the design cannot make leaves a button with nowhere to go, as before.
+          b.link('broken', { type: 'none', target: '' }, 'Weekly', 'secondary', { stateAction: { state: 'plan', op: 'set', value: 'weekly' } }),
+          // One that also goes somewhere fixed still links every placement to the same place.
+          b.link('both', { type: 'url', target: 'https://example.com' }, 'Annual', 'secondary', { stateAction: { state: 'plan', op: 'set', value: 'annual' } })
+        ])
+    });
+    const found = componentReusabilityDiagnostics(def, effectiveTokens(s));
+    expect(found.filter((d) => field(d)[2] === 'link').map((d) => d.nodeId)).toEqual(['dead', 'broken', 'both']);
+  });
+
   it('leaves short labels, separators, bound fields and shared layers alone', () => {
     expect(isMicroLabel('New this season')).toBe(true);
     expect(isMicroLabel('one two three four')).toBe(true);

@@ -13,6 +13,7 @@ import { executeTool, toolsForRun, type ToolHost } from '@agent/tools';
 import { definitionTarget, definitionTools, type DefinitionTarget } from '@agent/definition';
 import { authorityFor, checkAuthority, type Authority } from '@agent/scope';
 import { findForbiddenShapes, OPEN_VALUE_KEY, toStrictSchema } from '@agent/strict-schema';
+import { Ajv } from 'ajv';
 import { hasOpenSchema } from '@agent/propschema';
 import type { ToolDefinition } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
@@ -79,6 +80,8 @@ describe('choosing the definition tools', () => {
         const r = toolsForRun({ ...base, selection: target === inner ? { owner, nodeId: 'content' } : null, capabilities, definitionTarget: target });
         expect(r).toMatchObject({ mode: 'definition', focused: true });
         expect(names(r.tools)).toEqual(expect.arrayContaining([...MICRO, 'read_component', 'request_clarification']));
+        // Declaring UI state is the whole design's; a node with no button to wire gets no state tool (#377).
+        expect(names(r.tools).includes('manage_component_state')).toBe(target === whole);
         expect(names(r.tools)).not.toContain('apply_operations');
         for (const t of r.tools) {
           expect(findForbiddenShapes(toStrictSchema(t.parameters)), t.name).toEqual([]);
@@ -348,5 +351,105 @@ describe('running the definition tools', () => {
     const revision = session.revision;
     expect(errorOf(await run(gone, 'manage_component_prop', { change: { action: 'add', prop: 'x', label: 'X', type: 'string' } })).message).toMatch(/no longer in the site/);
     expect(session.revision).toBe(revision);
+  });
+});
+
+describe('UI state with the definition tools (#377)', () => {
+  it('builds a toggle step by step: a yes/no state, a button that toggles it, a part shown while it is on, then removes it', async () => {
+    const { session, id } = await hero();
+    const host = hostFor(session, authorityOf(session.state, id, null));
+    const def = () => session.state.components[id];
+    // Offered from the start, so the first state can be added; reading state is offered once there is some.
+    let tools = definitionTools(session.state, { definitionId: id })!;
+    expect(JSON.stringify(prop(tool(tools, 'manage_component_state'), 'change'))).not.toContain('on_click');
+    expect(JSON.stringify(prop(tool(tools, 'bind_definition_field'), 'binding'))).not.toContain('$state');
+    const add = await run(host, 'manage_component_state', { change: { action: 'add', state: 'open', label: 'Details', type: 'boolean' } });
+    expect(add.ok, JSON.stringify(add.content)).toBe(true);
+    expect(def().state).toEqual({ open: { type: 'boolean', label: 'Details', initial: false } });
+    tools = definitionTools(session.state, { definitionId: id })!;
+    expect(prop(tool(tools, 'bind_definition_field'), 'binding').anyOf!.some((b) => b.properties?.$state?.enum?.join() === 'open')).toBe(true);
+    const branches = prop(tool(tools, 'manage_component_state'), 'change').anyOf!;
+    expect(branches.map((b) => b.properties!.action.enum![0])).toEqual(['add', 'remove', 'on_click']);
+    expect(branches[2].properties!.nodeId.enum).toEqual(['primary', 'secondary']);
+
+    // The calls a constrained model sends fit the schema it is held to.
+    const fits = (name: string, args: unknown) => new Ajv({ strict: false }).validate(toStrictSchema(tool(tools, name).parameters), args);
+    expect(fits('manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'toggle', state: 'open' } })).toBe(true);
+    expect(fits('manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'set', state: 'open', value: true } })).toBe(true);
+    expect(fits('bind_definition_field', { nodeId: 'lead', field: 'when', binding: { $state: 'open' } })).toBe(true);
+    expect(fits('bind_definition_field', { nodeId: 'lead', field: 'when', binding: { $state: 'gone' } })).toBe(false);
+    expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'toggle', state: 'open' } })).ok).toBe(true);
+    expect(def().tree!.nodes.secondary).toMatchObject({ stateAction: { state: 'open', op: 'toggle' } });
+    expect((await run(host, 'bind_definition_field', { nodeId: 'lead', field: 'when', binding: { $state: 'open' } })).ok).toBe(true);
+    expect(def().tree!.nodes.lead.when).toEqual({ $state: 'open' });
+    // Still used: the engine says by what, and nothing changes.
+    const busy = await run(host, 'manage_component_state', { change: { action: 'remove', state: 'open' } });
+    expect(busy.ok).toBe(false);
+    expect(JSON.stringify(busy.content)).toMatch(/still used by/);
+    expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'none' } })).ok).toBe(true);
+    expect((await run(host, 'bind_definition_field', { nodeId: 'lead', field: 'when', binding: null })).ok).toBe(true);
+    expect((await run(host, 'manage_component_state', { change: { action: 'remove', state: 'open' } })).ok).toBe(true);
+    expect(def().state).toBeUndefined();
+  });
+
+  it('names what a state call gets wrong, and applies nothing', async () => {
+    const { session, id } = await hero();
+    const host = hostFor(session, authorityOf(session.state, id, null));
+    expect((await run(host, 'manage_component_state', { change: { action: 'add', state: 'plan', label: 'Plan', type: 'enum', options: ['monthly', 'annual'] } })).ok).toBe(true);
+    const revision = session.revision;
+    const fieldOf = async (name: string, args: unknown) => {
+      const out = await run(host, name, args);
+      expect(out.ok).toBe(false);
+      const c = out.content as { message?: unknown };
+      return typeof c.message === "string" ? c.message : JSON.stringify(c);
+    };
+    expect(await fieldOf('manage_component_state', { change: { action: 'add', state: 'plan', label: 'Again', type: 'boolean' } })).toMatch(/change\.state.*already has the UI state "plan"/);
+    expect(await fieldOf('manage_component_state', { change: { action: 'add', state: 'tab', label: 'Tab', type: 'enum' } })).toMatch(/change\.options.*needs its option values/);
+    expect(await fieldOf('manage_component_state', { change: { action: 'on_click', nodeId: 'primary', op: 'set', state: 'plan' } })).toMatch(/change\.value.*needs the value/);
+    expect(await fieldOf('manage_component_state', { change: { action: 'on_click', nodeId: 'primary', op: 'set', state: 'plan', value: 'weekly' } })).toMatch(/not one of its options/);
+    expect(await fieldOf('manage_component_state', { change: { action: 'on_click', nodeId: 'lead', op: 'next', state: 'plan' } })).toMatch(/"lead" is not a button/);
+    expect(await fieldOf('bind_definition_field', { nodeId: 'lead', field: 'text', binding: { $state: 'plan' } })).toMatch(/bind it to when or unless/);
+    expect(await fieldOf('bind_definition_field', { nodeId: 'lead', field: 'when', binding: { $state: 'period' } })).toMatch(/has no UI state "period"/);
+    expect(session.revision).toBe(revision);
+    // A step that goes round keeps going round.
+    expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'primary', op: 'next', state: 'plan', wrap: true } })).ok).toBe(true);
+    expect(session.state.components[id].tree!.nodes.primary).toMatchObject({ stateAction: { state: 'plan', op: 'next', wrap: true } });
+  });
+
+  it('offers only clearing a button’s action when it names state the design no longer has', async () => {
+    const { session, id } = await hero();
+    const host = hostFor(session, authorityOf(session.state, id, null));
+    expect((await run(host, 'manage_component_state', { change: { action: 'add', state: 'open', label: 'Open', type: 'boolean' } })).ok).toBe(true);
+    expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'toggle', state: 'open' } })).ok).toBe(true);
+    // A hand edit took the declaration away, leaving the button's action naming nothing.
+    delete session.state.components[id].state;
+    const branches = prop(tool(definitionTools(session.state, { definitionId: id })!, 'manage_component_state'), 'change').anyOf!;
+    expect(branches.map((b) => [b.properties!.action.enum![0], b.properties!.op?.enum])).toEqual([['add', undefined], ['on_click', ['none']]]);
+    expect(branches[1].properties!.nodeId.enum).toEqual(['secondary']);
+    expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'none' } })).ok).toBe(true);
+    expect((session.state.components[id].tree!.nodes.secondary as { stateAction?: unknown }).stateAction).toBeUndefined();
+  });
+
+  it('lets a run on a node selected in the design wire its own buttons to the states it has, but never declare or remove one', async () => {
+    const { session, id, owner } = await hero();
+    const whole = hostFor(session, authorityOf(session.state, id, null));
+    expect((await run(whole, 'manage_component_state', { change: { action: 'add', state: 'plan', label: 'Plan', type: 'enum', options: ['monthly', 'annual'] } })).ok).toBe(true);
+    const selected = authorityOf(session.state, id, { owner, instancePath: [], nodeId: 'actions' });
+    const host = hostFor(session, selected);
+    expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'primary', op: 'set', state: 'plan', value: 'annual' } })).ok).toBe(true);
+    expect(session.state.components[id].tree!.nodes.primary).toMatchObject({ stateAction: { state: 'plan', op: 'set', value: 'annual' } });
+    // Any state at all stops every placement being detached or converted to code: declaring one is the whole design's.
+    const tools = definitionTools(session.state, definitionTarget(selected)!)!;
+    expect(prop(tool(tools, 'manage_component_state'), 'change', 'action').enum).toEqual(['on_click']);
+    const revision = session.revision;
+    const add = await run(host, 'manage_component_state', { change: { action: 'add', state: 'open', label: 'Open', type: 'boolean' } });
+    expect(add.ok).toBe(false);
+    expect(session.revision).toBe(revision);
+    for (const op of [
+      { type: 'component.setState', definitionId: id, state: 'open', schema: { type: 'boolean' } },
+      { type: 'component.setState', definitionId: id, state: 'plan', schema: { type: 'enum', options: ['monthly', 'weekly'] } },
+      { type: 'component.removeState', definitionId: id, state: 'plan' }
+    ] as EditOperation[])
+      expect(checkAuthority(session.state, [op], selected), op.type).toBeTruthy();
   });
 });

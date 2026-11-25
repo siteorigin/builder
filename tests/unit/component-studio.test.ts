@@ -5,7 +5,9 @@ import { installComponent, makeInstance } from '@engine/install';
 import { generateComponentPreview } from '@generator/preview';
 import { PREVIEW_MODULE } from '@shared/component-preview';
 import { descOf, listPropFor, needsStudio, refExists, studioRef, studioCtx, studioDescOf, studioDesignCtx, studioPick, designCtx, type BridgeDesc } from '../../src/renderer/src/lib/model';
-import { NEW_STUDIO, StudioLoads, studioSpec, studioVariants } from '../../src/renderer/src/lib/studio';
+import { NEW_STUDIO, StudioLoads, studioSpec, studioStates, studioVariants } from '../../src/renderer/src/lib/studio';
+import { applyOperations } from '@engine/apply';
+import { defFile, generateProject } from '@generator/index';
 
 const starter = () => createStarterState('blank', 'Studio Test', false);
 const own = (id: string) => ({ kind: 'component' as const, id });
@@ -205,5 +207,88 @@ describe('Component Studio: the previews its frame is given', () => {
     expect(loads.prepared(pending, 'late')).toBe(false);
     expect(release.mock.calls).toEqual([['late']]);
     expect(loads.shows('shown')).toBe(true);
+  });
+});
+
+/** A design with a Monthly/Annual choice (tabs) and a yes/no state opening a drawer, made as the editor makes one. */
+function stateful(): { state: ProjectState; id: string } {
+  const none = { type: 'none' as const, target: '' };
+  const made = applyOperations(starter(), [
+    {
+      type: 'component.upsert',
+      name: 'Plan switch',
+      properties: {},
+      state: { plan: { type: 'enum', label: 'Plan', options: ['monthly', 'annual'] }, open: { type: 'boolean', label: 'Details' } },
+      nodes: [
+        { kind: 'element', id: 'root', tag: 'section', children: ['tabs', 'monthly', 'annual', 'more', 'drawer'] },
+        { kind: 'element', id: 'tabs', children: ['monthlyTab', 'annualTab'] },
+        { kind: 'link', id: 'monthlyTab', link: none, label: 'Monthly', stateAction: { state: 'plan', op: 'set', value: 'monthly' } },
+        { kind: 'link', id: 'annualTab', link: none, label: 'Annual', stateAction: { state: 'plan', op: 'set', value: 'annual' } },
+        { kind: 'element', id: 'monthly', children: [], when: { ref: { $state: 'plan' }, eq: 'monthly' } },
+        { kind: 'element', id: 'annual', children: [], when: { ref: { $state: 'plan' }, eq: 'annual' } },
+        { kind: 'link', id: 'more', link: none, label: 'Details', stateAction: { state: 'open', op: 'toggle' } },
+        { kind: 'element', id: 'drawer', overlay: 'drawer-end', children: [], when: { $state: 'open' } }
+      ]
+    }
+  ]);
+  return { state: made.state, id: made.results[0].definitionId as string };
+}
+
+describe('Component Studio: UI state (#377)', () => {
+  it('previews each state at the author’s value while the state can hold it, and asks only for what differs from the start', () => {
+    const { state, id } = stateful();
+    const def = state.components[id];
+    expect(studioStates(def, NEW_STUDIO)).toEqual({ plan: 'monthly', open: false });
+    expect(studioSpec(def, NEW_STUDIO)).toEqual({ definitionId: id });
+    expect(studioSpec(def, { ...NEW_STUDIO, states: { plan: 'annual' } })).toEqual({ definitionId: id, states: { plan: 'annual' } });
+    // Both at once, each kept.
+    expect(studioSpec(def, { ...NEW_STUDIO, states: { plan: 'annual', open: true } })).toEqual({ definitionId: id, states: { plan: 'annual', open: true } });
+    // Off is a value of its own, asked for when the design starts on.
+    const startsOpen = { ...def, state: { ...def.state!, open: { type: 'boolean' as const, label: 'Details', initial: true } } };
+    expect(studioSpec(startsOpen, { ...NEW_STUDIO, states: { open: false } })).toEqual({ definitionId: id, states: { open: false } });
+    expect(studioSpec(startsOpen, { ...NEW_STUDIO, states: { open: true } })).toEqual({ definitionId: id });
+    expect(studioStates(startsOpen, NEW_STUDIO).open).toBe(true);
+    // An option or a state gone since (an Undo), or a value of the wrong kind, shows where the design starts.
+    expect(studioSpec(def, { ...NEW_STUDIO, states: { plan: 'lifetime', gone: true, open: 'yes' as never } })).toEqual({ definitionId: id });
+    expect(studioStates({ ...def, state: { plan: { type: 'enum', label: 'Plan', options: [], initial: 'x' } as never } }, NEW_STUDIO)).toEqual({});
+  });
+
+  it('generates the preview from a copy starting at the previewed values, showing an open drawer in place while editing', () => {
+    const { state, id } = stateful();
+    const before = JSON.stringify(state.components[id]);
+    const out = generateComponentPreview(state, { definitionId: id, states: { plan: 'annual', open: true } });
+    if ('error' in out) throw new Error(out.error);
+    const file = out.files.get(defFile(state.components[id]))!;
+    expect(file).toContain('let so_state_plan = $state("annual");');
+    // The drawer starts closed in the design, and open in the preview.
+    expect(file).toContain('let so_state_open = $state(true);');
+    expect(state.components[id].state!.open.initial).toBe(false);
+    // The drawer is marked open in place, and the editor's own Show to edit button steps aside while it is.
+    expect(file).toContain(`data-so-overlay-open={so_state_open ? '' : undefined}`);
+    expect(file).toMatch(/\{#if !\(so_state_open\)\}\s*<button type="button" class="so-overlay-peek"/);
+    expect(JSON.stringify(state.components[id])).toBe(before);
+    expect(generateComponentPreview(state, { definitionId: id, states: { period: 'annual' } })).toEqual({ error: '"Plan switch" has no UI state "period".' });
+    expect(generateComponentPreview(state, { definitionId: id, states: { plan: 'weekly' } })).toEqual({ error: '"Plan switch" → Plan: "weekly" is not one of its values.' });
+    expect(generateComponentPreview(state, { definitionId: id, states: { open: 'yes' } })).toEqual({ error: '"Plan switch" → Details: "yes" is not one of its values.' });
+    // A page's placements keep the author's own Show to edit: the project's editor and site variants never mark one open.
+    for (const instrument of [true, false]) expect([...generateProject(state, { instrument }).values()].some((f) => f.includes('data-so-overlay-open'))).toBe(false);
+  });
+
+  it('opens in place only the studied design’s own dialogs and drawers, never those of a component placed inside it', () => {
+    const { state, id } = stateful();
+    // A wrapper placing the switch twice: its preview is the wrapper's, so the switch's drawers keep Show to edit.
+    const wrapped = applyOperations(state, [{ type: 'component.create', definitionId: 'proj.wrapper-aaaaa', name: 'Wrapper' }]).state;
+    const wrapper = wrapped.components['proj.wrapper-aaaaa'];
+    const root = wrapper.tree!.rootIds[0];
+    const both = applyOperations(wrapped, [
+      { type: 'node.insert', owner: own(wrapper.id), parentId: root, definitionId: id },
+      { type: 'node.insert', owner: own(wrapper.id), parentId: root, definitionId: id }
+    ]).state;
+    const out = generateComponentPreview(both, { definitionId: wrapper.id });
+    if ('error' in out) throw new Error(out.error);
+    expect(out.files.get(defFile(both.components[id]))).not.toContain('data-so-overlay-open');
+    const own_ = generateComponentPreview(both, { definitionId: id });
+    if ('error' in own_) throw new Error(own_.error);
+    expect(own_.files.get(defFile(both.components[id]))).toContain('data-so-overlay-open');
   });
 });

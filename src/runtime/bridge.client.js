@@ -544,7 +544,8 @@ window.addEventListener('keydown', (e) => {
 // In Edit a component's dialog or drawer renders in its place, hidden, beside a button of the editor's own
 // ([data-so-overlay-peek]) that shows it so what is inside can be selected and edited. Which ones are shown is kept
 // here, by where they are on the page (see overlayKey), so a hot update that renders one afresh keeps it shown, and
-// every other placement of the same design stays as it is.
+// every other placement of the same design stays as it is. In Component Studio's preview, one whose UI state the
+// studio previews open is marked [data-so-overlay-open] by the component itself and shows without that button.
 
 /** Dialogs and drawers the author shows in place, by overlayKey. */
 const overlaysShown = new Set();
@@ -4461,8 +4462,8 @@ style.textContent =
   ' html[data-so-editing] [data-appear-state]:not(#so-editor) { animation: none !important; }' +
   // A component's dialog or drawer in Edit: hidden in its place until the author shows it with the button beside it,
   // then framed, so it reads as content visitors see over the page.
-  ' html[data-so-editing] [data-so-overlay]:not([data-so-peek]):not(#so-editor) { display: none !important; }' +
-  ' html[data-so-editing] [data-so-overlay][data-so-peek] { outline: 2px dashed rgba(100, 116, 139, 0.6); outline-offset: 3px; }' +
+  ' html[data-so-editing] [data-so-overlay]:not([data-so-peek]):not([data-so-overlay-open]):not(#so-editor) { display: none !important; }' +
+  ' html[data-so-editing] [data-so-overlay]:is([data-so-peek], [data-so-overlay-open]) { outline: 2px dashed rgba(100, 116, 139, 0.6); outline-offset: 3px; }' +
   ' html[data-so-editing] .so-overlay-peek { display: flex; align-items: center; gap: 8px; box-sizing: border-box; width: 100%; margin: 4px 0; padding: 6px 10px; border: 1px dashed rgba(100, 116, 139, 0.7); border-radius: 6px; background: #f8fafc; color: #334155; font: 600 12px/1.35 system-ui, -apple-system, sans-serif; letter-spacing: normal; text-align: start; text-transform: none; cursor: pointer; }' +
   ' html[data-so-editing] .so-overlay-peek::after { content: "Show to edit"; margin-inline-start: auto; font-weight: 500; opacity: 0.75; }' +
   ' html[data-so-editing] .so-overlay-peek[aria-expanded="true"]::after { content: "Hide"; }';

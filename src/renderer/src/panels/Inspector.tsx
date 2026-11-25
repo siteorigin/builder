@@ -60,6 +60,8 @@ import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
 import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs, shellMenu } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
+import { stateActionRuns } from '@engine/schema';
+import { previewedState } from '../lib/studio';
 import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
 import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
@@ -72,6 +74,7 @@ import { TagField } from './TagField';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type ListFill, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
+import { ClickActionSection, OverlaySection, UiStateSection, overlayOffered } from './InteractionControls';
 import { EntranceField, StaggerSwitch, appearSummary } from './EntranceControls';
 import { useStyleCopyItems } from './StylePaste';
 import { platformKeys, useCopyPasteItems, type CopyPasteActions } from './CopyPaste';
@@ -2031,6 +2034,7 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
         <>
           <PropertiesSection def={def} level={LEVEL} />
           <VariantsSection def={def} level={LEVEL} onStyle={(target) => styleLook(def, target)} />
+          <UiStateSection def={def} level={LEVEL} />
         </>
       )}
     </>
@@ -2279,12 +2283,16 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const look = target && lookable ? target : null;
   const lookAxis = look ? def.variantAxes![look.axis] : undefined;
   const lookOption = look ? lookAxis!.options[look.variant] : undefined;
+  // Component Studio previews the design's UI state at the values its toolbar shows: a component placed in the design
+  // whose variant follows that state is styled as the canvas shows it.
+  const studioView = useStore((s) => (s.definitionMode?.definitionId === def.id ? s.definitionMode.studio : undefined));
+  const stateShown = previewedState(def, studioView);
   // A component placed in the design: its choices as the site starts them. One this design's state or property sets
   // shows that one's default.
   const startChoices: InstanceNode['variants'] =
     node.kind === 'instance'
       ? Object.fromEntries(
-          Object.entries(startingVariants(node.variants, def) ?? {}).map(([axis, v]) => [axis, isBinding(v) && '$prop' in v ? ((propBindingSchema(def.properties, v)?.default as string | undefined) ?? v) : v])
+          Object.entries(startingVariants(node.variants, stateShown) ?? {}).map(([axis, v]) => [axis, isBinding(v) && '$prop' in v ? ((propBindingSchema(def.properties, v)?.default as string | undefined) ?? v) : v])
         )
       : undefined;
   // Under a look's own rules: what the design gives this element at each size without them (its own styles and the
@@ -2375,11 +2383,13 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         }
       : undefined;
   const placedDef = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
-  // A button with words and no destination in the design: the site leaves it out of every placement.
+  // A button with words and no destination in the design: the site leaves it out of every placement, unless it changes
+  // the component's UI state (a tab, a toggle), which makes it a real button.
   const fixedLink = node.kind === 'link' && !isBinding(node.link) ? (node.link as LinkValue | null | undefined) : undefined;
   const designUnlinked =
     node.kind === 'link' &&
     !isBinding(node.link) &&
+    !stateActionRuns(def, node.stateAction) &&
     (node.appearance === 'primary' || node.appearance === 'secondary') &&
     typeof node.label === 'string' &&
     !!node.label.trim() &&
@@ -2457,7 +2467,10 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       <PartSection def={def} node={node} level={LEVEL} />
       {isRoot && <PropertiesSection def={def} level={LEVEL} />}
       {isRoot && <VariantsSection def={def} level={LEVEL} onStyle={(t) => styleLook(def, t)} />}
+      {isRoot && <UiStateSection def={def} level={LEVEL} />}
       <ConditionControls def={def} node={node} level={LEVEL} />
+      {node.kind === 'link' && <ClickActionSection def={def} node={node} level={LEVEL} />}
+      {overlayOffered(def, node) && <OverlaySection def={def} node={node} level={LEVEL} />}
       {(node.kind === 'element' || node.kind === 'repeat' || (node.kind === 'instance' && anchorCapable(state, placedDef))) && (
         <Section
           title="Entrance"
@@ -2520,11 +2533,11 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         ) : node.kind === 'instance' ? (
           <StyleControls
             styles={node.overrides?.root}
-            inherited={placedDef?.kind === 'managed' && placedDef.tree ? designStyles(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, def)) : undefined}
+            inherited={placedDef?.kind === 'managed' && placedDef.tree ? designStyles(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, stateShown)) : undefined}
             wideColumns
             tokens={tokens}
             allowed={placedDef?.parts.root?.styleControls ?? styleSetFor(node)}
-            layers={placedDef?.kind === 'managed' && placedDef.tree ? designLayers(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, def)) : undefined}
+            layers={placedDef?.kind === 'managed' && placedDef.tree ? designLayers(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, stateShown)) : undefined}
             onSet={(property, value, expectedRevision, inState) =>
               commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId: 'root', ...styleAt(scope, inState), property, value }], styleLabel(state, property, refTo(owner, node.id), undefined, value, inState), styleKey(property, `${def.id}:${node.id}:root:${styleScopeKey(scope, inState)}:${property}`), expectedRevision)
             }
