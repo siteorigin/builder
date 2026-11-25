@@ -138,9 +138,13 @@ try {
     return Object.fromEntries(await Promise.all(cells.map(async (id) => [p.nodes[id].name, await boxOf(id)])));
   };
   const near = (a, b, what, slack = 3) => assert.ok(Math.abs(a - b) <= slack, `${what}: ${a} against ${b}`);
+  /** Shows the page at a size, once the canvas is that wide: under 768px for Phone, 1024px and up for Desktop. */
   const showAt = async (size) => {
     await win.getByRole('button', { name: size, exact: true }).first().click();
-    await win.waitForTimeout(600);
+    await eventually(async () => {
+      const width = await frame.locator('body').evaluate(() => innerWidth);
+      assert.ok(size === 'Phone' ? width < 768 : width >= 1024, `the canvas shows ${size}: ${width}px`);
+    }, 15000);
   };
   const STARTERS = [
     {
@@ -219,7 +223,7 @@ try {
     step(`${starter.tile}: one column on phones, the cells one above the other in order`);
     await showAt('Phone');
     await eventually(async () => {
-      assert.equal(await at(grid).evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length), 1, 'one column');
+      assert.deepEqual(await at(grid).evaluate((el) => [getComputedStyle(el).display, getComputedStyle(el).gridTemplateColumns.split(' ').length]), ['grid', 1], 'one column');
       const list = Object.values(await boxes(cells));
       for (let i = 1; i < list.length; i++) {
         near(list[i].x, list[0].x, 'stacked at the same edge', 2);
@@ -239,20 +243,41 @@ try {
       );
       assert.ok(tall);
       changes++;
-      await eventually(async () => {
-        const pinned = await at(cells[1]).evaluate((el) => {
-          el.parentElement.scrollIntoView({ block: 'start' });
+      /** The sidebar and main column with the page scrolled `travel` pixels past the grid's top, instantly. */
+      const scrolled = (travel) =>
+        at(cells[1]).evaluate((el, travel) => {
+          const grid = el.parentElement;
           const main = el.previousElementSibling;
-          scrollBy(0, 900);
-          const top = parseFloat(getComputedStyle(el).top);
-          return { position: getComputedStyle(el).position, top, sidebar: el.getBoundingClientRect().top, main: main.getBoundingClientRect().top, mainHeight: main.getBoundingClientRect().height };
-        });
-        assert.equal(pinned.position, 'sticky', JSON.stringify(pinned));
-        assert.ok(pinned.mainHeight >= 2400, `the main column is long: ${JSON.stringify(pinned)}`);
-        assert.ok(pinned.main < 0, `the main column has scrolled up past the top: ${JSON.stringify(pinned)}`);
-        near(pinned.sidebar, pinned.top, `the sidebar is held at its offset below the header (${JSON.stringify(pinned)})`, 2);
+          scrollTo({ top: grid.getBoundingClientRect().top + scrollY + travel, behavior: 'instant' });
+          const css = getComputedStyle(el);
+          const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+          const header = parseFloat(css.getPropertyValue('--so-header-offset'));
+          return {
+            position: css.position,
+            // Below the header's published offset (4.5rem when none is), and 1.5rem more.
+            expected: (Number.isNaN(header) ? 4.5 * rem : header) + 1.5 * rem,
+            sidebar: el.getBoundingClientRect().top,
+            sidebarBottom: el.getBoundingClientRect().bottom,
+            main: main.getBoundingClientRect().top,
+            mainHeight: main.getBoundingClientRect().height,
+            gridBottom: grid.getBoundingClientRect().bottom
+          };
+        }, travel);
+      await eventually(async () => {
+        for (const travel of [900, 1500]) {
+          const p = await scrolled(travel);
+          assert.equal(p.position, 'sticky', JSON.stringify(p));
+          assert.ok(p.mainHeight >= 2400, `the main column is long: ${JSON.stringify(p)}`);
+          assert.ok(p.main < 0, `the main column has scrolled up past the top: ${JSON.stringify(p)}`);
+          near(p.sidebar, p.expected, `${travel}px down, the sidebar is held below the header`, 2);
+        }
       }, 30000);
       await win.screenshot({ path: join(OUT, 'sidebar-pinned.png') });
+      await eventually(async () => {
+        const p = await scrolled(2400);
+        near(p.sidebarBottom, p.gridBottom, 'at the end of the grid the sidebar goes with it', 2);
+        assert.ok(p.sidebar < p.expected, `released: ${JSON.stringify(p)}`);
+      }, 30000);
     }
 
     step(`${starter.tile}: each change has its own Undo, and one more takes the layout away with its Section`);
@@ -329,7 +354,7 @@ try {
     assert.deepEqual(p.nodes[made.one].overrides?.container?.base, { layout: 'grid', gridTemplate: '1fr 2fr', rowGap: { token: 'space.xl' }, columnGap: { token: 'space.sm' } });
     assert.equal(p.nodes[made.two].overrides, undefined, 'the other Section keeps its own layout');
   }, 15000);
-  await eventually(async () => assert.match(await columnLayout.locator('.section-head').innerText(), /4 changes/), 15000);
+  await eventually(async () => assert.match(await columnLayout.locator('.section-head').innerText(), /(^|\D)4 changes/), 15000);
   await columnLayout.screenshot({ path: join(OUT, 'section-column-layout.png') });
 
   assert.deepEqual(errors, [], 'no page errors');
