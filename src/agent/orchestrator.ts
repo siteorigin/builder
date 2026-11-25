@@ -391,10 +391,12 @@ ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
 
 /**
  * `constrained`: the model answers in grammar-constrained JSON, reading each tool's signature in the prompt. Every run,
- * a question included, reads the project brief after its instructions when the project has one (#519).
+ * a question included, reads the project brief after its instructions when the project has one (#519), unless `brief`
+ * is false: a run whose first request fits its window only without the brief.
  */
-function systemPrompt(state: ProjectState, run: RunTools, constrained = false): string {
-  return withBrief(instructions(state, run, constrained), state, constrained);
+function systemPrompt(state: ProjectState, run: RunTools, constrained = false, brief = true): string {
+  const text = instructions(state, run, constrained);
+  return brief ? withBrief(text, state, constrained) : text;
 }
 
 /** The instructions for a run, by what it may do and the model it goes to. */
@@ -1105,6 +1107,8 @@ export class Orchestrator {
     const constrainedJson = capabilities.toolCalling === 'constrained-json';
     /** Set on the first turn, before any call, when the model's window cannot hold the request beside the general tools. */
     let onlyFocused = false;
+    /** Cleared on the first turn, before any call, when the request fits the model's window only without the brief. */
+    let briefShown = true;
     /** Re-chosen each turn, because the user can widen a selection run to the whole site part way through. */
     const runTools = (): RunTools =>
       toolsForRun({
@@ -1506,7 +1510,7 @@ export class Orchestrator {
      */
     const narrowTools = () => {
       if (onlyFocused) return false;
-      const size = (run: RunTools) => estimateRequestTokens(systemPrompt(readState(), run, constrainedJson), run.tools, [], constrainedJson);
+      const size = (run: RunTools) => estimateRequestTokens(systemPrompt(readState(), run, constrainedJson, briefShown), run.tools, [], constrainedJson);
       const before = size(runTools());
       onlyFocused = true;
       if (size(runTools()) < before) return true;
@@ -1538,7 +1542,7 @@ export class Orchestrator {
         }
         current = runTools();
         let tools = current.tools;
-        let system = systemPrompt(readState(), current, constrainedJson);
+        let system = systemPrompt(readState(), current, constrainedJson, briefShown);
         const caps = ad.adapter.capabilities();
         const fit = () => applyContextBudget(items, { system, tools, capabilities: caps, isMutation: (n) => MUTATING_TOOLS.has(n as never), revision: readRevision() });
         let budget = fit();
@@ -1555,7 +1559,14 @@ export class Orchestrator {
         if (budget.overflow && turns === 1 && caps.contextWindowKnown && !current.focused && narrowTools()) {
           current = runTools();
           tools = current.tools;
-          system = systemPrompt(readState(), current, constrainedJson);
+          system = systemPrompt(readState(), current, constrainedJson, briefShown);
+          budget = fit();
+        }
+        // The brief is background the author can read for themselves: a request that fits only without it goes out
+        // without it, for the rest of the run, rather than failing over it.
+        if (budget.overflow && turns === 1 && caps.contextWindowKnown && briefShown && readState().brief) {
+          briefShown = false;
+          system = systemPrompt(readState(), current, constrainedJson, briefShown);
           budget = fit();
         }
         // With only a guessed window the first request goes out regardless: only the server knows its exact count.
