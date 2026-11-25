@@ -1686,7 +1686,9 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
   // Whether two rules can set something in common. Borders and corners are compared as families, so a side, a
   // colour or a physical edge never slips past its shorthand.
   const family = (n: string) => (n.includes('radius') ? 'radius' : n.startsWith('border') ? 'border' : n);
-  const touch = (a: Decl, b: Decl) => !paintedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y))));
+  // The two shift axes write one translate through a variable each, so one never overrides the other.
+  const axes = (a: Decl, b: Decl) => (a.prop === 'translateX' && b.prop === 'translateY') || (a.prop === 'translateY' && b.prop === 'translateX');
+  const touch = (a: Decl, b: Decl) => !axes(a, b) && !paintedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y))));
   const order = (d: Decl) => STYLE_STATES.indexOf(d.state!);
   const own = (d: Decl) => d.index >= beneath;
   for (const a of states) {

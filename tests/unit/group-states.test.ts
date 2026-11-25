@@ -6,13 +6,14 @@
 import { describe, expect, it } from 'vitest';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
-import type { ComponentDefinition, ElementNode, IconNode, InstanceNode, LinkNode, ProjectState, TextNode } from '@shared/types';
+import type { ComponentDefinition, ElementNode, IconNode, InstanceNode, LinkNode, NodeTree, ProjectState, ResponsiveStyles, TextNode } from '@shared/types';
 import { STYLE_STATES, parseStyleScopeKey } from '@shared/types';
-import { STATE_STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
+import { STATE_STYLE_PROPS, flattenStates, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { enclosingGroup, partInInteractionGroup } from '@shared/interaction-groups';
-import { MIGRATIONS } from '@shared/migrations';
+import { MIGRATIONS, migrateProject } from '@shared/migrations';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION } from '@catalogue/foundation/pack';
+import { P, item } from '@catalogue/dsl';
 import { applyOperations } from '@engine/apply';
 import { EngineError } from '@engine/tree';
 import { validateState } from '@engine/validate';
@@ -110,8 +111,8 @@ describe('marking a group and styling what is inside it', () => {
       'base:groupFocus': { color: '#0000ff' },
       'base:hover': { color: '#ff0000' }
     });
-    s = style(s, 'n_arrow', 'phone', 'groupHover', 'opacity', null);
-    expect(node(s, 'n_arrow').styles).not.toHaveProperty('phone:groupHover');
+    expect(style(s, 'n_arrow', 'phone', 'groupHover', 'opacity', null).pages[s.site.homePageId].nodes.n_arrow.styles).not.toHaveProperty('phone:groupHover');
+    // A reset of one state clears it at every size, and leaves the others.
     s = apply(s, [{ type: 'node.resetStyles', owner: owner(s), nodeId: 'n_arrow', state: 'groupHover' }]);
     expect(node(s, 'n_arrow').styles).toEqual({ 'base:groupFocus': { color: '#0000ff' }, 'base:hover': { color: '#ff0000' } });
     // The element's own hover still refuses a shift; a group state refuses layout.
@@ -120,8 +121,34 @@ describe('marking a group and styling what is inside it', () => {
   });
 
   it('refuses to ungroup a group, whose children would lose it', () => {
+    const plain = cards();
+    expect(home(apply(plain, [{ type: 'node.unwrap', owner: owner(plain), nodeIds: ['n_inner'] }])).nodes).not.toHaveProperty('n_inner');
     const s = group(cards(), 'n_inner');
     rejects(() => apply(s, [{ type: 'node.unwrap', owner: owner(s), nodeIds: ['n_inner'] }]), /interaction group/);
+  });
+
+  it('refuses group styles on a list or a slot, which render no element of their own', () => {
+    const s = fresh();
+    const def = {
+      ...FOUNDATION.managed({
+        componentId: 'project.list',
+        name: 'List',
+        category: 'content',
+        tags: [],
+        icon: 'sparkles',
+        description: '',
+        properties: { items: P.list('Items', 'Item', { label: P.str('Label', 'Item') }, [{ label: 'One' }]) },
+        parts: { root: { nodeId: 'root', label: 'List' } },
+        build: (b) => b.el('root', 'ul', { name: 'List', interactionGroup: true }, [b.repeat('rows', 'items', [b.el('row', 'li', { name: 'Row' }, [b.text('label', 'span', item('label'))])])])
+      }),
+      owner: 'project' as const
+    } as ComponentDefinition;
+    s.components[def.id] = def;
+    const list = def.tree!.nodes.rows;
+    const at = { owner: { kind: 'component' as const, id: def.id }, nodeId: list.id, scope: 'base' };
+    rejects(() => apply(s, [{ type: 'node.setStyle', ...at, state: 'groupHover', property: 'opacity', value: 0.5 }]), /no element of its own/);
+    // Clearing one a hand edit left there is still allowed.
+    expect(() => apply(s, [{ type: 'node.setStyle', ...at, state: 'groupHover', property: 'opacity', value: null }])).not.toThrow();
   });
 });
 
@@ -135,6 +162,21 @@ describe('which group an element follows', () => {
     // A group is never its own.
     expect(enclosingGroup(home(s), 'n_inner')).toBe('n_card');
     expect(enclosingGroup(home(s), 'n_loose')).toBeNull();
+    // Content placed in a placement's slot is inside it, and a repeat passes its group on to what it repeats.
+    const tree = {
+      rootIds: ['g'],
+      nodes: {
+        g: el('g', ['place', 'list'], { interactionGroup: true }),
+        place: { id: 'place', kind: 'instance', definitionId: 'x', props: {}, slots: { content: ['slotted'] } },
+        slotted: { id: 'slotted', kind: 'icon', icon: 'star' },
+        list: { id: 'list', kind: 'repeat', list: { $prop: 'items' }, children: ['row'] },
+        row: { id: 'row', kind: 'icon', icon: 'star' }
+      }
+    } as unknown as NodeTree;
+    expect(enclosingGroup(tree, 'slotted')).toBe('g');
+    expect(enclosingGroup(tree, 'row')).toBe('g');
+    (tree.nodes.g as ElementNode).interactionGroup = undefined;
+    expect(enclosingGroup(tree, 'slotted')).toBeNull();
   });
 
   it('warns about group styles no group can show, and about a group flag on what cannot be one', () => {
@@ -162,14 +204,89 @@ describe('which group an element follows', () => {
   it('reaches a placement’s part through a group in its design, or around the placement', () => {
     const s = fresh();
     const def = cardDef(s, false);
-    const placed = makeInstance(def, {});
     expect(partInInteractionGroup(def, 'arrow', false)).toBe(false);
     expect(partInInteractionGroup(def, 'arrow', true)).toBe(true);
     (def.tree!.nodes.root as ElementNode).interactionGroup = true;
     expect(partInInteractionGroup(def, 'arrow', false)).toBe(true);
     // The design's root is no group of its own: only one around the placement reaches it.
     expect(partInInteractionGroup(def, 'root', false)).toBe(false);
-    expect(placed.definitionId).toBe(def.id);
+  });
+
+  it('reaches a code component’s parts while its code renders a group, as a design converted to code keeps', () => {
+    let s = fresh();
+    const def = cardDef(s);
+    const placed = makeInstance(def, {}) as InstanceNode;
+    home(s).nodes[placed.id] = placed;
+    home(s).rootIds.push(placed.id);
+    s = apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: placed.id, partId: 'arrow', scope: 'base', state: 'groupFocus', property: 'color', value: '#00aa00' }]);
+    const cls = overrideClass(placed.id, 'arrow');
+    expect(generateSiteCss(s)).toContain(`:where(${FOCUS_ON}) .${cls}.${cls}:not(`);
+    const r = applyOperations(s, [{ type: 'component.convertToCode', owner: owner(s), nodeId: placed.id, name: 'Card code' }]);
+    const code = r.state.components[r.results[0].definitionId as string];
+    expect(code.kind).toBe('code');
+    expect(code.source).toContain('"so-group"');
+    expect(generateSiteCss(r.state)).toMatch(new RegExp(`:where\\(${FOCUS_ON.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\) \\.${cls}\\.${cls}\\.${cls}:not\\(`));
+    expect(warnings(r.state, 'STYLE_GROUP_MISSING')).toEqual([]);
+    // Code with no group of its own reaches nothing through its own markup.
+    expect(partInInteractionGroup({ ...code, source: code.source!.replaceAll('so-group', 'so-card') }, 'arrow', false)).toBe(false);
+  });
+});
+
+describe('moving elements between documents', () => {
+  it('refuses to make a component of an element whose group effect comes from a card outside it', () => {
+    let s = group(cards(), 'n_card');
+    s = style(s, 'n_arrow', 'base', 'groupHover', 'translateX', '4px');
+    rejects(() => apply(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: 'n_arrow', name: 'Arrow' }]), /“[^”]+” has styles for while its card is hovered/);
+    // Made from the card itself, the group goes with it and keeps working.
+    const t = apply(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: 'n_card', name: 'Card' }]);
+    const made = Object.values(t.components).find((d) => d.name === 'Card')!;
+    const arrow = Object.values(made.tree!.nodes).find((n) => n.styles?.['base:groupHover'])!;
+    expect(warnings(t, 'STYLE_GROUP_MISSING')).toEqual([]);
+    expect(generateComponentsCss(t)).toContain(`:where(${HOVER_ON}) .${nodeClass(made, arrow.id)}:not(`);
+  });
+
+  it('keeps a detached design’s dormant group styles dormant, and its working ones working', () => {
+    let s = fresh();
+    // The same card twice: as designed, a group, and a plain copy whose arrow's group styles no group of its own shows.
+    const plain = cardDef(s, false);
+    const dormant = { ...plain, id: `${plain.id}-plain`, componentId: 'project.plain-card', name: 'Plain card' } as ComponentDefinition;
+    s.components[dormant.id] = dormant;
+    const live = cardDef(s);
+    const wrap = el('n_wrap', [], { interactionGroup: true });
+    home(s).nodes[wrap.id] = wrap;
+    home(s).rootIds.push(wrap.id);
+    const placements = [live, dormant].map((d) => {
+      const p = makeInstance(d, {}) as InstanceNode;
+      home(s).nodes[p.id] = p;
+      wrap.children.push(p.id);
+      return p;
+    });
+    s = apply(s, []);
+    // The plain card's arrow has group styles and no group in its own design: warned, and never shown.
+    expect(warnings(s, 'STYLE_GROUP_MISSING').map((d) => d.nodeId)).toEqual(['arrow']);
+    for (const p of placements) s = apply(s, [{ type: 'component.detachInstance', owner: owner(s), nodeId: p.id }]);
+    const arrows = Object.values(home(s).nodes).filter((n) => n.detachedFrom?.node === 'arrow');
+    expect(arrows).toHaveLength(2);
+    // The working card's arrow keeps its group states; the plain one's, which no group showed, are left behind, so
+    // the page's group around both does not start showing them.
+    const [kept, left] = [...arrows].sort((a) => (a.styles?.['base:groupHover'] ? -1 : 1));
+    expect(kept.styles).toEqual({ 'base:groupHover': { translateX: '4px' }, 'base:groupFocus': { color: '#0000ff' } });
+    expect(left.styles?.['base:groupHover']).toBeUndefined();
+    expect(left.styles?.['base:groupFocus']).toBeUndefined();
+    // The detached card is still a group; with the page's own, two.
+    expect(Object.values(home(s).nodes).filter((n) => (n as ElementNode).interactionGroup).length).toBe(2);
+    // Only the plain design itself still holds styles no group shows; nothing on the page does.
+    expect(warnings(s, 'STYLE_GROUP_MISSING').map((d) => d.owner)).toEqual([{ kind: 'component', id: dormant.id }]);
+  });
+
+  it('folds a shift on one axis with a stronger shift on the other, which never override each other', () => {
+    const layers = [
+      { styles: { 'base:groupHover': { translateX: '4px' } } as ResponsiveStyles, strength: 1 },
+      { styles: { base: { translateY: '8px' } } as ResponsiveStyles, strength: 3 }
+    ];
+    expect(flattenStates(layers)).toEqual({ 'base:groupHover': { translateX: '4px' } });
+    // Custom CSS that writes translate itself still conflicts.
+    expect(flattenStates([layers[0], { styles: { base: { customCss: 'translate: 0 8px' } } as ResponsiveStyles, strength: 3 }])).toBeNull();
   });
 });
 
@@ -299,6 +416,15 @@ describe('a button inside a group', () => {
 describe('the document format', () => {
   it('marks interaction groups with a version-only step', () => {
     expect(MIGRATIONS.at(-1)?.id).toBe('interaction-groups');
+    let s = group(cards(), 'n_card');
+    s = style(s, 'n_arrow', 'phone', 'groupFocus', 'color', '#0000ff');
+    const from = MIGRATIONS.length;
+    for (const d of [s.manifest, s.site, s.tokens, s.assets, s.themeLock, ...Object.values(s.pages), ...Object.values(s.components)]) d.schemaVersion = from;
+    const before = structuredClone(s);
+    const out = migrateProject(s)!;
+    expect(out.applied).toEqual(['interaction-groups']);
+    const unversioned = (p: ProjectState) => JSON.parse(JSON.stringify({ ...p, themeLock: undefined }, (k, v) => (k === 'schemaVersion' ? undefined : v)));
+    expect(unversioned(out.state)).toEqual(unversioned(before));
   });
 });
 

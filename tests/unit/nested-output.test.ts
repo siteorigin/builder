@@ -420,6 +420,7 @@ describe.runIf(BROWSER)('state rules a design sets on a placement inside it', ()
 // ---------------------------------------------------------------------------
 
 const RED = 'rgb(255, 0, 0)';
+const BLUE = 'rgb(0, 0, 255)';
 const NONE = 'rgba(0, 0, 0, 0)';
 
 /**
@@ -437,6 +438,7 @@ async function after(page: { body: string; css: string }, action: { hover?: stri
       await tab.evaluate(`document.querySelector(${JSON.stringify(action.focus)}).setAttribute('data-target', '')`);
       await tab.keyboard.press('Tab');
       for (let i = 0; i < 20 && !(await tab.evaluate('document.activeElement?.hasAttribute("data-target")')); i++) await tab.keyboard.press('Tab');
+      if (!(await tab.evaluate('document.activeElement?.hasAttribute("data-target")'))) throw new Error(`Tab never reached ${action.focus}`);
     }
     return (await tab.evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].map((el) => getComputedStyle(el).getPropertyValue(${JSON.stringify(prop)}))`)) as string[];
   } finally {
@@ -444,7 +446,7 @@ async function after(page: { body: string; css: string }, action: { hover?: stri
   }
 }
 
-/** A card component that is an interaction group: an arrow that turns red while its card is hovered or has focus, then its slot. */
+/** A card component that is an interaction group: an arrow that turns red while its card is hovered and blue while it has focus, then its slot. */
 function groupCardDef(s: ProjectState) {
   return addDef(s, {
     componentId: 'project.group-card',
@@ -454,7 +456,7 @@ function groupCardDef(s: ProjectState) {
     slots: { content: { label: 'Content' } },
     build: (b) =>
       b.el('root', 'div', { name: 'Card', interactionGroup: true, styles: { base: { paddingBlock: '40px', paddingInline: '40px' } } }, [
-        b.el('arrow', 'span', { name: 'Arrow', styles: { base: { customCss: 'display: block; width: 10px; height: 10px' }, 'base:groupHover': { background: '#ff0000' }, 'base:groupFocus': { background: '#ff0000' } } }, []),
+        b.el('arrow', 'span', { name: 'Arrow', styles: { base: { customCss: 'display: block; width: 10px; height: 10px' }, 'base:groupHover': { background: '#ff0000' }, 'base:groupFocus': { background: '#0000ff' } } }, []),
         b.slot('content-slot', 'content')
       ])
   });
@@ -464,7 +466,7 @@ describe.runIf(BROWSER)('group states', () => {
   it('follow the nearest card on the page: the outer card never lights the inner card’s arrow', async () => {
     const s = fresh();
     const page = home(s);
-    const arrowStyles = { base: { customCss: 'display: block; width: 10px; height: 10px' }, 'base:groupHover': { background: '#ff0000' }, 'base:groupFocus': { background: '#ff0000' } };
+    const arrowStyles = { base: { customCss: 'display: block; width: 10px; height: 10px' }, 'base:groupHover': { background: '#ff0000' }, 'base:groupFocus': { background: '#0000ff' } };
     const box = { base: { paddingBlock: '40px', paddingInline: '40px' } };
     Object.assign(page.nodes, {
       n_outer: { id: 'n_outer', kind: 'element', tag: 'div', interactionGroup: true, styles: box, children: ['n_outer_arrow', 'n_outer_link', 'n_inner'] },
@@ -485,8 +487,8 @@ describe.runIf(BROWSER)('group states', () => {
     // Over the inner card, which is inside the outer one too: both.
     expect(await after(rendered, { hover: '.so-n-n_inner' }, arrows, 'background-color')).toEqual([RED, RED]);
     // Focus on the outer card's link, then on the inner card's.
-    expect(await after(rendered, { focus: '.so-n-n_outer_link' }, arrows, 'background-color')).toEqual([RED, NONE]);
-    expect(await after(rendered, { focus: '.so-n-n_inner_link' }, arrows, 'background-color')).toEqual([RED, RED]);
+    expect(await after(rendered, { focus: '.so-n-n_outer_link' }, arrows, 'background-color')).toEqual([BLUE, NONE]);
+    expect(await after(rendered, { focus: '.so-n-n_inner_link' }, arrows, 'background-color')).toEqual([BLUE, BLUE]);
   });
 
   it('keep a card placed in its own slot apart from the card around it', async () => {

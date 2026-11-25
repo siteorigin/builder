@@ -29,7 +29,8 @@ import type {
 } from '@shared/types';
 import type { BackgroundImageValue, Binding, EntryDoc } from '@shared/types';
 import { withAuthoredRel } from '@shared/link-rel';
-import { APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
+import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
+import { APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, canonicalStyleValue, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
@@ -1991,6 +1992,8 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
   if (op.state !== undefined && op.value !== null) {
     const err = stateStyleError(op.property, op.state);
     if (err) fail(err);
+    // A list or a slot renders what it holds, and no element of its own a group state could restyle.
+    if (isGroupStyleState(op.state) && (node.kind === 'repeat' || node.kind === 'slot')) fail('A list or a slot shows no element of its own for its group to restyle. Style an element inside it instead.');
   }
   if (op.value !== null) {
     const err = validateStyleValue(op.property, op.value);
@@ -2968,6 +2971,32 @@ function makeUnique(state: ProjectState, op: Op<'component.makeUnique'>): OpResu
   return { definitionId: copy.id };
 }
 
+/**
+ * A component made of part of a document keeps what it holds, but not the interaction groups around it: a group state
+ * a group outside it shows now would no longer show (a design's own rules follow only its own groups). Refused, naming
+ * the element, rather than turning the effect off unseen.
+ */
+function refuseGroupStylesOut(state: ProjectState, tree: NodeTree, rootId: string) {
+  const ids = new Set(subtreeIds(tree, rootId));
+  const nearest = groupLookup(tree);
+  const lookups = new Map<string, (nodeId: string) => string | null>();
+  // The ancestors of a node inside what is taken come before those outside it, so the nearest group decides.
+  const inside = (id: string) => {
+    const g = nearest(id);
+    return g !== null && ids.has(g);
+  };
+  for (const id of ids) {
+    const n = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
+    if (!n) continue;
+    const before = nearest(id) !== null;
+    const lost = (hasGroupStyles(n.styles) && before && !inside(id)) ||
+      (n.kind === 'instance' &&
+        Object.entries(n.overrides ?? {}).some(([pid, o]) => hasGroupStyles(o) && partInInteractionGroup(state.components[n.definitionId], pid, before, lookups) && !partInInteractionGroup(state.components[n.definitionId], pid, inside(id), lookups)));
+    if (lost)
+      fail(`“${displayName(state, n)}” has styles for while its card is hovered or has focus, from an interaction group around what the component would hold, which it would no longer follow. Make the component from the card itself, or reset those styles first.`);
+  }
+}
+
 function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>): OpResult {
   const tree = editableTree(state, op.owner);
   const root = getNode(tree, op.nodeId);
@@ -2975,6 +3004,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   if (root.kind === 'slot' || root.kind === 'repeat') fail('Select an element rather than a slot or repeat to create a component.');
   refuseItemStylesInto(state, tree, subtreeIds(tree, op.nodeId), 'every placement of a component shares its items.');
   if (op.owner.kind !== 'component') refuseCodeRootStylesInto(state, tree, subtreeIds(tree, op.nodeId));
+  refuseGroupStylesOut(state, tree, op.nodeId);
   // UI state belongs to the design that declares it; the new component would read or change state it does not have.
   if (usesState(subtreeIds(tree, op.nodeId).flatMap((id) => (tree.nodes[id] ? [tree.nodes[id]] : []))))
     fail('Part of this content reads or changes the UI state of the component around it, which a component of its own would not have. Remove those conditions and button actions first.');

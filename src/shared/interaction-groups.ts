@@ -42,16 +42,24 @@ export function groupLookup(tree: NodeTree | undefined | null): (nodeId: string)
   const memo = new Map<string, string | null>();
   return (nodeId) => {
     if (memo.has(nodeId)) return memo.get(nodeId)!;
+    // Every container passed on the way up shares the answer: the first group above it, or what one already asked
+    // for answers. A loop in a damaged tree ends the walk with none.
     let found: string | null = null;
-    const seen = new Set<string>([nodeId]);
+    const path = [nodeId];
+    const seen = new Set<string>(path);
     for (let at = parents.get(nodeId); at !== undefined && !seen.has(at); at = parents.get(at)) {
-      seen.add(at);
       if (isInteractionGroup(Object.hasOwn(tree.nodes, at) ? tree.nodes[at] : undefined)) {
         found = at;
         break;
       }
+      if (memo.has(at)) {
+        found = memo.get(at)!;
+        break;
+      }
+      seen.add(at);
+      path.push(at);
     }
-    memo.set(nodeId, found);
+    for (const id of path) memo.set(id, found);
     return found;
   };
 }
@@ -59,14 +67,20 @@ export function groupLookup(tree: NodeTree | undefined | null): (nodeId: string)
 /** The nearest group strictly around a node in its tree, or null. */
 export const enclosingGroup = (tree: NodeTree | undefined | null, nodeId: string): string | null => groupLookup(tree)(nodeId);
 
+/** A code component's markup that renders an interaction group (the class written as a class name of its own). */
+const CODE_GROUP = new RegExp(`(^|[^\\w-])${INTERACTION_GROUP_CLASS}(?![\\w-])`);
+
 /**
  * Whether a group can reach a part of a placement: one around the placement itself in the document it sits in
  * (`placed`, whether a group encloses the placement there), or one enclosing that part in its component's design. A
- * placement's root has no group of its own design around it, so only the first can reach it. `lookups` keeps one
- * lookup per design across a pass.
+ * placement's root has no group of its own design around it, so only the first can reach it. A code component's
+ * markup is its source, which no tree describes: one that renders a group (a managed design converted to code keeps
+ * its groups) lets its parts follow it, and the rule itself still needs that group around the part to apply. `lookups`
+ * keeps one lookup per design across a pass.
  */
 export function partInInteractionGroup(def: ComponentDefinition | undefined, partId: string, placed: boolean, lookups?: Map<string, (nodeId: string) => string | null>): boolean {
   if (placed) return true;
+  if (def?.kind === 'code') return typeof def.source === 'string' && CODE_GROUP.test(def.source);
   if (!def || def.kind !== 'managed' || !def.tree) return false;
   const nodeId = partId === 'root' || !Object.hasOwn(def.parts ?? {}, partId) ? def.tree.rootIds[0] : def.parts[partId]?.nodeId;
   if (!nodeId) return false;
@@ -76,6 +90,12 @@ export function partInInteractionGroup(def: ComponentDefinition | undefined, par
     lookups?.set(def.id, find);
   }
   return find(nodeId) !== null;
+}
+
+/** A set of styles without its group state rules (those no group can show stay unshown when copied elsewhere). */
+export function withoutGroupStates(styles: ResponsiveStyles | undefined): ResponsiveStyles | undefined {
+  if (!styles || typeof styles !== 'object' || !Object.keys(styles).some((k) => isGroupStyleState(parseStyleScopeKey(k)?.state))) return styles;
+  return Object.fromEntries(Object.entries(styles).filter(([k]) => !isGroupStyleState(parseStyleScopeKey(k)?.state))) as ResponsiveStyles;
 }
 
 /** Whether a set of styles holds any group state rule. */

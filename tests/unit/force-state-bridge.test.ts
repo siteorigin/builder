@@ -42,7 +42,8 @@ const CSS = `body { margin: 0; font: 16px/1.4 sans-serif }
 .quoted:hover, [title=":hover"] { color: rgb(255, 0, 0) }
 .garrow { color: rgb(0, 0, 0) }
 @media (hover: hover) { ${groupStateSelector('.garrow', 'groupHover')} { color: rgb(255, 0, 0) } }
-${groupStateSelector('.garrow', 'groupFocus')} { color: rgb(0, 0, 255) }`;
+${groupStateSelector('.garrow', 'groupFocus')} { color: rgb(0, 0, 255) }
+.escaped:is(.unused, .esc\\:focus-within) { color: rgb(0, 128, 0) }`;
 const FRAME = `<!doctype html><html><head><style id="site">${CSS}</style></head><body>
 <main data-so-node="s" data-so-ctx="page:p">
   <div class="card" data-so-node="c" data-so-ctx="page:p">Card</div>
@@ -56,7 +57,9 @@ const FRAME = `<!doctype html><html><head><style id="site">${CSS}</style></head>
   <p class="quoted" data-so-node="q" data-so-ctx="page:p">Quoted</p>
   <p class="adopt" data-so-node="a" data-so-ctx="page:p">Adopted</p>
   <div class="so-group" data-so-node="g1" data-so-ctx="page:p"><span class="garrow" data-so-node="ga" data-so-ctx="page:p">Outer arrow</span>
-    <div class="so-group" data-so-node="g2" data-so-ctx="page:p"><span class="garrow" data-so-node="gb" data-so-ctx="page:p">Inner arrow</span></div></div>
+    <div class="so-group" data-so-node="g2" data-so-ctx="page:p"><span class="garrow" data-so-node="gb" data-so-ctx="page:p">Inner arrow</span></div>
+    <dialog id="modal" class="so-group" data-so-node="g3" data-so-ctx="page:p"><div class="so-group" data-so-node="g4" data-so-ctx="page:p"><span class="garrow" data-so-node="gc" data-so-ctx="page:p">Arrow in a dialog</span></div></dialog></div>
+  <p class="escaped esc:focus-within" id="escaped">Escaped</p>
 </main><script type="module" src="/bridge.js"></script></body></html>`;
 
 let browser: Browser;
@@ -178,11 +181,37 @@ describe.skipIf(!browserInstalled)('showing the selected element in a hover, foc
     await force('groupFocus', 'gb');
     await expect.poll(marked).toEqual(['g1=within', 'g2=within']);
     expect(await paint(at('gb'), 'color')).toBe(BLUE);
+    // The outer arrow with focus in its card alone: the inner card, without focus, keeps its arrow as it is.
+    await force('groupFocus', 'ga');
+    await expect.poll(marked).toEqual(['g1=within']);
+    expect(await paint(at('ga'), 'color')).toBe(BLUE);
+    expect(await paint(at('gb'), 'color')).toBe('rgb(0, 0, 0)');
+    // Cleared straight from a group state, every mark goes.
+    await force(null);
+    await expect.poll(marked).toEqual([]);
     await force('focus', 'gb');
     await expect.poll(marked).toEqual(['gb=focus']);
     expect(await paint(at('gb'), 'color')).toBe('rgb(0, 0, 0)');
-    await force(null);
-    await expect.poll(marked).toEqual([]);
+  });
+
+  it('stops at a modal dialog, over the page, beyond which nothing counts as hovered', async () => {
+    await frame.evaluate(`document.getElementById('modal').showModal()`);
+    try {
+      await force('groupHover', 'gc');
+      await expect.poll(marked).toEqual(['g3=hover', 'g4=hover']);
+      expect(await paint(at('gc'), 'color')).toBe(RED);
+    } finally {
+      await force(null);
+      await frame.evaluate(`document.getElementById('modal').close()`);
+    }
+  });
+
+  it('leaves a colon escaped in a class name alone, which a forgiving :is() would otherwise drop', async () => {
+    await force('groupFocus', 'gb');
+    await expect.poll(marked).toEqual(['g1=within', 'g2=within']);
+    const sel = await frame.evaluate<string>(`[...document.getElementById('site').sheet.cssRules].find((r) => r.selectorText && r.selectorText.startsWith('.escaped')).selectorText`);
+    expect(sel).toBe('.escaped:is(.unused, .esc\\:focus-within)');
+    expect(await paint('#escaped', 'color')).toBe(GREEN);
   });
 
   it('leaves a quoted state in an attribute value alone, and rewrites the rule around it', async () => {

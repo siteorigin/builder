@@ -1850,11 +1850,17 @@ function CodePartInspector({ state, selection, tokens }: { state: ProjectState; 
               inherited={undefined}
               wideColumns
               allowed={allowed}
+              grouped={partInInteractionGroup(def, partId, inGroupAt(state, owner, inst.id))}
               tokens={tokens}
-              onSet={(property, value, expectedRevision) =>
-                commitOps([{ type: 'node.setStyle', owner, nodeId: inst.id, partId, scope, property, value }], styleLabel(state, property, here, part.label, value), styleKey(property, `${inst.id}:${partId}:${scope}:${property}`), expectedRevision)
+              onSet={(property, value, expectedRevision, inState) =>
+                commitOps(
+                  [{ type: 'node.setStyle', owner, nodeId: inst.id, partId, ...styleAt(scope, inState), property, value }],
+                  styleLabel(state, property, here, part.label, value, inState),
+                  styleKey(property, `${inst.id}:${partId}:${styleScopeKey(scope, inState)}:${property}`),
+                  expectedRevision
+                )
               }
-              onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: inst.id, partId, scope: sc }], forLabel(state, 'Reset overrides', here, part.label))}
+              onReset={(sc, states) => void applyOps(styleResets({ type: 'node.resetStyles', owner, nodeId: inst.id, partId }, sc, states), forLabel(state, resetWords('Reset overrides', states), here, part.label))}
               target={`the ${part.label.toLowerCase()}`}
             />
           </>

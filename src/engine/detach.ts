@@ -13,6 +13,7 @@ import { newId } from '@shared/ids';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { isArticleDate } from '@shared/articles';
 import { flattenStates, flattenStyles, type StyleLayer } from '@shared/styles';
+import { groupLookup, partInInteractionGroup, withoutGroupStates } from '@shared/interaction-groups';
 import { designLayers, selectedVariants } from '@shared/variants';
 import { liveItemStyles } from '@shared/item-styles';
 import { defKey, keepWeakerHides, naturalDisplay, nodeAxes } from '@generator/index';
@@ -105,22 +106,31 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   const defOrder = new Map(Object.values(state.components).sort((a, b) => a.id.localeCompare(b.id)).map((d, i) => [d.id, i]));
   const tie = (defId: string) => (defOrder.get(defId) ?? 0) / (defOrder.size + 1) / 10;
 
+  // Group states no interaction group could show here stay unshown: on the page, a group around the placement would
+  // reach them as the design's own rules never did.
+  const designGroup = groupLookup(design);
+  const placedInGroup = groupLookup(tree)(op.nodeId) !== null;
+  const groupLookups = new Map<string, (nodeId: string) => string | null>();
+  const shownHere = (styles: ResponsiveStyles | undefined, live: boolean) => (live ? styles : withoutGroupStates(styles));
+  const partLive = (pid: string) => partInInteractionGroup(def, pid, placedInGroup, groupLookups);
+
   /** The layers of rules on one of the design's nodes for this placement, weakest first, as the stylesheets cascade them. */
   const layersFor = (nodeId: string, at: At, boost: number): StyleLayer[] => {
     const design = designLayers(def, nodeId, inst.variants);
     const designed = design.map((l) => l.styles);
-    const layers: StyleLayer[] = design.map((l) => ({ ...l, strength: l.strength + (boost ? tie(def.id) : 0) }));
+    const live = designGroup(nodeId) !== null;
+    const layers: StyleLayer[] = design.map((l) => ({ ...l, styles: shownHere(l.styles, live), strength: l.strength + (boost ? tie(def.id) : 0) }));
     // Each shared change is two override classes, in the site stylesheet after every component's: it beats any
     // option's rule at every size. One item's own styles carry one class more. A part that is a placed component
     // takes two classes more than either.
-    for (const pid of overrideParts) if (partNode(pid) === nodeId) layers.push({ styles: inst.overrides![pid], strength: 3 + boost, wideColumns: true, unhides: designed });
+    for (const pid of overrideParts) if (partNode(pid) === nodeId) layers.push({ styles: shownHere(inst.overrides![pid], partLive(pid)), strength: 3 + boost, wideColumns: true, unhides: designed });
     for (const pid of itemParts) {
       if (partNode(pid) !== nodeId) continue;
       const entry = liveItemStyles(def, inst, pid);
       const item = entry ? at.items[entry.list] : undefined;
       const mine = entry && item !== undefined ? own(entry.items, item) : undefined;
       if (!mine || typeof mine !== 'object') continue;
-      layers.push({ styles: keepWeakerHides(def, inst, pid, mine), strength: 4 + boost, wideColumns: true, unhides: [...designed, own(inst.overrides, pid)] });
+      layers.push({ styles: shownHere(keepWeakerHides(def, inst, pid, mine), partLive(pid)), strength: 4 + boost, wideColumns: true, unhides: [...designed, own(inst.overrides, pid)] });
     }
     return layers;
   };

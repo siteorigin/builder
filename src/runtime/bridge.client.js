@@ -4295,12 +4295,12 @@ const FORCE_STATES = ['hover', 'focus', 'active', 'groupHover', 'groupFocus'];
  * The pseudo-classes a mark stands in for. `:focus-within` stands for an interaction group with focus inside it (its
  * own mark, `within`), so showing an element focused never shows the groups around it as holding focus.
  */
-const FORCE_PSEUDO = /:(hover|focus-visible|focus-within|focus|active)(?![\w-])/g;
+const FORCE_PSEUDO = /(?<!\\):(hover|focus-visible|focus-within|focus|active)(?![\w-])/g;
 const FORCE_OF = { hover: 'hover', 'focus-visible': 'focus', 'focus-within': 'within', focus: 'focus', active: 'active' };
 /**
  * A group state is shown on the interaction groups around the selected element (`.so-group`), not on it: each is
  * marked hovered, or as holding focus, as a real pointer or focus inside the nearest one would make it and every
- * group around that one.
+ * group around that one, up to a modal dialog, over the page, beyond which nothing counts as hovered.
  */
 const GROUP_MARK = { groupHover: 'hover', groupFocus: 'within' };
 
@@ -4366,7 +4366,10 @@ function forcedTargets() {
     const own = !forced.part && el.hasAttribute('data-so-code') ? [...el.children].filter((c) => c.tagName !== 'STYLE' && c.tagName !== 'SCRIPT') : [el];
     for (const t of own) {
       if (group) {
-        for (let g = t.parentElement && t.parentElement.closest('.so-group'); g; g = g.parentElement && g.parentElement.closest('.so-group')) out.push(g);
+        for (let a = t.parentElement; a; a = a.parentElement) {
+          if (a.classList.contains('so-group')) out.push(a);
+          if (isModal(a)) break;
+        }
         continue;
       }
       out.push(t);
@@ -4374,6 +4377,14 @@ function forcedTargets() {
     }
   }
   return out;
+}
+/** Whether an element is a modal dialog shown over the page (an engine without `:modal` has none). */
+function isModal(el) {
+  try {
+    return el.matches(':modal');
+  } catch {
+    return false;
+  }
 }
 /** Marks the elements to show in the state, and unmarks any that no longer are (re-rendered, or another selection). */
 function markForced() {
