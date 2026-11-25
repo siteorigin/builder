@@ -374,6 +374,11 @@ describe('a code component’s own markup', () => {
     expect(partInInteractionGroup(code('<div class="card so-group"><span class={so_o?.arrow}></span></div>'), 'arrow', false)).toBe(true);
     expect(partInInteractionGroup(code('<div class="card"></div><style>:global(.so-group:hover) .card { color: red }</style>'), 'arrow', false)).toBe(false);
     expect(partInInteractionGroup(code('<!-- so-group --><div class="card"></div>'), 'arrow', false)).toBe(false);
+    // A comment that mentions a stylesheet's tag hides nothing after it.
+    expect(partInInteractionGroup(code('<!-- The <style> block comes below. --><div class="so-group"><b class={so_o?.arrow}></b></div><style>.x { color: red }</style>'), 'arrow', false)).toBe(true);
+    // Its root is reached only by a group around the placement, as a design's root is.
+    expect(partInInteractionGroup(code('<div class="so-group"></div>'), 'root', false)).toBe(false);
+    expect(partInInteractionGroup(code('<div class="so-group"></div>'), 'root', true)).toBe(true);
   });
 });
 
