@@ -1,8 +1,8 @@
 // The component library in Insert > Your components, against the real app (#56): Make unique asks for a name and
 // never stacks "(unique)", each tile says how often it is used, and its menu renames it, lists and shows where it
 // is placed, and deletes it once unused, with Undo bringing it back (one still in use opens a review of where, #663).
-// A component is also shown on its own, in an
-// isolated preview, whether or not any page places it (#347), and that preview never reaches the site's files.
+// A component is also shown on its own, in an isolated preview, whether or not any page places it (#347), and that
+// preview never reaches the site's files.
 // Each component's tile shows a thumbnail photographed from that preview, drawn again when the component's style or
 // the site's brand changes and kept in the editor's cache, never in an export (#370).
 import assert from 'node:assert/strict';
