@@ -652,7 +652,8 @@ function checkEntryAuthority(state: ProjectState, ops: EditOperation[], authorit
   return null;
 }
 
-export const WIDEN_YES = 'Yes, allow changes beyond the selection';
+// Says what yes allows, as the note above the choices does: the whole site.
+export const WIDEN_YES = 'Yes, allow changes across the whole site';
 export const WIDEN_NO = 'No, only change the selection';
 
 /** The two answers to a request for more than the authority allows: the first allows it. */

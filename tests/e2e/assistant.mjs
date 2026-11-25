@@ -147,10 +147,12 @@ try {
   assert.deepEqual([asked.run.status, asked.run.result.ask, asked.run.text], ['no-changes', true, HERO], 'the answer is what the read returned');
   assert.match(asked.run.steps.find((st) => st.status === 'error')?.detail ?? '', /Unknown tool/, 'a question cannot change the site');
   assert.equal(await siteName(), nameBefore);
-  assert.equal(asked.shown.reply.result.heading, 'Answered · site unchanged', 'the card says nothing changed');
+  assert.equal(asked.shown.reply.result.heading, 'Answered · site unchanged', 'the reply says nothing changed');
+  assert.equal(asked.shown.reply.result.reply, true, 'an answer reads as a reply, with no card');
   assert.match(asked.shown.request.caption, /Question · read only/);
   assert.deepEqual(asked.shown.request.images, [assetId], 'the request shows its image');
-  assert.match(asked.shown.reply.model, /test-model/, 'and the model it went to');
+  // The model is the one the composer names for the next message, so it is in the turn's details, not repeated under it.
+  assert.equal(asked.shown.reply.model, undefined, 'the composer\'s own model is not repeated under the turn');
   // Every step of the run in the order the app sent it, all under the run's own IDs.
   const askEntries = (await observe({ runId: ask.runId })).entries;
   assert.ok(askEntries.every((e) => e.runId === ask.runId && e.conversationId === threadA && e.messageId === ask.messageId));
@@ -214,7 +216,7 @@ try {
   const decline = await send('Match the site name to the call to action');
   const widen1 = await wait(decline.runId);
   assert.equal(widen1.reason, 'input', 'the wait ends where the author must answer');
-  assert.deepEqual([widen1.run.question.widen, widen1.run.question.choices], [true, ['Yes, allow changes beyond the selection', 'No, only change the selection']]);
+  assert.deepEqual([widen1.run.question.widen, widen1.run.question.choices], [true, ['Yes, allow changes across the whole site', 'No, only change the selection']]);
   assert.equal(widen1.question.questionId, widen1.run.question.questionId, 'the card shows that question');
   assert.match(widen1.question.scopeNote, /change the whole site/);
   let at = await mark();
@@ -237,7 +239,7 @@ try {
   const approve = await send('Match the site name to the call to action, please');
   assert.equal((await wait(approve.runId)).reason, 'input');
   at = await mark();
-  await click('button', 'Yes, allow changes beyond the selection');
+  await click('button', 'Yes, allow changes across the whole site');
   const approved = await wait(approve.runId, at);
   assert.deepEqual([approved.reason, approved.run.status], ['terminal', 'completed'], JSON.stringify(approved.run.steps));
   assert.equal(await siteName(), 'Harbour Light Studio');

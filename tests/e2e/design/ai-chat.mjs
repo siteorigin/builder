@@ -110,11 +110,13 @@ const t = (min) => new Date(Date.UTC(2026, 10, 20, 9, min)).toISOString();
 const ctx = (page, selectionLabel = null) => ({ pageId: page.id, pageTitle: page.title, selection: null, selectionLabel, viewport: 1280 });
 const done = (id, label) => ({ id, label, status: 'done' });
 let n = 0;
+// Every turn records the model it went to, as a real run does.
+const MODEL = { provider: 'openai', id: 'gpt-6.2-sol', label: 'GPT-6.2 Sol' };
 const turn = (user, page, sel, assistant) => {
   const runId = `r_seed${++n}`;
   return [
     { id: `m_u${n}`, role: 'user', text: user, time: t(n * 3), context: ctx(page, sel), runId },
-    { id: `m_a${n}`, role: 'assistant', text: assistant.result?.summary ?? '', time: t(n * 3 + 1), runId, ...assistant }
+    { id: `m_a${n}`, role: 'assistant', text: assistant.result?.summary ?? '', time: t(n * 3 + 1), runId, model: MODEL, ...assistant }
   ];
 };
 const result = (status, summary, extra = {}) => ({ result: { status, summary, changes: [], validation: [], canUndo: false, ...extra } });
@@ -149,7 +151,8 @@ const heroConversation = {
         changes: [
           { label: 'Added page “Services” (/services)', pageId: about.id },
           { label: 'Added Card grid to Services', pageId: about.id },
-          { label: 'Updated the shared header navigation' }
+          // A shared header change links to the header, as the report gives it one.
+          { label: 'Updated the shared header navigation', owner: { kind: 'shell', id: 'header' }, nodeId: 'n_header' }
         ],
         validation: ['Fits the screen at phone width.', 'Content is wider than the screen at tablet width.', 'Project structure, links and references are valid.', 'All components build without errors.'],
         canUndo: true
@@ -157,7 +160,9 @@ const heroConversation = {
     }),
     ...turn('Does the About page need anything else before launch?', about, null, {
       activities: [done('a15', `Reading ${about.title}`)],
-      ...result('no-changes', 'It reads well. Two optional ideas: add a short line about your **service area**, and swap the second team photo for one taken on site. I have not changed anything.')
+      // Advice, as a model really writes it: the prompt asks for plain sentences, but advice often comes back as two
+      // short paragraphs and a list, with bold. The panel has to read well either way.
+      ...result('no-changes', 'It’s in good shape for launch. The story is clear, the team section feels personal, and every link works.\n\nTwo things I’d still consider:\n\n- Add one line about your **service area**, so visitors outside Auckland know whether you’ll travel.\n- Swap the second team photo (`team-2.jpg`) for one taken on site; it’s the only studio shot on the page.\n\nI haven’t changed anything. Switch to Edit and ask if you’d like me to make either change.')
     })
   ]
 };
@@ -218,7 +223,7 @@ const partialConversation = {
       changes: [
         { label: 'Added page “Pricing” (/pricing)', pageId: about.id },
         { label: 'Added Plan cards to Pricing', pageId: about.id },
-        { label: 'Updated the shared header navigation' }
+        { label: 'Updated the shared header navigation', owner: { kind: 'shell', id: 'header' }, nodeId: 'n_header' }
       ],
       validation: partialChecks.map((c) => c.text),
       checks: partialChecks,
@@ -235,7 +240,7 @@ const askConversation = {
   createdAt: t(12),
   messages: turn('Where do I change the phone number in the footer?', home, null, {
     activities: [done('q1', 'Reading the shared footer')],
-    ...result('no-changes', 'The phone number is in the shared **footer**, so changing it once updates every page.', {
+    ...result('no-changes', 'The phone number is in the shared **footer**, under Contact details, so changing it there updates every page at once. It currently reads “09 555 0142”.', {
       ask: true,
       locations: [{ owner: { kind: 'shell', id: 'footer' }, nodeId: 'n_footer_contact', prop: 'phone', path: ['Footer', 'Contact details', 'Phone number'] }]
     })
@@ -264,16 +269,59 @@ const longConversation = {
       activities: [done(`z${i}a`, `Reading ${home.title}`), ...(change ? [done(`z${i}b`, 'Updating content')] : []), done(`z${i}c`, 'Checking the result')],
       ...(change
         ? result('completed', `Done. ${change} on ${home.title}, and everything else is as it was.`, { changes: [{ label: `${change} on ${home.title}`, pageId: home.id }], validation: ['Project structure, links and references are valid.', 'All components build without errors.'], canUndo: true })
-        : result('no-changes', 'It fits at phone width. The only tight spot is the hero heading, which wraps to three lines.'))
+        : result('no-changes', 'Home fits at phone width: nothing scrolls sideways and every section stacks cleanly. The one tight spot is the hero heading, “Calm, considered interiors for real family homes”, which wraps to three lines at 390px. Shortening it, or reducing its size on phones, would keep the photo in view.'))
     })
   )
+};
+n = 60;
+// A back-and-forth about one shared-header element: a question answered on the way, one change with a problem found
+// after it, then follow-ups the AI answers without changing anything. Short turns in a row, as people really write.
+const followupChecks = [
+  // The newest thread carries the current wording (src/agent/report.ts); older transcripts keep what they said.
+  { status: 'issue', text: 'Found 8 links or buttons too small to tap easily at phone width on Contact.' },
+  { status: 'pass', text: 'Project structure, links and references are valid.' },
+  { status: 'pass', text: 'All components build without errors.' },
+  { status: 'pass', text: 'Fits the screen at phone width.' }
+];
+const followupConversation = {
+  id: 'c_seedfollow',
+  title: 'Can you make that button not solid green?',
+  createdAt: t(2),
+  messages: [
+    ...turn('Can you make that button not solid green?', contact, 'Header', {
+      activities: [done('f1', 'Reading the shared header'), done('f2', 'Inspecting the selected element'), done('f3', 'Waiting for your answer')],
+      questions: [{ id: 'q_seedfill', text: 'This header doesn’t let me remove the green fill from the “Book a call 🔔” button. Would you like me to turn it into a regular navigation link in the shared header instead?', choices: ['Turn it into a navigation link', 'Keep the button as-is'], answered: 'Keep the button as-is' }],
+      ...result('no-changes', 'I left the “Book a call 🔔” button as it is.')
+    }),
+    ...turn('Okay, wait. Rather a nav link then.', contact, 'Header', {
+      activities: [done('f4', 'Reading the shared header'), done('f5', 'Updating shared navigation'), done('f6', 'Checking Contact at phone width'), done('f7', 'Checking Contact at tablet width'), done('f8', 'Checking the result')],
+      ...result('completed', 'I replaced the solid green “Book a call 🔔” button with a regular link in the shared header. It still goes to the Contact page.', {
+        changes: [{ label: 'Changed the navigation, action label and action link of the shared header', owner: { kind: 'shell', id: 'header' }, nodeId: 'n_header' }],
+        validation: followupChecks.map((c) => c.text),
+        checks: followupChecks,
+        canUndo: true
+      })
+    }),
+    ...turn('No wait, I want an outline link.', contact, 'Header', {
+      activities: [done('f9', 'Reading the shared header'), done('f10', 'Inspecting the selected element'), done('f11', 'Looking for button styles')],
+      ...result('no-changes', 'I left “Book a call 🔔” as a regular link to Contact. This header supports plain links and a solid button, but it doesn’t offer an outline style.')
+    }),
+    ...turn('Sorry an outline button.', contact, 'Header', {
+      activities: [done('f12', 'Inspecting the selected element')],
+      ...result('no-changes', 'This header only supports a solid button, not an outline button. I left “Book a call 🔔” as a regular link to Contact.')
+    }),
+    ...turn('Why is that?', contact, 'Header', {
+      activities: [done('f13', 'Reading the shared header')],
+      ...result('no-changes', 'The theme’s Header has two built-in styles: plain navigation links and a solid action button. The editor lets me change the button’s label and destination, but it doesn’t expose controls for its fill or border, so I can’t make it an outline button in this header.\n\nIf an outline button matters, I can copy the Header into your project as its own component, where its button style can be changed. That changes the header on every page, so I’d ask before doing it.')
+    })
+  ]
 };
 // The hero thread is the one continued most recently, so it is the one that opens first (the list and the first
 // conversation shown go by the latest message, not by when a thread was started).
 heroConversation.messages.forEach((m, i) => (m.time = t(240 + i)));
 const chatDir = join(projectDir, '.siteorigin', 'sessions', 'chat');
 mkdirSync(chatDir, { recursive: true });
-for (const c of [heroConversation, troubleConversation, colourConversation, partialConversation, askConversation, longConversation]) writeFileSync(join(chatDir, `${c.id}.json`), JSON.stringify(c));
+for (const c of [heroConversation, troubleConversation, colourConversation, partialConversation, askConversation, longConversation, followupConversation]) writeFileSync(join(chatDir, `${c.id}.json`), JSON.stringify(c));
 const libraryImages = Object.values(snap.state.assets.assets).filter((a) => a.kind === 'image').slice(0, 3);
 if (libraryImages.length < 3) throw new Error('the sample project has fewer than three images to attach and offer');
 
@@ -340,12 +388,32 @@ await shot('conversation-problems', '.chat-log >> text=Add the FAQ as plain head
 
 // What a finished turn can leave behind: unfinished work, a located answer, an Undo, and a long thread.
 await openConversation('Build out a Pricing page');
+// Continue is offered only while the unfinished turn's changes are still applied, which history says.
+await markUndoable('r_seed31');
 await shot('partial', '.result-foot >> text=Continue');
 await openConversation('Where do I change the phone number');
 await shot('answer', '.chat-log >> text=Open in inspector');
 await openConversation('Make the brand colour');
 await markUndoable('r_seed21');
 await shot('undo-available', '.result-foot >> text=Undo turn');
+// The follow-ups thread, with its one change still the newest step in undo history.
+await openConversation('Can you make that button not solid green');
+await markUndoable('r_seed62');
+await shot('followups', '.chat-log >> text=Why is that?');
+await win.locator('.chat-log').evaluate((el) => (el.scrollTop = 0));
+await pause(250);
+await shot('followups-top', '.chat-log >> text=Book a call');
+// A reply's details opened: its steps and the model that answered.
+await win.locator('.chat-log .reply-toggle').first().click();
+await pause(250);
+await shot('reply-details', '.chat-log .reply-details');
+await win.locator('.chat-log .reply-toggle').first().click();
+await pause(150);
+await setDockWidth(300);
+await win.locator('.chat-log').evaluate((el) => (el.scrollTop = el.scrollHeight * 0.25));
+await pause(250);
+await shot('followups-narrow', '.chat-log >> text=Okay, wait');
+await setDockWidth(340);
 await openConversation('Tidy the home page');
 await shot('long-latest', '.chat-log >> text=Add alt text to the gallery images');
 await win.locator('.chat-log').evaluate((el) => (el.scrollTop = el.scrollHeight * 0.4));
@@ -411,7 +479,8 @@ await openAiTab();
 const convId = (await win.evaluate(() => window.builder.ai.conversations())).active.id;
 const runId = 'r_live';
 const liveUser = { id: 'm_lu', role: 'user', text: 'Make the hero heading shorter and more confident', time: t(58), context: ctx(home, 'Heading'), runId };
-const liveAi = { id: 'm_la', role: 'assistant', text: '', time: t(58), runId, activities: [] };
+// A run records the model it went to when it starts, so the composer has no reason to warn about a switch.
+const liveAi = { id: 'm_la', role: 'assistant', text: '', time: t(58), runId, model: MODEL, activities: [] };
 await emit({ runId, conversationId: convId, kind: 'status', status: 'preparing' });
 await emit({ runId, conversationId: convId, kind: 'message', message: liveUser });
 await emit({ runId, conversationId: convId, kind: 'message', message: liveAi });
@@ -420,7 +489,7 @@ await shot('thinking', '.chat-log >> text=Make the hero heading shorter');
 
 await emit({ runId, conversationId: convId, kind: 'status', status: 'running' });
 await emit({ runId, conversationId: convId, kind: 'message', message: { ...liveAi, activities: [done('l1', `Reading ${home.title}`), done('l2', 'Inspecting the selected element'), { id: 'l3', label: 'Updating content', status: 'running' }] } });
-await emit({ runId, conversationId: convId, kind: 'text', text: 'The current heading runs to two lines on phones. I will tighten it to one clear promise' });
+await emit({ runId, conversationId: convId, kind: 'text', text: 'The heading “Calm, considered interiors for real family homes” runs to three lines on phones. I’ll tighten it to one clear promise and keep' });
 await pause(300);
 // The step under way is named in the run strip; the log keeps the steps already taken.
 await shot('working', '.run-strip >> text=Updating content');
@@ -443,7 +512,7 @@ await emit({
     ...liveAi,
     text: '',
     activities: [done('l1', `Reading ${home.title}`), done('l2', 'Inspecting the selected element'), { id: 'l4', label: 'Waiting for your answer', status: 'running' }],
-    questions: [{ id: 'q_seedwiden', text: 'The shorter heading reads better without the small line above it. Can I change things outside the heading?', choices: ['Yes, allow changes beyond the selection', 'No, only change the selection'], widen: true }]
+    questions: [{ id: 'q_seedwiden', text: 'The shorter heading reads better without the small line above it. Can I change things outside the heading?', choices: ['Yes, allow changes across the whole site', 'No, only change the selection'], widen: true }]
   }
 });
 await pause(300);
@@ -477,7 +546,7 @@ await emit({
     ...liveAi,
     text: '',
     activities: [done('l1', `Reading ${home.title}`), done('l2', 'Inspecting the selected element')],
-    questions: [{ id: 'q_seedwiden', text: 'The shorter heading reads better without the small line above it. Can I change things outside the heading?', choices: ['Yes, allow changes beyond the selection', 'No, only change the selection'], widen: true, answered: 'Yes, allow changes beyond the selection' }],
+    questions: [{ id: 'q_seedwiden', text: 'The shorter heading reads better without the small line above it. Can I change things outside the heading?', choices: ['Yes, allow changes across the whole site', 'No, only change the selection'], widen: true, answered: 'Yes, allow changes across the whole site' }],
     result: { status: 'failed', summary: 'The AI provider rejected the API key. Update it in Settings.', changes: [], validation: [], canUndo: false, error: 'Incorrect API key provided.' }
   }
 });

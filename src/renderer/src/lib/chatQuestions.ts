@@ -93,8 +93,8 @@ export function offeredImages(q: Pick<ChatQuestion, 'images'>): ChatImageRef[] {
 
 /** What the hint under a waiting question says the author can do. */
 export function questionHint(q: Pick<ChatQuestion, 'choices' | 'widen' | 'images'>): string {
-  if (q.widen) return 'Choose an option, or type a reply below. Only the first option, or a plain “yes”, allows the wider change.';
+  if (q.widen) return 'Choose an option, or type a reply below. A typed “yes” or “OK” allows it too.';
   const images = offeredImages(q).length;
-  if (images) return `Choose a picture${q.choices.length ? ' or an option' : ''}, or type your own answer below. Preview shows a picture larger before you choose.`;
+  if (images) return `Choose a picture${q.choices.length ? ' or an option' : ''}, or type your own answer below. Select a picture to see it larger first.`;
   return q.choices.length ? 'Choose an option, or type your own answer below.' : 'Type your answer below.';
 }

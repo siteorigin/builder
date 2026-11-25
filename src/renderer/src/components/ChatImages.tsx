@@ -154,7 +154,7 @@ function ImageChoice({ img, onChoose, onPreview }: { img: ChatImageRef & { label
         title={live ? `Answer with ${img.name}` : `${img.name} is no longer in Assets`}
         onClick={(e) => e.detail <= 1 && onChoose()}
       >
-        <Check /> Choose
+        Choose
       </button>
     </li>
   );

@@ -94,10 +94,15 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
   };
   /** An element edited in this run that did not exist before it was "set"; an existing one was "changed". */
   const verb = (o: OwnerRef, id: string) => (nodeIn(before, o, id) ? 'Changed' : 'Set');
+  /** The element and where it is, said once: the shared header's own Header is "the shared header", not "Header on the shared header". */
+  const nameOn = (o: OwnerRef, id: string) => {
+    const n = name(o, id);
+    return o.kind === 'shell' && n.trim().toLowerCase() === o.id ? where(o) : `${n} on ${where(o)}`;
+  };
   const contentEdit = (op: EditOperation & { owner: OwnerRef; nodeId: string }, detail: string) =>
-    add(op, `content:${ownerKey(op.owner)}:${op.nodeId}`, (d) => `${verb(op.owner, op.nodeId)} the ${joinWords(d)} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId), detail);
+    add(op, `content:${ownerKey(op.owner)}:${op.nodeId}`, (d) => `${verb(op.owner, op.nodeId)} the ${joinWords(d)} of ${nameOn(op.owner, op.nodeId)}`, linkTo(op.owner, op.nodeId), detail);
   const styleEdit = (op: EditOperation & { owner: OwnerRef; nodeId: string }, detail: string) =>
-    add(op, `style:${ownerKey(op.owner)}:${op.nodeId}`, (d) => `Changed the ${joinWords(d)} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId), detail);
+    add(op, `style:${ownerKey(op.owner)}:${op.nodeId}`, (d) => `Changed the ${joinWords(d)} of ${nameOn(op.owner, op.nodeId)}`, linkTo(op.owner, op.nodeId), detail);
   /** An image value as shown: one bound to a component property shows that property's default. */
   const shownImage = (state: ProjectState, o: OwnerRef, value: unknown): Partial<ImageValue> => {
     const v = isBinding(value) && '$prop' in value && o.kind === 'component' ? propBindingValue(state.components[o.id]?.properties[value.$prop]?.default, value) : value;
@@ -476,7 +481,8 @@ const READABILITY_ROWS: Array<[keyof InspectionChecks, string, string]> = [
   ['contrast', 'text with low contrast', 'text elements with low contrast'],
   ['overlaps', 'overlapping boxes', 'overlapping boxes'],
   ['clippedText', 'text cut off by its box', 'boxes that cut off text'],
-  ['tapTargets', 'a tap target under 44px', 'tap targets under 44px']
+  // Said for a site owner: what a tap target under 44px is like to use.
+  ['tapTargets', 'a link or button too small to tap easily', 'links or buttons too small to tap easily']
 ];
 
 /**

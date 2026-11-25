@@ -630,6 +630,8 @@ describe('page scope (#513)', () => {
     const page: Authority = { kind: 'page', pageId: about, label: 'the About page' };
     expect(canEditContracts(page)).toBe(false);
     expect(widenChoices(page)).toEqual(['Yes, allow changes across the whole site', 'No, only change the About page']);
+    // A selection's yes says what it allows in the same words as the note above the choices: the whole site.
+    expect(widenChoices({ kind: 'selection' } as Authority)).toEqual(['Yes, allow changes across the whole site', 'No, only change the selection']);
   });
 
   it("allows the page's own sections and settings, and nothing beyond them", () => {

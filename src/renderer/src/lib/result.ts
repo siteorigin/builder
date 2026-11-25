@@ -30,6 +30,17 @@ export function changeText(c: ChatChange): { label: string; operations: string[]
   return { label: c.label, operations: c.operations ?? [] };
 }
 
+/**
+ * Whether a finished turn is an answer and nothing more: it changed nothing, and has nothing unfinished, nothing a check
+ * found and nothing to recover (`offers`: Continue or Try again). It then reads as a reply rather than a result card, so a
+ * card always means the site changed or something needs the author.
+ */
+export function answerOnly(r: NonNullable<ChatMessage['result']>, offers: boolean): boolean {
+  if (r.status !== 'no-changes' || r.incomplete || offers || (Array.isArray(r.changes) && r.changes.length)) return false;
+  const { issues, unverified } = checksOf(r);
+  return !issues.length && !unverified.length;
+}
+
 /** A change can be shown when it names a page, or an element of the shared header or footer. */
 export const canOpen = (c: ChatChange) => !!c.pageId || (c.owner?.kind === 'shell' && !!c.nodeId);
 

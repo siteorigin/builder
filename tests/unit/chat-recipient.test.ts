@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChatMessage, ProviderStatus } from '@shared/api';
 import type { TurnModel } from '@shared/turn-model';
 import { REPLAYED_MESSAGES } from '@shared/turn-model';
-import { nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../../src/renderer/src/lib/chatRecipient';
+import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../../src/renderer/src/lib/chatRecipient';
 
 const t = '2026-11-24T09:00:00.000Z';
 const A: TurnModel = { provider: 'local', id: 'studio-a', label: 'studio-a' };
@@ -191,5 +191,31 @@ describe('the notice before a message goes to another model', () => {
     expect(switchNotice([], toLocal('studio-b'))).toBeNull();
     expect(switchNotice([...exchange(A)], null)).toBeNull();
     expect(switchNotice([...exchange(A)], toLocal('studio-a'))).toBeNull();
+  });
+});
+
+describe('where a turn says its model under it', () => {
+  const next = nextRecipient(openai, models({}), null);
+
+  it('says nothing under a thread that only ever used the model the composer names', () => {
+    expect(modelLines([...exchange(SOL), ...exchange(SOL), ...exchange(SOL)], next)).toEqual(new Set());
+  });
+
+  it('says it where the thread starts on another model, and on each turn that moves to another', () => {
+    const msgs = [...exchange(SONNET), ...exchange(SONNET), ...exchange(SOL), ...exchange(SOL)];
+    const ids = msgs.filter((m) => m.role === 'assistant').map((m) => m.id);
+    expect(modelLines(msgs, next)).toEqual(new Set([ids[0], ids[2]]));
+  });
+
+  it('always says it on a turn that never got an answer, which does not count as the thread moving', () => {
+    const msgs = [...exchange(SOL), ...exchange({ ...SONNET, unanswered: true }), ...exchange(SOL)];
+    const ids = msgs.filter((m) => m.role === 'assistant').map((m) => m.id);
+    expect(modelLines(msgs, next)).toEqual(new Set([ids[1]]));
+  });
+
+  it('says it on the first turn when the next model is not known, and skips turns with no model', () => {
+    const msgs = [...exchange(), ...exchange(SOL), ...exchange(SOL)];
+    const ids = msgs.filter((m) => m.role === 'assistant').map((m) => m.id);
+    expect(modelLines(msgs, null)).toEqual(new Set([ids[1]]));
   });
 });

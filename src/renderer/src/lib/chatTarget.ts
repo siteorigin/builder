@@ -4,7 +4,7 @@
  * nodes, never the page the canvas happens to show it on. While a post is open in the Posts workspace: that post, never
  * the page under the writer. The chips show it and the message is sent with it, from one place.
  */
-import { CHAT_EDIT_SCOPES, type ChatContext, type ChatEditScope } from '@shared/api';
+import { CHAT_EDIT_SCOPES, type ChatContext, type ChatEditScope, type ChatMessage } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { inDefinition, placementsOn, refExists, refLabel, studioRef } from './model';
 import { NEW_STUDIO, type DefinitionMode } from './studio';
@@ -119,6 +119,17 @@ export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: 
 }
 
 /** How a sent message names what it was about: its page, or the component it edited everywhere, then the element. */
+/**
+ * What a request was aimed at, beyond the words its caption uses: its mode, reach, page, element, component and post.
+ * Two requests about different elements can share a caption ("Home → Heading"); this tells them apart.
+ */
+export function requestTarget(m: Pick<ChatMessage, 'context'> | undefined): string {
+  const c = m?.context;
+  if (!c) return '';
+  const sel = c.selection;
+  return JSON.stringify([c.mode ?? 'edit', c.scope ?? null, c.pageId ?? null, sel ? [sel.owner, sel.instancePath ?? [], sel.nodeId] : null, typeof c.component?.id === 'string' ? c.component.id : null, c.post && typeof c.post === 'object' ? [c.post.collectionId, c.post.entryId] : null]);
+}
+
 export function targetOf(ctx?: ChatContext | null): string {
   if (!ctx) return '';
   // A transcript is read back from disk: a malformed post is left out.

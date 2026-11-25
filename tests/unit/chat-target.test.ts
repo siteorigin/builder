@@ -5,7 +5,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { ChatContext, ChatMessage } from '@shared/api';
 import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
-import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditableDesign } from '../../src/renderer/src/lib/chatTarget';
+import { chatContextFor, composerScope, editScope, requestTarget, retryView, targetOf, uneditableDesign } from '../../src/renderer/src/lib/chatTarget';
 import { NEW_STUDIO } from '../../src/renderer/src/lib/studio';
 import { continueContext } from '../../src/renderer/src/lib/result';
 
@@ -294,5 +294,25 @@ describe('the composer with a post open in the Posts workspace (#400)', () => {
     expect(continueContext(user('u', { ...ctx, post: { ...post, title: 3 } } as unknown as ChatContext), state, 1280)).toMatchObject({ error: expect.stringMatching(/^That post/) });
     // One read back damaged is still a post's request, never one about the page under the writer.
     expect(retryView(state, { ...ctx, post: { collectionId: 'posts' } } as unknown as ChatContext, { pageId: home, definitionMode: null })).toMatchObject({ post: null, missing: 'The post' });
+  });
+});
+
+describe('what a request was aimed at', () => {
+  const ctx = (extra: Partial<ChatContext>): ChatContext => ({ pageId: 'pg_home', pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, ...extra });
+  const req = (c: ChatContext): Pick<ChatMessage, 'context'> => ({ context: c });
+  const heading = (nodeId: string) => ({ owner: { kind: 'page' as const, id: 'pg_home' }, instancePath: [], nodeId });
+
+  it('tells apart two elements that share a caption, and matches the same one', () => {
+    const a = req(ctx({ selection: heading('n_a'), selectionLabel: 'Heading', scope: 'selection' }));
+    const b = req(ctx({ selection: heading('n_b'), selectionLabel: 'Heading', scope: 'selection' }));
+    expect(targetOf(a.context)).toBe(targetOf(b.context));
+    expect(requestTarget(a)).not.toBe(requestTarget(b));
+    expect(requestTarget(a)).toBe(requestTarget(req(ctx({ selection: heading('n_a'), selectionLabel: 'Heading', scope: 'selection' }))));
+  });
+
+  it('tells apart a question from an edit, and the page from the whole site, about the same page', () => {
+    expect(requestTarget(req(ctx({ mode: 'ask' })))).not.toBe(requestTarget(req(ctx({}))));
+    expect(requestTarget(req(ctx({ scope: 'page' })))).not.toBe(requestTarget(req(ctx({ scope: 'site' }))));
+    expect(requestTarget(undefined)).toBe('');
   });
 });

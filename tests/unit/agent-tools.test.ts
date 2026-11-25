@@ -1277,7 +1277,7 @@ describe('selection tools', () => {
       // Leave room for the full catalogue after widening. The compact selection budget is tested separately.
       { ...focused, contextWindowTokens: 12_000 }
     );
-    answers.push('Yes, allow changes beyond the selection');
+    answers.push('Yes, allow changes across the whole site');
     const { result } = await run('Add a services page for this', heroRef(session.state));
     expect(result?.error).toBeUndefined();
     expect(result?.status).toBe('completed');
@@ -2287,7 +2287,7 @@ describe('a selected part or placement scopes the run (#132)', () => {
     const def = () => session.state.components[defId];
     const before = (def().properties.heading as { default: unknown }).default;
     const ownHeading = (pageAt(session.state, '/')!.nodes[pageAt(session.state, '/')!.rootIds[0]] as InstanceNode).props.heading;
-    answers.push('Yes, allow changes beyond the selection');
+    answers.push('Yes, allow changes across the whole site');
     await run('Change the default heading', { owner: { kind: 'component', id: defId }, instancePath: [], nodeId: 'heading' });
     expect(lastResult(adapter.requests[1]).error?.message).toMatch(/changes the default of the "heading" property/);
     expect(defaultWhenAsked).toBe(before);
@@ -2465,7 +2465,7 @@ describe('a selected card styles itself until the user widens the run (#132)', (
       ],
       focused
     );
-    answers.push('Yes, allow changes beyond the selection');
+    answers.push('Yes, allow changes across the whole site');
     const g = grid(session.state);
     poetry = (g.props.items as ListItem[])[1].id;
     const def = session.state.components[g.definitionId];
