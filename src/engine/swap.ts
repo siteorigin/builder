@@ -368,8 +368,8 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
   }
   // A design built in the editor may place the slot inside a list this placement leaves empty, which shows nothing:
   // refused where the old design showed that content.
-  const shown = target.kind === 'managed' && target.tree && plan.slots ? shownSlots(target, { ...node, definitionId: target.id, props }) : undefined;
-  const wasShown = source.kind === 'managed' && source.tree ? shownSlots(source, node) : undefined;
+  const shown = target.kind === 'managed' && target.tree && plan.slots ? shownSlots(target, { ...node, definitionId: target.id, props }, tree) : undefined;
+  const wasShown = source.kind === 'managed' && source.tree ? shownSlots(source, node, tree) : undefined;
   for (const slot of Object.keys(plan.slots ?? {})) if (shown && !shown.has(slot) && (!wasShown || wasShown.has(slot))) problems.push(`“${target.name}” would not show the content in its “${own(target.slots, slot)?.label ?? slot}” slot here.`);
   // The slot it sits in must take the new design too.
   const at = findParent(tree, node.id);

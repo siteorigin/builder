@@ -12,7 +12,7 @@ import { generateProject } from '@generator/index';
 import { generateComponentPreview } from '@generator/preview';
 import { checkSvelteSource } from '../../src/main/codecheck';
 import { addPoints, fitting, offeredAt, quickItems, resolvePoint } from '../../src/renderer/src/lib/inline-insert';
-import { slotRefuses } from '../../src/renderer/src/lib/insert-at';
+import { slotRefusal, slotRefuses } from '../../src/renderer/src/lib/insert-at';
 import { removeRendered, serverHtml } from './generated-site';
 
 /**
@@ -200,7 +200,8 @@ describe('the Insert panel and the canvas’s Add list inside a slot that names 
     const s = applyOperations(base, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: [card, 'media.gallery'], primitives: ['text'] }]).state;
     const at = { owner: page, parentId: grid, slot: 'content' };
     expect(slotRefuses(s, at, { primitive: 'heading' })).toBe(false);
-    expect(slotRefuses(s, at, { primitive: 'image' })).toBe(true);
+    const gallery = Object.values(s.components).find((d) => d.componentId === 'media.gallery')?.name ?? 'media.gallery';
+    expect(slotRefusal(s, at, { primitive: 'image' })).toBe(`The “Cards” slot of “Section” takes “Feature card”, “${gallery}” and text.`);
     expect(slotRefuses(s, at, { primitive: 'badge' })).toBe(true);
     expect(slotRefuses(s, at, { definitionId: card })).toBe(false);
     // A theme component the project has not installed yet is known by the theme's own design.
@@ -230,7 +231,7 @@ describe('the Insert panel and the canvas’s Add list inside a slot that names 
       { type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', max: 1 },
       { type: 'node.insert', owner: page, parentId: grid, slot: 'content', primitive: 'heading' }
     ]).state;
-    expect(slotRefuses(full, at, { primitive: 'paragraph' })).toBe(true);
+    expect(slotRefusal(full, at, { primitive: 'paragraph' })).toBe('The “Cards” slot of “Section” holds at most one item.');
     expect(slotRefuses(full, at, { definitionId: card })).toBe(true);
   });
 });
@@ -474,6 +475,49 @@ describe('a design rebuilt whole around slot fallbacks', () => {
     // "two" moves into the fallback of "one": the placement fills "one", so "two" would never show.
     const moved = nodes([], []).map((n) => (n.id === 'one' ? { ...n, children: ['two'] } : n));
     expect(() => applyOperations(s, [{ type: 'component.upsert', definitionId: id, name: 'Split', category: 'layout', properties: {}, nodes: moved, slots: { one: { label: 'One' }, two: { label: 'Two' } } } as EditOperation])).toThrow(/“Two”|"two"/);
+  });
+
+  it('counts content inside a fallback as shown where the slot is given only an empty slot of the design around it', () => {
+    let { s, id } = split();
+    const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const slots = { one: { label: 'One' }, two: { label: 'Two' } };
+    // "two" shows inside the fallback of "one".
+    const nested = [
+      { kind: 'element', id: 'root', children: ['one'] },
+      { kind: 'slot', id: 'one', slot: 'one', children: ['two'] },
+      { kind: 'slot', id: 'two', slot: 'two' }
+    ];
+    // Emptied first, so the rebuild can move "two" inside "one"'s fallback on Home.
+    const homeSplit = home(s).rootIds.find((r) => (home(s).nodes[r] as InstanceNode).definitionId === id)!;
+    s = applyOperations(s, [{ type: 'node.remove', owner: page, nodeId: (home(s).nodes[homeSplit] as InstanceNode).slots!.one[0] }]).state;
+    s = applyOperations(s, [{ type: 'component.upsert', definitionId: id, name: 'Split', category: 'layout', properties: {}, nodes: nested, slots } as EditOperation]).state;
+    // A Wrapper whose design places the Split, gives its "two" a note, and hands its own empty "w" slot to "one".
+    let r = applyOperations(s, [{ type: 'node.move', owner: page, nodeId: homeSplit, parentId: null, index: 0 }]);
+    r = applyOperations(r.state, [{ type: 'node.insert', owner: page, parentId: null, index: 0, componentId: 'layout.section' }]);
+    const holder = r.results[0].nodeId as string;
+    r = applyOperations(r.state, [{ type: 'node.move', owner: page, nodeId: homeSplit, parentId: holder, slot: 'content', index: 0 }]);
+    r = applyOperations(r.state, [{ type: 'component.createFromNode', owner: page, nodeId: holder, name: 'Wrapper' }]);
+    const wrapper = r.results[0].definitionId as string;
+    s = r.state;
+    const design: OwnerRef = { kind: 'component', id: wrapper };
+    const inner = Object.values(tree(s, wrapper).nodes).find((n): n is InstanceNode => n.kind === 'instance' && n.definitionId === id)!;
+    s = applyOperations(s, [
+      { type: 'component.setSlot', definitionId: wrapper, slot: 'w', label: 'W' },
+      { type: 'node.remove', owner: design, nodeId: inner.slots!.two[0] }
+    ]).state;
+    s = applyOperations(s, [
+      { type: 'node.insert', owner: design, parentId: inner.id, slot: 'one', primitive: 'slot', bind: 'w' },
+      { type: 'node.insert', owner: design, parentId: inner.id, slot: 'two', primitive: 'paragraph', text: 'Shown through the fallback' }
+    ]).state;
+    // Moving "two" into a list with no items would hide that note wherever the Wrapper leaves "w" empty.
+    const listed = [
+      { kind: 'element', id: 'root', children: ['one', 'rows'] },
+      { kind: 'slot', id: 'one', slot: 'one' },
+      { kind: 'repeat', id: 'rows', list: 'items', children: ['two'] },
+      { kind: 'slot', id: 'two', slot: 'two' }
+    ];
+    const items = { items: { type: 'list', label: 'Items', fields: { title: { type: 'string', label: 'Title', default: '' } }, default: [] } };
+    expect(() => applyOperations(s, [{ type: 'component.upsert', definitionId: id, name: 'Split', category: 'layout', properties: items, nodes: listed, slots } as EditOperation])).toThrow(/would no longer show the content in its "two" slot/);
   });
 
   it('keeps a placement’s styles for a part the rebuild keeps, when the slot whose fallback held it goes', () => {

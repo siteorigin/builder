@@ -456,7 +456,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
    * can show anything while a slot is not given), or a component it hands that slot on to as it is, that may.
    */
   const showsOwn = (c: ComponentDefinition | undefined, slot: string, depth = 0): boolean => {
-    if (!c || depth > 16) return false;
+    if (!c || depth > 1000) return false;
     if (c.kind === 'code') return true;
     const nodes = c.tree?.nodes ?? {};
     return Object.values(nodes).some((x) => {

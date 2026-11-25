@@ -10,7 +10,7 @@ import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from 
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
-import { elementWhere, nodeLabel, sectionWhere, slotRefuses, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
+import { elementWhere, nodeLabel, sectionWhere, slotRefusal, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } from '../lib/insert-search';
 import { SLOT_NO_PLACE, unplacedSlots } from '../lib/slot-contract';
 import { exportComponentFile, insertSaved, removeFromLibrary, saveToLibrary } from '../lib/saved-components';
@@ -1111,29 +1111,6 @@ export function InsertPanel() {
   if (!snap) return null;
   const st = snap.state;
 
-  const sectionAt = insertionPoint('section');
-  const elementAt = insertionPoint('element');
-  const sectionTo = sectionWhere(st, sectionAt);
-  const elementTo = elementWhere(st, elementAt);
-  // A project component goes where it was made to go: beside the page's sections, or into the selected layout like an
-  // element (a second card beside the selected one, in its grid).
-  const plans = new Map<string, { role: InsertRole; at: InsertAt | null; where: Where }>();
-  const planOf = (it: Item) => {
-    let p = plans.get(it.key);
-    if (!p) {
-      // A saved component goes in as it went in where it was saved: among the sections, or into the selected layout.
-      // A slot's placeholder goes where the Slots section puts one, not where other elements go (see insertPlan).
-      const as = it.kind === 'saved' ? it.saved!.role : it.spec.primitive === 'slot' ? 'slot' : it.kind;
-      const { role, at } = as === 'section' ? { role: 'section' as const, at: sectionAt } : as === 'element' ? { role: 'element' as const, at: elementAt } : insertPlan(it.spec, snap);
-      p = { role, at, where: as === 'section' ? sectionTo : as === 'element' ? elementTo : whereFor(st, at, role) };
-      plans.set(it.key, p);
-    }
-    return p;
-  };
-  const whereOf = (it: Item): Where => planOf(it).where;
-  // What the slot an item would go into does not take is not offered there (see slotRefuses).
-  const offered = (it: Item) => !slotRefuses(st, planOf(it).at, it.spec);
-
   const theme = getTheme(st.site.themeId);
   // Each section, then (when asked for) each variant option on its own, pictured as it inserts.
   const sections: Item[] = entries.flatMap((e) => {
@@ -1174,7 +1151,7 @@ export function InsertPanel() {
     const shipped: Item = { ...base, hay: `${base.hay} theme default ${named.join(' ')}`.toLowerCase().trim(), ...(named.length ? { defaults: named.join(' · ') } : {}) };
     return [shipped, ...options];
   });
-  const elements: Item[] = BASICS.map((b): Item => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: basicHay(b), group: b.layout ? COLUMN_LAYOUTS : 'Basic elements', spec: basicSpec(b), icon: b.icon })).filter(offered);
+  const elements: Item[] = BASICS.map((b) => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: basicHay(b), group: b.layout ? COLUMN_LAYOUTS : 'Basic elements', spec: basicSpec(b), icon: b.icon }));
   // While a component of the project's own is edited everywhere: the slots it declares that its design does not show
   // yet, each placed in the design as an element (see slotInsertAt).
   const editedDef = editing && Object.hasOwn(st.components, editing) ? st.components[editing] : undefined;
@@ -1212,7 +1189,7 @@ export function InsertPanel() {
     for (const c of (copies.get(d.id) ?? []).sort(byName)) visit(c, 1);
   };
   for (const d of defs.filter((d) => !sourceOf(d)).sort(byName)) visit(d, 0);
-  const everyMine: Item[] = familyOrder.flatMap(([d, depth]): Item[] => {
+  const mine: Item[] = familyOrder.flatMap(([d, depth]): Item[] => {
     const from = d.provenance?.forkedFrom ? st.components[d.provenance.forkedFrom] : undefined;
     const copyOf = from?.owner === 'project' ? from.name : undefined;
     const themeCopy = from?.owner === 'theme' ? from.name : undefined;
@@ -1248,7 +1225,6 @@ export function InsertPanel() {
       .filter((l): l is string => !!l && l.trim().toLowerCase() !== 'default');
     return [options.length && named.length ? { ...base, defaults: named.join(' · '), hay: `${base.hay} ${named.join(' ')}`.toLowerCase() } : base, ...options];
   });
-  const mine = everyMine.filter(offered);
 
   // Saved components that would bring code show only in Developer mode, as Your components' code does.
   const savedItems: Item[] = (library?.opening === snap.workspaceKey && library.theme === themeKey ? library.list : [])
@@ -1274,6 +1250,33 @@ export function InsertPanel() {
   const results = searchItems([...mine, ...savedItems, ...sections, ...slotItems, ...elements], query, shown);
   const current = results[Math.min(active, results.length - 1)];
 
+  const sectionAt = insertionPoint('section');
+  const elementAt = insertionPoint('element');
+  const sectionTo = sectionWhere(st, sectionAt);
+  const elementTo = elementWhere(st, elementAt);
+  // A project component goes where it was made to go: beside the page's sections, or into the selected layout like an
+  // element (a second card beside the selected one, in its grid).
+  const plans = new Map<string, { role: InsertRole; at: InsertAt | null; where: Where }>();
+  const planOf = (it: Item) => {
+    let p = plans.get(it.key);
+    if (!p) {
+      // A saved component goes in as it went in where it was saved: among the sections, or into the selected layout.
+      // A slot's placeholder goes where the Slots section puts one, not where other elements go (see insertPlan).
+      const as = it.kind === 'saved' ? it.saved!.role : it.spec.primitive === 'slot' ? 'slot' : it.kind;
+      const { role, at } = as === 'section' ? { role: 'section' as const, at: sectionAt } : as === 'element' ? { role: 'element' as const, at: elementAt } : insertPlan(it.spec, snap);
+      p = { role, at, where: as === 'section' ? sectionTo : as === 'element' ? elementTo : whereFor(st, at, role) };
+      plans.set(it.key, p);
+    }
+    return p;
+  };
+  const whereOf = (it: Item): Where => planOf(it).where;
+  // Why a click would not put an item where it goes: a slot that does not take it, or has no room (see slotRefusal).
+  // The tile stays, since it can still be dragged somewhere else.
+  const refusals = new Map<string, string | null>();
+  const refusalOf = (it: Item): string | null => {
+    if (!refusals.has(it.key)) refusals.set(it.key, it.saved ? null : slotRefusal(st, planOf(it).at, it.spec));
+    return refusals.get(it.key)!;
+  };
   // Components as a group go to one place only when each of them does.
   const componentTo = mine.length && mine.every((it) => sameWhere(whereOf(it), whereOf(mine[0]))) ? whereOf(mine[0]) : null;
   const savedTo = savedItems.length && savedItems.every((it) => sameWhere(whereOf(it), whereOf(savedItems[0]))) ? whereOf(savedItems[0]) : null;
@@ -1287,6 +1290,9 @@ export function InsertPanel() {
   // and put both in one place.
   const add = async (it: Item) => {
     if (adding.current) return;
+    // Said here rather than tried: the slot it would go into does not take it.
+    const refused = refusalOf(it);
+    if (refused) return void toast(`${fullName(it)} can’t go there. ${refused}`, 'error');
     adding.current = true;
     clearTimeout(peekTimer.current);
     setPeek(null);
@@ -1544,6 +1550,7 @@ export function InsertPanel() {
   const tileProps = (it: Item) => ({
     'data-kind': it.kind,
     'data-key': it.key,
+    ...(refusalOf(it) ? { 'data-refused': '', title: refusalOf(it)! } : {}),
     'aria-describedby': describedBy(it),
     onClick: (e: React.MouseEvent<HTMLElement>) => clickAdds(it, e) && void add(it),
     // A saved component isn't in this project until it is inserted, so it is clicked in rather than dragged.
@@ -1765,9 +1772,7 @@ export function InsertPanel() {
   const libraryWho = (it: Item) =>
     [it.code ? 'code component' : 'component', it.variant ? `${it.variant.axis.toLowerCase()} option of ${it.name}` : '', it.copyOf ? `copy of ${it.copyOf}` : '', it.themeCopy ? `copy of the theme's ${it.themeCopy} section` : ''].filter(Boolean).join(', ');
   // Basic elements, and the column layouts offered near the top of the panel: a Grid with its columns ready to fill.
-  // A group the selected slot takes nothing of is left out (see slotRefuses).
-  const elementGroup = (group: 'columns' | 'basics' | 'slots', label: string, list: Item[]) =>
-    list.length > 0 && (
+  const elementGroup = (group: 'columns' | 'basics' | 'slots', label: string, list: Item[]) => (
     <section className="insert-group" data-kind="element" data-group={group} aria-labelledby={`${id}-${group}`}>
       <h4 className="insert-head" id={`${id}-${group}`}>
         {label}
@@ -1797,19 +1802,12 @@ export function InsertPanel() {
           <span className="ico" aria-hidden="true">
             <Component />
           </span>
-          {everyMine.length ? (
-            <span className="txt">
-              <strong>None of yours go here</strong>
-              <span>The selected slot takes other components. Select somewhere else to add or manage yours.</span>
+          <span className="txt">
+            <strong>Reuse what you design</strong>
+            <span>
+              Start one below, or right-click a group on the page and choose <b>Create component</b>. It appears here, ready to add to any page.
             </span>
-          ) : (
-            <span className="txt">
-              <strong>Reuse what you design</strong>
-              <span>
-                Start one below, or right-click a group on the page and choose <b>Create component</b>. It appears here, ready to add to any page.
-              </span>
-            </span>
-          )}
+          </span>
         </div>
       )}
       <TileGrid
@@ -2035,10 +2033,11 @@ export function InsertPanel() {
                   role="option"
                   data-kind={it.kind}
                   data-key={it.key}
+                  data-refused={refusalOf(it) ? '' : undefined}
                   aria-selected={it === current}
                   aria-describedby={describedBy(it)}
                   className={`insert-result${it === current ? ' active' : ''}`}
-                  title={it.kind !== 'section' && it.description ? it.description : undefined}
+                  title={refusalOf(it) ?? (it.kind !== 'section' && it.description ? it.description : undefined)}
                   onMouseDown={(e) => e.preventDefault()}
                   onContextMenu={
                     it.kind === 'component' || it.kind === 'saved'
