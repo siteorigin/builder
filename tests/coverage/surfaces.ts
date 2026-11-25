@@ -13,11 +13,14 @@
  * - `tab:pages`: a view of the left sidebar (its rail button and its command).
  * - `key:z`, `key:Escape`: a key the editor's global shortcut handler acts on, with whatever modifiers it checks.
  * - `item:Canvas:Edit text`, `item:Layers:Select *`: an item of a menu the editor draws, by the file that builds it and
- *   its label (`*` stands for the part made from data).
+ *   its label (`*` stands for the part made from data); `item:Chat:<data>` stands for the items a file labels wholly
+ *   from data (a list of pages, conversations or choices), so a new such menu in a new file needs a row too.
  *
  * The readers parse the source with TypeScript and say where a shape they do not know is, so a refactor that hides an
- * action from them fails loudly instead of quietly shrinking the list. Labels made wholly from data (a list of pages,
- * a model's choices) are left out: the row for the menu that lists them covers them.
+ * action from them fails loudly instead of quietly shrinking the list, and every action they found before is a route of
+ * some row, so one they stop finding is reported as a route to nothing. An action written in a shape they do not read
+ * (a command built by a helper in another file, a key compared outside handleShortcut) is not found: CONTRIBUTING.md
+ * says the row is then the author's to add.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join, relative, resolve } from 'node:path';
@@ -25,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { appMenuTemplate } from '../../src/main/app-menu.ts';
 import { writingMenuTemplate } from '../../src/main/writing-menu.ts';
+import type { WritingTarget } from '../../src/main/writing-menu.ts';
 import type { MenuItemConstructorOptions } from 'electron';
 
 export const ROOT = resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -60,17 +64,33 @@ export function nativeMenu(): Surface[] {
       else throw new Error(`An application menu item with no label or role under ${path.join(' > ') || 'the menu bar'}: read it in tests/coverage/surfaces.ts.`);
     }
   };
-  for (const p of PLATFORMS) walk(appMenuTemplate(p, true, { command: () => undefined, history: () => () => undefined }), [], p);
+  // With a project open and without: an item offered only at Welcome is found too.
+  for (const p of PLATFORMS) for (const open of [true, false]) walk(appMenuTemplate(p, open, { command: () => undefined, history: () => () => undefined }), [], p);
   return [...found].map(([key, ps]) => ({ key, file: 'src/main/app-menu.ts', platforms: PLATFORMS.filter((p) => ps.has(p)) }));
 }
 
-/** The writing menu's own items, for a misspelling with no suggestions in text that takes typing. */
+/**
+ * The writing menu's items, for text that takes typing: spelled right, misspelled with suggestions (one key stands for
+ * the dictionary's suggestions, `writing:<suggestion>`), and misspelled with none.
+ */
 export function writingMenu(): Surface[] {
   const none = () => undefined;
-  const items = writingMenuTemplate({ isEditable: true, misspelledWord: 'teh', dictionarySuggestions: [], editFlags: {} as never }, { replaceMisspelling: none, cut: none, copy: none, paste: none, selectAll: none }) ?? [];
-  const keys = items.filter((i) => i.type !== 'separator' && i.label).map((i) => `writing:${i.label}`);
-  // A misspelling's suggestions are listed by the dictionary: one key stands for them.
-  return ['writing:<suggestion>', ...keys].map((key) => ({ key, file: 'src/main/writing-menu.ts' }));
+  const actions = { replaceMisspelling: none, cut: none, copy: none, paste: none, selectAll: none };
+  const flags = { canCut: true, canCopy: true, canPaste: true, canSelectAll: true } as never;
+  const SUGGESTION = 'the-suggestion';
+  const keys = new Set<string>();
+  const targets: Pick<WritingTarget, 'misspelledWord' | 'dictionarySuggestions'>[] = [
+    { misspelledWord: '', dictionarySuggestions: [] },
+    { misspelledWord: 'teh', dictionarySuggestions: [SUGGESTION] },
+    { misspelledWord: 'teh', dictionarySuggestions: [] }
+  ];
+  for (const target of targets)
+    for (const i of writingMenuTemplate({ isEditable: true, editFlags: flags, ...target }, actions) ?? []) {
+      if (i.type === 'separator') continue;
+      if (!i.label) throw new Error('A writing menu item with no label: read it in tests/coverage/surfaces.ts.');
+      keys.add(`writing:${i.label === SUGGESTION ? '<suggestion>' : i.label}`);
+    }
+  return [...keys].map((key) => ({ key, file: 'src/main/writing-menu.ts' }));
 }
 
 // ---------------------------------------------------------------------------
@@ -90,9 +110,13 @@ function visit(n: ts.Node, fn: (n: ts.Node) => void) {
   ts.forEachChild(n, (c) => visit(c, fn));
 }
 
-function props(o: ts.ObjectLiteralExpression, sf: ts.SourceFile): Map<string, ts.Expression> {
-  const m = new Map<string, ts.Expression>();
-  for (const p of o.properties) if (ts.isPropertyAssignment(p)) m.set(p.name.getText(sf), p.initializer);
+/** An object literal's properties by name: a value, or null for one given by shorthand or as a method (made from data). */
+function props(o: ts.ObjectLiteralExpression, sf: ts.SourceFile): Map<string, ts.Expression | null> {
+  const m = new Map<string, ts.Expression | null>();
+  for (const p of o.properties) {
+    if (ts.isPropertyAssignment(p)) m.set(p.name.getText(sf), p.initializer);
+    else if (ts.isShorthandPropertyAssignment(p) || ts.isMethodDeclaration(p)) m.set(p.name.getText(sf), null);
+  }
   return m;
 }
 
@@ -126,10 +150,10 @@ export function commands(): Surface[] {
     const p = props(n, sf);
     if (!p.has('run')) return;
     const id = p.get('id');
-    if (!id) throw new Error(`A command with no id at ${where(sf, n)}: give it one, or read it in tests/coverage/surfaces.ts.`);
+    if (id === undefined) throw new Error(`A command with no id at ${where(sf, n)}: give it one, or read it in tests/coverage/surfaces.ts.`);
     // An id made wholly from data (the Insert panel's choices) is keyed by the command's fixed group: `command:Insert:*`.
     const group = p.get('group');
-    const ids = texts(id) ?? (group && texts(group)?.length === 1 ? [`${texts(group)![0]}:*`] : null);
+    const ids = (id ? texts(id) : null) ?? (group && texts(group)?.length === 1 ? [`${texts(group)![0]}:*`] : null);
     if (!ids) throw new Error(`A command whose id is made wholly from data, with no fixed group, at ${where(sf, n)}: give it a fixed prefix (\`page:\${id}\`).`);
     for (const t of ids) out.set(`command:${t}`, { key: `command:${t}`, file: where(sf, n) });
   });
@@ -147,7 +171,7 @@ export function leftTabs(): Surface[] {
     while (ts.isAsExpression(list) || ts.isSatisfiesExpression(list)) list = list.expression;
     if (!ts.isArrayLiteralExpression(list)) throw new Error(`LEFT_TABS is not a plain list at ${where(sf, n)}.`);
     for (const el of list.elements) {
-      const id = ts.isObjectLiteralExpression(el) ? props(el, sf).get('id') : undefined;
+      const id = ts.isObjectLiteralExpression(el) ? (props(el, sf).get('id') ?? undefined) : undefined;
       const t = id && texts(id);
       if (!t || t.length !== 1) throw new Error(`A sidebar view with no fixed id at ${where(sf, el)}.`);
       out.push({ key: `tab:${t[0]}`, file: where(sf, el) });
@@ -169,9 +193,22 @@ export function shortcuts(): Surface[] {
       if (!ts.isBinaryExpression(c) || c.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) return;
       const left = c.left.getText(sf);
       if (left !== 'key' && left !== 'key.toLowerCase()') return;
-      if (!ts.isStringLiteral(c.right)) throw new Error(`A shortcut compared with something other than a key name at ${where(sf, c)}.`);
-      const k = c.right.text;
-      out.set(`key:${k}`, { key: `key:${k}`, file: where(sf, c) });
+      const k = texts(c.right);
+      if (!k || k.length !== 1 || k[0].includes('*')) throw new Error(`A shortcut compared with something other than a key name at ${where(sf, c)}.`);
+      out.set(`key:${k[0]}`, { key: `key:${k[0]}`, file: where(sf, c) });
+    });
+    // Keys listed together: ['c', 'v'].includes(key) (or key.toLowerCase()).
+    visit(n.body, (c) => {
+      if (!ts.isCallExpression(c) || !ts.isPropertyAccessExpression(c.expression) || c.expression.name.text !== 'includes') return;
+      const arg = c.arguments[0]?.getText(sf);
+      if (arg !== 'key' && arg !== 'key.toLowerCase()') return;
+      const list = c.expression.expression;
+      if (!ts.isArrayLiteralExpression(list)) throw new Error(`Shortcut keys listed in something other than a list of key names at ${where(sf, c)}.`);
+      for (const el of list.elements) {
+        const k = ts.isExpression(el) ? texts(el) : null;
+        if (!k || k.length !== 1) throw new Error(`A shortcut key that is not a key name at ${where(sf, el)}.`);
+        out.set(`key:${k[0]}`, { key: `key:${k[0]}`, file: where(sf, el) });
+      }
     });
   });
   if (!handler) throw new Error('handleShortcut was not found in Editor.tsx: has the editor\'s shortcut handler moved?');
@@ -206,9 +243,14 @@ export function menuItems(): { items: Surface[]; fromData: { file: string }[] } 
       if (!ts.isObjectLiteralExpression(n)) return;
       const p = props(n, sf);
       const label = p.get('label');
-      if (!label || !p.has('onSelect')) return;
-      const t = texts(label);
-      if (!t) return void fromData.push({ file: where(sf, n) });
+      if (!p.has('label') || !p.has('onSelect')) return;
+      const t = label ? texts(label) : null;
+      if (!t) {
+        fromData.push({ file: where(sf, n) });
+        const key = `item:${menuOwner(file)}:<data>`;
+        if (!items.has(key)) items.set(key, { key, file: where(sf, n) });
+        return;
+      }
       for (const text of t) {
         const key = `item:${menuOwner(file)}:${text}`;
         if (!items.has(key)) items.set(key, { key, file: where(sf, n) });

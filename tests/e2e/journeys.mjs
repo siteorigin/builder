@@ -20,6 +20,7 @@ const session = new Session({ parentDir: WORK });
 /** The session the helpers talk to: the recording, then the replay. */
 let current = session;
 let replayed = null;
+let replaySession = null;
 let passed = false;
 let n = 0;
 
@@ -99,7 +100,7 @@ try {
   assert.equal(created.screen, 'editor');
   assert.match(created.project.path, /^workspace\//, 'the project is in the session’s workspace, by its session path');
   const oldName = created.project.site.name;
-  assert.ok(oldName && oldName !== NEW_NAME, `the site has its own name (${oldName})`);
+  assert.equal(oldName, PROJECT, 'the site is named as the project was');
   const home = created.project.pages.find((p) => p.home);
 
   step('principal journey: the hero heading edited in the Inspector, saved and shown');
@@ -188,7 +189,8 @@ try {
   assert.ok(site.find.matches.some((m) => m.file === 'index.html'), `the home page has the heading: ${JSON.stringify(site.find)}`);
   const named = await ok('exports.inspect', { path: exported.export.path, file: 'index.html', find: NEW_NAME });
   assert.ok(named.find.matches.length > 0, 'and the site’s new name');
-  await press('Escape');
+  // Closed by its own button: an untargeted Escape would go wherever the dialog has just put the focus.
+  await click(editor('button', 'Close', { region: 'Export your website' }));
   await until('ui.context', { dialog: null });
 
   step('principal journey: closed and opened again, the project still holds both');
@@ -205,13 +207,14 @@ try {
   step('the record proves the principal journey');
   const record = (await ok('evidence.save')).record;
   assert.deepEqual([record.complete, record.dropped, record.scenario.fixture], [true, 0, 'welcome']);
-  const proof = proveJourney(record);
+  const proof = proveJourney(record, { edit: HEADING, oldName: PROJECT, newName: NEW_NAME, answer: ANSWER });
   assert.ok(proof.ok, `the record proves the journey:\n${describeProof(proof)}`);
   assert.ok(record.evidence.screenshots?.editor && record.evidence.screenshots?.preview, 'with screenshots of the editor and the preview');
   assert.deepEqual(session.pageErrors, [], 'the editor raised no errors');
 
   step('the recorded journey replays in a fresh session');
-  replayed = await replay(record, { session: { parentDir: WORK } });
+  // The replay's session is held before it starts, so it is closed whatever the replay does.
+  replayed = await replay(record, { make: () => (replaySession = new Session({ parentDir: WORK })) });
   assert.equal(replayed.ok, true, `the replay diverged: ${JSON.stringify(replayed.divergence)}`);
   const kinds = new Set(replayed.steps.filter((s) => s.status === 'replayed').map((s) => s.op));
   for (const op of ['desktop.setAnswers', 'assistant.script', 'ui.click', 'ui.fill', 'ui.press', 'menu.invoke', 'wait.for', 'project.summary', 'exports.inspect']) assert.ok(kinds.has(op), `it replayed ${op}`);
@@ -226,13 +229,15 @@ try {
   assert.ok(againSite.find.matches.length > 0, 'whose home page has the heading');
   const replayedRuns = (await observe({ after: 0 })).entries.filter((e) => e.type === 'run.started').map((e) => e.request.mode);
   assert.deepEqual(replayedRuns, ['ask', 'edit', 'edit'], 'the replay asked and edited as the recording did');
+  const replayedChoosers = (await ok('desktop.events', { after: 0 })).entries.filter((e) => e.type === 'chooser').map((e) => e.outcome);
+  assert.equal(replayedChoosers[0], 'cancelled', `the replay cancelled the first chooser as the recording did: ${replayedChoosers.join(', ')}`);
   assert.deepEqual(replayed.session.pageErrors, [], 'the replayed editor raised no errors');
 
   passed = true;
   console.log('\njourneys: all checks passed');
 } finally {
   let closedOk = true;
-  for (const s of [replayed?.session, session].filter(Boolean)) {
+  for (const s of [replaySession, session].filter(Boolean)) {
     await s.close({ failed: !passed }).catch((e) => {
       closedOk = false;
       console.error('close failed', e);

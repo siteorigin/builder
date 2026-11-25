@@ -1324,9 +1324,20 @@ export class Session {
         return { ref, role: r.node?.role, name: r.node?.name };
       }
       case 'wait.for':
-        return { condition: r.condition, met: true, ...(r.outcome ? { outcome: r.outcome } : {}), ...(typeof r.revision === 'number' ? { revision: r.revision } : {}), ...(typeof r.count === 'number' ? { count: r.count } : {}) };
+        return {
+          condition: r.condition,
+          met: true,
+          ...(r.outcome ? { outcome: r.outcome } : {}),
+          // Which export finished, by its session path: a check of the files can be tied to it.
+          ...(typeof r.export?.path === 'string' ? { export: r.export.path } : {}),
+          ...(typeof r.revision === 'number' ? { revision: r.revision } : {}),
+          ...(typeof r.count === 'number' ? { count: r.count } : {})
+        };
       case 'project.summary':
-        return { revision: r.revision, ...(r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {}) };
+        return { revision: r.revision, ...(r.project ? { site: r.project.site?.name ?? null } : {}), ...(r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {}) };
+      case 'assistant.wait':
+        // How the run's wait ended, and what it answered: the record says an answer was read, not only that someone looked.
+        return { reason: r.reason, status: r.run?.status, ...(typeof r.run?.result?.ask === 'boolean' ? { ask: r.run.result.ask } : {}), ...(typeof r.run?.text === 'string' ? { text: r.run.text } : {}) };
       case 'exports.inspect':
         return { type: r.type, ...(typeof r.files === 'number' ? { files: r.files } : {}), ...(r.find ? { found: r.find.matches.length, complete: r.find.complete } : typeof r.complete === 'boolean' ? { complete: r.complete } : {}) };
       case 'evidence.save':

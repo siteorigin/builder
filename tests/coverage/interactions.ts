@@ -123,7 +123,9 @@ export const INTERACTIONS: Interaction[] = [
     outcome: 'The edit and the approved AI change are in the home page document and the preview; Undo and Redo move only the AI change; the exported index.html holds both; the reopened project still does; the whole run replays from its record in a fresh session',
     scenario: 'welcome · scripted',
     proof: [
-      { test: J, kind: 'driver', step: 'principal journey' },
+      { test: J, kind: 'driver', step: 'principal journey: a new site from Welcome, through the New project dialog' },
+      { test: J, kind: 'driver', step: 'principal journey: Undo takes back the assistant’s change and Redo makes it again, leaving the heading' },
+      { test: J, kind: 'driver', step: 'the record proves the principal journey' },
       { test: J, kind: 'driver', step: 'the recorded journey replays in a fresh session' },
       { test: 'scripts/model-smoke.mjs', kind: 'driver' }
     ]
@@ -136,7 +138,10 @@ export const INTERACTIONS: Interaction[] = [
     routes: ['welcome:Open project', 'menu:File > Open Project…', 'chat:No, only change the selection'],
     outcome: 'A cancelled chooser leaves Welcome as it was with no project opened; a declined wider change leaves the site name as it was',
     scenario: 'welcome · scripted',
-    proof: [{ test: J, kind: 'driver', step: 'cancelled journey' }]
+    proof: [
+      { test: J, kind: 'driver', step: 'cancelled journey: an Open Project chooser cancelled from Welcome opens nothing' },
+      { test: J, kind: 'driver', step: 'cancelled journey: an edit that needs more than the selection is declined, and the site keeps its name' }
+    ]
   },
   // ---- projects ----
   {
@@ -204,7 +209,7 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Open a project by its folder where the file picker cannot choose folders',
     start: 'Welcome or a project, on Windows or Linux',
     routes: ['menu:File > Open Project Folder…'],
-    outcome: 'The folder chooser is asked for a folder, and the folder chosen opens as the project',
+    outcome: 'Asked for a folder, the controller offers the chooser a folder (on Windows and Linux too); what opening a chosen folder does is not checked here',
     scenario: 'unit fixtures · none',
     platforms: ['win32', 'linux'],
     proof: [{ test: 'tests/unit/open-project.test.ts', kind: 'unit', step: 'chooses a folder when asked to, on Windows and Linux too' }],
@@ -482,7 +487,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'pages',
     intent: 'Go to another page to edit it',
     start: 'Business site with two pages of the same title',
-    routes: ['panel:Pages › page row', 'toolbar:Page menu', 'command:page:*', 'command:page:more'],
+    routes: ['panel:Pages › page row', 'toolbar:Page menu', 'command:page:*', 'command:page:more', 'item:Toolbar:<data>'],
     outcome: 'The toolbar’s page menu and the command menu tell same-title pages apart by address, find a page by its address, follow a rename, and open the page shown when chosen by keyboard',
     scenario: 'Business starter · none',
     proof: [
@@ -606,7 +611,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'layers',
     intent: 'Pick an element on the page or in Layers, or the one around it',
     start: 'Business site open, nothing selected',
-    routes: ['canvas:click', 'canvas:double-click', 'item:Canvas:Select *', 'item:Inspector:Select *', 'key:Escape', 'tab:layers', 'panel:Layers › row'],
+    routes: ['canvas:click', 'canvas:double-click', 'item:Canvas:Select *', 'item:Inspector:Select *', 'key:Escape', 'tab:layers', 'panel:Layers › row', 'item:Inspector:<data>', 'item:StatusBar:<data>'],
     outcome: 'A first click picks the section and the next the card or heading inside it; the editor’s selection is the element clicked; a code component’s placement, then its marked part, are picked in turn; a section picked in Layers is selected and scrolled into view, and picking it again brings it back after the page has scrolled away',
     scenario: 'Business starter · none',
     proof: [
@@ -658,7 +663,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'layers',
     intent: 'Move elements up, down, into a container or to another page, without dragging',
     start: 'Business site, one element or several layers selected',
-    routes: ['key:ArrowUp', 'key:ArrowDown', 'item:Layers:Move up', 'item:Layers:Move down', 'item:Canvas:Move up', 'item:Canvas:Move down', 'item:Layers:Move into…', 'item:Layers:Move within…', 'item:Layers:Before *', 'item:Layers:To the end', 'item:Layers:Move to page…'],
+    routes: ['key:ArrowUp', 'key:ArrowDown', 'item:Layers:Move up', 'item:Layers:Move down', 'item:Canvas:Move up', 'item:Canvas:Move down', 'item:Layers:Move into…', 'item:Layers:Move within…', 'item:Layers:Before *', 'item:Layers:To the end', 'item:Layers:Move to page…', 'item:Layers:<data>'],
     outcome: 'Shift+Cmd/Ctrl+↓ on a Layers row moves it one place as one change named in History; several layers move as a block, into a container in their order, and two sections move to the end of another page as one change',
     scenario: 'Business starter · none',
     proof: [
@@ -1029,14 +1034,15 @@ export const INTERACTIONS: Interaction[] = [
     area: 'styles',
     intent: 'Take the theme’s newer version of a section',
     start: 'A project whose installed hero is older than the theme’s',
-    routes: ['command:health', 'dialog:Project health › Update'],
+    routes: ['status:Project health', 'command:health', 'dialog:Project health › Update'],
     outcome: 'Project health offers the update on opening; Update replaces the definition and its lock entry with the theme’s; Undo puts the older ones back; the page is untouched both ways',
     scenario: 'Business starter · none',
     proof: [
       { test: 'tests/e2e/theme-update.mjs', kind: 'e2e', step: 'reopen: Project health offers the update' },
       { test: 'tests/e2e/theme-update.mjs', kind: 'e2e', step: 'Update replaces the definition and its lock entry with the theme’s' },
       { test: 'tests/e2e/theme-update.mjs', kind: 'e2e', step: 'Undo puts the older definition back' }
-    ]
+    ],
+    gaps: [{ missing: 'The test opens Project health from the status bar; the command menu’s Project health… is not taken', owner: 'styles' }]
   },
   // ---- insert ----
   {
@@ -1210,7 +1216,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'components',
     intent: 'See where my components are used, rename them, and delete the unused ones',
     start: 'Blank site with project components, Insert › Your components',
-    routes: ['item:Insert:Rename', 'item:Insert:* · *', 'item:Insert:Delete component', 'panel:Insert › Your components'],
+    routes: ['item:Insert:Rename', 'item:Insert:* · *', 'item:Insert:Delete component', 'panel:Insert › Your components', 'item:Insert:<data>'],
     outcome: 'Each tile says how often it is used and shows a thumbnail redrawn when its style or the brand changes; its menu lists and shows each placement; a used one cannot be deleted; an unused one is deleted and Undo brings it back',
     scenario: 'Blank starter · none',
     proof: [
@@ -1709,14 +1715,15 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Come back to where I was editing',
     start: 'Business site Home, the last call to action selected',
     routes: ['preview:Back to editing', 'panel:Pages › page row', 'welcome:Recent projects › card'],
-    outcome: 'After Preview, after returning to the page from the list, and after reopening the project, the call to action is selected again and in view; a visitor’s jump or link leaves nothing selected; none of it is a change to the site',
+    outcome: 'Back from Preview, the call to action is selected again and the page stays where the visitor scrolled it; returning to Home from the page list, and reopening the project, select it again and bring it into view; a visitor’s jump or link leaves nothing selected; none of it is a change to the site',
     scenario: 'Business starter · none',
     proof: [
       { test: 'tests/e2e/resume-place.mjs', kind: 'e2e', step: 'Preview, scroll as a visitor, Back to editing' },
       { test: 'tests/e2e/resume-place.mjs', kind: 'e2e', step: 'returning to Home from the page list selects the call to action again, in view' },
       { test: 'tests/e2e/resume-place.mjs', kind: 'e2e', step: 'reopening the project opens Home at the call to action, in view' },
       { test: 'tests/unit/workspace-state.test.ts', kind: 'unit' }
-    ]
+    ],
+    gaps: [{ missing: 'The reopen is made through the project API, not from Welcome’s Recent projects card', owner: 'preview' }]
   },
   {
     id: 'preview.live',
@@ -1901,7 +1908,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'assistant',
     intent: 'Ask the assistant a question without it changing anything',
     start: 'Business site with its own studio hours, viewed on Home',
-    routes: ['chat:Mode', 'item:Chat:Ask', 'item:Chat:Edit', 'chat:Open in inspector'],
+    routes: ['chat:Mode', 'item:Chat:Ask', 'item:Chat:Edit', 'chat:Open in inspector', 'item:Chat:<data>'],
     outcome: 'The answer quotes the site and names the Inspector’s path while the site and its history stay unchanged; the editor says the AI is reading and editing goes on; Open in inspector opens the page, selects the element and focuses the field, and says so once the row is gone',
     scenario: 'Business starter · scripted model server',
     proof: [
@@ -1916,7 +1923,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'assistant',
     intent: 'Stay in control of a run: approve or decline a wider change, stop it, or undo it',
     start: 'Business site, a run asking to go beyond the selection, or one that made two changes',
-    routes: ['chat:Approve', 'chat:No, only change the selection', 'chat:Undo turn', 'chat:Stop'],
+    routes: ['chat:Yes, allow changes across the whole site', 'chat:No, only change the selection', 'chat:Undo turn', 'chat:Stop and undo'],
     outcome: 'Declined, the run stays within the selection and still edits it; approved, the wider change lands; Undo turn reverts both changes and the card says so; Stop ends the run stopped and its change is gone',
     scenario: 'business-v1 · scripted',
     proof: [
@@ -1952,7 +1959,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'assistant',
     intent: 'Show the assistant a particular photo from my library',
     start: 'Two different photos both named hero in the library',
-    routes: ['chat:Images', 'item:Chat:Browse in Assets…', 'panel:Assets › Use in AI chat'],
+    routes: ['chat:Images', 'item:Chat:Browse in Assets…', 'panel:Assets › Use in AI chat', 'item:Chat:<data>'],
     outcome: 'The photo goes to the chat from its details and stays across a page switch; removed before sending, nothing is sent; sent, the model gets its asset ID and name and never the picture; a question shows both photos told apart by ID and the choice answers with that exact one',
     scenario: 'Blank starter · scripted model server',
     proof: [
@@ -1969,7 +1976,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'assistant',
     intent: 'Find, rename or delete a conversation, and come back to a message I had not sent',
     start: 'A project with several conversations and unsent text',
-    routes: ['chat:Conversations', 'chat:New conversation', 'item:Chat:Find, rename or remove…', 'item:Chat:Clear history…', 'chat:Message', 'item:Chat:Message with *', 'chat:Continue'],
+    routes: ['chat:Conversations', 'chat:New conversation', 'item:Chat:Find, rename or remove…', 'item:Chat:Clear history…', 'chat:Message', 'item:Chat:Message with *', 'chat:Continue', 'item:Chat:<data>'],
     outcome: 'A continued conversation moves to the top; it is renamed and found by a phrase from a later request; one is deleted after a cancelled attempt, its draft with it; each conversation keeps its own draft across switches, projects and a restart; an unfinished request offers Continue; after a reopen the kept threads and the site edit are there',
     scenario: 'Blank starter · scripted model server',
     proof: [
@@ -2336,7 +2343,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'settings',
     intent: 'Work in a small window, and make panels wider or narrower',
     start: 'A project with long names and both panels open, at the 1100×700 minimum',
-    routes: ['panel:splitter drag', 'panel:splitter arrow keys', 'item:Editor:Narrower', 'item:Editor:Wider', 'item:Editor:Default width', 'toolbar:More'],
+    routes: ['panel:splitter drag', 'panel:splitter arrow keys', 'item:Editor:Narrower', 'item:Editor:Wider', 'item:Editor:Default width', 'toolbar:More', 'item:Editor:<data>'],
     outcome: 'The window stops at its minimum and the toolbar fits there; splitters and their arrow keys stop before the canvas gets too narrow; a wider window gives the panels their room back; the project reopens with its widths fitted and then restored; a new project starts with the default widths',
     scenario: 'Blank and Business starters · none',
     proof: [
@@ -2356,7 +2363,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'settings',
     intent: 'Find any command by typing its name',
     start: 'A project open',
-    routes: ['key:k', 'toolbar:Search'],
+    routes: ['key:k'],
     outcome: 'Cmd/Ctrl+K opens the command menu; a partial command name leads with the command, not a search of the content',
     scenario: 'Business starter · none',
     proof: [
@@ -2453,11 +2460,12 @@ export const INTERACTIONS: Interaction[] = [
     proof: [
       { test: 'tests/e2e/spelling.mjs', kind: 'e2e', step: 'an inspector field offers the suggestions for a misspelled word' },
       { test: 'tests/e2e/spelling.mjs', kind: 'e2e', step: 'choosing a suggestion corrects the field, and Edit → Undo and Redo move it like typing' },
+      { test: 'tests/e2e/spelling.mjs', kind: 'e2e', step: 'the correction saves, and undoing the project takes it back' },
       { test: 'tests/e2e/spelling.mjs', kind: 'e2e', step: 'a correction inside bold rich text keeps its formatting' },
       { test: 'tests/e2e/spelling.mjs', kind: 'e2e', step: 'a right-click on a section still opens its element actions' },
       { test: 'tests/unit/writing-menu.test.ts', kind: 'unit', step: 'says so when a misspelled word has no suggestions' }
     ],
-    gaps: [{ missing: 'The writing menu’s Cut, Copy, Paste and Select All are read but never chosen', owner: 'desktop' }]
+    gaps: [{ missing: 'The writing menu’s Cut, Copy, Paste and Select All are read but never chosen; No spelling suggestions is a disabled line, checked only in its unit test', owner: 'desktop' }]
   },
   {
     id: 'desktop.choosers',

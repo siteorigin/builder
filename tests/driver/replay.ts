@@ -52,6 +52,8 @@ const REPEATED = new Set(['wait.for', 'project.summary', 'exports.inspect']);
 /** How often an input whose target moved as the pointer arrived is sent again, and how long it settles first. */
 export const UNSTABLE_RETRIES = 3;
 const UNSTABLE_SETTLE_MS = 300;
+/** How long, from the first attempt, an input that keeps moving may be aimed at again. */
+const UNSTABLE_BUDGET_MS = 5000;
 
 /** Failures of an input that come before anything is sent: such a step changed nothing and is passed over. */
 const REFUSED_BEFORE_INPUT = new Set(['BAD_REQUEST', 'UNKNOWN_OP', 'BUSY', 'NOT_STARTED', 'CLOSED', 'STALE_REF', 'STALE_OBSERVATION', 'AMBIGUOUS_TARGET', 'TARGET_NOT_FOUND', 'WINDOW_CLOSED', 'WINDOW_REPLACED', 'APP_EXITED']);
@@ -155,10 +157,16 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
       }
     }
     const send = () => call(e.op, Object.keys(args).length ? args : undefined, { ...(e.timeoutMs !== undefined ? { timeoutMs: e.timeoutMs } : {}), ...on(e) });
+    const began = Date.now();
     let reply = await send();
-    // A target still moving when the pointer arrived (a dialog settling) was not pressed: only the pointer moved. A person
-    // aims again; so does the replay, a few times, once it has had a moment to settle.
-    for (let again = 0; again < UNSTABLE_RETRIES && e.class === 'input' && !reply.ok && reply.error.code === 'NOT_ACTIONABLE' && reply.error.details?.reason === 'unstable'; again++) {
+    // A target still moving when the pointer arrived (a dialog settling) was not pressed, scrolled or dragged: at most the
+    // pointer moved onto it, which can start what hovering starts. A person aims again; so does the replay, a few times
+    // within one budget, once it has had a moment to settle. Every other refusal stands.
+    for (
+      let again = 0;
+      again < UNSTABLE_RETRIES && e.class === 'input' && !reply.ok && reply.error.code === 'NOT_ACTIONABLE' && reply.error.details?.reason === 'unstable' && Date.now() - began + UNSTABLE_SETTLE_MS < UNSTABLE_BUDGET_MS;
+      again++
+    ) {
       await new Promise((r) => setTimeout(r, UNSTABLE_SETTLE_MS));
       reply = await send();
     }

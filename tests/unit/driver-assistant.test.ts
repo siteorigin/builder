@@ -614,6 +614,7 @@ describe('the script', () => {
       ['finish', { message: 'Done.' }]
     ]);
     expect(() => parseScript({ scenario: 'widen', params: { question: 'More?', siteName: ' ', then: 'Done.' } })).toThrow(/"siteName" is text/);
+    expect(() => parseScript({ scenario: 'widen', params: { question: 'More?', siteName: 7, then: 'Done.' } })).toThrow(/"siteName" is text/);
     expect(parseScript({ scenario: 'fail' }).steps).toEqual([{ error: { status: 409, message: 'The scripted provider refused the request.' } }]);
     expect(parseScript({ scenario: 'read-and-answer', params: { text: 'Hi.' } }).steps[0]).toMatchObject({ tool: 'read_page', args: { pageId: { $context: 'pageId' } } });
     for (const name of Object.keys(SCENARIOS)) expect(SCENARIOS[name].summary).toBeTruthy();

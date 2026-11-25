@@ -665,8 +665,11 @@ describe('replay', () => {
     const r = await replay(record(journey.slice(0, 2)), { make: () => settles });
     expect(r.ok, JSON.stringify(r.divergence)).toBe(true);
     expect(settles.sent.filter((f) => f.op === 'ui.click')).toHaveLength(3);
-    const never = await replay(record(journey.slice(0, 2)), { make: () => fake(moving(UNSTABLE_RETRIES + 1)) });
+    const neverSettles = fake(moving(10));
+    const never = await replay(record(journey.slice(0, 2)), { make: () => neverSettles });
     expect([never.ok, never.divergence?.seq, never.divergence?.reason]).toEqual([false, 2, expect.stringMatching(/NOT_ACTIONABLE/)]);
+    expect(neverSettles.sent.filter((f) => f.op === 'ui.click')).toHaveLength(1 + UNSTABLE_RETRIES);
+    expect(UNSTABLE_RETRIES).toBe(3);
     // Any other refusal is not tried again: something may have come up over the target.
     const covered = fake((f) => (f.op === 'ui.click' ? failure(f, 'NOT_ACTIONABLE', { reason: 'obscured', dispatched: 'partial' }) : answers()(f)));
     expect((await replay(record(journey.slice(0, 2)), { make: () => covered })).ok).toBe(false);

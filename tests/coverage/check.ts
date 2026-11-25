@@ -3,7 +3,8 @@
  * rows, the actions the readers found (surfaces.ts), and how to read a file, and gets back every problem, each saying
  * what to do about it.
  */
-import type { Area, Interaction } from './interactions.ts';
+import ts from 'typescript';
+import type { Area, Interaction, ProofKind } from './interactions.ts';
 import { ENFORCED_PREFIXES } from './surfaces.ts';
 import type { Surface } from './surfaces.ts';
 
@@ -25,12 +26,45 @@ export const DESCRIBED_PREFIXES = ['welcome', 'toolbar', 'panel', 'inspector', '
 /** Tests that run the packaged app. */
 const PACKAGED_TESTS = new Set(['tests/e2e/packaged.mjs', 'tests/e2e/linux-container.mjs']);
 
+/** Where each kind of proof lives. */
+const PROOF_PLACES: Record<ProofKind, RegExp> = {
+  driver: /^(tests\/e2e\/[\w-]+\.mjs|scripts\/model-smoke\.mjs)$/,
+  e2e: /^tests\/e2e\/[\w-]+\.mjs$/,
+  design: /^tests\/e2e\/(design\/)?[\w-]+\.mjs$/,
+  packaged: /^tests\/e2e\/[\w-]+\.mjs$/,
+  unit: /^tests\/unit\/[\w.-]+\.test\.ts$/
+};
+/** Proofs that drive the app the way a person does: the ones that link an e2e script. */
+const BEHAVIOUR: ReadonlySet<ProofKind> = new Set(['driver', 'e2e', 'packaged']);
+
+/** The titles a test file declares: the first argument of each step(), it(), test() and describe() call, as written (* for a part made per case). */
+export function declaredSteps(path: string, text: string): string[] {
+  const sf = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, false, path.endsWith('.ts') ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+  const out: string[] = [];
+  const visit = (n: ts.Node) => {
+    if (ts.isCallExpression(n)) {
+      const callee = ts.isIdentifier(n.expression) ? n.expression.text : ts.isPropertyAccessExpression(n.expression) && ts.isIdentifier(n.expression.expression) ? n.expression.expression.text : '';
+      const first = n.arguments[0];
+      if (['step', 'it', 'test', 'describe'].includes(callee) && first) {
+        if (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) out.push(first.text);
+        // A title made for each case (`${starter}: ...`): its fixed words, with * where each case's go.
+        else if (ts.isTemplateExpression(first)) out.push(first.head.text + first.templateSpans.map((t) => `*${t.literal.text}`).join(''));
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
 export function checkCoverage(input: CoverageInput): string[] {
   const problems: string[] = [];
   const ids = new Set<string>();
   const routed = new Set<string>();
   const linked = new Set<string>();
   const known = new Map(input.surfaces.map((s) => [s.key, s]));
+  const steps = new Map<string, string[]>();
+  const stepsOf = (path: string, text: string) => steps.get(path) ?? steps.set(path, declaredSteps(path, text)).get(path)!;
   const prefixOf = (route: string) => route.slice(0, route.indexOf(':'));
   for (const r of input.rows) {
     const at = `Row ${r.id}`;
@@ -45,15 +79,27 @@ export function checkCoverage(input: CoverageInput): string[] {
       if ((ENFORCED_PREFIXES as readonly string[]).includes(p)) {
         if (!known.has(route)) problems.push(`${at}: route "${route}" is not an action of the app any more (tests/coverage/surfaces.ts finds no such ${p}). Remove it, or name the action as it is now.`);
         routed.add(route);
-      } else if (!(DESCRIBED_PREFIXES as readonly string[]).includes(p) || route.length <= p.length + 1) problems.push(`${at}: route "${route}" starts with one of ${[...ENFORCED_PREFIXES, ...DESCRIBED_PREFIXES].map((x) => `${x}:`).join(' ')}.`);
+      } else if (!(DESCRIBED_PREFIXES as readonly string[]).includes(p) || !route.slice(p.length + 1).trim()) problems.push(`${at}: route "${route}" starts with one of ${[...ENFORCED_PREFIXES, ...DESCRIBED_PREFIXES].map((x) => `${x}:`).join(' ')}.`);
     }
     // An owned gap stands for a missing proof.
     if (!r.proof.length && !r.gaps?.length) problems.push(`${at}: it has neither a proof nor a gap with its owner.`);
+    // A row proven only by screen captures still needs an owned gap: a capture checks no outcome.
+    if (r.proof.length && r.proof.every((p) => p.kind === 'design') && !r.gaps?.length) problems.push(`${at}: its only proofs capture screens; add a proof that checks the outcome, or a gap with its owner.`);
     for (const p of r.proof) {
-      linked.add(p.test);
+      if (BEHAVIOUR.has(p.kind) || p.kind === 'design') linked.add(p.test);
+      if (!PROOF_PLACES[p.kind]?.test(p.test)) problems.push(`${at}: a ${p.kind} proof lives in ${p.kind === 'unit' ? 'tests/unit/*.test.ts' : 'tests/e2e/*.mjs'}, not ${p.test}.`);
       const text = input.read(p.test);
-      if (text === null) problems.push(`${at}: its proof ${p.test} does not exist.`);
-      else if (p.step && !text.includes(p.step)) problems.push(`${at}: ${p.test} has no step "${p.step}".`);
+      if (text === null) {
+        problems.push(`${at}: its proof ${p.test} does not exist.`);
+        continue;
+      }
+      const titles = stepsOf(p.test, text);
+      if (p.step) {
+        // The step is a title the file declares, or part of exactly one: not a comment, and not shared by several steps.
+        const hits = titles.includes(p.step) ? [p.step] : titles.filter((t) => t.includes(p.step!));
+        if (!hits.length) problems.push(`${at}: ${p.test} declares no step "${p.step}".`);
+        else if (hits.length > 1) problems.push(`${at}: "${p.step}" is part of ${hits.length} steps of ${p.test}; name the one that proves it.`);
+      } else if ((p.kind === 'driver' || p.kind === 'e2e') && titles.length) problems.push(`${at}: name the step of ${p.test} that proves it.`);
       if (p.kind === 'packaged' && !PACKAGED_TESTS.has(p.test)) problems.push(`${at}: ${p.test} does not run the packaged app, so it cannot prove a packaged build.`);
     }
     if (r.builds?.includes('packaged') && !r.proof.some((p) => p.kind === 'packaged')) problems.push(`${at}: it says it is proven on the packaged build, but no packaged test proves it.`);

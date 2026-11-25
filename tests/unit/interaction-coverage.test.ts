@@ -1,12 +1,14 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { checkCoverage } from '../coverage/check';
+import { checkCoverage, declaredSteps } from '../coverage/check';
 import type { CoverageInput } from '../coverage/check';
 import { AREAS, GAP_ISSUES, INTERACTIONS, toMarkdown } from '../coverage/interactions';
 import type { Area, Interaction } from '../coverage/interactions';
 import { commands, leftTabs, menuItems, nativeMenu, ROOT, shortcuts, surfaces, texts, writingMenu } from '../coverage/surfaces';
 import ts from 'typescript';
+import type { MenuItemConstructorOptions } from 'electron';
+import { appMenuTemplate } from '../../src/main/app-menu';
 
 const read = (p: string) => (existsSync(join(ROOT, p)) ? readFileSync(join(ROOT, p), 'utf8') : null);
 /** Scripts that are helpers, or capture screens only, rather than prove behaviour. */
@@ -40,8 +42,20 @@ describe('what the readers find in the app', () => {
     expect(menu.get('role:startSpeaking')).toEqual(['darwin']);
   });
 
+  it('keeps each platform’s accelerators: Redo on Ctrl+Y on Windows, Shift+Cmd/Ctrl+Z elsewhere', () => {
+    const redo = (p: NodeJS.Platform) => (appMenuTemplate(p, true, { command: () => undefined, history: () => () => undefined }).find((m) => m.label === 'Edit')!.submenu as MenuItemConstructorOptions[]).find((i) => i.id === 'edit-redo')!.accelerator;
+    expect([redo('win32'), redo('darwin'), redo('linux')]).toEqual(['Control+Y', 'Shift+CommandOrControl+Z', 'Shift+CommandOrControl+Z']);
+    // Export and Close Project are offered only with a project open.
+    const file = (open: boolean) => (appMenuTemplate('darwin', open, { command: () => undefined, history: () => () => undefined }).find((m) => m.label === 'File')!.submenu as MenuItemConstructorOptions[]).filter((i) => i.id).map((i) => [i.id, i.enabled]);
+    expect([file(true), file(false)]).toEqual([
+      [['export', true], ['close-project', true]],
+      [['export', false], ['close-project', false]]
+    ]);
+  });
+
   it('lists the writing menu, the command menu, the sidebar and the shortcut keys', () => {
-    expect(writingMenu().map((s) => s.key)).toEqual(['writing:<suggestion>', 'writing:No spelling suggestions', 'writing:Cut', 'writing:Copy', 'writing:Paste', 'writing:Select All']);
+    // Read from the template for right spelling, a misspelling with suggestions, and one with none.
+    expect(writingMenu().map((s) => s.key).sort()).toEqual(['writing:<suggestion>', 'writing:Copy', 'writing:Cut', 'writing:No spelling suggestions', 'writing:Paste', 'writing:Select All']);
     const cmds = commands().map((s) => s.key);
     for (const k of ['command:newproject', 'command:find', 'command:page:*', 'command:panel:*', 'command:Insert:*', 'command:sec:*:*']) expect(cmds).toContain(k);
     expect(leftTabs().map((s) => s.key)).toEqual(expect.arrayContaining(['tab:pages', 'tab:layers', 'tab:insert', 'tab:assets']));
@@ -72,7 +86,12 @@ describe('checkCoverage', () => {
     proof: [{ test: 'tests/e2e/a.mjs', kind: 'driver', step: 'creates it' }],
     ...over
   });
-  const files: Record<string, string> = { 'tests/e2e/a.mjs': "step('creates it')", 'tests/e2e/b.mjs': '' };
+  const files: Record<string, string> = {
+    'tests/e2e/a.mjs': "step('creates it');\nstep('creates it again, twice');\n// step('only in a comment')",
+    'tests/e2e/b.mjs': '',
+    'tests/e2e/tour.mjs': '',
+    'tests/unit/a.test.ts': "it('reads it', () => {});"
+  };
   const base = (over: Partial<CoverageInput> = {}): CoverageInput => ({
     rows: [row()],
     surfaces: [{ key: 'menu:File > New Project…', file: 'src/main/app-menu.ts', platforms: ['darwin', 'win32', 'linux'] }],
@@ -97,19 +116,44 @@ describe('checkCoverage', () => {
     expect(problems).toHaveLength(2);
     expect(problems[0]).toMatch(/route "command:gone" is not an action of the app any more/);
     expect(problems[1]).toMatch(/route "somewhere:else" starts with one of/);
+    // A described route names its control.
+    expect(checkCoverage(base({ rows: [row({ routes: ['menu:File > New Project…', 'toolbar:   '] })] }))).toEqual([expect.stringMatching(/route "toolbar:   " starts with one of/)]);
   });
 
-  it('fails a proof that does not exist, a step it does not have, and an e2e script no row links', () => {
+  it('fails a proof that does not exist, a step it does not declare, and an e2e script no row links', () => {
     const problems = checkCoverage(
       base({
-        rows: [row({ proof: [{ test: 'tests/e2e/a.mjs', kind: 'driver', step: 'a step that is not there' }, { test: 'tests/e2e/gone.mjs', kind: 'e2e' }] })],
+        rows: [row({ proof: [{ test: 'tests/e2e/a.mjs', kind: 'driver', step: 'creates it' }, { test: 'tests/e2e/a.mjs', kind: 'driver', step: 'a step that is not there' }, { test: 'tests/e2e/gone.mjs', kind: 'e2e' }] })],
         e2e: ['tests/e2e/a.mjs', 'tests/e2e/b.mjs']
       })
     );
     expect(problems).toEqual([
-      'Row projects.create: tests/e2e/a.mjs has no step "a step that is not there".',
+      'Row projects.create: tests/e2e/a.mjs declares no step "a step that is not there".',
       'Row projects.create: its proof tests/e2e/gone.mjs does not exist.',
       'No row links tests/e2e/b.mjs: add it as a proof of the rows it proves.'
+    ]);
+  });
+
+  it('takes a step only as part of exactly one declared title, never from a comment, and needs one for a behaviour proof', () => {
+    const steps = (step?: string, kind: 'driver' | 'unit' = 'driver', test = kind === 'unit' ? 'tests/unit/a.test.ts' : 'tests/e2e/a.mjs') => checkCoverage(base({ rows: [row({ proof: [{ test: 'tests/e2e/a.mjs', kind: 'driver', step: 'creates it again' }, { test, kind, ...(step ? { step } : {}) }] })] }));
+    expect(steps('only in a comment')).toEqual(['Row projects.create: tests/e2e/a.mjs declares no step "only in a comment".']);
+    expect(steps('creates')).toEqual(['Row projects.create: "creates" is part of 2 steps of tests/e2e/a.mjs; name the one that proves it.']);
+    expect(steps()).toEqual(['Row projects.create: name the step of tests/e2e/a.mjs that proves it.']);
+    // A unit test may be linked as a whole; a named one must be declared.
+    expect(steps(undefined, 'unit')).toEqual([]);
+    expect(steps('reads it', 'unit')).toEqual([]);
+    expect(steps('reads nothing', 'unit')).toEqual(['Row projects.create: tests/unit/a.test.ts declares no step "reads nothing".']);
+    expect(declaredSteps('x.mjs', "step(`${name}: made per case`); it(\"plain\"); // step('no')")).toEqual(['*: made per case', 'plain']);
+  });
+
+  it('fails a proof kind that does not fit its file, and a row only screen captures prove', () => {
+    expect(checkCoverage(base({ rows: [row({ proof: [row().proof[0], { test: 'tests/e2e/b.mjs', kind: 'unit' }] })], e2e: ['tests/e2e/a.mjs', 'tests/e2e/b.mjs'] }))).toEqual([
+      'Row projects.create: a unit proof lives in tests/unit/*.test.ts, not tests/e2e/b.mjs.',
+      // Linked only as a unit test, b.mjs is still not linked as the script it is.
+      'No row links tests/e2e/b.mjs: add it as a proof of the rows it proves.'
+    ]);
+    expect(checkCoverage(base({ rows: [row(), row({ id: 'projects.tour', proof: [{ test: 'tests/e2e/tour.mjs', kind: 'design' }] })] }))).toEqual([
+      'Row projects.tour: its only proofs capture screens; add a proof that checks the outcome, or a gap with its owner.'
     ]);
   });
 
