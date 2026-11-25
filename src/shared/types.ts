@@ -782,6 +782,12 @@ export interface ComponentDefinition {
   source?: string;
   /** Project-relative path of an authored project code component. */
   sourcePath?: string;
+  /**
+   * Code that is a design's generated file, edited outside the app and converted (code components only): the design's
+   * definition ID. Its placements call it as they call that design's file, and the design (kept in the project) still
+   * supplies the shared styles the file's classes name.
+   */
+  generatedFrom?: string;
   dependencies?: string[];
   provenance?: { pack?: string; packVersion?: string; componentId?: string; forkedFrom?: string; createdBy?: 'user' | 'ai' };
   license?: string;

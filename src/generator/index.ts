@@ -164,6 +164,16 @@ export function defFile(def: ComponentDefinition): string {
   return `${GENERATED_DIR}/${defKey(def.id)}.svelte`;
 }
 /**
+ * The design whose generated file a code component is, edited outside the app and converted (`generatedFrom`): its
+ * placements give it what they give that design's file, and its styles are that design's. Undefined for any other
+ * component, and once the design is gone (the code is then called as code).
+ */
+export function designCalled(state: Pick<ProjectState, 'components'>, def: ComponentDefinition | undefined): ComponentDefinition | undefined {
+  if (def?.kind !== 'code' || !def.generatedFrom || !Object.hasOwn(state.components, def.generatedFrom)) return undefined;
+  const design = state.components[def.generatedFrom];
+  return design.kind === 'managed' && design.tree ? design : undefined;
+}
+/**
  * The copy of a contact form's code that declares its WebMCP tool (generator/webmcp.ts), beside the theme's generated
  * components whatever folder the form's own code is in: both are one folder below the library, so its imports lead
  * where they did. Written only while the site declares tools.
@@ -1342,7 +1352,8 @@ function addOverrideRules(
   placed = false,
   lookups?: Map<string, (nodeId: string) => string | null>
 ) {
-  const def = state.components[inst.definitionId];
+  // Code converted from a design's file takes overrides as that design does, through the design's own classes.
+  const def = designCalled(state, state.components[inst.definitionId]) ?? state.components[inst.definitionId];
   if (!def) return;
   for (const partId of Object.keys(inst.overrides ?? {}).sort()) {
     const part = def.parts[partId];
@@ -1380,12 +1391,14 @@ function nestedStateMarker(owner: ComponentDefinition, def: ComponentDefinition,
  * Whether a placement's part is something a code component renders: its own part, or a code component placed as it,
  * directly or as the root of the designs placed there.
  */
-function stylesCode(state: ProjectState, def: ComponentDefinition, partId: string): boolean {
+function stylesCode(state: ProjectState, placed: ComponentDefinition, partId: string): boolean {
+  // A design's file converted to code renders its parts as the design did, styled from the shared stylesheet.
+  const def = designCalled(state, placed) ?? placed;
   if (def.kind === 'code') return true;
   let target = def.tree?.nodes[def.parts[partId]?.nodeId ?? def.tree.rootIds[0]];
   for (const seen = new Set<string>(); target?.kind === 'instance' && !seen.has(target.definitionId); ) {
     seen.add(target.definitionId);
-    const inner = state.components[target.definitionId];
+    const inner = designCalled(state, state.components[target.definitionId]) ?? state.components[target.definitionId];
     if (inner?.kind === 'code') return true;
     target = inner?.tree?.nodes[inner.tree.rootIds[0]];
   }
@@ -1478,7 +1491,8 @@ export function generateSiteCss(state: ProjectState): string {
     for (const id of Object.keys(tree.nodes).sort()) {
       const n = tree.nodes[id];
       if (n.kind === 'instance') {
-        const def = state.components[n.definitionId];
+        // Code converted from a design's file is styled as that design's placements are (see designCalled).
+        const def = designCalled(state, state.components[n.definitionId]) ?? state.components[n.definitionId];
         const placed = group(id) !== null;
         for (const partId of Object.keys(n.overrides ?? {}).sort()) {
           if (!def) continue;
@@ -3304,6 +3318,10 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   const def = ctx.state.components[node.definitionId];
   if (!def) return `${p}<!-- Missing component definition ${node.definitionId} -->`;
   const name = importName(def);
+  // Code converted from a design's edited file is given what the design's file was given (see designCalled): its
+  // properties under the same keys, every chosen axis, its entrance and its items' styles, never the code-only extras.
+  const design = designCalled(ctx.state, def);
+  const code = def.kind === 'code' && !design;
   // While the site declares WebMCP tools, a contact form in the visitor's website is the copy of its code that declares
   // its tool, told its name. The editor's preview, and code written from a design, keep the form's own code.
   const tool = !ctx.instrument && !ctx.standalone && webMcpOn(ctx.state.site) && declaresFormTool(def) ? formTool(ctx.state, node, ctx.def ? undefined : ctx.toolNames?.get(node.id)) : null;
@@ -3316,10 +3334,11 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   if (ctx.def) attrs.push(`class=${classExpr(ctx, node, rootShown ? [js(rootShown)] : [])}`);
   // A page placement kept from a detached design still hands its root the inert classes it had there, for the theme
   // (with a code component's root override class, below). A code component with a property of that name takes none.
-  const pageClasses = ctx.def || (def.kind === 'code' && Object.hasOwn(def.properties, 'class')) ? [] : detachedClasses(node);
+  const pageClasses = ctx.def || (code && Object.hasOwn(def.properties, 'class')) ? [] : detachedClasses(node);
+  /** The key each property is passed under: a design's file takes its names as the design renamed them (propKey). */
+  const keyed: ComponentDefinition = design ? { ...def, kind: 'managed' } : def;
   for (const [propName, schema] of Object.entries(def.properties).sort(([a], [b]) => a.localeCompare(b))) {
     const raw = Object.hasOwn(node.props, propName) ? node.props[propName] : schema.default;
-    const code = def.kind === 'code';
     const rctx = code ? { ...ctx.rctx, forCode: true } : ctx.rctx;
     // A computed list is never bound or stored: on a page it is worked out for that page, and inside a design (which
     // every page shares) it takes the rows the page handed down (`so_pages`).
@@ -3338,7 +3357,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
       // An object is converted as the one item of a list.
       expr = schema.type === 'richtext' ? `richParagraphs(${expr})` : schema.type === 'object' ? `richParagraphs([${expr}], ${js(fields)})[0]` : `richParagraphs(${expr}, ${js(fields)})`;
     }
-    attrs.push(propAttr(propKey(def, propName), expr));
+    attrs.push(propAttr(propKey(keyed, propName), expr));
   }
   const chosen = Object.entries(selectedVariants(def, node.variants));
   const axes = new Map(axesOf(def));
@@ -3352,26 +3371,27 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // A code placement whose own choice names none of the options is given nothing on that axis, so the code's own
   // fallback shows, as it did before axes (a first-format value naming no variant passed no `variant`).
   const stale = (axis: string) => {
-    const own = def.kind === 'code' && node.variants && Object.hasOwn(node.variants, axis) ? node.variants[axis] : undefined;
+    const own = code && node.variants && Object.hasOwn(node.variants, axis) ? node.variants[axis] : undefined;
     return typeof own === 'string' && !Object.hasOwn(axes.get(axis)!.options, own);
   };
   for (const [axis, value] of chosen) {
     // A code component gets an axis prop only if its source reads it; anything else would land in its rest props.
-    if (def.kind === 'code' && (Object.hasOwn(def.properties, variantProp(axis)) || !def.source?.includes(variantProp(axis)) || stale(axis))) continue;
+    if (code && (Object.hasOwn(def.properties, variantProp(axis)) || !def.source?.includes(variantProp(axis)) || stale(axis))) continue;
     attrs.push(`${variantProp(axis)}=${variantExpr(value, axis)}`);
   }
   // Code components read the first axis as `variant`, the contract they have always had.
-  if (def.kind === 'code' && chosen.length && !Object.hasOwn(def.properties, 'variant') && !stale(chosen[0][0])) attrs.push(`variant=${variantExpr(chosen[0][1], chosen[0][0])}`);
+  if (code && chosen.length && !Object.hasOwn(def.properties, 'variant') && !stale(chosen[0][0])) attrs.push(`variant=${variantExpr(chosen[0][1], chosen[0][0])}`);
   // A section's anchor lands on its component's root element.
   if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
   else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);
   // So does its entrance, and its place in a staggered list, when the site has entrances.
   const ownAppear = node.appear === 'none' || isAppearPreset(node.appear) ? node.appear : undefined;
-  if (def.kind === 'managed' && isDefRoot(ctx, node) && ctx.standalone) {
+  const takesAppear = def.kind === 'managed' || !!design;
+  if (takesAppear && isDefRoot(ctx, node) && ctx.standalone) {
     // Written in: the code copy passes its one placement's choice (or its root's own) straight to the design inside.
     const chosen = ctx.standalone.appear ?? ownAppear;
     if (chosen) attrs.push(`so_appear=${attrJs(chosen)}`);
-  } else if (def.kind === 'managed' && (ctx.standalone || appearPlumbing(ctx.state))) {
+  } else if (takesAppear && (ctx.standalone || appearPlumbing(ctx.state))) {
     // A code copy writes in what every placement inside it chose, whatever the site uses today.
     const own = ownAppear;
     if (isDefRoot(ctx, node)) attrs.push(own ? `so_appear={so_appear ?? ${js(own)}}` : 'so_appear={so_appear}', 'so_stagger={so_stagger}');
@@ -3399,14 +3419,14 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     for (const partId of Object.keys(node.overrides ?? {}).sort()) map[partId] = overrideClass(node.id, partId) + shownClasses(def, node.overrides![partId]);
     for (const pid of partMarks) map[pid] = Object.hasOwn(map, pid) ? `${map[pid]} so-part--${pid}` : `so-part--${pid}`;
     attrs.push(`so_o={${js(Object.fromEntries(Object.keys(map).sort().map((k) => [k, map[k]])))}}`);
-    if (def.kind === 'code' && map.root && !Object.hasOwn(def.properties, 'class')) pageClasses.unshift(map.root);
+    if (code && map.root && !Object.hasOwn(def.properties, 'class')) pageClasses.unshift(map.root);
   }
   if (pageClasses.length) attrs.push(`class=${attrJs(pageClasses.join(' '))}`);
   // Styles of single list items: each item's parts get a class of their own, looked up by the item's ID.
   if (!ctx.def && node.itemOverrides) {
     const byItem: Record<string, Record<string, string>> = {};
     for (const partId of Object.keys(node.itemOverrides).sort()) {
-      const entry = liveItemStyles(def, node, partId);
+      const entry = liveItemStyles(design ?? def, node, partId);
       for (const itemId of Object.keys(entry?.items ?? {}).sort()) {
         if (!entry!.items[itemId] || typeof entry!.items[itemId] !== 'object') continue;
         // Own keys only: an item ID can be any word, "toString" included.
@@ -3418,17 +3438,17 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   }
   // Inside a design, a code component's inner parts take the design's override classes the same way; its root is
   // reached through the node class `class` already passes.
-  if (ctx.def && def.kind === 'code') {
+  if (ctx.def && code) {
     const map: Record<string, string> = {};
     // A part its code hides is shown again through the same marker classes a page's placement passes.
     for (const partId of Object.keys(node.overrides ?? {}).sort()) if (partId !== 'root' && Object.hasOwn(def.parts, partId)) map[partId] = nestedOverrideClass(ctx.def, node.id, partId) + shownClasses(def, node.overrides![partId]);
     if (Object.keys(map).length) attrs.push(`so_o={${js(map)}}`);
   }
   // A managed component's inner parts take a class of the design's only for its state rules (see nestedStateMarker).
-  if (ctx.def && def.kind === 'managed') {
+  if (ctx.def && (def.kind === 'managed' || design)) {
     const map: Record<string, string> = {};
     for (const partId of Object.keys(node.overrides ?? {}).sort()) {
-      const marker = nestedStateMarker(ctx.def, def, node, partId);
+      const marker = nestedStateMarker(ctx.def, design ?? def, node, partId);
       if (marker) map[partId] = marker;
     }
     if (Object.keys(map).length) attrs.push(`so_o={${js(map)}}`);

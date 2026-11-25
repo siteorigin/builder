@@ -1,7 +1,7 @@
 import './StatusBar.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type ReactNode } from 'react';
 import { Archive, ArrowDown, Bot, Check, ChevronRight, CircleAlert, CircleCheck, Component, Copy, Ellipsis, FileDiff, FileText, FolderOpen, GitCompareArrows, Info, Link2, Lock, Network, RefreshCw, Share2, Stethoscope, TriangleAlert, Wrench, X } from 'lucide-react';
-import type { Diagnostic, EditorDestination, FileText as FileContent, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
+import type { ConflictChoice, Diagnostic, EditorDestination, FileText as FileContent, ProjectSnapshot, RuntimeState, SavedCopy } from '@shared/api';
 import type { SeoFinding, SeoPillar } from '@shared/seo';
 import { SEO_PILLARS } from '@shared/seo';
 import { diagnosticKey } from '@engine/validate';
@@ -268,7 +268,9 @@ const DOCUMENT_NAMES: Record<string, string> = {
 };
 
 /** What a conflicted file holds, in the words the user knows it by. The path is shown beside it. */
-function conflictSubject(state: ProjectState, path: string): string {
+function conflictSubject(state: ProjectState, path: string, designId?: string): string {
+  // A design's own file (one that can become a code component) is named for its component.
+  if (designId && Object.hasOwn(state.components, designId)) return `${state.components[designId].name} component file`;
   const page = /^siteorigin\/pages\/([^/]+)\.json$/.exec(path)?.[1];
   if (page) return Object.hasOwn(state.pages, page) ? `${state.pages[page].title} page` : 'Page file';
   const component = /^siteorigin\/components\/([^/]+)\//.exec(path)?.[1];
@@ -277,6 +279,12 @@ function conflictSubject(state: ProjectState, path: string): string {
   const route = /^src\/routes\/(.*)\+page\.svelte$/.exec(path)?.[1];
   const built = route === undefined ? undefined : Object.values(state.pages).find((p) => p.route === `/${route}`);
   return built ? `${built.title} website file` : 'Project file';
+}
+
+/** The SHA-256 of text as a file holds it (UTF-8), in hex: the bytes a conversion expects to find on disk. */
+async function textDigest(text: string): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /** A generated file's reason, without the word "generated". */
@@ -597,6 +605,8 @@ function SeoRow({ finding: f, state }: { finding: SeoFinding; state: ProjectStat
 
 export function HealthModal() {
   const snap = useStore((s) => s.snapshot);
+  // Converting a design's edited file makes code, which needs Developer mode as all code does.
+  const codeEnabled = useStore((s) => !!s.settings?.developerMode);
   const runtime = useStore((s) => s.runtime);
   const pageIssue = useStore((s) => s.previewIssue);
   const frameReady = useStore((s) => s.frameReady);
@@ -654,22 +664,30 @@ export function HealthModal() {
   const close = () => setState({ modal: null });
   /**
    * Settle a conflict. The dialog is held from the moment a choice is pressed, through `check` (the compared versions
-   * read again), so no other choice can start meanwhile.
+   * read again, giving what a conversion expects to find), so no other choice can start meanwhile. A conversion's
+   * refusal is the row's to show, beside its choice (`onRefused`); Keep's and Restore's are said as before.
    */
-  const resolve = async (path: string, choice: 'keep' | 'restore', check?: () => Promise<boolean>) => {
+  const resolve = async (conflict: ProjectSnapshot['conflicts'][number], choice: ConflictChoice, check?: () => Promise<false | { expect?: string }>, onRefused?: (message: string) => void) => {
+    const path = conflict.path;
     if (busy) return;
     setBusy(path);
     try {
-      if (check && !(await check())) return;
+      const checked = check ? await check() : {};
+      if (!checked) return;
       settling.current = { path, before: snap.conflicts.map((c) => c.path) };
-      const r = await api.project.resolveConflict(path, choice);
+      const subject = conflictSubject(st, path, conflict.convert?.definitionId);
+      const r = await api.project.resolveConflict(path, choice, choice === 'convert' && checked.expect ? { expect: checked.expect } : undefined);
       if (!r.ok) {
         settling.current = null;
-        if (r.message) toast(r.message, 'error');
-      } else setStatus(`${conflictSubject(st, path)} settled. The version you replaced is under Saved copies.`);
+        const message = r.message ?? (choice === 'convert' ? 'The file could not be converted.' : undefined);
+        if (message && choice === 'convert' && onRefused) onRefused(message);
+        else if (message) toast(message, 'error');
+      } else if (choice === 'convert') setStatus(`${subject} is now a code component, used everywhere the component was. The edited file is also under Saved copies.`);
+      else setStatus(`${subject} settled. The version you replaced is under Saved copies.`);
     } catch (e) {
       settling.current = null;
-      toast(`The conflict could not be resolved: ${(e as Error).message}`, 'error');
+      if (choice === 'convert' && onRefused) onRefused(`The file could not be converted: ${(e as Error).message}`);
+      else toast(`The conflict could not be resolved: ${(e as Error).message}`, 'error');
     } finally {
       setBusy(null);
     }
@@ -973,7 +991,18 @@ export function HealthModal() {
                 </p>
                 <ul>
                   {snap.conflicts.map((c) => (
-                    <ConflictRow key={c.path} conflict={c} state={st} dir={snap.dir} busy={!!busy} readOnly={readOnly} canUnlock={!!snap.readOnly?.canUnlock} recoveryNote={recoveryNote} onResolve={(choice, check) => void resolve(c.path, choice, check)} />
+                    <ConflictRow
+                      key={c.path}
+                      conflict={c}
+                      state={st}
+                      dir={snap.dir}
+                      busy={!!busy}
+                      readOnly={readOnly}
+                      canUnlock={!!snap.readOnly?.canUnlock}
+                      codeEnabled={codeEnabled}
+                      recoveryNote={recoveryNote}
+                      onResolve={(choice, check, onRefused) => void resolve(c, choice, check, onRefused)}
+                    />
                   ))}
                 </ul>
               </li>
@@ -1080,6 +1109,7 @@ function ConflictRow({
   busy,
   readOnly,
   canUnlock,
+  codeEnabled,
   recoveryNote,
   onResolve
 }: {
@@ -1089,17 +1119,21 @@ function ConflictRow({
   busy: boolean;
   readOnly: boolean;
   canUnlock: boolean;
+  /** Developer mode: a design's edited file can become a code component only with it on. */
+  codeEnabled: boolean;
   /** The band's line saying the version replaced is kept: every choice is described by it too. */
   recoveryNote: string;
-  onResolve: (choice: 'keep' | 'restore', check?: () => Promise<boolean>) => void;
+  onResolve: (choice: ConflictChoice, check?: () => Promise<false | { expect?: string }>, onRefused?: (message: string) => void) => void;
 }) {
   // An older snapshot without a kind: generated conflicts were the ones whose reason says so.
   const kind = c.kind ?? (c.reason.startsWith('Generated') ? 'generated' : 'canonical');
   const [versions, setVersions] = useState<ConflictVersions | 'loading' | null>(null);
   // Only the latest request's reply is shown; hiding the versions drops one still on its way.
   const asked = useRef(0);
-  const subject = conflictSubject(state, c.path);
+  const subject = conflictSubject(state, c.path, c.convert?.definitionId);
   const ids = useId();
+  // Why the edited file did not become a code component, said beside that choice until another is made.
+  const [refused, setRefused] = useState<string | null>(null);
   const compareRef = useRef<HTMLButtonElement>(null);
   // The versions were shown but couldn't be read again before a choice: say so here, and choose nothing.
   const [recheck, setRecheck] = useState(false);
@@ -1124,11 +1158,13 @@ function ConflictRow({
   // Choices wait for versions still loading. With the versions shown, a choice is made against them: they are read
   // again first (the dialog held meanwhile), and one that changed, or can't be read, is shown and nothing is chosen.
   const held = busy || versions === 'loading';
-  const choose = (choice: 'keep' | 'restore') => {
+  const choose = (choice: ConflictChoice) => {
     if (held) return;
+    setRefused(null);
+    const onRefused = choice === 'convert' ? setRefused : undefined;
     const shown = versions;
-    if (!shown) return onResolve(choice);
-    const check = async () => {
+    if (!shown) return onResolve(choice, undefined, onRefused);
+    const check = async (): Promise<false | { expect?: string }> => {
       const ask = ++asked.current;
       const opening = getState().snapshot?.workspaceKey;
       const r = await api.project.compareConflict(c.path).catch(() => null);
@@ -1144,9 +1180,10 @@ function ConflictRow({
         return false;
       }
       setRecheck(false);
-      return true;
+      // A conversion takes exactly the file compared: read again just before, any other bytes there are refused.
+      return choice === 'convert' && shown.disk?.state === 'text' ? { expect: await textDigest(shown.disk.text) } : {};
     };
-    onResolve(choice, check);
+    onResolve(choice, check, onRefused);
   };
   const restoreDoes = kind === 'generated' ? (c.builderMissing ? 'Removes the file, which your pages no longer make. Your version is kept as a copy.' : 'Makes the file again from your pages. To keep a change to it, make the change in the page or in a code component.') : c.builderMissing ? 'Removes the file, which SiteOrigin Builder’s version doesn’t have.' : 'Puts back the version you were editing.';
   return (
@@ -1196,7 +1233,7 @@ function ConflictRow({
           {readOnly ? (
             <p className="health-hint">{canUnlock ? 'Unlock the project to settle this.' : 'This can be settled once the project is editable.'}</p>
           ) : (
-            <div className="health-choices" role="group" aria-label={kind === 'generated' ? `Restore the ${subject}` : `Choose a version of the ${subject}`} aria-describedby={recoveryNote}>
+            <div className="health-choices" role="group" aria-label={kind === 'generated' ? (c.convert ? `Restore or convert the ${subject}` : `Restore the ${subject}`) : `Choose a version of the ${subject}`} aria-describedby={recoveryNote}>
               {kind === 'canonical' && (
                 <div className="health-choice">
                   {/* Held, not disabled, while a choice is being made: focus stays where it was. */}
@@ -1212,6 +1249,20 @@ function ConflictRow({
                 </button>
                 <span id={`${ids}-restore`}>{restoreDoes}</span>
               </div>
+              {kind === 'generated' && c.convert && (
+                <div className="health-choice">
+                  {/* Shown without Developer mode too, held, with why: a choice left out would say nothing. */}
+                  <button className="btn btn-sm" aria-disabled={held || !codeEnabled || undefined} aria-describedby={`${ids}-convert`} onClick={() => codeEnabled && choose('convert')}>
+                    Convert to code component
+                  </button>
+                  <span id={`${ids}-convert`}>{codeEnabled ? 'Makes the edited file a code component, used everywhere this component is.' : 'Custom code needs Developer mode. Turn it on in Settings to make the edited file a code component.'}</span>
+                  {refused && (
+                    <p className="health-hint health-refused" role="alert">
+                      {refused}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </>

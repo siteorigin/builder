@@ -747,7 +747,14 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
       def.source = relinkSource(def.source ?? '', defFile(def), file, moved, keys);
       def.sourcePath = file;
       if (def.dependencies?.length) def.dependencies = [...new Set(def.dependencies.map((d) => ids.get(d)!))].sort();
-    } else delete def.sourcePath;
+      // The design a converted file was made by lands beside it under its new ID; one the package lacks names nothing.
+      const design = typeof def.generatedFrom === 'string' ? ids.get(def.generatedFrom) : undefined;
+      if (design) def.generatedFrom = design;
+      else delete def.generatedFrom;
+    } else {
+      delete def.sourcePath;
+      delete def.generatedFrom;
+    }
     // Where it was copied from is another project's history: it names nothing here.
     const prov = def.provenance ?? {};
     def.provenance = {
