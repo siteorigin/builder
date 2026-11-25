@@ -278,6 +278,9 @@ describe('where Image focus is offered', () => {
     expect(listed.find((p) => p.startsWith('translateY '))).toContain('500px, 32rem or em, or 100%');
     expect(listed.find((p) => p.startsWith('transition '))).toContain('[none|colors|shadow|transform|opacity|common]');
     expect(listed.find((p) => p.startsWith('opacity'))).toBe('opacity');
+    // Frosted glass: a blur and its limit, and a color token at part strength (#353).
+    expect(listed.find((p) => p.startsWith('backdropBlur '))).toBe('backdropBlur [0|4px|12px|24px] or one length in px, rem or em up to 64px or 4rem, 0 for none: blurs what shows through a background at less than full strength, for frosted glass');
+    for (const id of ['background ', 'color ']) expect(listed.find((p) => p.startsWith(id)), id).toContain('{"token": "color.surface", "alpha": 0.7}');
     const inst = instanceOf(s, 'Home', 'hero.split');
     const tools = selectionTools(s, selectionTarget({ owner: ownerOf(s, 'Home'), instancePath: [inst.id], nodeId: 'media', partId: 'media' }));
     const style = tools?.find((t) => t.name === 'style_selected_element');

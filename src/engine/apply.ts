@@ -29,7 +29,7 @@ import type {
 import type { Binding, EntryDoc } from '@shared/types';
 import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
-import { STYLE_PROP_MAP, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, canonicalStyleValue, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
 import { planRouteMove, routeFolder, type RouteMove } from '@shared/page-tree';
 import { VISITOR_TEXT_KEYS, isVisitorTextKey, ownVisitorText, ownVisitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
@@ -1805,6 +1805,8 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
     const err = validateStyleValue(op.property, op.value);
     if (err) fail(err);
     checkTokenRef(state, op.value);
+    // A link is stored token first, its strength only when below full, so equal links compare equal.
+    if (typeof op.value === 'object') op = { ...op, value: canonicalStyleValue(op.value) };
     // Column sizes are kept on one line with single spaces, as the inspector's field shows them.
     if (STYLE_PROP_MAP[op.property].kind === 'tracks' && typeof op.value === 'string') op = { ...op, value: op.value.trim().replace(/\s+/g, ' ') };
     // A literal family on an element follows the same rule as a font token; keywords and var() name no family.

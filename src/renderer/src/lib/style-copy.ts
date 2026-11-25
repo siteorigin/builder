@@ -7,7 +7,7 @@
 import type { EditOperation } from '@shared/ops';
 import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleScopeKey, StyleState, StyleValue } from '@shared/types';
 import { STYLE_STATES, parseStyleScopeKey, styleScopeKey } from '@shared/types';
-import { STYLE_PROP_MAP, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { effectiveTokens } from '@generator/index';
 import { resolveFontStack } from '@catalogue/fonts';
@@ -179,11 +179,16 @@ function tokenRef(property: string, v: StyleValue): string | null {
   return property === 'textStyle' && typeof v === 'string' && TEXT_TOKEN_RE.test(v.trim()) ? v.trim() : null;
 }
 
-/** A value an edit can carry: a literal, or exactly `{ token }`. Anything else came from a hand-edited document. */
+/**
+ * A value an edit can carry: a literal, or a link, `{ token }` or a colour's `{ token, alpha }` (validateStyleValue
+ * checks where a strength may go). Anything else came from a hand-edited document.
+ */
 function isStyleValue(v: unknown): v is StyleValue {
   if (typeof v === 'string' || typeof v === 'boolean') return true;
   if (typeof v === 'number') return Number.isFinite(v);
-  return !!v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 1 && typeof (v as { token?: unknown }).token === 'string';
+  if (!v || typeof v !== 'object' || Array.isArray(v) || typeof (v as { token?: unknown }).token !== 'string') return false;
+  const keys = Object.keys(v);
+  return keys.length === 1 || (keys.length === 2 && typeof (v as { alpha?: unknown }).alpha === 'number');
 }
 
 /** CSS variables named in CSS text, such as a gradient's `var(--so-color-brand)` (`var` in any case, as CSS reads it). */
@@ -225,7 +230,8 @@ function prepare(state: ProjectState, known: Known, property: string, v: unknown
     const font = resolveFontStack(state, v);
     return 'error' in font ? { error: font.error } : { value: v, stored: font.stack };
   }
-  return { value: v, stored: v };
+  // The edit stores a link token first, with its strength only below full.
+  return { value: v, stored: canonicalStyleValue(v) };
 }
 
 const scopeList = (s: ResponsiveStyles, property: string) => ALL_KEYS.filter((k) => s[k]?.[property] !== undefined).map((k) => changeLabel(parseStyleScopeKey(k)!));

@@ -288,6 +288,39 @@ describe('component packages: export and import (#371)', () => {
     await Promise.all([src.s.close(), same.close(), other.close(), theme.close()]);
   });
 
+  it('carries a site style a design uses only at part strength, and keeps the strength where the style is renamed (#353)', async () => {
+    const s = await blank('Glass');
+    const owner = home(s);
+    const token = ok(await s.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Sea', value: '#0a6e8a' }] }, { label: 'Add style' })).results![0].tokenId as string;
+    const section = ok(await s.apply({ operations: [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }] }, { label: 'Insert' })).results![0].nodeId as string;
+    const box = ok(await s.apply({ operations: [{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'heading', text: 'Frosted' }] }, { label: 'Fill' })).results![0].nodeId as string;
+    ok(
+      await s.apply(
+        {
+          operations: [
+            { type: 'node.setStyle', owner, nodeId: box, scope: 'base', state: 'hover', property: 'background', value: { token, alpha: 0.7 } },
+            { type: 'node.setStyle', owner, nodeId: box, scope: 'base', property: 'backdropBlur', value: '12px' }
+          ]
+        },
+        { label: 'Style' }
+      )
+    );
+    const defId = ok(await s.apply({ operations: [{ type: 'component.createFromNode', owner, nodeId: section, name: 'Glass card' }] }, { label: 'Create' })).results![0].definitionId as string;
+    const { path } = await exportTo(s, defId);
+    expect((JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage).tokens.map((t) => t.id)).toContain(token);
+
+    // A different Sea in the destination: the import's lands under the next name, still at 70%.
+    const other = await blank('Other');
+    ok(await other.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Sea', value: '#ff0000' }] }, { label: 'Add' }));
+    const r = ok(await importInto(other, path));
+    const def = other.state.components[r.results!.at(-1)!.definitionId as string];
+    const styled = Object.values(def.tree!.nodes).find((n) => n.styles?.['base:hover']);
+    expect(styled?.styles?.base?.backdropBlur).toBe('12px');
+    expect(styled?.styles?.['base:hover']).toEqual({ background: { token: 'color.custom-sea-2', alpha: 0.7 } });
+    expect(validateState(other.state).filter((d) => d.severity === 'error')).toEqual([]);
+    await Promise.all([s.close(), other.close()]);
+  });
+
   it('carries a code component with the code component it imports, relinking the import each time it lands', async () => {
     const s = await blank('Code');
     const token = ok(await s.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Sea', value: '#0a6e8a' }] }, { label: 'Add' })).results![0].tokenId as string;

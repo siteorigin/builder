@@ -1,5 +1,5 @@
 import { isFocusValue } from './focus';
-import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleState, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleState, StyleTokenRef, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 import { parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
 
 /**
@@ -138,7 +138,7 @@ export const STYLE_PROPS: StylePropDef[] = [
     { value: 'start', label: 'Left' }, { value: 'center', label: 'Center' }, { value: 'end', label: 'Right' }
   ] },
   { id: 'color', label: 'Text color', group: 'appearance', kind: 'color', tokenGroup: 'color' },
-  { id: 'background', label: 'Background', description: 'A color, or a linear-, radial- or conic-gradient().', group: 'appearance', kind: 'color', tokenGroup: 'color' },
+  { id: 'background', label: 'Background', description: 'A color, or a linear-, radial- or conic-gradient(). A Site styles color can be made see-through.', group: 'appearance', kind: 'color', tokenGroup: 'color' },
   { id: 'border', label: 'Border', group: 'appearance', kind: 'border', tokenGroup: 'border' },
   edge('borderBlockStart', 'Border top', 'appearance', 'border', 'border', '1px solid #ddd'),
   edge('borderBlockEnd', 'Border bottom', 'appearance', 'border', 'border', '1px solid #ddd'),
@@ -177,7 +177,7 @@ export const STYLE_PROP_MAP: Record<string, StylePropDef> = Object.fromEntries(S
 
 /**
  * The style properties a rule for an interactive state (hover, focus, pressed) may set: how the element looks (its
- * colors, background, borders, corners, shadow and opacity), never its layout, size, visibility or motion, which
+ * colors, background, borders, corners, shadow, opacity and backdrop blur), never its layout, size, visibility or motion, which
  * would move what is around it, or the transition that animates the change (that belongs on its resting style).
  */
 export const STATE_STYLE_PROPS: readonly string[] = STYLE_PROPS.filter((p) => p.group === 'appearance').map((p) => p.id);
@@ -211,7 +211,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
     case 'image':
       return ['width', 'maxWidth', 'minWidth', 'height', 'maxHeight', 'aspectRatio', 'objectFit', 'objectPosition', 'radius', 'shadow', ...borders, ...margins, 'opacity', ...child, ...placed, ...end];
     case 'link':
-      return ['width', 'minWidth', ...margins, 'color', 'background', 'radius', ...child, ...placed, ...end];
+      return ['width', 'minWidth', ...margins, 'color', 'background', 'radius', 'backdropBlur', ...child, ...placed, ...end];
     case 'icon':
       return ['color', 'fontSize', 'background', 'radius', ...margins, ...child, ...placed, ...end];
     case 'element':
@@ -236,7 +236,7 @@ export function partStyleControls(def: Pick<ComponentDefinition, 'parts' | 'tree
 }
 
 /** What a code component's part offers when it names no controls of its own. */
-const CODE_PART_CONTROLS = ['paddingBlock', 'background', 'color', 'border', 'radius', 'shadow', 'opacity', 'hidden'];
+const CODE_PART_CONTROLS = ['paddingBlock', 'background', 'color', 'border', 'radius', 'shadow', 'opacity', 'backdropBlur', 'hidden'];
 
 /**
  * The style controls the inspector offers on one part of a placement: undefined offers every property, null means
@@ -312,6 +312,32 @@ export function linkOf(v: unknown, group?: TokenGroup): string | null {
 
 export function tokenVar(tokenId: string): string {
   return `--so-${tokenId.replace(/[^a-zA-Z0-9]+/g, '-')}`;
+}
+
+/** Whether a link paints its token at part strength: an alpha below 1. */
+export const partStrength = (ref: StyleTokenRef): boolean => typeof ref.alpha === 'number' && ref.alpha < 1;
+
+/**
+ * A colour at part strength, as CSS: mixed with transparent, so 0.7 paints it at 70% (a colour already see-through
+ * is made more so: half-transparent at 0.7 paints at 35%).
+ */
+export function colorAtStrength(color: string, alpha: number): string {
+  return `color-mix(in srgb, ${color} ${Math.round(Math.min(1, Math.max(0, alpha)) * 10000) / 100}%, transparent)`;
+}
+
+/** A style's token link as CSS: the token's variable, mixed to its strength when below full. */
+export function tokenRefCss(ref: StyleTokenRef): string {
+  const css = `var(${tokenVar(ref.token)})`;
+  return partStrength(ref) ? colorAtStrength(css, ref.alpha!) : css;
+}
+
+/**
+ * A token link as stored: exactly `{ token }`, or `{ token, alpha }` when below full strength, token first, so equal
+ * links compare equal. Anything else is returned as it is.
+ */
+export function canonicalStyleValue(v: StyleValue): StyleValue {
+  if (typeof v !== 'object' || v === null || typeof v.token !== 'string') return v;
+  return partStrength(v) ? { token: v.token, alpha: v.alpha } : { token: v.token };
 }
 
 /** A length literal: a number with a unit, or a unitless zero (CSS drops any other unitless number). */
@@ -826,6 +852,12 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
     if (!def.tokenGroup) return `${def.label} cannot use a token.`;
     const groups = Array.isArray(def.tokenGroup) ? def.tokenGroup : [def.tokenGroup];
     if (!groups.some((g) => value.token.startsWith(g + '.'))) return `${def.label} needs a ${groups.join(' or ')} token, not "${value.token}".`;
+    const extra = Object.keys(value).find((k) => k !== 'token' && k !== 'alpha');
+    if (extra !== undefined) return `A token reference holds "token"${def.kind === 'color' ? ' and "alpha"' : ''} only, not "${extra.slice(0, 40)}".`;
+    if (value.alpha === undefined) return null;
+    if (def.kind !== 'color') return `${def.label} takes its token at full strength: only a color can be see-through.`;
+    if (typeof value.alpha !== 'number' || !Number.isFinite(value.alpha) || value.alpha < 0 || value.alpha > 1)
+      return `${def.label} strength ("alpha") must be a number from 0 to 1, such as 0.7 for 70%.`;
     return null;
   }
   const s = String(value).trim();
@@ -890,7 +922,7 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
 }
 
 function cssValue(v: StyleValue): string {
-  if (typeof v === 'object' && v !== null) return `var(${tokenVar(v.token)})`;
+  if (typeof v === 'object' && v !== null) return tokenRefCss(v);
   return String(v);
 }
 
@@ -903,6 +935,9 @@ const CHECKED_AT_OUTPUT = new Set([
 /** Convert one style property into CSS declarations. */
 export function styleToCss(propId: string, raw: StyleValue): string[] {
   if (typeof raw === 'object' && raw !== null && typeof raw.token !== 'string') return [];
+  // A link holding more than its token (a strength) is read again: a hand-edited one on a property that cannot
+  // take it, or with a strength out of range, writes nothing.
+  if (typeof raw === 'object' && raw !== null && Object.keys(raw).length > 1 && validateStyleValue(propId, raw)) return [];
   const value = typeof raw === 'string' ? raw.trim() : raw;
   if (CHECKED_AT_OUTPUT.has(propId) && validateStyleValue(propId, value)) return [];
   const v = cssValue(value);

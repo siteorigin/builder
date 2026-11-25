@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { InstanceNode, ProjectState, ResponsiveStyles } from '@shared/types';
-import type { EditOperation } from '@shared/ops';
+import type { InstanceNode, LinkNode, ProjectState, ResponsiveStyles } from '@shared/types';
+import { validateOperation, type EditOperation } from '@shared/ops';
+import { tokenUsageCounts } from '@engine/tokens';
 import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, isStateStyleProp, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
@@ -861,5 +862,114 @@ describe('backdrop blur (#353)', () => {
     expect(site).toContain('backdrop-filter: none');
     const cleared = applyOperations(out.state, [set('backdropBlur', null)]);
     expect((cleared.state.pages[s.site.homePageId].nodes[hero.id] as InstanceNode).overrides?.root?.base?.backdropBlur).toBeUndefined();
+  });
+});
+
+describe('see-through site colors (#353)', () => {
+  const MIX = 'color-mix(in srgb, var(--so-color-surface) 70%, transparent)';
+
+  it('lets a color or background link paint its site color at part strength, from 0 to 1', () => {
+    for (const prop of ['background', 'color'])
+      for (const alpha of [0, 0.05, 0.7, 1]) expect(validateStyleValue(prop, { token: 'color.surface', alpha }), `${prop} ${alpha}`).toBeNull();
+    for (const alpha of [-0.1, 1.01, Number.NaN, Infinity, '0.7', null, true])
+      expect(validateStyleValue('background', { token: 'color.surface', alpha } as never), String(alpha)).toMatch(/strength \("alpha"\) must be a number from 0 to 1/);
+    // Only a color can be see-through, and a link holds nothing else.
+    expect(validateStyleValue('gap', { token: 'space.lg', alpha: 0.5 })).toMatch(/full strength/);
+    expect(validateStyleValue('shadow', { token: 'shadow.sm', alpha: 0.5 })).toMatch(/full strength/);
+    expect(validateStyleValue('background', { token: 'color.surface', opacity: 0.5 } as never)).toMatch(/holds "token" and "alpha" only, not "opacity"/);
+    expect(validateStyleValue('gap', { token: 'space.lg', x: 1 } as never)).toMatch(/holds "token" only, not "x"/);
+    expect(validateStyleValue('background', { token: 'space.lg', alpha: 0.5 })).toMatch(/needs a color token/);
+  });
+
+  it('writes a link below full strength as its variable mixed with transparent, and a full one as the variable', () => {
+    expect(styleToCss('background', { token: 'color.surface', alpha: 0.7 })).toEqual([`background: ${MIX}`]);
+    expect(styleToCss('color', { token: 'color.text', alpha: 0.555 })).toEqual(['color: color-mix(in srgb, var(--so-color-text) 55.5%, transparent)']);
+    expect(styleToCss('background', { token: 'color.surface', alpha: 0 })).toEqual(['background: color-mix(in srgb, var(--so-color-surface) 0%, transparent)']);
+    expect(styleToCss('background', { token: 'color.surface', alpha: 1 })).toEqual(['background: var(--so-color-surface)']);
+    expect(styleToCss('background', { token: 'color.surface' })).toEqual(['background: var(--so-color-surface)']);
+    // A hand-edited link outside the grammar writes nothing, on a color or anywhere else.
+    for (const [prop, bad] of [
+      ['background', { token: 'color.surface', alpha: 2 }],
+      ['background', { token: 'color.surface', alpha: '0.5' }],
+      ['background', { token: 'color.surface', alpha: 0.5, x: 1 }],
+      ['gap', { token: 'space.lg', alpha: 0.5 }],
+      ['radius', { token: 'radius.md', alpha: 0.5 }]
+    ] as Array<[string, never]>)
+      expect(styleToCss(prop, bad), `${prop} ${JSON.stringify(bad)}`).toEqual([]);
+  });
+
+  it('keeps the strength through the edit boundary, stored token first and dropped at full strength', () => {
+    const s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const op = (value: unknown, property = 'background') => {
+      const checked = validateOperation({ type: 'node.setStyle', owner, nodeId: hero.id, scope: 'base', property, value });
+      if (!checked.ok) throw new Error(checked.message);
+      return checked.op;
+    };
+    const base = (st: ProjectState) => (home(st).nodes[hero.id] as InstanceNode).overrides?.root?.base;
+    let out = applyOperations(s, [op({ alpha: 0.7, token: 'color.surface' }), op('12px', 'backdropBlur')]).state;
+    expect(base(out)).toEqual({ background: { token: 'color.surface', alpha: 0.7 }, backdropBlur: '12px' });
+    expect(Object.keys(base(out)!.background as object)).toEqual(['token', 'alpha']);
+    const cls = `so-o-${hero.id}-root`;
+    const rule = ruleOf(css(out, 'site'), `.${cls}.${cls}`);
+    for (const d of [`background: ${MIX};`, '-webkit-backdrop-filter: blur(12px);', 'backdrop-filter: blur(12px);']) expect(rule).toContain(d);
+    expect(tokenUsageCounts(out)['color.surface']).toBe((tokenUsageCounts(s)['color.surface'] ?? 0) + 1);
+    // Full strength is the plain link; a plain link sets a see-through one back to full.
+    expect(base(applyOperations(out, [op({ token: 'color.surface', alpha: 1 })]).state)?.background).toEqual({ token: 'color.surface' });
+    out = applyOperations(out, [op({ token: 'color.surface' })]).state;
+    expect(base(out)?.background).toEqual({ token: 'color.surface' });
+    // A link with a key it cannot hold is refused at the boundary rather than stripped.
+    expect(validateOperation({ type: 'node.setStyle', owner, nodeId: hero.id, scope: 'base', property: 'background', value: { token: 'color.surface', opacity: 0.5 } }).ok).toBe(false);
+    expect(() => applyOperations(s, [op({ token: 'space.lg', alpha: 0.5 }, 'gap')])).toThrow(/full strength/);
+    expect(() => applyOperations(s, [op({ token: 'color.surface', alpha: 1.5 })])).toThrow(/from 0 to 1/);
+  });
+
+  it('keeps the strength when its site color is replaced, and when the color is kept as a value', () => {
+    let s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    s = applyOperations(s, [
+      { type: 'token.create', group: 'color', label: 'Glass', value: 'rgb(255 255 255 / 0.5)' },
+      { type: 'token.create', group: 'color', label: 'Sea', value: '#2e8b57' }
+    ]).state;
+    const [glass, sea] = s.tokens.custom.map((t) => t.id);
+    s = applyOperations(s, [
+      { type: 'node.setStyle', owner, nodeId: hero.id, scope: 'base', property: 'background', value: { token: sea, alpha: 0.7 } },
+      { type: 'node.setStyle', owner, nodeId: hero.id, scope: 'phone', state: 'hover', property: 'color', value: { token: sea } }
+    ]).state;
+    const root = (st: ProjectState) => (home(st).nodes[hero.id] as InstanceNode).overrides?.root;
+    expect(tokenUsageCounts(s)[sea]).toBe(2);
+    const replaced = applyOperations(s, [{ type: 'token.replace', tokenId: sea, withTokenId: glass }]).state;
+    expect(root(replaced)?.base?.background).toEqual({ token: glass, alpha: 0.7 });
+    expect(root(replaced)?.['phone:hover']?.color).toEqual({ token: glass });
+    // Kept as a value: the half-transparent color at 70% still paints at 35%, as the link did.
+    const detached = applyOperations(replaced, [{ type: 'token.remove', tokenId: glass, detach: true }]).state;
+    expect(root(detached)?.base?.background).toBe('color-mix(in srgb, rgb(255 255 255 / 0.5) 70%, transparent)');
+    expect(root(detached)?.['phone:hover']?.color).toBe('rgb(255 255 255 / 0.5)');
+    expect(validateStyleValue('background', root(detached)!.base!.background)).toBeNull();
+    // Removing it in favour of another style keeps the strength too.
+    const moved = applyOperations(replaced, [{ type: 'token.remove', tokenId: glass, replacementTokenId: 'color.surface' }]).state;
+    expect(root(moved)?.base?.background).toEqual({ token: 'color.surface', alpha: 0.7 });
+  });
+
+  it('paints a see-through button through its own variables, at rest and on hover', () => {
+    const s = fresh();
+    const page = home(s);
+    page.nodes.n_link = { id: 'n_link', kind: 'link', link: { type: 'url', target: 'https://example.com/' }, label: 'Talk to us', appearance: 'primary' } as LinkNode;
+    page.rootIds.push('n_link');
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const out = applyOperations(s, [
+      { type: 'node.setStyle', owner, nodeId: 'n_link', scope: 'base', property: 'background', value: { token: 'color.surface', alpha: 0.7 } },
+      { type: 'node.setStyle', owner, nodeId: 'n_link', scope: 'base', state: 'hover', property: 'background', value: { token: 'color.surface', alpha: 0.9 } },
+      { type: 'node.setStyle', owner, nodeId: 'n_link', scope: 'base', property: 'backdropBlur', value: '4px' }
+    ]).state;
+    const site = css(out, 'site');
+    expect(site).toContain(`--so-btn-bg: ${MIX};`);
+    expect(site).toContain('--so-btn-bg-hover: color-mix(in srgb, var(--so-color-surface) 90%, transparent);');
+    expect(site).toContain('backdrop-filter: blur(4px);');
+    // A hand-edited strength the button cannot paint writes no hover variable on its own either.
+    (home(out).nodes.n_link as LinkNode).styles = { base: { background: { token: 'color.surface', alpha: 3 } } };
+    expect(css(out, 'site')).not.toContain('--so-btn-bg');
   });
 });

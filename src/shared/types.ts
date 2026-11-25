@@ -37,8 +37,13 @@ export function parseStyleScopeKey(key: string): { scope: ResponsiveScope; state
   return (STYLE_STATES as string[]).includes(state) ? { scope: scope as ResponsiveScope, state: state as StyleState } : null;
 }
 
+/**
+ * A style's link to a site token. A colour link can paint the token at part strength: `alpha` from 0 to 1 (0.7 is
+ * 70%), mixed with transparent, for a see-through surface that still follows the token.
+ */
+export type StyleTokenRef = { token: string; alpha?: number };
 /** A literal style value or a reference to a site token. */
-export type StyleValue = string | number | boolean | { token: string };
+export type StyleValue = string | number | boolean | StyleTokenRef;
 export type StyleProps = Record<string, StyleValue>;
 /**
  * Style rules by where they apply: each size range's resting rules, and the rules for its interactive states, side by

@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronRight, EyeOff, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
-import type { ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef } from '@shared/types';
+import type { ResponsiveScope, ResponsiveStyles, StyleTokenRef, StyleValue, TokenDef } from '@shared/types';
 import { parseStyleScopeKey } from '@shared/types';
-import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, cssRivals, styleDeclOrder, withColumnSizes, type StylePropDef } from '@shared/styles';
+import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, colorAtStrength, cssRivals, partStrength, styleDeclOrder, withColumnSizes, type StylePropDef } from '@shared/styles';
+import { parseColor } from '@shared/color';
 import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
@@ -29,7 +30,9 @@ const restingRules = (s: ResponsiveStyles | undefined) => Object.entries(s ?? {}
 const listJoin = (items: string[]) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
 const tokenOf = (tokens: TokenDef[], id: string) => tokens.find((t) => t.id === id);
-const isToken = (v: StyleValue | undefined): v is { token: string } => typeof v === 'object' && v !== null;
+const isToken = (v: StyleValue | undefined): v is StyleTokenRef => typeof v === 'object' && v !== null;
+/** A link's strength as a whole percentage, for a colour painted see-through. */
+const strengthText = (ref: StyleTokenRef) => `${Math.round((ref.alpha ?? 1) * 1000) / 10}%`;
 
 /** A site style's final value, following aliases (one style pointing at another). */
 function resolved(tokens: TokenDef[], id: string, depth = 0): TokenDef['value'] | undefined {
@@ -61,7 +64,7 @@ const unitText = (def: StylePropDef) => (def.unit === 'deg' ? '°' : def.id === 
 export function describeStyleValue(def: StylePropDef, raw: StyleValue | undefined, tokens: TokenDef[]): string {
   const v = linkOf(def, raw);
   if (v === undefined) return '';
-  if (isToken(v)) return tokenText(def, tokens, v.token);
+  if (isToken(v)) return partStrength(v) ? `${tokenText(def, tokens, v.token)} at ${strengthText(v)}` : tokenText(def, tokens, v.token);
   if (def.kind === 'boolean') return def.id === 'hidden' ? (v ? 'Hidden' : 'Visible') : v ? 'Yes' : 'No';
   return def.options?.find((o) => o.value === String(v))?.label ?? (typeof v === 'number' ? `${v}${unitText(def)}` : def.unit ? `${v} ${def.unit}` : String(v));
 }
@@ -71,10 +74,22 @@ function colorOf(tokens: TokenDef[], id: string): string {
   return typeof v === 'string' ? v : 'transparent';
 }
 
+/**
+ * The colour a link paints, written out: the site style's colour, at the link's strength when below full, as
+ * rgb() with that opacity where the colour can be read (so the colour picker starts from it).
+ */
+function linkedColor(tokens: TokenDef[], ref: StyleTokenRef): string {
+  const color = colorOf(tokens, ref.token);
+  if (!partStrength(ref)) return color;
+  const c = parseColor(color);
+  const a = Number(((c?.a ?? 1) * ref.alpha!).toPrecision(4));
+  return c ? `rgb(${Math.round(c.r)} ${Math.round(c.g)} ${Math.round(c.b)} / ${a})` : colorAtStrength(color, ref.alpha!);
+}
+
 /** The colour a colour value paints, for a swatch beside its name; undefined for anything that isn't a colour. */
 export function styleSwatch(def: StylePropDef, v: StyleValue | undefined, tokens: TokenDef[]): string | undefined {
   if (def.kind !== 'color' || v === undefined) return undefined;
-  return isToken(v) ? colorOf(tokens, v.token) : String(v);
+  return isToken(v) ? linkedColor(tokens, v) : String(v);
 }
 
 /** The scope control: which screen sizes the next change applies to, and which sizes already hold changes. */
@@ -590,8 +605,8 @@ function tokenOptions(tokens: TokenDef[], group: StylePropDef['tokenGroup']) {
 }
 
 /** The mark for a value linked to Site styles: the colour itself for a colour, the Site styles glyph otherwise. */
-function Lead({ def, v, tokens }: { def: StylePropDef; v: { token: string }; tokens: TokenDef[] }) {
-  if (def.kind === 'color') return <span className="style-lead swatch" style={{ background: colorOf(tokens, v.token) }} aria-hidden="true" />;
+function Lead({ def, v, tokens }: { def: StylePropDef; v: StyleTokenRef; tokens: TokenDef[] }) {
+  if (def.kind === 'color') return <span className="style-lead swatch" style={{ background: linkedColor(tokens, v) }} aria-hidden="true" />;
   return <Palette className="style-lead" aria-hidden="true" />;
 }
 
@@ -718,8 +733,9 @@ function Control({
   const leadValue = custom ? undefined : current;
   const lead = isToken(leadValue) ? leadValue : undefined;
   const linkedName = lead ? `${describeStyleValue(def, lead, tokens)}, from Site styles` : undefined;
-  // What a custom value starts from: the value in effect, written out, a linked style followed to its end.
-  const currentEnd = isToken(current) ? resolved(tokens, current.token) : current;
+  // What a custom value starts from: the value in effect, written out, a linked style followed to its end (a colour
+  // at the strength the link paints it).
+  const currentEnd = isToken(current) ? (def.kind === 'color' ? linkedColor(tokens, current) : resolved(tokens, current.token)) : current;
   const currentText = currentEnd === undefined || typeof currentEnd === 'object' ? undefined : String(currentEnd);
   // While a custom value is drafted over a stored or inherited one, that one still applies until the draft commits.
   const keeps = set ? describeStyleValue(def, value, tokens) : underText;
@@ -728,7 +744,20 @@ function Control({
     requestAnimationFrame(() => picker.current?.focus());
   };
   // What the colour picker starts from: the colour in effect, a linked style followed to its end.
-  const colorText = isToken(current) ? colorOf(tokens, current.token) : current === undefined ? '' : String(current);
+  const colorText = isToken(current) ? linkedColor(tokens, current) : current === undefined ? '' : String(current);
+  // A linked colour can be painted see-through: its strength, set here or showing through, and a field to change it.
+  const strength = def.kind === 'color' && lead ? lead : undefined;
+  const setStrength = (t: string) => {
+    const text = t.trim().replace(/\s*%$/, '');
+    // Empty or 100 is full strength: the plain link, kept here only if a strength was set here.
+    if (!text || Number(text) === 100) {
+      if (linked && partStrength(value)) onSet({ token: value.token });
+      return;
+    }
+    const n = /^(\d+(\.\d+)?|\.\d+)$/.test(text) ? Number(text) : NaN;
+    if (!(n >= 0 && n <= 100)) return false;
+    onSet({ token: strength!.token, alpha: Math.round(n * 10) / 1000 });
+  };
   return (
     <>
       <span className={`style-field${lead ? ' has-lead' : ''}`} title={linkedName}>
@@ -755,7 +784,8 @@ function Control({
             setDrafting(false);
             if (v === '') onSet(null);
             else if (v === 'custom') setDrafting(true);
-            else if (v.startsWith('token:')) onSet({ token: v.slice(6) });
+            // Another site color keeps the strength the link in effect paints at.
+            else if (v.startsWith('token:')) onSet(isToken(current) && partStrength(current) && def.kind === 'color' ? { token: v.slice(6), alpha: current.alpha } : { token: v.slice(6) });
             else onSet(v);
           }}
         >
@@ -778,6 +808,26 @@ function Control({
           {def.kind !== 'textStyle' && <option value="custom">{literal ? 'Custom' : 'Custom value…'}</option>}
         </select>
       </span>
+      {strength && (
+        <span className="style-strength">
+          <span className="style-strength-label" aria-hidden="true">
+            Strength
+          </span>
+          <span className="style-field">
+            <DraftInput
+              className={`input sm grow style-input${linked && partStrength(value) ? ' is-set' : ' is-inherited'}`}
+              value={linked && partStrength(value) ? strengthText(value).slice(0, -1) : ''}
+              placeholder={strengthText(strength).slice(0, -1)}
+              ariaLabel={`${label} strength, 0 to 100%`}
+              aria-describedby={describedBy}
+              onCommit={setStrength}
+            />
+          </span>
+          <span className="style-strength-unit" aria-hidden="true">
+            %
+          </span>
+        </span>
+      )}
       {custom && (
         <div
           className="style-custom"
