@@ -284,10 +284,12 @@ assert.equal(await settled(), atRest, 'choosing a mood only previews it');
 assert.deepEqual(await overrides(), beforePalette, 'and saves nothing');
 assert.equal(await pageBackground(), beforeBackground, 'nor changes the page');
 await harmony.getByRole('button', { name: 'Generate harmonious palette from brand' }).click();
+// What the site shows: a color the palette shares with the theme needs no saved value of its own.
+const siteColor = (id) => frame.locator('html').evaluate((el, name) => getComputedStyle(el).getPropertyValue(name).trim().toLowerCase(), `--so-${id.replace(/[^a-zA-Z0-9]+/g, '-')}`);
 await eventually(async () => {
-  const now = await overrides();
-  for (const [id, value] of Object.entries(proposed)) assert.equal(now[id], value, `${id} is the previewed color`);
+  for (const [id, value] of Object.entries(proposed)) assert.equal(await siteColor(id), value, `${id} is the previewed color`);
 });
+assert.equal((await overrides())['color.background'], proposed['color.background'], 'saved as the site background');
 assert.equal(await settled(), atRest + 1, 'in one step');
 await eventually(async () => assert.equal(await pageBackground(), rgbOf(proposed['color.background']), 'the page shows the new background'));
 await eventually(async () => assert.match(await win.locator('#dock-panel-styles [aria-live="polite"][aria-atomic="true"]').textContent(), /Tinted palette made from your brand color\. You can undo this\./, 'and says it can be undone'));
