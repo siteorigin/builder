@@ -260,6 +260,14 @@ Answer in a few plain sentences, without headings. The site is ${JSON.stringify(
  * so its version says neither again.
  */
 /** `component`: the run has upsert_managed_component, which a small site run is given for a component request. */
+/**
+ * What makes a page easy to find and to quote for search engines and AI answer engines: a clear outline, sections that
+ * answer their heading, described images, links that say where they go, and the page and site described from facts.
+ */
+const SEO_GUIDANCE =
+  'For search engines and AI answers: each page has one Heading 1 (its opening section\'s heading), with the headings below it stepping down a level at a time; each section opens with a direct answer to its heading and stays short and scannable; informative images get alt text that says what they show; link text says where it leads, never "click here"; every page gets a specific description; and the site\'s publisher identity comes only from facts the user gave.';
+const SEO_GUIDANCE_SHORT = 'SEO: one Heading 1 per page (the opening heading); sections that open with a direct answer; alt text saying what each image shows; link text naming where it goes; a specific description on every page; publisher identity only from facts the user gave.';
+
 function focusedPrompt(state: ProjectState, mode: RunTools['mode'], images = false, constrained = false, abridged = false, component = false): string {
   const theme = getTheme(state.site.themeId);
   if (constrained) {
@@ -277,14 +285,17 @@ ${rules} Mention anything a tool found that the user needs to act on.`;
     if (mode === 'page')
       return `You build and edit one page of a small business website, made of ready-made section components.
 - This request may change only the page in <editor_context> currentPage, which lists its sections. Build or rewrite it with upsert_page_with_sections and its route: from a short request, an opening section, the content the page is for, and usually a closing call to action. removeOtherSections: true replaces the sections already there. Internal links use routes such as /contact/.
-- apply_operations removes (node.remove) or moves (node.move) one section by its ID, and changes the page's own settings (page.update).
-- Ask first with request_clarification (widenScope: true) when the request needs other pages, the site's brand or the shared header and footer.
+- apply_operations removes (node.remove) or moves (node.move) one section by its ID, and changes the page's own settings (page.update). update_page_seo sets its search settings.
+- ${SEO_GUIDANCE_SHORT}
+- Ask first with request_clarification (widenScope: true) when the request needs other pages, the site's brand or search settings, or the shared header and footer.
 - When the user wants advice or ideas in chat only, give them and change nothing.
 - When the user asks for checks at screen sizes, run inspect_layout on this page at each of those sizes, after its last change.
 ${rules} The result card lists each layout and image check with its latest result, so do not restate those; do mention anything else a tool found that the user needs to act on.
 ${themeGuidance(theme)}`;
     return `You build and edit small business websites made of ready-made section components.
 - Build one page per upsert_page_with_sections call; from a short request, give it several sections: an opening section, the content the page is for, and usually a closing call to action. Internal links use routes such as /contact/.
+- update_page_seo sets a page's search settings; update_site_seo the site's address, language, publisher identity, crawler policy and llms.txt.
+- ${SEO_GUIDANCE_SHORT}
 ${component ? '- When the user asks for a new reusable component, build it whole with one upsert_managed_component call, following componentBlueprints in <editor_context>; placeOnPage also puts it on a page.\n' : ''}- One request can take many replies; the user does not answer between them. Keep going until every page the user asked for is finished.
 - When the user wants advice or ideas in chat only, give them and change nothing.
 - When the user asks for checks at screen sizes, run inspect_layout on each page they name at each of those sizes, after its last change.
@@ -322,10 +333,11 @@ ${shared}`;
   if (mode === 'page')
     return `You build and edit one page of a small business website, made of ready-made section components.
 - This request may change only the page in <editor_context> currentPage, which lists its sections with their IDs; read_page shows their full content. upsert_page_with_sections builds or rewrites it in one call, with all its sections, by its route: from a short request, an opening section, the content the page is for, and usually a closing call to action. ${PAGE_FROM_COPY} ${REPLACE_PLACEHOLDERS} addToHeaderNav / addToFooterNav add a menu link to it.
-- apply_operations removes or moves one section by its ID (node.remove, node.move) and changes the page's own settings (page.update).
+- apply_operations removes or moves one section by its ID (node.remove, node.move) and changes the page's own settings (page.update). update_page_seo sets its search settings.
 - read_project with sections ["catalogue"] lists every component with its properties.
 - Internal links use routes such as /contact/.
-- request_clarification asks the user one question and waits for the answer. ${ASKING} Ask with widenScope: true before changing other pages, the site's brand or the shared header and footer: the app rejects those until the user allows it.
+- ${SEO_GUIDANCE_SHORT}
+- request_clarification asks the user one question and waits for the answer. ${ASKING} Ask with widenScope: true before changing other pages, the site's brand or search settings, or the shared header and footer: the app rejects those until the user allows it.
 - One request can take many steps. A step is one response of yours with its tool calls, not a turn of the conversation: the user does not reply between steps. Keep going until the page is finished.
 - When the user asks for checks at screen sizes, run inspect_layout on this page at each of those sizes, after its last change.
 ${shared}
@@ -333,6 +345,8 @@ ${themeGuidance(theme)}`;
   return `You build and edit small business websites made of ready-made section components.
 - upsert_page_with_sections creates or updates a whole page in one call, with all its sections, and adds it to the navigation. Build one page per call; from a short request, give it several sections: an opening section, the content the page is for, and usually a closing call to action. ${PAGE_FROM_COPY} ${REPLACE_PLACEHOLDERS}
 - update_site_brand sets the site name, tagline, contact details, colors, fonts and type scale everywhere at once.
+- update_page_seo sets a page's search settings; update_site_seo the site's address, language, publisher identity, crawler policy and llms.txt.
+- ${SEO_GUIDANCE_SHORT}
 ${component ? '- upsert_managed_component builds a new reusable component whole, or rebuilds one, in one call, when the user asks for a component: componentBlueprints in <editor_context> show the shape. placeOnPage also puts it on a page.\n' : ''}- read_project with sections ["catalogue"] lists every component with its properties. read_page shows a page.
 - Internal links use routes such as /contact/, even for pages you have not built yet.
 - request_clarification asks the user one question and waits for the answer. ${ASKING}
@@ -383,9 +397,9 @@ function systemPrompt(state: ProjectState, run: RunTools, constrained = false): 
   const theme = getTheme(state.site.themeId);
   const preferred =
     run.mode === 'site'
-      ? `\n\nPreferred tools: build or rewrite a page with one upsert_page_with_sections call (all its sections, navigation included, no IDs or revisions), change the name, contact details, colors, fonts or type scale with update_site_brand, and build or rebuild a reusable component whole with one upsert_managed_component call. Several of these calls may run in one step. Use apply_operations for finer edits they cannot express.`
+      ? `\n\nPreferred tools: build or rewrite a page with one upsert_page_with_sections call (all its sections, navigation included, no IDs or revisions), change the name, contact details, colors, fonts or type scale with update_site_brand, a page's search settings with update_page_seo and the site's (public address, publisher identity, crawler policy, llms.txt) with update_site_seo, and build or rebuild a reusable component whole with one upsert_managed_component call. Several of these calls may run in one step. Use apply_operations for finer edits they cannot express.`
       : run.mode === 'page'
-        ? `\n\nPreferred tools: build or rewrite this page with one upsert_page_with_sections call by its route (all its sections, no IDs or revisions). Use apply_operations for finer edits on this page that it cannot express.`
+        ? `\n\nPreferred tools: build or rewrite this page with one upsert_page_with_sections call by its route (all its sections, no IDs or revisions), and set its search settings with update_page_seo. Use apply_operations for finer edits on this page that it cannot express.`
       : run.mode === 'selection'
         ? `\n\nPreferred tools: update_selected_props, edit_selected_list, edit_selected_table and style_selected_element change the selected element directly, with no IDs or revisions. Use apply_operations only for what they cannot express.`
         : '';
@@ -425,6 +439,7 @@ Things that are easy to get wrong:
 - Fonts: only these font families are installed: ${installedFonts(state).map((f) => f.family).join(', ')}. Any other family name falls back to a system font. System stacks (system-ui, Georgia, ui-serif, ui-monospace) are always fine. Change fonts with token.set on font.body / font.display.
 - Icons: icon props accept only the icon names listed by read_project with sections ["catalogue"] (for example sparkles, compass, leaf, phone, mail). Unknown names are rejected.
 - Text styles: textStyle is always a token reference such as { "token": "text.h2" }, never a bare string.
+- ${SEO_GUIDANCE}
 
 ${COMPONENT_GUIDANCE}
 
@@ -1933,6 +1948,12 @@ function activityLabel(call: ToolCall, state: ProjectState): string {
       return `Building the ${String(args.title ?? args.slug ?? '')} page`.replace('  ', ' ');
     case 'update_site_brand':
       return 'Updating the site brand';
+    case 'update_page_seo': {
+      const id = typeof args.pageId === 'string' ? pageIdFor(state, args.pageId) : null;
+      return `Updating search settings for ${id ? page(id) : 'a page'}`;
+    }
+    case 'update_site_seo':
+      return 'Updating site search settings';
     case 'upsert_managed_component':
       return `${args.definitionId ? 'Rebuilding' : 'Building'} the ${String(args.name ?? '').trim() || 'new'} component`;
     case 'update_selected_props':

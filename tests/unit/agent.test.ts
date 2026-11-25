@@ -24,6 +24,7 @@ import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/
 import { turnState } from '@shared/turns';
 import { undoableId } from '../../src/renderer/src/lib/result';
 import { estimateRequestTokens } from '@agent/budget';
+import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -3403,5 +3404,316 @@ describe('components that are not reusable yet (#363)', () => {
     expect(env.adapter.requests).toHaveLength(2);
     expect(result?.status).toBe('completed');
     expect(result?.checks?.filter((c) => c.status === 'issue').map((c) => c.text)).toEqual([expect.stringContaining('the heading “Spring offers”')]);
+  });
+});
+
+describe('search and AI-agent settings (#598)', () => {
+  const photo = { id: 'a_share001', name: 'Shop front', file: 'static/assets/shop-front-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 1000, width: 1200, height: 630, hash: 'share', kind: 'image' as const, createdAt: '2026-01-01T00:00:00Z' };
+  const withPhoto = async (env: Awaited<ReturnType<typeof setup>>) => {
+    const r = await env.session.apply({ operations: [{ type: 'asset.add', asset: photo }] }, { label: 'Import', source: 'user' });
+    expect(r.ok).toBe(true);
+  };
+  const lastResult = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const pageCtx = (pageId: string, pageTitle: string): ChatContext => ({ pageId, pageTitle, selection: null, selectionLabel: null, viewport: 1280, scope: 'page' });
+  const routeId = (s: ProjectState, route: string) => Object.values(s.pages).find((p) => p.route === route)!.id;
+  const local = { toolCalling: 'constrained-json' as const, contextWindowTokens: 32_768 };
+
+  for (const [label, capabilities] of [
+    ['a cloud model', {}],
+    ['a constrained local model', local]
+  ] as const) {
+    it(`sets a page's search settings and the site's identity, crawler policy and llms.txt in one undoable change, for ${label}`, async () => {
+      const env = await setup(
+        [
+          (req) => {
+            const names = req.tools.map((t) => t.name);
+            expect(names).toEqual(expect.arrayContaining(['update_page_seo', 'update_site_seo']));
+            // A small model has no general operations to fall back on: these tools are its only way to these settings.
+            expect(names.includes('apply_operations')).toBe(label === 'a cloud model');
+            return [call('s1', 'update_page_seo', { pageId: '/about/', seoTitle: 'About Riverside Bakery, baking since 1987', description: 'Who bakes your bread, and how.', noindex: false, searchHidden: true, socialImage: photo.id, canonical: 'https://example.org/about/', language: 'en-AU' })];
+          },
+          (req) => {
+            expect(lastResult(req)).toMatchObject({ ok: true });
+            return [
+              call('s2', 'update_site_seo', {
+                description: 'Bread, pastries and coffee in Riverside, baked each morning.',
+                baseUrl: 'https://riverside.example',
+                language: 'en-AU',
+                socialImage: photo.id,
+                llmsTxt: false,
+                llmsFull: true,
+                markdownMirrors: true,
+                llmsSummary: 'A neighbourhood bakery in Riverside.',
+                identity: { kind: 'LocalBusiness', name: 'Riverside Bakery Pty Ltd', logo: photo.id, sameAs: ['https://www.wikidata.org/wiki/Q42'], telephone: '+61 2 5550 1234', openingHours: ['Mo-Fr 07:00-15:00'], geo: { latitude: -33.86, longitude: 151.2 } },
+                crawlerPolicy: { preset: 'custom', base: 'block-ai-training', overrides: [{ token: 'GPTBot', access: 'allow' }], disallowPaths: ['/drafts/'] }
+              })
+            ];
+          },
+          (req) => {
+            expect(lastResult(req)).toMatchObject({ ok: true });
+            return finish('The About page and the site are ready for search engines and AI agents.');
+          }
+        ],
+        { capabilities }
+      );
+      await withPhoto(env);
+      const about = routeId(env.session.state, '/about/');
+      // Kept out of search engines until this request lets them list it again with noindex: false.
+      expect((await env.session.apply({ operations: [{ type: 'page.update', pageId: about, noindex: true }] }, { label: 'Hide', source: 'user' })).ok).toBe(true);
+      const before = { page: structuredClone(env.session.state.pages[about]), site: structuredClone(env.session.state.site), revision: env.session.revision };
+      const steps = env.session.historyInfo().entries.length;
+      const { runId, result } = await env.run('Make the site easy to find');
+      expect(result?.status).toBe('completed');
+      // One batch for each call: nothing split across several, nothing left out.
+      expect(env.session.revision).toBe(before.revision + 2);
+      const page = env.session.state.pages[about];
+      expect(page.seo).toMatchObject({ title: 'About Riverside Bakery, baking since 1987', description: 'Who bakes your bread, and how.', searchHidden: true, socialImage: photo.id, canonical: 'https://example.org/about/' });
+      expect(page.seo.noindex).toBeFalsy();
+      expect(page.language).toBe('en-AU');
+      const site = env.session.state.site;
+      expect(site).toMatchObject({ description: 'Bread, pastries and coffee in Riverside, baked each morning.', baseUrl: 'https://riverside.example', language: 'en-AU', socialImage: photo.id, llmsTxt: false, llmsFull: true, markdownMirrors: true, llmsSummary: 'A neighbourhood bakery in Riverside.' });
+      expect(site.identity).toEqual({ kind: 'LocalBusiness', name: 'Riverside Bakery Pty Ltd', logo: photo.id, sameAs: ['https://www.wikidata.org/wiki/Q42'], telephone: '+61 2 5550 1234', openingHours: ['Mo-Fr 07:00-15:00'], geo: { latitude: -33.86, longitude: 151.2 } });
+      expect(site.crawlerPolicy).toMatchObject({ preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow' }, disallowPaths: ['/drafts/'] });
+      // The whole request is one step of history, and one undo takes all of it back.
+      expect(env.session.historyInfo().entries.length).toBe(steps + 1);
+      expect((await env.session.undoGroup(runId)).ok).toBe(true);
+      expect(env.session.state.pages[about]).toEqual(before.page);
+      expect(env.session.state.site).toEqual(before.site);
+    });
+  }
+
+  it('applies a page and a site call sent together in one reply, each on the revision the other left', async () => {
+    const env = await setup([
+      () => [calls(['t1', 'update_page_seo', { pageId: '/about/', description: 'Who we are.' }], ['t2', 'update_site_seo', { description: 'A neighbourhood bakery.', llmsFull: true }])],
+      (req) => {
+        const results = req.items.filter((i) => (i as { kind?: string }).kind === 'tool_result').map((i) => JSON.parse((i as { content: string }).content));
+        expect(results.map((r) => r.ok)).toEqual([true, true]);
+        return finish('Done.');
+      }
+    ]);
+    const { result } = await env.run('Describe the About page and the site');
+    expect(result?.status).toBe('completed');
+    expect(env.session.state.pages[routeId(env.session.state, '/about/')].seo.description).toBe('Who we are.');
+    expect(env.session.state.site).toMatchObject({ description: 'A neighbourhood bakery.', llmsFull: true });
+    expect(env.session.revision).toBe(2);
+  });
+
+  it('clears with "" and null, unsets the publisher kind with "", and leaves a crawler to its base with "default"', async () => {
+    const seen: ProjectState[] = [];
+    const look = () => seen.push(structuredClone(env.session.state));
+    const env = await setup([
+      () => [
+        call('c1', 'update_site_seo', {
+          identity: { kind: 'LocalBusiness', name: 'Riverside Bakery', email: 'hello@riverside.example', sameAs: ['https://github.com/riverside'], priceRange: '$$', openingHours: ['Mo-Fr 07:00-15:00'] },
+          crawlerPolicy: { preset: 'custom', base: 'block-ai-training', overrides: [{ token: 'GPTBot', access: 'allow' }, { token: 'ClaudeBot', access: 'disallow' }] }
+        })
+      ],
+      () => {
+        look();
+        // A person has no price range or opening hours: choosing that kind clears them; the email and profiles go by "".
+        return [call('c2', 'update_site_seo', { socialImage: '', identity: { kind: 'Person', email: '', sameAs: [] }, crawlerPolicy: { overrides: [{ token: 'gptbot', access: 'default' }] } })];
+      },
+      () => {
+        look();
+        return [call('c3', 'update_page_seo', { pageId: '/', seoTitle: '', socialImage: '', canonical: '' })];
+      },
+      () => [call('c4', 'update_site_seo', { identity: { kind: '' } })],
+      () => {
+        look();
+        return [call('c5', 'update_site_seo', { identity: null, crawlerPolicy: null })];
+      },
+      () => finish('Cleared.')
+    ]);
+    await withPhoto(env);
+    const home = env.session.state.site.homePageId;
+    await env.session.apply({ operations: [{ type: 'site.update', socialImage: photo.id }, { type: 'page.update', pageId: home, seoTitle: 'Old title', socialImage: photo.id, canonical: 'https://elsewhere.example/' }] }, { label: 'Set', source: 'user' });
+    const { result } = await env.run('Tidy the search settings');
+    expect(result?.status).toBe('completed');
+    const [first, second, third] = seen;
+    expect(first.site.identity).toEqual({ kind: 'LocalBusiness', name: 'Riverside Bakery', email: 'hello@riverside.example', sameAs: ['https://github.com/riverside'], priceRange: '$$', openingHours: ['Mo-Fr 07:00-15:00'] });
+    expect(first.site.crawlerPolicy).toMatchObject({ preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow', ClaudeBot: 'disallow' } });
+    // GPTBot is back to what the base does with it (kept out, as an AI training crawler); the base itself stays.
+    expect(second.site.socialImage ?? null).toBeNull();
+    expect(second.site.identity).toEqual({ kind: 'Person', name: 'Riverside Bakery' });
+    expect(second.site.crawlerPolicy).toMatchObject({ preset: 'custom', base: 'block-ai-training' });
+    expect(second.site.crawlerPolicy?.overrides).toEqual({ ClaudeBot: 'disallow' });
+    expect(third.site.identity).toEqual({ name: 'Riverside Bakery' });
+    const page = env.session.state.pages[home];
+    expect(page.seo.title).toBeUndefined();
+    expect(page.seo.socialImage ?? null).toBeNull();
+    expect(page.seo.canonical).toBeUndefined();
+    expect(env.session.state.site.identity).toBeUndefined();
+    expect(env.session.state.site.crawlerPolicy).toBeUndefined();
+  });
+
+  it('refuses a crawler named twice, an unknown image or an empty call, and applies nothing', async () => {
+    const results: unknown[] = [];
+    const keep = (req: CanonicalModelRequest) => results.push(lastResult(req));
+    const env = await setup([
+      () => [call('d1', 'update_site_seo', { description: 'Fresh bread daily.', crawlerPolicy: { preset: 'custom', overrides: [{ token: 'GPTBot', access: 'allow' }, { token: 'gptbot', access: 'default' }] } })],
+      (req) => {
+        keep(req);
+        return [call('d2', 'update_site_seo', { description: 'Fresh bread daily.', socialImage: 'a_missing1', identity: { logo: 'a_missing0' } })];
+      },
+      (req) => {
+        keep(req);
+        return [call('d3', 'update_page_seo', { pageId: '/about/', socialImage: 'a_missing0' })];
+      },
+      (req) => {
+        keep(req);
+        return [call('d4', 'update_page_seo', { pageId: '/about/' })];
+      },
+      (req) => {
+        keep(req);
+        return [call('d5', 'update_page_seo', { pageId: '/nowhere/', noindex: true })];
+      },
+      (req) => {
+        keep(req);
+        return [call('d6', 'update_site_seo', { identity: {} })];
+      },
+      (req) => {
+        keep(req);
+        // An empty list names no crawler, so it would change nothing while the description went in.
+        return [call('d7', 'update_site_seo', { description: 'Fresh bread daily.', crawlerPolicy: { overrides: [] } })];
+      },
+      (req) => {
+        keep(req);
+        // A site always has a language: "" is no way to clear it.
+        return [call('d8', 'update_site_seo', { description: 'Fresh bread daily.', language: '' })];
+      },
+      (req) => {
+        keep(req);
+        return finish('Nothing changed.');
+      }
+    ]);
+    const before = structuredClone(env.session.state);
+    const { result } = await env.run('Update search settings');
+    expect(results.map((r) => (r as { error?: string }).error)).toEqual(['VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'INVALID_ARGUMENT']);
+    expect(JSON.stringify(results[0])).toMatch(/crawlerPolicy\.overrides\[1\]\.token.*already in overrides\[0\]/);
+    expect(JSON.stringify(results[1])).toMatch(/identity\.logo: no library image has the assetId \\"a_missing0\\"/);
+    expect(JSON.stringify(results[1])).toMatch(/socialImage: no library image has the assetId \\"a_missing1\\"/);
+    expect(JSON.stringify(results[2])).toMatch(/socialImage: no library image/);
+    expect(JSON.stringify(results[3])).toMatch(/send at least one setting/);
+    expect(JSON.stringify(results[4])).toMatch(/there is no page \\"\/nowhere\/\\"/);
+    expect(JSON.stringify(results[5])).toMatch(/send at least one setting/);
+    expect(JSON.stringify(results[6])).toMatch(/crawlerPolicy\.overrides: name each crawler to change/);
+    expect(JSON.stringify(results[7])).toMatch(/language/);
+    expect(result?.status).toBe('no-changes');
+    expect(env.session.state.site).toEqual(before.site);
+    expect(env.session.state.pages).toEqual(before.pages);
+    expect(env.session.revision).toBe(0);
+  });
+
+  it("limits a page run to its own page's search settings, and widens to the site's only when the user says yes", async () => {
+    for (const answer of ['yes', 'no'] as const) {
+      let about = '';
+      let home = '';
+      const asked = (env: Awaited<ReturnType<typeof setup>>) => env.events.find((e) => e.message?.questions)?.message?.questions?.[0];
+      const env = await setup([
+        (req) => {
+          const names = req.tools.map((t) => t.name);
+          expect(names).toContain('update_page_seo');
+          // The site's settings reach every page, so a page run is not offered them.
+          expect(names).not.toContain('update_site_seo');
+          const seo = req.tools.find((t) => t.name === 'update_page_seo')!.parameters as { properties: { pageId: { enum?: string[] } } };
+          expect(seo.properties.pageId.enum).toEqual([about]);
+          return [call('p1', 'update_page_seo', { pageId: about, description: 'Who we are.', noindex: true })];
+        },
+        (req) => {
+          expect(lastResult(req)).toMatchObject({ ok: true });
+          // Another page, by its ID or its route: refused, whatever the tool's schema said.
+          return [call('p2', 'update_page_seo', { pageId: home, description: 'Changed from the About page.' })];
+        },
+        (req) => {
+          expect(JSON.stringify(lastResult(req))).toMatch(/SCOPE_MISMATCH.*page\.update changes another page, not the About page/);
+          return [call('p2b', 'update_page_seo', { pageId: '/', description: 'Changed from the About page.' })];
+        },
+        (req) => {
+          expect(JSON.stringify(lastResult(req))).toMatch(/SCOPE_MISMATCH.*page\.update changes another page, not the About page/);
+          // A site tool sent anyway is not one this run has.
+          return [call('p3', 'update_site_seo', { baseUrl: 'https://riverside.example' })];
+        },
+        (req) => {
+          expect(lastResult(req)).toMatchObject({ error: 'INVALID_ARGUMENT', message: 'Unknown tool "update_site_seo".' });
+          // Only the About page's own change landed.
+          expect(env.session.revision).toBe(1);
+          return [call('p4', 'request_clarification', { question: 'Set the public address for the whole site?', widenScope: true })];
+        },
+        (req) => {
+          expect(req.tools.some((t) => t.name === 'update_site_seo')).toBe(answer === 'yes');
+          return [call('p5', answer === 'yes' ? 'update_site_seo' : 'update_page_seo', answer === 'yes' ? { baseUrl: 'https://riverside.example' } : { pageId: home, noindex: true })];
+        },
+        () => finish('Done.')
+      ]);
+      about = routeId(env.session.state, '/about/');
+      home = env.session.state.site.homePageId;
+      const homeBefore = structuredClone(env.session.state.pages[home]);
+      const r = await env.orch.send('Make this page and the site findable', pageCtx(about, 'About'));
+      for (let i = 0; i < 300 && !asked(env); i++) await new Promise((res) => setTimeout(res, 10));
+      const q = asked(env)!;
+      expect(q.choices).toEqual(['Yes, allow changes across the whole site', 'No, only change the About page']);
+      expect(env.orch.answer(r.runId!, q.id!, q.choices[answer === 'yes' ? 0 : 1])).toBe(true);
+      while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+      expect(env.session.state.pages[about].seo).toMatchObject({ description: 'Who we are.', noindex: true });
+      expect(env.session.state.pages[home]).toEqual(homeBefore);
+      expect(env.session.state.site.baseUrl).toBe(answer === 'yes' ? 'https://riverside.example' : undefined);
+      if (answer === 'no') expect(JSON.stringify(env.adapter.requests[6].items.at(-1))).toMatch(/SCOPE_MISMATCH.*page\.update changes another page/);
+      expect(env.session.revision).toBe(answer === 'yes' ? 2 : 1);
+    }
+  });
+
+  it('refuses both tools to a run limited to a selection, and changes nothing', async () => {
+    const env = await setup([
+      () => [call('x1', 'update_page_seo', { pageId: '/', noindex: true })],
+      (req) => {
+        expect(lastResult(req)).toMatchObject({ error: 'INVALID_ARGUMENT', message: 'Unknown tool "update_page_seo".' });
+        return [call('x2', 'update_site_seo', { description: 'Changed from a selection.' })];
+      },
+      (req) => {
+        expect(lastResult(req)).toMatchObject({ error: 'INVALID_ARGUMENT', message: 'Unknown tool "update_site_seo".' });
+        return finish('Nothing changed.');
+      }
+    ]);
+    const home = env.session.state.pages[env.session.state.site.homePageId];
+    const before = structuredClone(env.session.state);
+    const { result } = await env.run('Hide this page from search', { selection: { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] }, selectionLabel: 'Hero', scope: 'selection' });
+    expect(result?.status).toBe('no-changes');
+    expect(env.adapter.requests[0].tools.map((t) => t.name)).not.toEqual(expect.arrayContaining(['update_page_seo']));
+    expect(env.session.state.site).toEqual(before.site);
+    expect(env.session.state.pages).toEqual(before.pages);
+    expect(env.session.revision).toBe(0);
+  });
+
+  it('offers neither tool to a selection or a question, and both in a site run that has no general operations', () => {
+    const state = createStarterState('business', 'Test', false);
+    const home = state.pages[state.site.homePageId];
+    const names = (r: ReturnType<typeof toolsForRun>) => r.tools.map((t) => t.name);
+    for (const capabilities of [{ toolCalling: 'native' as const, contextWindowTokens: 400_000 }, local]) {
+      const base = { state, capabilities, codeEnabled: false, definitionOps: false };
+      const selection = toolsForRun({ ...base, selection: { owner: { kind: 'page', id: home.id }, nodeId: home.rootIds[0] } });
+      const ask = toolsForRun({ ...base, selection: null, ask: true });
+      for (const r of [selection, ask]) for (const n of ['update_page_seo', 'update_site_seo']) expect(names(r), `${r.mode} ${capabilities.toolCalling}`).not.toContain(n);
+      expect(names(toolsForRun({ ...base, selection: null }))).toEqual(expect.arrayContaining(['update_page_seo', 'update_site_seo']));
+      const page = names(toolsForRun({ ...base, selection: null, page: { route: '/about/' } }));
+      expect(page).toContain('update_page_seo');
+      expect(page).not.toContain('update_site_seo');
+    }
+  });
+
+  it('gives every SEO tool a schema a grammar compiles as it is, with no open values', () => {
+    const state = createStarterState('business', 'Test', false);
+    for (const capabilities of [{ toolCalling: 'native' as const, contextWindowTokens: 400_000 }, local]) {
+      const base = { state, selection: null, capabilities, codeEnabled: false, definitionOps: false };
+      const offered = [...toolsForRun(base).tools, ...toolsForRun({ ...base, page: { route: '/about/' } }).tools].filter((t) => ['update_page_seo', 'update_site_seo', 'upsert_page_with_sections', 'update_site_brand'].includes(t.name));
+      expect(new Set(offered.map((t) => t.name)).size).toBe(4);
+      for (const t of offered) {
+        // The two SEO tools need no conversion at all; the page and brand tools are checked as a grammar gets them.
+        if (t.name.endsWith('_seo')) expect(findForbiddenShapes(t.parameters), t.name).toEqual([]);
+        const strict = toStrictSchema(t.parameters);
+        expect(findForbiddenShapes(strict), t.name).toEqual([]);
+        // A crawler policy keyed by name would need the escape hatch for open values; rows do not.
+        expect(JSON.stringify(strict), t.name).not.toContain('$json');
+      }
+    }
   });
 });

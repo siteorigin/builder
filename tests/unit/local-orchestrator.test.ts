@@ -13,6 +13,7 @@ import { LIMITS, Orchestrator } from '@agent/orchestrator';
 import { LocalAdapter, openLocalAdapter, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
 import { DEFAULT_LOCAL_PROFILE, type LocalModelProfile } from '@agent/models';
 import { findForbiddenShapes } from '@agent/strict-schema';
+import Ajv2020 from 'ajv/dist/2020.js';
 import { FOCUSED_WINDOW_TOKENS, toolsForRun } from '@agent/tools';
 import { contextVerdict, estimateRequestTokens, estimateTokens } from '@agent/budget';
 import { pageGlance, pageGlanceChars } from '@agent/context';
@@ -689,22 +690,31 @@ describe('what a constrained local run sends first (#364)', () => {
   /** The supplied-copy rule every edit run is given (45 bytes), and with the page tool its brief's rules (328 more). */
   const COPY_BYTES = 50;
   const PAGE_COPY_BYTES = COPY_BYTES + 335;
+  /**
+   * Writing search and AI-agent settings (#598) is another: a site run, which has no apply_operations on a small model,
+   * gets update_page_seo and update_site_seo (their grammar branches and signatures), the page tool takes a page's
+   * search title, link preview image, noindex and canonical address, and the instructions carry one line of SEO
+   * guidance: 4,176 bytes measured on the site runs. A page run gets update_page_seo for its own page and the same
+   * line: 1,198 bytes. Their `seo` bytes, each with a little room, are made room for in the same way.
+   */
+  const SEO_BYTES = 4_250;
+  const PAGE_SEO_BYTES = 1_250;
   const BUDGETS = {
     // The site runs offer every catalogue section to insert, so a new section (the Carousel's ~830 bytes) grows them.
     // They also start with the open page's sections (#513): about 1 KB for the starter's eight-section home page.
-    site: { code: false, baseline: 42_641, budget: 32_400 + AUDIT_BYTES + PAGE_COPY_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES },
-    'site (code)': { code: true, baseline: 44_027, budget: 33_700 + AUDIT_BYTES + PAGE_COPY_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES },
+    site: { code: false, baseline: 42_641, budget: 32_400 + AUDIT_BYTES + PAGE_COPY_BYTES + SEO_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES, seo: SEO_BYTES },
+    'site (code)': { code: true, baseline: 44_027, budget: 33_700 + AUDIT_BYTES + PAGE_COPY_BYTES + SEO_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES, seo: SEO_BYTES },
     // A page run (#513) is measured against the site run it was before it had a scope of its own. It offers the page
     // tool and the few operations that remove, move or set the page's own settings, but nothing site-wide.
-    page: { code: false, baseline: 42_641, budget: 31_700 + PAGE_AUDIT_BYTES + PAGE_COPY_BYTES, audit: PAGE_AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES },
-    section: { code: false, baseline: 12_723, budget: 9_700 + FROSTED_BYTES + COPY_BYTES, audit: 0, frosted: FROSTED_BYTES, copy: COPY_BYTES },
-    part: { code: false, baseline: 10_001, budget: 7_550 + FROSTED_BYTES + COPY_BYTES, audit: 0, frosted: FROSTED_BYTES, copy: COPY_BYTES },
-    ask: { code: false, baseline: 13_138, budget: 9_600 + AUDIT_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0 },
-    'ask (code)': { code: true, baseline: 13_736, budget: 10_100 + AUDIT_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0 }
+    page: { code: false, baseline: 42_641, budget: 31_700 + PAGE_AUDIT_BYTES + PAGE_COPY_BYTES + PAGE_SEO_BYTES, audit: PAGE_AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES, seo: PAGE_SEO_BYTES },
+    section: { code: false, baseline: 12_723, budget: 9_700 + FROSTED_BYTES + COPY_BYTES, audit: 0, frosted: FROSTED_BYTES, copy: COPY_BYTES, seo: 0 },
+    part: { code: false, baseline: 10_001, budget: 7_550 + FROSTED_BYTES + COPY_BYTES, audit: 0, frosted: FROSTED_BYTES, copy: COPY_BYTES, seo: 0 },
+    ask: { code: false, baseline: 13_138, budget: 9_600 + AUDIT_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0, seo: 0 },
+    'ask (code)': { code: true, baseline: 13_736, budget: 10_100 + AUDIT_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0, seo: 0 }
   } as const;
   const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
 
-  it.each(Object.entries(BUDGETS))('keeps the %s run within its budget', async (label, { code, baseline, budget, audit, frosted, copy }) => {
+  it.each(Object.entries(BUDGETS))('keeps the %s run within its budget', async (label, { code, baseline, budget, audit, frosted, copy, seo }) => {
     const { session, run } = await setup({ toolMode: 'constrained-json' }, {}, code);
     const home = session.state.pages[session.state.site.homePageId];
     const section = home.nodes[home.rootIds[0]] as { id: string; definitionId: string };
@@ -717,9 +727,12 @@ describe('what a constrained local run sends first (#364)', () => {
     const sent = { messages: bytes(body.messages), response_format: bytes(body.response_format) };
     const total = sent.messages + sent.response_format;
     expect(total, JSON.stringify(sent)).toBeLessThanOrEqual(budget);
-    expect(1 - (total - audit - frosted - copy) / baseline, JSON.stringify(sent)).toBeGreaterThan(0.24);
+    expect(1 - (total - audit - frosted - copy - seo) / baseline, JSON.stringify(sent)).toBeGreaterThan(0.24);
     // The room is made only where the tool is offered.
     expect(JSON.stringify(body.response_format).includes('"audit_seo"'), label).toBe(audit > 0);
+    const actions = (body.response_format.json_schema.schema.properties.action.anyOf as Array<{ properties: { tool: { enum: string[] } } }>).flatMap((b) => b.properties.tool.enum);
+    expect(actions.includes('update_page_seo'), label).toBe(seo > 0);
+    expect(actions.includes('update_site_seo'), label).toBe(label.startsWith('site'));
     // Still the strict grammar, in its compact form, and the context unindented, with all it said before.
     expect(body.response_format.type).toBe('json_schema');
     expect(JSON.stringify(body.response_format.json_schema.schema)).not.toContain('"type":"string","enum"');
@@ -754,6 +767,58 @@ describe('what a constrained local run sends first (#364)', () => {
       results.push({ heading: node.props.heading, image: node.props.image, tone: node.variants?.tone });
     }
     expect(results[0]).toEqual({ heading: 'Sharper', image: { assetId: null, alt: 'A calm room' }, tone: 'muted' });
+    expect(results[1]).toEqual(results[0]);
+  });
+
+  it("sets a page's search settings and the site's identity and crawler policy from a constrained reply as from a native call (#598)", async () => {
+    const results: unknown[] = [];
+    const ajv = new Ajv2020({ strict: false });
+    const pageArgs = { pageId: '/about/', seoTitle: 'About Riverside', noindex: true, socialImage: '' };
+    // Crawlers go as rows, which the grammar can hold and the tool turns into the policy's list by name.
+    const siteArgs = {
+      baseUrl: 'https://riverside.example',
+      identity: { kind: 'Person', name: 'Ana Riverside', sameAs: ['https://github.com/ana-riverside'], geo: null },
+      crawlerPolicy: { preset: 'custom', overrides: [{ token: 'GPTBot', access: 'disallow' }, { token: 'ClaudeBot', access: 'allow' }], disallowPaths: ['/drafts/'], noAiMeta: null }
+    };
+    for (const toolMode of ['constrained-json', 'native'] as const) {
+      const sentBefore = server.requests.length;
+      const { session, run } = await setup({ toolMode });
+      server.script(
+        ...(toolMode === 'native'
+          ? [toolCallReply('update_page_seo', pageArgs), toolCallReply('update_site_seo', siteArgs), textReply('Done.')]
+          : [envelopeReply('update_page_seo', pageArgs), envelopeReply('update_site_seo', siteArgs), envelopeReply('finish', { message: 'Done.' })])
+      );
+      const { result } = await run('Make the site findable');
+      expect(result?.status, toolMode).toBe('completed');
+      // Each reply is one the model could really have sent: it fits the grammar, or the tool's own schema, as sent.
+      const first = server.requests.slice(sentBefore).find((r) => r.method === 'POST')!.body;
+      for (const [tool, args] of [['update_page_seo', pageArgs], ['update_site_seo', siteArgs]] as const) {
+        if (toolMode === 'constrained-json') {
+          expect(first.messages[0].content).toContain(`\n- ${tool} {`);
+          const fits = ajv.validate(first.response_format.json_schema.schema, { brief_status: 'Working', action: { tool, args } });
+          expect(fits, `${tool}: ${JSON.stringify(ajv.errors)}`).toBe(true);
+          // Without the tool's own branch the same reply would not fit, so the grammar is what admits it.
+          const others = structuredClone(first.response_format.json_schema.schema);
+          others.properties.action.anyOf = others.properties.action.anyOf.filter((b: { properties: { tool: { enum: string[] } } }) => !b.properties.tool.enum.includes(tool));
+          expect(ajv.validate(others, { brief_status: 'Working', action: { tool, args } }), tool).toBe(false);
+        } else {
+          const offered = (first.tools as Array<{ function: { name: string; parameters: object } }>).find((t) => t.function.name === tool);
+          expect(offered, tool).toBeDefined();
+          expect(ajv.validate(offered!.function.parameters, args), `${tool}: ${JSON.stringify(ajv.errors)}`).toBe(true);
+        }
+      }
+      if (toolMode === 'constrained-json') expect(findForbiddenShapes(first.response_format.json_schema.schema)).toEqual([]);
+      const site = session.state.site;
+      const about = Object.values(session.state.pages).find((pg) => pg.route === '/about/')!;
+      results.push({ page: { title: about.seo.title, noindex: about.seo.noindex }, baseUrl: site.baseUrl, identity: site.identity, crawlerPolicy: site.crawlerPolicy, revision: session.revision });
+    }
+    expect(results[0]).toEqual({
+      page: { title: 'About Riverside', noindex: true },
+      baseUrl: 'https://riverside.example',
+      identity: { kind: 'Person', name: 'Ana Riverside', sameAs: ['https://github.com/ana-riverside'] },
+      crawlerPolicy: { preset: 'custom', overrides: { GPTBot: 'disallow', ClaudeBot: 'allow' }, disallowPaths: ['/drafts/'] },
+      revision: 2
+    });
     expect(results[1]).toEqual(results[0]);
   });
 });

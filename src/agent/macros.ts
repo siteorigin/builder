@@ -13,6 +13,8 @@ import type { EditOperation } from '@shared/ops';
 import { normalizeRoute, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { isLanguageCode } from '@shared/languages';
+import { TEXT_LIMITS } from '@shared/text-limits';
+import { CANONICAL_URL_MAX } from '@shared/seo';
 import { catalogueComponent, catalogueEntries } from '@catalogue/index';
 import { hasCollections, listsEntries } from '@shared/entry-feed';
 import { applyOperation } from '@engine/apply';
@@ -36,6 +38,11 @@ export type SectionInput = Omit<z.infer<typeof SECTION_ARGS>, 'index'>;
 const DRAFT_DESCRIPTION = 'true keeps the page as a draft: editable and previewed, but left out of the exported website. false publishes it. Omit to leave it as it is. The home page is never a draft.';
 const LANGUAGE_DESCRIPTION = 'Language code such as "fr", when not the site language. "" uses the site language. Omit to leave it.';
 const TRANSLATION_DESCRIPTION = 'Slug of the page this one translates, such as "about": links them, joining any versions it has. Each version needs its own language; a page without one uses the site language. "" unlinks. Omit to leave it.';
+
+const SEO_TITLE_DESCRIPTION = 'Search result title, about 50 to 60 characters. "" uses the page title.';
+const SOCIAL_IMAGE_DESCRIPTION = 'Link preview image assetId. "" uses the site\'s.';
+const NOINDEX_DESCRIPTION = 'true keeps the page out of search engines and AI answers.';
+const CANONICAL_DESCRIPTION = 'The original https:// address, when published elsewhere first. "" uses its own.';
 
 const ARTICLE_DATE_DESCRIPTION = 'YYYY-MM-DD: makes a dated article, shown in News lists.';
 /** Placed first on a new article unless the call places a header of its own: it shows the page's title and details. */
@@ -75,6 +82,10 @@ export const UPSERT_ARGS = z.object({
   title: z.string().min(1).max(80).optional().describe('Page title. Defaults to one made from the slug for a new page.'),
   navLabel: z.string().max(40).optional(),
   description: z.string().max(320).optional().describe('Search engine description.'),
+  seoTitle: z.string().max(TEXT_LIMITS.seoTitle).optional().describe(SEO_TITLE_DESCRIPTION),
+  socialImage: z.string().max(200).optional().describe(SOCIAL_IMAGE_DESCRIPTION),
+  noindex: z.boolean().optional().describe(NOINDEX_DESCRIPTION),
+  canonical: z.string().max(CANONICAL_URL_MAX).optional().describe(CANONICAL_DESCRIPTION),
   draft: z.boolean().optional().describe(DRAFT_DESCRIPTION),
   language: z.string().max(20).optional().describe(LANGUAGE_DESCRIPTION),
   translationOf: z.string().max(120).optional().describe(TRANSLATION_DESCRIPTION),
@@ -721,6 +732,9 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   }
   if (!args.sections && !page) return fieldError([{ field: 'sections', message: 'a new page needs at least one section' }], 'Nothing was applied.');
   if (args.language?.trim() && !isLanguageCode(args.language.trim())) return fieldError([{ field: 'language', message: 'use a language code such as "fr" or "en-GB"' }], 'Nothing was applied.');
+  const image = args.socialImage?.trim();
+  if (image && !(Object.hasOwn(state.assets.assets, image) && state.assets.assets[image].kind === 'image'))
+    return fieldError([{ field: 'socialImage', message: `no library image has the assetId "${image}". Use an assetId search_assets returns, or "" for the site's image` }], 'Nothing was applied.');
   let linkTranslationTo: string | null | undefined;
   if (args.translationOf !== undefined) {
     const other = args.translationOf.trim() ? findPage(state, args.translationOf) : null;
@@ -802,6 +816,10 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     ...(!createOp && args.title && args.title.trim() !== page!.title ? { title: args.title.trim() } : {}),
     ...(args.navLabel !== undefined ? { navLabel: args.navLabel } : {}),
     ...(args.description !== undefined ? { description: args.description } : {}),
+    ...(args.seoTitle !== undefined ? { seoTitle: args.seoTitle } : {}),
+    ...(args.socialImage !== undefined ? { socialImage: image || null } : {}),
+    ...(args.noindex !== undefined ? { noindex: args.noindex } : {}),
+    ...(args.canonical !== undefined ? { canonical: args.canonical } : {}),
     ...(args.draft !== undefined ? { draft: args.draft } : {}),
     ...(args.language !== undefined ? { language: args.language.trim() } : {}),
     ...(linkTranslationTo !== undefined ? { linkTranslationTo } : {}),
@@ -989,6 +1007,10 @@ export function upsertToolSchema(state: ProjectState, only?: string): JsonSchema
       title: { type: 'string', maxLength: 80 },
       navLabel: { type: 'string', maxLength: 40 },
       description: { type: 'string', maxLength: 320, description: 'Search engine description.' },
+      seoTitle: { type: 'string', maxLength: TEXT_LIMITS.seoTitle, description: SEO_TITLE_DESCRIPTION },
+      socialImage: { type: 'string', maxLength: 200, description: SOCIAL_IMAGE_DESCRIPTION },
+      noindex: { type: 'boolean', description: NOINDEX_DESCRIPTION },
+      canonical: { type: 'string', maxLength: CANONICAL_URL_MAX, description: CANONICAL_DESCRIPTION },
       draft: { type: 'boolean', description: DRAFT_DESCRIPTION },
       language: { type: 'string', maxLength: 20, description: LANGUAGE_DESCRIPTION },
       ...(only ? {} : { translationOf: { type: 'string', maxLength: 120, description: TRANSLATION_DESCRIPTION } }),
