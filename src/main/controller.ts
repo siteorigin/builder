@@ -1394,6 +1394,44 @@ export class Controller {
     this.localTimer = setTimeout(() => void this.flushLocalState(), 300);
   }
 
+  /**
+   * A conversation being deleted in the opening `key` takes its unsent message and images with it, and is no longer
+   * the one to reopen. Dropped from the workspace state before the delete starts, while the opening is sure to be
+   * current, so a close during the delete can't keep them. Answers a function that puts them back, for a delete that
+   * fails.
+   */
+  forgetConversation(id: string, key: string): () => void {
+    if (!this.session || !key || this.workspaceKey !== key) return () => undefined;
+    const { chatDrafts, chatImages, chatConversation } = this.localState;
+    const patch: LocalWorkspaceState = {};
+    const back: LocalWorkspaceState = {};
+    if (chatDrafts && Object.hasOwn(chatDrafts, id)) {
+      patch.chatDrafts = Object.fromEntries(Object.entries(chatDrafts).filter(([k]) => k !== id));
+      back.chatDrafts = { [id]: chatDrafts[id] };
+    }
+    if (chatImages && Object.hasOwn(chatImages, id)) {
+      patch.chatImages = Object.fromEntries(Object.entries(chatImages).filter(([k]) => k !== id));
+      back.chatImages = { [id]: chatImages[id] };
+    }
+    // Left out of the file when it is written: the project reopens on the conversation main shows first.
+    if (chatConversation === id) (patch.chatConversation = undefined), (back.chatConversation = id);
+    if (!Object.keys(patch).length) return () => undefined;
+    this.saveLocalState(patch, key);
+    return () => {
+      if (this.workspaceKey !== key) return;
+      const now = this.localState;
+      this.saveLocalState(
+        {
+          ...(back.chatDrafts ? { chatDrafts: { ...now.chatDrafts, ...back.chatDrafts } } : {}),
+          ...(back.chatImages ? { chatImages: { ...now.chatImages, ...back.chatImages } } : {}),
+          // Only while no other conversation has been opened since.
+          ...(back.chatConversation && now.chatConversation === undefined ? { chatConversation: back.chatConversation } : {})
+        },
+        key
+      );
+    };
+  }
+
   /** The opening of the project that is open now (see saveLocalState), or null. */
   get openingKey(): string | null {
     return this.workspaceKey;

@@ -513,6 +513,27 @@ function registerIpc() {
   handle('ai:conversations', () => orchestrator.loadConversations());
   handle('ai:newConversation', () => orchestrator.newConversation());
   handle('ai:openConversation', (id: string) => orchestrator.openConversation(id));
+  // Renamed or deleted only in the opening of the project the author did it in; a read-only view changes neither.
+  handle('ai:renameConversation', (id: string, title: unknown, key?: string) => {
+    if (typeof key !== 'string' || key !== controller.openingKey) throw new Error('The project changed, so the conversation was not renamed.');
+    const blocked = readOnlyReason();
+    if (blocked) throw new Error(blocked);
+    return orchestrator.renameConversation(id, title);
+  });
+  handle('ai:deleteConversation', async (id: string, key?: string) => {
+    if (typeof key !== 'string' || key !== controller.openingKey) throw new Error('The project changed, so the conversation was not deleted.');
+    const blocked = readOnlyReason();
+    if (blocked) throw new Error(blocked);
+    // Its unsent message goes first, while this opening is current: it never outlives the conversation, even if the
+    // project closes during the delete. A delete that fails puts it back.
+    const restore = controller.forgetConversation(id, key);
+    try {
+      return await orchestrator.deleteConversation(id);
+    } catch (e) {
+      restore();
+      throw e;
+    }
+  });
   // Chat history belongs to the app editing the project; a read-only view never clears it.
   handle('ai:clearHistory', async (key?: string) => {
     // Cleared only in the opening of the project the confirmation was given in.

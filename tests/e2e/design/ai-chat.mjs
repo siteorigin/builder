@@ -268,6 +268,9 @@ const longConversation = {
     })
   )
 };
+// The hero thread is the one continued most recently, so it is the one that opens first (the list and the first
+// conversation shown go by the latest message, not by when a thread was started).
+heroConversation.messages.forEach((m, i) => (m.time = t(240 + i)));
 const chatDir = join(projectDir, '.siteorigin', 'sessions', 'chat');
 mkdirSync(chatDir, { recursive: true });
 for (const c of [heroConversation, troubleConversation, colourConversation, partialConversation, askConversation, longConversation]) writeFileSync(join(chatDir, `${c.id}.json`), JSON.stringify(c));

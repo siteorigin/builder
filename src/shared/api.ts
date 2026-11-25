@@ -610,8 +610,22 @@ export function turnQuestions(m: Pick<ChatMessage, 'questions' | 'question'>): C
 export interface Conversation {
   id: string;
   title: string;
+  /** The author named it: its title is theirs, and its first request never replaces it. */
+  named?: boolean;
   createdAt: string;
   messages: ChatMessage[];
+}
+
+/** A stored conversation as Earlier conversations lists it (see shared/conversations). */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  named?: boolean;
+  createdAt: string;
+  /** Its newest message: the list puts the conversations continued most recently first. */
+  updatedAt: string;
+  /** Every request the author wrote in it, oldest first: shown to tell it apart, and searched. */
+  prompts: string[];
 }
 
 export interface AiEvent {
@@ -959,9 +973,16 @@ export interface BuilderApi {
     /** Models the saved local server reports. */
     /** `server`: the saved address that was asked, which the list belongs to. */
     localModels(): Promise<{ ok: boolean; models: string[]; message?: string; server?: string }>;
-    conversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }>;
+    conversations(): Promise<{ active: Conversation; list: ConversationSummary[] }>;
     newConversation(): Promise<Conversation>;
     openConversation(id: string): Promise<Conversation>;
+    /**
+     * Name a stored conversation (or the open one). `workspaceKey` is the opening of the project it was renamed in;
+     * main refuses any other. Resolves with its new title.
+     */
+    renameConversation(id: string, title: string, workspaceKey: string): Promise<{ id: string; title: string }>;
+    /** Delete one stored conversation; the open one is replaced by a new conversation. Resolves with the open one. */
+    deleteConversation(id: string, workspaceKey: string): Promise<Conversation>;
     /** `workspaceKey` is the opening of the project the user confirmed this in; main refuses any other. */
     clearHistory(workspaceKey?: string): Promise<Conversation>;
     /**

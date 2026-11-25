@@ -1,9 +1,10 @@
 import { installedFonts } from '@catalogue/fonts';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type FieldLocation, type ProviderId, type RunStatus } from '@shared/api';
+import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type ProviderId, type RunStatus } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
+import { autoTitle, byRecentActivity, cleanTitle, NEW_CONVERSATION, storedTitle, summarize, TITLE_MAX } from '@shared/conversations';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { newId } from '@shared/ids';
 import { canCarryOn, summaryNow, turnState, type TurnHistory } from '@shared/turns';
@@ -418,10 +419,24 @@ ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}${preferred}`;
 
 export class Orchestrator {
   private run: ActiveRun | null = null;
-  /** Clear-history calls in progress. */
+  /** Calls removing conversations in progress (Clear history, or a delete of the open one): no request may start. */
   private clearing = 0;
-  /** The last finished request's transcript write; reading or removing transcripts waits for it. */
+  /** Clear-history calls in progress: nothing is renamed or deleted meanwhile, or it would come back after the clear. */
+  private clearingAll = 0;
+  /**
+   * The last change queued to the stored conversations (a finished request's transcript write, a list or open read, a
+   * rename, a delete, a clear): each runs after the one before, so it reads and writes what those left.
+   */
   private saving: Promise<void> = Promise.resolve();
+  /** Conversations a delete has been asked for and not finished: nothing new may open or rename them meanwhile. */
+  private removing = new Set<string>();
+  /** Conversations deleted in this opening of the project: a read that raced the delete never brings one back. */
+  private deleted = new Set<string>();
+  /**
+   * The name each conversation was last given in this opening, once saved: a transcript write queued before the
+   * rename (whatever copy of the conversation it holds) writes this name, never the one it replaced.
+   */
+  private names = new Map<string, string>();
   /** Settles once the current run has ended: rolled back or committed, and the app told it is idle. */
   private runEnded: Promise<void> = Promise.resolve();
   conversation: Conversation | null = null;
@@ -451,38 +466,54 @@ export class Orchestrator {
     return s ? s.local('sessions', 'chat') : null;
   }
 
-  async loadConversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }> {
+  /** A stored conversation by its ID, under the title it goes by (see storedTitle). */
+  private async readConversation(dir: string, id: string): Promise<Conversation> {
+    const c = JSON.parse(await fs.readFile(join(dir, `${id}.json`), 'utf8')) as Conversation;
+    // The storage name is the identity; a file claiming another ID is not this conversation.
+    if (c?.id !== id || !Array.isArray(c.messages)) throw new Error('Unknown conversation.');
+    c.title = storedTitle(c);
+    return c;
+  }
+
+  async loadConversations(): Promise<{ active: Conversation; list: ConversationSummary[] }> {
     const session = this.deps.session();
     const dir = this.chatDir();
     if (!dir) throw new Error('No project open');
-    const list: Conversation[] = [];
-    // Reading never creates the folder: a read-only project must stay untouched. The first save makes it.
-    const files = await fs.readdir(dir).catch((e: NodeJS.ErrnoException) => {
-      if (e.code === 'ENOENT') return [] as string[];
-      throw e;
-    });
-    for (const f of files) {
-      const m = f.match(/^(c_[a-z0-9]+)\.json$/);
-      if (!m) continue;
-      try {
-        const c = JSON.parse(await fs.readFile(join(dir, f), 'utf8')) as Conversation;
-        // The storage name is the identity; a file claiming another ID is ignored.
-        if (c.id === m[1] && Array.isArray(c.messages)) list.push(c);
-      } catch {
-        /* skip */
+    // Read in turn with the changes queued before it (a rename or delete already asked for is in the list), and
+    // before any asked for after it.
+    const list = await this.queueFileChange(async () => {
+      const read: Conversation[] = [];
+      // Reading never creates the folder: a read-only project must stay untouched. The first save makes it.
+      const files = await fs.readdir(dir).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === 'ENOENT') return [] as string[];
+        throw e;
+      });
+      for (const f of files) {
+        const m = f.match(/^(c_[a-z0-9]+)\.json$/);
+        if (!m) continue;
+        try {
+          read.push(await this.readConversation(dir, m[1]));
+        } catch {
+          /* skip */
+        }
       }
-    }
+      return read;
+    });
     this.sameSession(session);
-    list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const kept = list.filter((c) => !this.deleted.has(c.id) && !this.removing.has(c.id));
+    // The open conversation is newer than its file (a name just given, a request still being saved): listed as it is.
+    const open = this.conversation;
+    const summaries = kept.map((c) => summarize(open?.id === c.id ? open : c)).sort(byRecentActivity);
     // Listing never replaces the open conversation: a new one is not on disk until its first message, and one
     // mid-run is saved only when the run ends. Swapping it would send the next message to another thread.
-    if (!this.conversation) this.conversation = list[0] ?? this.freshConversation();
-    return { active: this.conversation, list: list.map((c) => ({ id: c.id, title: c.title, createdAt: c.createdAt })) };
+    // With none open yet, the one continued most recently opens.
+    if (!this.conversation) this.conversation = kept.find((c) => c.id === summaries[0]?.id) ?? this.freshConversation();
+    return { active: this.conversation, list: summaries };
   }
 
   /** A request adds to, and then saves, the open conversation: switching away mid-run would misfile its messages. */
-  private notRunning() {
-    if (this.run) throw new Error('Wait for the AI to finish before switching conversations.');
+  private notRunning(doing = 'switching conversations') {
+    if (this.run) throw new Error(`Wait for the AI to finish before ${doing}.`);
   }
 
   /** A read that finished after its project closed must not set the next project's conversation. */
@@ -490,8 +521,22 @@ export class Orchestrator {
     if (this.deps.session() !== session) throw new Error('The project changed while its conversations were loading.');
   }
 
+  /** Deleted, or a delete is under way: not to be opened or named again. */
+  private gone(id: string) {
+    return this.deleted.has(id) || this.removing.has(id);
+  }
+
+  /** Rename and delete wait for nothing else, and never run beside a clear, a request or in a read-only project. */
+  private canChange(session: RunSession, id: unknown, doing: string): asserts id is string {
+    if (session.readOnly) throw new Error(session.readOnly.reason);
+    if (typeof id !== 'string' || !/^c_[a-z0-9]+$/.test(id)) throw new Error('Unknown conversation.');
+    // A request saves its conversation when it ends: a name given meanwhile could be written over by the old one.
+    this.notRunning(doing);
+    if (this.clearingAll) throw new Error('The conversation history is being cleared. Try again in a moment.');
+  }
+
   private freshConversation(): Conversation {
-    return { id: newId('c'), title: 'New conversation', createdAt: new Date().toISOString(), messages: [] };
+    return { id: newId('c'), title: NEW_CONVERSATION, createdAt: new Date().toISOString(), messages: [] };
   }
 
   async newConversation(): Promise<Conversation> {
@@ -504,17 +549,110 @@ export class Orchestrator {
     const session = this.deps.session();
     const dir = this.chatDir();
     if (!dir) throw new Error('No project open');
-    if (!/^c_[a-z0-9]+$/.test(id)) throw new Error('Unknown conversation.');
+    if (typeof id !== 'string' || !/^c_[a-z0-9]+$/.test(id) || this.gone(id)) throw new Error('Unknown conversation.');
     // The open conversation is newer than its file, which a finished request may still be writing.
     if (this.conversation?.id === id) return this.conversation;
-    await this.saving;
-    const c = JSON.parse(await fs.readFile(join(dir, `${id}.json`), 'utf8')) as Conversation;
-    if (c.id !== id) throw new Error('Unknown conversation.');
+    // Read in turn with the writes, renames and deletes queued before it, so it reads what they left.
+    const c = await this.queueFileChange(() => this.readConversation(dir, id));
     this.sameSession(session);
-    // Checked after the read too: a request may have started while the file was loading.
+    // Checked after the read too: a request may have started, or a delete been asked for, while it was loading.
     this.notRunning();
+    if (this.gone(id)) throw new Error('That conversation was deleted.');
     this.conversation = c;
     return c;
+  }
+
+  /**
+   * Name a conversation, in turn with every change already queued. The open one takes the name and is saved with it
+   * (one with nothing in it yet is saved, name and all, with its first message); any other is rewritten in its file.
+   */
+  async renameConversation(id: string, name: unknown): Promise<{ id: string; title: string }> {
+    const session = this.deps.session();
+    const dir = this.chatDir();
+    if (!session || !dir) throw new Error('No project open');
+    this.canChange(session, id, 'renaming a conversation');
+    if (this.gone(id)) throw new Error('Unknown conversation.');
+    const title = cleanTitle(name);
+    if (!title) throw new Error(`A conversation’s name needs some text, up to ${TITLE_MAX} characters.`);
+    const { names } = this;
+    await this.queueFileChange(async () => {
+      // Checked when its turn comes: the project may have been taken over, or the conversation deleted, meanwhile.
+      if (session.readOnly) throw new Error(session.readOnly.reason);
+      if (this.deleted.has(id)) throw new Error('Unknown conversation.');
+      this.sameSession(session);
+      const open = this.conversation?.id === id ? this.conversation : null;
+      if (open && !this.run) {
+        // Written from the open conversation, whose messages are all settled. One with nothing in it yet is saved,
+        // name and all, with its first message.
+        const before = { title: open.title, named: open.named, name: names.get(id) };
+        open.title = title;
+        open.named = true;
+        // The write reads the name from here; only this change runs until it is done.
+        names.set(id, title);
+        try {
+          await this.transcriptWrite()?.();
+        } catch (e) {
+          // Not saved, so not named: the list and the file go on agreeing.
+          if (before.name === undefined) names.delete(id);
+          else names.set(id, before.name);
+          if (open.title === title) {
+            open.title = before.title;
+            if (before.named) open.named = true;
+            else delete open.named;
+          }
+          throw e;
+        }
+      } else {
+        // Written into its file as it was last saved, never with a running request's messages (that request saves
+        // them, and the name, when it ends). An open conversation not saved yet takes the name with its first save.
+        const c = await this.readConversation(dir, id).catch((e: NodeJS.ErrnoException) => {
+          if (open && e.code === 'ENOENT') return null;
+          throw e;
+        });
+        if (c) {
+          c.title = title;
+          c.named = true;
+          await this.writeConversation(dir, c);
+        }
+        // Named in memory only once saved.
+        if (open) Object.assign(open, { title, named: true });
+      }
+      names.set(id, title);
+    });
+    return { id, title };
+  }
+
+  /**
+   * Delete one conversation and nothing else: the site, its undo history and every other conversation stay. Changes
+   * queued before it land first; nothing asked for after it can open or name it. The open one gives way to a new
+   * conversation. A delete that fails leaves the conversation as it was, still listed and still saved.
+   */
+  async deleteConversation(id: string): Promise<Conversation> {
+    const session = this.deps.session();
+    const dir = this.chatDir();
+    if (!session || !dir) throw new Error('No project open');
+    this.canChange(session, id, 'deleting a conversation');
+    if (this.removing.has(id)) throw new Error('That conversation is already being deleted.');
+    const open = this.conversation?.id === id;
+    // This opening's own records: a delete that finishes after the project closed never marks another opening's.
+    const { removing, deleted } = this;
+    removing.add(id);
+    // No request may start in the open conversation while it goes: it would add to a thread being removed.
+    if (open) this.clearing++;
+    try {
+      await this.queueFileChange(async () => {
+        if (session.readOnly) throw new Error(session.readOnly.reason);
+        if (this.deps.session() !== session) throw new Error('The project changed, so the conversation was not deleted.');
+        await fs.rm(join(dir, `${id}.json`), { force: true });
+        deleted.add(id);
+      });
+    } finally {
+      removing.delete(id);
+      if (open) this.clearing--;
+    }
+    this.sameSession(session);
+    if (this.conversation?.id === id) this.conversation = this.freshConversation();
+    return this.conversation ?? (await this.loadConversations()).active;
   }
 
   async clearHistory(): Promise<Conversation> {
@@ -524,12 +662,15 @@ export class Orchestrator {
     const dir = this.chatDir();
     // No request may start while the files are going: it would add to a conversation that is being removed.
     this.clearing++;
+    this.clearingAll++;
     try {
-      // A finished request's transcript write would bring a cleared conversation back.
-      await this.saving;
-      if (dir) await fs.rm(dir, { recursive: true, force: true });
+      // After a finished request's transcript write (which would bring a cleared conversation back), and any
+      // rename or delete already asked for.
+      if (dir) await this.queueFileChange(() => fs.rm(dir, { recursive: true, force: true }));
+      else await this.saving;
     } finally {
       this.clearing--;
+      this.clearingAll--;
     }
     this.sameSession(session);
     this.conversation = this.freshConversation();
@@ -551,16 +692,45 @@ export class Orchestrator {
     const dir = this.chatDir();
     const conv = this.conversation;
     if (!dir || !conv || !conv.messages.length || !/^c_[a-z0-9]+$/.test(conv.id)) return null;
+    const saved = JSON.parse(JSON.stringify(conv)) as Conversation;
+    const { deleted, names } = this;
+    return async () => {
+      // Checked again when the write's turn comes: the project may have been taken over, or the conversation
+      // deleted (by a delete that finished: one that failed leaves it to be saved as usual), meanwhile.
+      if (session.readOnly || deleted.has(conv.id)) return;
+      // The messages as they were when the write was asked for; the name as it is now, so a rename that landed
+      // after this write was queued is never written over, whichever conversation is open by then.
+      const renamed = names.get(conv.id);
+      saved.title = renamed ?? conv.title;
+      if (renamed !== undefined || conv.named) saved.named = true;
+      else delete saved.named;
+      await this.writeConversation(dir, saved);
+    };
+  }
+
+  /** Replace a conversation's file whole: written beside it, then moved over it, so a reader never sees half. */
+  private async writeConversation(dir: string, conv: Conversation) {
     const bytes = JSON.stringify(conv);
     const target = join(dir, `${conv.id}.json`);
-    return async () => {
-      // Checked again when the write's turn comes: the project may have been taken over meanwhile.
-      if (session.readOnly) return;
-      const tmp = `${target}.${newId('t')}.tmp`;
-      await fs.mkdir(dir, { recursive: true });
+    const tmp = `${target}.${newId('t')}.tmp`;
+    await fs.mkdir(dir, { recursive: true });
+    try {
       await fs.writeFile(tmp, bytes);
       await fs.rename(tmp, target);
-    };
+    } catch (e) {
+      await fs.rm(tmp, { force: true }).catch(() => undefined);
+      throw e;
+    }
+  }
+
+  /** Run a change to the stored conversations after every change already queued, and answer with its outcome. */
+  private queueFileChange<T>(change: () => Promise<T>): Promise<T> {
+    const done = this.saving.then(change);
+    this.saving = done.then(
+      () => undefined,
+      () => undefined
+    );
+    return done;
   }
 
   /** Save the transcript after any save already under way, so the newest bytes are always the last written. */
@@ -572,6 +742,9 @@ export class Orchestrator {
 
   reset() {
     this.conversation = null;
+    this.deleted = new Set();
+    this.removing = new Set();
+    this.names = new Map();
     if (this.run) this.run.conversationId = '';
     // Another project never waits on this one's transcript write.
     this.saving = Promise.resolve();
@@ -669,8 +842,10 @@ export class Orchestrator {
     const request = prior?.text;
     // A Create component request goes on building a component, however many times it is told to continue.
     const requestTask = prior?.context?.task === 'component' ? ('component' as const) : undefined;
+    // Named by its first request with words in it, unless the author has named it.
+    const titled = conv.named || conv.messages.some((m) => m.role === 'user' && typeof m.text === 'string' && m.text.trim());
     conv.messages.push(userMsg, assistant);
-    if (conv.title === 'New conversation') conv.title = text.trim().slice(0, 60);
+    if (!titled && text.trim()) conv.title = autoTitle(text);
     const active: ActiveRun = { id: runId, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id, reached: false, recipient: intended };
     this.run = active;
     this.deps.onBusyChange(true);
