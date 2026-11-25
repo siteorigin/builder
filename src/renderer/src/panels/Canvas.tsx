@@ -2295,14 +2295,15 @@ export function Canvas() {
   // text is being typed, a block moved, the page resized or a component's design edited everywhere.
   const spaceDesc = selection ? descFor(selection) : null;
   // The page's report must be for this selection: one from before it changed measured something else.
-  const spaceFor = !!spacing && !!spaceDesc && spacing.desc.ctx === spaceDesc.ctx && spacing.desc.node === spaceDesc.node && spacing.desc.items === spaceDesc.items;
+  // A code component's marked part has no spacing handles: a report for its placement is never one for the part.
+  const spaceFor = !!spacing && !!spaceDesc && !spaceDesc.part && spacing.desc.ctx === spaceDesc.ctx && spacing.desc.node === spaceDesc.node && spacing.desc.items === spaceDesc.items;
   const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
   // The canvas's Add buttons (#387), on the box of the selection and of what is hovered, each only on a box the page
   // measured for it (one copy: a repeated item's place would be every item's). Below one section and above the next
   // are one place, drawn once, the selection's first. While a list is open, only its own button is drawn, where it was.
   const addOwner: OwnerRef | null = templateMode ? templateOwner(templateMode) : pageId ? { kind: 'page', id: pageId } : null;
   const addReady = mode === 'edit' && !!state && !!addOwner && frameReady && !staleFrame && !stylesOpen && !definitionMode && !editing && !reorder && !resizing && !insertDrop && !dragging && !snapshot?.readOnly && !snapshot?.aiBusy && !menu.isOpen;
-  const measuredFor = (a: BridgeDesc | null, b: BridgeDesc | null) => !!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '');
+  const measuredFor = (a: BridgeDesc | null, b: BridgeDesc | null) => !!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '') && (a.part || '') === (b.part || '');
   const addButtons: Array<{ p: AddPoint; box: AddBox }> = adding
     ? [{ p: adding.point, box: adding.box }]
     : !addReady

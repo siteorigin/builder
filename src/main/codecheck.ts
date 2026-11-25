@@ -11,6 +11,7 @@
  */
 import { posix } from 'node:path';
 import type { ComponentDefinition } from '@shared/types';
+import { slotIdent } from '@generator/index';
 
 export interface CodeProblem {
   severity: 'error' | 'warning';
@@ -112,6 +113,19 @@ export interface CheckOptions {
    * the project is refused, as compiling a component alone never notices it is missing.
    */
   modules?: (path: string) => boolean;
+  /**
+   * The code component's contract, when its slots and parts are checked against its code: every declared slot is
+   * rendered from the snippet its placements pass (`slot_<name>`), and every part marked `data-so-part` is declared.
+   */
+  contract?: CodeContract;
+}
+
+/** A code component's contract as the code check holds its code to it (see contractProblems). */
+export interface CodeContract {
+  slots?: ComponentDefinition['slots'];
+  parts?: ComponentDefinition['parts'];
+  /** The declared slots that hold content in some placement: code that stops showing one would hide that content. */
+  filled?: string[];
 }
 
 /** The props a component passes on to places that load a URL, apply CSS or open a link. */
@@ -459,7 +473,263 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
   };
   visit(ast.instance, 0, null, 'instance', []);
   visit(ast.fragment, 0, null, 'fragment', []);
+  if (opts.contract) for (const p of contractProblems(ast, opts.contract)) add(p.severity, p.message, p.node);
   return { problems, sinks };
+}
+
+/** What a part a code component's author marks may be called: a declared part's ID. */
+const PART_ID = /^[a-z][A-Za-z0-9]{0,39}$/;
+
+/** Every node of a parsed component with the nodes around it, outermost first. */
+function walkAst(root: unknown, visit: (n: Node, around: Node[]) => void, around: Node[] = []): void {
+  if (!root || typeof root !== 'object') return;
+  if (Array.isArray(root)) {
+    for (const child of root) walkAst(child, visit, around);
+    return;
+  }
+  const n = root as Node;
+  if (typeof n.type !== 'string') return;
+  visit(n, around);
+  const inner = [...around, n];
+  for (const k of Object.keys(n)) if (!SKIP_KEYS.has(k)) walkAst(n[k], visit, inner);
+}
+
+/** The `data-so-part` attributes of a parsed component's markup, with the element or component each is on. */
+function partMarkers(fragment: unknown): Array<{ attr: Node; host: Node }> {
+  const out: Array<{ attr: Node; host: Node }> = [];
+  walkAst(fragment, (n, around) => {
+    const host = around[around.length - 1];
+    if (n.type === 'Attribute' && n.name === 'data-so-part' && host && Array.isArray(host.attributes)) out.push({ attr: n, host });
+  });
+  return out;
+}
+
+/**
+ * The props a component's script takes from $props(), by prop name: the local it is read through, whether it has a
+ * default written there, and whether that default is a fallback that is never missing: a function written in place,
+ * or the name of a snippet the markup declares or a function the script declares (never a variable, which may hold
+ * undefined). `let { slot_content: body = fallback } = $props()` reads slot_content through `body`.
+ */
+function propsLocals(ast: Node): Map<string, { local: string; defaulted: boolean; fallback: boolean }> {
+  const callable = new Set<string>();
+  walkAst(ast.fragment, (n) => {
+    if (n.type === 'SnippetBlock' && (n.expression as Node)?.type === 'Identifier') callable.add(String((n.expression as Node).name));
+  });
+  for (const st of ((ast.instance as { content?: { body?: Node[] } } | null)?.content?.body ?? []) as Node[]) if (st.type === 'FunctionDeclaration' && (st.id as Node)?.type === 'Identifier') callable.add(String((st.id as Node).name));
+  const locals = new Map<string, { local: string; defaulted: boolean; fallback: boolean }>();
+  walkAst(ast.instance, (n) => {
+    if (n.type !== 'VariableDeclarator' || (n.init as Node | null)?.type !== 'CallExpression') return;
+    const callee = (n.init as Node).callee as Node;
+    if (callee?.type !== 'Identifier' || callee.name !== '$props' || (n.id as Node)?.type !== 'ObjectPattern') return;
+    for (const prop of ((n.id as Node).properties as Node[]) ?? []) {
+      if (prop.type !== 'Property' || prop.computed) continue;
+      const key = prop.key as Node;
+      const name = key.type === 'Identifier' ? String(key.name) : key.type === 'Literal' ? String(key.value) : null;
+      let value = prop.value as Node;
+      let defaulted = false;
+      let fallback = false;
+      if (value?.type === 'AssignmentPattern') {
+        const right = value.right as Node;
+        defaulted = !(right?.type === 'Identifier' && right.name === 'undefined') && !(right?.type === 'Literal' && right.value === null);
+        fallback = FUNCTION_TYPES.has(String(right?.type)) || (right?.type === 'Identifier' && callable.has(String(right.name)));
+        value = value.left as Node;
+      }
+      if (name && value?.type === 'Identifier') locals.set(name, { local: String(value.name), defaulted, fallback });
+    }
+  });
+  return locals;
+}
+
+/** The part a node of the markup gives its class to through the placement's hook (so_o?.total, so_o["total"]), if any. */
+function hookedPart(n: Node): string | null {
+  if (n.type !== 'MemberExpression' || (n.object as Node)?.type !== 'Identifier' || (n.object as Node).name !== 'so_o') return null;
+  const p = n.property as Node;
+  if (!n.computed) return p?.type === 'Identifier' ? String(p.name) : null;
+  return p?.type === 'Literal' && typeof p.value === 'string' ? p.value : null;
+}
+
+/** A part marker's name when it is written out (data-so-part="total"), or null for one an expression gives. */
+function markerName(attr: Node): string | null {
+  const values = attr.value === true ? [] : Array.isArray(attr.value) ? (attr.value as Node[]) : [attr.value as Node];
+  if (values.length !== 1) return null;
+  return values[0].type === 'Text' ? String(values[0].data) : values[0].type === 'ExpressionTag' ? literalText(values[0].expression as Node) : null;
+}
+
+/**
+ * The parts and slots a code component's code shows, read from its syntax tree: each part its markup marks with a
+ * written-out data-so-part or gives its class through so_o, and each slot_<name> its script takes from $props().
+ * Comments, strings and a script's own logic declare nothing. Null when the code cannot be parsed.
+ */
+export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[] } | null> {
+  const { parse } = await import('svelte/compiler');
+  let ast: Node;
+  try {
+    ast = parse(source, { modern: true }) as unknown as Node;
+  } catch {
+    return null;
+  }
+  const parts = new Set<string>();
+  for (const { attr } of partMarkers(ast.fragment)) {
+    const id = markerName(attr);
+    if (id !== null) parts.add(id);
+  }
+  walkAst(ast.fragment, (n) => {
+    const id = hookedPart(n);
+    if (id !== null) parts.add(id);
+  });
+  const slots = [...propsLocals(ast).keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
+  return { parts: [...parts], slots };
+}
+
+/**
+ * Whether a block's test is true only while `name` holds something: `name`, `!!name`, `name != null` (or
+ * `!= undefined`), `typeof name === 'function'`, or an `&&` chain with one of them.
+ */
+function truthyTest(test: Node | undefined, name: string): boolean {
+  if (!test) return false;
+  const is = (n: Node | undefined) => n?.type === 'Identifier' && n.name === name;
+  const nothing = (n: Node | undefined, loose: boolean) => (n?.type === 'Identifier' && n.name === 'undefined') || (loose && n?.type === 'Literal' && n.value === null);
+  if (is(test)) return true;
+  if (test.type === 'UnaryExpression' && test.operator === '!' && (test.argument as Node)?.type === 'UnaryExpression' && (test.argument as Node).operator === '!') return is((test.argument as Node).argument as Node);
+  if (test.type === 'LogicalExpression' && test.operator === '&&') return truthyTest(test.left as Node, name) || truthyTest(test.right as Node, name);
+  if (test.type === 'BinaryExpression') {
+    const [l, r] = [test.left as Node, test.right as Node];
+    // Loosely, so null (a default of null) is ruled out with undefined.
+    if (test.operator === '!=') return (is(l) && nothing(r, true)) || (is(r) && nothing(l, true));
+    if (test.operator === '===' || test.operator === '==') {
+      const typed = (a: Node, b: Node) => a?.type === 'UnaryExpression' && a.operator === 'typeof' && is(a.argument as Node) && b?.type === 'Literal' && b.value === 'function';
+      return typed(l, r) || typed(r, l);
+    }
+  }
+  return false;
+}
+
+/**
+ * Where a code component's code breaks its contract: a declared slot it never renders (which hides content its
+ * placements hold there), or renders in a way that fails while a placement leaves it empty (the snippet is then not
+ * given, on the server as in the browser); a part it marks under a name it does not declare, by an expression the
+ * editor cannot read, or in a spread the website's build cannot take out; a declared part it neither marks nor gives
+ * its class, or marks on an element that does not take the part's class (so styles set in the editor cannot reach it).
+ */
+function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> {
+  const out: Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> = [];
+  const locals = propsLocals(ast);
+  // Each snippet the markup renders, by the name it calls, with whether a call there can find it missing: an optional
+  // call, or a plain one inside a block shown only while it is given ({#if slot_content}, not its {:else}).
+  const renders: Array<{ name: string; node: Node; optional: boolean; guarded: boolean }> = [];
+  walkAst(ast.fragment, (n, around) => {
+    if (n.type !== 'RenderTag') return;
+    let call = n.expression as Node;
+    let optional = !!call?.optional;
+    if (call?.type === 'ChainExpression') {
+      call = call.expression as Node;
+      optional = true;
+    }
+    const callee = call?.type === 'CallExpression' ? (call.callee as Node) : undefined;
+    if (callee?.type !== 'Identifier') return;
+    const name = String(callee.name);
+    const guarded = around.some((a, i) => a.type === 'IfBlock' && around[i + 1] === a.consequent && truthyTest(a.test as Node, name));
+    renders.push({ name, node: n, optional: optional || !!call.optional, guarded });
+  });
+  const slots = contract.slots ?? {};
+  const filled = new Set(contract.filled ?? []);
+  // The names the markup hands on, to a snippet it renders or a component it places: a slot handed on is shown by
+  // whatever it is handed to. Only testing it ({#if slot_content}) shows nothing.
+  const handed = new Set<string>();
+  walkAst(ast.fragment, (n, around) => {
+    if (n.type !== 'Identifier') return;
+    const passed = around.some((a, i) => (a.type === 'RenderTag' && i < around.length - 1) || ((a.type === 'Attribute' || a.type === 'SpreadAttribute') && /^(Component|SvelteComponent|SvelteSelf)$/.test(String(around[i - 1]?.type))));
+    if (passed) handed.add(String(n.name));
+  });
+  // Its declared slots, and every slot_<name> it takes from $props(), declared or not yet: each must render safely.
+  const taken = [...locals.keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
+  for (const slot of [...new Set([...Object.keys(slots), ...taken])]) {
+    const label = Object.hasOwn(slots, slot) && typeof slots[slot]?.label === 'string' && slots[slot].label.trim() ? slots[slot].label.trim() : slot;
+    const prop = slotIdent(slot);
+    const from = locals.get(prop);
+    const local = from?.local ?? prop;
+    const shown = renders.filter((r) => r.name === local);
+    if (!shown.length && from && handed.has(local)) continue;
+    if (!shown.length) {
+      // Content placed there already would disappear from the site: the code must show the slot, or the content go first.
+      if (filled.has(slot)) out.push({ severity: 'error', message: `The “${label}” slot holds content on the site, but the code does not show it. Keep rendering it with {@render ${local}?.()}, or move that content out of the slot first.` });
+      else out.push({ severity: 'warning', message: `The “${label}” slot is never shown: take ${prop} from $props() and render it with {@render ${local}?.()}, or what is placed there will not show.` });
+      continue;
+    }
+    if (!from) {
+      out.push({ severity: 'error', message: `${prop} must be taken from $props() (let { ${prop} } = $props()) for the “${label}” slot to show what is placed there.`, node: shown[0].node });
+      continue;
+    }
+    for (const r of shown)
+      if (!r.optional && !r.guarded && !from.fallback)
+        out.push({ severity: 'error', message: `Render the “${label}” slot with {@render ${local}?.()} or inside {#if ${local}}: a placement with nothing in it gives no snippet, and the page would fail to render.`, node: r.node });
+  }
+  // Each placement gives the code its part classes, which replace whatever the code gives so_o itself.
+  if (locals.get('so_o')?.defaulted) out.push({ severity: 'warning', message: 'Give so_o no default of its own (let { so_o } = $props()): each placement passes its own part classes, which replace it.' });
+  const parts = contract.parts ?? {};
+  const marked = new Set<string>();
+  walkAst(ast.fragment, (n) => void (hookedPart(n) !== null && marked.add(hookedPart(n)!)));
+  // A marker in a spread is set by the code as it runs, where the website's build cannot take it out.
+  walkAst(ast.fragment, (n) => {
+    const spread = n.type === 'SpreadAttribute' && (n.expression as Node)?.type === 'ObjectExpression' ? (((n.expression as Node).properties as Node[]) ?? []) : [];
+    const keyOf = (k: Node | undefined) => (k?.type === 'Identifier' ? k.name : k?.type === 'Literal' ? k.value : null);
+    if (spread.some((p) => p.type === 'Property' && keyOf(p.key as Node) === 'data-so-part')) out.push({ severity: 'error', message: 'Write data-so-part as an attribute of its own (data-so-part="total"), not in a spread: the published site must not carry it.', node: n });
+  });
+  for (const { attr, host } of partMarkers(ast.fragment)) {
+    const id = markerName(attr);
+    if (id === null) {
+      out.push({ severity: 'warning', message: 'Mark a part with its name written out (data-so-part="total"): the editor cannot tell which part an expression names.', node: attr });
+      continue;
+    }
+    if (id === 'root') {
+      out.push({ severity: 'warning', message: 'The root part is the whole component: mark only the elements inside it with data-so-part.', node: attr });
+      continue;
+    }
+    marked.add(id);
+    if (!Object.hasOwn(parts, id)) {
+      out.push({ severity: PART_ID.test(id) ? 'warning' : 'error', message: PART_ID.test(id) ? `“${id}” is not one of the component's parts yet. Saving adds it.` : `Part names are camelCase words, such as "total" ("${id}").`, node: attr });
+      continue;
+    }
+    // Styles set in the editor reach a part through the class the placement gives it, read in the class's code.
+    const cls = (host.attributes as Node[]).find((a) => a.type === 'Attribute' && a.name === 'class');
+    const hooks = new Set<string>();
+    if (cls && cls.value !== true) walkAst((Array.isArray(cls.value) ? (cls.value as Node[]) : [cls.value as Node]).filter((v) => v.type === 'ExpressionTag'), (v) => void (hookedPart(v) !== null && hooks.add(hookedPart(v)!)));
+    if (!hooks.has(id)) out.push({ severity: 'warning', message: `Give the element marked “${id}” the part's class (class={so_o?.${id}}), or styles set for it in the editor will not show.`, node: attr });
+  }
+  for (const id of Object.keys(parts)) if (id !== 'root' && !marked.has(id)) out.push({ severity: 'warning', message: `The “${parts[id]?.label ?? id}” part is not in the code: give its element the part's class (class={so_o?.${id}}) so it can be styled and picked on the page.` });
+  return out;
+}
+
+/**
+ * A code component's source with every part marker (`data-so-part`) taken out, as the website's build ships it. The
+ * markers are the editor's, written in the code so the preview can find each part; the published site carries none.
+ * Source that cannot be parsed is returned as it is: it does not build either.
+ */
+export async function withoutPartMarkers(source: string): Promise<string> {
+  if (!source.includes('data-so-part')) return source;
+  const { parse } = await import('svelte/compiler');
+  // The parser reads past a byte order mark, so its offsets count from after it.
+  const bom = source.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const body = source.slice(bom);
+  let ast: Node;
+  try {
+    ast = parse(body, { modern: true }) as unknown as Node;
+  } catch {
+    return source;
+  }
+  const cuts = partMarkers(ast.fragment)
+    .map(({ attr }) => {
+      let start = Number(attr.start);
+      const end = Number(attr.end);
+      // With the space before it when the tag goes on with a space or ends there, so the tag reads as if the
+      // attribute was never written; otherwise that space is what parts its neighbours, and stays.
+      if (/[\s/>]/.test(body[end] ?? '')) while (start > 0 && /\s/.test(body[start - 1])) start--;
+      return { start, end };
+    })
+    .sort((a, b) => b.start - a.start);
+  let out = body;
+  for (const c of cuts) out = out.slice(0, c.start) + out.slice(c.end);
+  return source.slice(0, bom) + out;
 }
 
 /** The text of a string literal or a template literal without expressions; null for anything computed. */

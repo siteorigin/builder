@@ -74,6 +74,7 @@ import { addPageStarter } from './page-starters';
 import {
   componentRemove,
   codeImports,
+  declareCodeNames,
   dependentsOf,
   directDependencies,
   dropPartOverrides,
@@ -141,6 +142,12 @@ export interface ApplyContext {
   addressesAtStart?: ReadonlySet<string>;
   /** A component package the editor read and checked, which a `component.import` in the batch names (see component-package.ts). */
   componentImport?: ComponentImport;
+  /**
+   * The parts and slots each code source of the batch shows, as the code check reads them from its syntax tree (the
+   * session reads them before it applies the batch): createCode and updateSource declare them at once, so later
+   * operations of the same batch can fill a slot or style a part the code just gained. Without it, none are declared.
+   */
+  codeNames?: (source: string) => { parts: readonly string[]; slots: readonly string[] } | null | undefined;
   /**
    * The addresses visitors reached each collection entry at when the batch began, lowercased, with that entry's ID
    * (see entryAddressesInUse): an entry keeps an old address working only when it was one of these. An entry removed
@@ -310,7 +317,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'component.convertToCode':
       return convertToCode(state, op);
     case 'component.createCode':
-      return createCode(state, op);
+      return createCode(state, op, ctx);
     case 'component.updateSource': {
       const def = projectDef(state, op.definitionId);
       if (def.kind !== 'code') fail(`"${def.name}" is a managed component. Convert a copy to code before editing source.`);
@@ -321,6 +328,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         throw new EngineError('CONFLICT', `The properties of "${def.name}" changed since they were opened. Review them again before saving.`);
       if (op.properties) replaceProperties(state, def, op.properties, op.renames);
       def.source = op.source;
+      const names = ctx.codeNames?.(op.source);
+      if (names && def.owner === 'project') declareCodeNames(def, names);
       return { hash: sourceHash(op.source) };
     }
     case 'component.remove':
@@ -3278,7 +3287,7 @@ function moveCodeReservedProps(def: ComponentDefinition, placed: InstanceNode) {
   for (const [id, n] of Object.entries(tree.nodes)) if (!seen.has(id)) tree.nodes[id] = rebind(n) as GraphNode;
 }
 
-function createCode(state: ProjectState, op: Op<'component.createCode'>): OpResult {
+function createCode(state: ProjectState, op: Op<'component.createCode'>, ctx: ApplyContext): OpResult {
   const properties = normalizeProperties(op.properties, state);
   // Source safety (imports, module scripts, raw HTML) is checked from the syntax tree when the session saves it.
   const id = projectDefId(op.name, 'code');
@@ -3301,6 +3310,8 @@ function createCode(state: ProjectState, op: Op<'component.createCode'>): OpResu
     provenance: { createdBy: 'user' },
     license: 'Project'
   };
+  const names = ctx.codeNames?.(op.source);
+  if (names) declareCodeNames(def, names);
   state.components[id] = def;
   return { definitionId: id, sourcePath: def.sourcePath, hash: sourceHash(op.source) };
 }

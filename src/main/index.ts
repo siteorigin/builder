@@ -21,7 +21,7 @@ import { OpenAIAdapter, testOpenAI } from '@agent/openai';
 import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
 import { listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { compileProject } from './compile';
-import { checkSvelteSource, componentSources } from './codecheck';
+import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
 import { stopMediaWorker } from './project/assets';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
@@ -32,6 +32,8 @@ import { desktopForLaunch, launchMode } from './headless-desktop';
 import { installAiJournal } from './ai-journal';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
+import { declareCodeNames } from '@engine/definitions';
+import type { ComponentDefinition } from '@shared/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Tests and side-by-side development can isolate settings, credentials and caches.
@@ -460,7 +462,11 @@ function registerIpc() {
   handle('project:unlock', () => controller.unlock());
   handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
   handle('project:validateSource', async (source: string) => {
-    const problems = await checkSvelteSource(String(source));
+    // The slots and parts the code declares by itself, as saving it declares them, so a slot it shows is checked.
+    const contract: Pick<ComponentDefinition, 'kind' | 'parts' | 'slots'> = { kind: 'code', parts: { root: { nodeId: 'root', label: 'Root' } } };
+    const names = await codeContractNames(String(source));
+    if (names) declareCodeNames(contract, names);
+    const problems = await checkSvelteSource(String(source), { contract });
     const errors = problems.filter((p) => p.severity === 'error');
     return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
   });

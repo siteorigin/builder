@@ -88,13 +88,22 @@ const orderOf = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v
 function isDesc(v: unknown): v is BridgeDesc {
   if (!v || typeof v !== 'object') return false;
   const d = v as Record<string, unknown>;
-  return str(d.ctx) && str(d.node) && str(d.items) && (d.tag === undefined || str(d.tag, 200)) && (d.text === undefined || str(d.text, 400)) && (d.code === undefined || typeof d.code === 'boolean');
+  return (
+    str(d.ctx) &&
+    str(d.node) &&
+    str(d.items) &&
+    (d.tag === undefined || str(d.tag, 200)) &&
+    (d.text === undefined || str(d.text, 400)) &&
+    (d.code === undefined || typeof d.code === 'boolean') &&
+    (d.part === undefined || str(d.part, 200))
+  );
 }
 
 /** The element chain under the pointer, innermost first. A chain with any malformed entry is empty. */
 export function chainOf(v: unknown): BridgeDesc[] {
   if (!Array.isArray(v) || v.length > MAX_CHAIN || !Array.from(v).every(isDesc)) return [];
-  return v.map((d: BridgeDesc) => ({ ctx: d.ctx, node: d.node, items: d.items, tag: d.tag, text: d.text, code: d.code }));
+  // A code component's marked part keeps its ID; every other entry is as it always was.
+  return v.map((d: BridgeDesc) => ({ ctx: d.ctx, node: d.node, items: d.items, tag: d.tag, text: d.text, code: d.code, ...(d.part !== undefined ? { part: d.part } : {}) }));
 }
 
 /** What the page says is at a point while something is dragged over it (see the bridge's pointAt), or null. */

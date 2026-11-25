@@ -19,7 +19,7 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { isPlainFile, builtPhotosMessage, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
+import { isPlainFile, builtPhotosMessage, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, pictureMime, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -198,6 +198,10 @@ const MAX_FONT_FILE = 32 * 1024 * 1024;
  * quotes are written &quot;, so `="` never occurs inside one).
  */
 const EDITOR_MARKUP = /<[a-zA-Z][^<>]*\sdata-so-(?:ctx|node)="|siteorigin-bridge/;
+/** Editor-only markup in a built page: the editor's own attributes and bridge, or a code component's part marker. */
+const editorMarkup = (html: string) => EDITOR_MARKUP.test(html) || carriesPartMarker(html);
+/** The same in a built script: the bridge, the editor's attributes, or a template that writes a part marker. */
+const editorScript = (js: string) => /siteorigin-bridge|data-so-ctx/.test(js) || carriesPartMarker(js);
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
@@ -2535,6 +2539,8 @@ export class Controller {
     // Credits are read first: a page can use a responsive copy whose original is pruned.
     const credits = await variantCredits(project, state);
     const omitted = await pruneWebsiteAssets(project, state);
+    // The parts the editor finds in code components by their markers: the website carries no marker.
+    await stripPartMarkers(project, state);
     // What visitors download carries no location or device metadata; the project's own photos keep theirs.
     const photos = await cleanWebsitePhotos(project, state, credits);
     if (photos.failed.length) return { ok: false, message: uncleanablePhotosMessage(photos.failed), warnings: [] };
@@ -2558,7 +2564,7 @@ export class Controller {
       const file = join(out, p.route === '/' ? 'index.html' : join(p.route, 'index.html'));
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${p.route}.`, warnings: warnings() };
       const html = await fs.readFile(file, 'utf8');
-      if (EDITOR_MARKUP.test(html)) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings: warnings() };
+      if (editorMarkup(html)) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings: warnings() };
       const language = pageLanguageWarning(live, p, html);
       if (language) warn(language);
     }
@@ -2566,19 +2572,19 @@ export class Controller {
     for (const { route } of siteEntries(live)) {
       const file = join(out, route, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings: warnings() };
-      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
+      if (editorMarkup(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
     }
     // So is each page of every collection's index and category archives.
     for (const { route } of archivePages(live)) {
       const file = join(out, route, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings: warnings() };
-      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
+      if (editorMarkup(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
     }
     // Old addresses kept working are pages of their own on a static host: each must be there to send visitors on.
     for (const { from } of liveRedirects(live)) {
       const file = join(out, from, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${from}, an old address that should send visitors on.`, warnings: warnings() };
-      if (EDITOR_MARKUP.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings: warnings() };
+      if (editorMarkup(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings: warnings() };
     }
     // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
     // static/, say, would publish the address the author kept back.
@@ -2595,7 +2601,7 @@ export class Controller {
     const notFoundStop = notFoundPageProblem(notFound);
     if (notFoundStop || notFound === null) return { ok: false, message: notFoundStop ?? '', warnings: warnings() };
     for (const f of await listFiles(out)) {
-      if (/\.js$/.test(f) && /siteorigin-bridge|data-so-ctx/.test(await fs.readFile(join(out, f), 'utf8'))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings: warnings() };
+      if (/\.js$/.test(f) && editorScript(await fs.readFile(join(out, f), 'utf8'))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings: warnings() };
     }
     // Images the build brought in from somewhere other than the cleaned sources (a package, generated code).
     const unchecked = await cleanBuiltSite(out);

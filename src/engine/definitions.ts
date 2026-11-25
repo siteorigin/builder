@@ -452,6 +452,27 @@ export function setPart(state: ProjectState, op: Op<'component.setPart'>): OpRes
   return {};
 }
 
+/** A part or slot name as its label: "priceTotal" is "Price total". */
+const labelOf = (id: string) => id.replace(/([A-Z])/g, ' $1').toLowerCase().replace(/^./, (c) => c.toUpperCase());
+
+/**
+ * Declares the parts and slots a code component's code shows (as the code check reads them from its syntax tree) that
+ * its contract does not have yet, each under its own name: "total" is the "Total" part, "content" the "Content" slot.
+ * Names that are not plain camelCase words are left to the code check to report. Nothing is taken away: a part or slot
+ * the code no longer shows keeps its placements' styles and content until it is removed.
+ */
+export function declareCodeNames(def: Pick<ComponentDefinition, 'kind' | 'parts' | 'slots'>, names: { parts: readonly string[]; slots: readonly string[] }): void {
+  if (def.kind !== 'code') return;
+  for (const id of names.parts) if (id !== 'root' && validId(id) && !own(def.parts, id)) def.parts[id] = { nodeId: id, label: labelOf(id) };
+  for (const name of names.slots) if (validId(name) && !own(def.slots, name)) (def.slots ??= {})[name] = { label: labelOf(name) };
+}
+
+/** The declared slots of a component that hold content in at least one of its placements. */
+export function filledSlots(state: ProjectState, def: ComponentDefinition): string[] {
+  const uses = instancesOf(state, def.id);
+  return Object.keys(def.slots ?? {}).filter((slot) => uses.some((u) => slotChildren(u.node, slot).length > 0));
+}
+
 export function removePart(state: ProjectState, op: Op<'component.removePart'>): OpResult {
   const def = projectDef(state, op.definitionId);
   if (op.partId === 'root') fail('Every component keeps its root part.');

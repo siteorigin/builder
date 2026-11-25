@@ -19,6 +19,7 @@ import { archivePages } from '@shared/archives';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
+import { withoutPartMarkers } from './codecheck';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
@@ -561,6 +562,22 @@ export async function leaveOutDrafts(dir: string, state: ProjectState): Promise<
   await fs.writeFile(join(dir, MANIFEST_PATH), toJson({ ...manifest, files: Object.fromEntries(Object.entries(files).sort()) }));
 }
 
+/**
+ * Take the editor's part markers (data-so-part) out of a staged copy's code components before the website is built from
+ * it: the preview finds each marked part of a code component by its marker, and the published site carries none. The
+ * editable project, and its export, keep them, so the parts are still found wherever the project is opened again.
+ */
+export async function stripPartMarkers(project: string, state: ProjectState): Promise<void> {
+  for (const def of Object.values(state.components)) {
+    if (def.kind !== 'code' || def.owner !== 'project' || !def.sourcePath) continue;
+    const abs = safeJoin(project, def.sourcePath);
+    const source = await readIfExists(abs);
+    if (source === null) continue;
+    const clean = await withoutPartMarkers(source);
+    if (clean !== source) await fs.writeFile(abs, clean);
+  }
+}
+
 /** Why a website export stopped: published pages link to drafts, which the website leaves out. Null when none do. */
 export function draftLinksStop(state: ProjectState): { message: string; warnings: string[] } | null {
   const { draftLinks } = publicationPlan(state);
@@ -974,6 +991,21 @@ function generalFailure(read: ExplainedBuild): { message: string; warnings: stri
 /** Markup and code only the editor's preview may carry. */
 const EDITOR_MARKUP = /data-so-(ctx|node)|siteorigin-bridge/;
 
+/** A start tag as Svelte writes one, in a page or in a script's template, with its attributes. */
+const START_TAG = /<[a-zA-Z][^\s/>]*((?:\s+[^\s"'=<>/]+(?:=(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*\/?>/g;
+const TAG_ATTRIBUTE = /\s([^\s"'=<>/]+)(?:=(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
+
+/**
+ * Whether built HTML, or a built script's templates, give an element a code component's part marker (data-so-part),
+ * which the website's build takes out of the code (see stripPartMarkers). Read as attributes of start tags, so words
+ * that only mention the marker (a title, a page's text) are the site's own.
+ */
+export function carriesPartMarker(text: string): boolean {
+  if (!text.includes('data-so-part')) return false;
+  for (const tag of text.matchAll(START_TAG)) for (const a of tag[1].matchAll(TAG_ATTRIBUTE)) if (a[1].toLowerCase() === 'data-so-part') return true;
+  return false;
+}
+
 /** Start tags as Svelte writes them, and whole scripts and styles; see NOT_FOUND_JS, which makes these addresses absolute. */
 const BUILT_PARTS = /<script(?=[\s/>])[^>]*>[\s\S]*?<\/script\s*>|<style(?=[\s/>])[^>]*>[\s\S]*?<\/style\s*>|<[a-zA-Z][^\s/>]*(?:\s+[^\s"'=<>/]+(?:="[^"]*")?)*\s*\/?>/gi;
 const BUILT_ATTRIBUTE = /\s([^\s"'=<>/]+)="([^"]*)"/g;
@@ -1044,7 +1076,7 @@ export function pageRelativeAddresses(html: string): string[] {
 /** Why the built not-found page cannot be exported, or null. `html` is null when the build did not write it as a file. */
 export function notFoundPageProblem(html: string | null): string | null {
   if (html === null) return `The build is missing ${NOT_FOUND_FILE}, the page shown at addresses the site does not have.`;
-  if (EDITOR_MARKUP.test(html)) return `Editor-only markup was found in ${NOT_FOUND_FILE}. Export aborted.`;
+  if (EDITOR_MARKUP.test(html) || carriesPartMarker(html)) return `Editor-only markup was found in ${NOT_FOUND_FILE}. Export aborted.`;
   return null;
 }
 

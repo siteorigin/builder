@@ -2251,6 +2251,9 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
   return `(min-width: 1024px) ${desktop}, (min-width: 768px) ${tablet}, ${phone}`;
 }
 
+/** Part IDs the editor's preview can name in a class (see the part marks given to a code placement). */
+const PART_CLASS_ID = /^[A-Za-z][A-Za-z0-9_-]{0,80}$/;
+
 function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
   const p = pad(ctx);
   const ids = appearAttrs(ctx, node) + idAttrs(ctx, node.id);
@@ -2501,11 +2504,15 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   }
   // Instance overrides at page level are applied through generated override classes. Code components get the
   // same map, and their root override also through `class`, which every code component places on its root.
-  if (!ctx.def && node.overrides && Object.keys(node.overrides).length) {
+  // The editor's preview finds each declared part of a code placement by a class of its own (`so-part--total`), given
+  // through the same hook its styles take, so a part is picked on the canvas without the code carrying any marker.
+  const partMarks = ctx.instrument && !ctx.def && def.kind === 'code' ? Object.keys(def.parts).filter((pid) => pid !== 'root' && PART_CLASS_ID.test(pid)).sort() : [];
+  if (!ctx.def && ((node.overrides && Object.keys(node.overrides).length) || partMarks.length)) {
     const map: Record<string, string> = {};
     // A code placement shows a part its code hides through classes, since its stylesheet cannot see those hides.
-    for (const partId of Object.keys(node.overrides).sort()) map[partId] = overrideClass(node.id, partId) + shownClasses(def, node.overrides[partId]);
-    attrs.push(`so_o={${js(map)}}`);
+    for (const partId of Object.keys(node.overrides ?? {}).sort()) map[partId] = overrideClass(node.id, partId) + shownClasses(def, node.overrides![partId]);
+    for (const pid of partMarks) map[pid] = Object.hasOwn(map, pid) ? `${map[pid]} so-part--${pid}` : `so-part--${pid}`;
+    attrs.push(`so_o={${js(Object.fromEntries(Object.keys(map).sort().map((k) => [k, map[k]])))}}`);
     if (def.kind === 'code' && map.root && !Object.hasOwn(def.properties, 'class')) pageClasses.unshift(map.root);
   }
   if (pageClasses.length) attrs.push(`class=${attrJs(pageClasses.join(' '))}`);
@@ -2548,6 +2555,8 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   }
   // Slots
   let slotContent = '';
+  /** Snippets declared beside the placement rather than given to it, each passed only while editing. */
+  const beside: string[] = [];
   if (def.slots) {
     const snippets: string[] = [];
     for (const slotName of Object.keys(def.slots).sort()) {
@@ -2556,10 +2565,19 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
       const childIds = Array.isArray(placed) ? placed : [];
       if (!childIds.length) {
         // The editor's preview marks an empty slot where content can go. Visitors, and every export, see nothing.
-        const marker = ctx.instrument && def.kind === 'managed' ? emptySlotMarker(def.slots[slotName], slotName) : '';
+        const marker = ctx.instrument ? emptySlotMarker(def.slots[slotName], slotName) : '';
         if (!marker) continue;
         // Only while editing: Preview, as visitors see the page, has nothing in the slot at all.
         ctx.usesEditing = true;
+        if (def.kind === 'code') {
+          // A code component may show something of its own while a slot is not given ({#if slot_x}…{:else}…): it
+          // is given the placeholder only while editing, so Preview shows what visitors see.
+          ctx.snippets = (ctx.snippets ?? 0) + 1;
+          const snippet = `so_slot_empty_${ctx.snippets}`;
+          beside.push(`${p}{#snippet ${snippet}()}\n${p}\t${marker}\n${p}{/snippet}`);
+          attrs.push(`slot_${safeIdent(slotName)}={so_editing ? ${snippet} : undefined}`);
+          continue;
+        }
         snippets.push(`${p}\t{#snippet slot_${safeIdent(slotName)}()}\n${p}\t\t{#if so_editing}\n${p}\t\t\t${marker}\n${p}\t\t{/if}\n${p}\t{/snippet}`);
         continue;
       }
@@ -2571,7 +2589,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     slotContent = snippets.join('\n');
   }
   const open = `${p}<${name}\n${attrs.map((a) => `${p}\t${a}`).join('\n')}\n${p}`;
-  let markup = slotContent ? `${open}>\n${slotContent}\n${p}</${name}>` : `${open}/>`;
+  let markup = [...beside, slotContent ? `${open}>\n${slotContent}\n${p}</${name}>` : `${open}/>`].join('\n');
   if (ctx.instrument && def.kind === 'code') {
     const c = ctx.def ? '{__so}' : attrJs(ctx.ctxExpr);
     markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;

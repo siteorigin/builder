@@ -51,7 +51,7 @@ function descOf(el) {
   return { ctx: el.getAttribute('data-so-ctx') || '', node: el.getAttribute('data-so-node') || '', items: el.getAttribute('data-so-items') || '' };
 }
 function sameDesc(a, b) {
-  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items);
+  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || ''));
 }
 /** The innermost of the editor's elements at `target` (itself or the nearest one around it), or null. */
 function innermost(target) {
@@ -63,13 +63,59 @@ function innermost(target) {
   return null;
 }
 /**
- * The editor's elements at `target`, innermost first. Only attributes and tag names are read: anything that makes
- * the browser lay the page out (an element's text, its box) would do so on every move of the pointer.
+ * The code placement a marked part belongs to: the nearest of the editor's elements around it, when that is a code
+ * component's. A mark inside content placed in a slot (an element of the page's own), or in no placement at all,
+ * names no part.
  */
-function chainFrom(target) {
+function partOwner(el) {
+  const at = innermost(el.parentElement);
+  return at && at.hasAttribute('data-so-code') ? at : null;
+}
+/** The class the editor gives a code placement's declared part through the hook its styles take (see the generator). */
+const PART_CLASS = 'so-part--';
+/**
+ * The part a code component's element is: the one its author marked with `data-so-part`, or the one whose class the
+ * placement gave it (`so-part--total`). Only attributes are read.
+ */
+function partIdOf(el) {
+  if (el.hasAttribute('data-so-part')) return el.getAttribute('data-so-part') || '';
+  // The placement's class comes after any the code writes itself, so the last one is the part's.
+  let part = '';
+  for (const c of el.classList || []) if (c.startsWith(PART_CLASS) && c.length > PART_CLASS.length) part = c.slice(PART_CLASS.length);
+  return part;
+}
+/** A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. */
+function partDesc(el) {
+  if (el.hasAttribute('data-so-node')) return null;
+  const part = partIdOf(el);
+  const owner = part ? partOwner(el) : null;
+  return owner ? { ...descOf(owner), part } : null;
+}
+/**
+ * What the pointer is on, as the editor names it: the innermost marked part of a code placement or editor element
+ * at `target`, with its descriptor; null when there is none.
+ */
+function pointedAt(target) {
+  for (let el = target instanceof Element ? target : target?.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+    if (el.hasAttribute('data-so-node')) return { el, desc: descOf(el) };
+    const desc = partDesc(el);
+    if (desc) return { el, desc };
+  }
+  return null;
+}
+/**
+ * The editor's elements at `target`, innermost first. Only attributes and tag names are read: anything that makes
+ * the browser lay the page out (an element's text, its box) would do so on every move of the pointer. With `parts`,
+ * the parts a code component's author marked are named too, each just inside the placement it belongs to.
+ */
+function chainFrom(target, parts = false) {
   const chain = [];
-  for (let el = innermost(target); el && el !== document.documentElement; el = el.parentElement) {
+  for (let el = parts ? target instanceof Element ? target : target?.parentElement : innermost(target); el && el !== document.documentElement; el = el.parentElement) {
     if (el.hasAttribute('data-so-node')) chain.push({ ...descOf(el), tag: el.tagName.toLowerCase(), code: el.hasAttribute('data-so-code') });
+    else if (parts) {
+      const desc = partDesc(el);
+      if (desc) chain.push({ ...desc, tag: el.tagName.toLowerCase() });
+    }
   }
   return chain;
 }
@@ -83,7 +129,12 @@ function cssEscape(s) {
 function findAll(desc) {
   if (!desc) return [];
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
-  return [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
+  const els = [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
+  if (typeof desc.part !== 'string' || !desc.part) return els;
+  // A marked part of a code placement: every element of that placement's own markup carrying the marker (the
+  // author's code can show one more than once), never one in another placement or in content placed in a slot.
+  const marked = `[data-so-part="${cssEscape(desc.part)}"], .${cssEscape(PART_CLASS + desc.part)}`;
+  return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === desc.part && partOwner(p) === el));
 }
 /** The box an element is laid out as (with display: contents, its first child that shows), and whether its container
  *  lays its items out by CSS order: only a flex or grid container does. */
@@ -148,7 +199,8 @@ function sendRects() {
   // The padding, border and margin of the first selected box the editor outlines, for its spacing handles, with
   // what it measured so a report from before a new selection is never taken for it.
   const first = selBoxes.findIndex(Boolean);
-  const box = mode === 'edit' && first >= 0 ? spacingOf(selEls[first]) : null;
+  // A code component's marked part has no spacing handles: its author's code lays it out.
+  const box = mode === 'edit' && first >= 0 && !selected.part ? spacingOf(selEls[first]) : null;
   const spacing = box && { ...box, ctx: selected.ctx, node: selected.node, items: selected.items || '' };
   send('rects', { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, viewport: { width: innerWidth, height: innerHeight, scrollY } });
 }
@@ -804,14 +856,16 @@ document.addEventListener(
     // Report what is under the pointer; the editor decides what that hover means (what a click would
     // select) and sends it back with `track`, which is what gets outlined. While the pointer stays on the
     // same element nothing is reported, so the elements around it are only looked at once it reaches another.
-    const el = innermost(e.target);
-    const next = el ? descOf(el) : null;
+    // A part a code component's author marked counts as an element of its own, so moving between two parts is news.
+    const at = pointedAt(e.target);
+    const el = at ? at.el : null;
+    const next = at ? at.desc : null;
     // Another element with the same descriptor is news too: the same part of a component placed in another list item
     // differs only further out, in the items its placement carries.
     if (el === pointerEl && sameDesc(next, pointerAt)) return;
     pointerAt = next;
     pointerEl = el;
-    send('hover', { chain: chainFrom(el) });
+    send('hover', { chain: chainFrom(el, true) });
   },
   true
 );
@@ -862,7 +916,7 @@ document.addEventListener(
       }
       scheduleRects();
     }
-    send('select', { chain: chainFrom(e.target), alt: e.altKey, meta: e.metaKey || e.ctrlKey });
+    send('select', { chain: chainFrom(e.target, true), alt: e.altKey, meta: e.metaKey || e.ctrlKey });
   },
   true
 );
@@ -873,7 +927,7 @@ document.addEventListener(
     e.preventDefault();
     e.stopPropagation();
     pendingHit = { id: String(++hitCount), target: new WeakRef(e.target), at: textAt(e.clientX, e.clientY) };
-    send('dblclick', { chain: chainFrom(e.target), hit: pendingHit.id });
+    send('dblclick', { chain: chainFrom(e.target, true), hit: pendingHit.id });
   },
   true
 );
@@ -885,7 +939,7 @@ document.addEventListener(
     // paste) opens for the word under the pointer, and the selection stays where it is.
     if (editing && editing.el.contains(e.target)) return;
     e.preventDefault();
-    send('contextmenu', { chain: chainFrom(e.target), x: e.clientX, y: e.clientY });
+    send('contextmenu', { chain: chainFrom(e.target, true), x: e.clientX, y: e.clientY });
   },
   true
 );

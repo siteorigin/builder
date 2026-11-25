@@ -16,7 +16,7 @@ import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
-import { codeNeeds } from '@engine/definitions';
+import { codeNeeds, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
@@ -29,7 +29,7 @@ import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { ownServerHook } from './server-hook';
-import { checkSvelteSource, componentSources } from '../codecheck';
+import { checkSvelteSource, codeContractNames, componentSources } from '../codecheck';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
@@ -1968,7 +1968,11 @@ export class ProjectSession extends EventEmitter {
       // An import is a change of its own (its images and the package), checked against the project as it stands.
       if (importing && (ops.filter((o) => o.type === 'component.import').length !== 1 || ops.some((o) => o.type !== 'asset.add' && o.type !== 'component.import')))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'A component package is imported as a change of its own, with only its images.', recoverable: true } };
-      const context = { clipboards: this.clipboards, ...(opts.componentImport ? { componentImport: opts.componentImport } : {}) };
+      // The parts and slots each code source in the batch shows, read from its syntax tree before the batch is applied,
+      // so its own later operations can fill a slot or style a part the code just gained.
+      const names = new Map<string, { parts: string[]; slots: string[] } | null>();
+      for (const op of ops) if ((op.type === 'component.createCode' || op.type === 'component.updateSource') && typeof op.source === 'string' && !names.has(op.source)) names.set(op.source, await codeContractNames(op.source));
+      const context = { clipboards: this.clipboards, codeNames: (source: string) => names.get(source), ...(opts.componentImport ? { componentImport: opts.componentImport } : {}) };
       const code = opts.codeAllowed === false ? developerModeRefusal(this.state, ops, context) : null;
       if (code) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: `${code} Turn on Developer mode in Settings to work with code.`, recoverable: true } };
       // Paste places what the editor copied; an AI run never sends it.
@@ -2027,6 +2031,8 @@ export class ProjectSession extends EventEmitter {
           await checkSvelteSource(def.source, {
             strict: opts.source === 'ai' || installed || importing,
             filename: def.sourcePath,
+            // A project's own code is held to its contract: the slots it declares must render safely when left empty.
+            ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def) } } : {}),
             resolve: files ? (p: string) => (files.has(p) ? resolve(p) : undefined) : resolve,
             ...(files && built
               ? { author: 'Code in a component package', generated: (p: string) => files.has(p), modules: (p: string) => files.has(p) || (p.startsWith('src/lib/siteorigin/runtime/') && built!.has(p)) }

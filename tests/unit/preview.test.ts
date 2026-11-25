@@ -113,4 +113,13 @@ describe('bridge payload shapes', () => {
     expect(chainOf(new Array(2000).fill(d))).toEqual([]);
     expect(chainOf(new Array(2))).toEqual([]);
   });
+
+  it('keeps the part a code component marked, and drops a chain whose part is malformed', () => {
+    const placement = { ctx: 'page:p1', node: 'n1', items: '', tag: 'div', code: true };
+    const part = { ctx: 'page:p1', node: 'n1', items: '', tag: 'output', part: 'total' };
+    expect(chainOf([part, placement])).toEqual([{ ...part, text: undefined, code: undefined }, { ...placement, text: undefined }]);
+    expect(chainOf([{ ...part, part: 'x'.repeat(200) }, placement])[0].part).toBe('x'.repeat(200));
+    expect(chainOf([{ ...part, part: 7 }, placement])).toEqual([]);
+    expect(chainOf([{ ...part, part: 'x'.repeat(201) }, placement])).toEqual([]);
+  });
 });
