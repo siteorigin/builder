@@ -52,8 +52,17 @@ const shownPath = () => readablePath(location.pathname);
 const documentId = 'd' + Array.from(crypto.getRandomValues(new Uint32Array(2)), (n) => n.toString(36)).join('');
 let navigationSeq = 0;
 let navigationId = `${documentId}.0`;
-/** A page arrived in place: what is sent from here on is about it. Shown on the page for the test driver. */
+/** The address (path and query) the current navigation arrived at. */
+let navigatedTo = location.pathname + location.search;
+/**
+ * A page arrived in place: what is sent from here on is about it. A jump within the page (a #section, Back to one)
+ * or a request for the page already shown is no new page, and keeps the navigation, so what the editor asked of
+ * the page meanwhile is still answered. Shown on the page for the test driver.
+ */
 function nextNavigation() {
+  const at = location.pathname + location.search;
+  if (at === navigatedTo) return;
+  navigatedTo = at;
   navigationId = `${documentId}.${++navigationSeq}`;
   document.documentElement.setAttribute('data-so-navigation', navigationId);
 }
