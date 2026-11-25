@@ -7,7 +7,7 @@
 import type { EditOperation } from '@shared/ops';
 import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleScope, StyleScopeKey, StyleState, StyleValue } from '@shared/types';
 import { CONTAINER_SCOPES, STYLE_STATES, isContainerScope, parseStyleScopeKey, styleScopeKey } from '@shared/types';
-import { isGridChild, withGridChildProps } from './grid-child';
+import { GRID_CHILD_PROPS } from './grid-child';
 import { CONTAINER_SCOPE_LABEL, STYLE_PROP_MAP, containerStyleError, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { isBackgroundImageValue, isPictureAsset } from '@shared/background-image';
@@ -128,7 +128,7 @@ function partTarget(def: ComponentDefinition, inst: InstanceNode, owner: OwnerRe
  * one set of a selected part or element. Null for what takes no style changes of its own here: a component's
  * design (Edit everywhere styles every placement), a part of a component nested inside a section, a repeat or slot.
  */
-export function styleSelection(state: ProjectState, ref: ElementRef, scope: ResponsiveScope = 'base'): StyleSelection | null {
+export function styleSelection(state: ProjectState, ref: ElementRef): StyleSelection | null {
   // A slot of a placement, picked by its empty box, is a place for content: it has no styles of its own.
   if (ref.owner.kind === 'component' || ref.slot !== undefined) return null;
   // A part picked by name stays that part, as in the inspector, even on its component's root element: a component
@@ -150,9 +150,7 @@ export function styleSelection(state: ProjectState, ref: ElementRef, scope: Resp
     const codeStyled = def.kind === 'code' && codeTakesOverrides(def);
     const targets = ['root', ...Object.keys(def.parts).filter((p) => p !== 'root')].flatMap((p) => {
       const list = placementStyleControls(def, p, codeStyled);
-      if (list === null) return [];
-      const partRef: ElementRef = p === 'root' ? b : { owner: b.owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p };
-      return [partTarget(def, node, b.owner, p, withGridChildProps(list, isGridChild(state, partRef, scope)))];
+      return list === null ? [] : [partTarget(def, node, b.owner, p, list)];
     });
     return targets.length ? { kind: 'section', label: node.name ?? def.name, where, targets } : null;
   }
@@ -163,7 +161,7 @@ export function styleSelection(state: ProjectState, ref: ElementRef, scope: Resp
   if (inst?.kind !== 'instance' || !def || own(def.parts, b.partId)?.nodeId !== b.nodeId) return null;
   const list = placementStyleControls(def, b.partId, def.kind === 'code' && codeTakesOverrides(def));
   if (list === null) return null;
-  const t = partTarget(def, inst, b.owner, b.partId, withGridChildProps(list, isGridChild(state, b, scope)));
+  const t = partTarget(def, inst, b.owner, b.partId, list);
   return { kind: 'single', label: `${t.label} in ${inst.name ?? def.name}`, where, targets: [{ ...t, part: null }] };
 }
 
@@ -262,8 +260,7 @@ const scopeList = (s: ResponsiveStyles, property: string) => ALL_KEYS.filter((k)
  * offer, is left as it is.
  */
 export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: ElementRef, scope: PasteScope): PastePlan {
-  // A grid item takes its spans where the Inspector offers them: at the size pasted onto, or any for every size.
-  const destination = styleSelection(state, ref, scope === 'every' ? 'base' : scope);
+  const destination = styleSelection(state, ref);
   if (!destination) return { destination, rows: [], operations: [] };
   const now = effectiveTokens(state);
   const known: Known = { tokens: new Set(now.map((t) => t.id)), vars: new Set(now.map((t) => tokenVar(t.id))), copied: new Set(copy.vars) };
@@ -292,7 +289,9 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
       if (!target) skip(missing);
       else if (!def) skip('This version of the builder doesn’t know this style.');
       else if (property === 'customCss') skip('Custom CSS can set several properties at once, so it isn’t pasted. Copy it by hand.');
-      else if (!target.offered.includes(property)) skip(`${destination.kind === 'section' ? `${destination.label}’s ${target.label.toLowerCase()}` : destination.label} doesn’t offer ${label.toLowerCase()}.`);
+      // A placement takes spans whatever its design lists: they place it in the box around it. Whether that box is a
+      // grid can change with this same paste, and outside one they do nothing. (An element's own set offers them.)
+      else if (!target.offered.includes(property) && !(target.partId && GRID_CHILD_PROPS.includes(property))) skip(`${destination.kind === 'section' ? `${destination.label}’s ${target.label.toLowerCase()}` : destination.label} doesn’t offer ${label.toLowerCase()}.`);
       else if (!scopes.some((sc) => set.styles[sc]?.[property] !== undefined)) skip(`The copy sets it for ${scopeList(set.styles, property).join(', ')}, not ${SCOPE_LABELS[scope as ResponsiveScope]}.`);
       else {
         // Every size the paste writes is checked first: a property with one value that can't be written changes nowhere.

@@ -298,10 +298,13 @@ describe('where Image focus is offered', () => {
     for (const part of ['up to 12 column sizes', '"16rem 1fr 14rem"', '"repeat(auto-fit, minmax(18rem, 1fr))"', 'auto-fill', 'scope phone']) expect(template).toContain(part);
     expect(listed.find((p) => p.startsWith('rowSpan '))).toBe('rowSpan [1|2|3|4|5|6] (a grid child; above 1 for all sizes it applies from tablet up, set it at scope phone to span there)');
     expect(listed.find((p) => p.startsWith('columnSpan '))).toContain('scope phone');
+    // Packing and row heights (#666): what each takes.
+    expect(listed.find((p) => p.startsWith('gridAutoFlow '))).toContain('[row|dense]');
+    expect(listed.find((p) => p.startsWith('gridAutoRows '))).toContain('"minmax(12rem, auto)"');
     const inst = instanceOf(s, 'Home', 'hero.split');
     const tools = selectionTools(s, selectionTarget({ owner: ownerOf(s, 'Home'), instancePath: [inst.id], nodeId: 'media', partId: 'media' }));
     const style = tools?.find((t) => t.name === 'style_selected_element');
-    for (const part of ['repeat(auto-fit, minmax(18rem, 1fr))', 'rowSpan (1 to 6)', 'apply from tablet up, so phones keep their own columns unless scope "phone" sets them']) expect(style?.description).toContain(part);
+    for (const part of ['gridAutoFlow "dense"', 'gridAutoRows takes one row height', 'repeat(auto-fit, minmax(18rem, 1fr))', 'rowSpan (1 to 6)', 'apply from tablet up, so phones keep their own columns unless scope "phone" sets them']) expect(style?.description).toContain(part);
     expect(JSON.stringify(style?.parameters)).toContain('"rowSpan"');
   });
 });

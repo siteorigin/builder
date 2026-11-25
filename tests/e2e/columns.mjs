@@ -386,6 +386,8 @@ try {
   await inspector.locator('.style-group[data-group="layout"]').screenshot({ path: join(OUT, 'grid-item-spans.png') });
   await inspector.locator('.style-row[data-prop="columnSpan"] select').selectOption('full');
   await eventually(async () => assert.equal(await at(made.first).evaluate((el) => getComputedStyle(el).gridColumnEnd), '-1'), 30000);
+  await inspector.locator('.style-row[data-prop="rowSpan"] select').selectOption('2');
+  await eventually(async () => assert.equal(await at(made.first).evaluate((el) => getComputedStyle(el).gridRowEnd), 'span 2'), 30000);
   await pick('Other section');
   await eventually(async () => assert.equal(await spanRows.count(), 0, 'outside a grid they stay behind the group’s heading'), 10000);
 

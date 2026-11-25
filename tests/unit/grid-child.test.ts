@@ -137,13 +137,36 @@ describe('whether an element is a grid item', () => {
     expect(isGridChild(state, at, 'base')).toBe(true);
   });
 
+  it('counts a grid that only one screen size makes, whichever it is', () => {
+    const s = site();
+    const box = s.insert({ parentId: s.section, slot: 'content', primitive: 'stack' });
+    const cell = s.insert({ parentId: box, primitive: 'stack' });
+    for (const size of ['phone', 'tablet', 'desktop'] as const) {
+      s.style(box, 'layout', 'grid', size);
+      expect(isGridChild(s.state, s.ref(cell), 'base'), size).toBe(true);
+      expect(isGridChild(s.state, s.ref(cell), size), size).toBe(true);
+      s.style(box, 'layout', null, size);
+    }
+    expect(isGridChild(s.state, s.ref(cell), 'base')).toBe(false);
+  });
+
   it('is not claimed for an element another box wraps: a card’s action link takes the cell', () => {
+    const s = site();
+    const grid = s.insert({ parentId: s.section, slot: 'content', primitive: 'grid' });
+    const cell = s.insert({ parentId: grid, primitive: 'stack' });
+    s.insert({ parentId: cell, primitive: 'image' });
+    const state = structuredClone(s.state);
+    (state.pages[s.owner.id].nodes[cell] as ElementNode).action = 'image';
+    expect(isGridChild(state, s.ref(cell), 'base')).toBe(false);
+  });
+
+  it('keeps the cell for an element whose action has no picture to open, so no link goes around it', () => {
     const s = site();
     const grid = s.insert({ parentId: s.section, slot: 'content', primitive: 'grid' });
     const cell = s.insert({ parentId: grid, primitive: 'stack' });
     const state = structuredClone(s.state);
     (state.pages[s.owner.id].nodes[cell] as ElementNode).action = 'image';
-    expect(isGridChild(state, s.ref(cell), 'base')).toBe(false);
+    expect(isGridChild(state, s.ref(cell), 'base')).toBe(true);
   });
 
   it('is not claimed inside a code component, or for a node that is not there', () => {
@@ -158,6 +181,109 @@ describe('whether an element is a grid item', () => {
     expect(isGridChild(state, s.ref('anything', { instancePath: [nested] }), 'base')).toBe(false);
     // The placement itself is still the grid's item.
     expect(isGridChild(state, s.ref(nested), 'base')).toBe(true);
+  });
+});
+
+describe('whether content is a grid item through designs nested in one another', () => {
+  /**
+   * A page placing "outer", whose root places "inner" and gives its slot a tile. Inner is a root holding a box that
+   * holds the slot, and a second slot in a grid beside it.
+   */
+  const nested = () => {
+    const element = (id: string, children: string[], extra: object = {}) => ({ id, kind: 'element', tag: 'div', children, ...extra });
+    const design = (id: string, nodes: Record<string, unknown>, root: string, parts: Record<string, string>, extra: object = {}) =>
+      ({ id, componentId: id, kind: 'managed', owner: 'project', name: id, properties: {}, parts: Object.fromEntries(Object.entries(parts).map(([p, nodeId]) => [p, { nodeId, label: p }])), tree: { rootIds: [root], nodes }, ...extra }) as unknown as ComponentDefinition;
+    const inner = design(
+      'a.inner',
+      {
+        root: element('root', ['holder', 'side']),
+        holder: { id: 'holder', kind: 'slot', slot: 'content' },
+        side: element('side', ['aside'], { styles: { base: { layout: 'grid' } } }),
+        aside: { id: 'aside', kind: 'slot', slot: 'aside' }
+      },
+      'root',
+      { root: 'root' },
+      { variantAxes: { shape: { label: 'Shape', default: 'list', options: { list: { label: 'List' }, bento: { label: 'Bento', styles: { root: { base: { layout: 'grid' } } } } } } } }
+    );
+    const outer = design(
+      'z.outer',
+      {
+        wrap: element('wrap', ['nest']),
+        nest: { id: 'nest', kind: 'instance', definitionId: 'a.inner', props: {}, slots: { content: ['tile'], aside: ['note'] } },
+        tile: element('tile', []),
+        note: element('note', [])
+      },
+      'wrap',
+      { root: 'wrap', box: 'nest' }
+    );
+    const state = structuredClone(createStarterState('blank', 'Blank', false));
+    const home = state.pages[state.site.homePageId];
+    state.components = { ...state.components, [inner.id]: inner, [outer.id]: outer };
+    home.rootIds = ['placed'];
+    home.nodes = { placed: { id: 'placed', kind: 'instance', definitionId: 'z.outer', props: {} } as InstanceNode };
+    const owner: OwnerRef = { kind: 'page', id: home.id };
+    const at = (nodeId: string): ElementRef => ({ owner, instancePath: ['placed'], nodeId });
+    return {
+      state,
+      at,
+      outer: state.components['z.outer'],
+      placed: home.nodes.placed as InstanceNode,
+      nest: state.components['z.outer'].tree!.nodes.nest as InstanceNode
+    };
+  };
+
+  it('reads each slot where its own outlet shows it', () => {
+    const s = nested();
+    expect(isGridChild(s.state, s.at('tile'), 'base')).toBe(false);
+    expect(isGridChild(s.state, s.at('note'), 'base')).toBe(true);
+  });
+
+  it('lets the page’s change to a part that is a placed component beat that placement’s own', () => {
+    const s = nested();
+    s.nest.overrides = { root: { base: { layout: 'stack' } } };
+    expect(isGridChild(s.state, s.at('tile'), 'base')).toBe(false);
+    s.placed.overrides = { box: { base: { layout: 'grid' } } };
+    expect(isGridChild(s.state, s.at('tile'), 'base')).toBe(true);
+    s.nest.overrides = { root: { base: { layout: 'grid' } } };
+    s.placed.overrides = { box: { base: { layout: 'stack' } } };
+    expect(isGridChild(s.state, s.at('tile'), 'base')).toBe(false);
+  });
+
+  it('counts the outer design’s own rules for the placement, which land on the nested root', () => {
+    const s = nested();
+    s.outer.variantAxes = { dense: { label: 'Dense', default: 'on', options: { on: { label: 'On', styles: { nest: { base: { layout: 'grid' } } } } } } };
+    expect(isGridChild(s.state, s.at('tile'), 'base')).toBe(true);
+  });
+
+  it('reads a variant a nested placement takes from a property of the design around it', () => {
+    const s = nested();
+    s.outer.properties = { shape: { type: 'enum', label: 'Shape', default: 'list', options: [{ value: 'list', label: 'List' }, { value: 'bento', label: 'Bento' }] } };
+    s.nest.variants = { shape: { $prop: 'shape' } };
+    expect(isGridChild(s.state, s.at('tile'), 'base')).toBe(false);
+    s.placed.props = { shape: 'bento' };
+    expect(isGridChild(s.state, s.at('tile'), 'base')).toBe(true);
+    s.placed.props = {};
+    (s.outer.properties.shape as { default: string }).default = 'bento';
+    expect(isGridChild(s.state, s.at('tile'), 'base')).toBe(true);
+  });
+});
+
+describe('whether a list item’s own part style makes the box around its content a grid', () => {
+  it('counts it for that item alone', () => {
+    const s = site();
+    const cards = s.insert({ parentId: null, componentId: 'features.grid' });
+    const def = s.defOf(cards);
+    const [partId, part] = Object.entries(def.parts).find(([, p]) => {
+      const n = def.tree!.nodes[p.nodeId];
+      return n.kind === 'element' && n.children.length > 0 && Object.values(def.tree!.nodes).some((r) => r.kind === 'repeat' && r.children.includes(p.nodeId));
+    })!;
+    const inner = (def.tree!.nodes[part.nodeId] as ElementNode).children[0];
+    const items = (s.placed(cards).props.items ?? (def.properties.items as { default: unknown }).default) as Array<{ id: string }>;
+    s.apply({ type: 'node.setStyle', owner: s.owner, nodeId: cards, partId, itemId: items[0].id, scope: 'base', property: 'layout', value: 'grid' });
+    const at = s.ref(inner, { instancePath: [cards] });
+    expect(isGridChild(s.state, { ...at, itemPath: [items[0].id] }, 'base')).toBe(true);
+    expect(isGridChild(s.state, { ...at, itemPath: [items[1].id] }, 'base')).toBe(false);
+    expect(isGridChild(s.state, at, 'base')).toBe(false);
   });
 });
 
@@ -180,6 +306,16 @@ describe('the Inspector’s style rows for a grid item', () => {
       // They stay one click away outside a grid.
       expect(rows(list, false).find((g) => g.g === 'layout')!.rel.map((p) => p.id), kind).toEqual(expect.arrayContaining(['columnSpan', 'rowSpan']));
     }
+  });
+
+  it('shows a long list’s common rows of its first two groups, and any row with a value', () => {
+    const text = styleSetFor({ kind: 'text' })!;
+    const plain = rows(text, false);
+    expect(plain.map((g) => g.g).slice(0, 2)).toEqual(['typography', 'size']);
+    expect(layout(plain)).toEqual([]);
+    expect(plain.find((g) => g.g === 'typography')!.visible.map((p) => p.id)).toEqual(['textStyle', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'textAlign']);
+    expect(layout(rows(text, false, ['rowSpan']))).toEqual(['rowSpan']);
+    expect(layout(rows(text, true))).toEqual(['columnSpan', 'rowSpan']);
   });
 
   it('tucks and shows every other row as it would outside a grid', () => {
@@ -206,17 +342,20 @@ describe('the Inspector’s style rows for a grid item', () => {
     expect(layout(rows(partStyleControls(def, part), true))).toEqual(expect.arrayContaining(['columnSpan', 'rowSpan']));
   });
 
-  it('pastes spans onto a grid item whose design lists other controls, as the Inspector offers them', () => {
+  it('pastes spans onto a placement whose design lists other controls, as a grid item’s Inspector offers them', () => {
     const s = site();
     const grid = s.insert({ parentId: s.section, slot: 'content', primitive: 'grid' });
     const cell = s.insert({ parentId: grid, primitive: 'stack' });
     const nested = s.insert({ parentId: grid, componentId: 'layout.section' });
     const outside = s.insert({ parentId: null, componentId: 'layout.section' });
     s.style(cell, 'columnSpan', '2');
+    s.style(cell, 'rowSpan', '3', 'desktop');
     const copy = captureStyle(s.state, s.ref(cell))!;
-    for (const scope of ['every', 'base'] as const) {
-      expect(planStylePaste(s.state, copy, s.ref(nested), scope).rows.find((r) => r.property === 'columnSpan')?.status, scope).not.toBe('skip');
-      expect(planStylePaste(s.state, copy, s.ref(outside), scope).rows.find((r) => r.property === 'columnSpan')?.status, scope).toBe('skip');
+    for (const target of [nested, outside]) {
+      const plan = planStylePaste(s.state, copy, s.ref(target), 'every');
+      expect(plan.rows.filter((r) => r.property.endsWith('Span')).map((r) => [r.property, r.status])).toEqual([['columnSpan', 'change'], ['rowSpan', 'change']]);
+      expect(plan.operations).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: target, partId: 'root', scope: 'desktop', property: 'rowSpan', value: '3' })]));
     }
+    expect(planStylePaste(s.state, copy, s.ref(nested), 'desktop').operations.map((o) => (o as { property: string }).property)).toEqual(['rowSpan']);
   });
 });

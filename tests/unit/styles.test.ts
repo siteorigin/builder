@@ -4,7 +4,7 @@ import { validateOperation, type EditOperation } from '@shared/ops';
 import { tokenUsageCounts } from '@engine/tokens';
 import { validateState } from '@engine/validate';
 import { MIGRATIONS } from '@shared/migrations';
-import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, isStateStyleProp, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
+import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, isStateStyleProp, parseCustomCss, parseRowSize, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { applyOperations } from '@engine/apply';
@@ -1052,7 +1052,12 @@ describe('grid packing and row heights (#666)', () => {
       expect(validateStyleValue('gridAutoRows', value), value).toBeNull();
       expect(styleToCss('gridAutoRows', value), value).toEqual([`grid-auto-rows: ${css}`]);
     }
+    expect(STYLE_PROP_MAP.gridAutoRows.options!.map((o) => o.value)).toEqual(['auto', '1fr', 'minmax(8rem, auto)', 'minmax(12rem, auto)', 'minmax(16rem, auto)']);
     for (const o of STYLE_PROP_MAP.gridAutoRows.options!) expect(validateStyleValue('gridAutoRows', o.value), o.value).toBeNull();
+    // Too long, or nested deeper than browsers read.
+    const long = `calc(${Array.from({ length: 80 }, () => '1px').join(' + ')})`;
+    const deep = `${'calc('.repeat(10)}1px${')'.repeat(10)}`;
+    for (const value of [long, deep]) expect(parseRowSize(value), value.slice(0, 20)).toBeNull();
     const refused = ['12', '-4rem', '1fr 2fr', 'repeat(2, 1fr)', 'repeat(auto-fit, minmax(12rem, 1fr))', 'auto-fit-sm', 'minmax(1fr, auto)', 'minmax(12rem)', 'fit-content(20rem)', 'var(--row)', 'auto; color: red', 'url(x)', ''];
     for (const value of refused) {
       expect(validateStyleValue('gridAutoRows', value), value).toMatch(/./);
@@ -1083,14 +1088,16 @@ describe('grid packing and row heights (#666)', () => {
     const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, parentId: home(s).rootIds[0], slot: 'content', primitive: 'grid' }]);
     const gridId = r.results[0].nodeId as string;
     const edited = structuredClone(r.state);
-    home(edited).nodes[gridId].styles = { base: { layout: 'grid', gridAutoFlow: 'sideways', gridAutoRows: '1fr 2fr' } };
+    home(edited).nodes[gridId].styles = { base: { layout: 'grid', gridAutoFlow: 'sideways', gridAutoRows: 0 } };
     const text = css(edited, 'site');
     expect(text).not.toContain('grid-auto-flow');
     expect(text).not.toContain('grid-auto-rows');
-    expect(validateState(edited).filter((d) => d.code === 'STYLE_VALUE_INVALID')).toHaveLength(2);
+    expect(styleToCss('gridAutoRows', 0)).toEqual([]);
+    const said = validateState(edited).filter((d) => d.code === 'STYLE_VALUE_INVALID').map((d) => d.message);
+    expect(said).toEqual([expect.stringContaining('Grid packing must be one of'), expect.stringContaining('Row heights must be text')]);
   });
 
-  it('is offered on containers, with the AI told what each takes', () => {
+  it('is offered on containers', () => {
     expect(styleSetFor({ kind: 'element' })).toEqual(expect.arrayContaining(['gridAutoFlow', 'gridAutoRows']));
     for (const kind of ['text', 'image', 'link', 'icon']) expect(styleSetFor({ kind }), kind).not.toContain('gridAutoRows');
   });

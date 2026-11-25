@@ -2,9 +2,11 @@
  * Whether what the Inspector styles sits directly in a grid, and the style rows that follow from it: a grid item's
  * Column span and Row span show in the Layout group itself rather than behind its "more" toggle.
  */
-import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, ProjectState, ResponsiveScope } from '@shared/types';
+import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, InstanceNode, NodeTree, ProjectState, ResponsiveScope } from '@shared/types';
+import { isBinding } from '@shared/types';
+import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { cascadeStyles, type StyleLayer, type StylePropDef } from '@shared/styles';
-import { designLayers } from '@shared/variants';
+import { designLayers, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
 import { findParent } from '@engine/tree';
 import { isCardLink, isCarouselTrack } from '@generator/card-links';
@@ -43,32 +45,62 @@ function inside(walk: Walk, outer: Frame, placement: InstanceNode): Frame | null
   return def?.kind === 'managed' && def.tree ? { tree: def.tree, def, placement, outer } : null;
 }
 
+/** What a property of a placed design holds here: the placement's own value, followed outward while it passes one on. */
+function propIn(frame: Frame, binding: { $prop: string; field?: string }, depth = 0): unknown {
+  const { def, placement, outer } = frame;
+  if (!def || !placement || depth > MAX_DEPTH) return undefined;
+  const own = Object.hasOwn(placement.props, binding.$prop) ? placement.props[binding.$prop] : undefined;
+  const value = isBinding(own) && '$prop' in own && outer ? propIn(outer, own, depth + 1) : own;
+  return propBindingValue(value, binding) ?? propBindingSchema(def.properties, binding)?.default;
+}
+
+/** The options a frame's design is shown with: a placement's choices, those it binds read as the page first shows them. */
+function chosenIn(walk: Walk, frame: Frame): InstanceNode['variants'] {
+  const { placement, outer } = frame;
+  if (!placement) return walk.look ? { [walk.look.axis]: walk.look.variant } : undefined;
+  const chosen = startingVariants(placement.variants, outer?.def);
+  if (!chosen || !outer) return chosen;
+  return Object.fromEntries(
+    Object.entries(chosen).map(([axis, v]) => {
+      const bound = isBinding(v) && '$prop' in v ? propIn(outer, v) : undefined;
+      return [axis, typeof bound === 'string' ? bound : v];
+    })
+  );
+}
+
 /** What a placement's own changes add to one node of its design. */
 function placementLayers(walk: Walk, frame: Frame, nodeId: string): StyleLayer[] {
-  const { def, placement, outer } = frame;
+  const { def, placement } = frame;
   if (!def || !placement) return [];
-  const isRoot = def.tree?.rootIds[0] === nodeId;
+  // A part that is itself a placed component is written two classes heavier, so it beats that placement's own changes.
+  const extra = def.tree?.nodes[nodeId]?.kind === 'instance' ? 1 : 0;
   const out: StyleLayer[] = [];
   for (const [partId, styles] of Object.entries(placement.overrides ?? {})) {
     const target = partId === 'root' ? def.tree?.rootIds[0] : def.parts[partId]?.nodeId;
-    if (target === nodeId) out.push({ styles, strength: 3, wideColumns: true });
+    if (target === nodeId) out.push({ styles, strength: 3 + extra, wideColumns: true });
   }
   if (walk.itemId) {
     for (const [partId, part] of Object.entries(def.parts)) {
       const styles = part.nodeId === nodeId ? itemStylesOf(def, placement, partId, walk.itemId) : undefined;
-      if (styles) out.push({ styles, strength: 4, wideColumns: true });
+      if (styles) out.push({ styles, strength: 4 + extra, wideColumns: true });
     }
   }
-  // A design whose root is this placement hands its own placement's changes on to this root.
-  if (isRoot && outer?.placement && outer.tree.rootIds[0] === placement.id) out.unshift(...placementLayers(walk, outer, placement.id));
   return out;
 }
 
-/** The style rules on one element, weakest first. */
+/** The style rules on one element of a frame's tree, weakest first. */
 function boxLayers(walk: Walk, frame: Frame, node: GraphNode): StyleLayer[] {
-  if (!frame.def) return [{ styles: node.styles, strength: 1 }];
-  const chosen = frame.placement ? frame.placement.variants : walk.look ? { [walk.look.axis]: walk.look.variant } : undefined;
-  return [...designLayers(frame.def, node.id, chosen), ...placementLayers(walk, frame, node.id)];
+  const { def, outer } = frame;
+  if (!def) return [{ styles: node.styles, strength: 1 }];
+  const design = designLayers(def, node.id, chosenIn(walk, frame));
+  const own = placementLayers(walk, frame, node.id);
+  // A design's root also carries what the tree around it gives the placement: that design's rules for it, and its
+  // own placement's changes to it. Two designs' rules of one weight go by the stylesheet's order, which is by ID.
+  if (def.tree?.rootIds[0] !== node.id || !frame.placement || !outer?.def) return [...design, ...own];
+  const placed = nodeOf(outer.tree, frame.placement.id);
+  if (!placed) return [...design, ...own];
+  const around = boxLayers(walk, outer, placed);
+  return outer.def.id.localeCompare(def.id) < 0 ? [...around, ...design, ...own] : [...design, ...around, ...own];
 }
 
 /** Whether the element that renders directly around a node is a grid at any of `sizes`. */
@@ -94,17 +126,28 @@ function parentIsGrid(walk: Walk, frame: Frame, nodeId: string, sizes: ReadonlyA
   return !!design && Object.values(design.tree.nodes).some((n) => n.kind === 'slot' && n.slot === parent.slot && parentIsGrid(walk, design, n.id, sizes, depth + 1));
 }
 
+/** Whether an element holds a picture its own action could open: one of its images, outside lists and components. */
+function holdsImage(tree: NodeTree, node: ElementNode, depth = 0): boolean {
+  return node.children.some((id) => {
+    const child = nodeOf(tree, id);
+    return child?.kind === 'image' || (child?.kind === 'element' && depth < MAX_DEPTH && holdsImage(tree, child, depth + 1));
+  });
+}
+
 /**
  * Whether the element a node renders is wrapped in another of the runtime's own (a card's action link, a carousel's
  * frame), which is then the grid's item: a span on the element would do nothing.
  */
-function wrapped(state: ProjectState, node: GraphNode, depth = 0): boolean {
+function wrapped(state: ProjectState, tree: NodeTree, node: GraphNode, depth = 0): boolean {
   if (node.kind === 'instance') {
     const def = Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
     const root = def?.kind === 'managed' && def.tree ? nodeOf(def.tree, def.tree.rootIds[0]) : undefined;
-    return !!root && depth < MAX_DEPTH && wrapped(state, root, depth + 1);
+    return !!root && depth < MAX_DEPTH && wrapped(state, def!.tree!, root, depth + 1);
   }
-  return isCarouselTrack(node) || (node.kind === 'element' && node.action !== undefined && node.action !== null && isCardLink(node));
+  if (isCarouselTrack(node)) return true;
+  if (node.kind !== 'element' || node.action === undefined || node.action === null || !isCardLink(node)) return false;
+  // With no picture to open, an image action adds no link around the element.
+  return node.action !== 'image' || holdsImage(tree, node);
 }
 
 /**
@@ -125,7 +168,7 @@ export function isGridChild(state: ProjectState, ref: ElementRef, scope: Respons
     frame = next;
   }
   const node = nodeOf(frame.tree, ref.nodeId);
-  if (!node || node.kind === 'repeat' || node.kind === 'slot' || wrapped(state, node)) return false;
+  if (!node || node.kind === 'repeat' || node.kind === 'slot' || wrapped(state, frame.tree, node)) return false;
   return parentIsGrid(walk, frame, node.id, scope === 'base' ? ['phone', 'tablet', 'desktop'] : [scope]);
 }
 
