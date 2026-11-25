@@ -89,7 +89,9 @@ const PATCHES: Record<string, (def: ComponentDefinition) => void> = {
     restyleOption(def, 'tone', 'inverse', 'card-link', { base: { color: tok('color.on-inverse') } });
   },
   'stats.row': (def) => {
-    restyle(def, 'figure', { base: { paddingBlockStart: tok('space.md'), borderBlockStart: RULE, gap: tok('space.sm') } });
+    // The rule is on the figure's value (shown first, and a part placements can restyle), not on its repeated wrapper.
+    restyle(def, 'figure', { base: { gap: tok('space.sm') } });
+    restyle(def, 'value', { base: { paddingBlockStart: tok('space.md'), borderBlockStart: RULE } });
   },
   'testimonials.grid': (def) => {
     restyle(def, 'card', { base: { shadow: null, border: tok('border.default') } });
