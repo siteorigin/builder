@@ -3,8 +3,11 @@
  * web address link as `rel`, written in the text form after its destination, and rendered after the security tokens a
  * new tab adds.
  */
-import { describe, expect, it } from 'vitest';
-import type { LinkValue, ProjectState } from '@shared/types';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { InstanceNode, LinkValue, ProjectState } from '@shared/types';
 import { validateOperation } from '@shared/ops';
 import { canonicalRels, linkRels, linkTitle, relAttribute, relsFromAttribute, withRels } from '@shared/link-rel';
 import { linkFromTarget, linkTokens, parseRichText, richTextToMarkdown } from '@shared/richtext';
@@ -15,10 +18,46 @@ import { resolveLink } from '@generator/index';
 import { linkAt, setLink, typedLink } from '../../src/renderer/src/lib/richtext-commands';
 import { richDom } from '../../src/renderer/src/lib/richtext';
 import { emptyReport, htmlToRichText } from '../../src/main/posts-import/html';
+import { articleLinks } from '../../src/renderer/src/lib/post-dom';
+import { ProjectSession } from '../../src/main/project/session';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const aboutOf = (s: ProjectState) => Object.values(s.pages).find((p) => p.title === 'About')!;
 const SHOP = 'https://shop.example/';
+
+const dirs: string[] = [];
+afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+describe('a link’s relationships in a project', () => {
+  it('are saved in its document, kept on reopen, and undone and redone like any edit', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-rel-'));
+    dirs.push(dir);
+    const s = await ProjectSession.create(dir, createStarterState('business', 'Rel', false));
+    const header = s.state.site.shell.header;
+    const nodeId = header.rootIds[0];
+    const cta = () => (s.state.site.shell.header.nodes[nodeId] as InstanceNode).props.ctaLink;
+    const before = cta();
+    const set = (value: unknown) => s.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId, prop: 'ctaLink', value }] }, { label: 'Edit link' });
+    expect((await set({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored'] })).ok).toBe(true);
+    expect((await set({ type: 'url', target: SHOP, newTab: true, rel: ['ugc', 'sponsored'] })).ok).toBe(true);
+    const stored = () => (JSON.parse(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8')).shell.header.nodes[nodeId] as InstanceNode).props.ctaLink;
+    expect(stored()).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored', 'ugc'] });
+    await s.undo();
+    expect(cta()).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored'] });
+    await s.redo();
+    expect(cta()).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored', 'ugc'] });
+    // A refused value changes nothing.
+    expect((await set({ type: 'url', target: SHOP, rel: ['noopener'] })).ok).toBe(false);
+    expect(cta()).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored', 'ugc'] });
+    await s.close();
+    const again = await ProjectSession.open(dir, 'test');
+    expect((again.state.site.shell.header.nodes[nodeId] as InstanceNode).props.ctaLink).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored', 'ugc'] });
+    await again.undo();
+    await again.undo();
+    expect((again.state.site.shell.header.nodes[nodeId] as InstanceNode).props.ctaLink).toEqual(before);
+    await again.close();
+  });
+});
 
 describe('the stored relationships', () => {
   it('reads only the three it knows, each once, in their own order', () => {
@@ -174,6 +213,21 @@ describe('relationships read back from a page', () => {
     expect(richDom([{ tag: 'a', href: SHOP, rel: ['a', 'b', 'c', 'd'], children: ['x'] }])).toBeNull();
     const { blocks } = blocksFromDom([{ tag: 'p', children: [{ tag: 'a', href: SHOP, newTab: true, rel: ['ugc', 'bogus'], children: ['x'] }, ' ', { tag: 'a', href: '/about/', rel: ['ugc'], children: ['y'] }] }], s.pages);
     expect(blocks).toEqual([{ type: 'p', spans: [{ text: 'x', link: { type: 'url', target: SHOP, newTab: true, rel: ['ugc'] } }, { text: ' ' }, { text: 'y', link: { type: 'page', target: aboutOf(s).id } }] }]);
+  });
+
+  it('come from the Posts writer’s anchor, which the link dialog changes, never from the link it kept for the anchor', () => {
+    // The writer keeps each link's stored destination on its anchor (data-link) and reads it back as so-link:…, so a
+    // page link survives its page's address changing. The anchor's own rel is what the author last ticked.
+    const kept = (l: LinkValue) => `so-link:${JSON.stringify(l)}`;
+    const links = articleLinks(s);
+    expect(links.link(kept({ type: 'url', target: SHOP, rel: ['sponsored'] }), false, [])).toEqual({ type: 'url', target: SHOP });
+    expect(links.link(kept({ type: 'url', target: SHOP, newTab: true }), true, ['ugc', 'nofollow'])).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['nofollow', 'ugc'] });
+    expect(links.link(kept({ type: 'page', target: aboutOf(s).id }), false, ['ugc'])).toEqual({ type: 'page', target: aboutOf(s).id });
+    // A link typed in the writer since: read from its address.
+    expect(links.link(SHOP, false, ['sponsored'])).toEqual({ type: 'url', target: SHOP, rel: ['sponsored'] });
+    // The whole text, as the writer reads its anchors.
+    const { blocks } = blocksFromDom([{ tag: 'p', children: [{ tag: 'a', href: kept({ type: 'url', target: SHOP, rel: ['sponsored'] }), children: ['deal'] }] }], s.pages, links);
+    expect(blocks).toEqual([{ type: 'p', spans: [{ text: 'deal', link: { type: 'url', target: SHOP } }] }]);
   });
 
   it('come with an imported post’s links to other sites', () => {
