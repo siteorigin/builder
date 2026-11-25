@@ -145,6 +145,17 @@ describe('the contact form’s code', () => {
     expect(changed(/name=\{names\[i\]\}/, "name={names[i] ?? 'message'}")).toBeNull();
     // The sending state the agent's answer reads, under another name.
     expect(changed(/\bstatus\b/g, 'sendStatus')).toBeNull();
+    expect(changed("import { visitorText } from '../runtime/visitor-text.js';", "import { visitorText } from '../runtime/visitor-text.js';\n\timport /* helper */ '\\x2e/Helper.svelte';")).toBeNull();
+    // A field that locks itself some other way while sending would change under an agent.
+    expect(changed("readonly={status === 'sending'}", 'readonly={busy}')).toBeNull();
+  });
+
+  it('changes only the form’s markup and code, whatever else the code says, and either quote', () => {
+    const quoted = FORM_SOURCE_FOR_TESTS.replace("readonly={status === 'sending'}", 'readonly={status === "sending"}');
+    expect(adaptFormSource(quoted)).toContain('readonly={status === "sending" && !so_answering}');
+    const said = FORM_SOURCE_FOR_TESTS.replace('\tconst uid = $props.id();', "\tconst uid = $props.id();\n\tconst note = 'name={honeypot}';");
+    const adapted = adaptFormSource(said)!;
+    expect(adapted).toContain("\tconst note = 'name={honeypot}';");
   });
 });
 
@@ -620,6 +631,24 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
       await page.evaluate('window.told = undefined');
       await posts[0].fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
       await expect.poll(() => page.inputValue('input[name="name"]')).toBe('');
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
+  it('keeps what the visitor typed while the agent waited', async () => {
+    const { browser, page, posts } = await open();
+    try {
+      await page.evaluate(agentSubmit(true));
+      await expect.poll(() => posts.length).toBe(1);
+      await page.fill('input[name="name"]', 'Bo');
+      await posts[0].fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      await page.waitForFunction(told);
+      expect(await page.evaluate('window.told')).toEqual({ sent: true, message: 'The message was sent.' });
+      await new Promise((r) => setTimeout(r, 100));
+      expect(await page.inputValue('input[name="name"]')).toBe('Bo');
+      // The message that went is the one the agent filled in.
+      expect(posts[0].request().postDataBuffer()?.toString()).toContain('Ana');
     } finally {
       await browser.close();
     }

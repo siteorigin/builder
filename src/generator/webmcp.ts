@@ -39,7 +39,7 @@ const CHOICES_OPEN = '<fieldset class="so-form__field so-form__field--wide so-fo
 /** The spam trap: off screen, but in the agent's view of the form all the same. */
 const TRAP = /name=\{honeypot\}/g;
 /** What makes a field read-only, or a question unanswerable, while a message sends. */
-const WHILE_SENDING = /(readonly|disabled)=\{status === 'sending'\}/g;
+const WHILE_SENDING = /(readonly|disabled)=\{status === (['"])sending\2\}/g;
 
 const count = (text: string, piece: string) => text.split(piece).length - 1;
 const LABEL = "so_webmcp ? String(field.label ?? '').trim() || undefined : undefined";
@@ -64,15 +64,24 @@ const SPECIFIERS = /\b(?:from|import)\s*\(?\s*(['"`])((?:(?!\1)[^\n])*)\1/g;
  * which a path beside the form would lead nowhere).
  */
 export function adaptFormSource(source: string): string | null {
-  if (/\bso_(?:webmcp|send|reset|told|answering)|\btool(?:name|description|autosubmit|param\w*)\b|\{\s*\.\.\./i.test(source) || /['"`]\.\//.test(source)) return null;
-  if ([...source.matchAll(SPECIFIERS)].some((m) => m[2].includes('\\') || m[2].startsWith('./') || m[2] === '.')) return null;
-  if ([PROPS_END, UID, STATUS, HONEYPOT, FORM_OPEN, FIELD_LOOP, SUBMIT].some((piece) => count(source, piece) !== 1) || !source.includes(RESET)) return null;
-  // Every field the loop places names itself on a line of its own, so none is left without its description.
-  const at = source.indexOf(FIELD_LOOP);
-  const loop = source.slice(at, source.indexOf(FIELD_LOOP_END, at));
+  if (/\bso_(?:webmcp|send|reset|told|answering|sent|values)|\btool(?:name|description|autosubmit|param\w*)\b|\{\s*\.\.\./i.test(source) || /['"`]\.\//.test(source)) return null;
+  // Module paths written with escapes could name a file beside the form however they are spelled.
+  if (/\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F{])/.test(source) || [...source.matchAll(SPECIFIERS)].some((m) => m[2].includes('\\') || m[2].startsWith('./') || m[2] === '.')) return null;
+  // The code and the markup, each changed only where it is the form's: a script string that reads like markup is left alone.
+  const cut = source.indexOf('\n</script>');
+  if (cut < 0) return null;
+  const script = source.slice(0, cut);
+  const markup = source.slice(cut);
+  if ([PROPS_END, UID, STATUS, HONEYPOT, SUBMIT].some((piece) => count(script, piece) !== 1) || !script.includes(RESET)) return null;
+  if ([FORM_OPEN, FIELD_LOOP].some((piece) => count(markup, piece) !== 1)) return null;
+  // Every field the loop places names itself on a line of its own, and locks itself while sending only as the form
+  // does, so none is left without its description or changes under an agent.
+  const at = markup.indexOf(FIELD_LOOP);
+  const loop = markup.slice(at, markup.indexOf(FIELD_LOOP_END, at));
   const fields = loop.match(FIELD_NAME)?.length ?? 0;
   if (!fields || fields !== (loop.match(/\bname=/g)?.length ?? 0)) return null;
-  return source
+  if ((loop.match(WHILE_SENDING)?.length ?? 0) !== (loop.match(/\b(?:readonly|disabled)=/g)?.length ?? 0)) return null;
+  const code = script
     // First, so the emptying the agent's answer waits for is not itself made to wait.
     .replaceAll(RESET, 'so_reset(form);')
     .replace(PROPS_END, "\n\t\tclass: className = '',\n\t\tso_webmcp = null\n\t} = $props();")
@@ -84,11 +93,17 @@ export function adaptFormSource(source: string): string | null {
       SUBMIT,
       `\n\t// An agent in the visitor's browser that filled the form in (WebMCP) waits to hear whether the message was sent. It is
 \t// told once sending ends (respondWith, claimed while the browser still asks). Meanwhile the fields stay as they are,
-\t// and the form is emptied only once the agent has its answer.
+\t// and the form is emptied once the agent has its answer, and only while it still holds what was sent: anything the
+\t// visitor typed meanwhile is theirs to keep.
 \tlet so_told = null;
+\tlet so_sent = null;
 \tlet so_answering = $state(false);
+\tconst so_values = (form) => JSON.stringify([...form.elements].map((el) => (el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value)));
 \tfunction so_reset(form) {
-\t\tconst reset = () => HTMLFormElement.prototype.reset.call(form);
+\t\tconst expected = so_sent;
+\t\tconst reset = () => {
+\t\t\tif (expected === null || so_values(form) === expected) HTMLFormElement.prototype.reset.call(form);
+\t\t};
 \t\t// After the browser has taken the answer in, never before.
 \t\tif (so_told) so_told.then(() => setTimeout(reset));
 \t\telse reset();
@@ -102,16 +117,15 @@ export function adaptFormSource(source: string): string | null {
 \t\t\tevent.respondWith(busy.then(() => ({ sent: false, message: 'The form is already sending a message.' })));
 \t\t\treturn;
 \t\t}
+\t\tconst form = event.currentTarget;
 \t\tlet tell;
 \t\tconst told = new Promise((resolve) => (tell = resolve));
 \t\tso_told = told;
+\t\tso_sent = so_values(form);
 \t\tso_answering = true;
-\t\tlet trapped = false;
-\t\ttry {
-\t\t\ttrapped = !!new FormData(event.currentTarget).get(honeypot);
-\t\t} catch {
-\t\t\t// Read as not filled in.
-\t\t}
+\t\t// Read from the field itself, so nothing that adds to a form's data runs twice for one send.
+\t\tconst trap = form.elements.namedItem(honeypot);
+\t\tconst trapped = !!trap && (trap.type === 'checkbox' ? trap.checked : !!trap.value);
 \t\tconst answer = () => {
 \t\t\tif (trapped) return { sent: false, message: 'The message was discarded: the spam trap was filled in.' };
 \t\t\tif (status === 'sent') return { sent: true, message: 'The message was sent.' };
@@ -124,18 +138,24 @@ export function adaptFormSource(source: string): string | null {
 \t\tso_send(event).then(done, done);
 \t\tevent.respondWith(told);
 \t\ttold.then(() => {
-\t\t\tif (so_told === told) so_told = null;
+\t\t\tif (so_told !== told) return;
+\t\t\tso_told = null;
+\t\t\tso_sent = null;
 \t\t});
 \t}
 
 \tasync function so_send(event) {
 \t\tevent.preventDefault();`
-    )
-    .replace(FORM_OPEN, `${FORM_OPEN}\n\t\t\ttoolname={so_webmcpName}\n\t\t\ttooldescription={so_webmcp?.description}`)
-    .replace(FIELD_NAME, (_m, tabs: string, name: string) => `\n${tabs}${name}\n${tabs}toolparamdescription={${LABEL}}`)
-    .replace(CHOICES_OPEN, `${CHOICES_OPEN} toolparamdescription={${LABEL}}`)
-    .replace(TRAP, (name) => `${name} toolparamdescription={so_webmcp ? 'A spam trap: always leave it empty. Filling it in discards the message.' : undefined}`)
-    .replace(WHILE_SENDING, (_m, attr: string) => `${attr}={status === 'sending' && !so_answering}`);
+    );
+  return (
+    code +
+    markup
+      .replace(FORM_OPEN, `${FORM_OPEN}\n\t\t\ttoolname={so_webmcpName}\n\t\t\ttooldescription={so_webmcp?.description}`)
+      .replace(FIELD_NAME, (_m, tabs: string, name: string) => `\n${tabs}${name}\n${tabs}toolparamdescription={${LABEL}}`)
+      .replace(CHOICES_OPEN, `${CHOICES_OPEN} toolparamdescription={${LABEL}}`)
+      .replace(TRAP, (name) => `${name} toolparamdescription={so_webmcp ? 'A spam trap: always leave it empty. Filling it in discards the message.' : undefined}`)
+      .replace(WHILE_SENDING, (_m, attr: string, q: string) => `${attr}={status === ${q}sending${q} && !so_answering}`)
+  );
 }
 
 /** Adapted sources by the code they came from: a form placed on every page is adapted once. */

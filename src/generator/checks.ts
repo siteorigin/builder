@@ -645,8 +645,8 @@ export function netlifyFormClashes(state: ProjectState): FormNameClash[] {
 /**
  * Whether the website shows a code component `test` picks: on a published page, in the shared header or footer where
  * the website shows it (a published page that does, or any page of a collection: its entries and archives always do),
- * or on a published entry's page as its collection's layout shows it for that entry, at any depth (inside designs,
- * content areas and kept panels). A component only installed, or placed only on drafts, is not shown. With
+ * at any depth (inside designs, content areas and kept panels), or in the layout of a collection with a published
+ * entry. A component only installed, or placed only on drafts, is not shown. With
  * `throughCode`, code that places the component itself (a design converted to code) shows it too.
  */
 export function siteShowsCode(state: ProjectState, test: (def: ComponentDefinition) => boolean, opts: { throughCode?: boolean } = {}): boolean {
@@ -672,17 +672,10 @@ export function siteShowsCode(state: ProjectState, test: (def: ComponentDefiniti
     return found;
   };
   if ([...pages, ...shell].some((tree) => shows(state, tree))) return true;
-  // Each entry's page as the website has it, its layout's conditions read for that entry: only in collections whose
-  // layout places such a component somewhere, whatever its conditions say.
-  const placing = new Map<string, boolean>();
-  return entries.some(({ collection, entry }) => {
-    const id = collection.settings.id;
-    if (!placing.has(id)) placing.set(id, treePlaces(live, collection.settings.template, picks));
-    if (!placing.get(id)) return false;
-    const page = materializeTemplate(live, collection, entry, entryNeighbours(live, id, entry.id));
-    entryTrees.set(page, { collectionId: id, entryId: entry.id });
-    return shows(live, page);
-  });
+  // A collection's layout counts once an entry is published and the layout places such a component anywhere, whatever
+  // its conditions say of each entry: reading every entry's page would cost each one its feeds again, and the tools
+  // this decides are offered for the site as a whole (site search reads the index, whichever page shows its box).
+  return [...new Set(entries.map((e) => e.collection.settings.id))].some((id) => treePlaces(live, live.collections[id]?.settings?.template, picks));
 }
 
 /** Whether a tree places, anywhere and whatever its conditions, a component `picks` says yes to, or a design that does. */
