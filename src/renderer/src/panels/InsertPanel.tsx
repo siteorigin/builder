@@ -1600,15 +1600,15 @@ export function InsertPanel() {
       ...needs.map((d): MenuItem => ({ label: `Needed by ${d.name}`, icon: <Code />, hint: 'Code', disabled: true })),
       { separator: true },
       // One in use opens a review of what uses it, with a way to each placement (#663).
-      { label: count || needs.length ? 'Delete component…' : 'Delete component', icon: <Trash2 />, danger: true, hint: count || needs.length ? 'In use' : undefined, onSelect: () => deleteOrReview(def) }
+      { label: count || needs.length ? 'Delete component…' : 'Delete component', icon: <Trash2 />, danger: true, hint: count || needs.length ? 'In use' : undefined, onSelect: () => deleteOrReview(def, count > 0 || needs.length > 0) }
     ];
   };
-  // Decided when chosen, as the project is then: the menu may have opened before something placed it, or before its
-  // last placement went.
-  const deleteOrReview = (def: ComponentDefinition) => {
+  // Checked again when chosen: the menu may have opened before something placed it. One the menu offered as in use
+  // is reviewed even if its last use has gone since, so the author confirms what was not said to be deleted at once.
+  const deleteOrReview = (def: ComponentDefinition, shownInUse: boolean) => {
     const now = getState().snapshot;
     if (!now) return;
-    if (placesOf(now.state, def.id).length || dependentsOf(now.state, def.id).length) setState({ modal: { kind: 'removal-review', opening: now.workspaceKey, definitionId: def.id } });
+    if (shownInUse || placesOf(now.state, def.id).length || dependentsOf(now.state, def.id).length) setState({ modal: { kind: 'removal-review', opening: now.workspaceKey, definitionId: def.id } });
     else void removeDefinition(def);
   };
   const removeDefinition = async (def: ComponentDefinition) => {

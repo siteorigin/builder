@@ -59,7 +59,7 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
   const operations: EditOperation[] | undefined = slot !== undefined ? plan?.operations : review && !review.rows.length && !dependents.length ? [{ type: 'component.remove', definitionId }] : undefined;
   const problem = gone || busy ? undefined : readOnly ? 'This project is open read-only, so nothing can be removed.' : plan?.problem;
   // Whether the review can remove anything now, which decides what it says it does.
-  const can = !!operations && !problem;
+  const can = !!operations && !problem && !busy;
   // The revision the remove button was pressed on: a press the project changed under (a held Space, a slow click)
   // acts on content the author was not shown, so it is let go and a fresh press is needed.
   const pressed = useRef<number | null>(null);
@@ -146,7 +146,12 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
               {operations ? 'Cancel' : 'Close'}
             </SafeButton>
             {operations && (
-              <button className="btn btn-danger" disabled={busy || !!problem} onPointerDown={arm} onKeyDown={(e) => !e.repeat && (e.key === ' ' || e.key === 'Enter') && arm()} onClick={() => void remove()}>
+              <button className="btn btn-danger" disabled={busy || !!problem} onPointerDown={arm} onKeyDown={(e) => {
+                  if (e.key !== ' ' && e.key !== 'Enter') return;
+                  // A held key repeats: only its first press counts, and only for what was shown then.
+                  if (e.repeat) return e.preventDefault();
+                  arm();
+                }} onClick={() => void remove()}>
                 {busy ? 'Removing…' : action}
               </button>
             )}

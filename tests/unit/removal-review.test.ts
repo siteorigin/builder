@@ -205,6 +205,14 @@ describe('removing a slot with what placements hold in it (#663)', () => {
     const copy = run(s, [{ type: 'node.duplicate', owner: w.design, nodeId: w.outlet }]);
     const second = run(copy.state, [{ type: 'node.move', owner: w.design, nodeId: copy.results[0].nodeId as string, parentId: 'root', index: 0 }]).state;
     expect(planSlotRemoval(second, w.id, w.slot)!.problem).toBeUndefined();
+    // One that shows only while another slot is empty does not, where that other slot is filled.
+    const other = createSlotOps(s, s.components[w.wrapId], 'Other', slotInsertAt(s, w.wrapId, ref(w.design, 'root'))!)!;
+    let hidden = run(s, other.operations).state;
+    const otherOutlet = Object.values(hidden.components[w.wrapId].tree!.nodes).find((n) => n.kind === 'slot' && n.slot === other.slot)!.id;
+    const inFallback = run(hidden, [{ type: 'node.duplicate', owner: w.design, nodeId: w.outlet }]);
+    hidden = run(inFallback.state, [{ type: 'node.move', owner: w.design, nodeId: inFallback.results[0].nodeId as string, parentId: otherOutlet, index: 0 }]).state;
+    hidden = run(hidden, [{ type: 'node.insert', owner: w.home, parentId: wrapOnHome, slot: other.slot, primitive: 'paragraph', text: 'Other words' }]).state;
+    expect(planSlotRemoval(hidden, w.id, w.slot)!.problem).toMatch(/shows its own “Extra” slot, which holds content on Home/);
   });
 
   it('takes a design’s filled slot when the only placement filling it goes too', () => {
@@ -236,6 +244,19 @@ describe('removing a slot with what placements hold in it (#663)', () => {
     expect(plan.rows).toEqual([]);
     expect(plan.operations).toBeUndefined();
     expect(plan.problem).toMatch(/^The “Buttons” slot shows Offer card’s “Extra” slot while it is empty, and “Extra” holds content on Home\. Removed, that content would no longer show\./);
+  });
+
+  it('leaves a slot that code placing the component fills for the author to change that code first', () => {
+    const c = site();
+    const s = structuredClone(c.s);
+    const ticker = { id: 'cd_ticker', name: 'Ticker', kind: 'code', owner: 'project', dependencies: [c.id], source: '<p>No slot here</p>' } as unknown as ComponentDefinition;
+    s.components.cd_ticker = ticker;
+    // Code that places the card without filling Buttons is no reason to keep it.
+    expect(planSlotRemoval(s, c.id, c.slot)!.problem).toBeUndefined();
+    ticker.source = '<OfferCard>{#snippet slot_buttons()}<p>Call us</p>{/snippet}</OfferCard>';
+    const plan = planSlotRemoval(s, c.id, c.slot)!;
+    expect(plan.operations).toBeUndefined();
+    expect(plan.problem).toBe('The code of Ticker places Offer card and fills its “Buttons” slot. Removed, what that code puts there would no longer show. Change that code first.');
   });
 
   it('leaves content a hand edit damaged for the author to look at', () => {

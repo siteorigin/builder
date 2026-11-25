@@ -6,7 +6,8 @@
 import type { ComponentDefinition, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { childLists, findParent, instancesOf, subtreeIds } from '@engine/tree';
-import { dependentsOf } from '@engine/definitions';
+import { codeImports, dependentsOf } from '@engine/definitions';
+import { slotIdent } from '@generator/index';
 import { nodeLabel } from './insert-at';
 import { treeFor } from './model';
 import { fillsSlot } from './slot-contract';
@@ -91,6 +92,24 @@ export interface SlotRemovalPlan {
   problem?: string;
 }
 
+/**
+ * The slot placeholders a design shows: those reached from its root other than through what another placeholder
+ * shows while its slot is empty (a placement filling that slot never shows them).
+ */
+function shownOutlets(tree: NodeTree): Set<string> {
+  const out = new Set<string>();
+  const seen = new Set<string>();
+  const walk = (id: string) => {
+    const n = own(tree.nodes, id);
+    if (!n || seen.has(id)) return;
+    seen.add(id);
+    if (n.kind === 'slot') return void out.add(id);
+    for (const l of childLists(n)) l.ids.forEach(walk);
+  };
+  tree.rootIds.forEach(walk);
+  return out;
+}
+
 /** A slot's name for the author: its label, or its code name when a hand edit left it without one. */
 const slotName = (label: unknown, slot: string) => (typeof label === 'string' && label.trim() ? label : slot);
 
@@ -121,6 +140,9 @@ export function planSlotRemoval(state: ProjectState, definitionId: string, slot:
     entry.held.push(...held);
     byOwner.set(key, entry);
   }
+  // Code that places the component and fills the slot reads it by its prop: removed, what it puts there would not show.
+  const caller = Object.values(state.components).find((d) => codeImports(state, d, def.id) && !!d.source?.includes(slotIdent(slot)));
+  if (caller) return { rows, items: 0, problem: `The code of ${caller.name} places ${def.name} and fills its “${label}” slot. Removed, what that code puts there would no longer show. Change that code first.` };
   // What goes, by place: each piece with everything inside it.
   const gone = new Map<string, Set<string>>();
   const operations: EditOperation[] = [];
@@ -146,10 +168,13 @@ export function planSlotRemoval(state: ProjectState, definitionId: string, slot:
     const design = key.startsWith('component:') ? own(state.components, key.slice('component:'.length)) : undefined;
     const tree = design?.tree;
     if (!design || !tree) continue;
+    const shown = shownOutlets(tree);
     for (const id of set) {
       const n = own(tree.nodes, id);
       if (n?.kind !== 'slot' || (key === ownKey && n.slot === slot)) continue;
-      if (Object.values(tree.nodes).some((m) => m.kind === 'slot' && m.slot === n.slot && !set.has(m.id))) continue;
+      // Another placeholder the design shows keeps that content showing; one only inside what another shows while empty
+      // does not, for a placement filling that other slot.
+      if (Object.values(tree.nodes).some((m) => m.kind === 'slot' && m.slot === n.slot && !set.has(m.id) && shown.has(m.id))) continue;
       const filled = instancesOf(state, design.id).find((u) => fillsSlot(u.node, n.slot) && stays(u.owner, u.node.id));
       if (!filled) continue;
       const name = slotName(own(design.slots, n.slot)?.label, n.slot);
