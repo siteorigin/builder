@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceNode } from '@shared/types';
 import { LIMITS } from '@agent/orchestrator';
+import type { EditOperation } from '@shared/ops';
+import { applyOperations } from '@engine/apply';
 import { EVAL_CASES, SUITE_VERSION } from '../../scripts/eval/cases';
 import { estimateCostUsd, REPORT_SCHEMA_VERSION, runCase, runSuite, SCRIPTED_PROFILES, ScriptedAdapter, scriptedAdapter, summarize, tracesToJsonl, type CaseResult, type EvalCase, type RunOptions } from '../../scripts/eval/harness';
 
@@ -484,8 +486,36 @@ describe('agent benchmark', () => {
       // Readable once fixed, but then hidden, or faded out, on phones.
       expect(await failing(fixes((list) => list.push(line('hidden', true))))).toEqual(['readable-on-phone']);
       expect(await failing(fixes((list) => list.push(line('opacity', 0))))).toEqual(['readable-on-phone']);
-      // Custom CSS can change anything about the line, at any size: nothing about it is measured.
-      expect(await failing(fixes((list) => list.push(line('customCss', 'display: none;'))))).toEqual(['fits-on-phone', 'readable-on-phone', 'desktop-kept']);
+      // Custom CSS can change anything about the line where it applies: on phones nothing about it is measured.
+      expect(await failing(fixes((list) => list.push(line('customCss', 'display: none;'))))).toEqual(['fits-on-phone', 'readable-on-phone']);
+      // The panel's color on the text alone, the panel itself left bare.
+      const bare = (n: string, a: any) => n === 'apply_operations' && a.operations.push({ ...a.operations[0], scope: 'base', property: 'background', value: null }, { ...a.operations[0], nodeId: 'line', scope: 'base', property: 'background', value: { token: 'color.surface' } });
+      expect(await failing(editCalls(repair, bare))).toEqual(['panel-background']);
+      // A responsive cap worked out from calc(), and min(), keep the 720px desktop panel.
+      await passes(fixes((list) => list.splice(0, 1, { ...list[0], scope: 'base', property: 'maxWidth', value: 'calc(100% - 2rem)' })));
+      await passes(fixes((list) => Object.assign(list[0], { scope: 'base', value: 'min(100%, 720px)' })));
+      // The hours shown twice, a paragraph on phones and a heading from tablets up, both bound to the one field: each
+      // size reads its own.
+      const twoWays: EvalCase = {
+        ...repair,
+        setup: (state) => {
+          const made = applyOperations(state, [
+            {
+              type: 'component.upsert',
+              name: 'Counter hours',
+              properties: { message: { type: 'string', label: 'Message', default: 'Counter closes at four' } },
+              nodes: [
+                { kind: 'element', id: 'panel', tag: 'aside', children: ['line', 'big'], styles: { base: { width: 'fill', maxWidth: '720px', background: { token: 'color.surface' } } } },
+                { kind: 'text', id: 'line', tag: 'p', text: { $prop: 'message' }, styles: { tablet: { hidden: true }, desktop: { hidden: true } } },
+                { kind: 'text', id: 'big', tag: 'h2', text: { $prop: 'message' }, styles: { phone: { hidden: true } } }
+              ]
+            } as EditOperation
+          ]);
+          Object.assign(state, made.state);
+        },
+        script: () => []
+      };
+      await passes(twoWays);
       // Full width on desktop too; and capped narrower than the desktop panel was.
       expect(await failing(fixes((list) => (list[0].scope = 'base')))).toEqual(['desktop-kept']);
       expect(await failing(fixes((list) => Object.assign(list[0], { scope: 'base', property: 'maxWidth', value: '300px' })))).toEqual(['desktop-kept']);

@@ -429,7 +429,7 @@ const nearestStyle = (def: ComponentDefinition, nodeId: string, size: Size, prop
   return undefined;
 };
 /** Custom CSS that can take something off the page or out of sight. */
-const CSS_HIDES = /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(\.0*)?\s*(;|!|$)|clip|(max-)?height\s*:\s*0/i;
+const CSS_HIDES = /(^|[;{\s])(display\s*:\s*none|visibility\s*:\s*(hidden|collapse)|opacity\s*:\s*0(\.0*)?\s*(;|!|$)|(max-)?height\s*:\s*0(px)?\s*(;|!|$))/i;
 /**
  * Whether styles hide a node, or a container around it, at every screen size: by Hidden, or by custom CSS that can.
  * Hidden at one size only is judged where it matters, by the measurer (see phoneRepairChecks).
@@ -465,7 +465,8 @@ const SPACING_PROP = /^(padding|margin|gap|rowGap|columnGap)/;
 /** A color or spacing value that is not one of the site's styles: a hex, a pixel length, custom CSS that sets either. */
 const offToken = (prop: string, value: unknown) => {
   if (value === undefined || value === null || tokenOf(value)) return false;
-  if (prop === 'customCss') return /(padding|margin|gap|color|background)/i.test(String(value));
+  // A declaration of one of those properties (not a value that names one, as a transition does).
+  if (prop === 'customCss') return /(^|[;{\s])(padding|margin|gap|row-gap|column-gap|color|background(-color)?)(-[a-z-]+)?\s*:/i.test(String(value));
   if (COLOR_PROPS.has(prop)) return !['transparent', 'inherit', 'currentcolor'].includes(String(value).toLowerCase());
   if (SPACING_PROP.test(prop)) return !['0', '0px', 'auto'].includes(String(value).toLowerCase());
   return false;
@@ -478,22 +479,31 @@ const textNodes = (def: ComponentDefinition) => Object.values(def.tree?.nodes ??
  * measured, visible and readable: hidden, faded or cut off, it is not.
  */
 const phoneRepairChecks = (after: ProjectState, def: ComponentDefinition | undefined, message: string): Check[] => {
-  const line = def && nodeShowing(after, def, message);
+  // The text nodes that show the editable message: each one bound to its property (a phone and a desktop rendering
+  // of it, say), or the one node that shows the words.
+  const path = def && editedBy(after, def, message);
+  const [prop, field] = (path ?? '').split('.');
+  const bound = def && path ? textNodes(def).filter((n) => same((def.tree!.nodes[n] as { text?: unknown }).text, field ? { $prop: prop, field } : { $prop: prop })) : [];
+  const shownAt = def && nodeShowing(after, def, message);
+  const lines = new Set(bound.length ? bound : shownAt ? [shownAt] : []);
+  const line = [...lines][0];
   const measure = (width: number) => {
     const m = def ? measureComponent(after, { definitionId: def.id }, width) : { error: 'gone' };
     return 'error' in m ? null : m;
   };
   const phone = measure(390);
   const desktop = measure(1280);
-  const readable = (m: ReturnType<typeof measure>) => !!m && !!line && (m.texts.find((t) => t.nodeId === line)?.ratio ?? 0) >= 4.5 && !m.findings.some((f) => f.kind === 'low-contrast');
+  const readable = (m: ReturnType<typeof measure>) => !!m && m.texts.some((t) => lines.has(t.nodeId) && (t.ratio ?? 0) >= 4.5) && !m.findings.some((f) => f.kind === 'low-contrast');
   const fits = (m: ReturnType<typeof measure>) => !!m && m.widths.checked > 0 && !m.widths.unmeasured.length && !m.findings.some((f) => f.kind === 'element-overflow');
   const root = def?.tree?.rootIds[0] ?? '';
   return [
-    check('message-editable', !!def && !!editedBy(after, def, message)),
+    check('message-editable', !!path),
     check('fits-on-phone', fits(phone), JSON.stringify(phone ? { findings: phone.findings, unmeasured: phone.widths.unmeasured } : 'not measured')),
     check('readable-on-phone', readable(phone), JSON.stringify(phone?.texts)),
     // The panel still renders 720px wide on its desktop background, with its text readable.
-    check('desktop-kept', fits(desktop) && readable(desktop) && desktop?.boxes[root] === 720 && !!line && tokenOf(nearestStyle(def, line, 'desktop', 'background')) === 'color.surface', String(desktop?.boxes[root]))
+    check('desktop-kept', fits(desktop) && readable(desktop) && desktop?.boxes[root] === 720 && !!def && !!line && tokenOf(nearestStyle(def, line, 'desktop', 'background')) === 'color.surface', String(desktop?.boxes[root])),
+    // The panel itself on the site's panel color, at every size: not its text alone.
+    check('panel-background', !!def && SIZES.every((size) => tokenOf(styleAt(def, root, size, 'background')) === 'color.surface'))
   ];
 };
 /** An inspection that found something, could not measure something, or did not run. */
@@ -1052,7 +1062,7 @@ export const EVAL_CASES: EvalCase[] = [
       const found =
         def &&
         axesOf(def)
-          .filter(([axis, a]) => plain(a.label || axis) === 'tone')
+          .filter(([axis, a]) => /\btone\b/i.test(a.label || axis))
           .flatMap(([axis, a]) => Object.entries(a.options).filter(([, o]) => plain(o.label ?? '') === 'inverse').map(([option]) => ({ axis, option, isDefault: a.default === option })))[0];
       const inverse = found ? { [found.axis]: found.option } : undefined;
       const texts = def ? textNodes(def) : [];

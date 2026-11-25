@@ -94,8 +94,16 @@ describe('static component measurement for the benchmark', () => {
     expect(width({ base: { width: 'fit' } })).toMatchObject({ box: undefined, checked: 2, unmeasured: [], findings: [] });
     // A minimum width of auto sets no floor.
     expect(width({ base: { width: '720px', minWidth: 'auto' } }, 1280)).toMatchObject({ box: 720, findings: [] });
-    // Under a cap that cannot be worked out a width that fits still fits, but its own width is not known.
-    expect(width({ base: { width: '720px', maxWidth: 'calc(100% - 1000px)' } }, 1280)).toEqual({ box: undefined, checked: 2, unmeasured: [], findings: [] });
+    // calc(), min(), max() and clamp() of lengths are worked out; under a cap that cannot be (an em is the element's own
+    // font size), a width that fits still fits, but its own width is not known.
+    expect(width({ base: { width: '720px', maxWidth: 'calc(100% - 1000px)' } }, 1280)).toMatchObject({ box: 280, findings: [] });
+    expect(width({ base: { width: '720px', maxWidth: 'calc(100% - 2rem)' } })).toMatchObject({ box: 358, findings: [] });
+    expect(width({ base: { width: 'min(100%, 720px)' } })).toMatchObject({ box: 390, findings: [] });
+    expect(width({ base: { width: 'min(100%, 720px)' } }, 1280)).toMatchObject({ box: 720, findings: [] });
+    expect(width({ base: { width: 'clamp(300px, 50vw, 900px)' } }, 1280)).toMatchObject({ box: 640 });
+    expect(width({ base: { width: 'calc((100% - 30px) / 2)' } })).toMatchObject({ box: 180 });
+    expect(width({ base: { width: 'calc(100% + 400px)' } })).toMatchObject({ box: 790, findings: ['element-overflow@panel'] });
+    expect(width({ base: { width: '720px', maxWidth: 'calc(100% - 2em)' } }, 1280)).toEqual({ box: undefined, checked: 2, unmeasured: [], findings: [] });
   });
 
   it('works out a percentage from the container and a vw from the screen', () => {
@@ -115,20 +123,60 @@ describe('static component measurement for the benchmark', () => {
     expect(kinds(row(false))).toEqual(['element-overflow@panel']);
     expect(row(false).findings[0].message).toContain('at least 500px');
     expect(kinds(row(true))).toEqual([]);
+    // An item of a row shrinks to fit, down to its minimum width.
+    expect(kinds(measure(panel({ base: { layout: 'row' } }, { base: { width: '120vw' } }), 390))).toEqual([]);
+    expect(kinds(measure(panel({ base: { layout: 'row' } }, { base: { width: '120vw', minWidth: '420px' } }), 390))).toEqual(['element-overflow@panel', 'element-overflow@line']);
+  });
+
+  it('counts each item of a repeated list in a row, and the gaps between them, against a row narrower than the screen', () => {
+    const state = createStarterState('business', 'Harbour Lane Studio', false);
+    const made = applyOperations(state, [
+      {
+        type: 'component.upsert',
+        name: 'Cards',
+        properties: { cards: { type: 'list', label: 'Cards', fields: { title: { type: 'string', label: 'Title', default: 'Card' } }, default: [{ id: 'a', title: 'One' }, { id: 'b', title: 'Two' }] } },
+        nodes: [
+          { kind: 'element', id: 'wrap', tag: 'section', children: ['row'] },
+          { kind: 'element', id: 'row', tag: 'ul', children: ['each'], styles: { base: { layout: 'row', width: '300px', gap: '20px' } } },
+          { kind: 'repeat', id: 'each', list: 'cards', children: ['card'] },
+          { kind: 'element', id: 'card', tag: 'li', children: ['title'], styles: { base: { minWidth: '150px' } } },
+          { kind: 'text', id: 'title', tag: 'p', text: { $item: 'title' } }
+        ]
+      } as EditOperation
+    ]);
+    const id = String(made.results[0].definitionId);
+    const m = (props?: Record<string, unknown>) => {
+      const r = measureComponent(made.state, { definitionId: id, ...(props ? { props } : {}) }, 390);
+      if ('error' in r) throw new Error(r.error);
+      return r;
+    };
+    // Two cards of 150px and a 20px gap need 320px of the row's 300px: a row narrower than the 390px screen.
+    expect(kinds(m())).toEqual(['element-overflow@row']);
+    expect(m().findings[0].message).toContain('at least 320px');
+    expect(kinds(m({ cards: [{ id: 'a', title: 'One' }] }))).toEqual([]);
   });
 
   it('leaves a width or a color it cannot work out unmeasured, never passed', () => {
-    const calc = measure(panel({ base: { width: 'calc(100% + 400px)' } }), 390);
+    const calc = measure(panel({ base: { width: 'calc(100% + 2em)' } }), 390);
     expect(calc.widths).toEqual({ checked: 1, unmeasured: ['panel'] });
     expect(calc.findings).toEqual([]);
     // An em is the element's own font size, and a cap that cannot be worked out may or may not hold a wide panel.
     expect(measure(panel({ base: { width: '20em' } }), 390).widths.unmeasured).toEqual(['panel']);
-    expect(measure(panel({ base: { width: '720px', maxWidth: 'calc(100% - 2rem)' } }), 390).widths.unmeasured).toEqual(['panel']);
-    expect(measure(panel({ base: { width: '200px', maxWidth: 'calc(100% - 2rem)' } }), 390).widths.unmeasured).toEqual([]);
+    expect(measure(panel({ base: { width: '720px', maxWidth: 'calc(100% - 2em)' } }), 390).widths.unmeasured).toEqual(['panel']);
+    expect(measure(panel({ base: { width: '200px', maxWidth: 'calc(100% - 2em)' } }), 390).widths.unmeasured).toEqual([]);
     // Custom CSS can change anything: set for every size, and also when a size's own custom CSS wins the cascade there.
     expect(measure(panel({ base: { width: 'fill', customCss: 'width: 720px;' } }), 390).widths.unmeasured).toEqual(['panel']);
     expect(measure(panel({ base: { width: 'fill', customCss: 'width: 720px;' }, phone: { customCss: 'letter-spacing: 1px;' } }), 390).widths.unmeasured).toEqual(['panel']);
     expect(measure(panel({ base: SURFACE }, { phone: { customCss: 'display: none;' } }), 390).texts).toEqual([{ nodeId: 'line', ratio: null }]);
+    // Custom CSS for desktops only, or in a variant option not shown, changes nothing on phones.
+    expect(measure(panel({ base: SURFACE }, { desktop: { customCss: 'letter-spacing: 1px;' } }), 390).texts[0].ratio).toBeGreaterThan(15);
+    expect(measure(panel({ base: SURFACE }, { desktop: { customCss: 'letter-spacing: 1px;' } }), 1280).texts[0].ratio).toBeNull();
+    const ghosted = panel({ base: SURFACE });
+    (ghosted.state.components[ghosted.id].variantAxes!.tone.options.ghost.styles!.line as Styles).phone.customCss = 'color: white;';
+    expect(measure(ghosted, 390).texts[0].ratio).toBeGreaterThan(15);
+    expect(measure(ghosted, 390, { variants: { tone: 'ghost' } }).texts[0].ratio).toBeNull();
+    // A height that is not held (auto) cuts nothing off.
+    expect(measure(panel({ base: { ...SURFACE, height: 'auto', overflow: 'hidden' } }), 390).texts[0].ratio).toBeGreaterThan(15);
     // A picture behind the text, and text faded, in a box that can cut it off, or painted by custom CSS.
     const pictured = panel({ base: SURFACE });
     handSet(pictured, 'panel', { backgroundImage: { assetId: 'a1' } });
@@ -183,7 +231,7 @@ describe('static component measurement for the benchmark', () => {
     expect(findings[0].in.join(' ')).toContain('phone');
     expect(findings[0].in.join(' ')).not.toContain('desktop');
     // A width it cannot work out is reported beside what was found, so the measurement never reads as clean.
-    const odd = panel({ base: { width: 'calc(100% + 400px)' } }, UNREADABLE);
+    const odd = panel({ base: { width: 'calc(100% + 2em)' } }, UNREADABLE);
     const oddTarget = resolveInspectTarget(odd.state, { definitionId: odd.id });
     if ('error' in oddTarget) throw new Error(oddTarget.error);
     const oddCases = planComponentInspection(oddTarget).slice(0, 1);
