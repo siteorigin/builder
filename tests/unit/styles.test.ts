@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState, ResponsiveStyles } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
+import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, isStateStyleProp, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { applyOperations } from '@engine/apply';
@@ -819,5 +819,47 @@ describe('transforms and transitions', () => {
     const out = css(s, 'components');
     expect(out).not.toContain('__grid,');
     expect(out).not.toContain('transition');
+  });
+});
+
+describe('backdrop blur (#353)', () => {
+  it('is an advanced appearance control on elements and text, which hover and focus may change', () => {
+    expect(STYLE_PROP_MAP.backdropBlur).toMatchObject({ group: 'appearance', kind: 'length', advanced: true });
+    for (const kind of ['element', 'text']) expect(styleSetFor({ kind }), kind).toContain('backdropBlur');
+    expect(styleSetFor({ kind: 'image' })).not.toContain('backdropBlur');
+    expect(isStateStyleProp('backdropBlur')).toBe(true);
+  });
+
+  it('accepts 0 or one px, rem or em length up to its limit, and nothing else', () => {
+    for (const ok of ['0', '0px', '4px', '12px', '.5rem', '0.75em', '64px', '4rem', '4em', ' 12px ', 0])
+      expect(validateStyleValue('backdropBlur', ok), String(ok)).toBeNull();
+    for (const bad of ['64.5px', '4.1rem', '-4px', '+4px', '10%', '1vw', '4', 'auto', 'none', 'blur(4px)', '4px 4px', 'calc(4px + 1px)', 'var(--x)', '1e2px', 4])
+      expect(validateStyleValue('backdropBlur', bad as string), String(bad)).toMatch(/not a valid blur/);
+    expect(validateStyleValue('backdropBlur', { token: 'space.lg' })).toMatch(/cannot use a token/);
+  });
+
+  it('writes the prefixed and standard property together, and none for no blur', () => {
+    expect(styleToCss('backdropBlur', '12px')).toEqual(['-webkit-backdrop-filter: blur(12px)', 'backdrop-filter: blur(12px)']);
+    expect(styleToCss('backdropBlur', ' 0.5rem ')).toEqual(['-webkit-backdrop-filter: blur(0.5rem)', 'backdrop-filter: blur(0.5rem)']);
+    for (const none of ['0', '0px', 0]) expect(styleToCss('backdropBlur', none), String(none)).toEqual(['-webkit-backdrop-filter: none', 'backdrop-filter: none']);
+    // A hand-edited document outside the grammar writes nothing.
+    for (const bad of ['999px', '10%', 'blur(4px)', '4', true, { token: 'space.lg' }]) expect(styleToCss('backdropBlur', bad as string), String(bad)).toEqual([]);
+  });
+
+  it('sets, clears and writes it for a placement, beside a hover that clears it', () => {
+    const s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const set = (property: string, value: string | null, state?: 'hover') => ({ type: 'node.setStyle' as const, owner, nodeId: hero.id, scope: 'base', ...(state ? { state } : {}), property, value }) as EditOperation;
+    const out = applyOperations(s, [set('backdropBlur', '12px'), set('backdropBlur', '0', 'hover')]);
+    const root = () => (out.state.pages[s.site.homePageId].nodes[hero.id] as InstanceNode).overrides?.root;
+    expect(root()?.base?.backdropBlur).toBe('12px');
+    expect(() => applyOperations(out.state, [set('backdropBlur', '100px')])).toThrow(/not a valid blur/);
+    const cls = `so-o-${hero.id}-root`;
+    const site = css(out.state, 'site');
+    expect(ruleOf(site, `.${cls}.${cls}`)).toContain('-webkit-backdrop-filter: blur(12px);\n\tbackdrop-filter: blur(12px);');
+    expect(site).toContain('backdrop-filter: none');
+    const cleared = applyOperations(out.state, [set('backdropBlur', null)]);
+    expect((cleared.state.pages[s.site.homePageId].nodes[hero.id] as InstanceNode).overrides?.root?.base?.backdropBlur).toBeUndefined();
   });
 });

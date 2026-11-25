@@ -32,6 +32,8 @@ export interface StylePropDef {
 
 /** How far a shift can move an element, by unit. */
 export const TRANSLATE_LIMITS = { px: 500, rem: 32, em: 32, '%': 100 } as const;
+/** How strong a backdrop blur can be, by unit: a wider blur costs every frame that scrolls beneath it. */
+export const BLUR_LIMITS = { px: 64, rem: 4, em: 4 } as const;
 /** Browsers only transform boxes: an inline run of text has none of its own. */
 const INLINE_NOTE = ' Plain inline text, such as a link inside a sentence, does not move.';
 const TRANSFORM_ORIGINS = ['center', 'top', 'bottom', 'left', 'right', 'top left', 'top right', 'bottom left', 'bottom right'];
@@ -145,6 +147,9 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'radius', label: 'Corner radius', group: 'appearance', kind: 'length', tokenGroup: 'radius', placeholder: '8px' },
   { id: 'shadow', label: 'Shadow', group: 'appearance', kind: 'shadow', tokenGroup: 'shadow' },
   { id: 'opacity', label: 'Opacity', group: 'appearance', kind: 'number', min: 0, max: 1, step: 0.05 },
+  { id: 'backdropBlur', label: 'Backdrop blur', group: 'appearance', kind: 'length', advanced: true, placeholder: '12px', description: `Blurs what shows through a see-through background, for frosted glass: pair it with a background at less than full strength. 0 or one length in px, rem or em, at most ${BLUR_LIMITS.px}px.`, options: [
+    { value: '0', label: 'None' }, { value: '4px', label: 'Light' }, { value: '12px', label: 'Frosted' }, { value: '24px', label: 'Heavy' }
+  ] },
   { id: 'position', label: 'Position', group: 'position', kind: 'enum', description: 'Sticky keeps it in view while scrolling; absolute places it inside the nearest positioned parent.', options: [
     { value: 'static', label: 'Normal' }, { value: 'relative', label: 'Relative' }, { value: 'sticky', label: 'Sticky' }, { value: 'absolute', label: 'Absolute' }
   ] },
@@ -194,7 +199,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
   const margins = ['marginBlockStart', 'marginBlockEnd', 'marginInlineStart', 'marginInlineEnd'];
   const spacing = [...margins, 'paddingBlock', 'paddingInline', 'paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd'];
   const borders = ['border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd'];
-  const appearance = ['color', 'background', ...borders, 'radius', 'shadow', 'opacity'];
+  const appearance = ['color', 'background', ...borders, 'radius', 'shadow', 'opacity', 'backdropBlur'];
   // How an item sits inside a grid or stack parent.
   const child = ['columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'order'];
   const placed = ['position', 'inset', 'zIndex'];
@@ -781,6 +786,17 @@ export function isTranslate(value: string): boolean {
   return n <= TRANSLATE_LIMITS[m[2] as keyof typeof TRANSLATE_LIMITS];
 }
 
+const BLUR_RE = /^(\d+(?:\.\d+)?|\.\d+)(px|rem|em)?$/;
+
+/** A backdrop blur: 0, or one length in px, rem or em within BLUR_LIMITS. blur() takes no percentage. */
+export function isBackdropBlur(value: string): boolean {
+  const m = BLUR_RE.exec(value.trim());
+  if (!m) return false;
+  const n = Number(m[1]);
+  if (!m[2]) return n === 0;
+  return n <= BLUR_LIMITS[m[2] as keyof typeof BLUR_LIMITS];
+}
+
 /** What each transition preset animates. Each lists properties these style controls can change. */
 const TRANSITION_PROPERTIES: Record<string, string> = {
   none: 'none',
@@ -843,6 +859,8 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
       if (propId === 'lineHeight' && /^\d*\.?\d+$/.test(s)) return null;
       if (propId === 'translateX' || propId === 'translateY')
         return isTranslate(s) ? null : `"${s.slice(0, 40)}" is not a valid shift. Use 0 or one length such as -4px, 0.5rem or 10%, at most ${TRANSLATE_LIMITS.px}px, ${TRANSLATE_LIMITS.rem}rem or ${TRANSLATE_LIMITS['%']}% either way.`;
+      if (propId === 'backdropBlur')
+        return isBackdropBlur(s) ? null : `"${s.slice(0, 40)}" is not a valid blur. Use 0 or one length such as 12px or 0.75rem, at most ${BLUR_LIMITS.px}px or ${BLUR_LIMITS.rem}rem.`;
       if (propId === 'inset') {
         // One to four offsets; spaces inside calc() and friends do not separate values.
         const parts = splitTop(s, (ch) => /\s/.test(ch));
@@ -879,7 +897,7 @@ function cssValue(v: StyleValue): string {
 /** Fixed-grammar properties: a hand-edited document that breaks the grammar writes nothing. */
 const CHECKED_AT_OUTPUT = new Set([
   'gridTemplate', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
-  'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing'
+  'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing', 'backdropBlur'
 ]);
 
 /** Convert one style property into CSS declarations. */
@@ -1019,6 +1037,12 @@ export function styleToCss(propId: string, raw: StyleValue): string[] {
       return [`box-shadow: ${v}`];
     case 'opacity':
       return [`opacity: ${v}`];
+    case 'backdropBlur': {
+      // Safari before 18 reads only the prefixed property. A zero blur is none, which (unlike blur(0)) leaves the
+      // element without a stacking context of its own.
+      const filter = Number.parseFloat(String(value)) === 0 ? 'none' : `blur(${v})`;
+      return [`-webkit-backdrop-filter: ${filter}`, `backdrop-filter: ${filter}`];
+    }
     case 'position':
       return [`position: ${v}`];
     case 'inset':
