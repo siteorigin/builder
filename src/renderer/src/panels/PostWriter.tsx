@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Bold, Eye, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Send, Unlink, Undo2 } from 'lucide-react';
-import type { EntrySeo, ImageValue, LinkValue, ProjectState, RichText } from '@shared/types';
+import type { AssetRecord, EntryDoc, EntrySeo, ImageValue, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
 import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
@@ -507,20 +507,6 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const published = entry.draft === false;
   const images = useMemo(() => sortAssets(Object.values(state.assets.assets).filter((a) => a.kind === 'image'), 'name'), [state.assets]);
   const labels = useMemo(() => assetLabels(images), [images]);
-  // The post's search and sharing settings, and what it falls back to without each.
-  const seo: EntrySeo = entry.seo && typeof entry.seo === 'object' ? entry.seo : {};
-  const defaultTitle = `${entry.title} · ${state.site.name}`;
-  const base = publicUrl(state.site);
-  const ownUrl = base ? base + routeUrl(route) : null;
-  const featured = entry.featuredImage && state.assets.assets[entry.featuredImage]?.kind === 'image';
-  const inheritedImage = featured ? 'The featured image' : state.site.socialImage ? 'The site’s sharing image' : 'None';
-  const seoScope = seoSummary(seo);
-  // The search result, link card and meters follow the post's title, description and canonical URL as they are typed.
-  const seoSubject = useMemo<SeoSubject>(() => ({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }), [post.collectionId, post.entryId]);
-  const { typed: seoTyped, on: seoOn } = useTypedSeo(subjectKey(seoSubject));
-  const { overlay: seoOverlay, doc: seoDoc } = useDocumentPreview(state, seoSubject, seoTyped);
-  // Its structured data reads the whole website: it is worked out only while the settings are open on screen.
-  const [seoOpen, setSeoOpen] = useState(false);
   const blockLabel = { p: 'Paragraph', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', blockquote: 'Quote' } as Record<string, string>;
   const tools: Array<{ id: string; label: string; icon: React.ReactNode; on?: boolean; run: () => void; gap?: boolean }> = [
     { id: 'p', label: 'Paragraph', icon: <Pilcrow />, on: pressed.block === 'p' || pressed.block === 'div', run: () => block('p') },
@@ -614,57 +600,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               </Field>
             </div>
           </details>
-          <details className="post-details post-seo" onToggle={(e) => setSeoOpen(e.currentTarget.open)}>
-            <summary>Search & sharing{seoScope ? ` · ${seoScope}` : ''}</summary>
-            <div className="post-fields">
-              <SeoPreview state={state} subject={seoSubject} overlay={seoOverlay} doc={seoDoc} shown={seoOpen && !hidden} />
-              <div data-entry-field="seoTitle" style={{ display: 'contents' }}>
-                <Field
-                  label="Browser title"
-                  hint={
-                    <>
-                      Leave empty to use “{defaultTitle}”.
-                      <LengthMeter kind="title" doc={seoDoc} />
-                    </>
-                  }
-                >
-                  <DraftInput value={seo.title ?? ''} limit={TEXT_LIMITS.seoTitle} placeholder={defaultTitle} onDirty={seoOn.title} onCommit={(v) => (v.trim() !== (seo.title ?? '') ? update({ seoTitle: v.trim() }, 'Change post browser title') : undefined)} />
-                </Field>
-              </div>
-              <div data-entry-field="seoDescription" style={{ display: 'contents' }}>
-                <Field
-                  label="Description"
-                  hint={
-                    <>
-                      Shown by search engines and link previews. Leave empty to use the excerpt.
-                      <LengthMeter kind="description" doc={seoDoc} />
-                    </>
-                  }
-                >
-                  <DraftInput multiline rows={3} value={seo.description ?? ''} limit={TEXT_LIMITS.pageDescription} placeholder={entry.excerpt || state.site.description || 'Describe this post'} onDirty={seoOn.description} onCommit={(v) => (v.trim() !== (seo.description ?? '') ? update({ description: v.trim() }, 'Change post description') : undefined)} />
-                </Field>
-              </div>
-              <Field label="Sharing image" controlId={`${uid}-sharing`} hint="The picture link previews show.">
-                <select id={`${uid}-sharing`} className="select" value={seo.socialImage ?? ''} onChange={(e) => void update({ socialImage: e.target.value || null }, e.target.value ? 'Change post sharing image' : 'Use the default sharing image')}>
-                  <option value="">{inheritedImage}</option>
-                  {seo.socialImage && !images.some((a) => a.id === seo.socialImage) && <option value={seo.socialImage}>Missing image</option>}
-                  {images.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {labels.get(a.id)?.label ?? a.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <CanonicalUrlField value={seo.canonical} ownUrl={ownUrl} what="post" onTyped={seoOn.canonical} onCommit={(url) => update({ canonical: url }, url ? 'Change post canonical URL' : 'Clear post canonical URL')} />
-              <SwitchRow
-                checked={!!seo.noindex}
-                onChange={(v) => void update({ noindex: v }, v ? 'Hide post from search engines' : 'Show post to search engines')}
-                label="Hide from search engines"
-                hint={published ? 'Search engines are asked not to list it, and the sitemap leaves it out. Anyone with the address can still open it.' : 'Once published, search engines are asked not to list it, and the sitemap leaves it out.'}
-              />
-              <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void update({ searchHidden: v }, v ? 'Hide post from site search' : 'Show post in site search')} label="Hide from site search" hint="Keeps this post out of the site’s own search results once Site search lists posts." />
-            </div>
-          </details>
+          <PostSearchSettings state={state} post={post} entry={entry} route={route} published={published} hidden={hidden} images={images} labels={labels} update={update} />
           <div className="post-tools" role="toolbar" aria-label="Formatting">
             {tools.map((t) => (
               <button
@@ -901,5 +837,100 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
         )}
       </form>
     </Modal>
+  );
+}
+
+/**
+ * A post's Search & sharing settings, with previews of its search result, link card and structured data that follow
+ * its title, description and canonical URL as they are typed. Its own component, so typing re-renders only this, not
+ * the writer.
+ */
+function PostSearchSettings({
+  state,
+  post,
+  entry,
+  route,
+  published,
+  hidden,
+  images,
+  labels,
+  update
+}: {
+  state: ProjectState;
+  post: PostRef;
+  entry: EntryDoc;
+  route: string;
+  published: boolean;
+  hidden: boolean;
+  images: AssetRecord[];
+  labels: ReturnType<typeof assetLabels>;
+  update: (fields: Record<string, unknown>, label: string) => unknown;
+}) {
+  const uid = useId();
+  // The post's search and sharing settings, and what it falls back to without each.
+  const seo: EntrySeo = entry.seo && typeof entry.seo === 'object' ? entry.seo : {};
+  const defaultTitle = `${entry.title} · ${state.site.name}`;
+  const base = publicUrl(state.site);
+  const ownUrl = base ? base + routeUrl(route) : null;
+  const featured = entry.featuredImage && state.assets.assets[entry.featuredImage]?.kind === 'image';
+  const inheritedImage = featured ? 'The featured image' : state.site.socialImage ? 'The site’s sharing image' : 'None';
+  const seoScope = seoSummary(seo);
+  const seoSubject = useMemo<SeoSubject>(() => ({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }), [post.collectionId, post.entryId]);
+  const { typed: seoTyped, on: seoOn } = useTypedSeo(subjectKey(seoSubject));
+  const { overlay: seoOverlay, doc: seoDoc } = useDocumentPreview(state, seoSubject, seoTyped);
+  // Its structured data reads the whole website: it is worked out only while the settings are open on screen.
+  const [seoOpen, setSeoOpen] = useState(false);
+  return (
+    <details className="post-details post-seo" onToggle={(e) => setSeoOpen(e.currentTarget.open)}>
+      <summary>Search & sharing{seoScope ? ` · ${seoScope}` : ''}</summary>
+      <div className="post-fields">
+        <SeoPreview state={state} subject={seoSubject} overlay={seoOverlay} doc={seoDoc} shown={seoOpen && !hidden} />
+        <div data-entry-field="seoTitle" style={{ display: 'contents' }}>
+          <Field
+            label="Browser title"
+            hint={
+              <>
+                Leave empty to use “{defaultTitle}”.
+                <LengthMeter kind="title" doc={seoDoc} />
+              </>
+            }
+          >
+            <DraftInput value={seo.title ?? ''} limit={TEXT_LIMITS.seoTitle} placeholder={defaultTitle} onDirty={seoOn.title} onCommit={(v) => (v.trim() !== (seo.title ?? '') ? update({ seoTitle: v.trim() }, 'Change post browser title') : undefined)} />
+          </Field>
+        </div>
+        <div data-entry-field="seoDescription" style={{ display: 'contents' }}>
+          <Field
+            label="Description"
+            hint={
+              <>
+                Shown by search engines and link previews. Leave empty to use the excerpt.
+                <LengthMeter kind="description" doc={seoDoc} />
+              </>
+            }
+          >
+            <DraftInput multiline rows={3} value={seo.description ?? ''} limit={TEXT_LIMITS.pageDescription} placeholder={entry.excerpt || state.site.description || 'Describe this post'} onDirty={seoOn.description} onCommit={(v) => (v.trim() !== (seo.description ?? '') ? update({ description: v.trim() }, 'Change post description') : undefined)} />
+          </Field>
+        </div>
+        <Field label="Sharing image" controlId={`${uid}-sharing`} hint="The picture link previews show.">
+          <select id={`${uid}-sharing`} className="select" value={seo.socialImage ?? ''} onChange={(e) => void update({ socialImage: e.target.value || null }, e.target.value ? 'Change post sharing image' : 'Use the default sharing image')}>
+            <option value="">{inheritedImage}</option>
+            {seo.socialImage && !images.some((a) => a.id === seo.socialImage) && <option value={seo.socialImage}>Missing image</option>}
+            {images.map((a) => (
+              <option key={a.id} value={a.id}>
+                {labels.get(a.id)?.label ?? a.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <CanonicalUrlField value={seo.canonical} ownUrl={ownUrl} what="post" onTyped={seoOn.canonical} onCommit={(url) => update({ canonical: url }, url ? 'Change post canonical URL' : 'Clear post canonical URL')} />
+        <SwitchRow
+          checked={!!seo.noindex}
+          onChange={(v) => void update({ noindex: v }, v ? 'Hide post from search engines' : 'Show post to search engines')}
+          label="Hide from search engines"
+          hint={published ? 'Search engines are asked not to list it, and the sitemap leaves it out. Anyone with the address can still open it.' : 'Once published, search engines are asked not to list it, and the sitemap leaves it out.'}
+        />
+        <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void update({ searchHidden: v }, v ? 'Hide post from site search' : 'Show post in site search')} label="Hide from site search" hint="Keeps this post out of the site’s own search results once Site search lists posts." />
+      </div>
+    </details>
   );
 }

@@ -2571,24 +2571,95 @@ function languageName(code: string): string {
 /** Which shared parts a page shows, for its closed section's heading. */
 const shellSummary = (header: boolean, footer: boolean) => (header && footer ? 'Both shown' : header ? 'Header only' : footer ? 'Footer only' : 'Both hidden');
 
+/**
+ * A page's Search & sharing settings, with previews of its search result, link card and structured data that follow
+ * its title, description and canonical URL as they are typed. Its own component, so typing re-renders only this.
+ */
+function PageSearchSettings({ page, state, draft, upd }: { page: PageDoc; state: ProjectState; draft: boolean; upd: (patch: Record<string, unknown>, label?: string) => void }) {
+  // The structured data reads the whole website: it is worked out only while the Inspector shows.
+  const shown = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
+  const subject = useMemo<SeoSubject>(() => ({ kind: 'page', pageId: page.id }), [page.id]);
+  const { typed, on: typedOn } = useTypedSeo(subjectKey(subject));
+  const { overlay, doc: seoDoc } = useDocumentPreview(state, subject, typed);
+  const isHome = page.id === state.site.homePageId;
+  // How a shared link to the page looks, and whose sharing image it carries.
+  const sharing = sharingView(state, page);
+  const base = publicUrl(state.site);
+  const ownUrl = base ? base + routeUrl(page.route) : null;
+  return (
+    <>
+      <SeoPreview state={state} subject={subject} overlay={overlay} doc={seoDoc} shown={shown} />
+      <Field
+        label="Browser title"
+        hint={
+          <>
+            Leave empty to use “{isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.
+            <LengthMeter kind="title" doc={seoDoc} />
+          </>
+        }
+      >
+        <DraftInput id="page-seo-title" limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} onDirty={typedOn.title} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
+      </Field>
+      <Field
+        label="Description"
+        hint={
+          <>
+            Shown by search engines and link previews.
+            <LengthMeter kind="description" doc={seoDoc} />
+          </>
+        }
+      >
+        <DraftInput id="page-seo-description" multiline limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onDirty={typedOn.description} onCommit={(v) => upd({ description: v }, 'Change page description')} />
+      </Field>
+      {/* The page's own choice, or the site's while it has none: the picker shows both, and Use the site’s image returns to it. */}
+      <div className="col" style={{ gap: 4 }} data-seo-field="socialImage">
+        <ImageEditor
+          title="Sharing image"
+          value={{ assetId: page.seo.socialImage || null, alt: '' }}
+          state={state}
+          picture={sharing.picker}
+          onChange={(v) => upd({ socialImage: v.assetId }, v.assetId ? 'Change sharing image' : sharing.picker.inherited ? 'Use the site’s sharing image' : 'Remove sharing image')}
+        />
+        <div className="field-hint">{sharing.imageNote}</div>
+        <button type="button" className="insp-mini" style={{ alignSelf: 'flex-start', marginLeft: -6 }} onClick={() => openSiteSharing('socialImage')}>
+          Change the site’s sharing image
+        </button>
+      </div>
+      <SwitchRow
+        id="page-seo-noindex"
+        checked={!!page.seo.noindex}
+        onChange={(v) => upd({ noindex: v })}
+        label="Hide from search engines"
+        hint={
+          draft
+            ? 'Once published, search engines are asked not to list it. Anyone with the address can still open it.'
+            : 'Search engines are asked not to list it. Anyone with the address can still open it.'
+        }
+      />
+      <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint={draft ? 'Once published, leaves this page out of the site’s own Site search results.' : 'Leaves this page out of the site’s own Site search results.'} />
+      <CanonicalUrlField id="page-seo-canonical" value={page.seo.canonical} ownUrl={ownUrl} what="page" onTyped={typedOn.canonical} onCommit={(url) => upd({ canonical: url }, url ? 'Change canonical URL' : 'Clear canonical URL')} />
+      <RevisionDateField
+        id="page-seo-updated"
+        label="Last revised"
+        hint="When the page’s content last changed, for the sitemap. Leave empty to give no date."
+        value={page.updatedAt}
+        onSet={(v) => upd({ updatedAt: v }, 'Change revision date')}
+        onClear={() => upd({ updatedAt: null }, 'Clear revision date')}
+      />
+    </>
+  );
+}
+
 function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
   const dev = useStore((s) => !!s.settings?.developerMode);
   const [titleError, setTitleError] = useState<string | null>(null);
-  // The search result, link card and meters follow the title, description and canonical URL as they are typed.
-  const subject = useMemo<SeoSubject>(() => ({ kind: 'page', pageId: page?.id ?? '' }), [page?.id]);
-  const { typed, on: typedOn } = useTypedSeo(subjectKey(subject));
-  const { overlay, doc: seoDoc } = useDocumentPreview(state, subject, typed);
   if (!page) return null;
   // History says which page each setting was changed on: "Change browser title (About)".
   const upd = (patch: Record<string, unknown>, label = 'Update page settings') => void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], `${label} (${page.title})`);
   const isHome = page.id === state.site.homePageId;
   const draft = isDraftPage(state, page);
   const inside = pagesWithin(state.pages, page.id);
-  // How a shared link to the page looks, and whose sharing image it carries.
-  const sharing = sharingView(state, page);
-  const base = publicUrl(state.site);
-  const ownUrl = base ? base + routeUrl(page.route) : null;
   return (
     <div className="panel-body insp">
       <Header title={page.title} kind={`${isHome ? 'Home page' : draft ? 'Draft page' : 'Page'} · ${isHome ? '/' : page.route}`} icon={isHome ? <House /> : <FileText />}>
@@ -2664,64 +2735,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         <p className="insp-note field-hint">For this page only; other pages keep their own choice. Editing the header or footer changes it on every page that shows it.</p>
       </Section>
       <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(page)}>
-        <SeoPreview state={state} subject={subject} overlay={overlay} doc={seoDoc} />
-        <Field
-          label="Browser title"
-          hint={
-            <>
-              Leave empty to use “{isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.
-              <LengthMeter kind="title" doc={seoDoc} />
-            </>
-          }
-        >
-          <DraftInput id="page-seo-title" limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} onDirty={typedOn.title} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
-        </Field>
-        <Field
-          label="Description"
-          hint={
-            <>
-              Shown by search engines and link previews.
-              <LengthMeter kind="description" doc={seoDoc} />
-            </>
-          }
-        >
-          <DraftInput id="page-seo-description" multiline limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onDirty={typedOn.description} onCommit={(v) => upd({ description: v }, 'Change page description')} />
-        </Field>
-        {/* The page's own choice, or the site's while it has none: the picker shows both, and Use the site’s image returns to it. */}
-        <div className="col" style={{ gap: 4 }} data-seo-field="socialImage">
-          <ImageEditor
-            title="Sharing image"
-            value={{ assetId: page.seo.socialImage || null, alt: '' }}
-            state={state}
-            picture={sharing.picker}
-            onChange={(v) => upd({ socialImage: v.assetId }, v.assetId ? 'Change sharing image' : sharing.picker.inherited ? 'Use the site’s sharing image' : 'Remove sharing image')}
-          />
-          <div className="field-hint">{sharing.imageNote}</div>
-          <button type="button" className="insp-mini" style={{ alignSelf: 'flex-start', marginLeft: -6 }} onClick={() => openSiteSharing('socialImage')}>
-            Change the site’s sharing image
-          </button>
-        </div>
-        <SwitchRow
-          id="page-seo-noindex"
-          checked={!!page.seo.noindex}
-          onChange={(v) => upd({ noindex: v })}
-          label="Hide from search engines"
-          hint={
-            draft
-              ? 'Once published, search engines are asked not to list it. Anyone with the address can still open it.'
-              : 'Search engines are asked not to list it. Anyone with the address can still open it.'
-          }
-        />
-        <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint={draft ? 'Once published, leaves this page out of the site’s own Site search results.' : 'Leaves this page out of the site’s own Site search results.'} />
-        <CanonicalUrlField id="page-seo-canonical" value={page.seo.canonical} ownUrl={ownUrl} what="page" onTyped={typedOn.canonical} onCommit={(url) => upd({ canonical: url }, url ? 'Change canonical URL' : 'Clear canonical URL')} />
-        <RevisionDateField
-          id="page-seo-updated"
-          label="Last revised"
-          hint="When the page’s content last changed, for the sitemap. Leave empty to give no date."
-          value={page.updatedAt}
-          onSet={(v) => upd({ updatedAt: v }, 'Change revision date')}
-          onClear={() => upd({ updatedAt: null }, 'Clear revision date')}
-        />
+        <PageSearchSettings page={page} state={state} draft={draft} upd={upd} />
       </Section>
       {dev && (
         <Section title="Advanced" id="page-adv" defaultOpen={false} level={LEVEL}>

@@ -225,11 +225,13 @@ export function structuredPreview(state: ProjectState, subject: SeoSubject): Str
   if (!meta) return null;
   const v = meta.visibility;
   const what = subject.kind === 'page' ? 'page' : 'post';
-  const elsewhere = !!meta.canonical && !!meta.url && !sameAddress(meta.canonical, meta.url);
+  // An override names another address even while the site has no public URL of its own to compare it with.
+  const elsewhere = !!meta.canonical && !sameAddress(meta.canonical, meta.url);
+  const copy = 'No: its canonical URL names another address, so this copy is left out';
   const llms = agentDiscovery(state.site).llmsTxt;
   const offSite = meta.draft ? 'Not while it is a draft' : 'Not on the website';
-  /** Why it is not in an output that lists what search engines may list; `copy` when that is all that stands in the way. */
-  const why = (copy: string) => (!v.website ? offSite : meta.noindex ? 'No: it is hidden from search engines' : !meta.url ? 'No: the site has no public URL' : copy);
+  /** Why it is not in an output that lists what search engines may list; `last` when nothing else stands in the way. */
+  const why = (last: string) => (!v.website ? offSite : meta.noindex ? 'No: it is hidden from search engines' : !meta.url ? 'No: the site has no public URL' : last);
   const status: StatusLine[] = [
     {
       id: 'canonical',
@@ -238,18 +240,18 @@ export function structuredPreview(state: ProjectState, subject: SeoSubject): Str
       on: !!meta.canonical && !elsewhere
     },
     { id: 'search', label: 'Search engines', value: !v.website ? (meta.draft ? 'Not while it is a draft: the export leaves drafts out' : offSite) : meta.noindex ? 'Asked not to list it' : 'May list it', on: v.indexable },
-    { id: 'sitemap', label: 'Sitemap', value: v.sitemap ? 'Listed' : why('No: its canonical URL names another address, which the sitemap lists instead'), on: v.sitemap },
+    { id: 'sitemap', label: 'Sitemap', value: v.sitemap ? 'Listed' : why(copy), on: v.sitemap },
     { id: 'structured', label: 'Structured data', value: v.jsonLd ? 'Written into its page' : why('No'), on: v.jsonLd },
     {
       id: 'llms',
       label: `AI agents (${LLMS_TXT_FILE})`,
-      value: !llms ? `The site writes no ${LLMS_TXT_FILE}` : v.llms ? 'Listed' : !v.website ? offSite : meta.noindex ? 'No: it is hidden from search engines' : 'No: its canonical URL names another address, which agents are told of instead',
+      value: !llms ? `The site writes no ${LLMS_TXT_FILE}` : v.llms ? 'Listed' : !v.website ? offSite : meta.noindex ? 'No: it is hidden from search engines' : copy,
       on: llms && v.llms
     },
     {
       id: 'siteSearch',
       label: 'Site search',
-      value: subject.kind === 'entry' ? 'Posts aren’t in site search yet' : !v.website ? offSite : v.siteSearch ? 'Found' : 'Hidden from site search',
+      value: subject.kind === 'entry' ? 'Posts aren’t in site search yet' : !v.website ? offSite : v.siteSearch ? 'May find it' : 'Hidden from site search',
       on: subject.kind === 'page' && v.siteSearch
     }
   ];
@@ -259,7 +261,7 @@ export function structuredPreview(state: ProjectState, subject: SeoSubject): Str
       kind: 'none',
       reason: !v.website
         ? meta.draft
-          ? `Drafts carry no structured data. Once the ${what} is published, its page carries the site’s connected graph.`
+          ? `Drafts carry no structured data. ${meta.noindex ? `Once published, the ${what} is still hidden from search engines, so it carries none then either.` : !publicUrl(state.site) ? `Once the ${what} is published and the site has a public URL, its page carries the site’s connected graph.` : `Once the ${what} is published, its page carries the site’s connected graph.`}`
           : `This ${what} is not on the website, so it carries no structured data.`
         : meta.noindex
           ? `This ${what} is hidden from search engines, so its page carries no structured data.`

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Globe } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
@@ -87,19 +87,31 @@ function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPrevi
       {(['desktop', 'mobile'] as const).map((device) => {
         const r = doc.serp[device];
         return (
-          <div key={device} className={`serp serp-${device}`} role="group" aria-label={device === 'desktop' ? 'Search result on a computer' : 'Search result on a phone'} data-device={device}>
-            <div className="serp-device">{device === 'desktop' ? 'Computer' : 'Phone'}</div>
-            <div className="serp-site">
-              <SiteIcon state={state} />
-              <span className="serp-site-text">
-                <span className="serp-site-name">{doc.siteName || address.host || 'Your site'}</span>
-                <span className="serp-url">{[address.host ?? 'No public URL', ...address.trail].join(' › ')}</span>
-              </span>
-            </div>
-            <div className={`serp-title${r.title.text ? '' : ' none'}`}>{r.title.text || 'No title'}</div>
-            <div className={`serp-desc${r.description.text ? '' : ' none'}`}>
-              {doc.date && <span className="serp-date">{doc.date}</span>}
-              {r.description.text || 'No description: search engines pick words from the page.'}
+          // Each result is laid out at its screen's width, in proportion to the widths it is measured against, so a line
+          // breaks where it would there; a computer's is wider than the Inspector, which scrolls it sideways.
+          <div key={device} className={`serp-frame serp-frame-${device}`} tabIndex={device === 'desktop' ? 0 : undefined} role="group" aria-label={device === 'desktop' ? 'Search result on a computer' : 'Search result on a phone'}>
+            <div className={`serp serp-${device}`} data-device={device}>
+              <div className="serp-device">{device === 'desktop' ? 'Computer' : 'Phone'}</div>
+              <div className="serp-site">
+                <SiteIcon state={state} />
+                <span className="serp-site-text">
+                  <span className="serp-site-name">{doc.siteName || address.host || 'Your site'}</span>
+                  <span className="serp-url">{[address.host ?? 'No public URL', ...address.trail].join(' › ')}</span>
+                </span>
+              </div>
+              <div className={`serp-title${r.title.text ? '' : ' none'}`}>
+                {r.title.lines.length
+                  ? r.title.lines.map((line, i) => (
+                      <span key={i} className="serp-title-line">
+                        {line}
+                      </span>
+                    ))
+                  : 'No title'}
+              </div>
+              <div className={`serp-desc${r.description.text ? '' : ' none'}`}>
+                {doc.date && <span className="serp-date">{doc.date}</span>}
+                {r.description.text || 'No description: search engines pick words from the page.'}
+              </div>
             </div>
           </div>
         );
@@ -166,10 +178,19 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
   const [structured, setStructured] = useState<{ key: string; value: StructuredPreview | null } | null>(null);
   const showing = shown && tab === 'data' && !!doc;
   const ready = structured?.key === key;
+  // Whether the tab has shown this document's structured data since it was last opened.
+  const settled = useRef(false);
   useEffect(() => {
-    if (!showing) return;
-    // The first look is at once; while text is typed it waits for a pause.
-    const t = setTimeout(() => setStructured({ key, value: structuredPreview(overlay, subject) }), ready ? SETTLE_MS : 0);
+    if (!showing) {
+      settled.current = false;
+      return;
+    }
+    // A look on opening the tab is at once, never at a result left from before; while text is typed it waits for a pause.
+    const wait = settled.current && ready ? SETTLE_MS : 0;
+    const t = setTimeout(() => {
+      settled.current = true;
+      setStructured({ key, value: structuredPreview(overlay, subject) });
+    }, wait);
     return () => clearTimeout(t);
   }, [showing, overlay, key]);
   if (!doc) return null;
@@ -183,7 +204,7 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
         options={[
           { value: 'search', label: 'Search result', panel: () => <SearchResults state={state} doc={doc} /> },
           { value: 'link', label: 'Link preview', panel: () => <SharingPreview card={doc.card} /> },
-          { value: 'data', label: 'Structured data', panel: () => <StructuredData structured={ready ? structured!.value : undefined} /> }
+          { value: 'data', label: 'Structured data', panel: () => <StructuredData structured={ready && settled.current ? structured!.value : undefined} /> }
         ]}
       />
     </div>

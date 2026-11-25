@@ -19,6 +19,14 @@ describe('textWidth', () => {
     expect(textWidth('🙂', 14)).toBe(14);
     expect(textWidth('', 20)).toBe(0);
   });
+
+  it('measures a joined emoji or a flag as the one picture a reader sees, and Hebrew points as no room', () => {
+    expect(textWidth('👨‍👩‍👧‍👦', 20)).toBe(20);
+    expect(textWidth('👍🏽', 20)).toBe(20);
+    expect(textWidth('🇦🇺', 20)).toBe(20);
+    expect(textWidth('שָׁלוֹם', 14)).toBe(textWidth('שלום', 14));
+    expect(textWidth('Hi', 14)).toBeCloseTo(((722 + 222) * 14) / 1000, 5);
+  });
 });
 
 describe('fitToWidth', () => {
@@ -47,6 +55,31 @@ describe('fitToWidth', () => {
     expect(textWidth(r.text, 20)).toBeLessThanOrEqual(100);
     expect(r.text).toMatch(/^Super\w*…$/);
   });
+
+  it('keeps text exactly as wide as the room whole', () => {
+    const text = 'Pottery classes by the river';
+    expect(fitToWidth(text, 20, textWidth(text, 20))).toMatchObject({ text, cut: false });
+    expect(fitToWidth(text, 20, textWidth(text, 20) - 0.01).cut).toBe(true);
+  });
+
+  it('keeps as many whole words as fit with the “…”, and no fewer', () => {
+    const long = 'Weekly wheel classes, private lessons and commissioned tableware made to order in the studio by the river';
+    const r = fitToWidth(long, 20, 300);
+    const kept = r.text.slice(0, -1);
+    const next = long.slice(0, long.indexOf(' ', kept.length + 1));
+    // One word more would not have fitted with the "…".
+    expect(textWidth(`${next}…`, 20)).toBeGreaterThan(300);
+    expect(kept).toBe('Weekly wheel classes, private');
+  });
+
+  it('never cuts inside a joined emoji', () => {
+    const family = '👨‍👩‍👧‍👦';
+    const r = fitToWidth(family.repeat(40), 20, 300);
+    expect(r.cut).toBe(true);
+    const kept = r.text.slice(0, -1);
+    expect(kept.length % family.length).toBe(0);
+    expect(kept.split(family).every((part) => part === '')).toBe(true);
+  });
 });
 
 describe('fitLines', () => {
@@ -58,9 +91,11 @@ describe('fitLines', () => {
     expect(textWidth(text, 20)).toBeLessThan(640);
     const r = fitLines(text, 20, 320, 2);
     expect(r).toMatchObject({ cut: true, max: 640 });
-    expect(r.text.startsWith(`${W} `)).toBe(true);
-    expect(r.text.endsWith('…')).toBe(true);
-    expect(fitLines(`${W} ${W}`, 20, 320, 2)).toMatchObject({ text: `${W} ${W}`, cut: false });
+    // The second line holds the second word cut to fit with its "…" (it has no space to go back to).
+    expect(r.lines).toEqual([W, `${'W'.repeat(15)}…`]);
+    expect(r.text).toBe(`${W} ${'W'.repeat(15)}…`);
+    expect(fitLines(`${W} ${W}`, 20, 320, 2)).toMatchObject({ text: `${W} ${W}`, lines: [W, W], cut: false });
+    expect(fitLines('', 20, 320, 2)).toMatchObject({ text: '', lines: [], cut: false });
   });
 
   it('is fitToWidth on one line', () => {
@@ -73,7 +108,7 @@ describe('fitLines', () => {
     const r = fitLines(word, 20, 320, 2);
     expect(r.cut).toBe(true);
     expect(r.text).toMatch(/^W+…$/);
-    expect(fitLines('W'.repeat(30), 20, 320, 2)).toMatchObject({ text: 'W'.repeat(30), cut: false });
+    expect(fitLines('W'.repeat(30), 20, 320, 2)).toMatchObject({ text: 'W'.repeat(30), lines: ['W'.repeat(16), 'W'.repeat(14)], cut: false });
   });
 });
 
@@ -96,6 +131,19 @@ describe('serpSnippet', () => {
     expect(dated.desktop.description.max).toBeLessThan(plain.desktop.description.max);
     expect(dated.desktop.description.max).toBeCloseTo(SERP_LAYOUT.desktop.description - textWidth('2 March 2027 — ', SERP_LAYOUT.descriptionFont), 5);
   });
+
+  it('takes the date’s room on a phone too', () => {
+    const dated = serpSnippet({ title, description, datePrefix: '2 March 2027 — ' });
+    expect(dated.mobile.description.max).toBeCloseTo(SERP_LAYOUT.mobile.description - textWidth('2 March 2027 — ', SERP_LAYOUT.descriptionFont), 5);
+  });
+
+  it('can fit a title on a computer’s line that a phone’s two lines cut, since a phone wraps a word at a time', () => {
+    const ten = 'W'.repeat(10);
+    const s = serpSnippet({ title: `${ten} ${ten} ${ten}`, description: '' });
+    expect(s.desktop.title).toMatchObject({ cut: false, lines: [`${ten} ${ten} ${ten}`] });
+    expect(s.mobile.title.cut).toBe(true);
+    expect(s.mobile.title.lines[0]).toBe(ten);
+  });
 });
 
 describe('serpAddress', () => {
@@ -107,5 +155,11 @@ describe('serpAddress', () => {
 
   it('falls back to the route without a public URL', () => {
     expect(serpAddress(null, '/services/kitchens/')).toEqual({ host: null, trail: ['services', 'kitchens'] });
+  });
+
+  it('keeps a port in the host, and falls back to the route for an address it can’t read', () => {
+    expect(serpAddress('https://studio.example:8443/work/kitchens/', '/kitchens/')).toEqual({ host: 'studio.example:8443', trail: ['work', 'kitchens'] });
+    expect(serpAddress('not a url', '/kitchens/')).toEqual({ host: null, trail: ['kitchens'] });
+    expect(serpAddress(null, '/bad%E0%A4%A/')).toEqual({ host: null, trail: ['bad%E0%A4%A'] });
   });
 });

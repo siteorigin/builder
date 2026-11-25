@@ -24,11 +24,15 @@ const openRail = async (name) => {
   if ((await win.locator(`.rail [aria-label="${name}"]`).getAttribute('aria-pressed')) !== 'true') await win.locator(`.rail [aria-label="${name}"]`).click();
 };
 const openPage = async (title) => {
+  const before = await win.locator('.toolbar .project-title').innerText();
   await openRail('Pages');
   await win.locator('.pages-list [role="option"]', { hasText: title }).first().click();
   await eventually(async () => assert.match(await win.locator('.toolbar .project-title').innerText(), new RegExp(title), `${title} is open`));
   await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
-  // Each page's previews open on its search result; the link card is a tab away.
+  // Each page's previews open on its search result (#597); the link card is a tab away.
+  const searchTab = section().getByRole('tab', { name: 'Search result' });
+  await searchTab.waitFor();
+  if (!before.includes(title)) assert.equal(await searchTab.getAttribute('aria-selected'), 'true', `${title} opens on its search result`);
   await section().getByRole('tab', { name: 'Link preview' }).click();
   await section().locator('.share-card').waitFor();
 };
@@ -246,6 +250,13 @@ assert.equal(pageFile(kitchens).seo.title, undefined, 'nothing is saved while it
 await titleBox().press('Escape');
 await eventually(async () => assert.match(await meter('title').innerText(), /^Default title:/, 'Escape puts the default back'));
 assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Kitchens · Harbour Lane Studio');
+const descriptionBox = () => field('Description').getByRole('textbox');
+await descriptionBox().fill('Oak, steel and stone kitchens, drawn and built by hand.');
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-desc').innerText(), 'Oak, steel and stone kitchens, drawn and built by hand.', 'the description being typed shows in the result'));
+assert.equal(await meter('description').innerText(), '55 characters · fits on computers and phones', 'and is what the meter measures');
+assert.equal(pageFile(kitchens).seo.description, undefined, 'nothing is saved while it is typed');
+await descriptionBox().press('Escape');
+await eventually(async () => assert.match(await meter('description').innerText(), /^From the fallback:/, 'Escape puts the fallback back'));
 await section().scrollIntoViewIfNeeded();
 await win.screenshot({ path: join(SHOTS, 'page-sharing-search-result.png') });
 
@@ -269,9 +280,15 @@ await canonicalBox.fill('https://journal.example/kitchens/');
 await eventually(async () => assert.equal(await status('canonical').innerText(), 'https://journal.example/kitchens/ (another address)', 'the canonical URL being typed shows in the status'));
 assert.match(await status('sitemap').innerText(), /canonical URL names another address/, 'a copy leaves the sitemap to the original');
 assert.equal(await status('structured').innerText(), 'Written into its page', 'and still carries its structured data');
+assert.equal((await webPage()).url, 'https://studio.example/work/kitchens/', 'its graph names the page by its own address');
 assert.equal(pageFile(kitchens).seo.canonical, undefined, 'nothing is saved while it is typed');
 await canonicalBox.press('Escape');
 await eventually(async () => assert.equal(await status('canonical').innerText(), 'https://studio.example/work/kitchens/', 'Escape puts the page’s own address back'));
+// Text that is no address is never previewed as one: the status keeps the saved address.
+await canonicalBox.fill('journal.example/kitchens');
+await win.waitForTimeout(500);
+assert.equal(await status('canonical').innerText(), 'https://studio.example/work/kitchens/', 'an unusable address leaves the status as saved');
+await canonicalBox.press('Escape');
 await win.screenshot({ path: join(SHOTS, 'page-sharing-structured-data.png') });
 
 step('a title refused for being too long is measured when the page is opened again, until Escape puts the saved one back (#597)');

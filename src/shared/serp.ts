@@ -59,14 +59,16 @@ const SYMBOLS: Record<string, number> = {
   '÷': 584
 };
 
-/** Marks that join or vary the letter before them and take no room of their own. */
-const ZERO = /[̀-ͯ​-‍⁠︀-️]/u;
-/** Letters set a full square wide: Chinese, Japanese and Korean, full-width forms, and emoji. */
-const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{20000}-\u{3fffd}]|\p{Extended_Pictographic}/u;
+/** Marks set on the letter before them (accents, Hebrew points, Arabic vowels), and joiners: no room of their own. */
+const ZERO = /[\p{Mn}\p{Me}​-‍⁠]/u;
+/** Letters set a full square wide: Chinese, Japanese and Korean, and full-width forms. */
+const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{20000}-\u{3fffd}]/u;
+/** An emoji or a flag: one picture a full square wide, however many code points (a family, a skin tone) make it. */
+const PICTURE = /\p{Extended_Pictographic}|\p{Regional_Indicator}/u;
 /** What a letter Arial is not measured for here takes: about its average lowercase letter. */
 const OTHER = 556;
 
-/** The width of one character (one code point), in thousandths of the type size. */
+/** The width of one code point, in thousandths of the type size. */
 function advance(ch: string): number {
   const code = ch.codePointAt(0)!;
   if (code >= 32 && code <= 126) return ASCII[code - 32];
@@ -79,10 +81,26 @@ function advance(ch: string): number {
   return OTHER;
 }
 
+let segmenter: Intl.Segmenter | undefined;
+
+/** Text as a reader sees its characters: a letter with its accents, or a joined emoji, is one. */
+function graphemes(text: string): string[] {
+  segmenter ??= new Intl.Segmenter('en', { granularity: 'grapheme' });
+  return Array.from(segmenter.segment(text), (s) => s.segment);
+}
+
+/** The width of one character as a reader sees it, in thousandths of the type size. */
+function graphemeAdvance(g: string): number {
+  if (PICTURE.test(g)) return 1000;
+  let units = 0;
+  for (const ch of g) units += advance(ch);
+  return units;
+}
+
 /** How wide text is set in Arial at `fontPx`, in CSS pixels. */
 export function textWidth(text: string, fontPx: number): number {
   let units = 0;
-  for (const ch of text) units += advance(ch);
+  for (const g of graphemes(text)) units += graphemeAdvance(g);
   return (units * fontPx) / 1000;
 }
 
@@ -90,6 +108,8 @@ export function textWidth(text: string, fontPx: number): number {
 export interface SerpText {
   /** What shows: the text, or as much of it as fits followed by "…". Empty when there is no text. */
   text: string;
+  /** The same, line by line where it is wrapped over lines of its own (a phone's title); one line otherwise. */
+  lines: string[];
   /** Whether it was cut short. */
   cut: boolean;
   /** How wide the whole text is, in CSS pixels. */
@@ -102,19 +122,19 @@ const ELLIPSIS = '…';
 
 /**
  * Text cut to fit `maxWidth` at `fontPx`, as a results page cuts it: at the last word that fits whole, with "…"
- * after it, and mid-word only when not even the first word fits. Whitespace is collapsed first, as a page's `<head>`
- * reads.
+ * after it, and mid-word only when not even the first word fits. It is never cut inside a character (an accent or a
+ * joined emoji stays whole). Whitespace is collapsed first, as a page's `<head>` reads.
  */
 export function fitToWidth(value: string, fontPx: number, maxWidth: number): SerpText {
   const text = seoText(value);
   const width = textWidth(text, fontPx);
-  if (width <= maxWidth) return { text, cut: false, width, max: maxWidth };
+  if (width <= maxWidth) return { text, lines: text ? [text] : [], cut: false, width, max: maxWidth };
   const room = maxWidth - textWidth(ELLIPSIS, fontPx);
-  const chars = [...text];
+  const chars = graphemes(text);
   let used = 0;
   let end = 0;
   while (end < chars.length) {
-    const next = used + (advance(chars[end]) * fontPx) / 1000;
+    const next = used + (graphemeAdvance(chars[end]) * fontPx) / 1000;
     if (next > room) break;
     used = next;
     end++;
@@ -126,7 +146,8 @@ export function fitToWidth(value: string, fontPx: number, maxWidth: number): Ser
     if (space > 0) kept = kept.slice(0, space);
   }
   kept = kept.replace(/[\s,;:–—-]+$/u, '');
-  return { text: kept ? kept + ELLIPSIS : ELLIPSIS, cut: true, width, max: maxWidth };
+  const shown = kept ? kept + ELLIPSIS : ELLIPSIS;
+  return { text: shown, lines: [shown], cut: true, width, max: maxWidth };
 }
 
 /**
@@ -137,9 +158,9 @@ export function fitLines(value: string, fontPx: number, lineWidth: number, lines
   const text = seoText(value);
   const width = textWidth(text, fontPx);
   const max = lineWidth * lines;
+  const shown: string[] = [];
   let rest = text;
-  let shown = '';
-  for (let line = 1; line < lines && rest; line++) {
+  while (rest && shown.length < lines - 1) {
     const words = rest.split(' ');
     let used = '';
     let taken = 0;
@@ -150,23 +171,40 @@ export function fitLines(value: string, fontPx: number, lineWidth: number, lines
       taken++;
     }
     if (taken) {
-      shown += (shown ? ' ' : '') + used;
+      shown.push(used);
       rest = words.slice(taken).join(' ');
       continue;
     }
     // Not even the first word fits on the line: it is broken where the line ends, and goes on on the next.
-    // The broken word's two halves are one word, so no space goes between them.
-    const chars = [...words[0]];
-    const px = (ch: string) => (advance(ch) * fontPx) / 1000;
+    const chars = graphemes(words[0]);
     let n = 0;
-    for (let w = 0; n < chars.length - 1 && w + px(chars[n]) <= lineWidth; n++) w += px(chars[n]);
+    for (let w = 0; n < chars.length - 1 && w + (graphemeAdvance(chars[n]) * fontPx) / 1000 <= lineWidth; n++) w += (graphemeAdvance(chars[n]) * fontPx) / 1000;
     n = Math.max(1, n);
-    const next = fitLines([chars.slice(n).join(''), ...words.slice(1)].join(' '), fontPx, lineWidth, lines - line);
-    return { text: `${shown ? `${shown} ` : ''}${chars.slice(0, n).join('')}${next.text}`, cut: next.cut, width, max };
+    shown.push(chars.slice(0, n).join(''));
+    rest = [chars.slice(n).join(''), ...words.slice(1)].join(' ');
   }
-  if (!rest) return { text: shown, cut: false, width, max };
-  const last = fitToWidth(rest, fontPx, lineWidth);
-  return { text: (shown ? `${shown} ` : '') + last.text, cut: last.cut, width, max };
+  if (rest) {
+    const last = fitToWidth(rest, fontPx, lineWidth);
+    shown.push(last.text);
+    return { text: joinLines(shown, text), lines: shown, cut: last.cut, width, max };
+  }
+  return { text: joinLines(shown, text), lines: shown, cut: false, width, max };
+}
+
+/** Wrapped lines as one text again: a space where the text had one between them, none inside a broken word. */
+function joinLines(lines: string[], text: string): string {
+  let out = '';
+  let at = 0;
+  // Every line but the last (which may end in "…") is the text from where the line before it ended.
+  for (const line of lines) {
+    if (out && text[at] === ' ') {
+      out += ' ';
+      at++;
+    }
+    out += line;
+    at += line.length;
+  }
+  return out;
 }
 
 /** One result as a results page lays it out on one kind of screen. */

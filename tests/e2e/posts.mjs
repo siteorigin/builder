@@ -410,6 +410,13 @@ assert.equal(await postMeter('title').innerText(), '10 characters · short: 15 t
 assert.equal(savedSeo().title, undefined, 'nothing is saved while it is typed');
 await postTitleBox.press('Escape');
 await eventually(async () => assert.match(await postMeter('title').innerText(), /^Default title:/, 'Escape puts the default back'));
+const postDescriptionBox = seoBox.getByLabel('Description', { exact: true });
+await postDescriptionBox.fill('Notes from a weekend of raku firing.');
+await eventually(async () => assert.match(await postResult('desktop').locator('.serp-desc').innerText(), /— Notes from a weekend of raku firing\.$/, 'the description being typed follows the date in the result'));
+assert.equal(await postMeter('description').innerText(), '36 characters · short: 50 to 160 reads best');
+assert.equal(savedSeo().description, undefined, 'nothing is saved while it is typed');
+await postDescriptionBox.press('Escape');
+await eventually(async () => assert.match(await postMeter('description').innerText(), /^From the fallback:/, 'Escape puts the fallback back'));
 
 await seoTab('Link preview').click();
 const postCard = seoBox.locator('.share-card');
@@ -432,6 +439,12 @@ await eventually(async () => {
   const node = (await postGraph())['@graph'].find((n) => n['@type'] === 'WebPage');
   assert.deepEqual({ url: node.url, name: node.name }, { url: `https://studio.example${path}`, name: 'Raku firing notes from the weekend' }, 'the post’s structured data names it by its address and its title');
 }, 20000);
+const postNode = async () => (await postGraph())['@graph'].find((n) => n['@type'] === 'WebPage');
+await postTitleBox.fill('Raku notes from the kiln');
+await eventually(async () => assert.equal((await postNode()).name, 'Raku notes from the kiln', 'the graph follows the title as it is typed'));
+assert.equal(savedSeo().title, 'Raku firing notes from the weekend', 'nothing new is saved while it is typed');
+await postTitleBox.press('Escape');
+await eventually(async () => assert.equal((await postNode()).name, 'Raku firing notes from the weekend', 'Escape puts the saved title back in the graph'));
 const postCanonical = seoBox.getByLabel('Canonical URL');
 await postCanonical.fill('https://journal.example/raku/');
 await eventually(async () => assert.equal(await seoBox.locator('[data-status="canonical"] dd').innerText(), 'https://journal.example/raku/ (another address)', 'the canonical URL being typed shows in the status'));
