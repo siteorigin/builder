@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkRelayUrl, DEFAULT_RELAY_URL, formatInviteLink, parseInviteLink, RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
+import { checkRelayUrl, DEFAULT_RELAY_URL, formatInviteLink, parseInviteLink, RELAY_URL_ENV, relaySocketUrl, resolveRelayUrl, roomPreviewPath, roomSocketPath, HOST_SOCKET_PATH } from '@shared/live/relay-url';
 
 const ROOM = 'abcdefghijkmnpqrstuvwxyz';
 
@@ -25,8 +25,14 @@ describe('relay URL resolution', () => {
   it('trims spaces and trailing slashes', () => {
     expect(checkRelayUrl('  https://live.siteorigin.com/  ')).toEqual({ ok: true, url: 'https://live.siteorigin.com' });
     expect(checkRelayUrl('http://127.0.0.1:8787///')).toEqual({ ok: true, url: 'http://127.0.0.1:8787' });
-    expect(checkRelayUrl('https://example.com/live/')).toEqual({ ok: true, url: 'https://example.com/live' });
     expect(checkRelayUrl('HTTPS://Live.SiteOrigin.com')).toEqual({ ok: true, url: 'https://live.siteorigin.com' });
+  });
+
+  it('accepts custom domains, ports and IPv6 loopback', () => {
+    expect(checkRelayUrl('https://collaborate.siteorigin.com')).toEqual({ ok: true, url: 'https://collaborate.siteorigin.com' });
+    expect(checkRelayUrl('https://live.example.com:8443')).toEqual({ ok: true, url: 'https://live.example.com:8443' });
+    expect(checkRelayUrl('https://live.example.com:443')).toEqual({ ok: true, url: 'https://live.example.com' });
+    expect(checkRelayUrl('http://[::1]:8787')).toEqual({ ok: true, url: 'http://[::1]:8787' });
   });
 
   it('rejects non-HTTP(S) schemes', () => {
@@ -43,8 +49,14 @@ describe('relay URL resolution', () => {
       'https://live.siteorigin.com/?',
       'https://live.siteorigin.com#top',
       `https://live.siteorigin.com/s/${ROOM}`,
+      'https://example.com/live',
+      'https://example.com/./',
       'https://live.\nsiteorigin.com',
-      'https://live.siteorigin.com/a b'
+      'https://live.siteorigin.com/a b',
+      'https:\\\\live.siteorigin.com',
+      'https://live%2esiteorigin.com',
+      'https://',
+      'https://:8787'
     ])
       expect(checkRelayUrl(bad)).toMatchObject({ ok: false });
     expect(checkRelayUrl(42)).toMatchObject({ ok: false });
@@ -55,19 +67,18 @@ describe('invite links', () => {
   it('formats /s/<roomId> under the relay', () => {
     expect(formatInviteLink('https://live.siteorigin.com/', ROOM)).toBe(`https://live.siteorigin.com/s/${ROOM}`);
     expect(formatInviteLink('http://127.0.0.1:8787', ROOM)).toBe(`http://127.0.0.1:8787/s/${ROOM}`);
-    expect(formatInviteLink('https://example.com/live', ROOM)).toBe(`https://example.com/live/s/${ROOM}`);
     expect(() => formatInviteLink('https://live.siteorigin.com', 'Bad Room')).toThrow();
     expect(() => formatInviteLink('ws://127.0.0.1', ROOM)).toThrow();
   });
 
   it('parses what it formats', () => {
-    for (const relay of ['https://live.siteorigin.com', 'http://127.0.0.1:8787', 'https://collaborate.siteorigin.com', 'https://example.com/live'])
+    for (const relay of ['https://live.siteorigin.com', 'http://127.0.0.1:8787', 'https://collaborate.siteorigin.com', 'http://[::1]:8787'])
       expect(parseInviteLink(formatInviteLink(relay, ROOM))).toEqual({ relayUrl: relay, roomId: ROOM });
   });
 
-  it('ignores surrounding spaces, one trailing slash, and an added query or fragment', () => {
+  it('allows surrounding spaces and one trailing slash, and normalizes the relay', () => {
     expect(parseInviteLink(`  https://live.siteorigin.com/s/${ROOM}/  `)).toEqual({ relayUrl: 'https://live.siteorigin.com', roomId: ROOM });
-    expect(parseInviteLink(`https://live.siteorigin.com/s/${ROOM}?utm_source=chat#x`)).toEqual({ relayUrl: 'https://live.siteorigin.com', roomId: ROOM });
+    expect(parseInviteLink(`HTTPS://LIVE.siteorigin.com:443/s/${ROOM}`)).toEqual({ relayUrl: 'https://live.siteorigin.com', roomId: ROOM });
   });
 
   it('rejects anything that is not exactly an invite link', () => {
@@ -84,9 +95,28 @@ describe('invite links', () => {
       `https://live.siteorigin.com/x/${ROOM}`,
       `https://live.siteorigin.com/s/other/s/${ROOM}`,
       `https://live.siteorigin.com/s/${ROOM} extra`,
+      `https://live.siteorigin.com/s/${ROOM}?utm_source=chat`,
+      `https://live.siteorigin.com/s/${ROOM}#x`,
+      `https://live.siteorigin.com/s/${ROOM}?`,
+      `https://example.com/live/s/${ROOM}`,
+      // Only valid once a URL parser has normalized it.
+      `https://live.siteorigin.com/x/../s/${ROOM}`,
+      `https://live.siteorigin.com/./s/${ROOM}`,
+      `https://live.siteorigin.com\\s\\${ROOM}`,
+      `https://live.siteorigin.com/s/%61${ROOM.slice(1)}`,
+      `https://live.siteorigin.com/%73/${ROOM}`,
       ''
     ])
       expect(parseInviteLink(bad)).toBeNull();
     expect(parseInviteLink(undefined)).toBeNull();
+  });
+});
+
+describe('relay routes', () => {
+  it('names the sockets and preview under each room, on ws:// or wss:// to match the relay', () => {
+    expect(relaySocketUrl('https://live.siteorigin.com', HOST_SOCKET_PATH)).toBe('wss://live.siteorigin.com/ws/host');
+    expect(relaySocketUrl('http://127.0.0.1:8787/', roomSocketPath(ROOM))).toBe(`ws://127.0.0.1:8787/s/${ROOM}/ws`);
+    expect(roomPreviewPath(ROOM)).toBe(`/s/${ROOM}/preview`);
+    expect(() => relaySocketUrl('ftp://x', HOST_SOCKET_PATH)).toThrow();
   });
 });

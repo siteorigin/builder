@@ -1,49 +1,67 @@
 import { ROOM_ID_RE } from './limits';
 
 /**
- * Where the live session relay is, and the invite links it serves. The production relay is the default; an
- * environment variable (for tests and local development, such as `wrangler dev` on http://127.0.0.1:8787) or the
- * advanced setting points the app at another one without a code change.
+ * Where the live session relay is, the routes it serves, and its invite links. The production relay is the default;
+ * an environment variable (for tests and local development, such as `wrangler dev` on http://127.0.0.1:8787) or the
+ * advanced setting points the app at another one without a code change. A relay is always a whole origin: every
+ * route below sits at its root.
  */
 
 export const DEFAULT_RELAY_URL = 'https://live.siteorigin.com';
 export const RELAY_URL_ENV = 'SITEORIGIN_LIVE_RELAY_URL';
-/** The path under the relay that a room's invite link, guest shell and sockets live at: `/s/<roomId>`. */
-export const ROOM_PATH_PREFIX = '/s/';
+
+/** The relay's routes. A host opens a new room on HOST_SOCKET_PATH; everything else is under its room's path. */
+export const HOST_SOCKET_PATH = '/ws/host';
+/** A room's invite link and guest page: `/s/<roomId>`. */
+export const roomPath = (roomId: string) => `/s/${roomId}`;
+/** The socket a host reconnects on and guests join on. */
+export const roomSocketPath = (roomId: string) => `${roomPath(roomId)}/ws`;
+/** Where an admitted guest redeems its preview ticket for the room's preview cookie (POST, `{ ticket }`). */
+export const roomAdmissionPath = (roomId: string) => `${roomPath(roomId)}/admission`;
+/** The root of the room's tunnelled preview; a preview request's target is the path below it. */
+export const roomPreviewPath = (roomId: string) => `${roomPath(roomId)}/preview`;
+
+/** Characters no relay address or invite link may hold: spaces and controls (which the URL parser drops or mends) and backslashes (which it reads as slashes). */
+const UNSAFE = /[\s\u0000-\u001f\u007f\\]/;
+/** An http(s) origin, with nothing but slashes after it. The authority holds no credentials or percent-escapes. */
+const ORIGIN_SYNTAX = /^(https?:\/\/[^/?#@%]+)\/*$/i;
+/** An invite link: an origin, then exactly `/s/<roomId>`, with at most one slash after it. */
+const INVITE_SYNTAX = /^(https?:\/\/[^/?#@%]+)\/s\/([^/?#]+)\/?$/i;
 
 export type RelayUrlCheck = { ok: true; url: string } | { ok: false; message: string };
 
 /**
- * A relay base URL as it is kept and used: http or https, with no credentials, query or fragment, and no trailing
- * slash, so `https://live.example.com/` and `https://live.example.com` are the same relay. A relay may live under a
- * path (`https://example.com/live`), but never under a room's own path.
+ * A relay address as it is kept and used: an http or https origin, in its normal form, with no trailing slash, so
+ * `https://Live.SiteOrigin.com/` and `https://live.siteorigin.com` are the same relay. The text is checked as written,
+ * before the URL parser normalizes it, so nothing the parser would rewrite (a dot segment, a backslash, an empty
+ * query) is accepted for what it becomes.
  */
 export function checkRelayUrl(raw: unknown): RelayUrlCheck {
-  if (typeof raw !== 'string' || !raw.trim()) return { ok: false, message: 'Enter the relay’s address, such as https://live.siteorigin.com.' };
-  const text = raw.trim();
-  // The URL parser drops tabs and line breaks inside an address; one holding any is refused instead of mended.
-  if (/[\s\u0000-\u001f\u007f]/.test(text)) return { ok: false, message: 'The relay’s address cannot contain spaces or line breaks.' };
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!text) return { ok: false, message: 'Enter the relay’s address, such as https://live.siteorigin.com.' };
+  if (UNSAFE.test(text)) return { ok: false, message: 'The relay’s address cannot contain spaces, line breaks or backslashes.' };
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(text)?.[1].toLowerCase();
+  if (scheme && scheme !== 'http' && scheme !== 'https') return { ok: false, message: 'The relay’s address must start with http:// or https://.' };
+  const match = ORIGIN_SYNTAX.exec(text);
+  if (!match) return { ok: false, message: 'Enter only the relay’s address, such as https://live.siteorigin.com, with no path, query, fragment, username or password.' };
   let u: URL;
   try {
-    u = new URL(text);
+    u = new URL(match[1]);
   } catch {
     return { ok: false, message: 'Enter the relay’s full address, such as https://live.siteorigin.com.' };
   }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return { ok: false, message: 'The relay’s address must start with http:// or https://.' };
-  if (u.username || u.password) return { ok: false, message: 'The relay’s address cannot include a username or password.' };
-  if (u.search || u.hash || text.includes('?') || text.includes('#')) return { ok: false, message: 'The relay’s address cannot include a query string or fragment.' };
-  const path = u.pathname.replace(/\/+$/, '');
-  if (`${path}/`.includes(ROOM_PATH_PREFIX)) return { ok: false, message: 'Enter the relay’s address, not a session’s invite link.' };
-  return { ok: true, url: `${u.protocol}//${u.host}${path}` };
+  if (!u.hostname) return { ok: false, message: 'Enter the relay’s full address, such as https://live.siteorigin.com.' };
+  return { ok: true, url: u.origin };
 }
 
 export type RelayUrlSource = 'env' | 'setting' | 'default';
 export type ResolvedRelayUrl = { ok: true; url: string; source: RelayUrlSource } | { ok: false; source: Exclude<RelayUrlSource, 'default'>; message: string };
 
 /**
- * The relay the app uses: the environment variable when it is set, then the advanced setting, then the production
- * relay. A blank value counts as unset. A value that is set but unusable is reported, never passed over for the next
- * one: a test pointed at a local relay must not reach the real one by mistake.
+ * The relay the app uses: the environment variable (`SITEORIGIN_LIVE_RELAY_URL`) when it is set, then the advanced
+ * setting, then the production relay. A blank value counts as unset. A value that is set but unusable is reported,
+ * never passed over for the next one: a test pointed at a local relay must not reach the real one by mistake. The
+ * caller reads the environment; this never touches `process`, so the renderer and the relay can use it too.
  */
 export function resolveRelayUrl(sources: { env?: string | null; setting?: string | null }): ResolvedRelayUrl {
   for (const source of ['env', 'setting'] as const) {
@@ -55,36 +73,32 @@ export function resolveRelayUrl(sources: { env?: string | null; setting?: string
   return { ok: true, url: DEFAULT_RELAY_URL, source: 'default' };
 }
 
-/** A room's invite link under the relay: `<relay>/s/<roomId>`. Throws on a relay or room ID that is not valid. */
+/** The WebSocket address of a route on a relay: wss:// on an https relay, ws:// on an http one. */
+export function relaySocketUrl(relayUrl: string, path: string): string {
+  const relay = checkRelayUrl(relayUrl);
+  if (!relay.ok) throw new Error(relay.message);
+  return `${relay.url.replace(/^http/, 'ws')}${path}`;
+}
+
+/** A room's invite link on the relay: `<relay>/s/<roomId>`. Throws on a relay or room ID that is not valid. */
 export function formatInviteLink(relayUrl: string, roomId: string): string {
   const relay = checkRelayUrl(relayUrl);
   if (!relay.ok) throw new Error(relay.message);
-  if (!ROOM_ID_RE.test(roomId)) throw new Error('Not a live session room ID.');
-  return `${relay.url}${ROOM_PATH_PREFIX}${roomId}`;
+  if (typeof roomId !== 'string' || !ROOM_ID_RE.test(roomId)) throw new Error('Not a live session room ID.');
+  return `${relay.url}${roomPath(roomId)}`;
 }
 
 export type InviteLink = { relayUrl: string; roomId: string };
 
 /**
- * The relay and room an invite link names, or null when the text is not one. Surrounding spaces, one trailing
- * slash, and a query or fragment a chat app may add are ignored; anything after the room ID in its path is not.
+ * The relay and room an invite link names, or null when the text is not exactly one: surrounding spaces and a single
+ * trailing slash are all it may add to `<relay>/s/<roomId>`.
  */
 export function parseInviteLink(text: unknown): InviteLink | null {
-  if (typeof text !== 'string') return null;
-  const link = text.trim();
-  if (/[\s\u0000-\u001f\u007f]/.test(link)) return null;
-  let u: URL;
-  try {
-    u = new URL(link);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
-  if (u.username || u.password) return null;
-  const at = u.pathname.lastIndexOf(ROOM_PATH_PREFIX);
-  if (at < 0) return null;
-  const roomId = u.pathname.slice(at + ROOM_PATH_PREFIX.length).replace(/\/$/, '');
-  if (!ROOM_ID_RE.test(roomId)) return null;
-  const relay = checkRelayUrl(`${u.protocol}//${u.host}${u.pathname.slice(0, at)}`);
-  return relay.ok ? { relayUrl: relay.url, roomId } : null;
+  const link = typeof text === 'string' ? text.trim() : '';
+  if (!link || UNSAFE.test(link)) return null;
+  const match = INVITE_SYNTAX.exec(link);
+  if (!match || !ROOM_ID_RE.test(match[2])) return null;
+  const relay = checkRelayUrl(match[1]);
+  return relay.ok ? { relayUrl: relay.url, roomId: match[2] } : null;
 }

@@ -18,22 +18,29 @@ export const ROOM_ID_ALPHABET = '23456789abcdefghijkmnpqrstuvwxyz';
 export const ROOM_ID_LENGTH = 24;
 export const ROOM_ID_RE = /^[23456789abcdefghijkmnpqrstuvwxyz]{24}$/;
 
-/** A guest's display name, after trimming: what the host reads in the waiting room. */
+/**
+ * The two roles a guest can hold. A viewer watches the live preview, follows pages and shows presence; a collaborator
+ * can also make visual edits. Nothing the host alone may do is ever granted to either.
+ */
+export const GUEST_ROLES = ['viewer', 'collaborator'] as const;
+export type GuestRole = (typeof GUEST_ROLES)[number];
+
+/** A guest's display name, in characters (code points) after trimming: what the host reads in the waiting room. */
 export const DISPLAY_NAME_MAX = 40;
+/** The project's name as guests are shown it, in characters. Never a path. */
+export const PROJECT_NAME_MAX = 80;
 /** How many guests a room holds at once, admitted or waiting. */
 export const MAX_GUESTS = 8;
 
 /**
- * The largest text frame anyone sends or accepts, in UTF-8 bytes: well under Cloudflare's 1 MiB WebSocket message
- * limit, so the relay never has to split or drop one.
+ * The largest text frame anyone sends or accepts, in UTF-8 bytes. This is the protocol's own limit, kept well under
+ * 1 MiB so it fits any WebSocket message limit Cloudflare applies, and the relay never has to split or drop a frame.
  */
 export const MAX_FRAME_BYTES = 768 * KiB;
 /** Preview response bodies travel in chunks of at most this many bytes, base64 encoded in their frame. */
 export const PREVIEW_CHUNK_BYTES = 256 * KiB;
 /** The most a single tunnelled preview response may carry in all; the host stops a larger one and aborts it. */
 export const MAX_PREVIEW_RESPONSE_BYTES = 32 * MiB;
-/** The most a tunnelled preview request may carry as its body. The preview is read-only, so this stays small. */
-export const MAX_PREVIEW_REQUEST_BODY_BYTES = 64 * KiB;
 /** How many preview requests one guest may have in flight at once. */
 export const MAX_PREVIEW_REQUESTS_IN_FLIGHT = 16;
 /** Header lists on preview frames: how many, and how long each name and value may be. */
@@ -47,10 +54,10 @@ export const MAX_PREVIEW_PATH_LENGTH = 2 * KiB;
 export const REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 /** A guest's ID, given by the relay when it joins. */
 export const GUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-/** A presence selection: the element ref a participant has selected, kept short. */
-export const MAX_SELECTION_REF_LENGTH = 256;
-/** A page ID in presence or preview reloads. */
-export const MAX_PAGE_ID_LENGTH = 128;
+/** A page, node, part or other document ID named in presence. */
+export const MAX_ID_LENGTH = 128;
+/** How deep a presence selection may reach: instances entered, or repeated items. */
+export const MAX_SELECTION_DEPTH = 16;
 /** The viewport widths a presence update may report, in CSS pixels. */
 export const MIN_VIEWPORT_WIDTH = 200;
 export const MAX_VIEWPORT_WIDTH = 8192;

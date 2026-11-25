@@ -13,9 +13,9 @@ export const MAX_SESSION_MS = 24 * HOUR;
  * The durations a host chooses from. `project` lasts until the host closes the project, which the host ends itself;
  * the relay still ends it at the 24-hour cap.
  */
-export const SESSION_DURATIONS = { '30m': 30 * MINUTE, '2h': 2 * HOUR, '8h': 8 * HOUR, project: MAX_SESSION_MS } as const;
-export type SessionDuration = keyof typeof SESSION_DURATIONS;
-export const SESSION_DURATION_IDS = Object.keys(SESSION_DURATIONS) as SessionDuration[];
+export const SESSION_DURATION_IDS = ['30m', '2h', '8h', 'project'] as const;
+export type SessionDuration = (typeof SESSION_DURATION_IDS)[number];
+export const SESSION_DURATIONS: Readonly<Record<SessionDuration, number>> = { '30m': 30 * MINUTE, '2h': 2 * HOUR, '8h': 8 * HOUR, project: MAX_SESSION_MS };
 
 export function isSessionDuration(value: unknown): value is SessionDuration {
   return typeof value === 'string' && Object.hasOwn(SESSION_DURATIONS, value);
@@ -31,28 +31,37 @@ export function sessionExpiresAt(duration: SessionDuration, startedAt: number): 
   return startedAt + SESSION_DURATIONS[duration];
 }
 
-export type ExpiryCheck = { ok: true; expiresAt: number } | { ok: false; code: 'INVALID' | 'PAST' | 'TOO_LONG'; message: string };
+export type ExpiryProblem = { ok: false; code: 'INVALID' | 'PAST' | 'TOO_LONG' | 'ENDED'; message: string };
+export type ExpiryCheck = { ok: true; expiresAt: number } | ExpiryProblem;
+
+const isTime = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
 
 /**
- * Whether a session started at `startedAt` may be set to end at `expiresAt` (on creation, extending or shortening
- * it): a whole number of milliseconds, still ahead at `now`, and within 24 hours of the start. Never moved to fit:
- * a host asking for more than the cap is told so.
+ * Whether a session may be set to end at `expiresAt`, on creation or when the host extends or shortens it: a whole
+ * number of milliseconds, still ahead at `now`, and within 24 hours of when the session started (never of now, so
+ * extending late in a session cannot stretch it). `currentExpiresAt` is the session's end before this change: a session
+ * that has already ended is never renewed. Never moved to fit: a host asking for more than the cap is told so.
  */
-export function checkSessionExpiry(expiresAt: unknown, startedAt: number, now: number): ExpiryCheck {
-  if (typeof expiresAt !== 'number' || !Number.isSafeInteger(expiresAt)) return { ok: false, code: 'INVALID', message: 'The end of the session is not a time.' };
+export function checkSessionExpiry(expiresAt: unknown, session: { startedAt: number; currentExpiresAt?: number }, now: number): ExpiryCheck {
+  if (!isTime(expiresAt)) return { ok: false, code: 'INVALID', message: 'The end of the session is not a time.' };
+  if (session.currentExpiresAt !== undefined && isExpired(session.currentExpiresAt, now)) return { ok: false, code: 'ENDED', message: 'The session has already ended.' };
   if (expiresAt <= now) return { ok: false, code: 'PAST', message: 'The session cannot end in the past.' };
-  if (expiresAt > sessionDeadline(startedAt)) return { ok: false, code: 'TOO_LONG', message: 'A live session can last at most 24 hours.' };
+  if (expiresAt > sessionDeadline(session.startedAt)) return { ok: false, code: 'TOO_LONG', message: 'A live session can last at most 24 hours.' };
   return { ok: true, expiresAt };
 }
 
 /**
- * Whether a guest's own access may end at `expiresAt` in a session ending at `sessionExpiresAt`. A guest's grant
- * never outlasts its session: one asked for later than the session's end is refused, never quietly shortened.
- * `null` is no grant of its own: the guest stays until the session ends.
+ * Whether a guest's own access may end at `expiresAt` in a session ending at `sessionExpiresAt`, when the host admits
+ * the guest or changes its grant. `null` is no grant of its own: the guest stays until the session ends. A grant never
+ * outlasts its session: one asked for past the session's end is refused, never quietly shortened. Nothing is granted
+ * once the session has ended, nor, given `currentExpiresAt` (the guest's grant before this change), to a guest whose
+ * access has already ended.
  */
-export function checkGuestExpiry(expiresAt: unknown, sessionExpiresAt: number, now: number): { ok: true; expiresAt: number | null } | Extract<ExpiryCheck, { ok: false }> {
+export function checkGuestExpiry(expiresAt: unknown, sessionExpiresAt: number, now: number, currentExpiresAt?: number | null): { ok: true; expiresAt: number | null } | ExpiryProblem {
+  if (expiresAt !== null && !isTime(expiresAt)) return { ok: false, code: 'INVALID', message: 'The end of the guest’s access is not a time.' };
+  if (isExpired(sessionExpiresAt, now)) return { ok: false, code: 'ENDED', message: 'The session has already ended.' };
+  if (currentExpiresAt !== undefined && isGuestExpired(currentExpiresAt, sessionExpiresAt, now)) return { ok: false, code: 'ENDED', message: 'The guest’s access has already ended.' };
   if (expiresAt === null) return { ok: true, expiresAt: null };
-  if (typeof expiresAt !== 'number' || !Number.isSafeInteger(expiresAt)) return { ok: false, code: 'INVALID', message: 'The end of the guest’s access is not a time.' };
   if (expiresAt <= now) return { ok: false, code: 'PAST', message: 'A guest’s access cannot end in the past.' };
   if (expiresAt > sessionExpiresAt) return { ok: false, code: 'TOO_LONG', message: 'A guest’s access cannot outlast the session.' };
   return { ok: true, expiresAt };

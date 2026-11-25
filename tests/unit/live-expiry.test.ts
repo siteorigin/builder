@@ -37,20 +37,26 @@ describe('session durations', () => {
 
 describe('session expiry', () => {
   it('allows any end up to 24 hours from the start, including after extending', () => {
-    expect(checkSessionExpiry(start + 2 * HOUR, start, start)).toEqual({ ok: true, expiresAt: start + 2 * HOUR });
-    expect(checkSessionExpiry(sessionDeadline(start), start, start + 20 * HOUR)).toEqual({ ok: true, expiresAt: start + 24 * HOUR });
+    expect(checkSessionExpiry(start + 2 * HOUR, { startedAt: start }, start)).toEqual({ ok: true, expiresAt: start + 2 * HOUR });
+    expect(checkSessionExpiry(sessionDeadline(start), { startedAt: start, currentExpiresAt: start + 21 * HOUR }, start + 20 * HOUR)).toEqual({ ok: true, expiresAt: start + 24 * HOUR });
+    // Shortening a running session is allowed too.
+    expect(checkSessionExpiry(start + HOUR, { startedAt: start, currentExpiresAt: start + 8 * HOUR }, start + 30 * MIN)).toEqual({ ok: true, expiresAt: start + HOUR });
   });
 
   it('enforces the 24-hour cap from the start, not from now', () => {
-    expect(checkSessionExpiry(start + 24 * HOUR + 1, start, start)).toMatchObject({ ok: false, code: 'TOO_LONG' });
-    // Extending late in a session still cannot reach past the start's cap.
-    expect(checkSessionExpiry(start + 30 * HOUR, start, start + 23 * HOUR)).toMatchObject({ ok: false, code: 'TOO_LONG' });
+    expect(checkSessionExpiry(start + 24 * HOUR + 1, { startedAt: start }, start)).toMatchObject({ ok: false, code: 'TOO_LONG' });
+    // At hour 23, another 8 hours would make a 31-hour session.
+    expect(checkSessionExpiry(start + 31 * HOUR, { startedAt: start, currentExpiresAt: start + 24 * HOUR }, start + 23 * HOUR)).toMatchObject({ ok: false, code: 'TOO_LONG' });
+  });
+
+  it('never renews a session that has already ended', () => {
+    expect(checkSessionExpiry(start + 3 * HOUR, { startedAt: start, currentExpiresAt: start + 2 * HOUR }, start + 2 * HOUR)).toMatchObject({ ok: false, code: 'ENDED' });
   });
 
   it('refuses an end already passed and anything that is not a time', () => {
-    expect(checkSessionExpiry(start, start, start)).toMatchObject({ ok: false, code: 'PAST' });
-    expect(checkSessionExpiry(start + HOUR, start, start + 2 * HOUR)).toMatchObject({ ok: false, code: 'PAST' });
-    for (const bad of [NaN, Infinity, 1.5 + start, '1', null, undefined]) expect(checkSessionExpiry(bad, start, start)).toMatchObject({ ok: false, code: 'INVALID' });
+    expect(checkSessionExpiry(start, { startedAt: start }, start)).toMatchObject({ ok: false, code: 'PAST' });
+    expect(checkSessionExpiry(start + HOUR, { startedAt: start, currentExpiresAt: start + 8 * HOUR }, start + 2 * HOUR)).toMatchObject({ ok: false, code: 'PAST' });
+    for (const bad of [NaN, Infinity, 1.5 + start, 2 ** 60, '1', null, undefined]) expect(checkSessionExpiry(bad, { startedAt: start }, start)).toMatchObject({ ok: false, code: 'INVALID' });
   });
 });
 
@@ -61,6 +67,16 @@ describe('guest expiry', () => {
     expect(checkGuestExpiry(null, sessionEnds, start)).toEqual({ ok: true, expiresAt: null });
     expect(checkGuestExpiry(start + 30 * MIN, sessionEnds, start)).toEqual({ ok: true, expiresAt: start + 30 * MIN });
     expect(checkGuestExpiry(sessionEnds, sessionEnds, start)).toEqual({ ok: true, expiresAt: sessionEnds });
+  });
+
+  it('grants nothing once the session or the guest’s own access has ended', () => {
+    // Not even clearing a deadline, at the moment the session ends.
+    expect(checkGuestExpiry(null, sessionEnds, sessionEnds)).toMatchObject({ ok: false, code: 'ENDED' });
+    expect(checkGuestExpiry(start + HOUR, sessionEnds, start + 30 * MIN, start + 30 * MIN)).toMatchObject({ ok: false, code: 'ENDED' });
+    expect(checkGuestExpiry(null, sessionEnds, start + 30 * MIN, start + 30 * MIN)).toMatchObject({ ok: false, code: 'ENDED' });
+    // A grant still running may be extended or cleared.
+    expect(checkGuestExpiry(start + HOUR, sessionEnds, start + 10 * MIN, start + 30 * MIN)).toEqual({ ok: true, expiresAt: start + HOUR });
+    expect(checkGuestExpiry(null, sessionEnds, start + 10 * MIN, start + 30 * MIN)).toEqual({ ok: true, expiresAt: null });
   });
 
   it('refuses a grant past the session, already passed, or not a time', () => {

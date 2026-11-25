@@ -8,10 +8,10 @@ import { ROOM_ID_ALPHABET, ROOM_ID_LENGTH, ROOM_ID_RE } from './limits';
  */
 
 // CryptoKey is a global type in the DOM library but only a value in Node's types; both name it through `crypto`.
-type Subtle = typeof globalThis.crypto.subtle;
-export type LiveCryptoKey = Awaited<ReturnType<Subtle['importKey']>>;
+export type LiveCryptoKey = Parameters<typeof globalThis.crypto.subtle.sign>[1];
 
-const ED25519 = { name: 'Ed25519' } as const;
+// The name alone: an object holding only `name` also matches one of Node's symmetric-key overloads.
+const ED25519 = 'Ed25519';
 /** Ed25519 keys and signatures have fixed sizes; anything else is refused before Web Crypto sees it. */
 export const PUBLIC_KEY_BYTES = 32;
 export const SIGNATURE_BYTES = 64;
@@ -108,7 +108,8 @@ export interface HostChallenge {
  * one per line. Null when either is malformed, so nothing ambiguous is ever signed.
  */
 export function hostChallengeBytes(challenge: HostChallenge): Uint8Array<ArrayBuffer> | null {
-  if (!challenge || !ROOM_ID_RE.test(challenge.roomId) || !NONCE_RE.test(challenge.nonce)) return null;
+  if (!challenge || typeof challenge.roomId !== 'string' || !ROOM_ID_RE.test(challenge.roomId)) return null;
+  if (typeof challenge.nonce !== 'string' || !NONCE_RE.test(challenge.nonce) || fromBase64Url(challenge.nonce)?.length !== NONCE_BYTES) return null;
   const encoded = new TextEncoder().encode(`${HOST_CHALLENGE_CONTEXT}\n${challenge.roomId}\n${challenge.nonce}`);
   const bytes = new Uint8Array(encoded.length);
   bytes.set(encoded);
