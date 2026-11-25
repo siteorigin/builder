@@ -60,6 +60,7 @@ describe('session expiry', () => {
     // Nor from session times that are not times: the cap is never skipped.
     expect(checkSessionExpiry(start + 30 * HOUR, { startedAt: NaN }, start)).toMatchObject({ ok: false, code: 'INVALID' });
     expect(checkSessionExpiry(start + HOUR, { startedAt: start, currentExpiresAt: NaN }, start)).toMatchObject({ ok: false, code: 'INVALID' });
+    expect(checkSessionExpiry(start + HOUR, { startedAt: start }, NaN)).toMatchObject({ ok: false, code: 'INVALID' });
   });
 });
 

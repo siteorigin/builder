@@ -55,11 +55,13 @@ export function isPreviewHeaderValue(value: string): boolean {
 
 /**
  * The development server's own routes, which the preview never needs and a guest must never reach: they act on the
- * host's computer (`/__open-in-editor` opens a file in the host's editor). A first path segment starting with `__`
- * is one of them, except SvelteKit's `__data.json`, which a page's data is fetched from.
+ * host's computer (`__open-in-editor` opens a file in the host's editor). Any first path segment starting with `__`
+ * is taken for one, except SvelteKit's `__data.json`, which a page's data is fetched from; the routes that act on the
+ * host are refused at any depth too, since a project's own Vite config may serve everything under another base.
  */
-function isDevServerRoute(firstSegment: string): boolean {
-  return firstSegment.startsWith('__') && firstSegment !== '__data.json';
+const HOST_ACTION_ROUTES = new Set(['__open-in-editor', '__inspect']);
+function isDevServerRoute(segment: string, first: boolean): boolean {
+  return HOST_ACTION_ROUTES.has(segment) || (first && segment.startsWith('__') && segment !== '__data.json');
 }
 
 /**
@@ -82,7 +84,7 @@ export function isPreviewTarget(target: unknown): target is string {
       return false;
     }
     if (decoded === '.' || decoded === '..' || /[/\\\u0000]/.test(decoded)) return false;
-    if (i === 0 && isDevServerRoute(decoded)) return false;
+    if (isDevServerRoute(decoded, i === 0)) return false;
   }
   return true;
 }

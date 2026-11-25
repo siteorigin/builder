@@ -1011,14 +1011,19 @@ export interface ApplyResult {
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Fields whose string values are used as lookup keys. Content (text, labels) may contain any words. */
 const KEY_FIELDS = /(^id$|Id$|^prop$|^field$|^property$|^variant$|^axis$|^slot$|^parentId$|^bind$|^\$prop$|^\$item$|^\$state$)/;
-/** Fields whose lists of strings are lookup keys too: lists of IDs (`pageIds`) and paths through a document. */
-const KEY_LIST_FIELDS = /(Ids$|Path$|^path$)/;
-const forbiddenIn = (k: string, x: unknown) =>
-  (KEY_FIELDS.test(k) && typeof x === 'string' && FORBIDDEN_KEYS.has(x)) || (KEY_LIST_FIELDS.test(k) && Array.isArray(x) && x.some((e) => typeof e === 'string' && FORBIDDEN_KEYS.has(e)));
+/**
+ * An operation's own lists of IDs (`pageIds`, `nodeIds`): lookup keys too. Only the operation's top-level fields,
+ * never the content it carries, where a property may be named anything and hold any words.
+ */
+const KEY_LIST_FIELDS = /Ids$/;
+const forbiddenList = (k: string, x: unknown) => KEY_LIST_FIELDS.test(k) && Array.isArray(x) && x.some((e) => typeof e === 'string' && FORBIDDEN_KEYS.has(e));
 function hasForbidden(v: unknown, depth = 0): boolean {
   if (depth > 12) return true;
   if (Array.isArray(v)) return v.some((x) => hasForbidden(x, depth + 1));
-  if (v && typeof v === 'object') return Object.entries(v).some(([k, x]) => FORBIDDEN_KEYS.has(k) || forbiddenIn(k, x) || hasForbidden(x, depth + 1));
+  if (v && typeof v === 'object')
+    return Object.entries(v).some(
+      ([k, x]) => FORBIDDEN_KEYS.has(k) || (KEY_FIELDS.test(k) && typeof x === 'string' && FORBIDDEN_KEYS.has(x)) || (depth === 0 && forbiddenList(k, x)) || hasForbidden(x, depth + 1)
+    );
   return false;
 }
 

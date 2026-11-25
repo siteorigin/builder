@@ -34,7 +34,7 @@ describe('the live relay setting', () => {
     // Nothing else changed with it.
     expect(s).toMatchObject({ appearance: 'dark', developerMode: true });
     // The update itself saved it.
-    expect(JSON.parse(readFileSync(settingsFile, 'utf8')).settings).toMatchObject({ liveRelayUrl: 'https://collaborate.siteorigin.com', appearance: 'dark' });
+    expect(JSON.parse(readFileSync(settingsFile, 'utf8')).settings).toMatchObject({ liveRelayUrl: 'https://collaborate.siteorigin.com', appearance: 'dark', developerMode: true });
 
     const { loadSettings } = await freshSettings(JSON.parse(readFileSync(settingsFile, 'utf8')));
     expect((await loadSettings()).settings.liveRelayUrl).toBe('https://collaborate.siteorigin.com');

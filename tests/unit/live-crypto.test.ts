@@ -61,6 +61,13 @@ describe('room IDs and nonces', () => {
     });
     try {
       expect(newRoomId()).toBe('23456789abcdefghijkmnpqr');
+      spy.mockImplementation(<T extends ArrayBufferView | null>(array: T): T => {
+        const bytes = array as unknown as Uint8Array;
+        bytes.forEach((_, i) => (bytes[i] = 8 + i));
+        return array;
+      });
+      // 8..31: the rest of the alphabet.
+      expect(newRoomId()).toBe('abcdefghijkmnpqrstuvwxyz');
     } finally {
       spy.mockRestore();
     }
@@ -141,7 +148,15 @@ describe('host challenge-response', () => {
     const orderEight = hex('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05');
     const orderEightNegated = hex('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85');
     const pPlusOne = hex('ee' + 'ff'.repeat(30) + '7f');
-    for (const key of [identity, orderEight, orderEightNegated, pPlusOne, hex('00'.repeat(32))]) {
+    const listed = [
+      '0000000000000000000000000000000000000000000000000000000000000000',
+      '0100000000000000000000000000000000000000000000000000000000000000',
+      '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+      'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+      'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+      'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f'
+    ].map(hex);
+    for (const key of [identity, orderEight, orderEightNegated, pPlusOne, ...listed]) {
       expect(isHostPublicKey(key)).toBe(false);
       expect(await importHostPublicKey(key)).toBeNull();
     }

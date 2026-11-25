@@ -122,6 +122,16 @@ describe('valid frames', () => {
       guestId
     };
     expect(checkFrame('guest-to-relay', fromGuest)).toMatchObject({ ok: false, error: { code: 'INVALID' } });
+    const hostRefusal: Frame<'host-to-relay', 'rpc:response'> = {
+      type: 'rpc:response',
+      guestId,
+      requestId,
+      // @ts-expect-error the host answers only the methods it was passed
+      method: 'ai.providers',
+      ok: false,
+      error: rpcError
+    };
+    expect(checkFrame('host-to-relay', hostRefusal)).toMatchObject({ ok: false, error: { path: 'method' } });
   });
 });
 
@@ -161,6 +171,12 @@ describe('refused frames', () => {
     expect(refused('relay-to-guest', { type: 'guest:status', status: 'banished' })).toMatchObject({ code: 'INVALID', path: 'status' });
     expect(refused('relay-to-guest', { type: 'rpc:response', requestId, method: 'project.snapshot', ok: true, result: 1, error: rpcError })).toMatchObject({ code: 'INVALID' });
     expect(refused('host-to-relay', { type: 'rpc:response', requestId, method: 'project.snapshot', ok: true, result: 1 })).toMatchObject({ code: 'INVALID', path: 'guestId' });
+  });
+
+  it('hold a roster of at most eight and a resume token of real length', () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ guestId: `g_${i}`, displayName: `Guest ${i}`, status: 'pending' }));
+    expect(refused('relay-to-host', { type: 'room:roster', participants: many })).toMatchObject({ code: 'INVALID', path: 'participants' });
+    expect(refused('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Sam', resumeToken: 'short' })).toMatchObject({ code: 'INVALID', path: 'resumeToken' });
   });
 
   it('never show a guest anyone still waiting', () => {
@@ -207,7 +223,7 @@ describe('refused frames', () => {
   });
 
   it('refuse names that are blank, too long, untrimmed or disguised', () => {
-    for (const displayName of ['', ' Sam', 'Sam ', 'Sam  Lee', 'x'.repeat(41), 'Sam\u202eeL', 'Sa\u200bm', 'Sam\nLee', 'Sam\u0007', 'Sam\u061c', '\u200d', '\u0301'])
+    for (const displayName of ['', ' Sam', 'Sam ', 'Sam  Lee', 'x'.repeat(41), '\u2800', '\u3164', 'Sam\u202eeL', 'Sa\u200bm', 'Sam\nLee', 'Sam\u0007', 'Sam\u061c', '\u200d', '\u0301'])
       expect(refused('guest-to-relay', { type: 'guest:join', version: 1, displayName })).toMatchObject({ code: 'INVALID', path: 'displayName' });
   });
 
@@ -233,9 +249,17 @@ describe('refused frames', () => {
     // JSON drops an undefined result, which the reader then misses.
     expect(encodeFrame('host-to-relay', answer(undefined))).toMatchObject({ ok: false, error: { code: 'INVALID', path: 'result' } });
     expect(encodeFrame('host-to-relay', answer(10n))).toMatchObject({ ok: false, error: { code: 'INVALID' } });
+    expect(encodeFrame('host-to-relay', { type: 'rpc:event', event: 'project:changed', payload: undefined })).toMatchObject({ ok: false, error: { code: 'INVALID', path: 'payload' } });
     const cycle: Record<string, unknown> = {};
     cycle.self = cycle;
     expect(encodeFrame('host-to-relay', answer(cycle))).toMatchObject({ ok: false, error: { code: 'INVALID' } });
+  });
+
+  it('are as large as they are when written again', () => {
+    // Fits as sent, but JSON writes each 1e20 out in twenty-one digits.
+    const sent = `{"type":"rpc:request","requestId":"r1","method":"project.apply","args":[[${Array(60_000).fill('1e20').join(',')}]]}`;
+    expect(utf8Length(sent)).toBeLessThan(frameLimit('guest-to-relay'));
+    expect(refused('guest-to-relay', sent)).toMatchObject({ code: 'TOO_LARGE' });
   });
 
   it('from a guest leave room for the guest ID the relay adds', () => {

@@ -41,10 +41,11 @@ import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewLocation, isPreview
 // Fields
 
 /**
- * Characters a name may never hold: controls, the marks that reorder text, and invisible spaces, any of which could
- * make one name look like another in the waiting room. Joiners stay: emoji and some scripts need them.
+ * Characters a name may never hold: controls, the marks that reorder text, and invisible spaces and blank fillers, any
+ * of which could make one name look like another, or like none, in the waiting room. Joiners stay: emoji and some
+ * scripts need them.
  */
-const UNSAFE_NAME_CHARS = /[\p{Cc}\p{Bidi_Control}​⁠﻿]/u;
+const UNSAFE_NAME_CHARS = /[\p{Cc}\p{Bidi_Control}\u115f\u1160\u200b\u2060\u2800\u3164\ufeff\uffa0]/u;
 /** A name must show something: a letter, number, symbol or punctuation mark, not joiners or marks alone. */
 const VISIBLE_NAME_CHAR = /[\p{L}\p{N}\p{S}\p{P}]/u;
 
@@ -233,7 +234,7 @@ const rpcError = z.object({ code: z.enum(RPC_ERROR_CODES), message, recoverable:
 export type RpcError = z.infer<typeof rpcError>;
 
 /** The host answers only the methods it was passed; the relay may also refuse any method a guest named. */
-const rpcResponse = <E extends z.ZodRawShape>(extra: E, named: typeof method | typeof liveMethod) =>
+const rpcResponse = <E extends z.ZodRawShape, N extends typeof method | typeof liveMethod>(extra: E, named: N) =>
   z.discriminatedUnion('ok', [
     msg('rpc:response', { ...extra, requestId, method: liveMethod, ok: z.literal(true), result: z.unknown() }),
     msg('rpc:response', { ...extra, requestId, method: named, ok: z.literal(false), error: rpcError })
@@ -394,7 +395,18 @@ export function checkFrame<D extends Direction>(direction: D, value: unknown): F
   const type = (value as { type?: unknown }).type;
   if (typeof type !== 'string' || !FRAME_TYPES[direction].has(type)) return fail('UNKNOWN_TYPE', `${typeof type === 'string' ? `"${type.slice(0, 40)}"` : 'A frame with no type'} is not a frame sent ${direction.replace(/-/g, ' ')}.`, 'type');
   const parsed = FRAME_SCHEMAS[direction].safeParse(value);
-  if (parsed.success) return { ok: true, frame: parsed.data as FrameOf<D> };
+  if (parsed.success) {
+    // A frame is as large as it is when written again: the relay rewrites what it passes on, and JSON may write a
+    // value longer than it was sent (1e20 as twenty-one digits), so one that grows past the limit is refused here.
+    let text: string;
+    try {
+      text = JSON.stringify(parsed.data);
+    } catch {
+      return fail('INVALID', 'The frame cannot be written as JSON.');
+    }
+    if (utf8Length(text) > frameLimit(direction)) return fail('TOO_LARGE', `Frames are at most ${frameLimit(direction)} bytes as written.`);
+    return { ok: true, frame: parsed.data as FrameOf<D> };
+  }
   const issue = parsed.error.issues[0];
   const path = issue.path.map(String).join('.');
   return fail('INVALID', `${path || 'frame'}: ${issue.message}`.slice(0, MAX_MESSAGE_LENGTH), path || undefined);

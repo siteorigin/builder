@@ -6,7 +6,11 @@ import type { GuestRole } from './limits';
  * capabilities.ts (which also checks these names still exist in the app's API).
  */
 
-/** A viewer reads the project as it is now; the preview, presence and the editor events come with admission. */
+/**
+ * A viewer reads the project as it is now; the preview, presence and the editor events come with admission. The host
+ * answers `project.snapshot`, and sends `project:changed`, with a copy made safe to share (#765), never the editor's
+ * own snapshot, which names the project's folder and holds private state.
+ */
 export const VIEWER_METHODS = ['project.snapshot'] as const;
 /** A collaborator also makes visual edits. */
 export const COLLABORATOR_METHODS = [...VIEWER_METHODS, 'project.apply'] as const;

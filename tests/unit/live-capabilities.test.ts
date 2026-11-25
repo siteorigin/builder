@@ -175,20 +175,22 @@ describe('checking a batch', () => {
   });
 
   it('leaves where a contact form sends its messages to the host', () => {
-    // Every setting that sends a form's messages to someone's account is protected.
-    for (const prop of FORM_DESTINATIONS) expect(HOST_ONLY_PROPS).toContain(prop);
+    // Exactly the settings that send a form's messages to someone's account are protected.
+    expect([...HOST_ONLY_PROPS].sort()).toEqual([...FORM_DESTINATIONS].sort());
     for (const prop of HOST_ONLY_PROPS) {
       expect(checkEditBatch('collaborator', { operations: [{ type: 'instance.setProp', owner: page, nodeId: 'n_form', prop, value: 'https://elsewhere.example/f/1' }] }), prop).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
       expect(checkEditBatch('collaborator', { operations: [{ type: 'node.insert', owner: page, parentId: null, componentId: 'contact.form', props: { heading: 'Write to us', [prop]: 'x' } }] }), prop).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
     }
-    // The form's other properties, and inserting one without its settings, are ordinary edits.
+    // The form's other properties, and inserting one without its settings, are ordinary edits; so is a property
+    // that only shares a name with a form setting on another component.
     expect(checkEditBatch('collaborator', { operations: [{ type: 'instance.setProp', owner: page, nodeId: 'n_form', prop: 'heading', value: 'Say hello' }] })).toMatchObject({ ok: true });
+    expect(checkEditBatch('collaborator', { operations: [{ type: 'instance.setProp', owner: page, nodeId: 'n_card', prop: 'provider', value: 'Acme Plumbing' }] })).toMatchObject({ ok: true });
     expect(checkEditBatch('collaborator', { operations: [{ type: 'node.insert', owner: page, parentId: null, componentId: 'contact.form', props: { heading: 'Write to us' } }] })).toMatchObject({ ok: true });
   });
 
   it('lets a collaborator rename, move and lay out a page, but not publish, hide or redirect it', () => {
     expect(checkEditBatch('collaborator', { operations: [{ type: 'page.update', pageId: 'pg_about', title: 'About us', route: '/about-us/', navLabel: 'About', showHeader: false }] })).toMatchObject({ ok: true });
-    for (const field of [{ draft: false }, { draft: true }, { noindex: true }, { searchHidden: true }, { canonical: 'https://elsewhere.example/' }, { newsHidden: true }])
+    for (const field of [{ draft: false }, { draft: true }, { noindex: true }, { searchHidden: true }, { canonical: 'https://elsewhere.example/' }, { newsHidden: true }, { structuredData: { type: 'WebPage' } }])
       expect(checkEditBatch('collaborator', { operations: [{ type: 'page.update', pageId: 'pg_about', title: 'About', ...field }] }), Object.keys(field)[0]).toMatchObject({
         ok: false,
         error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(Object.keys(field)[0]), operationIndex: 0 }
@@ -224,7 +226,10 @@ describe('checking a batch', () => {
     expect(checkEditBatch('collaborator', { operations: [setText, [setText]] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 1 } });
     expect(checkEditBatch('collaborator', { operations: [JSON.parse('{"type":"node.setContent","__proto__":{"x":1},"owner":{"kind":"page","id":"pg_home"},"nodeId":"n","field":"text","value":"x"}')] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 0 } });
     // A reserved name inside a list of IDs is refused too, before the engine looks it up.
-    expect(checkEditBatch('collaborator', { operations: [{ type: 'page.reorder', pageIds: ['pg_home', '__proto__'] }] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 0 } });
+    for (const reserved of ['__proto__', 'constructor', 'prototype'])
+      expect(checkEditBatch('collaborator', { operations: [{ type: 'page.reorder', pageIds: ['pg_home', reserved] }] }), reserved).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 0 } });
+    // Content may hold those words, in a property of any name.
+    expect(validateOperation({ type: 'node.insert', owner: page, parentId: null, componentId: 'content.text', props: { careerPath: ['prototype'], memberIds: ['constructor'] } })).toMatchObject({ ok: true });
     expect(validateOperation({ type: 'node.wrap', owner: page, nodeIds: ['n_1', 'constructor'] })).toMatchObject({ ok: false });
     expect(validateOperation({ type: 'page.reorder', pageIds: ['pg_home', 'pg_about'] })).toMatchObject({ ok: true });
   });

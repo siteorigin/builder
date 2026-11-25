@@ -84,6 +84,7 @@ describe('preview response streams', () => {
     expect(run(new PreviewStream('GET'), [head(), chunkOf(1, 0), abort]).at(-1)).toEqual({ ok: true, done: true });
     expect(run(new PreviewStream('GET'), [abort, chunkOf(1, 0)]).at(-1)).toMatchObject({ ok: false });
     expect(run(new PreviewStream('GET'), [head(), end(0), abort]).at(-1)).toMatchObject({ ok: false });
+    expect(run(new PreviewStream('GET'), [head(), chunkOf(1, 0), abort, chunkOf(1, 1)]).at(-1)).toMatchObject({ ok: false });
   });
 });
 
@@ -94,9 +95,13 @@ describe('preview targets and headers', () => {
   });
 
   it('keeps clear of the development server’s own routes', () => {
-    for (const bad of ['/__open-in-editor', '/__open-in-editor?file=src/app.html', '/%5f%5fopen-in-editor', '/__vite_ping', '/__inspect/']) expect(isPreviewTarget(bad), bad).toBe(false);
-    // SvelteKit's page data stays reachable, and so does a page that merely contains underscores.
-    for (const ok of ['/__data.json', '/about/__data.json', '/a/__open-in-editor', '/_app/version.json']) expect(isPreviewTarget(ok), ok).toBe(true);
+    for (const bad of ['/__open-in-editor', '/__open-in-editor?file=src/app.html', '/%5f%5fopen-in-editor', '/__vite_ping', '/__inspect/', '/__brand.svg'])
+      expect(isPreviewTarget(bad), bad).toBe(false);
+    // Under a project's own base, the routes that act on the host are still refused.
+    for (const bad of ['/site/__open-in-editor?file=x', '/a/b/__inspect/']) expect(isPreviewTarget(bad), bad).toBe(false);
+    // SvelteKit's page data, Vite's client modules and pages with underscores stay reachable.
+    for (const ok of ['/__data.json', '/about/__data.json', '/_app/version.json', '/@vite/client', '/@id/__x00__virtual:x.js', '/node_modules/.vite/deps/svelte.js?v=1', '/a/__notes/'])
+      expect(isPreviewTarget(ok), ok).toBe(true);
   });
 
   it('sends a redirect to the same place under the room’s preview, fragment and all', () => {

@@ -74,10 +74,12 @@ const OPERATIONS: Record<GuestRole, readonly string[]> = { viewer: [], collabora
 export const GUEST_OWNER_KINDS = ['page', 'shell'] as const;
 
 /**
- * Component properties only the host sets, wherever they are placed: a contact form's service settings, which decide
- * whose account receives the site's messages.
+ * Component properties only the host sets, wherever they are placed: the contact form settings that send the site's
+ * messages to someone's own account (the form's FORM_DESTINATIONS). This goes by the property's name only. A project
+ * component that passes one of its own properties into a nested form's settings needs the host's check against that
+ * definition (#765), which this contract cannot see.
  */
-export const HOST_ONLY_PROPS = ['provider', 'endpoint', 'accessKey', 'formName'] as const;
+export const HOST_ONLY_PROPS = ['endpoint', 'accessKey'] as const;
 
 /** The page settings a collaborator may change: its name, address, search text and image, and its shared parts. */
 export const COLLABORATOR_PAGE_FIELDS = ['title', 'navLabel', 'route', 'seoTitle', 'description', 'socialImage', 'showHeader', 'showFooter'] as const;
