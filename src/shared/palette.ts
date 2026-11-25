@@ -19,7 +19,7 @@
  * Pure and deterministic: the same brand, mood and theme always make the same palette.
  */
 import type { TokenDef } from './types';
-import { READABLE_TEXT_COLORS, TEXT_CONTRAST, compositeOver, contrastBetween, evaluatePairs, isFailing, type ContrastPair, type PairResult } from './contrast';
+import { READABLE_TEXT_COLORS, TEXT_CONTRAST, compositeOver, contrastBetween, evaluatePairs, isFailing, pairsOf, type ContrastPair, type PairResult } from './contrast';
 import { oklabToLinearRgb, oklabToRgb, parseColor, rgbToOklab, toHex6 } from './color';
 import { resolvedCss } from './color-scheme';
 
@@ -317,7 +317,10 @@ export function harmonizePalette(input: HarmonyInput): PaletteHarmony {
     return null;
   };
   let chosen = carry(requested);
-  if (!chosen) {
+  // Moving the brand can only fix pairs it is part of: a theme pairing other colours no page fixes is not searched for.
+  const brandPairs = new Set(pairsOf(input.pairs, 'color.brand', input.tokens).map((p) => p.id));
+  const brandCanFix = (['light', 'dark'] as const).some((page) => [...failing(only(extremes(requested, page, accent)))].every((id) => brandPairs.has(id)));
+  if (!chosen && brandCanFix) {
     const seed = lchOf(requested);
     const tried = new Set([requested]);
     for (let k = 1; !chosen && k * BRAND_STEP <= 1; k++) {
