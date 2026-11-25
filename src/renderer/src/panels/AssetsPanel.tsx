@@ -13,6 +13,7 @@ import { AssetOrderControls, shortName, useAssetSeries } from '../components/Ass
 import { Picture, Thumb } from '../components/AssetPicture';
 import { assetDropRefusal, goToShellPart, imagePlacement, openComponentStudio, openPost, openSiteStyles, placeAsset, selectPage, openLayout } from '../lib/actions';
 import { beginAssetDrag } from '../lib/asset-drag';
+import { openEditorDestination } from '../lib/open-destination';
 import { SHOW_ASSET_EVENT } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
@@ -295,13 +296,14 @@ function goToPlace(state: ProjectState, p: Pick<PlaceLabel, 'at' | 'field' | 'wh
  * Where Show goes for one use of an image: its element and field (in Component Studio for a component's design), where
  * a component's starting image is changed, its page's settings, or Site styles.
  */
-function showUse(state: ProjectState, u: ImageUseRow): (() => void) | undefined {
+export function showUse(state: ProjectState, u: ImageUseRow): (() => void) | undefined {
   if (u.at || u.definitionId) return goToPlace(state, u);
   const post = u.post;
   if (post) return () => void openPost(post.collectionId, post.entryId, post.n);
   if (u.setting === 'site') return openSiteStyles;
   const pageId = u.setting?.pageId;
-  return pageId ? () => selectPage(pageId, null) : undefined;
+  // A page's sharing image is changed in its settings: the Inspector opens at the field, whichever view was showing.
+  return pageId ? () => openEditorDestination({ kind: 'pageSeo', pageId, field: 'socialImage' }) : undefined;
 }
 
 /** For a use in a theme component, whose design and starting values can't be changed: how it is changed instead. */
@@ -347,7 +349,7 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
   }
   for (const p of Object.values(state.pages)) {
     const c = count(p.seo) + (p.seo.socialImage === assetId ? 1 : 0);
-    if (c) out.push({ key: `seo/${p.id}`, icon: 'page', where: p.title, what: 'Sharing image', count: c, go: () => selectPage(p.id, null) });
+    if (c) out.push({ key: `seo/${p.id}`, icon: 'page', where: p.title, what: 'Sharing image', count: c, go: () => openEditorDestination({ kind: 'pageSeo', pageId: p.id, field: 'socialImage' }) });
   }
   if (state.site.favicon === assetId) out.push({ key: 'favicon', icon: 'site', where: 'Site', what: 'Browser tab icon', count: 1, go: openSiteStyles });
   if (state.site.socialImage === assetId) out.push({ key: 'social', icon: 'site', where: 'Site', what: 'Sharing image', count: 1, go: openSiteStyles });

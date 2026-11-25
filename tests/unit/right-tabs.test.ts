@@ -42,6 +42,8 @@ describe('the AI tab icon', () => {
 
   it('takes the accent whichever view is open', () => {
     expect(layout).toMatch(/#dock-tab-chat svg \{ color: var\(--accent-text\); \}/);
+    // A narrow dock drops the other tabs' icons, never the AI's.
+    expect(layout).toContain('.dock-tab:not(#dock-tab-chat) > svg { display: none; }');
   });
 
   it('leaves the other tabs plain until selected', () => {
