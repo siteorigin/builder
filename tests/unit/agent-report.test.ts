@@ -123,6 +123,28 @@ describe('change descriptions', () => {
     for (const l of labels) expect(l).not.toMatch(RAW);
   });
 
+  it('says which design a section changed to, naming the content it dropped (#374)', () => {
+    const { state } = project();
+    const home = { kind: 'page' as const, id: state.site.homePageId };
+    const hero = state.pages[home.id].rootIds[0];
+    const { changes } = run(state, [
+      () => [{ type: 'instance.setProp', owner: home, nodeId: hero, prop: 'image', value: 'as_office' }],
+      () => [{ type: 'instance.swapComponent', owner: home, nodeId: hero, componentId: 'hero.centered', allowDrops: true }]
+    ]);
+    expect(changes.at(-1)).toMatchObject({ label: 'Changed Split hero on Home to “Centered hero”, dropping “Image”', pageId: home.id, nodeId: hero });
+    for (const c of changes) expect(c.label).not.toMatch(RAW);
+    // Each change names the design it left, though an earlier one in the run chose it.
+    const twice = run(state, [
+      () => [{ type: 'instance.swapComponent', owner: home, nodeId: hero, componentId: 'hero.centered', allowDrops: true }],
+      () => [{ type: 'instance.swapComponent', owner: home, nodeId: hero, componentId: 'intro.page', allowDrops: true }]
+    ]);
+    expect(twice.changes.map((c) => c.label)).toEqual([
+      'Changed Split hero on Home to “Centered hero”',
+      'Changed Centered hero on Home to “Page introduction”, dropping “Primary button label”, “Primary button link”, “Secondary button label” and “Secondary button link”'
+    ]);
+    expect((twice.after.pages[home.id].nodes[hero] as { definitionId: string }).definitionId).toBe('foundation.intro.page');
+  });
+
   it('keeps one entry per element when two elements have the same name, and links a copy to the copy', () => {
     const { state, pageId, owner } = project();
     const home = { kind: 'page' as const, id: state.site.homePageId };

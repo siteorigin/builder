@@ -276,6 +276,9 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: 
               ? OPERATION_SCHEMAS[t].omit({ definitionId: true })
               : t === 'asset.replace'
               ? OPERATION_SCHEMAS[t].omit({ keepAlt: true, uses: true })
+              : t === 'instance.swapComponent'
+              ? // Content a new design has no place for is let go only by the author, from the preview in the Inspector.
+                OPERATION_SCHEMAS[t].omit({ allowDrops: true })
               : t === 'page.update' && only
                 ? // A run limited to a page changes its own settings: a new route or translation reaches other pages.
                   OPERATION_SCHEMAS[t].omit({ route: true, linkTranslationTo: true })
@@ -789,6 +792,9 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       if (ops.some((o) => o.type === 'asset.replace' && o.keepAlt !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'asset.replace does not take keepAlt: uses with the old image’s suggested alt text take the new one’s, and its result lists the uses whose alt text to check.' } };
       // Choosing some uses is the author's, from the places Assets lists; the AI replaces an image everywhere.
       if (ops.some((o) => o.type === 'asset.replace' && o.uses !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'asset.replace does not take uses: it replaces the image wherever it is used. To change one place, set that image value instead.' } };
+      // A swap keeps every piece of content or is refused, naming what has no place: content goes only by an edit that says so.
+      if (ops.some((o) => o.type === 'instance.swapComponent' && o.allowDrops !== undefined))
+        return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'instance.swapComponent does not take allowDrops. Pick a design with a place for the content, or, if the user asked for that content to go, clear it with instance.setProp first and then swap.' } };
       const before = host.diagnostics();
       const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId);
       if (!res.ok) {

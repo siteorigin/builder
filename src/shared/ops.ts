@@ -440,6 +440,21 @@ export const OPERATION_SCHEMAS = {
     variant: z.string().describe('The option to show. Other axes keep their current choice.'),
     axis: z.string().optional().describe('The variant axis (e.g. "tone", "layout"), when the option ID is on several.')
   }),
+  'instance.swapComponent': z
+    .object({
+      type: z.literal('instance.swapComponent'),
+      owner,
+      nodeId: z.string().describe('The placed component to change.'),
+      componentId: z.string().optional().describe('The catalogue component to change it to, such as "hero.split".'),
+      definitionId: z.string().optional().describe('Or the project component definition ID to change it to.'),
+      allowDrops: z
+        .boolean()
+        .optional()
+        .describe('Let go of content the new design has no place for, as the Inspector does once the author confirms its preview. Without it, such a change is refused and the refusal names that content.')
+    })
+    .describe(
+      'Change a placed component to another design where it is, keeping its content: text, links, images and list items carry over to properties of the same name or meaning (heading/title, lead/body, items/cards/plans), and its anchor, styles and options the new design also has (such as tone) stay.'
+    ),
 
   'token.set': z.object({
     type: z.literal('token.set'),

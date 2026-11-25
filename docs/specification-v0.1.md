@@ -688,7 +688,7 @@ Maintain one versioned operation union shared by manual controls and AI:
 | Content | Set property, set text, set link, set asset reference; insert/update/reorder/remove typed list items. |
 | Styles | Set supported property at a named responsive scope; unset override. |
 | Tokens | Create, rename, update, replace references and remove when safe. |
-| Components | Install from catalogue, create from subtree, create code component, duplicate, make unique, update managed definition and convert copy to code. |
+| Components | Install from catalogue, create from subtree, create code component, duplicate, make unique, swap a placement to another compatible design in place (carrying its content), update managed definition and convert copy to code. |
 | Shared shell | Update shared instance properties and navigation entries. |
 | Themes | Apply an already available compatible pack through the theme service. |
 

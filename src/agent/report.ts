@@ -310,6 +310,14 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Made ${name(op.owner, op.nodeId)} on ${where(op.owner)} into the reusable component ${quoted(op.name)}`, linkTo(op.owner, res.nodeId ?? op.nodeId));
       case 'component.makeUnique':
         return plain(op, `Made ${name(op.owner, op.nodeId)} on ${where(op.owner)} a separate copy`, linkTo(op.owner, res.nodeId ?? op.nodeId));
+      case 'instance.swapComponent': {
+        // The design it showed just before this change, which an earlier swap in the run may have chosen.
+        const was = nodeIn(before, op.owner, op.nodeId);
+        const from = typeof res.from === 'string' ? res.from : was ? displayName(before, was) : name(op.owner, op.nodeId);
+        const to = typeof res.definitionId === 'string' ? componentName(res.definitionId) : (op.definitionId ? componentName(op.definitionId) : (catalogueComponent(after.site.themeId, op.componentId ?? '')?.name ?? 'another design'));
+        const lost = Array.isArray(res.dropped) ? res.dropped.filter((d): d is string => typeof d === 'string') : [];
+        return plain(op, `Changed ${from} on ${where(op.owner)} to ${quoted(to)}${lost.length ? `, dropping ${joinWords(lost.map(quoted))}` : ''}`, linkTo(op.owner, op.nodeId));
+      }
       case 'component.detachInstance':
         return plain(op, `Detached ${typeof res.label === 'string' ? res.label : name(op.owner, op.nodeId)} on ${where(op.owner)} into its own elements`, linkTo(op.owner, res.nodeId ?? op.nodeId));
       case 'component.duplicate':

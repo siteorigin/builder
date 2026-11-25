@@ -98,6 +98,7 @@ import { contractConflicts, hiddenSlotContent, themeRefresh } from './theme-upda
 import { detachInstance } from './detach';
 import { importComponentPackage, type ComponentImport } from './component-package';
 import { componentUpsert } from './upsert';
+import { planSwap, swapTarget } from './swap';
 
 export type OpResult = Record<string, unknown>;
 
@@ -258,6 +259,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       node.variants = { ...node.variants, [found.axis]: found.id };
       return {};
     }
+    case 'instance.swapComponent':
+      return instanceSwap(state, op);
     case 'token.set':
       return op.scheme === 'dark' ? tokenSetDark(state, op) : tokenSet(state, op);
     case 'token.setColorScheme':
@@ -1302,6 +1305,51 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
   landed([nodes[0].id]);
   if (op.owner.kind === 'component' && !settled) followRoot(state.components[op.owner.id]);
   return { nodeId: nodes[0].id };
+}
+
+/**
+ * Show a placement as another design where it is (#374): its node, position, anchor and name stay, and its content
+ * moves to the new design's properties by name and meaning (see swap.ts). Content with no place there is refused
+ * unless `allowDrops` says to let it go.
+ */
+function instanceSwap(state: ProjectState, op: Op<'instance.swapComponent'>): OpResult {
+  const { node, def, tree } = instanceTarget(state, op.owner, op.nodeId);
+  if ((op.componentId === undefined) === (op.definitionId === undefined)) fail('instance.swapComponent needs either componentId or definitionId.');
+  const found = swapTarget(state, op) ?? fail(op.definitionId !== undefined ? `Component definition "${op.definitionId}" is not installed.` : `The theme has no component "${op.componentId}".`);
+  if (op.owner.kind === 'component' && (found.id === op.owner.id || dependsOn(state, found.id, op.owner.id))) fail('A component cannot contain itself.');
+  // Planned against the definition as installed, with the components it places: a refusal leaves the batch's copy, never the project.
+  const target = op.componentId !== undefined ? state.components[installComponent(state, op.componentId)] : found;
+  const plan = planSwap(state, op.owner, tree, node, target);
+  if (plan.problems.length) fail(plan.problems[0]);
+  if (plan.dropped.length && !op.allowDrops) {
+    const lost = plan.dropped.map((d) => (d.reason ? `${d.label} (${d.reason})` : d.label));
+    fail(`Changing “${node.name ?? def.name}” to “${target.name}” would drop ${lost.join('; ')}: the new design has no place for ${lost.length === 1 ? 'it' : 'them'}. Pick another design, or remove that content first if it should go.`);
+  }
+  // A form's fields keep the keys their answers were sent under, and fields new to the form get keys of their own.
+  if (namesFormFields(target) && Array.isArray(plan.props.fields))
+    plan.props.fields = settleFormKeys(namesFormFields(def) ? oldFormFields(def, node) : [], plan.props.fields as ListItem[], new Set(), formDefaults(target));
+  node.definitionId = target.id;
+  node.props = plan.props;
+  if (plan.anchor) node.anchor = plan.anchor;
+  if (plan.variants) node.variants = plan.variants;
+  else delete node.variants;
+  if (plan.overrides) node.overrides = plan.overrides;
+  else delete node.overrides;
+  if (plan.itemOverrides) node.itemOverrides = plan.itemOverrides;
+  else delete node.itemOverrides;
+  if (plan.slots) node.slots = plan.slots;
+  else delete node.slots;
+  if (!plan.keepAppear) delete node.appear;
+  // Brand text kept through a site rename belongs to the shared header and footer, which are never swapped.
+  delete node.keepsText;
+  return { nodeId: node.id, from: node.name ?? def.name, definitionId: target.id, kept: plan.kept.map((k) => k.to), dropped: plan.dropped.map((d) => d.label), restyled: plan.restyled };
+}
+
+/** A form placement's fields as it sends them: its own list, or the one its design gives every placement. */
+function oldFormFields(def: ComponentDefinition, node: InstanceNode): ListItem[] {
+  if (Array.isArray(node.props.fields)) return node.props.fields as ListItem[];
+  const schema = def.properties.fields;
+  return schema?.type === 'list' && Array.isArray(schema.default) ? schema.default : [];
 }
 
 /** Slots and repeats belong to component definitions: a slot renders a declared slot, a repeat a list property. */
@@ -3479,13 +3527,14 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     }
   }
   // Retagged nodes must fit where they render once the batch is done (a list item in a list, say), and so must every
-  // node of a design built whole, and what a wrap or an ungroup put in a new place (list items wrapped out of their list).
+  // node of a design built whole, and what a wrap or an ungroup put in a new place (list items wrapped out of their list),
+  // and a placement shown as another design.
   const retagged = ops.flatMap((op, i): Array<{ owner: OwnerRef; nodeId?: string; i: number; type: string }> =>
     op.type === 'node.setContent' && op.field === 'tag'
       ? [{ owner: op.owner, nodeId: op.nodeId, i, type: op.type }]
       : op.type === 'component.upsert'
         ? [{ owner: { kind: 'component', id: String(results[i].definitionId) }, i, type: op.type }]
-        : op.type === 'node.wrap' || op.type === 'node.unwrap'
+        : op.type === 'node.wrap' || op.type === 'node.unwrap' || op.type === 'instance.swapComponent'
           ? [{ owner: op.owner, i, type: op.type }]
           : []
   );

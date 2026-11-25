@@ -156,6 +156,44 @@ describe('agent orchestrator', () => {
     expect(firstResult).toMatchObject({ kind: 'tool_result', isError: true });
   });
 
+  it('changes a section to another design keeping its copy, and is refused a change that would lose some (#374)', async () => {
+    let refused = '';
+    let dropsRefused = '';
+    const homeOf = (st: ProjectState) => st.pages[st.site.homePageId];
+    const byComponent = (st: ProjectState, componentId: string) => homeOf(st).rootIds.find((id) => st.components[(homeOf(st).nodes[id] as InstanceNode).definitionId]?.componentId === componentId)!;
+    const { session, run } = await setup([
+      () => {
+        const owner = { kind: 'page', id: session.state.site.homePageId };
+        return [call('s1', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'instance.swapComponent', owner, nodeId: byComponent(session.state, 'testimonials.grid'), componentId: 'stats.row' }] })];
+      },
+      (req) => {
+        refused = JSON.stringify(req.items.at(-1));
+        const owner = { kind: 'page', id: session.state.site.homePageId };
+        return [call('s1b', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'instance.swapComponent', owner, nodeId: byComponent(session.state, 'testimonials.grid'), componentId: 'stats.row', allowDrops: true }] })];
+      },
+      (req) => {
+        dropsRefused = JSON.stringify(req.items.at(-1));
+        const owner = { kind: 'page', id: session.state.site.homePageId };
+        return [call('s2', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'instance.swapComponent', owner, nodeId: byComponent(session.state, 'hero.split'), componentId: 'hero.centered' }] })];
+      },
+      () => finish('Changed the hero to a centered one.')
+    ]);
+    const before = structuredClone(session.state);
+    const hero = byComponent(before, 'hero.split');
+    const { runId, result } = await run('Make the hero centered');
+    expect(refused).toMatch(/would drop Eyebrow; Testimonials/);
+    expect(dropsRefused).toMatch(/does not take allowDrops/);
+    expect(result?.status).toBe('completed');
+    const now = homeOf(session.state).nodes[hero] as InstanceNode;
+    expect(now.definitionId).toBe('foundation.hero.centered');
+    const was = homeOf(before).nodes[hero] as InstanceNode;
+    for (const key of ['heading', 'lead', 'primaryLabel', 'primaryLink']) expect(now.props[key]).toEqual(was.props[key]);
+    expect(homeOf(session.state).nodes[byComponent(before, 'testimonials.grid')]).toEqual(homeOf(before).nodes[byComponent(before, 'testimonials.grid')]);
+    expect(result?.changes.map((c) => c.label)).toContain('Changed Split hero on Home to “Centered hero”');
+    expect((await session.undoGroup(runId)).ok).toBe(true);
+    expect(homeOf(session.state)).toEqual(homeOf(before));
+  });
+
   it('denies source access outside project code components and unknown tools (A12)', async () => {
     const { session, run, adapter } = await setup([
       () => [call('x1', 'apply_source_patch', { definitionId: 'foundation.hero.split', expectedHash: 'x', source: '<script>alert(1)</script>' })],
@@ -600,6 +638,8 @@ describe('page scope (#513)', () => {
     allow({ type: 'node.setStyle', owner: own, nodeId: first, scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } });
     allow({ type: 'node.remove', owner: own, nodeId: first });
     allow({ type: 'component.detachInstance', owner: own, nodeId: first });
+    allow({ type: 'instance.swapComponent', owner: own, nodeId: first, componentId: 'cta.banner' });
+    deny(/outside the About page/, { type: 'instance.swapComponent', owner: { kind: 'page', id: home }, nodeId: state.pages[home].rootIds[0], componentId: 'hero.centered' });
     allow({ type: 'node.insert', owner: own, newNodeId: 'n_fresh1', componentId: 'cta.banner' }, { type: 'instance.setProp', owner: own, nodeId: 'n_fresh1', prop: 'heading', value: 'New' });
     // A section copied in from another page; never one copied out of it.
     allow({ type: 'node.copy', owner: { kind: 'page', id: home }, nodeId: state.pages[home].rootIds[0], toOwner: own });

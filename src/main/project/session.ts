@@ -373,6 +373,10 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     case 'node.wrap':
     case 'node.unwrap':
       return true;
+    // So is a swap: it is planned against the old and new designs (and, inside a design, every placement of it), which
+    // live in files it may leave as they are.
+    case 'instance.swapComponent':
+      return true;
     case 'entry.update':
       return o.slug !== undefined;
     default:
