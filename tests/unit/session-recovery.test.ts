@@ -6,6 +6,7 @@ import { createStarterState } from '@catalogue/starters';
 import type { AssetRecord } from '@shared/types';
 import { LOCK_STALE_MS, ProjectLockedError, ProjectSession } from '../../src/main/project/session';
 import { sha, toJson } from '../../src/main/project/fsutil';
+import { instancesOf } from '@engine/tree';
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -1151,5 +1152,199 @@ describe('the version an AI run attempted, when it rolled back around a conflict
     expect(JSON.parse(text(manual.disk)).description).toBe('Edited by hand');
     expect(await again.resolveConflict(SITE, 'restore')).toEqual({ ok: true });
     expect(again.savedCopies.map((c) => c.side)).toEqual(['external']);
+  });
+});
+
+describe('converting a design’s edited file to a code component (#737)', () => {
+  const HERO = 'foundation.hero.split';
+  const HERO_FILE = 'src/lib/siteorigin/generated/foundation-hero-split.svelte';
+  const placements = (st: ProjectSession['state'], defId: string) => instancesOf(st, defId).map((u) => `${u.owner.kind}:${u.owner.id}/${u.node.id}`).sort();
+
+  /**
+   * The hero placed on Home (as the starter has it), on About, inside a project design and in the footer; then its
+   * generated file edited by hand (a badge, its own count, a sibling design imported) and found so by a later save.
+   */
+  async function editedHero(edit = (text: string) => text) {
+    const { dir, s } = await make();
+    const [, about] = s.state.site.pageOrder;
+    const ok = async (operations: unknown[], label: string) => {
+      const r = await s.apply({ operations } as never, { label });
+      expect(r.ok, JSON.stringify(r.error)).toBe(true);
+      return r;
+    };
+    await ok([{ type: 'node.insert', owner: { kind: 'page', id: about }, parentId: null, definitionId: HERO, props: { heading: 'About hero' }, variants: { tone: 'inverse' } }], 'Place');
+    const made = await ok([{ type: 'component.create', name: 'Landing block' }], 'Create');
+    const design = made.results![0].definitionId as string;
+    const root = s.state.components[design].tree!.rootIds[0];
+    await ok([{ type: 'node.insert', owner: { kind: 'component', id: design }, parentId: root, definitionId: HERO }], 'Place in design');
+    await ok([{ type: 'node.insert', owner: { kind: 'shell', id: 'footer' }, parentId: null, definitionId: HERO }], 'Place in footer');
+    const before = placements(s.state, HERO);
+    expect(before.length).toBeGreaterThanOrEqual(4);
+    const generated = readFileSync(join(dir, HERO_FILE), 'utf8');
+    const edited = edit(
+      generated
+        .replace('<script>\n', '<script>\n\timport Banner from "./foundation-cta-banner.svelte";\n\tlet count = $state(0);\n')
+        .replace(/(<section [^>]*>)/, '$1\n\t<button type="button" class="hand-badge" onclick={() => count++}>New {count}</button>')
+        .concat('\n<style>\n\t.hand-badge { color: rebeccapurple; }\n</style>\n')
+    );
+    writeFileSync(join(dir, HERO_FILE), edited);
+    await ok([{ type: 'page.update', pageId: about, title: 'About us' }], 'Rename');
+    return { dir, s, generated, edited, before, design };
+  }
+  const historySteps = (s: ProjectSession) => s.historyInfo().entries.filter((e) => e.applied).length;
+
+  it('makes the edited file a code component every placement uses, keeps the design for its styles and clears the conflict', async () => {
+    const { dir, s, generated, edited, before } = await editedHero();
+    expect(edited).not.toBe(generated);
+    expect(s.conflicts).toEqual([{ path: HERO_FILE, kind: 'generated', reason: expect.stringMatching(/edited outside/), convert: { definitionId: HERO } }]);
+    const steps = historySteps(s);
+    const r = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true, expect: sha(edited) });
+    expect(r).toEqual({ ok: true, definitionId: expect.any(String) });
+    const code = s.state.components[r.definitionId!];
+    const hero = s.state.components[HERO];
+    expect(code).toMatchObject({ kind: 'code', owner: 'project', generatedFrom: HERO, componentId: hero.componentId, provenance: expect.objectContaining({ forkedFrom: HERO }) });
+    expect(code.sourcePath).toMatch(/^src\/lib\/siteorigin\/custom\/[A-Za-z0-9_-]+\.svelte$/);
+    // The edited file byte for byte, but for the one import the new folder needs.
+    expect(code.source).toBe(edited.replace('"./foundation-cta-banner.svelte"', '"../generated/foundation-cta-banner.svelte"'));
+    expect(readFileSync(join(dir, code.sourcePath!), 'utf8')).toBe(code.source);
+    // Its contract is the design's, so every placement's values and choices still apply.
+    expect(Object.keys(code.properties)).toEqual(Object.keys(hero.properties));
+    expect(Object.keys(code.variantAxes ?? {})).toEqual(Object.keys(hero.variantAxes ?? {}));
+    expect(code.slots).toEqual(hero.slots);
+    expect(code.dependencies).toContain(HERO);
+    // Every placement moved, the About hero with its own heading and tone; the design is placed nowhere now.
+    expect(placements(s.state, r.definitionId!)).toEqual(before);
+    expect(placements(s.state, HERO)).toEqual([]);
+    const aboutHero = instancesOf(s.state, r.definitionId!).find((u) => u.owner.kind === 'page' && u.owner.id === s.state.site.pageOrder[1])!.node;
+    expect(aboutHero).toMatchObject({ props: { heading: 'About hero' }, variants: { tone: 'inverse' } });
+    // The design's file is Builder's again and the edited one is kept.
+    expect(readFileSync(join(dir, HERO_FILE), 'utf8')).toBe(generated);
+    expect(s.conflicts).toEqual([]);
+    expect(s.savedCopies).toEqual([expect.objectContaining({ path: HERO_FILE, kind: 'generated', side: 'external' })]);
+    expect(readFileSync(join(dir, s.savedCopies[0].file), 'utf8')).toBe(edited);
+    // The design's rules, which the file's classes name, are still in the shared stylesheet; the pages use the code.
+    expect(readFileSync(join(dir, 'src/lib/siteorigin/styles/components.css'), 'utf8')).toContain('.so-foundation-hero-split__');
+    const home = readFileSync(join(dir, 'src/routes/+page.svelte'), 'utf8');
+    expect(home).toContain(`"${code.sourcePath!.replace('src/', '../')}"`);
+    expect(home).not.toContain('foundation-hero-split.svelte');
+    // One step of history.
+    expect(historySteps(s)).toBe(steps + 1);
+    expect(s.historyInfo().undoLabel).toBe(`Convert “${hero.name}” to code`);
+  });
+
+  it('undoes the whole conversion in one step without bringing the conflict back, and keeps it across a reopen', async () => {
+    const { dir, s, before, edited, generated } = await editedHero();
+    const r = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });
+    expect(r.ok).toBe(true);
+    const code = s.state.components[r.definitionId!];
+    expect((await s.undo()).ok).toBe(true);
+    expect(placements(s.state, HERO)).toEqual(before);
+    expect(Object.hasOwn(s.state.components, r.definitionId!)).toBe(false);
+    expect(existsSync(join(dir, code.sourcePath!))).toBe(false);
+    expect(s.conflicts).toEqual([]);
+    expect(readFileSync(join(dir, HERO_FILE), 'utf8')).toBe(generated);
+    // The edited file stays under Saved copies whatever is undone.
+    expect(s.savedCopies).toHaveLength(1);
+    expect((await s.redo()).ok).toBe(true);
+    expect(placements(s.state, r.definitionId!)).toEqual(before);
+    expect(readFileSync(join(dir, code.sourcePath!), 'utf8')).toBe(code.source);
+
+    const [copy] = s.savedCopies;
+    await s.close();
+    const again = await reopen(dir);
+    expect(again.state.components[r.definitionId!]).toMatchObject({ kind: 'code', source: code.source, generatedFrom: HERO });
+    expect(placements(again.state, r.definitionId!)).toEqual(before);
+    expect(again.conflicts).toEqual([]);
+    expect(again.savedCopies).toEqual([copy]);
+    expect(await again.readSavedCopy(copy.id)).toEqual({ ok: true, content: { state: 'text', text: edited } });
+  });
+
+  it('never offers it for a page, a stylesheet or a file that is not text, and refuses it there', async () => {
+    const { dir, s } = await make();
+    const HOME = 'src/routes/+page.svelte';
+    const CSS = 'src/lib/siteorigin/styles/components.css';
+    writeFileSync(join(dir, HOME), '<h1>Hero edited by hand</h1>\n');
+    writeFileSync(join(dir, CSS), '/* edited */\n');
+    writeFileSync(join(dir, HERO_FILE), Buffer.from([0x3c, 0x70, 0x3e, 0x00, 0xff, 0x3c]));
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Touch' }] }, { label: 'Touch' })).ok).toBe(true);
+    expect(s.conflicts.map((c) => c.path).sort()).toEqual([CSS, HERO_FILE, HOME].sort());
+    expect(s.conflicts.filter((c) => c.convert)).toEqual([]);
+    for (const path of [HOME, CSS, HERO_FILE]) {
+      const r = await s.resolveConflict(path, 'convert', { codeAllowed: true });
+      expect(r.ok).toBe(false);
+      expect(r.message).toMatch(/Only a component’s own file/);
+    }
+    expect(s.conflicts).toHaveLength(3);
+    expect(Object.values(s.state.components).some((d) => d.kind === 'code' && d.owner === 'project')).toBe(false);
+    expect(s.savedCopies).toEqual([]);
+  });
+
+  it('changes nothing when the edited code fails the checks, Developer mode is off, or the file changed since it was compared', async () => {
+    const { dir, s, edited } = await editedHero((text) => text.replace('let count = $state(0);', 'let count = $state(0;'));
+    const unchanged = () => {
+      expect(s.conflicts).toEqual([expect.objectContaining({ path: HERO_FILE, convert: { definitionId: HERO } })]);
+      expect(readFileSync(join(dir, HERO_FILE), 'utf8')).toBe(edited);
+      expect(Object.values(s.state.components).some((d) => d.kind === 'code' && d.owner === 'project')).toBe(false);
+      expect(s.savedCopies).toEqual([]);
+    };
+    const steps = historySteps(s);
+    const bad = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });
+    expect(bad.ok).toBe(false);
+    expect(bad.message).toMatch(/can’t become a code component: line \d+/);
+    unchanged();
+    // A valid file, but no Developer mode.
+    const fixed = edited.replace('$state(0;', '$state(0);');
+    writeFileSync(join(dir, HERO_FILE), fixed);
+    const off = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: false });
+    expect(off).toEqual({ ok: false, message: expect.stringMatching(/Custom code needs Developer mode/) });
+    // Compared as one version, another there now.
+    const stale = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true, expect: sha(edited) });
+    expect(stale).toEqual({ ok: false, message: 'The file changed since you compared the versions. Look again, then choose.' });
+    expect(s.conflicts).toEqual([expect.objectContaining({ path: HERO_FILE })]);
+    expect(readFileSync(join(dir, HERO_FILE), 'utf8')).toBe(fixed);
+    expect(s.savedCopies).toEqual([]);
+    expect(historySteps(s)).toBe(steps);
+    // An import that leads nowhere from the file's new folder is refused too.
+    writeFileSync(join(dir, HERO_FILE), fixed.replace('"./foundation-cta-banner.svelte"', '"./no-such-design.svelte"'));
+    const missing = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });
+    expect(missing.ok).toBe(false);
+    expect(missing.message).toMatch(/no-such-design\.svelte.*not a file in this project/);
+    expect(s.savedCopies).toEqual([]);
+  });
+
+  it('converts nothing once the file is SiteOrigin Builder’s version again, and lets the conflict go', async () => {
+    const { dir, s, generated } = await editedHero();
+    writeFileSync(join(dir, HERO_FILE), generated);
+    const r = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });
+    expect(r).toEqual({ ok: false, message: 'The file is SiteOrigin Builder’s version again, so there is nothing to convert.' });
+    expect(s.conflicts).toEqual([]);
+    expect(Object.values(s.state.components).some((d) => d.kind === 'code' && d.owner === 'project')).toBe(false);
+    expect(s.savedCopies).toEqual([]);
+    // Without a plain yes for Developer mode, nothing is converted either.
+    writeFileSync(join(dir, HERO_FILE), `${generated}<p>again</p>\n`);
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Again' }] }, { label: 'Touch' })).ok).toBe(true);
+    expect((await s.resolveConflict(HERO_FILE, 'convert')).message).toMatch(/Custom code needs Developer mode/);
+  });
+
+  it('says to reopen when the save stops after the project’s files are written', async () => {
+    const { s } = await editedHero();
+    vi.spyOn(s as unknown as { installHistory: () => Promise<unknown> }, 'installHistory').mockRejectedValueOnce(new Error('disk went away'));
+    const r = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });
+    expect(r).toEqual({ ok: false, message: expect.stringMatching(/could not be finished: disk went away Close and reopen the project/) });
+    expect(Object.values(s.state.components).some((d) => d.generatedFrom === HERO)).toBe(true);
+  });
+
+  it('leaves the edited file in place, still in conflict, when the conversion cannot be saved', async () => {
+    const { dir, s, edited } = await editedHero();
+    const persist = vi.spyOn(s as unknown as { persist: () => Promise<unknown> }, 'persist').mockRejectedValueOnce(Object.assign(new Error('no space left on device'), { code: 'ENOSPC' }));
+    const r = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(r).toEqual({ ok: false, message: expect.stringMatching(/could not be saved, so nothing was converted/) });
+    expect(readFileSync(join(dir, HERO_FILE), 'utf8')).toBe(edited);
+    expect(s.conflicts).toEqual([expect.objectContaining({ path: HERO_FILE, convert: { definitionId: HERO } })]);
+    expect(Object.values(s.state.components).some((d) => d.kind === 'code' && d.owner === 'project')).toBe(false);
+    // And the choice can be made again.
+    expect((await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true })).ok).toBe(true);
+    expect(s.conflicts).toEqual([]);
   });
 });

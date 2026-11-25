@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, constants as fsConstants, existsSync, type BigIntStats, type Dirent } from 'node:fs';
+import { promises as fs, constants as fsConstants, existsSync, statSync, type BigIntStats, type Dirent } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -9,23 +9,24 @@ import { SCHEMA_VERSION } from '@shared/types';
 import { BRIEF_FILE } from '@shared/brief';
 import { collectionGrantRefusal, type CollectionWriteGrant } from '@shared/collection-grant';
 import type { ApplyResult, EditBatch, EditOperation } from '@shared/ops';
-import type { AiTurnReview, FileText, RestoreVersionResult, SavedCopy, SaveFailure, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
+import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, SavedCopy, SaveFailure, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
-import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '@engine/apply';
+import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, type Clipboard } from '@engine/apply';
+import { clone } from '@engine/install';
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
-import { codeNeeds, filledSlots } from '@engine/definitions';
+import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
+import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile } from '@generator/index';
 import { sendsFormMessages, type ComponentImport } from '@engine/component-package';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
@@ -33,11 +34,13 @@ import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker } from './site-icons';
 import { ownServerHook } from './server-hook';
 import { checkSvelteSource, codeContractNames, componentSources } from '../codecheck';
+import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
+import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
@@ -479,7 +482,22 @@ export interface Conflict {
    * request, and the version the request tried to save is kept beside it for inspection.
    */
   aiRun?: boolean;
+  /**
+   * A design's own file, written by the app and edited outside it, whose text can become a project code component in
+   * the design's place (#737): the design it is the file of.
+   */
+  convert?: { definitionId: string };
 }
+
+/** How a design's edited file is converted: `expect` is the hash of the bytes the author compared, when they did. */
+export interface ConvertOptions {
+  expect?: string;
+  /** Developer mode, as every way of making code asks it: false refuses. */
+  codeAllowed?: boolean;
+}
+
+/** Said when the file in conflict is no longer the version the author compared and chose against. */
+const CHANGED_SINCE_COMPARED = 'The file changed since you compared the versions. Look again, then choose.';
 
 /**
  * One open, writable project. Owns canonical state, the revision counter, history,
@@ -1064,15 +1082,18 @@ export class ProjectSession extends EventEmitter {
    * Settle one conflict. "restore" puts Builder's version back (the external file is copied to the recovery
    * folder first); "keep" accepts the external file, but only when the project is still valid with it.
    */
-  resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }> {
-    // A code component's source put back reaches the preview with the files generated from it, as one update.
+  resolveConflict(path: string, choice: ConflictChoice, opts: ConvertOptions = {}): Promise<{ ok: boolean; message?: string; definitionId?: string }> {
+    // A code component's source put back, or a design's file converted, reaches the preview with the files generated
+    // from it, as one update.
     return this.serialize(() => this.publishing(async () => {
       if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
       if (this.activeRun) return { ok: false, message: 'Stop the AI before resolving conflicts.' };
       if (this.migrationFailed) return { ok: false, message: 'This project could not be updated to the current format. Close and reopen it.' };
       if (this.unsettled) return { ok: false, message: UNSETTLED };
       const conflict = this.conflicts.find((c) => c.path === path);
-      if (!conflict) return { ok: true };
+      // Nothing to convert is not a conversion made: only Keep and Restore find a settled file already settled.
+      if (!conflict) return choice === 'convert' ? { ok: false, message: 'That file is no longer in conflict.' } : { ok: true };
+      if (choice === 'convert') return this.convertEditedLocked(conflict, opts);
       if (conflict.kind === 'generated') {
         if (choice !== 'restore') return { ok: false, message: 'A generated file can only be restored. Move your edits into the page or a code component.' };
         await this.restoreGeneratedLocked(path);
@@ -1141,6 +1162,109 @@ export class ProjectSession extends EventEmitter {
       this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'Resolve conflict', source: 'user' } satisfies SessionEvent);
       return { ok: true };
     }));
+  }
+
+  /**
+   * A design's file edited outside the app made a project code component (#737): the edited file, as it reads from the
+   * custom folder, is the component's code, and every placement of the design places it instead. Checked as any code is
+   * before anything changes. Then the edited file is kept under Saved copies and claimed as the app's, so the save itself
+   * (one step of history) writes the design's file again, once its journal is down: a save stopped at any point leaves
+   * the edited file there, still listed, never lost, and one that did not start leaves the conflict as it was.
+   */
+  private async convertEditedLocked(conflict: Conflict, opts: ConvertOptions): Promise<{ ok: boolean; message?: string; definitionId?: string }> {
+    const path = conflict.path;
+    const refuse = (message: string) => ({ ok: false, message });
+    if (conflict.kind !== 'generated' || !conflict.convert) return refuse('Only a component’s own file, edited outside SiteOrigin Builder, can become a code component.');
+    // Asked here, as every way of making code is, whoever asks: only a plain yes allows it.
+    if (opts.codeAllowed !== true) return refuse('Custom code needs Developer mode. Turn on Developer mode in Settings to convert this file into a code component.');
+    // The project's own files are written by the conversion: a conflict on one of them is settled first.
+    if (this.pending.size) return refuse('Settle the conflicts of the project’s own files first.');
+    const design = designAt(this.state, path);
+    if (!design || design.id !== conflict.convert.definitionId) return refuse('That file is no longer a component’s own file, so it was not converted.');
+    const abs = safeJoin(this.dir, path);
+    // Read again just before converting: what is converted, kept and checked is exactly what is there now.
+    const disk = await readFileAt(abs);
+    if (disk === 'missing') return refuse(`${path} is no longer there, so there is nothing to convert.`);
+    if (disk === 'failed' || disk === 'changed') return refuse(`${path} could not be read, so it was not converted. Check that it is a file you can open, then try again.`);
+    if (opts.expect !== undefined && sha(disk.bytes) !== opts.expect) return refuse(CHANGED_SINCE_COMPARED);
+    const builder = await this.generatedContent(path);
+    if (builder === undefined) return refuse('That file is no longer generated.');
+    // Put back as SiteOrigin Builder's version meanwhile: nothing of anyone's to convert, and no conflict once looked at.
+    if (disk.bytes.equals(typeof builder === 'string' ? Buffer.from(builder) : builder) || sha(disk.bytes) === this.generated.files[path]) {
+      const changedFiles = await this.publishGenerated(false);
+      this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles, label: 'Resolve conflict', source: 'user' } satisfies SessionEvent);
+      return refuse('The file is SiteOrigin Builder’s version again, so there is nothing to convert.');
+    }
+    const text = textOfBytes(disk.bytes);
+    if (text === null) return refuse(`${path} is not text, so it can’t become a code component.`);
+    const next = clone(this.state);
+    let made: { definitionId: string; sourcePath: string };
+    try {
+      made = convertEditedDesign(next, design.id, text);
+    } catch (e) {
+      return refuse((e as Error).message);
+    }
+    const def = next.components[made.definitionId];
+    // A contact form's copy for AI agents is written only while the site declares tools: the code imports the form.
+    const adapters = new Map(Object.values(next.components).flatMap((d) => (isWebMcpForm(d) ? [[webMcpFormFile(d), defFile(d)] as const] : [])));
+    def.source = await relocateSource(text, path, made.sourcePath, (target) => adapters.get(target));
+    // The parts and slots the edited code shows for itself are declared too, as for any code saved.
+    const names = await codeContractNames(def.source);
+    if (names) declareCodeNames(def, names);
+    const pin = themePinProblem(next);
+    if (pin) return refuse(pin);
+    // Held to what any code component is, with every import it makes found in the project as it will be.
+    let files: Map<string, string>;
+    try {
+      files = this.generate(next, false);
+    } catch (e) {
+      return refuse(`The project could not be generated with the code component: ${(e as Error).message}`);
+    }
+    const resolve = componentSources(next.components);
+    /** A file the project has there: one the app writes, a component's code, or the project's own (never a folder). */
+    const exists = (p: string) => {
+      // The check tries each extension after the whole reference, a query too (`./data?raw.js`): the file is the path
+      // before the query, with that extension.
+      const q = p.search(/[?#]/);
+      const tail = q < 0 ? '' : p.slice(q);
+      const file = q < 0 ? p : p.slice(0, q) + (['/index.js', '.svelte', '.js', '.ts'].find((ext) => tail.endsWith(ext)) ?? '');
+      if (files.has(file) || resolve(file) !== undefined) return true;
+      try {
+        return statSync(safeJoin(this.dir, file)).isFile();
+      } catch {
+        return false;
+      }
+    };
+    const problems = (
+      await checkSvelteSource(def.source, {
+        filename: def.sourcePath,
+        contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def) },
+        resolve,
+        modules: exists
+      })
+    ).filter((p) => p.severity === 'error');
+    if (problems.length) return refuse(`The edited file can’t become a code component: ${problems.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')} Fix the file and try again, or use SiteOrigin Builder’s version.`);
+    const introduced = introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
+    if (introduced.length) return refuse(`The edited file can’t become a code component: ${introduced.map((d) => d.message).join(' ')}`);
+    // Kept byte for byte, and listed under Saved copies, before anything is replaced.
+    await this.saveCopy(path, 'generated', 'external', disk.bytes);
+    const claimed = this.generated.files[path];
+    this.generated.files[path] = sha(disk.bytes);
+    const before = this.state;
+    try {
+      await this.persist(next, { label: `Convert “${design.name}” to code`, source: 'user', wholeProject: true });
+    } catch (e) {
+      const why = (e as Error).message;
+      // Stopped part way (or unsure how far it got): reopening finishes it, or finds the file still in conflict.
+      if (this.state !== before || this.unsettled) return refuse(`The conversion could not be finished: ${why} Close and reopen the project: it then finishes the conversion, or shows the file in conflict as it was.`);
+      // Nothing of it installed: the edited file is someone else's again, still in conflict, to choose for again.
+      if (claimed === undefined) delete this.generated.files[path];
+      else this.generated.files[path] = claimed;
+      return refuse(e instanceof DiskConflictError ? `${why} Nothing was converted.` : `The conversion could not be saved, so nothing was converted: ${why}`);
+    }
+    // Saved again outside the app while it was being converted: that newer version stays, listed again.
+    if (this.conflicts.some((c) => c.path === path)) return { ok: true, definitionId: made.definitionId, message: `${path} was saved again while it was being converted. The version read is now the code component; the newer one is listed again.` };
+    return { ok: true, definitionId: made.definitionId };
   }
 
   // -------------------------------------------------------------------------
@@ -1850,6 +1974,8 @@ export class ProjectSession extends EventEmitter {
       return hash;
     };
     this.conflicts = this.conflicts.filter((c) => c.kind !== 'generated');
+    /** Files this app wrote that were edited outside it: a design's own may become a code component (see below). */
+    const edited = new Set<string>();
     // The theme's font files are copied from its pack beside the generated text, under the same ownership rules.
     const copies = new Map<string, string | Buffer>();
     for (const c of packFileCopies(this.state)) {
@@ -1922,6 +2048,7 @@ export class ProjectSession extends EventEmitter {
         // Edited outside the app (or no longer readable by it): keep the external version.
         nextFiles[path] = prev[path] ?? inflight[path];
         this.conflicts.push({ path, reason: diskHash === UNREADABLE ? UNREADABLE_REASON : 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
+        if (diskHash !== UNREADABLE) edited.add(path);
         continue;
       }
       if (!initial && diskHash !== null && !known(path)) {
@@ -1998,8 +2125,10 @@ export class ProjectSession extends EventEmitter {
         changedFiles.push(path);
         this.landing?.add(path);
       } else if (theirs) {
-        if (known(path)) nextFiles[path] = prev[path] ?? inflight[path];
-        else delete nextFiles[path];
+        if (known(path)) {
+          nextFiles[path] = prev[path] ?? inflight[path];
+          edited.add(path);
+        } else delete nextFiles[path];
         this.conflicts.push({ path, reason: 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
         const variant = safeJoin(devRoot, path);
         await fs.rm(variant, { force: true });
@@ -2059,6 +2188,14 @@ export class ProjectSession extends EventEmitter {
     this.contentHashes = hashes;
     // Only files still generated are worth remembering.
     for (const abs of this.seenOnDisk.keys()) if (!hashes.has(abs)) this.seenOnDisk.delete(abs);
+    // A design's own file, one this app wrote, edited outside it and still text, can become a code component (#737).
+    // Never a page, a stylesheet, the helpers or any other file, nor one that is gone, unreadable or binary.
+    for (const c of this.conflicts) {
+      const design = edited.has(c.path) ? designAt(this.state, c.path) : undefined;
+      if (!design) continue;
+      const read = await readFileAt(safeJoin(this.dir, c.path));
+      if (typeof read === 'object' && textOfBytes(read.bytes) !== null) c.convert = { definitionId: design.id };
+    }
     return changedFiles;
   }
 

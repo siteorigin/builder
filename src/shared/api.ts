@@ -288,6 +288,9 @@ export interface SavedCopy {
 /** A version of a file as text to show, or why it is not shown as text. */
 export type FileText = { state: 'text'; text: string } | { state: 'missing' } | { state: 'binary' } | { state: 'too-large' } | { state: 'unreadable' };
 
+/** How a file conflict is settled: the file on disk kept, Builder's version restored, or a design's file made code. */
+export type ConflictChoice = 'keep' | 'restore' | 'convert';
+
 export interface ProjectSnapshot {
   dir: string;
   state: ProjectState;
@@ -302,8 +305,11 @@ export interface ProjectSnapshot {
   assetUsage: Record<string, number>;
   /** Library images whose files are missing from the project folder, as last checked. */
   missingAssets: MissingAssetFiles[];
-  /** Files changed outside the app. canonical: a project document (keep or restore); generated: a derived file (restore). */
-  conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated'; builderMissing?: boolean; aiRun?: boolean }>;
+  /**
+   * Files changed outside the app. canonical: a project document (keep or restore); generated: a derived file (restore,
+   * or, for a design's own file, `convert` into a code component in the design's place).
+   */
+  conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated'; builderMissing?: boolean; aiRun?: boolean; convert?: { definitionId: string } }>;
   /** Copies of the versions the author chose against when settling conflicts, newest first. */
   savedCopies?: SavedCopy[];
   /** Set when the project is open for inspection only (a newer format, or another app is editing it). */
@@ -1083,7 +1089,12 @@ export interface BuilderApi {
     readSource(definitionId: string): Promise<{ source: string; hash: string; path: string; editable: boolean }>;
     generatedSource(kind: 'component' | 'page', id: string): Promise<string>;
     restoreGenerated(path: string): Promise<void>;
-    resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }>;
+    /**
+     * Settle a file conflict. `convert` (a design's own file, `conflicts[].convert`) makes the edited file a code
+     * component in the design's place; `expect` is the SHA-256 of the file's bytes as the author compared them, and
+     * `opening` the snapshot's `workspaceKey` it was chosen in.
+     */
+    resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: string; opening?: string }): Promise<{ ok: boolean; message?: string; definitionId?: string }>;
     /**
      * The versions of a file in conflict, to compare before choosing: SiteOrigin Builder's and the one on disk, and
      * for a conflict an AI request's rollback left (`aiRun`), the version that request tried to save.

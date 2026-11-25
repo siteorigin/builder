@@ -3591,6 +3591,71 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   return { definitionId: copy.id, sourcePath: copy.sourcePath };
 }
 
+/**
+ * A design's generated file, edited outside the app, made a project code component (#737), on `state` in place:
+ * `source` (the edited file, relocated to the custom folder) is its code, and every placement of the design places it
+ * instead, keeping its values and overrides. It declares what the design declares (properties, slots, parts, variant
+ * names), and is called as the design's file is (`generatedFrom`). The design stays: the shared stylesheet's rules for
+ * it are the ones the file's classes name, and as a dependency it stays while the code needs it. Uses inside a theme's
+ * own designs stay on the design, as for Edit everywhere: those are the theme's.
+ */
+export function convertEditedDesign(state: ProjectState, definitionId: string, source: string): { definitionId: string; sourcePath: string } {
+  const def = own(state.components, definitionId);
+  if (!def || def.kind !== 'managed' || !def.tree) return fail('That file is not a component design SiteOrigin Builder makes.');
+  const name = `${def.name} (code)`;
+  let id = projectDefId(name, 'code');
+  // Compared case-folded: on a case-insensitive disk two such names are one file.
+  const paths = new Set(Object.values(state.components).flatMap((d) => (d.sourcePath ? [d.sourcePath.toLowerCase()] : [])));
+  const pathOf = (i: string) => `${CUSTOM_DIR}/${pascal(name)}-${i.slice(-5).replace(/[^A-Za-z0-9]/g, '')}.svelte`;
+  // A random suffix can repeat one already in use: never put the new code in place of existing code.
+  while (Object.hasOwn(state.components, id) || paths.has(pathOf(id).toLowerCase())) id = projectDefId(name, 'code');
+  const copy: ComponentDefinition = {
+    ...clone(def),
+    id,
+    // The design's contract: a slot that takes the design by it takes the code too, as for Edit everywhere's copy.
+    componentId: def.componentId,
+    kind: 'code',
+    owner: 'project',
+    name,
+    source,
+    sourcePath: pathOf(id),
+    generatedFrom: def.id,
+    dependencies: [...new Set([def.id, ...(def.dependencies ?? []), ...directDependencies(def)])].sort(),
+    provenance: { ...def.provenance, forkedFrom: def.id, createdBy: 'user' }
+  };
+  // The design's markup and UI state live on in the file itself.
+  delete copy.tree;
+  delete copy.state;
+  // The file renders rich text through the RichText helper, which takes blocks, as every design's file does.
+  for (const schema of Object.values(copy.properties)) {
+    if (schema.type === 'richtext') schema.codeForm = 'blocks';
+    if (schema.type === 'list' || schema.type === 'object') for (const f of Object.values(schema.fields)) if (f.type === 'richtext') f.codeForm = 'blocks';
+  }
+  // Variant styles are the design's, in the shared stylesheet; the variant names (and what else an option says of
+  // itself) remain the component's contract.
+  if (copy.variantAxes)
+    copy.variantAxes = Object.fromEntries(
+      Object.entries(copy.variantAxes).map(([axis, a]) => [
+        axis,
+        {
+          ...a,
+          options: Object.fromEntries(
+            Object.entries(a.options).map(([k, v]) => {
+              const { styles: _styles, ...rest } = v;
+              return [k, rest];
+            })
+          )
+        }
+      ])
+    );
+  state.components[id] = copy;
+  for (const { node, owner } of instancesOf(state, def.id)) {
+    if (owner.kind === 'component' && state.components[owner.id]?.owner !== 'project') continue;
+    node.definitionId = id;
+  }
+  return { definitionId: id, sourcePath: copy.sourcePath! };
+}
+
 const holdsPageLink = (v: unknown): boolean => {
   if (Array.isArray(v)) return v.some(holdsPageLink);
   if (!v || typeof v !== 'object' || isBinding(v)) return false;

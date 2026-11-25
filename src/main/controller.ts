@@ -5,7 +5,7 @@ import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } fro
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AiTurnReview, ComponentExportResult, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
+import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS, starterProblem } from '@catalogue/starters';
@@ -820,14 +820,25 @@ export class Controller {
     return s.reloadFromDisk();
   }
 
-  /** Settle a file conflict: keep the version changed outside the app, or restore SiteOrigin Builder's version. */
-  async resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }> {
+  /**
+   * Settle a file conflict: keep the version changed outside the app, restore SiteOrigin Builder's version, or (a
+   * design's own file) convert the edited file into a code component, which needs Developer mode as all code does.
+   */
+  async resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: unknown; opening?: unknown }): Promise<{ ok: boolean; message?: string; definitionId?: string }> {
     const s = this.session;
     if (!s) return { ok: false, message: 'No project is open.' };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish first.' };
     // Only an exact choice is acted on: a missing or mistyped one must never overwrite a file.
-    if (typeof path !== 'string' || (choice !== 'keep' && choice !== 'restore')) return { ok: false, message: 'Choose which version to keep.' };
-    return s.resolveConflict(path, choice);
+    if (typeof path !== 'string' || (choice !== 'keep' && choice !== 'restore' && choice !== 'convert')) return { ok: false, message: 'Choose which version to keep.' };
+    if (choice !== 'convert') return s.resolveConflict(path, choice);
+    const expect = opts?.expect;
+    if (expect !== undefined && (typeof expect !== 'string' || !/^[0-9a-f]{64}$/.test(expect))) return { ok: false, message: 'Choose which version to keep.' };
+    // Made in the opening of the project it was asked in, never another one opened at the same folder since.
+    const closed = { ok: false, message: 'The project was closed before this could be settled.' };
+    if (opts?.opening !== undefined && opts.opening !== this.workspaceKey) return closed;
+    const codeAllowed = (await loadSettings()).settings.developerMode === true;
+    if (this.session !== s || this.closing || (opts?.opening !== undefined && opts.opening !== this.workspaceKey)) return closed;
+    return s.resolveConflict(path, 'convert', { expect, codeAllowed });
   }
 
   /**

@@ -1,4 +1,4 @@
-import type { NodeTree, ProjectState } from '@shared/types';
+import type { ComponentDefinition, NodeTree, ProjectState } from '@shared/types';
 import { isAppearPreset } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
 import { anchorCapable } from '@engine/tree';
@@ -207,6 +207,15 @@ const CODE_ENTRANCE = /\bdata-appear\s*=|\bso_appear\s*=(?!\s*\{?\s*["'`]none["'
  * design's root entrance its only placement turns off (`none`), and a preset on a placement that cannot take one
  * (a code component's) never turn the observer on.
  */
+/**
+ * The definition that shows a placement's own entrance: its own, or for a design's file converted to code
+ * (`generatedFrom`), that design, whose file it is and which took the entrance from its placement.
+ */
+function entranceTaker(state: ProjectState, defId: string): ComponentDefinition | undefined {
+  const def = state.components[defId];
+  return def?.kind === 'code' && def.generatedFrom && Object.hasOwn(state.components, def.generatedFrom) ? state.components[def.generatedFrom] : def;
+}
+
 export function usesAppear(state: ProjectState): boolean {
   // Each design once for each way it is reached: with its root's own entrance turned off by its placement, or not.
   const seen = new Set<string>();
@@ -217,7 +226,7 @@ export function usesAppear(state: ProjectState): boolean {
       if (n.kind !== 'instance') continue;
       // A design's root takes its placement's choice first.
       const choice = n.id === rootId ? 'none' : n.appear;
-      if (isAppearPreset(choice) && anchorCapable(state, state.components[n.definitionId])) return true;
+      if (isAppearPreset(choice) && anchorCapable(state, entranceTaker(state, n.definitionId))) return true;
       if (placesAppear(n.definitionId, choice === 'none')) return true;
     }
     return false;

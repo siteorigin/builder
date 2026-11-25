@@ -3,7 +3,7 @@ import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
-import type { Appearance, ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
+import type { Appearance, ConflictChoice, ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
@@ -461,7 +461,7 @@ function registerIpc() {
   handle('project:readSource', (id: string) => controller.readSource(id));
   handle('project:generatedSource', (kind: 'component' | 'page', id: string) => controller.generatedSource(kind, id));
   handle('project:restoreGenerated', (p: string) => controller.session?.restoreGeneratedFile(p));
-  handle('project:resolveConflict', (p: string, choice: 'keep' | 'restore') => controller.resolveConflict(p, choice));
+  handle('project:resolveConflict', (p: string, choice: ConflictChoice, opts?: { expect?: unknown; opening?: unknown }) => controller.resolveConflict(p, choice, opts && typeof opts === 'object' ? opts : undefined));
   handle('project:compareConflict', (p: unknown) => (typeof p === 'string' ? controller.compareConflict(p) : { ok: false, message: 'That file is no longer in conflict.' }));
   handle('project:readSavedCopy', (id: unknown) => (typeof id === 'string' ? controller.readSavedCopy(id) : { ok: false, message: 'That saved copy is no longer listed.' }));
   handle('project:dismissSavedCopy', (id: unknown) => (typeof id === 'string' ? controller.dismissSavedCopy(id) : { ok: false, message: 'That saved copy is no longer listed.' }));

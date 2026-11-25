@@ -211,7 +211,10 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
     return !!p && !!opts.generated?.(p);
   };
   const missing = (spec: string) => {
-    const p = resolveSpec(spec);
+    // The file is the path before any query or fragment, which never decides which file it is; a query whose own
+    // `..` would carry the path elsewhere names no file the other checks looked at.
+    const p = resolveSpec(spec.replace(/[?#].*$/, ''));
+    if (p && resolveSpec(spec)?.split(/[?#]/)[0] !== p) return !!opts.modules;
     return !!p && !!opts.modules && !['', '.js', '.ts', '.svelte', '/index.js'].some((ext) => opts.modules!(`${p}${ext}`));
   };
   const checkSpec = (spec: unknown, node: Node) => {

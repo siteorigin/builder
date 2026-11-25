@@ -247,6 +247,10 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
   const defs = packageClosure(state, rootId).map(clone);
   for (const def of defs) {
     if (def.category === 'shell') fail(`${quoted(def.name)} is part of the shared header or footer, which stays with its site.`);
+    // A design's own file converted to code names the classes the design's ID makes, which take new names where the
+    // package lands: its styles would not follow it.
+    if (def.kind === 'code' && def.generatedFrom)
+      fail(`${quoted(def.name)} is a design's file edited outside SiteOrigin Builder, which still relies on that design's styles. Convert the design to code from the Inspector, then export that.`);
     // Code converted by an early version still leans on the original design's stylesheet, which a package can't carry.
     const from = def.provenance?.forkedFrom;
     if (def.kind === 'code' && from && def.source?.includes(`so-${defKey(from)}__`))
@@ -747,7 +751,14 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
       def.source = relinkSource(def.source ?? '', defFile(def), file, moved, keys);
       def.sourcePath = file;
       if (def.dependencies?.length) def.dependencies = [...new Set(def.dependencies.map((d) => ids.get(d)!))].sort();
-    } else delete def.sourcePath;
+      // The design a converted file was made by lands beside it under its new ID; one the package lacks names nothing.
+      const design = typeof def.generatedFrom === 'string' ? ids.get(def.generatedFrom) : undefined;
+      if (design) def.generatedFrom = design;
+      else delete def.generatedFrom;
+    } else {
+      delete def.sourcePath;
+      delete def.generatedFrom;
+    }
     // Where it was copied from is another project's history: it names nothing here.
     const prov = def.provenance ?? {};
     def.provenance = {

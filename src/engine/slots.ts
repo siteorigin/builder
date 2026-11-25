@@ -15,10 +15,13 @@ export const restrictsKinds = (d: SlotDef): boolean => d.categories !== undefine
 export const SLOT_COMPONENT_IDS_MAX = 50;
 const COMPONENT_ID_MAX = 120;
 
-/** Whether a slot declared as `d` takes a placement of `def`: by its category, or named by its contract or definition ID. */
-export function takesComponent(d: SlotDef, def: Pick<ComponentDefinition, 'id' | 'componentId' | 'category'>): boolean {
+/**
+ * Whether a slot declared as `d` takes a placement of `def`: by its category, or named by its contract or definition ID.
+ * A design's file converted to code (`generatedFrom`) stands in for the design, so a slot naming the design takes it.
+ */
+export function takesComponent(d: SlotDef, def: Pick<ComponentDefinition, 'id' | 'componentId' | 'category' | 'generatedFrom'>): boolean {
   if (!restrictsKinds(d)) return true;
-  return (d.categories ?? []).includes(def.category) || (d.componentIds ?? []).some((id) => id === def.id || id === def.componentId);
+  return (d.categories ?? []).includes(def.category) || (d.componentIds ?? []).some((id) => id === def.id || id === def.componentId || (!!def.generatedFrom && id === def.generatedFrom));
 }
 
 /** The project's definitions a slot's component ID names: the one with that definition ID, else those of that contract. */

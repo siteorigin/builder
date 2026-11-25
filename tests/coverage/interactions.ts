@@ -1696,12 +1696,15 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Keep my work when a project file is changed outside Builder',
     start: 'A project open while another tool edits its documents',
     routes: ['status:File conflict notice'],
-    outcome: 'A newer on-disk edit is never overwritten and is reported as a conflict; an externally edited generated file is kept; the toolbar fits the conflict notice at the minimum window size',
+    outcome: 'A newer on-disk edit is never overwritten and is reported as a conflict; an externally edited generated file is kept; a design’s own file edited outside the app converts into a code component only with Developer mode and code that passes the checks, keeping the edited file under Saved copies; the toolbar fits the conflict notice at the minimum window size',
     scenario: 'unit fixtures · none',
     proof: [
       { test: 'tests/unit/session.test.ts', kind: 'unit', step: 'refuses to overwrite a newer on-disk edit' },
       { test: 'tests/unit/session-recovery.test.ts', kind: 'unit', step: 'canonical conflicts (spec 18.5)' },
-      { test: 'tests/e2e/layout.mjs', kind: 'e2e', step: 'the same with a file conflict notice, the widest save state' }
+      { test: 'tests/e2e/layout.mjs', kind: 'e2e', step: 'the same with a file conflict notice, the widest save state' },
+      { test: 'tests/e2e/convert-edited.mjs', kind: 'e2e', step: 'only the design file’s row offers the conversion, and without Developer mode it says why' },
+      { test: 'tests/e2e/convert-edited.mjs', kind: 'e2e', step: 'with Developer mode on, an edited file that fails the code checks is refused on its row, and nothing changes' },
+      { test: 'tests/e2e/convert-edited.mjs', kind: 'e2e', step: 'put right, it converts: the row goes, the preview shows the edited hero, and the edited file is under Saved copies' }
     ],
     gaps: [{ missing: 'No e2e script edits a document outside the app while it is open and resolves the conflict the editor reports', owner: 'history' }]
   },
