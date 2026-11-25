@@ -249,7 +249,7 @@ describe('collection tools for every model', () => {
 
   it('reads only the open post in a run limited to it', async () => {
     const state = blog();
-    const { h } = host(state, requestAuthority({ pageId: 'pg_any', pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, post: { collectionId: 'posts', entryId: 'en_spring', title: 'Spring' } }, state));
+    const { h } = host(state, requestAuthority({ pageId: 'pg_any', pageTitle: 'Home', selection: null, selectionLabel: null, post: { collectionId: 'posts', entryId: 'en_spring', title: 'Spring' } }, state));
     expect((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_spring' })).ok).toBe(true);
     expect((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_winter' })).content).toMatchObject({ message: expect.stringMatching(/entryId: this request is about the post “Spring open studio” \(posts\/en_spring\) alone/) });
     expect((await tool(h, 'list_collection_entries', { collectionId: 'posts' })).ok).toBe(false);
