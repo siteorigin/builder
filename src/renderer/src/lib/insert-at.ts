@@ -346,19 +346,13 @@ function styleOps(owner: OwnerRef, nodeId: string, styles: StarterStyles | undef
 /**
  * The rest of a column layout, once its Grid is in: its name and styles, then each cell an empty Stack named for its
  * place, so Layers and Insert's line say which cell is which and a click on the cell's frame on the canvas selects it
- * for Insert to fill. Each cell is a query container, which its grid track always sizes, so a card placed in a narrow
- * one follows its container rules.
+ * for Insert to fill.
  */
 function layoutOps(owner: OwnerRef, gridId: string, layout: Layout): EditOperation[] {
   const ops: EditOperation[] = [{ type: 'node.rename', owner, nodeId: gridId, name: layout.name }, ...styleOps(owner, gridId, layout.styles)];
   for (const cell of layout.cells) {
     const id = newId('n');
-    ops.push(
-      { type: 'node.insert', newNodeId: id, owner, parentId: gridId, primitive: 'stack' },
-      { type: 'node.rename', owner, nodeId: id, name: cell.name },
-      { type: 'node.setStyle', owner, nodeId: id, scope: 'base', property: 'containerType', value: 'inline-size' },
-      ...styleOps(owner, id, cell.styles)
-    );
+    ops.push({ type: 'node.insert', newNodeId: id, owner, parentId: gridId, primitive: 'stack' }, { type: 'node.rename', owner, nodeId: id, name: cell.name }, ...styleOps(owner, id, cell.styles));
   }
   return ops;
 }

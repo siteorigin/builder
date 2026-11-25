@@ -823,18 +823,30 @@ const duplicateItemMessage = (where: string, schema: { label: string; itemLabel?
 const nodeLabel = (n: GraphNode) => (n.name ? `“${n.name}”` : n.kind === 'link' ? 'a button' : n.kind === 'instance' ? 'a nested component' : `a ${n.kind} element`);
 
 /**
- * Why an element that is a query container (`containerType: inline-size`) at some size gets no width, or null: its
- * own width fits its content, or it sits in a horizontal stack that sizes it to its content (no grow, no width of its
- * own). A query container's content never widens it, so either way it is as narrow as its padding.
+ * Why an element that is a query container (`containerType: inline-size`) at some size may get no width, or null. A
+ * query container's content never widens it, so it is as narrow as its padding wherever its width comes from its
+ * content: its own width fits its content; it sits in a horizontal stack with no grow or width of its own, or in a
+ * vertical stack that aligns its items rather than stretching them, with no width of its own; or in a grid with a
+ * column sized by its content (auto, min-content, max-content, fit-content). A repeat lays out no box of its own, so
+ * the parent is the one around it. Read across every size the rules name: a warning, not a proof.
  */
-function queryContainerCollapse(n: GraphNode & { kind: 'element' }, parent: GraphNode | undefined): string | null {
+function queryContainerCollapse(n: GraphNode & { kind: 'element' }, parentOf: Map<string, GraphNode>): string | null {
   const resting = (styles: ResponsiveStyles | undefined) => Object.entries(styles ?? {}).flatMap(([k, v]) => (parseStyleScopeKey(k)?.state || !v || typeof v !== 'object' ? [] : [v]));
   const own = resting(n.styles);
   if (!own.some((r) => r.containerType === 'inline-size')) return null;
   if (own.some((r) => r.width === 'fit')) return 'that fits its content';
-  const row = parent?.kind === 'element' && resting(parent.styles).some((r) => r.layout === 'row');
-  const sized = own.some((r) => Number(r.flexGrow) > 0 || (r.width !== undefined && r.width !== 'auto'));
-  return row && !sized ? 'in a horizontal stack that sizes it to its content' : null;
+  let parent = parentOf.get(n.id);
+  for (let hops = 0; parent?.kind === 'repeat' && hops < 50; hops++) parent = parentOf.get(parent.id);
+  if (parent?.kind !== 'element') return null;
+  const around = resting(parent.styles);
+  const width = own.some((r) => (r.width !== undefined && r.width !== 'auto' && r.width !== 'fit') || (r.minWidth !== undefined && r.minWidth !== 'auto' && String(r.minWidth).trim() !== '0' && String(r.minWidth).trim() !== '0px'));
+  if (around.some((r) => r.layout === 'row') && !width && !own.some((r) => Number(r.flexGrow) > 0)) return 'in a horizontal stack that sizes it to its content';
+  if (around.some((r) => r.layout === 'stack') && around.some((r) => typeof r.align === 'string' && r.align !== 'stretch') && !width && !own.some((r) => r.alignSelf === 'stretch'))
+    return 'in a vertical stack that aligns its items instead of stretching them';
+  // A column sized by its content, not an as-many-as-fit preset (auto-fit, auto-fill), whose columns share the room.
+  if (around.some((r) => r.layout === 'grid') && around.some((r) => typeof r.gridTemplate === 'string' && /(^|[\s(,])(auto|min-content|max-content|fit-content)(?![\w-])/.test(r.gridTemplate)) && !width)
+    return 'in a grid with a column sized by its content, where it may sit';
+  return null;
 }
 
 /**
@@ -921,8 +933,8 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     const group = groupLookup(tree);
     const parentOf = new Map(Object.values(tree.nodes).flatMap((p) => childLists(p).flatMap((l) => l.ids.map((c) => [c, p] as const))));
     for (const n of Object.values(tree.nodes)) {
-      const collapse = n.kind === 'element' ? queryContainerCollapse(n, parentOf.get(n.id)) : null;
-      if (collapse) out.push({ severity: 'warning', code: 'CONTAINER_COLLAPSE', message: `${label}: ${nodeLabel(n)} is a query container ${collapse}, so it shrinks to nothing: a query container's width never comes from what is inside it. Give it a width (or Grow in a horizontal stack), or set Query container to None.`, owner, nodeId: n.id, site: `${n.id}|containerType` });
+      const collapse = n.kind === 'element' ? queryContainerCollapse(n, parentOf) : null;
+      if (collapse) out.push({ severity: 'warning', code: 'CONTAINER_COLLAPSE', message: `${label}: ${nodeLabel(n)} is a query container ${collapse}, so it can shrink to nothing: a query container's width never comes from what is inside it. Give it a width (or Grow in a horizontal stack), or set Query container to None.`, owner, nodeId: n.id, site: `${n.id}|containerType` });
       // Only a container can be an interaction group, and it is one by `true`.
       if (Object.hasOwn(n, 'interactionGroup') && (n.kind !== 'element' || (n as { interactionGroup?: unknown }).interactionGroup !== true))
         out.push({ severity: 'error', code: 'GROUP_INVALID', message: `${label}: ${nodeLabel(n)} is marked as an interaction group, which only a container can be, by true.`, owner, nodeId: n.id, site: `${n.id}|interactionGroup` });

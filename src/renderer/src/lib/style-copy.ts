@@ -7,7 +7,7 @@
 import type { EditOperation } from '@shared/ops';
 import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleScope, StyleScopeKey, StyleState, StyleValue } from '@shared/types';
 import { CONTAINER_SCOPES, STYLE_STATES, isContainerScope, parseStyleScopeKey, styleScopeKey } from '@shared/types';
-import { CONTAINER_SCOPE_LABEL, STYLE_PROP_MAP, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
+import { CONTAINER_SCOPE_LABEL, STYLE_PROP_MAP, containerStyleError, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { isBackgroundImageValue, isPictureAsset } from '@shared/background-image';
 import { effectiveTokens } from '@generator/index';
@@ -215,10 +215,12 @@ interface Known {
  * as its full stack), or why it can't be written into this project now: the checks the edit makes, so one value
  * never fails the whole paste.
  */
-function prepare(state: ProjectState, known: Known, property: string, v: unknown, inState: StyleState | undefined): { value: StyleValue; stored: StyleValue } | { error: string } {
+function prepare(state: ProjectState, known: Known, property: string, v: unknown, inState: StyleState | undefined, inContainer = false): { value: StyleValue; stored: StyleValue } | { error: string } {
   if (!isStyleValue(v)) return { error: 'The copied value isn’t one the builder can paste.' };
-  // A hand-edited document can hold a state value the builder never writes.
+  // A hand-edited document can hold a state value the builder never writes, or a container width's.
   if (inState && !isStateStyleProp(property, inState)) return { error: stateStyleError(property, inState)! };
+  const containerError = inContainer ? containerStyleError(property) : null;
+  if (containerError) return { error: containerError };
   const err = validateStyleValue(property, v);
   if (err) return { error: err };
   // A picture from another project, or one removed since it was copied, is not here to show.
@@ -294,7 +296,7 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
         for (const sc of scopes) {
           const raw: unknown = set.styles[sc]?.[property];
           if (raw === undefined) continue;
-          const ready = prepare(state, known, property, raw, parseStyleScopeKey(sc)?.state);
+          const ready = prepare(state, known, property, raw, parseStyleScopeKey(sc)?.state, isContainerScope(parseStyleScopeKey(sc)?.scope));
           if ('error' in ready) {
             why = ready.error;
             break;

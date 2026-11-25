@@ -17,7 +17,7 @@ function projectDef(def: ComponentDefinition, id: string, insertAs: 'section' | 
 
 /**
  * A horizontal media card: a picture box beside its text on desktop, as a row for all sizes and again for desktop,
- * and stacked (picture above text) in a narrow container whatever the screen.
+ * stacked (picture above text) in a narrow container whatever the screen, and spaced out in a wide one.
  */
 export function mediaCard(): ComponentDefinition {
   return projectDef(
@@ -31,7 +31,7 @@ export function mediaCard(): ComponentDefinition {
       properties: { title: P.str('Title', 'Night walks') },
       parts: { root: { nodeId: 'card', label: 'Card', styleControls: ['layout', 'gap', 'background'] } },
       build: (b) =>
-        b.el('card', 'div', { name: 'Card', styles: { base: { layout: 'row', gap: '0px' }, desktop: { layout: 'row' }, 'cq-narrow': { layout: 'stack' } } }, [
+        b.el('card', 'div', { name: 'Card', styles: { base: { layout: 'row', gap: '0px' }, desktop: { layout: 'row' }, 'cq-narrow': { layout: 'stack' }, 'cq-wide': { gap: '24px' } } }, [
           b.el('media', 'div', { name: 'Media', styles: { width: '160px', minHeight: '90px', flexShrink: 0 } }, []),
           b.text('title', 'h3', { $prop: 'title' }, { name: 'Title', styles: { flexGrow: 1, marginBlockStart: '0px', marginBlockEnd: '0px' } })
         ])

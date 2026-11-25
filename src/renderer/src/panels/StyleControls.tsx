@@ -435,13 +435,14 @@ export function StyleControls({
         if (line) lines.push(line);
       }
     // Rules for the width of the container around it beat every screen size wherever that width holds, so the
-    // previewed size's value above may not be what a placement in a narrow column shows. Set through the assistant.
-    if (!state)
-      for (const c of CONTAINER_SCOPES) {
-        const mine = styles?.[c]?.[p.id];
-        const v = mine ?? inherited?.[c]?.[p.id];
-        if (v !== undefined) lines.push({ text: `${CONTAINER_SCOPE_LABEL[c]} (${CONTAINER_SCOPE_RANGE[c]}) uses ${whole(v)}${mine === undefined ? ' from the design' : ''}` });
-      }
+    // previewed size's value above may not be what a placement in a narrow column shows. Named in each state too, so a
+    // reset for every size says what it clears. Set through the assistant.
+    for (const c of CONTAINER_SCOPES) {
+      const key = styleScopeKey(c, state ?? undefined);
+      const mine = styles?.[key]?.[p.id];
+      const v = mine ?? inherited?.[key]?.[p.id];
+      if (v !== undefined) lines.push({ text: `${CONTAINER_SCOPE_LABEL[c]} (${CONTAINER_SCOPE_RANGE[c]}) uses ${whole(v)}${mine === undefined ? ' from the design' : ''}` });
+    }
     // A change for one size: what its reset brings back, when that is known and different.
     if (scope !== 'base' && value !== undefined && under !== undefined && JSON.stringify(under) !== JSON.stringify(value))
       lines.push({ text: `${underFrom === 'From All sizes' ? 'All sizes has' : underFrom === 'From Default' ? 'Default has' : 'The design has'} ${whole(under)}` });

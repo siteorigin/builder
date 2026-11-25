@@ -8,7 +8,7 @@ import { effectiveTokens } from '@generator/index';
 import { Field, Modal, type MenuItem } from '../components/ui';
 import { commitOps, getState, setState, toast, undoAction, useStore, type State } from '../store';
 import { SCOPE_LABELS, captureStyle, changeLabel, planStylePaste, styleSelection, type PasteRow, type PasteScope } from '../lib/style-copy';
-import { isContainerScope, styleScopeKey, type StyleState } from '@shared/types';
+import { CONTAINER_SCOPES, isContainerScope, styleScopeKey, type StyleState } from '@shared/types';
 import { allSizesReach } from '../lib/style-source';
 import { describeStyleValue, isStyleLink, styleLabel, styleSwatch } from './StyleControls';
 
@@ -140,9 +140,11 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   // skips phones) and no other control writing the same CSS keeps its own value there (Column sizes over Columns).
   const targetOf = (r: PasteRow) => destination?.targets.find((t) => t.part === r.part) ?? (destination?.targets.length === 1 ? destination.targets[0] : undefined);
   const fallsToAll = (r: PasteRow, size: PasteRow['changes'][number]['scope'], state?: StyleState) => {
-    // A container width's value cleared falls to whatever the screen sizes give, not to All sizes alone.
+    // A container width's value cleared falls to whatever the screen sizes give, not to All sizes alone; and where a
+    // container width keeps a value of its own, that wins over All sizes wherever it holds.
     if (isContainerScope(size)) return false;
     const at = targetOf(r);
+    if (CONTAINER_SCOPES.some((c) => at?.styles?.[styleScopeKey(c, state)]?.[r.property] !== undefined && !rows.some((x) => x.part === r.part && x.property === r.property && x.changes.some((ch) => ch.scope === c && ch.state === state && ch.to === undefined)))) return false;
     // A rival's value at this size as the paste leaves it: what the review writes or clears, else what is there now.
     const rivalAfter = (rv: string) => {
       const planned = rows.find((x) => x.part === r.part && x.property === rv && x.status === 'change')?.changes.find((c) => c.scope === size && c.state === state);

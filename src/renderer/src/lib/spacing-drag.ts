@@ -4,6 +4,7 @@
  */
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleValue, TokenGroup } from '@shared/types';
+import { CONTAINER_SCOPES } from '@shared/types';
 import { MEDIA_QUERIES, STYLE_PROP_MAP, tokenVar } from '@shared/styles';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveTokens } from '@generator/index';
@@ -207,6 +208,8 @@ export const setsSide = (rules: Record<string, StyleValue>, edge: string, pair: 
  */
 export function beaten(styles: ResponsiveStyles | undefined, scope: ResponsiveScope, shown: Size, edge: string, pair: string | null, writes: string, names: string[]): boolean {
   if (scope === 'base' && setsSide(at(styles, shown), edge, pair, names)) return true;
+  // A container width's value beats every screen size wherever that width holds, which the canvas cannot tell here.
+  if (CONTAINER_SCOPES.some((c) => setsSide(styles?.[c] ?? {}, edge, pair, names))) return true;
   const here = at(styles, scope);
   return (writes !== edge && here[edge] !== undefined) || customSets(here.customCss, names);
 }
