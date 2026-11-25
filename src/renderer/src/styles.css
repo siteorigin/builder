@@ -2005,6 +2005,8 @@ iframe { color-scheme: light dark; }
 .editor.defining .style-scope-link { color: var(--plum); }
 /* The state picker sits under the sizes, in the same sticky band; a chosen state is marked like one size alone. */
 .style-state { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+/* With its group's two states the picker holds six choices: they wrap onto a second row rather than overflow the dock. */
+.style-state-picker { flex-wrap: wrap; }
 .style-state-picker.in-state button[aria-checked='true'] { background: color-mix(in srgb, var(--accent) 12%, var(--raised)); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent), var(--shadow-sm); }
 .editor.defining .style-state-picker.in-state button[aria-checked='true'] { background: color-mix(in srgb, var(--plum) 12%, var(--raised)); color: var(--plum); box-shadow: inset 0 0 0 1px var(--plum), var(--shadow-sm); }
 /* Groups are separated by a straight rule; a group with more options than it shows opens from its heading. */

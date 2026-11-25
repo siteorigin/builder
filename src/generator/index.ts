@@ -40,7 +40,8 @@ import type {
   TokenValue,
   UiStateSchema
 } from '@shared/types';
-import { DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, RESPONSIVE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isStateRef, slotChildren, stateInitial, styleScopeKey, type Condition } from '@shared/types';
+import { DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, RESPONSIVE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isGroupStyleState, isStateRef, slotChildren, stateInitial, styleScopeKey, type Condition, type GroupStyleState } from '@shared/types';
+import { INTERACTION_GROUP_CLASS, groupLookup, isInteractionGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import {
   MEDIA_QUERIES,
   REDUCED_MOTION_QUERY,
@@ -604,7 +605,7 @@ type RuleSet = {
 };
 const sizeLists = (): Record<ResponsiveScope, string[]> => ({ base: [], phone: [], tablet: [], desktop: [] });
 const copyLists = () => ({ phone: [] as string[], tablet: [] as string[] });
-const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], reduced: [], states: { hover: sizeLists(), focus: sizeLists(), active: sizeLists() }, copies: { rest: copyLists(), hover: copyLists(), focus: copyLists(), active: copyLists() } });
+const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], reduced: [], states: { groupHover: sizeLists(), groupFocus: sizeLists(), hover: sizeLists(), focus: sizeLists(), active: sizeLists() }, copies: { rest: copyLists(), groupHover: copyLists(), groupFocus: copyLists(), hover: copyLists(), focus: copyLists(), active: copyLists() } });
 const WIDE_QUERY = '(min-width: 768px)';
 /**
  * Where each interactive state applies. `:where()` adds no weight, so a state rule is exactly as strong as the rule it
@@ -613,9 +614,32 @@ const WIDE_QUERY = '(min-width: 768px)';
  * keyboard, so the card it wraps (its one child) shows those states with it. A card that is a link itself takes them
  * on its own element.
  */
-const STATE_PSEUDO: Record<StyleState, string> = { hover: ':hover', focus: ':focus-visible, .so-action:focus-visible > *', active: ':active, .so-action:active > *' };
+const STATE_PSEUDO: Record<Exclude<StyleState, GroupStyleState>, string> = { hover: ':hover', focus: ':focus-visible, .so-action:focus-visible > *', active: ':active, .so-action:active > *' };
 /** Hover rules apply only where a pointer can hover, so a tap on a touch screen never leaves one stuck on. */
 const HOVER_QUERY = '(hover: hover)';
+/**
+ * When an interaction group counts as hovered, or as holding focus: itself, or the action link that wraps it (a card
+ * with an action is that link's one child, and the link is what takes focus and can be hovered around it).
+ */
+const GROUP_PSEUDO: Record<GroupStyleState, string> = { groupHover: ':hover, .so-action:hover > *', groupFocus: ':focus-within, .so-action:focus-within > *' };
+
+/**
+ * The selector of a group state rule for the element `subject` names. It applies while a group around the element is
+ * hovered or holds focus, unless a group between that one and the element is not: `:hover` and `:focus-within` hold on
+ * every element around the one pointed at or focused, so a group that does not, inside one that does, is a nearer group
+ * the visitor is outside of. An outer card never shows what an inner card holds, and a group with no hovered group
+ * around it (a card in a dialog, over the page) still shows its own. Everything around the subject is `:where()`, so the
+ * rule is exactly as strong as the subject's resting rule.
+ */
+export function groupStateSelector(subject: string, state: GroupStyleState): string {
+  const on = `.${INTERACTION_GROUP_CLASS}:is(${GROUP_PSEUDO[state]})`;
+  const off = `.${INTERACTION_GROUP_CLASS}:not(${GROUP_PSEUDO[state]})`;
+  // A subject that reaches its element through another (a placement's root, then its part) is matched whole.
+  let top = subject;
+  for (let i = 0; i < 20 && /\([^()]*\)/.test(top); i++) top = top.replace(/\([^()]*\)/g, '');
+  const own = /[\s>+~,]/.test(top) ? `:is(${subject})` : subject;
+  return `:where(${on}) ${own}:not(:where(${on} ${off} *))`;
+}
 
 /** Declarations that could escape their rule or load remote content are never written. */
 function safeDecl(decl: string): boolean {
@@ -654,6 +678,11 @@ interface RuleOpts {
    * nested inside). `null` writes no state rules.
    */
   stateSelector?: string | null;
+  /**
+   * Whether an interaction group encloses the styled element in its own document, so its group state rules can apply.
+   * Without one they are written nothing for (validation says why).
+   */
+  grouped?: boolean;
 }
 
 /** A declaration made important, unless it already is (custom CSS may say so itself). */
@@ -827,19 +856,26 @@ function addStateRules(rules: RuleSet, raw: string, input: ResponsiveStyles, opt
   if (opts.stateSelector === null) return;
   const wrap = opts.wrap ?? ((sel: string) => sel);
   const base = opts.stateSelector ?? raw;
-  for (const state of STYLE_STATES)
+  const fallback: string[] = [];
+  for (const state of STYLE_STATES) {
+    const group = isGroupStyleState(state);
+    if (group && !opts.grouped) continue;
     for (const scope of RESPONSIVE_SCOPES) {
       const props = input[styleScopeKey(scope, state)];
       if (!props || typeof props !== 'object') continue;
       const decls: string[] = [];
       const media = opts.link ? undefined : opts.media;
+      const selector = wrap(group ? groupStateSelector(base, state) : `${base}:where(${STATE_PSEUDO[state]})`);
       for (const k of Object.keys(props).sort((a, b) => ORDER(a) - ORDER(b) || a.localeCompare(b))) {
-        if (!isStateStyleProp(k)) continue;
+        if (!isStateStyleProp(k, state)) continue;
         if (k === 'backgroundImage') {
-          if (media) addBackgroundImage(rules, wrap(`${base}:where(${STATE_PSEUDO[state]})`), props[k], scope, state, media, decls, opts.important);
+          if (media) addBackgroundImage(rules, selector, props[k], scope, state, media, decls, opts.important);
           continue;
         }
         const out = styleToCss(k, props[k]);
+        // A shift on one axis keeps the other where the element's own rules put it, not where an ancestor's shift
+        // (the variables are inherited) would: both start at zero, at no weight, as a resting shift's do.
+        fallback.push(...styleFallbackCss(k, props[k]).filter(safeDecl));
         // It paints through the variable too, so a stronger layer's resting colour (which sets only the variable)
         // still wins, as it does over every other state value; a text button paints no background of its own.
         if (opts.link && k === 'background')
@@ -850,9 +886,10 @@ function addStateRules(rules: RuleSet, raw: string, input: ResponsiveStyles, opt
         if (media && k === 'background' && safe.length && safe.some((d) => d.startsWith('background:'))) decls.push(...paintDecls(backgroundImageLayers(props[k])));
       }
       if (!decls.length) continue;
-      const selector = wrap(`${base}:where(${STATE_PSEUDO[state]})`);
       rules.states[state][scope].push(`${selector} {\n${lastCopies(decls).map((d) => `\t${opts.important ? important(d) : d};`).join('\n')}\n}`);
     }
+  }
+  if (fallback.length) rules.base.push(`${wrap(`:where(${base})`)} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
 }
 
 function emitRules(rules: RuleSet): string {
@@ -865,13 +902,13 @@ function emitRules(rules: RuleSet): string {
     out.push(block(MEDIA_QUERIES[scope], list));
   }
   // Every state after every resting rule, so a state beats the resting style at every size, as hand-written `:hover`
-  // does; within a state, a size's own rule after the rule for all sizes; and active after focus after hover, so the
-  // state a visitor is in last wins while several hold.
+  // does; within a state, a size's own rule after the rule for all sizes; and the element's own states after its
+  // group's, active after focus after hover, so the state a visitor is in last, and nearest, wins while several hold.
   for (const state of STYLE_STATES)
     for (const scope of RESPONSIVE_SCOPES) {
       const list = scope === 'phone' || scope === 'tablet' ? [...rules.copies[state][scope], ...rules.states[state][scope]] : rules.states[state][scope];
       if (!list.length) continue;
-      const query = [scope === 'base' ? null : MEDIA_QUERIES[scope], state === 'hover' ? HOVER_QUERY : null].filter(Boolean).join(' and ');
+      const query = [scope === 'base' ? null : MEDIA_QUERIES[scope], state === 'hover' || state === 'groupHover' ? HOVER_QUERY : null].filter(Boolean).join(' and ');
       if (query) out.push(block(query, list));
       else out.push(...list);
     }
@@ -996,10 +1033,13 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
   const rules = newRules();
   if (!def.tree) return rules;
   const wrap = (sel: string) => (standalone ? `:global(${sel})` : sel);
+  // Which nodes an interaction group of the design encloses, and so can show their group states.
+  const group = groupLookup(def.tree);
+  const lookups = new Map<string, (nodeId: string) => string | null>();
   for (const id of Object.keys(def.tree.nodes).sort()) {
     const n = def.tree.nodes[id];
-    addRules(rules, `.${nodeClass(def, id)}`, n.styles, { link: n.kind === 'link', wrap, gateHides: standalone ? shownMark(def) : undefined, media: mediaFor(state, designMedia(state, def, id), files) });
-    if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, def, n, `.${nodeClass(def, id)}`, wrap, files);
+    addRules(rules, `.${nodeClass(def, id)}`, n.styles, { link: n.kind === 'link', wrap, gateHides: standalone ? shownMark(def) : undefined, media: mediaFor(state, designMedia(state, def, id), files), grouped: group(id) !== null });
+    if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, def, n, `.${nodeClass(def, id)}`, wrap, files, group(id) !== null, lookups);
   }
   const axes = axesOf(def);
   const legacy = usesLegacyVariantClass(state, def);
@@ -1016,7 +1056,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
         const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `.${variantClass(def, axis, vid)}.${nodeClass(def, nid)}`;
         // An axis earlier in the cascade may be what hides this node, so showing it again has to undo that too.
         const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).flatMap((o) => (o.styles?.[nid] ? [o.styles[nid]] : [])));
-        const opts = { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone ? shownMark(def) : undefined, media: mediaFor(state, designMedia(state, def, nid), files) };
+        const opts = { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone ? shownMark(def) : undefined, media: mediaFor(state, designMedia(state, def, nid), files), grouped: group(nid) !== null };
         addRules(rules, sel, v.styles![nid], opts);
         // First-format converted code marks only its root with the option, so its nodes are still matched through
         // the root, except a node that carries option classes of its own: one of a placement inside it.
@@ -1132,17 +1172,29 @@ export function generateComponentsCss(state: ProjectState): string {
  * Overrides set on an instance that sits inside a definition (`owner`) use descendant selectors from the nested
  * instance root; a code component's inner parts take classes of the design's own instead.
  */
-function addOverrideRules(rules: RuleSet, state: ProjectState, owner: ComponentDefinition, inst: InstanceNode, rootSelector: string, wrap = (sel: string) => sel, files?: Map<string, string>) {
+function addOverrideRules(
+  rules: RuleSet,
+  state: ProjectState,
+  owner: ComponentDefinition,
+  inst: InstanceNode,
+  rootSelector: string,
+  wrap = (sel: string) => sel,
+  files?: Map<string, string>,
+  placed = false,
+  lookups?: Map<string, (nodeId: string) => string | null>
+) {
   const def = state.components[inst.definitionId];
   if (!def) return;
   for (const partId of Object.keys(inst.overrides ?? {}).sort()) {
     const part = def.parts[partId];
     // An override for a part the definition no longer declares styles nothing.
     if (partId !== 'root' && !part) continue;
+    // A group around the placement in the design, or one in its own design around the part, can show its group states.
+    const grouped = partInInteractionGroup(def, partId, placed, lookups);
     // A code component's own styles are scoped, so its inner parts are reached only by the classes it is given.
     if (def.kind === 'code' && partId !== 'root') {
       const cls = nestedOverrideClass(owner, inst.id, partId);
-      addRules(rules, `.${cls}.${cls}.${cls}`, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId, files), wrap });
+      addRules(rules, `.${cls}.${cls}.${cls}`, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId, files), wrap, grouped });
       continue;
     }
     // Doubled root selector: nested overrides must beat the nested definition's variant rules.
@@ -1152,7 +1204,7 @@ function addOverrideRules(rules: RuleSet, state: ProjectState, owner: ComponentD
     // placed inside this one (in its slot). Its state rules name the class the part takes for this override instead,
     // as strong as the resting rule.
     const marker = nestedStateMarker(owner, def, inst, partId);
-    addRules(rules, sel, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId, files), wrap, ...(marker ? { stateSelector: `.${marker}`.repeat(3) } : {}) });
+    addRules(rules, sel, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId, files), wrap, grouped, ...(marker ? { stateSelector: `.${marker}`.repeat(3) } : {}) });
   }
 }
 
@@ -1254,11 +1306,15 @@ function treeOwners(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTre
 
 export function generateSiteCss(state: ProjectState): string {
   const rules = newRules();
+  const lookups = new Map<string, (nodeId: string) => string | null>();
   for (const { tree } of treeOwners(state)) {
+    // Which nodes an interaction group of the page encloses, and so can show their group states.
+    const group = groupLookup(tree);
     for (const id of Object.keys(tree.nodes).sort()) {
       const n = tree.nodes[id];
       if (n.kind === 'instance') {
         const def = state.components[n.definitionId];
+        const placed = group(id) !== null;
         for (const partId of Object.keys(n.overrides ?? {}).sort()) {
           if (!def) continue;
           const cls = overrideClass(n.id, partId);
@@ -1267,7 +1323,7 @@ export function generateSiteCss(state: ProjectState): string {
           // A part that is itself a nested instance also carries its definition's three-class override rule.
           const target = def.tree?.nodes[def.parts[partId]?.nodeId ?? def.tree.rootIds[0]];
           const sel = target?.kind === 'instance' ? `.${cls}.${cls}.${cls}.${cls}` : def.kind === 'code' ? `.${cls}.${cls}.${cls}` : `.${cls}.${cls}`;
-          addRules(rules, sel, n.overrides![partId], overrideOpts(state, def, n, partId));
+          addRules(rules, sel, n.overrides![partId], { ...overrideOpts(state, def, n, partId), grouped: partInInteractionGroup(def, partId, placed, lookups) });
         }
         for (const partId of Object.keys(n.itemOverrides ?? {}).sort()) {
           const entry = liveItemStyles(def, n, partId);
@@ -1280,11 +1336,11 @@ export function generateSiteCss(state: ProjectState): string {
             const own = entry.items[itemId];
             // A hand-edited record that holds no styles writes nothing (validation reports it).
             if (!own || typeof own !== 'object') continue;
-            addRules(rules, `.${cls}`.repeat(times), keepWeakerHides(def!, n, partId, own), itemOverrideOpts(state, def!, n, partId, own));
+            addRules(rules, `.${cls}`.repeat(times), keepWeakerHides(def!, n, partId, own), { ...itemOverrideOpts(state, def!, n, partId, own), grouped: partInInteractionGroup(def, partId, placed, lookups) });
           }
         }
       } else {
-        addRules(rules, `.${pageNodeClass(id)}`, n.styles, { link: n.kind === 'link', media: mediaFor(state, hasBackgroundImage(n.styles)) });
+        addRules(rules, `.${pageNodeClass(id)}`, n.styles, { link: n.kind === 'link', media: mediaFor(state, hasBackgroundImage(n.styles)), grouped: group(id) !== null });
       }
     }
   }
@@ -1909,7 +1965,8 @@ export function detachedClasses(node: Pick<GraphNode, 'detachedFrom'>): string[]
 }
 
 function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string {
-  const detached = detachedClasses(node).map(js);
+  // An interaction group's element carries the class its group state rules name (see groupStateSelector).
+  const detached = [...(isInteractionGroup(node) ? [js(INTERACTION_GROUP_CLASS)] : []), ...detachedClasses(node).map(js)];
   if (ctx.def) {
     const parts = [js(nodeClass(ctx.def, node.id)), ...detached, ...extra];
     for (const [pid, p] of Object.entries(ctx.def.parts)) {

@@ -16,7 +16,7 @@ import { boundaryOf, ownerLabel, pagesUsingShell, refLabel, treeFor } from './mo
 
 export const STYLE_SCOPES: ResponsiveScope[] = ['base', 'phone', 'tablet', 'desktop'];
 export const SCOPE_LABELS: Record<ResponsiveScope, string> = { base: 'All sizes', phone: 'Phone', tablet: 'Tablet', desktop: 'Desktop' };
-export const STATE_LABELS: Record<StyleState, string> = { hover: 'hover', focus: 'focus', active: 'pressed' };
+export const STATE_LABELS: Record<StyleState, string> = { groupHover: 'group hover', groupFocus: 'group focus', hover: 'hover', focus: 'focus', active: 'pressed' };
 /** A size's resting rule and then its state rules: every rule a paste for that size writes. */
 const keysAt = (scope: ResponsiveScope): StyleScopeKey[] => [scope, ...STYLE_STATES.map((st) => styleScopeKey(scope, st))];
 /** Every rule a set of styles can hold, in the order a paste lists them. */
@@ -214,10 +214,10 @@ interface Known {
  * as its full stack), or why it can't be written into this project now: the checks the edit makes, so one value
  * never fails the whole paste.
  */
-function prepare(state: ProjectState, known: Known, property: string, v: unknown, inState: boolean): { value: StyleValue; stored: StyleValue } | { error: string } {
+function prepare(state: ProjectState, known: Known, property: string, v: unknown, inState: StyleState | undefined): { value: StyleValue; stored: StyleValue } | { error: string } {
   if (!isStyleValue(v)) return { error: 'The copied value isn’t one the builder can paste.' };
   // A hand-edited document can hold a state value the builder never writes.
-  if (inState && !isStateStyleProp(property)) return { error: stateStyleError(property)! };
+  if (inState && !isStateStyleProp(property, inState)) return { error: stateStyleError(property, inState)! };
   const err = validateStyleValue(property, v);
   if (err) return { error: err };
   // A picture from another project, or one removed since it was copied, is not here to show.
@@ -293,7 +293,7 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
         for (const sc of scopes) {
           const raw: unknown = set.styles[sc]?.[property];
           if (raw === undefined) continue;
-          const ready = prepare(state, known, property, raw, sc.includes(':'));
+          const ready = prepare(state, known, property, raw, parseStyleScopeKey(sc)?.state);
           if ('error' in ready) {
             why = ready.error;
             break;

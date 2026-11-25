@@ -6,6 +6,7 @@ import { collectionDiagnostics } from './collections';
 import { isPictureAsset } from '@shared/background-image';
 import type { BackgroundImageValue, GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
 import { STYLE_PROP_MAP, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
+import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
 import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldSchema } from '@shared/entry-fields';
@@ -829,14 +830,24 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
   const out: Diagnostic[] = [];
   const tokenIds = new Set(declaredTokens(state).map((t) => t.id));
   const groupOf = new Map(declaredTokens(state).map((t) => [t.id, t.group]));
-  const checkStyles = (rs: ResponsiveStyles | undefined, label: string, owner: Diagnostic['owner'], nodeId?: string, layer = 'own') => {
+  const checkStyles = (rs: ResponsiveStyles | undefined, label: string, owner: Diagnostic['owner'], nodeId?: string, layer = 'own', grouped = true, what = 'it') => {
+    // Group states with no group around the element: kept, so turning a group back on restores them, but never shown.
+    if (!grouped && hasGroupStyles(rs))
+      out.push({
+        severity: 'warning',
+        code: 'STYLE_GROUP_MISSING',
+        message: `${label}: ${what} has styles for while its group is hovered or has focus, but no interaction group encloses it, so they never show. Mark a container around it as an interaction group, or reset those styles.`,
+        owner,
+        nodeId,
+        site: `${nodeId ?? ''}|${layer}|group`
+      });
     for (const [scopeId, scope] of Object.entries(rs ?? {})) {
       const at = parseStyleScopeKey(scopeId);
       // Rules under a key that names no size or state reach no stylesheet; the site styles they name are still checked.
       if (!at) out.push({ severity: 'error', code: 'STYLE_SCOPE_INVALID', message: `${label}: some styles are kept under "${scopeId}", which is neither a screen size nor a hover, focus or pressed state.`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}` });
       for (const [prop, v] of Object.entries(scope ?? {})) {
-        if (at?.state && !isStateStyleProp(prop))
-          out.push({ severity: 'error', code: 'STYLE_STATE_PROPERTY', message: `${label}: ${stateStyleError(prop)}`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}|${prop}` });
+        if (at?.state && !isStateStyleProp(prop, at.state))
+          out.push({ severity: 'error', code: 'STYLE_STATE_PROPERTY', message: `${label}: ${stateStyleError(prop, at.state)}`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}|${prop}` });
         // A background image names a library image, and is written only while it does.
         if (Object.hasOwn(STYLE_PROP_MAP, prop) && STYLE_PROP_MAP[prop].kind === 'media') {
           const site = `${nodeId ?? ''}|${layer}|${scopeId}|${prop}`;
@@ -884,11 +895,16 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     }
   };
   const nestingOf = nestingChecker(state);
+  const lookups = new Map<string, (nodeId: string) => string | null>();
   for (const { owner, tree, label } of allTrees(state)) {
     const def = owner.kind === 'component' ? state.components[owner.id] : undefined;
     // Theme definitions are fixed theme data, checked when the theme is built.
     if (def?.owner === 'theme') continue;
+    const group = groupLookup(tree);
     for (const n of Object.values(tree.nodes)) {
+      // Only a container can be an interaction group, and it is one by `true`.
+      if (Object.hasOwn(n, 'interactionGroup') && (n.kind !== 'element' || (n as { interactionGroup?: unknown }).interactionGroup !== true))
+        out.push({ severity: 'error', code: 'GROUP_INVALID', message: `${label}: ${nodeLabel(n)} is marked as an interaction group, which only a container can be, by true.`, owner, nodeId: n.id, site: `${n.id}|interactionGroup` });
       if (n.kind === 'element' && !isBinding(n.tag) && !ELEMENT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported element tag.`, owner, nodeId: n.id });
       if (n.kind === 'text' && !isBinding(n.tag) && !TEXT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported text tag.`, owner, nodeId: n.id });
       // A carousel's buttons go beside its list, which only a plain list can have.
@@ -946,22 +962,28 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
           const a = target.variantAxes && Object.hasOwn(target.variantAxes, axis) ? target.variantAxes[axis] : undefined;
           if (!a || !Object.hasOwn(a.options, v)) out.push({ severity: 'warning', code: 'VARIANT_UNKNOWN', message: `${label}: ${target.name} has no ${axis} "${String(v)}", so it shows its default.`, owner, nodeId: n.id });
         }
-        for (const [partId, o] of Object.entries(n.overrides ?? {})) checkStyles(o, label, owner, n.id, `part:${partId}`);
+        const placed = group(n.id) !== null;
+        const partWords = (partId: string) => (partId === 'root' ? displayName(state, n) : `the “${partId}” part of ${displayName(state, n)}`);
+        for (const [partId, o] of Object.entries(n.overrides ?? {})) checkStyles(o, label, owner, n.id, `part:${partId}`, partInInteractionGroup(target, partId, placed, lookups), partWords(partId));
         for (const [partId, entry] of Object.entries(n.itemOverrides ?? {})) {
           const valid = !!entry && typeof entry === 'object' && typeof entry.list === 'string' && !!entry.items && typeof entry.items === 'object' && !Array.isArray(entry.items);
           if (!valid) out.push({ severity: 'error', code: 'ITEM_STYLES_INVALID', message: `${label}: the styles set on single items of "${partId}" are not in the expected form.`, owner, nodeId: n.id });
           else if (Object.values(entry.items).some((rs) => !rs || typeof rs !== 'object' || Array.isArray(rs)))
             out.push({ severity: 'error', code: 'ITEM_STYLES_INVALID', message: `${label}: the styles set on a single item of "${partId}" are not in the expected form.`, owner, nodeId: n.id });
-          else for (const [itemId, rs] of Object.entries(entry.items)) checkStyles(rs, label, owner, n.id, `item:${partId}:${itemId}`);
+          else for (const [itemId, rs] of Object.entries(entry.items)) checkStyles(rs, label, owner, n.id, `item:${partId}:${itemId}`, partInInteractionGroup(target, partId, placed, lookups), `one item of ${partWords(partId)}`);
         }
       }
-      checkStyles(n.styles, label, owner, n.id);
+      checkStyles(n.styles, label, owner, n.id, 'own', group(n.id) !== null, nodeLabel(n));
     }
     // HTML the browser would rebuild (a block in a paragraph), or a list item, term or caption outside its list or figure.
     // A container directly in a list is a warning: lists are built that way, one edit at a time.
     for (const p of nestingOf(owner, tree)) out.push({ severity: p.severity, code: 'TAG_NESTING', message: `${label}: ${p.message}`, owner, nodeId: p.nodeId, site: p.site });
     if (def) {
-      for (const { axis, id, option: v } of variantOptions(def)) for (const [nid, st] of Object.entries(v.styles ?? {})) checkStyles(st, label, owner, nid, `variant:${axis}:${id}`);
+      for (const { axis, id, option: v } of variantOptions(def))
+        for (const [nid, st] of Object.entries(v.styles ?? {})) {
+          const styled = Object.hasOwn(tree.nodes, nid) ? tree.nodes[nid] : undefined;
+          checkStyles(st, label, owner, nid, `variant:${axis}:${id}`, group(nid) !== null, styled ? `${nodeLabel(styled)} in its ${id} look` : 'a node');
+        }
       if (!variantIdsValid(def)) out.push({ severity: 'warning', code: 'VARIANT_ID_INVALID', message: `${label}: a variant name uses characters that cannot be generated, so that variant is ignored.`, owner });
       for (const [axis, a] of Object.entries(def.variantAxes ?? {}))
         if (!Object.hasOwn(a.options ?? {}, a.default)) out.push({ severity: 'error', code: 'VARIANT_INVALID', message: `${label}: the default of the "${a.label ?? axis}" variant axis ("${a.default}") is not one of its options.`, owner });

@@ -273,6 +273,7 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       base.kind = 'element';
       base.tag = n.tag;
       if (n.carousel) base.carousel = true;
+      if (n.interactionGroup) base.interactionGroup = true;
       if (n.overlay) base.overlay = n.overlay;
       if (n.styles) base.styles = n.styles;
       if (n.appear) base.appear = n.appear;

@@ -1642,6 +1642,8 @@ function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined
   if (n.anchor) return `Links can jump to ${name} by its anchor “${n.anchor}”, so it can’t be ungrouped. Remove the anchor first.`;
   if (n.ariaLabel !== undefined) return `${name} has an accessible name, so it can’t be ungrouped. Remove it first.`;
   if (n.carousel) return `${name} is a carousel, so it can’t be ungrouped.`;
+  // What it holds would follow an outer group, or none, instead of this one.
+  if (n.interactionGroup) return `${name} is an interaction group, whose hover and focus the elements inside it respond to, so it can’t be ungrouped. Turn the group off first.`;
   if (n.appear) return `${name} has an entrance effect, which what it holds would lose, so it can’t be ungrouped. Remove the effect first.`;
   const held = n.children.map((c) => (Object.hasOwn(tree.nodes, c) ? tree.nodes[c] : undefined));
   // Hiding while the list inside it is empty is what shows the author where a list's images go meanwhile.
@@ -1987,7 +1989,7 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
   if (!own(STYLE_PROP_MAP, op.property)) fail(`Unknown style property "${op.property}". Valid: ${Object.keys(STYLE_PROP_MAP).join(', ')}.`);
   // Clearing a value a state cannot hold is always allowed, so a hand-edited document can be cleaned up.
   if (op.state !== undefined && op.value !== null) {
-    const err = stateStyleError(op.property);
+    const err = stateStyleError(op.property, op.state);
     if (err) fail(err);
   }
   if (op.value !== null) {
@@ -2258,6 +2260,13 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       if (a && anchorsInUse(state, owner, node.id).has(a)) fail(RESERVED_ANCHORS.has(a) ? `"${a}" is used by the site itself. Choose another anchor.` : `Another element on this page already uses the anchor "${a}".`);
       if (a) node.anchor = a;
       else delete node.anchor;
+      return {};
+    }
+    case 'interactionGroup': {
+      if (node.kind !== 'element') fail('Only containers can be interaction groups. Pick the card, row or container around what should respond.');
+      if (typeof v !== 'boolean') fail('interactionGroup is true or false.');
+      if (v) node.interactionGroup = true;
+      else delete node.interactionGroup;
       return {};
     }
     case 'collapseEmpty': {

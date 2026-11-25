@@ -112,7 +112,7 @@ export function stateUnder({ prop, scope, state, preview, styles, inherited, des
     for (const [key, props] of Object.entries(src.styles ?? {})) {
       const at = parseStyleScopeKey(key);
       if (!at || (at.scope !== 'base' && at.scope !== size) || (at.state !== undefined && at.state !== state)) continue;
-      if (at.state && !isStateStyleProp(prop)) continue;
+      if (at.state && !isStateStyleProp(prop, at.state)) continue;
       const value = props?.[prop];
       if (value === undefined) continue;
       // The value being edited (and, under All sizes, this element's own exceptions to it).

@@ -82,7 +82,12 @@ export class TreeBuilder {
    * A container. With `link` the whole container is one link (a card), so nothing inside it may be interactive.
    * With `action` as well, clicking it does what the action says: nothing, open its image full size, or follow `link`.
    */
-  el(id: string, tag: Bindable<ElementTag>, opts: NamedOpts & { collapseEmpty?: boolean; link?: Bindable<LinkValue>; action?: Bindable<ElementAction>; carousel?: true; overlay?: OverlayMode }, children: string[]): string {
+  el(
+    id: string,
+    tag: Bindable<ElementTag>,
+    opts: NamedOpts & { collapseEmpty?: boolean; link?: Bindable<LinkValue>; action?: Bindable<ElementAction>; carousel?: true; overlay?: OverlayMode; interactionGroup?: true },
+    children: string[]
+  ): string {
     return this.add(
       {
         id,
@@ -91,6 +96,7 @@ export class TreeBuilder {
         children,
         ...(opts.collapseEmpty ? { collapseEmpty: true } : {}),
         ...(opts.carousel ? { carousel: true as const } : {}),
+        ...(opts.interactionGroup ? { interactionGroup: true as const } : {}),
         ...(opts.overlay ? { overlay: opts.overlay } : {}),
         ...(opts.link !== undefined ? { link: opts.link } : {}),
         ...(opts.action !== undefined ? { action: opts.action } : {}),

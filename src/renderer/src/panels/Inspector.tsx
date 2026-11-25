@@ -86,6 +86,7 @@ import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { assetUrl, createComponentTarget, definitionView, isCodePart, ownerLabel, placedFeedRows, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
+import { enclosingGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
 import { wrapItems } from './WrapItems';
@@ -322,6 +323,8 @@ function applyTableEdit(owner: OwnerRef, nodeId: string, prop: string, edit: Tab
 const styleKey = (property: string, key: string) => (property === 'objectPosition' ? undefined : key);
 /** A style change's size, and its interactive state (hover, focus, pressed) when it is for one. */
 const styleAt = (scope: ResponsiveScope, inState?: StyleState) => (inState ? { scope, state: inState } : { scope });
+/** Whether an interaction group encloses a node of a document, so the node's group states can show. */
+const inGroupAt = (state: ProjectState, owner: OwnerRef, nodeId: string) => enclosingGroup(treeFor(state, owner), nodeId) !== null;
 /**
  * The resets a Style section asks for, as one step: every change at a size (or at every size), or only the changes
  * of some interactive states there.
@@ -330,7 +333,11 @@ function styleResets(op: Omit<Extract<EditOperation, { type: 'node.resetStyles' 
   return states?.length ? states.map((st) => ({ ...op, scope, state: st })) : [{ ...op, scope }];
 }
 /** A reset's name: `words`, or with only some states reset, which ones ("Reset hover and focus styles"). */
-const resetWords = (words: string, states?: StyleState[]) => (states?.length ? `Reset ${states.length > 1 ? `${states.slice(0, -1).join(', ')} and ${states[states.length - 1]}` : states[0]} styles` : words);
+const RESET_STATE_WORDS: Record<StyleState, string> = { groupHover: 'group hover', groupFocus: 'group focus', hover: 'hover', focus: 'focus', active: 'active' };
+const resetWords = (words: string, states?: StyleState[]) => {
+  const names = (states ?? []).map((st) => RESET_STATE_WORDS[st]);
+  return names.length ? `Reset ${names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]} styles` : words;
+};
 
 /** Where the preview serves pictures from, once it is running. */
 const useDevUrl = () => useStore((s) => (s.runtime.state === 'ready' ? s.runtime.url : null));
@@ -1235,6 +1242,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             layers={designLayers(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants)}
             wideColumns
             allowed={placementStyleControls(def, 'root', codeStyled) ?? undefined}
+            grouped={partInInteractionGroup(def, 'root', inGroupAt(state, owner, node.id))}
             tokens={tokens}
             image={rootImage}
             onSet={onStyle('root')}
@@ -1267,6 +1275,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             inherited={undefined}
             wideColumns
             allowed={placementStyleControls(def, styledPart, codeStyled) ?? undefined}
+            grouped={partInInteractionGroup(def, styledPart, inGroupAt(state, owner, node.id))}
             tokens={tokens}
             onSet={onStyle(styledPart)}
             onReset={(sc, states) => void applyOps(styleResets({ type: 'node.resetStyles', owner, nodeId: node.id, partId: styledPart }, sc, states), forLabel(state, resetWords('Reset overrides', states), here, styledPart === 'root' ? undefined : def.parts[styledPart]?.label))}
@@ -1325,6 +1334,21 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
 }
 
 /** Says which properties a code component's own code marks important, which styles set here cannot beat. */
+/**
+ * Marks a container as an interaction group (a card): hovering it, or focus inside it, shows the group states of the
+ * elements inside it.
+ */
+function GroupSwitch({ owner, node }: { owner: OwnerRef; node: ElementNode }) {
+  return (
+    <SwitchRow
+      checked={node.interactionGroup === true}
+      label="Interaction group"
+      hint="Hovering it, or focus anywhere inside it, shows the Group hover and Group focus styles of the elements inside it. A group inside it is a group of its own: what that one holds follows it instead."
+      onChange={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'interactionGroup', value: v }], v ? 'Make interaction group' : 'Turn off interaction group')}
+    />
+  );
+}
+
 function CodeImportantNote({ name, props }: { name: string; props: string[] }) {
   if (!props.length) return null;
   return (
@@ -1692,6 +1716,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 wideColumns
                 // Rows the shared style uses show here too, so the item can change what every item was given.
                 allowed={sharedRows(partStyleControls(def, partId!))}
+                grouped={partInInteractionGroup(def, partId!, inGroupAt(state, owner, inst.id))}
                 tokens={tokens}
                 image={itemImage}
                 resetLabel="Reset to shared style"
@@ -1746,6 +1771,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 layers={designLayers(def, part.nodeId, inst.variants)}
                 wideColumns
                 allowed={partStyleControls(def, partId!)}
+                grouped={partInInteractionGroup(def, partId!, inGroupAt(state, owner, inst.id))}
                 tokens={tokens}
                 image={partImage}
                 onSet={(property, value, expectedRevision, inState) =>
@@ -1961,6 +1987,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
         {node.kind === 'element' && (
           <>
             {!isBinding(node.tag) && <TagField state={state} owner={owner} node={node} onChange={(v) => content('tag', v)} />}
+            <GroupSwitch owner={owner} node={node} />
             <p className="faint insp-note">
               A container with {node.children.length} item{node.children.length === 1 ? '' : 's'}. With it selected, add elements inside it from Insert.
             </p>
@@ -1972,6 +1999,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
           styles={node.styles}
           inherited={undefined}
           allowed={styleSetFor(node)}
+          grouped={inGroupAt(state, owner, node.id)}
           tokens={tokens}
           image={node.kind === 'image' ? focusImage(state, devUrl, shownImage(state, selection, node.image), [], 'This picture can’t be shown here.') : undefined}
           onSet={(property, value, expectedRevision, inState) =>
@@ -2513,6 +2541,11 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       {isRoot && <VariantsSection def={def} level={LEVEL} onStyle={(t) => styleLook(def, t)} />}
       {isRoot && <UiStateSection def={def} level={LEVEL} />}
       <ConditionControls def={def} node={node} level={LEVEL} />
+      {node.kind === 'element' && (
+        <Section title="Interaction group" id="def-group" defaultOpen={false} level={LEVEL} scope={node.interactionGroup ? 'On' : undefined}>
+          <GroupSwitch owner={owner} node={node} />
+        </Section>
+      )}
       {node.kind === 'link' && <ClickActionSection def={def} node={node} level={LEVEL} />}
       {overlayOffered(def, node) && <OverlaySection def={def} node={node} level={LEVEL} />}
       {node.kind === 'instance' && isWebMcpForm(placedDef) && (
@@ -2561,6 +2594,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
               wideColumns
               tokens={tokens}
               allowed={node.kind === 'instance' ? (placedDef?.parts.root?.styleControls ?? styleSetFor(node)) : styleSetFor(node)}
+              grouped={inGroupAt(state, owner, node.id)}
               onSet={(property, value, expectedRevision, inState) =>
                 commitOps(
                   [{ type: 'node.setStyle', owner, nodeId: node.id, variant: look.variant, axis: look.axis, ...styleAt(scope, inState), property, value }],
@@ -2586,6 +2620,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
             wideColumns
             tokens={tokens}
             allowed={placedDef?.parts.root?.styleControls ?? styleSetFor(node)}
+            grouped={inGroupAt(state, owner, node.id)}
             layers={placedDef?.kind === 'managed' && placedDef.tree ? designLayers(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, stateShown)) : undefined}
             onSet={(property, value, expectedRevision, inState) =>
               commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId: 'root', ...styleAt(scope, inState), property, value }], styleLabel(state, property, refTo(owner, node.id), undefined, value, inState), styleKey(property, `${def.id}:${node.id}:root:${styleScopeKey(scope, inState)}:${property}`), expectedRevision)
@@ -2602,6 +2637,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           allowed={styleSetFor(node)}
           // A list or a slot renders no element of its own: nothing would show a state of it.
           states={node.kind !== 'repeat' && node.kind !== 'slot'}
+          grouped={inGroupAt(state, owner, node.id)}
           image={defImage}
           onSet={(property, value, expectedRevision, inState) => {
             // Resetting a value restores the original design's value, when there is one.

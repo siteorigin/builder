@@ -18,12 +18,18 @@ export type ResponsiveScope = 'base' | 'phone' | 'tablet' | 'desktop';
 export const RESPONSIVE_SCOPES: ResponsiveScope[] = ['base', 'phone', 'tablet', 'desktop'];
 
 /**
- * Interactive states a style rule can be limited to: `hover` (pointer over it, on devices that hover), `focus`
- * (keyboard focus, as `:focus-visible` shows it) and `active` (while pressed). Listed in the order the stylesheet
- * writes them, so a later state wins while several hold at once.
+ * Interactive states a style rule can be limited to: `groupHover` (the pointer anywhere over the nearest interaction
+ * group around it, on devices that hover) and `groupFocus` (focus anywhere inside that group, `:focus-within`), then
+ * the element's own `hover` (pointer over it), `focus` (keyboard focus, as `:focus-visible` shows it) and `active`
+ * (while pressed). Listed in the order the stylesheet writes them, so a later state wins while several hold at once:
+ * an element's own state beats its group's.
  */
-export type StyleState = 'hover' | 'focus' | 'active';
-export const STYLE_STATES: StyleState[] = ['hover', 'focus', 'active'];
+export const STYLE_STATES = ['groupHover', 'groupFocus', 'hover', 'focus', 'active'] as const;
+export type StyleState = (typeof STYLE_STATES)[number];
+/** The states that follow the nearest interaction group around an element (see `ElementNode.interactionGroup`). */
+export const GROUP_STYLE_STATES = ['groupHover', 'groupFocus'] as const;
+export type GroupStyleState = (typeof GROUP_STYLE_STATES)[number];
+export const isGroupStyleState = (state: StyleState | undefined | null): state is GroupStyleState => state === 'groupHover' || state === 'groupFocus';
 /** Where one bucket of styles applies: a size range, or a size range in one interactive state (`phone:hover`). */
 export type StyleScopeKey = ResponsiveScope | `${ResponsiveScope}:${StyleState}`;
 
@@ -35,7 +41,7 @@ export function parseStyleScopeKey(key: string): { scope: ResponsiveScope; state
   const [scope, state, ...rest] = key.split(':');
   if (rest.length || !(RESPONSIVE_SCOPES as string[]).includes(scope)) return null;
   if (state === undefined) return { scope: scope as ResponsiveScope };
-  return (STYLE_STATES as string[]).includes(state) ? { scope: scope as ResponsiveScope, state: state as StyleState } : null;
+  return (STYLE_STATES as readonly string[]).includes(state) ? { scope: scope as ResponsiveScope, state: state as StyleState } : null;
 }
 
 /**
@@ -445,6 +451,12 @@ export interface ElementNode extends NodeBase {
    * per placement can be one (see engine/schema `overlayProblem`); otherwise it is an ordinary container.
    */
   overlay?: OverlayMode;
+  /**
+   * Makes the container an interaction group (a card): the pointer anywhere over it, or focus anywhere inside it,
+   * shows the `groupHover` and `groupFocus` styles of the elements inside it whose nearest group it is. A group inside
+   * another is a boundary: what is inside it follows it, not the outer one.
+   */
+  interactionGroup?: true;
 }
 export interface TextNode extends NodeBase {
   kind: 'text';

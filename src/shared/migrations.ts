@@ -457,6 +457,12 @@ export const MIGRATIONS: Migration[] = [
     description:
       'A divider can be drawn as a decorative band (shape: "angle" | "wave" | "icon", with the icon an "icon" divider shows), hidden from screen readers. Nothing in the documents changes; the new version only keeps an older editor, which would export those bands as plain separator lines and drop their shape from designs it rebuilds, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'interaction-groups',
+    description:
+      'A container can be an interaction group (interactionGroup: true, a card), and style rules can apply while the nearest group around an element is hovered or holds focus ("base:groupHover", "phone:groupFocus" beside each size). Nothing in the documents changes; the new version only keeps an older editor, which would drop the group from the site and report those rules as damaged, from opening the project for editing.',
+    migrate() {}
   }
 ];
 

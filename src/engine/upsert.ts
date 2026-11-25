@@ -376,6 +376,7 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
       if (s.action !== undefined) n.action = oneOf(s.action, ELEMENT_ACTIONS, 'What a click does') as ElementNode['action'];
       if (s.ariaLabel !== undefined && text(s.ariaLabel)) n.ariaLabel = text(s.ariaLabel) as ElementNode['ariaLabel'];
       if (s.collapseEmpty) n.collapseEmpty = true;
+      if (s.interactionGroup) n.interactionGroup = true;
       if (s.appear !== undefined && s.appear !== 'none' && s.appear !== '') {
         if (!isAppearPreset(s.appear)) refuse('an entrance is fade, lift, scale-subtle or none.');
         n.appear = s.appear as ElementNode['appear'];

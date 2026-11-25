@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
 import { sha256Hex } from './sha256';
-import { COMPONENT_CATEGORIES, DIVIDER_SHAPES, LINK_RELS, OVERLAY_MODES, SLOT_PRIMITIVES } from './types';
+import { COMPONENT_CATEGORIES, DIVIDER_SHAPES, LINK_RELS, OVERLAY_MODES, SLOT_PRIMITIVES, STYLE_STATES } from './types';
 import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
@@ -47,8 +47,10 @@ const IMAGE_USE = z.discriminatedUnion('kind', [
 
 const scope = z.enum(['base', 'phone', 'tablet', 'desktop']).describe('Responsive scope. "base" applies at all sizes.');
 const styleState = z
-  .enum(['hover', 'focus', 'active'])
-  .describe('"hover", "focus" (keyboard) or "active" (pressed); omit for the resting style. A state sets only color, background, border, radius, shadow and opacity.');
+  .enum(STYLE_STATES)
+  .describe(
+    '"hover", "focus" (keyboard) or "active" (pressed); omit for the resting style. A state sets only color, background, border, radius, shadow and opacity. "groupHover" and "groupFocus" follow the nearest interaction group around the element (a card marked with interactionGroup): hovered, or holding focus anywhere inside; they can also shift, scale and rotate it.'
+  );
 /** A web font's face. The family becomes a CSS font-family name, so only plain characters are allowed. */
 const FONT_FACE = z.object({
   family: z.string().regex(FONT_FAMILY_RE),
@@ -136,6 +138,10 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
       ariaLabel: bindable(z.string()).optional(),
       collapseEmpty: z.boolean().optional().describe('Hidden when everything inside it is hidden.'),
       carousel: z.literal(true).optional(),
+      interactionGroup: z
+        .literal(true)
+        .optional()
+        .describe('An interaction group (a card): hovering it, or focus inside it, shows the groupHover and groupFocus styles of the elements inside whose nearest group it is.'),
       appear: z.string().optional(),
       overlay: z
         .enum(OVERLAY_MODES as unknown as [string, ...string[]])
@@ -435,8 +441,8 @@ export const OPERATION_SCHEMAS = {
     owner,
     nodeId: z.string(),
     field: z
-      .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty', 'appear', 'appearStagger', 'overlay', 'webmcpToolName', 'webmcpToolDescription', 'shape'])
-      .describe('"shape" (dividers): "line", "angle", "wave" or "icon"; "icon" on a divider of shape "icon" picks its icon. "webmcpToolName" / "webmcpToolDescription" (contact form placements): the name and description AI agents in visitors\' browsers know the form by while the site has WebMCP on; "" or null goes back to the default. "collapseEmpty" (definition containers): true hides it when all children are hidden. "overlay" (a plain div in a definition whose one condition reads a yes/no UI state): "dialog", "drawer-start", "drawer-end" or "drawer-bottom" shows it over the page while that condition holds, opened and closed by the state\'s buttons; null shows it in its place again. "tag" must fit where the node sits: li in ul/ol, dt/dd in dl, figcaption in figure, summary in details, only inline content in a p or span. "appear": a section or container enters as "fade", "lift" or "scale-subtle"; null clears, "none" turns a design\'s off. "appearStagger" (repeats): true staggers item entrances.'),
+      .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty', 'appear', 'appearStagger', 'overlay', 'webmcpToolName', 'webmcpToolDescription', 'shape', 'interactionGroup'])
+      .describe('"shape" (dividers): "line", "angle", "wave" or "icon"; "icon" on a divider of shape "icon" picks its icon. "webmcpToolName" / "webmcpToolDescription" (contact form placements): the name and description AI agents in visitors\' browsers know the form by while the site has WebMCP on; "" or null goes back to the default. "interactionGroup" (containers): true makes it an interaction group (a card), whose hover or inner focus shows the groupHover and groupFocus styles of the elements inside it; false turns it off. "collapseEmpty" (definition containers): true hides it when all children are hidden. "overlay" (a plain div in a definition whose one condition reads a yes/no UI state): "dialog", "drawer-start", "drawer-end" or "drawer-bottom" shows it over the page while that condition holds, opened and closed by the state\'s buttons; null shows it in its place again. "tag" must fit where the node sits: li in ul/ol, dt/dd in dl, figcaption in figure, summary in details, only inline content in a p or span. "appear": a section or container enters as "fade", "lift" or "scale-subtle"; null clears, "none" turns a design\'s off. "appearStagger" (repeats): true staggers item entrances.'),
     value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'node.setBinding': z.object({

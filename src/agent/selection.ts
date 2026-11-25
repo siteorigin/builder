@@ -44,7 +44,7 @@ export const SELECTION_ARGS = {
       itemId: z.string().optional(),
       resetItem: z.boolean().optional(),
       scope: z.enum(['base', 'phone', 'tablet', 'desktop']),
-      state: z.enum(['hover', 'focus', 'active']).optional(),
+      state: z.enum(STYLE_STATES).optional(),
       styles: z.array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, BACKGROUND_IMAGE, z.null()]) }).strict()).max(12)
     })
     .strict(),
@@ -57,7 +57,7 @@ export const SELECTION_DESCRIPTIONS: Record<keyof typeof SELECTION_ARGS, string>
   edit_selected_table:
     'Change one cell, row or column of a table in the selected element, by the row and column IDs in its content: set a cell, rename a column, or insert, remove or move a row or column. Other cells stay where they are.',
   style_selected_element:
-    'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}. Add state "hover", "focus" (keyboard focus) or "active" (while pressed) to style how it looks in that state only (colors, background, border, corner radius, shadow, opacity and backdrop blur); set transition on the resting style to animate the change; null values clear the state\'s value. For a see-through surface, give color or background a color token at part strength, {"token":"color.surface","alpha":0.7} for 70% (a plain {"token"} is full strength again); add backdropBlur such as "12px" for frosted glass, "0" for none. For a cropped image, objectPosition takes the focal point as "X% Y%" across and down, each 0 to 100 with at most one decimal, such as "50% 20%". For a picture behind the content of a container or section, backgroundImage takes {"assetId": the ID of a library image, "size": "cover" or "contain", "position": "X% Y%", "scrim": a color such as "rgba(0, 0, 0, 0.55)" or one gradient}; give it a scrim whenever text sits on top. Motion: translateX and translateY take a length such as "-4px", scale a factor such as 1.03, rotate degrees such as -2, transformOrigin "center" or an edge or corner such as "top left", transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration milliseconds such as 200 and transitionEasing ease, ease-out, linear or smooth. Grids: gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem", "2fr repeat(2, 1fr)" or "repeat(auto-fit, minmax(18rem, 1fr))" (as many columns as fit, each at least 18rem or the whole grid when narrower); a grid child spans columns with columnSpan (1 to 12 or full) and rows with rowSpan (1 to 6). Set for all sizes, a template and spans above 1 apply from tablet up, so phones keep their own columns unless scope "phone" sets them. A repeated part (a card) is styled for every item unless itemId names the one item to style; that item then differs from its siblings, and null values return it to the shared style.',
+    'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}. Add state "hover", "focus" (keyboard focus) or "active" (while pressed) to style how it looks in that state only (colors, background, border, corner radius, shadow, opacity and backdrop blur); state "groupHover" or "groupFocus" styles it while the nearest interaction group around it (a card; update_selected_props interactionGroup marks one) is hovered or holds focus, and may also shift, scale or rotate it; set transition on the resting style to animate the change; null values clear the state\'s value. For a see-through surface, give color or background a color token at part strength, {"token":"color.surface","alpha":0.7} for 70% (a plain {"token"} is full strength again); add backdropBlur such as "12px" for frosted glass, "0" for none. For a cropped image, objectPosition takes the focal point as "X% Y%" across and down, each 0 to 100 with at most one decimal, such as "50% 20%". For a picture behind the content of a container or section, backgroundImage takes {"assetId": the ID of a library image, "size": "cover" or "contain", "position": "X% Y%", "scrim": a color such as "rgba(0, 0, 0, 0.55)" or one gradient}; give it a scrim whenever text sits on top. Motion: translateX and translateY take a length such as "-4px", scale a factor such as 1.03, rotate degrees such as -2, transformOrigin "center" or an edge or corner such as "top left", transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration milliseconds such as 200 and transitionEasing ease, ease-out, linear or smooth. Grids: gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem", "2fr repeat(2, 1fr)" or "repeat(auto-fit, minmax(18rem, 1fr))" (as many columns as fit, each at least 18rem or the whole grid when narrower); a grid child spans columns with columnSpan (1 to 12 or full) and rows with rowSpan (1 to 6). Set for all sizes, a template and spans above 1 apply from tablet up, so phones keep their own columns unless scope "phone" sets them. A repeated part (a card) is styled for every item unless itemId names the one item to style; that item then differs from its siblings, and null values return it to the shared style.',
   request_wider_scope: 'Ask the user for permission to change more than the selected element, when the request cannot be done inside it.'
 };
 
@@ -107,7 +107,8 @@ const NODE_FIELDS: Partial<Record<GraphNode['kind'], Record<string, PropSchema>>
     appearance: choice('Button style', APPEARANCES)
   },
   icon: { icon: { type: 'icon', label: 'Icon', default: 'sparkles' } },
-  divider: { shape: choice('Shape: a plain line, or a decorative angle, wave or icon band in the divider\'s text color', DIVIDER_SHAPES) }
+  divider: { shape: choice('Shape: a plain line, or a decorative angle, wave or icon band in the divider\'s text color', DIVIDER_SHAPES) },
+  element: { interactionGroup: { type: 'boolean', label: 'Interaction group: hovering it, or focus inside it, shows the groupHover and groupFocus styles of what is inside', default: false } }
 };
 
 /**
@@ -351,7 +352,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
             }
           : {}),
         scope: { type: 'string', enum: ['base', 'phone', 'tablet', 'desktop'] },
-        state: { type: 'string', enum: [...STYLE_STATES], description: 'Style only this interactive state: hover, focus (keyboard focus) or active (while pressed). Omit for the resting style.' },
+        state: { type: 'string', enum: [...STYLE_STATES], description: 'Style only this interactive state: hover, focus (keyboard focus) or active (while pressed); groupHover or groupFocus while the nearest interaction group around it (a card) is hovered or holds focus, which can also shift, scale and rotate it. Omit for the resting style.' },
         styles: {
           type: 'array',
           minItems: perItem.length ? 0 : 1,
@@ -516,7 +517,7 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
   const issues: FieldIssue[] = [];
   a.styles.forEach((s, i) => {
     if (!known.has(s.property)) issues.push({ field: `styles[${i}].property`, message: `unknown style property "${s.property}"` });
-    else if (a.state !== undefined && s.value !== null && !isStateStyleProp(s.property)) issues.push({ field: `styles[${i}].property`, message: stateStyleError(s.property)! });
+    else if (a.state !== undefined && s.value !== null && !isStateStyleProp(s.property, a.state)) issues.push({ field: `styles[${i}].property`, message: stateStyleError(s.property, a.state)! });
   });
   if (issues.length) return fieldError(issues, note);
   const ops: EditOperation[] = a.styles.map((s) => ({ type: 'node.setStyle', owner, nodeId, ...(partId ? { partId } : {}), ...(a.itemId !== undefined ? { itemId: a.itemId } : {}), scope: a.scope, ...(a.state ? { state: a.state } : {}), property: s.property, value: s.value }));
