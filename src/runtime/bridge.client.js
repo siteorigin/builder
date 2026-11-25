@@ -2759,17 +2759,19 @@ function probe(url, deadline) {
  * the site). An image whose element shows nothing but whose file loads when requested again counts as loaded:
  * the measuring frame missed it, not the site.
  */
-async function imageReport(deadline) {
+async function imageReport(deadline, within = null) {
   // sources: the address each image was given (not the variant chosen), so the editor can tell a load that
-  // shows an image the page no longer has.
+  // shows an image the page no longer has. They cover the whole page even when only some elements are measured
+  // (`within`), whose images alone are counted and checked.
   const summary = { total: 0, loaded: 0, failed: 0, unverified: 0, failedFiles: [], sources: [] };
   const issues = [];
   const checks = [];
   for (const img of document.querySelectorAll('img')) {
     const url = img.currentSrc || img.getAttribute('src') || '';
     if (!url) continue;
-    summary.total++;
     if (summary.sources.length < 200) summary.sources.push(imagePath(img.getAttribute('src') || url));
+    if (within && !within(img)) continue;
+    summary.total++;
     if (img.complete && img.naturalWidth > 0) {
       summary.loaded++;
       continue;
@@ -3452,7 +3454,8 @@ function boxChildren(el, out = []) {
  * candidate is measured on its own: one that cannot be (odd markup) or that the time left does not reach marks its
  * check incomplete instead of losing the report.
  */
-function readability(vw, deadline) {
+function readability(vw, deadline, within = null) {
+  // `within`: only elements inside the ones asked for are checked; what is around them still counts as what they sit on.
   const read = colorReader();
   const count = () => ({ checked: 0, failed: 0, unverified: 0 });
   const checks = { contrast: count(), overlaps: count(), clippedText: count(), tapTargets: count() };
@@ -3490,7 +3493,7 @@ function readability(vw, deadline) {
     const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
     for (let t = walker.nextNode(); t; t = walker.nextNode()) {
       const el = parentOf(t);
-      if (!el || seen.has(el) || !t.textContent.trim()) continue;
+      if (!el || seen.has(el) || !t.textContent.trim() || (within && !within(el))) continue;
       if (seen.size >= MAX_TEXT_ELEMENTS) {
         checks.contrast.incomplete = true;
         break;
@@ -3519,6 +3522,7 @@ function readability(vw, deadline) {
     // (the next slide of a carousel); text shortened on purpose (an ellipsis, a line clamp) and the visually hidden
     // pattern are left alone.
     for (const el of document.querySelectorAll('body *')) {
+      if (within && !within(el)) continue;
       const going = each(checks.clippedText, () => {
         if (el.scrollHeight <= el.clientHeight + 2 && el.scrollWidth <= el.clientWidth + 2) return;
         const s = getComputedStyle(el);
@@ -3577,6 +3581,7 @@ function readability(vw, deadline) {
     // siblings flow as text: their outer rectangles cross without their lines doing so.)
     const parents = new Set();
     for (const el of document.querySelectorAll('[data-so-node]')) {
+      if (within && !within(el)) continue;
       const going = each(checks.overlaps, () => {
         let p = parentOf(el);
         while (p && p !== document.documentElement && getComputedStyle(p).display === 'contents') p = parentOf(p);
@@ -3602,23 +3607,27 @@ function readability(vw, deadline) {
       // Every pair is checked: sweeping down the page, a box only meets those that start above its bottom, and the
       // rest are apart. A sweep cut short counts only the pairs it compared.
       let compared = 0;
-      const all = (boxes.length * (boxes.length - 1)) / 2;
+      // Narrowed, only pairs with a box inside the elements asked for count: each two of those, and each with one outside.
+      const inside = within ? boxes.filter((b) => within(b.el)).length : boxes.length;
+      const all = (inside * (inside - 1)) / 2 + inside * (boxes.length - inside);
       boxes.sort((a, b) => a.rect.y - b.rect.y);
       for (let i = 0; i < boxes.length; i++) {
         const a = boxes[i];
         for (let j = i + 1; j < boxes.length && boxes[j].rect.y < a.rect.y + a.rect.height; j++) {
+          if (within && !within(a.el) && !within(boxes[j].el)) continue;
           if (++pairs > MAX_PAIRS) {
             checks.overlaps.incomplete = true;
             checks.overlaps.checked += compared;
             break overlap;
           }
           compared++;
-          const b = boxes[j];
-          const c = crossing(a.rect, b.rect);
+          // The box inside the elements asked for is the one the finding is about.
+          const [one, b] = within && !within(a.el) ? [boxes[j], a] : [a, boxes[j]];
+          const c = crossing(one.rect, b.rect);
           if (c.w <= 2 || c.h <= 2) continue;
           const going = each(checks.overlaps, () => {
             const other = findingDesc(b.el);
-            overlaps.add(a.el, { overlap: { width: Math.round(c.w), height: Math.round(c.h) } }, `Overlaps a neighbouring box by ${Math.round(c.w)}×${Math.round(c.h)}px.`, { with: { ...(other ? { desc: other } : {}), text: textPreview(b.el) } });
+            overlaps.add(one.el, { overlap: { width: Math.round(c.w), height: Math.round(c.h) } }, `Overlaps a neighbouring box by ${Math.round(c.w)}×${Math.round(c.h)}px.`, { with: { ...(other ? { desc: other } : {}), text: textPreview(b.el) } });
             checks.overlaps.failed++;
           });
           if (!going) {
@@ -3634,6 +3643,7 @@ function readability(vw, deadline) {
     if (vw < PHONE_MAX_WIDTH) {
       const inSentence = sentences();
       for (const el of document.querySelectorAll(INTERACTIVE)) {
+        if (within && !within(el)) continue;
         const going = each(checks.tapTargets, () => {
           if (!drawn(el) || el.closest(':disabled, [aria-disabled="true"]')) return;
           const s = getComputedStyle(el);
@@ -4227,13 +4237,20 @@ function rhythm(vw, page, deadline) {
  * `opts.page` ({ pageId, rootIds }) names the page's sections, for the notes on its rhythm.
  */
 async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
+  // Narrowed to elements the editor names (`opts.targets`, descriptors in the order asked): every element each one
+  // finds on the page, and only findings inside those. What belongs to the page as a whole (its width, its h1s, its
+  // runtime errors) is still reported.
+  const found = Array.isArray(opts.targets) ? opts.targets.map((d) => (d && typeof d === 'object' ? safeFindAll(d) : [])) : null;
+  const roots = found ? found.flat() : null;
+  const within = roots ? (el) => roots.some((r) => r === el || Node.prototype.contains.call(r, el)) : null;
   // Images first: one that arrives while they are requested again can still change the layout measured below.
-  const images = await imageReport(deadline);
+  const images = await imageReport(deadline, within);
   const vw = document.documentElement.clientWidth;
   const issues = [];
   const docWidth = document.documentElement.scrollWidth;
   if (docWidth > vw + 1) issues.push({ kind: 'horizontal-overflow', message: `The page is ${docWidth}px wide in a ${vw}px viewport.` });
   for (const el of document.querySelectorAll('[data-so-node]')) {
+    if (within && !within(el)) continue;
     // An element whose own properties are hidden (a form's named controls) is left out rather than losing the report.
     try {
       const r = rectOf(el);
@@ -4253,20 +4270,20 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
     const d = findingDesc(el);
     return d ? { desc: d } : {};
   };
-  for (const img of document.querySelectorAll('img')) if (!img.hasAttribute('alt')) issues.push({ kind: 'missing-alt', ...at(img), message: `Image ${imagePath(img.getAttribute('src') || '')} has no alt attribute.` });
+  for (const img of document.querySelectorAll('img')) if (!img.hasAttribute('alt') && (!within || within(img))) issues.push({ kind: 'missing-alt', ...at(img), message: `Image ${imagePath(img.getAttribute('src') || '')} has no alt attribute.` });
   // After the layout findings; the image counts in `images` are never capped.
   issues.push(...images.issues);
-  const placeholders = document.querySelectorAll('.so-img--placeholder').length;
+  const placeholders = [...document.querySelectorAll('.so-img--placeholder')].filter((el) => !within || within(el)).length;
   if (placeholders) issues.push({ kind: 'image-placeholder', message: `${placeholders} image placeholder(s) have no image chosen.` });
   const preview = previewState();
   // A page has one h1; a component shown on its own is not a page.
   const h1 = document.querySelectorAll('h1').length;
   if (h1 !== 1 && !preview) issues.push({ kind: 'heading-structure', message: `The page has ${h1} h1 headings (expected 1).` });
   // An <a> without href is a placeholder (a menu link with nowhere to go yet), not a link to name.
-  for (const a of document.querySelectorAll('a[href]')) if (!a.textContent.trim() && !a.getAttribute('aria-label')) issues.push({ kind: 'empty-link', ...at(a), message: 'A link has no accessible name.' });
+  for (const a of document.querySelectorAll('a[href]')) if ((!within || within(a)) && !a.textContent.trim() && !a.getAttribute('aria-label')) issues.push({ kind: 'empty-link', ...at(a), message: 'A link has no accessible name.' });
   // The readability checks measure pages of the site: a component shown on its own has sample content in a
   // made-up page, with nothing there an edit could address, unless the AI asks for it to check the design itself.
-  const readable = preview && !opts.readability ? null : readability(vw, readableBy);
+  const readable = preview && !opts.readability ? null : readability(vw, readableBy, within);
   // One list per kind, in the order found, so the cap keeps a finding of every kind.
   const byKind = new Map();
   for (const i of issues) {
@@ -4276,7 +4293,8 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
   const listed = pickIssues([...byKind.values(), ...(readable ? readable.findings : [])], MAX_ISSUES);
   // Advice on how the sections follow one another, for a page of the site with more than one; a component shown on
   // its own has no page around it.
-  const notes = !preview && opts.page ? rhythm(vw, opts.page, readableBy + 500) : null;
+  // Advice about the whole page, so never for chosen elements.
+  const notes = !preview && opts.page && !found ? rhythm(vw, opts.page, readableBy + 500) : null;
   // Which top-level page sections rendered ("page:<id>|<node>"), so the editor can tell a stale page load.
   const sections = new Set();
   for (const el of document.querySelectorAll('[data-so-ctx^="page:"][data-so-node]')) {
@@ -4294,6 +4312,7 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
     issues: listed,
     ...(notes ? { rhythm: notes } : {}),
     runtimeErrors: errors.slice(-10),
+    ...(found ? { targets: found.map(targetReport) } : {}),
     ...(preview ? { preview } : {}),
     ...(opts.gaps ? stackReport(readableBy + 500) : {})
   };
@@ -4305,6 +4324,40 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
     delete report.rhythm;
   }
   return report;
+}
+
+/** The elements a descriptor finds, or none when it cannot be looked up (a malformed part or slot name). */
+function safeFindAll(desc) {
+  try {
+    return findAll(desc);
+  } catch {
+    return [];
+  }
+}
+
+/** How many of one element's occurrences (repeated items, a part shown twice) a narrowed report measures. */
+const MAX_TARGET_ELEMENTS = 10;
+
+/**
+ * What a narrowed inspection says about one element asked for: each place it rendered, with the box it fills (in
+ * CSS pixels from the top left of the page, null when it lays out no box), the size of its content (scrollWidth and
+ * scrollHeight) and whether it shows at this width. One that rendered nowhere has no elements and does not show.
+ */
+function targetReport(els) {
+  const elements = els.slice(0, MAX_TARGET_ELEMENTS).map((el) => {
+    try {
+      const r = rectOf(el);
+      const box = r ? { x: Math.round(r.x + window.scrollX), y: Math.round(r.y + window.scrollY), width: Math.round(r.width), height: Math.round(r.height) } : null;
+      // A wrapper that makes no box of its own (a code component's) shows through what it holds.
+      const contents = getComputedStyle(el).display === 'contents';
+      const visible = !!box && box.width > 0 && box.height > 0 && (contents ? [...el.children].some((c) => drawn(c)) : drawn(el));
+      return { box, scrollWidth: contents ? (box ? box.width : 0) : el.scrollWidth, scrollHeight: contents ? (box ? box.height : 0) : el.scrollHeight, visible };
+    } catch {
+      // An element whose own properties are hidden (a form's named controls) is reported as not measured.
+      return { box: null, scrollWidth: 0, scrollHeight: 0, visible: false };
+    }
+  });
+  return { visible: elements.some((e) => e.visible), elements, ...(els.length > MAX_TARGET_ELEMENTS ? { omittedElements: els.length - MAX_TARGET_ELEMENTS } : {}) };
 }
 
 /** The stacked gaps for a report, and whether they stop short. */
@@ -4707,7 +4760,9 @@ window.addEventListener('message', async (e) => {
         // The page's sections, as the editor lists them, when it asks for the notes on their rhythm.
         const ids = Array.isArray(m.payload.rootIds) ? m.payload.rootIds.filter((id) => typeof id === 'string') : null;
         const page = typeof m.payload.pageId === 'string' && ids ? { pageId: m.payload.pageId, rootIds: ids } : null;
-        report = await inspect(Math.min(Date.now() + 2500, started + 6000), started + 7000, { readability: m.payload.readability === true, gaps: m.payload.gaps === true, page });
+        // Elements asked for by the editor (inspect_layout with refs), as descriptors in the order asked.
+        const targets = Array.isArray(m.payload.targets) ? m.payload.targets.slice(0, 20) : undefined;
+        report = await inspect(Math.min(Date.now() + 2500, started + 6000), started + 7000, { readability: m.payload.readability === true, gaps: m.payload.gaps === true, page, ...(targets ? { targets } : {}) });
       } catch (err) {
         // A failed measurement is answered as one, never left for the editor to time out on.
         report = { error: `The page could not be measured: ${String((err && err.message) || err).slice(0, 200)}` };

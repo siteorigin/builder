@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { AssetRecord, ProjectState } from '@shared/types';
+import type { AssetRecord, ElementRef, ProjectState } from '@shared/types';
 import type { ChatImageRef, FieldLocation } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import { EditOperationSchema, legacyShellError, MODEL_BINDING, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
@@ -31,6 +31,7 @@ import { isReusabilityWarning } from '@engine/reusability';
 import { OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
+import { LAYOUT_TARGET, MAX_LAYOUT_TARGETS, resolveLayoutTargets, targetRef } from './layout-targets';
 import { runUpdateThemeComponent, themeUpdateNote, UPDATE_THEME_COMPONENT_ARGS, UPDATE_THEME_COMPONENT_BRIEF, UPDATE_THEME_COMPONENT_DESCRIPTION, updateThemeComponentTool, wholeSelection, type UpdateReach } from './theme-update';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component', 'template']), id: z.string() });
@@ -75,7 +76,16 @@ export const TOOL_ARGS = {
     edits: z.array(z.object({ find: z.string(), replace: z.string() })).optional().describe('Exact text replacements applied in order. Each find must match exactly once.'),
     source: z.string().optional().describe('Full replacement source, instead of edits.')
   }),
-  inspect_layout: z.object({ pageId: z.string(), viewport: z.enum(['phone', 'tablet', 'desktop']) }),
+  inspect_layout: z.object({
+    pageId: z.string(),
+    viewport: z.enum(['phone', 'tablet', 'desktop']),
+    refs: z
+      .array(LAYOUT_TARGET)
+      .min(1)
+      .max(MAX_LAYOUT_TARGETS)
+      .optional()
+      .describe("Measure only these elements and what is inside them, each as a finding's ref names it (owner, nodeId, partId, itemId). Omit to measure the whole page.")
+  }),
   inspect_component: z.object({
     definitionId: z.string().optional().describe('A component of the project.'),
     componentId: z.string().optional().describe('Or a theme catalogue component, whether or not the project has it yet.'),
@@ -132,7 +142,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the revision and hash read_source returned with it.',
   inspect_layout:
-    'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text only pixels could judge (over an image). On a page of two or more sections, report.rhythm is advice on composition (never an error): three or more sections in a row with one layout on one background (at phone width, only sections that keep columns side by side) or each with a filled button, and an inner heading as large as the h1, each with the refs of the sections or headings to vary. No screenshots.',
+    'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; pass refs back to measure only those elements after a fix: report.targets gives each one\'s box, scroll size and whether it shows at that width, and the findings are only those inside them, beside the page-wide overflow and runtime errors. Checking elements never stands in for checking the whole page. contrast-unverified is text only pixels could judge (over an image). On a page of two or more sections, report.rhythm is advice on composition (never an error): three or more sections in a row with one layout on one background (at phone width, only sections that keep columns side by side) or each with a filled button, and an inner heading as large as the h1, each with the refs of the sections or headings to vary. No screenshots.',
   inspect_component:
     'Check one component on its own, off-screen, without changing anything: it is measured at phone (390px) and desktop (1280px) width with every link set and empty text filled, in each option of every variant axis, and with stress content: long text with an unbroken long word, links and optional text left empty, one and five list items. Returns each overflow, cut-off text, low contrast, overlap, small tap target, runtime error and spacing collapse once, with the cases and widths it showed in and where it is in the design: at.nodeId is the node of its design (node.setStyle { owner: { kind: "component", id: definitionId }, nodeId } changes it on every placement) and at.partId the part it belongs to. The design of a theme component changes on a project copy: component.fork it first (one the project does not have yet is added by placing it) and use the definitionId that returns. A clean component gets a one-line summary. Use after building or changing a reusable component, then fix what it finds and check again.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
@@ -168,7 +178,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   search_assets: 'Images by name and description, each with its assetId (names can repeat). You cannot see images.',
   read_source: "A component's Svelte source. Only project code components can be patched.",
   apply_source_patch: 'Change a project code component (never generated files, config or dependencies), with the revision and hash from read_source.',
-  inspect_layout: 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.',
+  inspect_layout: 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots. refs (findings\' refs) measures just those elements: report.targets has each box, scroll size and visibility, with only the findings inside them.',
   inspect_component: 'Measure a component on its own at phone and desktop width, in every variant option and with long, empty and repeated content: overflow, cut-off text, contrast, overlaps and collapsed spacing, each with where it is in the design. Changes nothing.',
   validate_project: '"schema" checks references, routes and structure; "component" also compiles every component.',
   audit_seo: 'SEO and AI-readiness findings, worst first, and each page’s links in and out. pageId (ID or route) or pillar narrows it. More: offset=nextOffset, linkOffset=nextLinkOffset.',
@@ -640,7 +650,8 @@ export interface ToolHost {
    */
   apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string, grants?: AuthorityGrants, requested?: RequestedScope): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
   compileAll(): Promise<Diagnostic[]>;
-  inspectLayout(pageId: string, width: number): Promise<unknown>;
+  /** `targets`: measure only these elements and what is inside them (see layout-targets.ts); omitted, the whole page. */
+  inspectLayout(pageId: string, width: number, targets?: ElementRef[]): Promise<unknown>;
   /** Show and measure a component in isolated previews, step by step (see inspect_component). */
   inspectComponent?(steps: ComponentPreviewStep[]): Promise<ComponentPreviewResult[]>;
   /** `images`: library images offered as choices, already checked to be in the project. */
@@ -990,7 +1001,27 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const resolved = pageIdFor(state, a.pageId);
       if (!resolved) return { ok: false, content: { error: 'INVALID_ARGUMENT', viewport: a.viewport, message: 'Unknown page.' } };
       a.pageId = resolved;
-      return measurePage((pageId, width) => host.inspectLayout(pageId, width), resolved, a.viewport, host.revision());
+      // A narrowed check names the elements it measured, so it is never read as a check of the whole page.
+      let targets: ElementRef[] | undefined;
+      if (a.refs) {
+        const found = resolveLayoutTargets(state, resolved, a.refs);
+        if (!found.ok) return { ok: false, content: { error: 'INVALID_ARGUMENT', pageId: resolved, viewport: a.viewport, message: found.message } };
+        targets = found.targets;
+      }
+      if (!targets) return measurePage((pageId, width) => host.inspectLayout(pageId, width), resolved, a.viewport, host.revision());
+      try {
+        const report = (await (targets ? host.inspectLayout(a.pageId, WIDTHS[a.viewport], targets) : host.inspectLayout(a.pageId, WIDTHS[a.viewport]))) as { error?: unknown; targets?: unknown } | null;
+        const measured = targets && Array.isArray(report?.targets) && report.targets.length === targets.length ? (report.targets as Array<Record<string, unknown>>) : null;
+        // A preview that is not running or did not load is a failed check, never a clean result; nor is a narrowed
+        // check that did not say what it found for each element.
+        if (!report || typeof report !== 'object' || report.error || (targets && !measured))
+          return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${String(report?.error ?? (report ? 'the elements were not measured' : 'no report'))}` } };
+        const envelope = { revision: host.revision(), pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport], ...(a.refs ? { scope: 'elements' as const } : {}) };
+        const shaped = measured ? { ...report, targets: measured.map((t, i) => ({ ref: targetRef(a.refs![i]), ...t })) } : report;
+        return { ok: true, content: { ...envelope, report: fitInspection(envelope, shaped) } };
+      } catch (e) {
+        return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
+      }
     }
     case 'inspect_component': {
       const a = args as z.infer<(typeof TOOL_ARGS)['inspect_component']>;

@@ -1,16 +1,22 @@
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewSpec, ComponentPreviewStep, PreparedComponentPreview } from '@shared/component-preview';
 import { api, getState } from '../store';
 import { acceptMessage, newSessionId, postToFrame, type BridgeMessage } from './bridge';
+import type { ElementRef } from '@shared/types';
 import { attributeFindings, failedImages, missingImages, missingSections, staleImages } from './inspect-check';
+import { descOf } from './model';
 
 /** How long the preview server gets to pick up files the AI just wrote before a fresh page load. */
 const SETTLE_MS = 400;
 
+type InspectRequest = { requestId: string; pageId: string; width: number; targets?: ElementRef[] };
+
 /**
  * Measure a page for the AI at a given viewport width using an off-screen preview frame.
- * Only structural and geometric evidence is collected; no pixels leave the app.
+ * Only structural and geometric evidence is collected; no pixels leave the app. With `targets`, only those elements
+ * and what is inside them are measured (the report's `targets` lists each one's boxes, in order), beside what
+ * belongs to the page as a whole: its width, its runtime errors.
  */
-export async function runInspection(req: { requestId: string; pageId: string; width: number }) {
+export async function runInspection(req: InspectRequest) {
   const state = () => getState().snapshot?.state;
   let report = await measure(req);
   // A page the dev server has not caught up with (a route created moments ago, sections just added, an image
@@ -37,7 +43,7 @@ export async function runInspection(req: { requestId: string; pageId: string; wi
   api.inspectResult(req.requestId, report);
 }
 
-async function measure(req: { requestId: string; pageId: string; width: number }): Promise<unknown> {
+async function measure(req: InspectRequest): Promise<unknown> {
   await new Promise((r) => setTimeout(r, SETTLE_MS));
   const s = getState();
   const runtime = s.runtime;
@@ -63,7 +69,10 @@ async function measure(req: { requestId: string; pageId: string; width: number }
         clearTimeout(timer);
         timer = setTimeout(() => done({ error: 'Timed out measuring the page.' }), 8000);
         // The page's sections as this load was asked for, so the frame can say how they follow one another.
-        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds] });
+        // Elements asked for are found as the canvas finds a selection, against the project as it is now.
+        const state = getState().snapshot?.state;
+        const targets = Array.isArray(req.targets) && state ? req.targets.map((t) => descOf(state, t)) : undefined;
+        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds], ...(targets ? { targets } : {}) });
       } else if (m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === req.requestId) done((m.payload as { report: unknown }).report);
     };
     let timer = setTimeout(() => done({ error: 'Timed out loading the page.' }), 12000);

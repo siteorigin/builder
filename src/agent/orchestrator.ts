@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type ProviderId, type RunStatus, type SourceDraft } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import type { CollectionWriteGrant } from '@shared/collection-grant';
-import type { ProjectState } from '@shared/types';
+import type { ElementRef, ProjectState } from '@shared/types';
 import { autoTitle, byRecentActivity, cleanTitle, NEW_CONVERSATION, storedTitle, summarize, TITLE_MAX } from '@shared/conversations';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { newId } from '@shared/ids';
@@ -13,6 +13,7 @@ import { getTheme } from '@catalogue/index';
 import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
+import { narrowedInspection } from './layout-targets';
 import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { PreviewCheck } from './preview-check';
 import { compactProjectSummary, describeSelection, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
@@ -104,7 +105,8 @@ export interface OrchestratorDeps {
   adapter(signal?: AbortSignal): Promise<{ adapter: AgentModelAdapter; model: string; provider: ProviderId; auto?: boolean } | { error: string; repair?: 'settings' | 'key' }>;
   emit(e: AiEvent): void;
   compileAll(): Promise<Diagnostic[]>;
-  inspectLayout(pageId: string, width: number): Promise<unknown>;
+  /** `targets`: measure only these elements of the page and what is inside them. */
+  inspectLayout(pageId: string, width: number, targets?: ElementRef[]): Promise<unknown>;
   /** Show and measure a component in isolated previews (see inspect_component); without it the tool says it cannot run. */
   inspectComponent?(steps: ComponentPreviewStep[], signal?: AbortSignal): Promise<ComponentPreviewResult[]>;
   onBusyChange(busy: boolean): void;
@@ -1551,7 +1553,7 @@ export class Orchestrator {
         return res;
       },
       compileAll: () => this.deps.compileAll(),
-      inspectLayout: (pageId, width) => this.deps.inspectLayout(pageId, width),
+      inspectLayout: (pageId, width, targets) => (targets ? this.deps.inspectLayout(pageId, width, targets) : this.deps.inspectLayout(pageId, width)),
       ...(this.deps.inspectComponent ? { inspectComponent: (steps: ComponentPreviewStep[]) => this.deps.inspectComponent!(steps, signal) } : {}),
       ask: (question, choices, widenScope, images) =>
         new Promise<string>((resolve) => {
@@ -2258,8 +2260,9 @@ export class Orchestrator {
           if (call.name === 'inspect_layout') {
             // Keyed by the page the tool resolved (a route and an ID name the same page), so a repeated
             // check replaces the earlier result instead of adding another line.
+            // A check of chosen elements (refs) never stands for the page: it is left out of the card, passed or failed.
             const c = outcome.content as { pageId?: string; viewport?: string };
-            inspections.record(c.pageId ?? `?${call.arguments}`, c.viewport ?? '', outcome.ok, outcome.content, outcome.report);
+            inspections.record(c.pageId ?? `?${call.arguments}`, c.viewport ?? '', outcome.ok, outcome.content, outcome.report, narrowedInspection(call.arguments));
           }
           if (call.name === 'inspect_component') {
             // Keyed by the component the tool resolved and its sample; each window of cases is kept apart, and a

@@ -1128,7 +1128,8 @@ export interface BuilderApi {
   on(channel: 'ai:event', cb: (e: AiEvent) => void): () => void;
   /** The editor's Appearance, when Settings saves a new one. */
   on(channel: 'appearance', cb: (appearance: Appearance) => void): () => void;
-  on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number }) => void): () => void;
+  /** `targets`: measure only these elements of the page and what is inside them (inspect_layout with refs). */
+  on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number; targets?: ElementRef[] }) => void): () => void;
   /** Show components in isolated preview frames, step by step, and answer with componentPreviewResult. */
   on(channel: 'component-preview:request', cb: (req: { requestId: string; steps: ComponentPreviewStep[]; measure?: ComponentPreviewMeasure }) => void): () => void;
   /** The main process no longer waits for this batch: start no more of its steps. */

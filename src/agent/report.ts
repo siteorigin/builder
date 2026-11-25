@@ -641,7 +641,12 @@ export class InspectionLog {
    */
   private components = new Map<string, { windows: Map<number, { ok: boolean; content: unknown; stale: boolean }>; pageId?: string }>();
 
-  record(pageId: string, viewport: string, ok: boolean, content: unknown, report?: unknown) {
+  /**
+   * `narrowed`: a check of chosen elements (inspect_layout with refs). It never says how the page fared, so it
+   * changes no row: an earlier whole-page check stays as it was, before later changes included.
+   */
+  record(pageId: string, viewport: string, ok: boolean, content: unknown, report?: unknown, narrowed = false) {
+    if (narrowed) return;
     const key = `${pageId}\n${viewport}`;
     // A check that could not run says nothing new about a page that has not changed since it was measured: the card
     // shows it could not run, and the measurement before it still stands for the application's own check.
