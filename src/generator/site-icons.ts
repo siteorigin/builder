@@ -65,9 +65,11 @@ export function siteIconLinks(): string {
  */
 export function generateWebManifest(state: ProjectState): string {
   const colors = siteColors(effectiveTokens(state));
-  const description = (state.site.description ?? '').trim();
+  // The documents can be edited by hand: anything but text is left out, as the page metadata leaves it out.
+  const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  const description = text(state.site.description);
   const manifest = {
-    name: state.site.name.trim() || 'Website',
+    name: text(state.site.name) || 'Website',
     ...(description ? { description } : {}),
     lang: siteLanguage(state.site),
     dir: siteDirection(state.site),

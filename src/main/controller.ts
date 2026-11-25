@@ -2468,7 +2468,9 @@ export class Controller {
   private async snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
     const stop = (message: string) => ({ ok: false as const, message });
     // The website's icons follow a favicon file changed with no document changing (put back by Locate, replaced in the
-    // folder), so the export never carries icons of another picture than its favicon.
+    // folder), so the export never carries icons of another picture than its favicon. They are drawn without holding
+    // the project's lock, then published under it.
+    await s.prepareSiteIcons();
     const icons = await s.refreshSiteIcons();
     return s.exclusive(async () => {
       // The native dialog and the queue for the lock both give the project time to change.
@@ -2484,10 +2486,11 @@ export class Controller {
       const rival = await rivalHookStop(s.dir, publishedState(s.state));
       if (rival) return stop(rival);
       await copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) });
-      // A favicon replaced since its icons were made would go out beside icons of the picture it replaced. While icons
-      // cannot be made at all, those the project has go out as they are.
+      // The icons go out with the favicon they were made from: one replaced since would go out beside icons of the
+      // picture it replaced. Only while icons cannot be made at all do those the project has go out as they are.
       const iconSource = await s.siteIconSource(dest);
-      if (iconSource !== s.siteIconsMade && iconSource !== icons) return stop('The project changed on disk while it was being exported. Export again.');
+      const unmade = icons && !icons.published && iconSource === icons.key;
+      if (iconSource !== s.siteIconsPublished && !unmade) return stop('The project changed on disk while it was being exported. Export again.');
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
       await leaveOutDrafts(dest, s.state);
       if (opts.forBuild) {

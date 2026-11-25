@@ -3,7 +3,7 @@
  * the same ownership rules as a theme's fonts: claimed by their bytes, never written over someone else's file, kept as
  * they are when they cannot be made, and drawn again only when what they are made from changes.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +11,7 @@ import sharp from 'sharp';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { WEB_MANIFEST } from '@shared/site-icons';
+import { siteIconSet } from '@generator/site-icons';
 import { ProjectSession } from '../../src/main/project/session';
 import { editedGeneratedFile } from '../../src/main/export';
 import { sha } from '../../src/main/project/fsutil';
@@ -31,11 +32,13 @@ const tmp = () => {
 };
 const fresh = () => createStarterState('business', 'Harbour Lane', false);
 const manifest = (d: string) => JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8')).files as Record<string, string>;
-const centre = async (png: Buffer) => {
+const at = async (png: Buffer, x?: number, y?: number) => {
   const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  const i = ((info.height >> 1) * info.width + (info.width >> 1)) * 4;
+  const i = ((y ?? info.height >> 1) * info.width + (x ?? info.width >> 1)) * 4;
   return { r: data[i], g: data[i + 1], b: data[i + 2] };
 };
+const centre = (png: Buffer) => at(png);
+const pngsIn = (dir: string) => (existsSync(dir) ? readdirSync(dir, { recursive: true }).map(String).filter((f) => f.endsWith('.png')) : []);
 
 /** Draws in this process, counting each set it is asked for; `fail` makes it fail as a stuck worker does. */
 function renderer() {
@@ -93,7 +96,10 @@ describe('the website’s icons in a project', () => {
     expect(JSON.parse(readFileSync(join(d, 'static', WEB_MANIFEST), 'utf8')).name).toBe('Harbour Lane');
     expect(await editedGeneratedFile(d)).toBeNull();
     const dev = join(d, '.siteorigin/cache/dev');
-    expect(readdirSync(dev, { recursive: true }).map(String).filter((f) => f.endsWith('.png'))).toEqual([]);
+    expect(pngsIn(dev)).toEqual([]);
+    // Nor on a later save that draws them again.
+    expect((await rename(sessions[0], 'Renamed')).ok).toBe(true);
+    expect(pngsIn(dev)).toEqual([]);
   });
 
   it('are drawn again only when what they are made from changes', async () => {
@@ -114,6 +120,27 @@ describe('the website’s icons in a project', () => {
     // Undo puts the earlier icons back, the same bytes.
     expect((await s.undo()).ok).toBe(true);
     expect(readFileSync(join(d, SITE_ICON_PATHS[2])).equals(before)).toBe(true);
+    // A new brand colour is a new monogram too.
+    expect((await s.apply({ operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#aa0000' }] }, { label: 'Brand' })).ok).toBe(true);
+    expect(await at(readFileSync(join(d, SITE_ICON_PATHS[1])), 1, 1)).toEqual({ r: 0xaa, g: 0, b: 0 });
+    expect(JSON.parse(readFileSync(join(d, 'static', WEB_MANIFEST), 'utf8')).theme_color).toBe('#aa0000');
+  });
+
+  it('are published on their own once ready when a save stopped waiting for them', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    setSiteIconRenderer(async (data, mime, icons) => (await gate, { ok: true, icons: await renderSiteIcons(data, mime, icons) }));
+    const d = tmp();
+    // The save waits no longer than its budget, and goes ahead without them.
+    const s = await create(d);
+    for (const p of SITE_ICON_PATHS) expect(existsSync(join(d, p))).toBe(false);
+    const changed = vi.fn();
+    s.on('changed', changed);
+    release();
+    await vi.waitFor(() => expect(existsSync(join(d, SITE_ICON_PATHS[2]))).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(manifest(d)[SITE_ICON_PATHS[2]]).toBe(sha(readFileSync(join(d, SITE_ICON_PATHS[2])))));
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ changedDocs: [], label: 'Update site icons' }));
+    expect(s.siteIconsPublished).toBe(await s.siteIconSource());
   });
 
   it('are made from the favicon picture once one is chosen, and follow its file put back or replaced with no document changing', async () => {
@@ -123,15 +150,15 @@ describe('the website’s icons in a project', () => {
     expect(await centre(readFileSync(join(d, 'static/icon-192.png')))).toEqual({ r: 255, g: 0, b: 0 });
     writeFileSync(join(d, 'static/assets/logo-1a2b3c4d.png'), await square('#0000ff'));
     // Seen when the library's files are looked at again (the app does so when static/ changes, and before an export).
-    expect(await s.refreshSiteIcons()).toBe(await s.siteIconSource());
+    expect(await s.refreshSiteIcons()).toEqual({ key: await s.siteIconSource(), published: true });
     expect(await centre(readFileSync(join(d, 'static/icon-192.png')))).toEqual({ r: 0, g: 0, b: 255 });
-    expect(s.siteIconsMade).toBe(await s.siteIconSource());
+    expect(s.siteIconsPublished).toBe(await s.siteIconSource());
     expect(await editedGeneratedFile(d)).toBeNull();
     // A missing file gives the monogram's icons; put back, the picture's again.
     const blue = readFileSync(join(d, 'static/assets/logo-1a2b3c4d.png'));
     rmSync(join(d, 'static/assets/logo-1a2b3c4d.png'));
     await s.refreshSiteIcons();
-    expect(await centre(readFileSync(join(d, 'static/apple-touch-icon.png')))).not.toEqual({ r: 0, g: 0, b: 255 });
+    expect(await at(readFileSync(join(d, 'static/apple-touch-icon.png')), 1, 1)).toEqual({ r: 0x1f, g: 0x5a, b: 0x4c });
     writeFileSync(join(d, 'static/assets/logo-1a2b3c4d.png'), blue);
     await s.refreshSiteIcons();
     expect(await centre(readFileSync(join(d, 'static/apple-touch-icon.png')))).toEqual({ r: 0, g: 0, b: 255 });
@@ -155,8 +182,33 @@ describe('the website’s icons in a project', () => {
     r.fail = true;
     expect((await rename(s, 'Third')).ok).toBe(true);
     expect(JSON.parse(readFileSync(join(d, 'siteorigin/site.json'), 'utf8')).name).toBe('Third');
+    expect(JSON.parse(readFileSync(join(d, 'static', WEB_MANIFEST), 'utf8')).name).toBe('Third');
     SITE_ICON_PATHS.forEach((p, i) => expect(readFileSync(join(d, p)).equals(made[i])).toBe(true));
     SITE_ICON_PATHS.forEach((p, i) => expect(manifest(d)[p]).toBe(sha(made[i])));
+    expect(await editedGeneratedFile(d)).toBeNull();
+    // An icon edited outside the app meanwhile is still named, though it cannot be made again now.
+    writeFileSync(join(d, SITE_ICON_PATHS[1]), 'edited');
+    expect((await rename(s, 'Fourth')).ok).toBe(true);
+    expect(s.conflicts.map((c) => c.path)).toEqual([SITE_ICON_PATHS[1]]);
+    expect(readFileSync(join(d, SITE_ICON_PATHS[1]), 'utf8')).toBe('edited');
+    expect(manifest(d)[SITE_ICON_PATHS[1]]).toBe(sha(made[1]));
+  });
+
+  it('keep claiming the icon a publication that stopped part way left, when they cannot be made again', async () => {
+    const r = renderer();
+    const d = tmp();
+    await (await create(d)).close();
+    const path = SITE_ICON_PATHS[0];
+    const disk = sha(readFileSync(join(d, path)));
+    // The older hash is still the settled one; the newer one, already on disk, is only pending.
+    const m = JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8'));
+    m.files[path] = 'a'.repeat(64);
+    m.pending = { [path]: disk };
+    writeFileSync(join(d, 'siteorigin/generated-manifest.json'), JSON.stringify(m));
+    r.fail = true;
+    const s = await open(d);
+    expect(manifest(d)[path]).toBe(disk);
+    expect(s.conflicts).toEqual([]);
     expect(await editedGeneratedFile(d)).toBeNull();
   });
 
@@ -192,8 +244,10 @@ describe('the website’s icons in a project', () => {
     await s.restoreGeneratedFile('static/icon-512.png');
     const restored = readFileSync(join(d, 'static/icon-512.png'));
     expect(await sharp(restored).metadata()).toMatchObject({ format: 'png', width: 512 });
-    // Restored as it is generated now, for the new name.
+    // Restored as it is generated now, for the new name: exactly the icon drawn from the renamed site's monogram.
     expect(restored.equals(original)).toBe(false);
+    const set = siteIconSet(s.state);
+    expect(restored.equals((await renderSiteIcons(Buffer.from(set.monogram), 'image/svg+xml', [{ size: 512 }]))[0])).toBe(true);
     expect(await editedGeneratedFile(d)).toBeNull();
     expect(s.conflicts).toEqual([]);
   });

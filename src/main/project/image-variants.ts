@@ -149,8 +149,12 @@ export async function handleVariantRequest(m: VariantRequest): Promise<VariantRe
     const buf = m.path ? await readFile(m.path) : Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength);
     if (m.kind === 'opaque') return { id: m.id, ok: true, variants: [], opaque: await isOpaque(buf) };
     if (m.kind === 'icons') {
-      if (!(await isReadable(buf, m.mime))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
-      const icons = await renderSiteIcons(buf, m.mime, m.icons ?? []);
+      // Whatever stops the drawing here (a picture the decoder refuses, or too many pixels to decode) is the picture's
+      // doing, and would be the same every time: the icons are then made from the monogram instead.
+      const unreadable = (e?: unknown) => ({ id: m.id, ok: false as const, error: e ? (e as Error).message : 'The picture could not be decoded.', unreadable: true });
+      if (!(await isReadable(buf, m.mime))) return unreadable();
+      const icons = await renderSiteIcons(buf, m.mime, m.icons ?? []).catch((e: unknown) => e as Error);
+      if (icons instanceof Error) return unreadable(icons);
       return { id: m.id, ok: true, variants: [], icons: icons.map((d) => new Uint8Array(d.buffer, d.byteOffset, d.byteLength)) };
     }
     if (m.kind === 'web') {

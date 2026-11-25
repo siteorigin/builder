@@ -3,8 +3,8 @@
  * writes the web app manifest and the head tags and says what the PNG icons are made from; the media worker draws
  * them; each session keeps the last set so a save that changes nothing they are made from draws nothing.
  */
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -24,6 +24,7 @@ const fresh = () => createStarterState('business', 'Test Studio', false);
 const dirs: string[] = [];
 afterEach(() => {
   setSiteIconRenderer(null);
+  vi.restoreAllMocks();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 const tmp = () => {
@@ -57,6 +58,43 @@ const wideLogo = () =>
     .composite([{ input: { create: { width: 200, height: 40, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } } }, top: 30, left: 0 }])
     .png()
     .toBuffer();
+
+/** A 200×100 opaque red picture with a blue stripe down each end, which a crop to a square would cut off. */
+const wideBanner = () =>
+  sharp({ create: { width: 200, height: 100, channels: 3, background: '#ff0000' } })
+    .composite([
+      { input: { create: { width: 10, height: 100, channels: 3, background: '#0000ff' } }, top: 0, left: 0 },
+      { input: { create: { width: 10, height: 100, channels: 3, background: '#0000ff' } }, top: 0, left: 190 }
+    ])
+    .png()
+    .toBuffer();
+
+/** A PNG whose header claims 20000×20000 pixels: past the decoder's pixel limit, whatever its file size. */
+function hugePng(): Buffer {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (b: Buffer) => {
+    let c = 0xffffffff;
+    for (const x of b) c = crcTable[(c ^ x) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc(body), 8 + data.length);
+    return out;
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(20000, 0);
+  ihdr.writeUInt32BE(20000, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', Buffer.from([0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01])), chunk('IEND', Buffer.alloc(0))]);
+}
 
 const inProcess: SiteIconRenderer = async (data, mime, icons) => {
   try {
@@ -94,15 +132,28 @@ describe('the web app manifest', () => {
     const cache = new GenerationCache();
     generateProject(fresh(), {}, cache);
     expect(generateProject(s, {}, cache).get(`static/${WEB_MANIFEST}`)).toBe(files.get(`static/${WEB_MANIFEST}`));
+    // A palette change (a new state, as every edit makes) reaches the manifest and the monogram through the cache too.
+    const branded = structuredClone(s);
+    branded.tokens.overrides['color.brand'] = '#123456';
+    const cached = generateProject(branded, {}, cache);
+    expect(JSON.parse(cached.get(`static/${WEB_MANIFEST}`)!).theme_color).toBe('#123456');
+    expect(cached.get('static/favicon.svg')).toContain('fill="#123456"');
+    expect(cached.get(`static/${WEB_MANIFEST}`)).toBe(generateProject(branded).get(`static/${WEB_MANIFEST}`));
   });
 
   it('keeps any name as JSON, follows the language’s direction, and leaves out what the site does not say', () => {
     const s = fresh();
     s.site.name = '  Café «Ω» "quoted" </script>\n ';
-    s.site.description = '   ';
+    s.site.description = 'Line one\n"Line" two\\';
     s.site.language = 'ar';
-    const manifest = JSON.parse(generateWebManifest(s));
+    let manifest = JSON.parse(generateWebManifest(s));
     expect(manifest.name).toBe('Café «Ω» "quoted" </script>');
+    expect(manifest.description).toBe('Line one\n"Line" two\\');
+    // A blank description, or one a hand edit made something other than text, is left out.
+    s.site.description = '   ';
+    expect(JSON.parse(generateWebManifest(s))).not.toHaveProperty('description');
+    (s.site as { description: unknown }).description = 42;
+    manifest = JSON.parse(generateWebManifest(s));
     expect(manifest).not.toHaveProperty('description');
     expect(manifest).not.toHaveProperty('short_name');
     expect(manifest).toMatchObject({ lang: 'ar', dir: 'rtl' });
@@ -117,15 +168,16 @@ describe('the web app manifest', () => {
       return [m.background_color, m.theme_color];
     };
     let s = fresh();
-    // A brand linked to the accent takes the accent's colour.
-    s.tokens.overrides['color.brand'] = { token: 'color.accent' };
-    expect(colors(s)).toEqual(['#fbfaf7', '#d98f48']);
+    // A brand linked to another colour takes that colour.
+    s.tokens.overrides['color.brand'] = { token: 'color.inverse' };
+    expect(colors(s)).toEqual(['#fbfaf7', '#14211d']);
     // A circular link is passed over for the accent; a background the parser cannot read, for the cards' colour.
     s = fresh();
     s.tokens.overrides['color.brand'] = { token: 'color.brand-strong' };
     s.tokens.overrides['color.brand-strong'] = { token: 'color.brand' };
     s.tokens.overrides['color.background'] = 'var(--paper)';
-    expect(colors(s)).toEqual(['#ffffff', '#d98f48']);
+    s.tokens.overrides['color.surface'] = '#eeeeee';
+    expect(colors(s)).toEqual(['#eeeeee', '#d98f48']);
     // Other notations, and a see-through brand laid over the background.
     s = fresh();
     s.tokens.overrides['color.background'] = 'rgb(0 0 0)';
@@ -158,7 +210,10 @@ describe('what the icons are made from', () => {
     const set = siteIconSet(s);
     expect(set.source).toEqual({ kind: 'svg', svg: set.monogram });
     expect(set.monogram).toContain('<rect width="64" height="64" fill="#1f5a4c"/>');
-    expect(set.monogram).toContain('>T</text>');
+    expect(set.monogram).toContain('fill="#ffffff">T</text>');
+    s.tokens.overrides['color.on-brand'] = { token: 'color.accent' };
+    expect(siteIconSet(s).monogram).toContain('fill="#d98f48">T</text>');
+    delete s.tokens.overrides['color.on-brand'];
     // The browser tab's monogram keeps its rounded corners.
     expect(generateProject(s).get('static/favicon.svg')).toContain('rx="14"');
     expect(set.icons).toEqual([
@@ -205,10 +260,13 @@ describe('drawing the icons', () => {
     const [apple, small] = await renderSiteIcons(await wideLogo(), 'image/png', [{ size: 180, background: '#fbfaf7' }, { size: 192 }]);
     expect(await pixel(small, 96, 96)).toEqual({ r: 255, g: 0, b: 0, a: 255 });
     expect((await pixel(small, 2, 2)).a).toBe(0);
-    // The bar reaches both sides, so the picture was not cropped.
-    expect((await pixel(small, 1, 96)).r).toBeGreaterThan(200);
     expect(await pixel(apple, 2, 2)).toEqual({ r: 0xfb, g: 0xfa, b: 0xf7, a: 255 });
     expect(await pixel(apple, 90, 90)).toEqual({ r: 255, g: 0, b: 0, a: 255 });
+    // Whole: both ends of an opaque banner are kept (a crop to the square would cut them), with padding above it.
+    const [banner] = await renderSiteIcons(await wideBanner(), 'image/png', [{ size: 192 }]);
+    expect(await pixel(banner, 1, 96)).toMatchObject({ r: 0, b: 255, a: 255 });
+    expect(await pixel(banner, 190, 96)).toMatchObject({ r: 0, b: 255, a: 255 });
+    expect((await pixel(banner, 96, 4)).a).toBe(0);
   });
 
   it('takes the first frame of a moving picture, and says when a picture cannot be decoded', async () => {
@@ -219,9 +277,14 @@ describe('drawing the icons', () => {
     const bytes = (b: Buffer) => new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
     const ok = await handleVariantRequest({ id: 1, kind: 'icons', data: bytes(gif), mime: 'image/gif', width: 0, icons: [{ size: 180, background: '#ffffff' }, { size: 192 }] });
     expect(ok).toMatchObject({ id: 1, ok: true });
-    expect(ok.ok && ok.icons?.length).toBe(2);
+    const replied = ok.ok ? (ok.icons ?? []) : [];
+    expect(replied).toHaveLength(2);
+    for (const [i, size] of [180, 192].entries()) expect(await sharp(Buffer.from(replied[i])).metadata()).toMatchObject({ format: 'png', width: size, height: size });
     const bad = await handleVariantRequest({ id: 2, kind: 'icons', data: bytes(Buffer.from('not a picture at all')), mime: 'image/png', width: 0, icons: [{ size: 192 }] });
     expect(bad).toMatchObject({ id: 2, ok: false, unreadable: true });
+    // Too many pixels to decode is the picture's doing as well, so its icons come from the monogram.
+    const huge = await handleVariantRequest({ id: 3, kind: 'icons', data: bytes(hugePng()), mime: 'image/png', width: 0, icons: [{ size: 192 }] });
+    expect(huge).toMatchObject({ id: 3, ok: false, unreadable: true });
   });
 });
 
@@ -253,6 +316,10 @@ describe('a project’s icons', () => {
     s.tokens.overrides['color.background'] = '#000000';
     expect((await maker.make(dir, s)).key).not.toBe(renamed.key);
     expect(calls).toHaveLength(3);
+    // The new background is the one the iOS icon of a see-through favicon is filled with.
+    const withPicture = withFavicon(dir, await wideLogo());
+    withPicture.tokens.overrides['color.background'] = '#000000';
+    expect(await pixel((await maker.make(dir, withPicture)).files!.get('static/apple-touch-icon.png')!, 2, 2)).toEqual({ r: 0, g: 0, b: 0, a: 255 });
   });
 
   it('are drawn from the favicon’s bytes as they are now, and from the monogram when its file cannot be used', async () => {
@@ -273,14 +340,61 @@ describe('a project’s icons', () => {
     const missing = await maker.make(dir, s);
     expect(missing.key).toBe((await maker.input(dir, { ...s, site: { ...s.site, favicon: null } })).key);
     expect(hex(await pixel(missing.files!.get('static/icon-192.png')!, 1, 1))).toBe('#1f5a4c');
+    // Bytes that are no picture at all are never given to the decoder.
     writeFileSync(join(dir, 'static/assets/logo-1a2b3c4d.png'), 'not a picture');
     calls.length = 0;
+    expect((await maker.make(dir, s)).key).toBe(missing.key);
+    expect(calls).toEqual([]);
+    writeFileSync(join(dir, 'static/assets/logo-1a2b3c4d.png'), Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('damaged')]));
     const refused = await maker.make(dir, s);
     expect(calls).toEqual(['image/png', 'image/svg+xml']);
     expect(hex(await pixel(refused.files!.get('static/icon-192.png')!, 1, 1))).toBe('#1f5a4c');
     // Only a regular file directly in static/assets/ is read: a record pointing elsewhere gets the monogram.
     s.assets.assets.as_logo.file = 'siteorigin/site.json';
     expect((await maker.input(dir, s)).mime).toBe('image/svg+xml');
+  });
+
+  it('read the favicon only from the project’s own folder, and as the picture its bytes are', async () => {
+    const dir = tmp();
+    const monogram = async (s: ProjectState) => (await new SiteIconMaker().input(dir, { ...s, site: { ...s.site, favicon: null } })).key;
+    // static/assets/ linked to a folder elsewhere: nothing there is read.
+    const elsewhere = tmp();
+    const outside = withFavicon(elsewhere, await wideLogo());
+    mkdirSync(join(dir, 'static'), { recursive: true });
+    symlinkSync(join(elsewhere, 'static/assets'), join(dir, 'static/assets'), 'dir');
+    expect((await new SiteIconMaker().input(dir, outside)).key).toBe(await monogram(outside));
+    rmSync(join(dir, 'static/assets'));
+    // SVG markup at a PNG's address is cleaned as an SVG; compressed or unknown bytes are not given to the decoder.
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><script>alert(1)</script><rect width="10" height="10" fill="#00f"/></svg>';
+    const disguised = withFavicon(dir, Buffer.from(svg));
+    const read = await new SiteIconMaker().input(dir, disguised);
+    expect(read.mime).toBe('image/svg+xml');
+    expect(read.data.toString()).not.toContain('script');
+    const gzipped = withFavicon(dir, Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00]));
+    expect((await new SiteIconMaker().input(dir, gzipped)).key).toBe(await monogram(gzipped));
+    // A JPEG kept under a PNG's record is drawn as the JPEG it is.
+    const jpeg = withFavicon(dir, await sharp({ create: { width: 8, height: 8, channels: 3, background: '#00ff00' } }).jpeg().toBuffer());
+    expect((await new SiteIconMaker().input(dir, jpeg)).mime).toBe('image/jpeg');
+  });
+
+  it('stop holding up a save that takes too long for them, and say so once they are ready', async () => {
+    const dir = tmp();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    setSiteIconRenderer(async (data, mime, icons) => (await gate, inProcess(data, mime, icons)));
+    const late = vi.fn();
+    const maker = new SiteIconMaker(late);
+    const pending = await maker.make(dir, fresh(), 20);
+    expect(pending.files).toBeNull();
+    expect(late).not.toHaveBeenCalled();
+    release();
+    await vi.waitFor(() => expect(late).toHaveBeenCalledTimes(1));
+    expect((await maker.make(dir, fresh(), 20)).files?.size).toBe(3);
+    // Waited for without a limit, a set is made however long it takes.
+    const s = fresh();
+    s.site.name = 'Patient';
+    expect((await maker.make(dir, s, Infinity)).files?.size).toBe(3);
+    expect(late).toHaveBeenCalledTimes(1);
   });
 
   it('draw an SVG favicon only once it has been cleaned, as an import would clean it', async () => {
@@ -306,6 +420,16 @@ describe('a project’s icons', () => {
     // A worker that failed is not asked again for the same icons straight away...
     expect((await maker.make(dir, fresh())).files).toBeNull();
     expect(calls).toHaveLength(1);
+    // ...only after a while; and a worker failing on a favicon picture is not the picture's fault: no monogram instead.
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 61_000);
+    expect((await maker.make(dir, fresh())).files).toBeNull();
+    expect(calls).toHaveLength(2);
+    const picture = withFavicon(dir, await wideLogo());
+    calls.length = 0;
+    expect((await maker.make(dir, picture)).files).toBeNull();
+    expect(calls).toEqual(['image/png']);
+    vi.restoreAllMocks();
     // ...but other icons are asked for, and a reply missing an icon is a failure too.
     const s = fresh();
     s.site.name = 'Other';
