@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Check, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { newId } from '@shared/ids';
 import { applyOps, commitOps } from '../store';
@@ -29,6 +29,7 @@ import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, 
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
+import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
@@ -1376,6 +1377,7 @@ export function Canvas() {
     const create = createComponentTarget(getState().snapshot, t);
     const parent = ref.instancePath.length ? { owner: ref.owner, instancePath: ref.instancePath.slice(0, -1), nodeId: ref.instancePath[ref.instancePath.length - 1] } : null;
     const locked = !t || t.owner.kind === 'shell';
+    const kept = definitionMode ? undefined : placedDefinition(state, t, devMode);
     const sib = siblings(state, t);
     const reorderable = !!sib && sib.count > 1;
     const name = chromeLabel(state, ref);
@@ -1422,6 +1424,8 @@ export function Canvas() {
               ...(locked ? [] : [...clipboard, { label: 'Duplicate', icon: <Copy />, shortcut: keys('⌘D'), onSelect: on(duplicateSelection) }]),
               ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: on(() => setState({ modal: { kind: 'create-component' as const, ref: create } })) }] : []),
               ...(!definitionMode && detachable(state, ref) ? [{ label: 'Detach component', icon: <Unlink />, onSelect: on(() => detachPlacement(ref)) }] : []),
+              // Kept for every project, or sent as a file (#372).
+              ...(kept ? [{ label: 'Save to personal library', icon: <BookmarkPlus />, onSelect: live(ref, () => saveToLibrary(kept)) }, { label: 'Export component…', icon: <Download />, onSelect: live(ref, () => exportComponentFile(kept)) }] : []),
               ...(locked ? [] : [{ separator: true }, { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: on(deleteSelection) }])
             ]
           : [])
