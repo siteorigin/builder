@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ElementNode, ElementRef, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
+import type { ElementNode, ElementRef, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import type { ProjectSnapshot } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
@@ -81,7 +81,7 @@ interface Question {
 const load = (path: string) => import(/* @vite-ignore */ path);
 const { deleteSelection } = (await load('../../src/renderer/src/lib/actions')) as { deleteSelection: () => Promise<void> };
 const { heldContent } = (await load('../../src/renderer/src/lib/delete-content')) as {
-  heldContent: (tree: ProjectState['pages'][string], nodeId: string) => { items: string[]; placements: number } | null;
+  heldContent: (tree: NodeTree, nodeId: string) => { items: string[]; placements: number } | null;
 };
 const { getState, setState, getConfirm, pendingConfirms } = (await load('../../src/renderer/src/store')) as {
   getState: () => EditorState;
