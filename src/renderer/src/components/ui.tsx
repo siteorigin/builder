@@ -778,8 +778,11 @@ interface DraftInputProps {
   autoFocus?: boolean;
   check?: (v: string) => DraftProblem | null;
   onProblem?: (problem: DraftProblem | null) => void;
-  /** Hears whether the field holds text other than the saved value. */
-  onDirty?: (dirty: boolean) => void;
+  /**
+   * Hears whether the field holds text other than the saved value, and the text it shows: as it is typed, when text
+   * refused for being too long is shown again, and when Escape puts the saved value back.
+   */
+  onDirty?: (dirty: boolean, draft: string) => void;
   /** Shows the field (its panel may be closed) before leaving the project's Keep editing returns to it. */
   reveal?: () => void;
 }
@@ -917,7 +920,7 @@ function DraftField({
     if (!focused.current) forget();
     if (!startedAt.current) setDraft(value);
   }, [value]);
-  useEffect(() => onDirty?.(draft !== value), [draft, value, onDirty]);
+  useEffect(() => onDirty?.(draft !== value, draft), [draft, value, onDirty]);
   // Text once refused is checked again as it is corrected and as the project changes (the translations it named
   // unlinked, or linked again): its reason comes and goes with it.
   useEffect(() => {

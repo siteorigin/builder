@@ -13,9 +13,10 @@ import { DraftInput, Field, SwitchRow } from '../components/ui';
 export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState; onChange: (patch: Record<string, unknown>) => unknown }) {
   const site = state.site;
   const settings = agentDiscovery(site);
-  // The summary as it is being typed, until it is saved or put back.
+  // The summary as the field shows it while it holds unsaved text (typed, or refused and shown again), until it is
+  // saved or put back.
   const [typed, setTyped] = useState<string | null>(null);
-  const settled = useCallback((dirty: boolean) => void (dirty || setTyped(null)), []);
+  const shown = useCallback((dirty: boolean, draft: string) => setTyped(dirty ? draft : null), []);
   // The documents it lists are worked out once per project state; typing changes only its opening.
   const preview = useMemo(() => (settings.llmsTxt ? generateLlmsTxt(state, typed === null ? undefined : { summary: typed }) : null), [state, typed, settings.llmsTxt]);
   return (
@@ -42,7 +43,7 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
         hint={`Beside each page and post in the index, at its address with ${MARKDOWN_MIRROR_FILE} added, without the header, footer or layout. Each page links to its copy.`}
       />
       <Field label="Summary" hint="One or two sentences llms.txt opens with. Leave it empty to use the site’s default description.">
-        <DraftInput multiline limit={TEXT_LIMITS.siteDescription} keep="site:llmsSummary" value={typeof site.llmsSummary === 'string' ? site.llmsSummary : ''} placeholder={typeof site.description === 'string' ? site.description : ''} onLive={setTyped} onDirty={settled} onCommit={(v) => onChange({ llmsSummary: v })} />
+        <DraftInput multiline limit={TEXT_LIMITS.siteDescription} keep="site:llmsSummary" value={typeof site.llmsSummary === 'string' ? site.llmsSummary : ''} placeholder={typeof site.description === 'string' ? site.description : ''} onDirty={shown} onCommit={(v) => onChange({ llmsSummary: v })} />
       </Field>
       {preview !== null ? (
         <Field label={`${LLMS_TXT_FILE} preview`} hint={publicUrl(site) ? undefined : 'Without a public URL its links are relative to the website’s folder. Add one in Site details for full addresses.'}>

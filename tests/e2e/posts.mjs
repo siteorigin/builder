@@ -2,6 +2,8 @@
 // and a library picture with its description and caption; nothing typed is lost when the author switches panels
 // straight away; the picture is a use Assets lists and opens; Undo and Redo are the project's; the post is saved as a
 // draft, previewed on the canvas in the site's own header and footer, backdated, published and previewed again.
+// Its Search & sharing settings preview it as search results list it, as a shared link and as structured data, and
+// follow what is typed before it is saved (#597).
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -271,7 +273,7 @@ await eventually(async () => assert.equal(await frame.locator('body').evaluate((
 step('back to writing, backdated and published');
 await win.locator('.posts-panel').getByRole('button', { name: 'Back to writing' }).click();
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true));
-await win.locator('.post-details > summary').click();
+await win.locator('.post-details:not(.post-seo) > summary').click();
 const date = win.getByLabel('Publication date');
 await date.fill('2025-06-01');
 await date.press('Enter');
@@ -387,6 +389,71 @@ await titleField.fill('');
 await titleField.press('Enter');
 await eventually(async () => assert.equal(await titleField.inputValue(), `${left} ${right}`, 'the saved title comes back'), 20000);
 assert.equal(savedTitle(), `${left} ${right}`, 'an empty title is not saved');
+
+step('Search & sharing shows the post as results list it, as a shared link and as structured data, following what is typed (#597)');
+const seoBox = win.locator('.post-seo');
+await seoBox.locator('summary').first().click();
+const seoTab = (name) => seoBox.getByRole('tab', { name });
+const postResult = (device) => seoBox.locator(`.serp-${device}`);
+const postMeter = (kind) => seoBox.locator(`.seo-meter[data-meter="${kind}"]`);
+const postTitleBox = seoBox.getByLabel('Browser title');
+const savedSeo = () => entryFile(entryId).seo ?? {};
+const fullTitle = `${left} ${right}`;
+await eventually(async () => assert.equal(await seoTab('Search result').getAttribute('aria-selected'), 'true', 'the previews open on the search result'));
+await eventually(async () => assert.match(await postResult('desktop').locator('.serp-title').innerText(), /^Winter light on the water .*…$/, 'the long default title is cut short with an ellipsis'));
+assert.match(await postMeter('title').innerText(), /^Default title: \d+ characters · likely cut short on computers and phones$/, 'the meter measures the default title');
+assert.match(await postResult('desktop').locator('.serp-date').innerText(), /2025 — $/, 'a dated post opens its description with its date');
+await postTitleBox.fill('Raku notes');
+await eventually(async () => assert.equal(await postResult('desktop').locator('.serp-title').innerText(), 'Raku notes', 'the result follows the title as it is typed'));
+assert.equal(await postResult('mobile').locator('.serp-title').innerText(), 'Raku notes');
+assert.equal(await postMeter('title').innerText(), '10 characters · short: 15 to 60 reads best');
+assert.equal(savedSeo().title, undefined, 'nothing is saved while it is typed');
+await postTitleBox.press('Escape');
+await eventually(async () => assert.match(await postMeter('title').innerText(), /^Default title:/, 'Escape puts the default back'));
+const postDescriptionBox = seoBox.getByLabel('Description', { exact: true });
+await postDescriptionBox.fill('Notes from a weekend of raku firing.');
+await eventually(async () => assert.match(await postResult('desktop').locator('.serp-desc').innerText(), /— Notes from a weekend of raku firing\.$/, 'the description being typed follows the date in the result'));
+assert.equal(await postMeter('description').innerText(), '36 characters · short: 50 to 160 reads best');
+assert.equal(savedSeo().description, undefined, 'nothing is saved while it is typed');
+await postDescriptionBox.press('Escape');
+await eventually(async () => assert.match(await postMeter('description').innerText(), /^From the fallback:/, 'Escape puts the fallback back'));
+
+await seoTab('Link preview').click();
+const postCard = seoBox.locator('.share-card');
+await postCard.waitFor();
+assert.equal(await postCard.locator('.share-card-title').textContent(), fullTitle, 'a shared link shows the post’s own title, without the site’s name');
+assert.equal(await postCard.locator('.share-card-host').textContent(), 'No usable public URL');
+await postTitleBox.fill('Raku firing notes from the weekend');
+await eventually(async () => assert.equal(await postCard.locator('.share-card-title').textContent(), 'Raku firing notes from the weekend', 'the card follows the title as it is typed'));
+await postTitleBox.press('Enter');
+await eventually(() => assert.equal(savedSeo().title, 'Raku firing notes from the weekend', 'Enter saves it'), 20000);
+
+await seoTab('Structured data').click();
+await eventually(async () => assert.match(await seoBox.locator('.seo-graph-none').innerText(), /Public URL/, 'without a public URL the post carries no structured data, and says why'));
+assert.equal(await seoBox.locator('[data-status="search"] dd').innerText(), 'May list it');
+assert.equal(await seoBox.locator('[data-status="siteSearch"] dd').innerText(), 'Posts aren’t in site search yet');
+const setUrl = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'site.update', baseUrl: 'https://studio.example' }] }, { label: 'Set public URL' }));
+assert.ok(setUrl.ok, JSON.stringify(setUrl));
+const postGraph = async () => JSON.parse(await seoBox.getByTestId('seo-graph').innerText());
+await eventually(async () => {
+  const node = (await postGraph())['@graph'].find((n) => n['@type'] === 'WebPage');
+  assert.deepEqual({ url: node.url, name: node.name }, { url: `https://studio.example${path}`, name: 'Raku firing notes from the weekend' }, 'the post’s structured data names it by its address and its title');
+}, 20000);
+const postNode = async () => (await postGraph())['@graph'].find((n) => n['@type'] === 'WebPage');
+await postTitleBox.fill('Raku notes from the kiln');
+await eventually(async () => assert.equal((await postNode()).name, 'Raku notes from the kiln', 'the graph follows the title as it is typed'));
+assert.equal(savedSeo().title, 'Raku firing notes from the weekend', 'nothing new is saved while it is typed');
+await postTitleBox.press('Escape');
+await eventually(async () => assert.equal((await postNode()).name, 'Raku firing notes from the weekend', 'Escape puts the saved title back in the graph'));
+const postCanonical = seoBox.getByLabel('Canonical URL');
+await postCanonical.fill('https://journal.example/raku/');
+await eventually(async () => assert.equal(await seoBox.locator('[data-status="canonical"] dd').innerText(), 'https://journal.example/raku/ (another address)', 'the canonical URL being typed shows in the status'));
+assert.match(await seoBox.locator('[data-status="sitemap"] dd').innerText(), /another address/);
+assert.equal(savedSeo().canonical, undefined, 'nothing is saved while it is typed');
+await postCanonical.press('Escape');
+await eventually(async () => assert.equal(await seoBox.locator('[data-status="canonical"] dd').innerText(), `https://studio.example${path}`, 'Escape puts the post’s own address back'));
+await seoBox.scrollIntoViewIfNeeded();
+await win.screenshot({ path: join(SHOTS, 'posts-seo-preview.png') });
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
