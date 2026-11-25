@@ -43,12 +43,22 @@ describe('column layouts in Insert (#514)', () => {
     expect(columns.filter((n) => n === '2 columns')).toHaveLength(1);
   });
 
+  it('finds the uneven layout starters by their names and by what they are for (#665)', () => {
+    expect(names('bento')[0]).toBe('Bento grid');
+    expect(names('featured tiles')[0]).toBe('Bento grid');
+    expect(names('sidebar')[0]).toBe('Sidebar + main');
+    expect(names('sticky')).toContain('Sidebar + main');
+    expect(names('asymmetric')).toEqual(expect.arrayContaining(['Bento grid', 'Sidebar + main', 'Asymmetric split']));
+    expect(names('wide narrow')[0]).toBe('Asymmetric split');
+    expect(names('2:1')).toEqual(['Asymmetric split']);
+  });
+
   it('adds a Grid that starts with its columns, offered with the Row and Grid ahead of the other elements', () => {
     const spec = (name: string) => basicSpec(BASICS.find((b) => b.name === name)!);
     expect(spec('2 columns')).toEqual({ primitive: 'grid', columns: 2 });
     expect(spec('3 columns')).toEqual({ primitive: 'grid', columns: 3 });
     expect(spec('Grid')).toEqual({ primitive: 'grid' });
-    expect(BASICS.filter((b) => b.layout).map((b) => b.name)).toEqual(['2 columns', '3 columns', 'Row', 'Grid']);
+    expect(BASICS.filter((b) => b.layout).map((b) => b.name)).toEqual(['2 columns', '3 columns', 'Bento grid', 'Sidebar + main', 'Asymmetric split', 'Row', 'Grid']);
     // Every tile has a key of its own.
     expect(new Set(BASICS.map((b) => b.id)).size).toBe(BASICS.length);
   });

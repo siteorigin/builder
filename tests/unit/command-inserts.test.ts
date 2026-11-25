@@ -66,7 +66,13 @@ describe('what the command menu inserts', () => {
 
   it('finds the basic elements and column layouts by the words Insert finds them by', () => {
     const choices = insertChoices(site().state, false);
-    expect(found(choices, 'two columns').map((c) => [c.id, c.kind, c.spec])).toEqual([['ins:e:columns-2', 'Layout', { primitive: 'grid', columns: 2 }]]);
+    // Even columns first, then the uneven two-column starters (#665).
+    expect(found(choices, 'two columns').map((c) => [c.id, c.kind, c.spec])).toEqual([
+      ['ins:e:columns-2', 'Layout', { primitive: 'grid', columns: 2 }],
+      ['ins:e:sidebar', 'Layout', { primitive: 'grid', starter: 'sidebar' }],
+      ['ins:e:split', 'Layout', { primitive: 'grid', starter: 'split' }]
+    ]);
+    expect(found(choices, 'bento').map((c) => [c.id, c.kind, c.spec])).toEqual([['ins:e:bento', 'Layout', { primitive: 'grid', starter: 'bento' }]]);
     expect(found(choices, 'bullet points').map((c) => c.spec)).toEqual([{ primitive: 'richtext', text: '- First item\n- Second item\n- Third item' }]);
     for (const name of ['Heading', 'Paragraph', 'Button', 'Image', 'Grid', 'Stack', 'Container']) expect(found(choices, name).some((c) => c.id.startsWith('ins:e:') && c.name === name)).toBe(true);
   });

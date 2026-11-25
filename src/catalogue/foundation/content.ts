@@ -1,4 +1,4 @@
-import { tokenVar } from '@shared/styles';
+import { STICKY_BELOW_HEADER, tokenVar } from '@shared/styles';
 import { NO_LINK, P, eq, item, prop, tok, uiState } from '../dsl';
 import { FOUNDATION } from './pack';
 import { eyebrowStyles, headingBlock, headingLevel, layoutAxis, mutedStyles, sectionShell, toneAxis } from './common';
@@ -7,12 +7,6 @@ const { managed } = FOUNDATION;
 
 const card = { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.xl'), paddingInline: tok('space.xl'), background: tok('color.surface'), color: tok('color.text'), border: tok('border.default'), radius: tok('radius.lg') } as const;
 
-/**
- * Pinned in view while the content beside it scrolls past, clear of the site's sticky header: the header publishes the
- * height it takes up as --so-header-offset (0 when it does not stick), and 1.5rem more keeps the two apart. Released
- * at the end of its section. Print shows it in its place (base.css).
- */
-const STICKY_BELOW_HEADER = { position: 'sticky', inset: 'calc(var(--so-header-offset, 4.5rem) + 1.5rem) auto auto auto', alignSelf: 'start' } as const;
 /** Two columns side by side, a narrower one for what stays pinned and a wider one for what scrolls. */
 const STICKY_SPLIT_LAYOUT = { layout: 'grid', gridTemplate: '1fr 1.5fr', align: 'start', columnGap: tok('space.2xl') } as const;
 

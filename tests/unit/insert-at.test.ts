@@ -7,7 +7,10 @@ import { validateState } from '@engine/validate';
 import { inferredRole, placementRole } from '@engine/insert-role';
 import { findParent } from '@engine/tree';
 import { quickItems } from '../../src/renderer/src/lib/inline-insert';
-import { definitionRole, elementWhere, heldSlot, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, placeFor, placementOf, sectionWhere, whereFor, type InsertAt } from '../../src/renderer/src/lib/insert-at';
+import { generateProject, STYLES_DIR } from '@generator/index';
+import { STICKY_BELOW_HEADER } from '@shared/styles';
+import { definitionRole, elementWhere, heldSlot, insertAt, insertOps, insertRole, insertSelection, LAYOUT_STARTERS, nodeBefore, nodeLabel, placeFor, placementOf, sectionWhere, whereFor, type InsertAt } from '../../src/renderer/src/lib/insert-at';
+import { BASICS, basicSpec, type LayoutStarter } from '../../src/renderer/src/lib/insert-search';
 
 /**
  * Where Insert puts a project component (#52): a card made inside a grid goes beside the selected card in that grid,
@@ -550,5 +553,114 @@ describe('What the Inspector calls a placement (#661)', () => {
     const owner: OwnerRef = { kind: 'component', id: p.bandDef };
     const rootId = p.state.components[p.bandDef].tree!.rootIds[0];
     expect(placementRole(p.state, owner, rootId)).toBe('element');
+  });
+});
+
+describe('the uneven layout starters come with their empty cells, in one change (#665)', () => {
+  /** A blank page with `starter` inserted at its top level, the Grid it made and its cells, and the site's CSS. */
+  const inserted = (starter: LayoutStarter) => {
+    const blank = createStarterState('blank', 'Plain', false);
+    const owner: OwnerRef = { kind: 'page', id: blank.site.homePageId };
+    const ops = insertOps(insertAt(blank, owner, 'element', null)!, { primitive: 'grid', starter }, 'element', 'n_starter');
+    const { state } = apply(blank, ops);
+    const page = home(state);
+    const grid = page.nodes.n_starter as ElementNode;
+    const css = generateProject(state).get(`${STYLES_DIR}/site.css`)!;
+    /** The declarations a class gets inside one media block, or outside any. */
+    const rule = (id: string, media: string | null) => {
+      const scope = media === null ? css.slice(0, css.indexOf('@media')) : css.slice(css.indexOf(`@media ${media} {`), css.indexOf('\n}', css.indexOf(`@media ${media} {`)));
+      const at = scope.indexOf(`.so-n-${id} {`);
+      return at < 0 ? '' : scope.slice(at, scope.indexOf('}', at));
+    };
+    return { state, ops, page, grid, cells: grid.children.map((id) => page.nodes[id] as ElementNode), rule, css };
+  };
+  const PHONE = '(max-width: 767.98px)';
+  const TABLET_UP = '(min-width: 768px)';
+  const DESKTOP = '(min-width: 1024px)';
+  const TABLET = '(min-width: 768px) and (max-width: 1023.98px)';
+
+  it('Insert offers each one among the column layouts, after the even ones, and the command menu with them', () => {
+    const layouts = BASICS.filter((b) => b.layout).map((b) => b.name);
+    expect(layouts).toEqual(['2 columns', '3 columns', 'Bento grid', 'Sidebar + main', 'Asymmetric split', 'Row', 'Grid']);
+    expect(BASICS.filter((b) => b.starter).map(basicSpec)).toEqual([
+      { primitive: 'grid', starter: 'bento' },
+      { primitive: 'grid', starter: 'sidebar' },
+      { primitive: 'grid', starter: 'split' }
+    ]);
+  });
+
+  for (const starter of Object.keys(LAYOUT_STARTERS) as LayoutStarter[])
+    it(`${starter}: a named Grid in a new Section, holding its empty Stacks, the first selected, in one valid batch`, () => {
+      const { state, ops, page, grid, cells } = inserted(starter);
+      const layout = LAYOUT_STARTERS[starter];
+      expect(ops[0]).toMatchObject({ type: 'node.insert', parentId: null, componentId: 'layout.section' });
+      expect(ops[1]).toMatchObject({ type: 'node.insert', newNodeId: 'n_starter', primitive: 'grid' });
+      // The spec's own fields never reach the operation.
+      expect(ops[1]).not.toHaveProperty('starter');
+      expect((page.nodes[page.rootIds[0]] as InstanceNode).slots?.content).toEqual(['n_starter']);
+      expect(grid.name).toBe(layout.name);
+      expect(cells.map((c) => c.name)).toEqual({ bento: ['Featured tile', 'Tall tile', 'Tile 3', 'Tile 4'], sidebar: ['Main', 'Sidebar'], split: ['Wide column', 'Narrow column'] }[starter]);
+      // Each cell is a Stack inserted into the Grid.
+      expect(ops.filter((op) => op.type === 'node.insert' && op.parentId === 'n_starter').map((op) => op.type === 'node.insert' && op.primitive)).toEqual(cells.map(() => 'stack'));
+      for (const c of cells) expect(c).toMatchObject({ kind: 'element', children: [], styles: { base: { layout: 'stack' } } });
+      expect(validateState(state).filter((d) => d.severity === 'error')).toEqual([]);
+      expect(insertSelection(ops, 'n_starter')).toBe(grid.children[0]);
+    });
+
+  it('bento: three columns on desktop, a featured tile two wide and a tall tile two high filling them, one column below desktop', () => {
+    const { grid, cells, rule } = inserted('bento');
+    expect(grid.styles).toMatchObject({ base: { layout: 'grid', columns: 1 }, desktop: { columns: 3 } });
+    const [featured, tall, third, fourth] = cells;
+    expect([featured.styles?.desktop, tall.styles?.desktop, third.styles?.desktop, fourth.styles?.desktop]).toEqual([{ columnSpan: '2' }, { rowSpan: '2' }, undefined, undefined]);
+    // Spans only on desktop: a phone or tablet keeps one column, with no tracks grown to fit a span.
+    expect(rule(grid.id, null)).toContain('grid-template-columns: repeat(1, minmax(0, 1fr))');
+    expect(rule(grid.id, DESKTOP)).toContain('grid-template-columns: repeat(3, minmax(0, 1fr))');
+    expect(rule(featured.id, DESKTOP)).toContain('grid-column: span 2 / span 2');
+    expect(rule(tall.id, DESKTOP)).toContain('grid-row: span 2 / span 2');
+    for (const media of [null, PHONE, TABLET_UP, TABLET]) for (const c of cells) expect(rule(c.id, media)).not.toMatch(/grid-(column|row):/);
+    // Tablets keep the one column: nothing for the grid between phone and desktop.
+    for (const media of [TABLET_UP, TABLET]) expect(rule(grid.id, media)).toBe('');
+  });
+
+  for (const starter of ['sidebar', 'split'] as const)
+    it(`${starter}: a wide column beside a narrow one from tablet up, one above the other on phones`, () => {
+      const { grid, rule, css } = inserted(starter);
+      expect(grid.styles).toMatchObject({ base: { layout: 'grid', columns: 1, gridTemplate: '2fr 1fr' }, desktop: { columns: 2 } });
+      expect(rule(grid.id, null)).toContain('grid-template-columns: repeat(1, minmax(0, 1fr))');
+      expect(rule(grid.id, TABLET_UP)).toContain('grid-template-columns: minmax(0, 2fr) minmax(0, 1fr)');
+      // Nothing for one size wins it back from the column sizes.
+      for (const media of [TABLET, DESKTOP]) expect(rule(grid.id, media)).not.toContain('grid-template-columns');
+      // The desktop count is the fallback for Column sizes taken away: the sizes win while they are set.
+      expect(css).not.toContain('repeat(2, minmax(0, 1fr))');
+    });
+
+  it('sidebar: the sidebar is pinned below the site header from tablet up, and scrolls with the page on phones', () => {
+    const { cells, rule } = inserted('sidebar');
+    const [main, sidebar] = cells;
+    expect([main.styles?.tablet, main.styles?.desktop]).toEqual([undefined, undefined]);
+    for (const media of [TABLET, DESKTOP]) expect(rule(main.id, media)).toBe('');
+    expect(sidebar.styles).toMatchObject({ tablet: STICKY_BELOW_HEADER, desktop: STICKY_BELOW_HEADER });
+    for (const media of [TABLET, DESKTOP]) {
+      expect(rule(sidebar.id, media)).toContain('position: sticky');
+      expect(rule(sidebar.id, media)).toContain('inset: calc(var(--so-header-offset, 4.5rem) + 1.5rem) auto auto auto');
+      expect(rule(sidebar.id, media)).toContain('align-self: start');
+    }
+    expect(rule(sidebar.id, null)).not.toContain('sticky');
+    expect(rule(sidebar.id, PHONE)).toBe('');
+  });
+
+  it('inside a selected container, a starter goes into it without a new Section; a starter that is not one inserts a plain Grid', () => {
+    const p = exhibitors();
+    const at = insertAt(p.state, p.owner, 'element', ref(p.owner, p.intro))!;
+    const ops = insertOps(at, { primitive: 'grid', starter: 'bento' }, 'element', 'n_bento');
+    expect(ops[0]).toEqual({ type: 'node.insert', newNodeId: 'n_bento', owner: p.owner, parentId: p.intro, slot: 'content', index: undefined, primitive: 'grid' });
+    const page = home(apply(p.state, ops).state);
+    const bento = page.nodes.n_bento as ElementNode;
+    expect(bento.name).toBe('Bento grid');
+    expect(bento.children.map((id) => page.nodes[id].kind === 'element' && page.nodes[id].name)).toEqual(['Featured tile', 'Tall tile', 'Tile 3', 'Tile 4']);
+    expect(insertSelection(ops, 'n_bento')).toBe(bento.children[0]);
+    expect(insertOps(at, { primitive: 'grid', starter: 'toString' as LayoutStarter }, 'element')).toEqual([{ type: 'node.insert', owner: p.owner, parentId: p.intro, slot: 'content', index: undefined, primitive: 'grid' }]);
+    // A starter on something that is no Grid is no layout.
+    expect(insertOps(at, { primitive: 'stack', starter: 'bento' }, 'element')).toEqual([{ type: 'node.insert', owner: p.owner, parentId: p.intro, slot: 'content', index: undefined, primitive: 'stack' }]);
   });
 });

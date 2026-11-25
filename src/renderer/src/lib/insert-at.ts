@@ -3,11 +3,12 @@
  * saying where it goes, and a drop on the canvas all read it from here, so they agree on the place.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ElementNode, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import type { ElementNode, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, StyleValue } from '@shared/types';
 import { newId } from '@shared/ids';
+import { STICKY_BELOW_HEADER } from '@shared/styles';
 import { childLists, findParent } from '@engine/tree';
 import { ownerLabel, refLabel, treeFor } from './model';
-import type { InsertSpec } from './insert-search';
+import type { InsertSpec, LayoutStarter } from './insert-search';
 import { definitionRole, type InsertRole } from '@engine/insert-role';
 import { insertsInline } from '@engine/semantic-tags';
 
@@ -267,13 +268,13 @@ export const insertAt = (state: ProjectState, owner: OwnerRef, role: InsertRole,
  * that fill it.
  */
 export function insertOps(at: InsertAt, spec: InsertSpec, role: InsertRole, nodeId?: string): EditOperation[] {
-  const { columns, ...rest } = spec;
-  const starter = rest.primitive === 'grid' && columns !== undefined ? starterColumns(columns) : 0;
-  // A Grid that starts with its columns is named here, so the same change can fill it.
-  const id = nodeId ?? (starter ? newId('n') : undefined);
+  const { columns, starter, ...rest } = spec;
+  const layout = rest.primitive === 'grid' ? starterLayout(columns, starter) : null;
+  // A Grid that starts with its cells is named here, so the same change can fill it.
+  const id = nodeId ?? (layout ? newId('n') : undefined);
   const named = id ? { newNodeId: id } : {};
   const what = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)) as InsertSpec;
-  const fill = starter ? columnOps(at.owner, id!, starter) : [];
+  const fill = layout ? layoutOps(at.owner, id!, layout) : [];
   if (role === 'element' && at.owner.kind === 'page' && !at.parentId) {
     const sectionId = newId('n');
     return [
@@ -294,24 +295,64 @@ export function insertSelection(ops: EditOperation[], nodeId: string): string {
   return (first?.type === 'node.insert' && first.newNodeId) || nodeId;
 }
 
-/** How many empty columns a column layout starts with: two to four, or none for a count that is not one. */
-function starterColumns(n: number): number {
-  return Number.isInteger(n) && n >= 2 && n <= 4 ? n : 0;
+/** Styles a starter sets, by size. */
+type StarterStyles = Partial<Record<'base' | 'tablet' | 'desktop', Record<string, StyleValue>>>;
+
+/** The Grid a layout starter makes, and the empty cells (Stacks) it starts with, each with its own styles. */
+type Layout = { name: string; styles: StarterStyles; cells: Array<{ name: string; styles?: StarterStyles }> };
+
+/**
+ * The uneven layout starters. Each stacks its cells in one column on phones (and tablets, for the bento), as any Grid
+ * starts. Column sizes for all sizes apply from tablet up, in place of the Grid's own desktop column count (see
+ * withColumnSizes); that count is two, so taking the sizes away later leaves two even columns rather than two cells in
+ * three. Spans are set for desktop alone, where the bento has its three columns, so a narrower grid never grows tracks
+ * to fit them.
+ */
+export const LAYOUT_STARTERS: Record<LayoutStarter, Layout> = {
+  // Three columns: a featured tile two wide and a tile two tall beside it, with two tiles under the featured one.
+  bento: {
+    name: 'Bento grid',
+    styles: { desktop: { columns: 3 } },
+    cells: [{ name: 'Featured tile', styles: { desktop: { columnSpan: '2' } } }, { name: 'Tall tile', styles: { desktop: { rowSpan: '2' } } }, { name: 'Tile 3' }, { name: 'Tile 4' }]
+  },
+  // The sidebar stays pinned below the site header while the main column scrolls past, released at the grid's end.
+  sidebar: {
+    name: 'Sidebar + main',
+    styles: { base: { gridTemplate: '2fr 1fr' }, desktop: { columns: 2 } },
+    cells: [{ name: 'Main' }, { name: 'Sidebar', styles: { tablet: { ...STICKY_BELOW_HEADER }, desktop: { ...STICKY_BELOW_HEADER } } }]
+  },
+  split: { name: 'Asymmetric split', styles: { base: { gridTemplate: '2fr 1fr' }, desktop: { columns: 2 } }, cells: [{ name: 'Wide column' }, { name: 'Narrow column' }] }
+};
+
+/**
+ * The cells a Grid starts with: a layout starter's, or two to four even columns side by side on desktop. None for a
+ * starter that is not one, or a count that is not two to four.
+ */
+function starterLayout(columns: number | undefined, starter: LayoutStarter | undefined): Layout | null {
+  if (starter !== undefined) return Object.hasOwn(LAYOUT_STARTERS, starter) ? LAYOUT_STARTERS[starter] : null;
+  if (columns === undefined || !Number.isInteger(columns) || columns < 2 || columns > 4) return null;
+  return { name: 'Columns', styles: { desktop: { columns } }, cells: Array.from({ length: columns }, (_, i) => ({ name: `Column ${i + 1}` })) };
+}
+
+type SetStyle = Extract<EditOperation, { type: 'node.setStyle' }>;
+
+/** The style a node gets, one property at a time, as Inspector would set it. */
+function styleOps(owner: OwnerRef, nodeId: string, styles: StarterStyles | undefined): EditOperation[] {
+  return Object.entries(styles ?? {}).flatMap(([scope, props]) =>
+    Object.entries(props ?? {}).map(([property, value]): EditOperation => ({ type: 'node.setStyle', owner, nodeId, scope: scope as SetStyle['scope'], property, value }))
+  );
 }
 
 /**
- * The rest of a column layout, once its Grid is in: that many columns side by side on desktop (one above the other
- * on smaller screens, as any Grid starts), each an empty Stack named for its place, so Layers and Insert's line say
- * which column is which and a click on the column's frame on the canvas selects it for Insert to fill.
+ * The rest of a column layout, once its Grid is in: its name and styles, then each cell an empty Stack named for its
+ * place, so Layers and Insert's line say which cell is which and a click on the cell's frame on the canvas selects it
+ * for Insert to fill.
  */
-function columnOps(owner: OwnerRef, gridId: string, n: number): EditOperation[] {
-  const ops: EditOperation[] = [
-    { type: 'node.rename', owner, nodeId: gridId, name: 'Columns' },
-    { type: 'node.setStyle', owner, nodeId: gridId, scope: 'desktop', property: 'columns', value: n }
-  ];
-  for (let i = 1; i <= n; i++) {
-    const column = newId('n');
-    ops.push({ type: 'node.insert', newNodeId: column, owner, parentId: gridId, primitive: 'stack' }, { type: 'node.rename', owner, nodeId: column, name: `Column ${i}` });
+function layoutOps(owner: OwnerRef, gridId: string, layout: Layout): EditOperation[] {
+  const ops: EditOperation[] = [{ type: 'node.rename', owner, nodeId: gridId, name: layout.name }, ...styleOps(owner, gridId, layout.styles)];
+  for (const cell of layout.cells) {
+    const id = newId('n');
+    ops.push({ type: 'node.insert', newNodeId: id, owner, parentId: gridId, primitive: 'stack' }, { type: 'node.rename', owner, nodeId: id, name: cell.name }, ...styleOps(owner, id, cell.styles));
   }
   return ops;
 }

@@ -8,11 +8,17 @@ export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'pa
 
 /**
  * What Insert adds. An element can start with its own text: a list's first items, in the rich text form. A Grid can
- * start with `columns` empty columns (Stacks), each ready to take content on the canvas. A divider can start as one
- * of the decorative shapes. A slot's placeholder, in the design of the component being edited, names the declared
- * slot it shows (`bind`).
+ * start with `columns` empty columns (Stacks), each ready to take content on the canvas, or with the cells of one of
+ * the layout starters (`starter`). A divider can start as one of the decorative shapes. A slot's placeholder, in the
+ * design of the component being edited, names the declared slot it shows (`bind`).
  */
-export type InsertSpec = { componentId?: string; definitionId?: string; primitive?: Primitive; bind?: string; text?: string; columns?: number; shape?: DividerShape; variants?: Record<string, string> };
+export type InsertSpec = { componentId?: string; definitionId?: string; primitive?: Primitive; bind?: string; text?: string; columns?: number; starter?: LayoutStarter; shape?: DividerShape; variants?: Record<string, string> };
+
+/**
+ * A Grid that starts with uneven cells: a bento of a wide featured tile and a tall one, a main column beside a sidebar
+ * pinned below the site header, or a wide column beside a narrow one. See insert-at's LAYOUT_STARTERS.
+ */
+export type LayoutStarter = 'bento' | 'sidebar' | 'split';
 
 export interface Basic {
   id: string;
@@ -21,6 +27,8 @@ export interface Basic {
   text?: string;
   /** A Grid's empty columns, made with it. */
   columns?: number;
+  /** A Grid's uneven empty cells, made with it. */
+  starter?: LayoutStarter;
   /** A divider's shape, when it is one of the decorative bands. */
   shape?: DividerShape;
   /** Offered with the column layouts, near the top of Insert, rather than with the other basic elements. */
@@ -32,11 +40,15 @@ export interface Basic {
 
 /**
  * Basic elements. A list is rich text that starts as a list, so its items are edited like any prose. The column
- * layouts lead: a Grid that starts with two or three empty columns, then the Row and Grid to arrange content by hand.
+ * layouts lead: a Grid that starts with two or three empty columns, the uneven starters (a bento grid, a main column
+ * beside a pinned sidebar, a wide-and-narrow split), then the Row and Grid to arrange content by hand.
  */
 export const BASICS: Basic[] = [
   { id: 'columns-2', primitive: 'grid', columns: 2, name: '2 columns', icon: 'columns-2', tags: 'two columns 2-column two-column 2 col layout grid split side by side', layout: true },
   { id: 'columns-3', primitive: 'grid', columns: 3, name: '3 columns', icon: 'columns-3', tags: 'three columns 3-column three-column 3 col layout grid side by side', layout: true },
+  { id: 'bento', primitive: 'grid', starter: 'bento', name: 'Bento grid', icon: 'layout-dashboard', tags: 'bento tiles featured tall feature grid asymmetric layout mosaic', layout: true },
+  { id: 'sidebar', primitive: 'grid', starter: 'sidebar', name: 'Sidebar + main', icon: 'panel-right', tags: 'sidebar main content aside sticky pinned two columns 2-column layout asymmetric', layout: true },
+  { id: 'split', primitive: 'grid', starter: 'split', name: 'Asymmetric split', icon: 'layout-panel-left', tags: 'asymmetric split uneven wide narrow 2:1 two columns 2-column layout side by side', layout: true },
   { id: 'row', primitive: 'row', name: 'Row', icon: 'align-horizontal-space-around', tags: 'horizontal container group side by side', layout: true },
   { id: 'grid', primitive: 'grid', name: 'Grid', icon: 'layout-grid', tags: 'columns container layout', layout: true },
   { id: 'heading', primitive: 'heading', name: 'Heading', icon: 'heading-1', tags: 'title text h1 h2' },
@@ -57,7 +69,7 @@ export const BASICS: Basic[] = [
 ];
 
 /** What Insert adds for a basic element. */
-export const basicSpec = (b: Basic): InsertSpec => ({ primitive: b.primitive, ...(b.text ? { text: b.text } : {}), ...(b.columns ? { columns: b.columns } : {}), ...(b.shape ? { shape: b.shape } : {}) });
+export const basicSpec = (b: Basic): InsertSpec => ({ primitive: b.primitive, ...(b.text ? { text: b.text } : {}), ...(b.columns ? { columns: b.columns } : {}), ...(b.starter ? { starter: b.starter } : {}), ...(b.shape ? { shape: b.shape } : {}) });
 
 /** How search reads a basic element: its name, its tags, and what it is. */
 export const basicHay = (b: Basic) => `${b.name} ${b.tags} element`.toLowerCase();
