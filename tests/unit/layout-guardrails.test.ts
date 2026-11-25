@@ -6,7 +6,7 @@
  * every starter in every theme.
  */
 import { describe, expect, it } from 'vitest';
-import type { ComponentDefinition, ElementNode, GraphNode, InstanceNode, ProjectState, ResponsiveStyles, TextNode } from '@shared/types';
+import type { ComponentDefinition, ElementNode, GraphNode, InstanceNode, ProjectState, ResponsiveStyles, StyleProps, TextNode } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { STARTERS, createStarterState } from '@catalogue/starters';
@@ -40,7 +40,7 @@ const apply = (s: ProjectState, ops: EditOperation[]) => applyOperations(s, ops)
 const setStyle = (s: ProjectState, nodeId: string, scope: string, property: string, value: unknown, extra: Record<string, unknown> = {}) =>
   apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId, scope, property, value, ...extra } as EditOperation]);
 
-/** A project design of hand-built nodes: a card whose root wraps its `content` slot in `n_inner` unless told otherwise. */
+/** A project design of hand-built nodes, its root and `n_inner` declared as parts, with a `content` slot unless told otherwise. */
 function addDesign(s: ProjectState, id: string, nodes: GraphNode[], extra: Partial<ComponentDefinition> = {}): ComponentDefinition {
   const def = {
     schemaVersion: SCHEMA_VERSION,
@@ -54,9 +54,9 @@ function addDesign(s: ProjectState, id: string, nodes: GraphNode[], extra: Parti
     category: 'content',
     tags: [],
     properties: {},
-    parts: { inner: { nodeId: 'n_inner', label: 'Inside' } },
+    parts: nodes.length ? { root: { nodeId: nodes[0].id, label: 'Card' }, inner: { nodeId: 'n_inner', label: 'Inside' } } : {},
     slots: { content: { label: 'Content' } },
-    tree: { rootIds: [nodes[0].id], nodes: Object.fromEntries(nodes.map((n) => [n.id, n])) },
+    ...(nodes.length ? { tree: { rootIds: [nodes[0].id], nodes: Object.fromEntries(nodes.map((n) => [n.id, n])) } } : {}),
     ...extra
   } as ComponentDefinition;
   s.components[id] = def;
@@ -76,7 +76,7 @@ describe('a sticky element inside a container that hides overflow', () => {
     expect(rest).toEqual([]);
     expect(d).toMatchObject({ severity: 'warning', code: STICKY, owner: owner(s), nodeId: 'n_side' });
     expect(d.message).toBe(
-      `${home(s).title}: on tablets, “Sidebar” is set to stick while the page scrolls, but “Card” around it hides overflow, so it scrolls away with everything else. Set the Overflow of “Card” to Clip: it trims what spills out the same way and lets “Sidebar” stick.`
+      `${home(s).title}: on tablets, “Sidebar” is set to stick while the page scrolls, but “Card” around it hides overflow, so it scrolls away with everything else. Set the Overflow of “Card” to Clip: it still trims what spills over its edges, and lets “Sidebar” stick.`
     );
     expect(d.fix).toEqual({ label: 'Set Overflow to Clip', operations: [{ type: 'node.setStyle', owner: owner(s), nodeId: 'n_card', scope: 'tablet', property: 'overflow', value: 'clip' }] });
     expect(blocksSaving(d)).toBe(false);
@@ -115,6 +115,27 @@ describe('a sticky element inside a container that hides overflow', () => {
     expect(fixOf({ base: { layout: 'stack' }, phone: { layout: 'block' }, tablet: { overflow: 'hidden' } })).toEqual([clip('tablet')]);
   });
 
+  it('offers no one-step fix where Clip could change more than the sticking', () => {
+    const sidebar = el('n_side', 'Sidebar', { base: { position: 'sticky', inset: '0' } });
+    // In a row, a box that no longer scrolls takes its content's width as its least, and may widen.
+    let s = page([el('n_row', 'Row', { base: { layout: 'row' } }, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar]);
+    expect(guardrails(s).map((d) => [d.code, d.fix])).toEqual([[STICKY, undefined]]);
+    // In flow, or a stack free to grow, it can only stay as wide as it was.
+    s = setStyle(s, 'n_row', 'base', 'layout', 'stack');
+    expect(guardrails(s)[0].fix?.operations).toHaveLength(1);
+    s = setStyle(s, 'n_row', 'base', 'maxHeight', '30rem');
+    expect(guardrails(s)[0].fix).toBeUndefined();
+    // Another box further out hides overflow too: one step would only hand the job to it.
+    s = page([el('n_outer', 'Outer', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar]);
+    expect(guardrails(s).map((d) => [d.message.includes('“Card” around it'), d.fix])).toEqual([[true, undefined]]);
+    // A project component's design is every placement's, though the same box on a page would take the fix.
+    const t = fresh();
+    addDesign(t, 'c_panel', [el('n_root', 'Panel', undefined, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar], { parts: {}, slots: {} });
+    expect(guardrails(t).map((d) => [d.code, d.owner, d.fix])).toEqual([[STICKY, { kind: 'component', id: 'c_panel' }, undefined]]);
+    const onPage = page([el('n_root', 'Panel', undefined, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar]);
+    expect(guardrails(onPage)[0].fix?.operations).toHaveLength(1);
+  });
+
   it('stays quiet for sticky headers and sidebars that work', () => {
     // Clip, visible, or nothing set on every container around it.
     expect(guardrails(clipped({ base: { layout: 'stack', overflow: 'clip' } }))).toEqual([]);
@@ -126,6 +147,21 @@ describe('a sticky element inside a container that hides overflow', () => {
     expect(guardrails(s)).toEqual([]);
     // A sticky header straight on the page.
     expect(guardrails(page([el('n_head', 'Header', { base: { position: 'sticky', inset: '0 auto auto auto' } })]))).toEqual([]);
+    // With no offset from the top or bottom it never sticks, so the card takes nothing from it.
+    for (const inset of [undefined, 'auto', '0 auto auto auto'.replace('0', 'auto'), 'auto 0']) {
+      s = clipped({ base: { layout: 'stack', overflow: 'hidden' } });
+      s = setStyle(s, 'n_side', 'base', 'inset', inset ?? null);
+      expect(guardrails(s), String(inset)).toEqual([]);
+    }
+    // A bottom offset sticks as surely as a top one: `top inline bottom`.
+    s = setStyle(clipped({ base: { layout: 'stack', overflow: 'hidden' } }), 'n_side', 'base', 'inset', 'auto 0 1rem');
+    expect(guardrails(s, STICKY)).toHaveLength(1);
+    // A box displayed some other way may be no box at all (contents): it is not read.
+    s = clipped({ base: { layout: 'stack', overflow: 'hidden', customCss: 'display: contents' } });
+    expect(guardrails(s)).toEqual([]);
+    // Overflow applies to no inline box: a hidden span around it is passed over.
+    s = page([el('n_card', 'Card', { base: { layout: 'stack' } }, ['n_wrap']), el('n_wrap', 'Words', { base: { overflow: 'hidden' } }, ['n_side'], { tag: 'span' }), el('n_side', 'Sidebar', { base: { position: 'sticky', inset: '0' } })]);
+    expect(guardrails(s)).toEqual([]);
     // A panel that scrolls on purpose, nearer than the hidden card: it sticks inside that panel.
     s = clipped({ base: { layout: 'stack', overflow: 'hidden' } });
     s = setStyle(s, 'n_wrap', 'base', 'customCss', 'overflow-y: auto; max-height: 20rem');
@@ -139,11 +175,12 @@ describe('a sticky element inside a container that hides overflow', () => {
   it('is found through a placed component, with advice only for the component’s own styles', () => {
     const s = fresh();
     addDesign(s, 'c_card', [el('n_root', 'Frame', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_inner']), el('n_inner', 'Inner', undefined, ['n_slot']), slotNode('n_slot')]);
-    page([placement('n_place', 'c_card', { slots: { content: ['n_side'] } }), el('n_side', 'Sidebar', { base: { position: 'sticky' } })], s);
+    page([placement('n_place', 'c_card', { slots: { content: ['n_side'] } }), el('n_side', 'Sidebar', { base: { position: 'sticky', inset: '1rem auto auto auto' } })], s);
     const [d, ...rest] = guardrails(s);
     expect(rest).toEqual([]);
     expect(d).toMatchObject({ code: STICKY, nodeId: 'n_side' });
     expect(d.message).toMatch(/: “Sidebar” is set to stick while the page scrolls, but “Card” around it hides overflow/);
+    // The design's own styles are every placement's: no one-step change here.
     expect(d.fix).toBeUndefined();
     // The placement's own change to its root wins over the design's.
     home(s).nodes.n_place = placement('n_place', 'c_card', { slots: { content: ['n_side'] }, overrides: { root: { base: { overflow: 'clip' } } } });
@@ -165,6 +202,11 @@ describe('a grid child spanning more columns than its grid has', () => {
       `${home(s).title}: on tablets, “Feature” spans 3 columns, but its grid has only 2 columns, so the grid adds a column of its own to fit it, squeezing the others. Lower its Column span to 2, or give the grid more columns.`
     );
     expect(d.fix).toBeUndefined();
+  });
+
+  it('leaves phones out of a span set for all sizes, whatever the phone grid', () => {
+    const s = bento(undefined, { base: { layout: 'grid', columns: 3 }, phone: { columns: 2 }, tablet: { columns: 2 } });
+    expect(guardrails(s).map((d) => d.message.match(/: (on [a-z ]+),/)?.[1])).toEqual(['on tablets']);
   });
 
   it('reads a span set for phones, which a span for all sizes leaves alone', () => {
@@ -199,7 +241,11 @@ describe('a grid child spanning more columns than its grid has', () => {
     expect(guardrails(bento({ base: { columnSpan: '2' } }))).toEqual([]);
     expect(guardrails(bento({ base: { columnSpan: 3 } }, { base: { layout: 'grid', columns: 3 } }))).toEqual([]);
     // Not a grid at that size: a span means nothing in a stack.
-    expect(guardrails(bento(undefined, { base: { layout: 'grid', columns: 3 }, tablet: { layout: 'stack' } }))).toEqual([]);
+    expect(guardrails(bento(undefined, { base: { layout: 'grid', columns: 3 }, tablet: { layout: 'stack', columns: 2 } }))).toEqual([]);
+    // A numeric span is read like the Inspector's text one.
+    expect(guardrails(bento({ base: { columnSpan: 3 } })).map((d) => d.code)).toEqual([SPAN]);
+    // A disclosure lays out what it holds in a box of its own, not in its grid's columns.
+    expect(guardrails(page([el('n_more', 'More', { base: { layout: 'grid', columns: 2 } }, ['n_body'], { tag: 'details' }), el('n_body', 'Body', { base: { columnSpan: '3' } })]))).toEqual([]);
     // A grid with no column count lays everything out in columns of its own making.
     expect(guardrails(bento(undefined, { base: { layout: 'grid' } }))).toEqual([]);
     // Placed absolutely, it makes no columns (whatever else is said about it).
@@ -209,9 +255,11 @@ describe('a grid child spanning more columns than its grid has', () => {
     expect(guardrails(bento(undefined, { base: { layout: 'grid', columns: 3, customCss: 'grid-template-columns: repeat(4, 1fr)' }, tablet: { columns: 2 } }))).toEqual([]);
   });
 
-  it('reads a text element as a grid child', () => {
+  it('reads a text element as a grid child, but not rich text, which the runtime renders', () => {
     const s = page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 2 } }, ['n_title']), text('n_title', 'Title', { base: { columnSpan: '4' } })]);
     expect(guardrails(s).map((d) => [d.code, d.nodeId])).toEqual([[SPAN, 'n_title']]);
+    home(s).nodes.n_title = { ...home(s).nodes.n_title, rich: true, text: [] } as GraphNode;
+    expect(guardrails(s)).toEqual([]);
   });
 
   it('reads the grid a placed component wraps its slot in, and a placement as a grid child', () => {
@@ -221,7 +269,7 @@ describe('a grid child spanning more columns than its grid has', () => {
     section.overrides = { container: { base: { layout: 'grid', columns: 2 } } };
     section.slots = { content: ['n_feature'] };
     page([section, el('n_feature', 'Feature', { base: { columnSpan: '3' } })], s);
-    // A placement's columns for all sizes apply from tablet up: phones keep the section's own stack.
+    // A placement's column count for all sizes applies from tablet up: on phones its grid has no count to exceed.
     const [d, ...rest] = guardrails(s);
     expect(rest).toEqual([]);
     expect(d).toMatchObject({ code: SPAN, nodeId: 'n_feature' });
@@ -235,13 +283,51 @@ describe('a grid child spanning more columns than its grid has', () => {
     expect(guardrails(t).map((x) => [x.code, x.nodeId])).toEqual([[SPAN, inner.id]]);
   });
 
+  it('reads only the parts a design declares, and nothing a condition may leave out', () => {
+    // A change to a part the design does not declare reaches no element.
+    const s = fresh();
+    addDesign(s, 'c_tile', [el('n_root', 'Tile')], { parts: {}, slots: {} });
+    page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 2 } }, ['n_place']), placement('n_place', 'c_tile', { overrides: { root: { base: { columnSpan: '3' } } } })], s);
+    expect(guardrails(s)).toEqual([]);
+    s.components.c_tile.parts = { root: { nodeId: 'n_root', label: 'Tile' } };
+    expect(guardrails(s).map((d) => [d.code, d.nodeId])).toEqual([[SPAN, 'n_place']]);
+    // A change that shows it again gets a display the generator picks from the options in its own order: not read.
+    home(s).nodes.n_place = placement('n_place', 'c_tile', { overrides: { root: { base: { columnSpan: '3', hidden: false } } } });
+    expect(guardrails(s)).toEqual([]);
+    // A slot inside a container its design shows only under a condition: what is placed there may never show.
+    const t = fresh();
+    addDesign(t, 'c_card', [el('n_root', 'Frame', undefined, ['n_inner']), el('n_inner', 'Inner', undefined, ['n_slot'], { when: { $prop: 'open' } } as Partial<ElementNode>), slotNode('n_slot')]);
+    page([placement('n_place', 'c_card', { slots: { content: ['n_badge'] } }), el('n_badge', 'Badge', { base: { position: 'absolute' } })], t);
+    expect(guardrails(t)).toEqual([]);
+    // Inside a code component's slot, a section's grid may be styled by the component's own stylesheet.
+    const u = fresh();
+    addDesign(u, 'c_code', [], { kind: 'code' });
+    const section = makeInstance(u.components[installComponent(u, 'layout.section')], {});
+    section.overrides = { container: { base: { layout: 'grid', columns: 2 } } };
+    section.slots = { content: ['n_feature'] };
+    page([placement('n_code', 'c_code', { slots: { content: [section.id] } }), section, el('n_feature', 'Feature', { base: { columnSpan: '3' } })], u);
+    expect(guardrails(u)).toEqual([]);
+  });
+
+  it('says nothing where the theme’s own rules may place a detached copy of its design', () => {
+    // Editorial gives a text section's heading the whole row when it is alone, detached copies included.
+    const loneHeading = (detachedFrom?: unknown) => {
+      const s = createStarterState('blank', 'Blank', false, 'editorial');
+      return page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 2 } }, ['n_heading']), el('n_heading', 'Heading', { base: { columnSpan: '3' } }, [], detachedFrom ? ({ detachedFrom } as Partial<ElementNode>) : {})], s);
+    };
+    expect(guardrails(loneHeading()).map((d) => d.code)).toEqual([SPAN]);
+    expect(guardrails(loneHeading({ component: 'editorial-content-text', node: 'heading' }))).toEqual([]);
+    // A copy of a node no theme rule hooks is read as usual.
+    expect(guardrails(loneHeading({ component: 'editorial-content-text', node: 'nothing-hooks-this' })).map((d) => d.code)).toEqual([SPAN]);
+  });
+
   it('reads a repeat’s items as the grid’s own children, in a project component’s design', () => {
     const s = fresh();
     const def = addDesign(s, 'c_cards', [
       el('n_root', 'Cards', { base: { layout: 'grid', columns: 2 } }, ['n_each']),
       { id: 'n_each', kind: 'repeat', list: { $prop: 'items' }, children: ['n_item'] } as GraphNode,
       el('n_item', 'Card', { base: { columnSpan: '3' } })
-    ], { parts: {}, slots: {} });
+    ], { parts: {}, slots: {}, properties: { items: { type: 'list', label: 'Items', fields: {}, default: [{ id: 'i_one' }] } } as ComponentDefinition['properties'] });
     expect(guardrails(s).map((d) => [d.code, d.owner, d.nodeId])).toEqual([[SPAN, { kind: 'component', id: def.id }, 'n_item']]);
   });
 });
@@ -260,17 +346,21 @@ describe('an absolutely positioned element with nothing positioned around it', (
       `${home(s).title}: “Badge” is positioned absolutely, but no container around it is Relative, Sticky or Absolute, so it is placed against the whole page instead of inside “Card”. Set the Position of “Card” to Relative.`
     );
     expect(blocksSaving(d)).toBe(false);
+    expect(d.fix).toBeUndefined();
     expect(guardrails(setStyle(s, 'n_card', 'base', 'position', 'relative'))).toEqual([]);
   });
 
   it('suggests a container for one placed straight on the page', () => {
     const s = page([el('n_badge', 'Badge', { base: { position: 'absolute' } })]);
+    expect(guardrails(s).map((d) => [d.code, d.nodeId])).toEqual([[ABSOLUTE, 'n_badge']]);
     expect(guardrails(s)[0].message).toBe(`${home(s).title}: “Badge” is positioned absolutely with no container around it, so it is placed against the whole page. Put it inside a container, and set that container’s Position to Relative.`);
   });
 
   it('is anchored by any positioned container around it, at the sizes it is positioned', () => {
     // (A section placed absolutely is loose itself, straight on the page; the badge inside it is not.)
     for (const position of ['relative', 'sticky', 'absolute']) expect(guardrails(loose(undefined, { base: { position } })).filter((d) => d.nodeId === 'n_badge'), position).toEqual([]);
+    // Normal is no position at all.
+    expect(guardrails(loose(undefined, { base: { position: 'static' } })).map((d) => d.nodeId)).toEqual(['n_badge']);
     expect(guardrails(loose({ base: { layout: 'stack' }, tablet: { position: 'relative' } }))[0].message).toMatch(/: on phones and desktops, “Badge” is positioned absolutely/);
     // Hidden on phones, it is placed nowhere there.
     let s = loose({ base: { layout: 'stack' }, tablet: { position: 'relative' } });
@@ -279,10 +369,10 @@ describe('an absolutely positioned element with nothing positioned around it', (
   });
 
   it('is anchored by a shift, scale, turn or blur on a container, even one that changes nothing', () => {
-    for (const styles of [{ translateY: '0px' }, { translateX: '-4px' }, { scale: 1 }, { rotate: 0 }, { backdropBlur: '12px' }, { customCss: 'filter: saturate(1.2)' }])
+    for (const styles of [{ translateY: '0px' }, { translateX: '-4px' }, { scale: 1 }, { rotate: 0 }, { backdropBlur: '12px' }, { customCss: 'filter: saturate(1.2)' }] as StyleProps[])
       expect(guardrails(loose({ base: { layout: 'stack', ...styles } })), JSON.stringify(styles)).toEqual([]);
-    // Neither a zero blur, opacity, a layer nor a turning point makes one.
-    for (const styles of [{ backdropBlur: '0' }, { opacity: 0.9 }, { zIndex: 2 }, { transformOrigin: 'top left' }])
+    // Neither a zero blur, opacity, a layer, a turning point nor custom CSS that only paints makes one.
+    for (const styles of [{ backdropBlur: '0' }, { opacity: 0.9 }, { zIndex: 2 }, { transformOrigin: 'top left' }, { customCss: 'color: red' }] as StyleProps[])
       expect(guardrails(loose({ base: { layout: 'stack', ...styles } })).map((d) => d.code), JSON.stringify(styles)).toEqual([ABSOLUTE]);
     // A shift only on hover leaves it loose while resting.
     expect(guardrails(loose({ base: { layout: 'stack' }, 'base:hover': { translateY: '-4px' } })).map((d) => d.code)).toEqual([ABSOLUTE]);
@@ -300,9 +390,11 @@ describe('an absolutely positioned element with nothing positioned around it', (
     // The option that positions the box around the slot anchors it; the root, which the page shows, never changed.
     home(s).nodes.n_place = placement('n_place', 'c_card', { slots: { content: ['n_badge'] }, variants: { tone: 'framed' } });
     expect(guardrails(s)).toEqual([]);
-    // So does the placement's own change to that part.
+    // So does the placement's own change to that part, which also beats the option's.
     home(s).nodes.n_place = placement('n_place', 'c_card', { slots: { content: ['n_badge'] }, overrides: { inner: { base: { position: 'sticky' } } } });
     expect(guardrails(s)).toEqual([]);
+    home(s).nodes.n_place = placement('n_place', 'c_card', { slots: { content: ['n_badge'] }, variants: { tone: 'framed' }, overrides: { inner: { base: { position: 'static' } } } });
+    expect(guardrails(s).map((x) => x.nodeId)).toEqual(['n_badge']);
   });
 
   it('says nothing where what is around it is not known', () => {
@@ -310,7 +402,7 @@ describe('an absolutely positioned element with nothing positioned around it', (
     const s = fresh();
     addDesign(s, 'c_badge', [el('n_root', 'Frame', undefined, ['n_mark']), el('n_mark', 'Mark', { base: { position: 'absolute' } })], { parts: {}, slots: {} });
     expect(guardrails(s)).toEqual([]);
-    // Inside a container whose action wraps it in a link of the runtime's (opening an image is positioned).
+    // Inside a container with an action, which the runtime may wrap in a link of its own (positioned, to open an image).
     expect(guardrails(page([el('n_card', 'Card', undefined, ['n_badge'], { action: 'image' }), el('n_badge', 'Badge', { base: { position: 'absolute' } })]))).toEqual([]);
     // Inside a carousel, whose frame is the runtime's.
     expect(guardrails(page([el('n_track', 'Track', undefined, ['n_slide'], { tag: 'ul', carousel: true }), el('n_slide', 'Slide', { base: { position: 'absolute' } }, [], { tag: 'li' })]))).toEqual([]);
@@ -324,9 +416,16 @@ describe('an absolutely positioned element with nothing positioned around it', (
 
 describe('the guardrails as diagnostics', () => {
   it('keep their identity through renames, so a rename brings in nothing new', () => {
-    const s = page([el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side', 'n_badge']), el('n_side', 'Sidebar', { base: { position: 'sticky' } }), el('n_badge', 'Badge', { base: { position: 'absolute' } })]);
+    const s = page([
+      el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side', 'n_note', 'n_badge']),
+      el('n_side', 'Sidebar', { base: { position: 'sticky', inset: '0' } }),
+      el('n_note', 'Note', { base: { position: 'sticky', inset: '0' } }),
+      el('n_badge', 'Badge', { base: { position: 'absolute' } })
+    ]);
     const before = guardrails(s);
-    expect(before.map((d) => d.code).sort()).toEqual([ABSOLUTE, STICKY]);
+    expect(before.map((d) => d.code).sort()).toEqual([ABSOLUTE, STICKY, STICKY]);
+    // Two of a kind in one page are two problems: the second one made again is new.
+    expect(introducedDiagnostics(before.filter((d) => d.nodeId !== 'n_note'), before).map((d) => d.nodeId)).toEqual(['n_note']);
     const renamed = apply(s, [
       { type: 'page.update', pageId: s.site.homePageId, title: 'Start' },
       { type: 'node.rename', owner: owner(s), nodeId: 'n_side', name: 'Contents' }
@@ -337,10 +436,13 @@ describe('the guardrails as diagnostics', () => {
   });
 
   it('never block a save or an edit', () => {
-    const s = page([el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), el('n_side', 'Sidebar', { base: { position: 'sticky' } })]);
+    const before = page([el('n_card', 'Card', { base: { layout: 'stack', overflow: 'visible' } }, ['n_side']), el('n_side', 'Sidebar', { base: { position: 'sticky', inset: '0' } })]);
+    expect(guardrails(before)).toEqual([]);
+    // The edit that brings the problem in goes through, and saving reads none of it.
+    const s = setStyle(before, 'n_card', 'base', 'overflow', 'hidden');
+    expect(guardrails(s).map((d) => d.code)).toEqual([STICKY]);
     expect(validateState(s).filter(blocksSaving)).toEqual([]);
     expect(validateState(s, { sectionLinks: false }).filter((d) => d.code.startsWith('LAYOUT_'))).toEqual([]);
-    expect(() => setStyle(s, 'n_side', 'base', 'inset', '0 auto auto auto')).not.toThrow();
   });
 
   it('find nothing in any starter of any theme, or in any of a theme’s components placed on a page', () => {
@@ -357,6 +459,9 @@ describe('the guardrails as diagnostics', () => {
           home(s).rootIds.push(node.id);
         }
         expect(guardrails(s), `${theme.id} components`).toEqual([]);
+        // The theme's own stylesheet positions nothing a page sits in: a loose badge is still found.
+        page([el('n_badge', 'Badge', { base: { position: 'absolute' } })], s);
+        expect(guardrails(s).map((d) => d.code), `${theme.id} badge`).toEqual([ABSOLUTE]);
       }
   });
 });
