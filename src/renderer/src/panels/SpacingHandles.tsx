@@ -26,7 +26,7 @@ import {
   type SpacingHandle,
   type SpacingTarget
 } from '../lib/spacing-drag';
-import { columnBoxes, gapDecls, gutters, planGap, planSplit, planWidth, sameSplit, splitDecls, splitDragValue, splitMedia, widthDecls, widthDragValue, widthReach } from '../lib/layout-drag';
+import { columnBoxes, gapDecls, gutters, planGap, planSplit, planWidth, sameSplit, splitDecls, splitDragValue, splitMedia, widthDecls, widthDragValue, widthReach, type SplitPlan } from '../lib/layout-drag';
 
 /** Screen pixels a press must travel before it is a drag rather than a click. */
 const DRAG_START = 3;
@@ -61,6 +61,8 @@ interface Grip {
   /** Whether a value is what the selection already has, so saving it changes nothing. */
   unchanged: (value: StyleValue) => boolean;
   text: (v: DragValue) => string;
+  /** A column divider's columns as they were when it was drawn. */
+  split?: SplitPlan;
 }
 
 interface Drag {
@@ -204,7 +206,9 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     const onScreen = (r: FrameRect): Rect => ({ left: sx(r.x), top: sy(r.y), width: r.width * z, height: r.height * z });
     const edges = { padding: pd, border: bd };
     const all = gutters(layout, edges, rtl);
-    const split = planSplit(state, t, scope, shown, layout);
+    // A divider being dragged keeps its columns while its own preview resizes them (the page no longer shows the split
+    // they say), so it is drawn where its gutter has moved to.
+    const split = planSplit(state, t, scope, shown, layout) ?? drag.current?.grip.split ?? null;
     for (const axis of ['x', 'y'] as const) {
       const plan = planGap(axis, t, scope, shown);
       const mine = all.filter((g) => g.axis === axis);
@@ -284,7 +288,8 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
             decls: (v) => splitDecls(String(v)),
             media: splitMedia(scope),
             unchanged: (v) => sameSplit(gridTemplateShares(v), split.shares),
-            text: (v) => String(v.value)
+            text: (v) => String(v.value),
+            split
           });
         });
     }
