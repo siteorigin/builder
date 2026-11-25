@@ -8,6 +8,8 @@ let mode = 'edit';
 let revision = 0;
 let selected = null; // descriptor
 let hovered = null;
+// The empty slots of the selected placement the editor draws Add buttons in (#657): measured with each outline.
+let trackedSlots = [];
 /** The innermost element under the pointer, as last reported to the editor. */
 let pointerAt = null;
 /** The element `pointerAt` describes. */
@@ -240,7 +242,9 @@ function sendRects() {
   const box = mode === 'edit' && first >= 0 && !selected.part && selected.slot === undefined ? spacingOf(selEls[first]) : null;
   // Read in the same pass, after the boxes above have brought the page's layout up to date: no further reflow.
   const spacing = box && { ...box, layout: layoutReport(selEls[first]), ctx: selected.ctx, node: selected.node, items: selected.items || '' };
-  send('rects', { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, viewport: { width: innerWidth, height: innerHeight, scrollY } });
+  // Each tracked slot's placeholder where it first shows, with what it was measured for.
+  const slots = mode === 'edit' ? trackedSlots.flatMap((desc) => { const box = findAll(desc).map(rectOf).find(Boolean); return box ? [{ desc, box }] : []; }) : [];
+  send('rects', { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, viewport: { width: innerWidth, height: innerHeight, scrollY } });
 }
 
 // ---------------------------------------------------------------------------
@@ -4514,6 +4518,7 @@ window.addEventListener('message', async (e) => {
       // The author selected something else meanwhile: the element asked for is no longer the one to show.
       if (pendingScroll && !sameDesc(pendingScroll.desc, selected)) pendingScroll = null;
       if (m.payload.hovered !== undefined) hovered = m.payload.hovered;
+      trackedSlots = Array.isArray(m.payload.slots) ? m.payload.slots.filter((d) => d && typeof d.slot === 'string').slice(0, 50) : [];
       scheduleRects();
       break;
     case 'scrollTo': {

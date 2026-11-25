@@ -7,7 +7,7 @@ import { breadcrumb, createComponentTarget, definitionPick, descOf, placedSlot, 
 import { insertAt } from '../../src/renderer/src/lib/insert-at';
 import { addPoints } from '../../src/renderer/src/lib/inline-insert';
 import { placeToKeep, readPlaces } from '../../src/renderer/src/lib/page-place';
-import { chainOf } from '../../src/renderer/src/lib/payload';
+import { chainOf, slotBoxes } from '../../src/renderer/src/lib/payload';
 import { toggle } from '../../src/renderer/src/lib/layer-set';
 import { styleSelection } from '../../src/renderer/src/lib/style-copy';
 import { composerScope } from '../../src/renderer/src/lib/chatTarget';
@@ -128,11 +128,12 @@ describe('a slot picked by its empty box (#652)', () => {
     expect(structuralTarget(p.placement, { state: st })).toEqual(p.placement);
     expect(detachable(st, p.slot('sidebar'))).toBeNull();
     expect(createComponentTarget({ state: st }, p.slot('sidebar'))).toBeNull();
-    expect(addPoints(st, p.owner, p.slot('sidebar'))).toEqual([]);
-    // The section's own Content slot: none of the section's Add buttons, which it has as a placement.
+    // Only an Add button inside the slot itself (#657), never one beside its placement.
+    expect(addPoints(st, p.owner, p.slot('sidebar')).map((x) => [x.side, x.slot])).toEqual([['inside', 'sidebar']]);
+    // The section's own Content slot: none of the section's Add buttons above or below it, which it has as a placement.
     const sectionSlot: ElementRef = { owner: p.owner, instancePath: [], nodeId: p.section, slot: 'content' };
     expect(addPoints(st, p.owner, { ...sectionSlot, slot: undefined }).length).toBeGreaterThan(0);
-    expect(addPoints(st, p.owner, sectionSlot)).toEqual([]);
+    expect(addPoints(st, p.owner, sectionSlot).map((x) => x.side)).toEqual(['inside']);
     // No styles of its own to copy or paste.
     expect(styleSelection(st, p.slot('sidebar'))).toBeNull();
     expect(styleSelection(st, p.placement)).not.toBeNull();
@@ -166,5 +167,16 @@ describe('a slot picked by its empty box (#652)', () => {
   it('is filled on its page, not in the design edited everywhere', () => {
     const p = split();
     expect(definitionPick(p.state(), p.definitionId, p.chainTo('sidebar'))?.ref).toEqual({ owner: { kind: 'component', id: p.definitionId }, instancePath: [], nodeId: 'sideCol' });
+  });
+});
+
+describe('the empty slots’ boxes a page reports (#657)', () => {
+  it('keeps each well-formed slot and its box, and drops anything else', () => {
+    const desc = { ctx: 'page:p', node: 'split', items: '', slot: 'main' };
+    const box = { x: 1, y: 2, width: 30, height: 40 };
+    expect(slotBoxes([{ desc: { ...desc, tag: 'span' }, box: { ...box, extra: 1 } }])).toEqual([{ desc, box }]);
+    expect(slotBoxes([{ desc: { ...desc, slot: undefined }, box }, { desc, box: { ...box, width: -1 } }, { desc }, null, 'x'])).toEqual([]);
+    expect(slotBoxes('nope')).toEqual([]);
+    expect(slotBoxes(Array.from({ length: 80 }, () => ({ desc, box }))).length).toBe(50);
   });
 });

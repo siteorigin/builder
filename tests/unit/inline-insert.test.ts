@@ -167,11 +167,18 @@ describe('an Add button goes only where the slot it fills is plain', () => {
   }
   const partOf = (owner: OwnerRef, placement: string, nodeId: string): ElementRef => ({ owner, instancePath: [placement], nodeId });
 
-  it('a part holding two slots, or a placement showing several, gets none; a part holding one gets that one', () => {
+  it('a part holding two slots gets none, a placement showing several gets one on each empty slot (#657); a part holding one gets that one', () => {
     const p = twoSlots();
     expect(addPoints(p.state, p.owner, partOf(p.owner, p.card, 'wrap'))).toEqual([]);
     expect(addPoints(p.state, p.owner, partOf(p.owner, p.card, 'wrap'), true)).toEqual([]);
-    expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
+    // Each drawn on its own slot's box, never all on the placement's.
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card)).map((x) => [x.slot, x.onSlot])).toEqual([
+      ['body', true],
+      ['aside', true],
+      ['media', true]
+    ]);
+    // Hovered, the placement has no slot boxes measured for it: the pointer over an empty slot hovers that slot instead.
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card), true)).toEqual([]);
     const [media] = addPoints(p.state, p.owner, partOf(p.owner, p.card, 'mediaBox'));
     expect(resolvePoint(p.state, media)).toEqual({ owner: p.owner, parentId: p.card, slot: 'media' });
     const out = applyOperations(p.state, insertOps(resolvePoint(p.state, media)!, { primitive: 'button' }, 'element'));
@@ -290,6 +297,135 @@ describe('an Add button goes only where the slot it fills is plain', () => {
   it('a repeated item’s copy gets none: the place would be every item’s', () => {
     const p = page();
     expect(addPoints(p.state, p.owner, { ...ref(p.owner, p.row), itemPath: ['a'] })).toEqual([]);
+  });
+});
+
+describe('Add buttons inside the slots of a component that shows several (#657)', () => {
+  /** Home: a Section holding a Split that shows Main (anything) and Sidebar (text only) side by side, both empty. */
+  function split() {
+    let state = createStarterState('blank', 'Expo', false);
+    const owner: OwnerRef = { kind: 'page', id: state.site.homePageId };
+    const step = (ops: EditOperation[]) => {
+      const out = applyOperations(state, ops);
+      state = out.state;
+      return out.results;
+    };
+    const [{ nodeId: section }] = step([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]);
+    const [{ definitionId }] = step([
+      {
+        type: 'component.upsert',
+        name: 'Split',
+        insertAs: 'element',
+        properties: {},
+        nodes: [
+          { kind: 'element', id: 'root', children: ['mainCol', 'sideCol'], styles: { base: { layout: 'grid', columns: 2 } } },
+          { kind: 'element', id: 'mainCol', children: ['main'] },
+          { kind: 'slot', id: 'main', slot: 'main' },
+          { kind: 'element', id: 'sideCol', children: ['side'] },
+          { kind: 'slot', id: 'side', slot: 'sidebar' }
+        ],
+        slots: { main: { label: 'Main' }, sidebar: { label: 'Sidebar', primitives: ['text'] } }
+      }
+    ]);
+    const [{ nodeId: placed }] = step([{ type: 'node.insert', owner, parentId: section as string, slot: 'content', definitionId: definitionId as string }]);
+    const id = placed as string;
+    return { state: () => state, step, owner, section: section as string, definitionId: definitionId as string, id, placement: ref(owner, id), slot: (name: string): ElementRef => ({ ...ref(owner, id), slot: name }) };
+  }
+  const slotList = (s: ProjectState, id: string, slot: string) => (home(s).nodes[id] as InstanceNode).slots?.[slot] ?? [];
+
+  it('a selected Split gets one in Main and one in Sidebar, each on its own slot’s box and named by it', () => {
+    const p = split();
+    const points = addPoints(p.state(), p.owner, p.placement);
+    expect(points.map((x) => [x.side, x.slot, x.onSlot])).toEqual([
+      ['inside', 'main', true],
+      ['inside', 'sidebar', true]
+    ]);
+    expect(new Set(points.map((x) => x.key)).size).toBe(2);
+    expect(points.map(pointLabel)).toEqual(['Add inside Main in Split', 'Add inside Sidebar in Split']);
+    expect(points.map((x) => resolvePoint(p.state(), x))).toEqual([
+      { owner: p.owner, parentId: p.id, slot: 'main' },
+      { owner: p.owner, parentId: p.id, slot: 'sidebar' }
+    ]);
+  });
+
+  for (const [slot, other] of [
+    ['main', 'sidebar'],
+    ['sidebar', 'main']
+  ] as const)
+    it(`what is chosen from ${slot}’s button goes into ${slot} alone, in one change`, () => {
+      const p = split();
+      const point = addPoints(p.state(), p.owner, p.placement).find((x) => x.slot === slot)!;
+      const at = resolvePoint(p.state(), point)!;
+      const paragraph = offeredAt(p.state(), at, 'element').find((it) => it.name === 'Paragraph')!;
+      const out = applyOperations(p.state(), insertOps(at, paragraph.spec, 'element'));
+      expect(slotList(out.state, p.id, slot)).toEqual([out.results[0].nodeId]);
+      expect(slotList(out.state, p.id, other)).toEqual([]);
+    });
+
+  it('each slot’s list offers what that slot’s contract takes', () => {
+    const p = split();
+    const [main, sidebar] = addPoints(p.state(), p.owner, p.placement).map((x) => offeredAt(p.state(), resolvePoint(p.state(), x)!, 'element').map((it) => it.name));
+    expect(main).toEqual(expect.arrayContaining(['Paragraph', 'Image']));
+    expect(sidebar).toContain('Paragraph');
+    expect(sidebar).not.toContain('Image');
+  });
+
+  it('a filled slot loses its button, and the empty one keeps its own on its own box', () => {
+    const p = split();
+    p.step([{ type: 'node.insert', owner: p.owner, parentId: p.id, slot: 'sidebar', primitive: 'paragraph', text: 'Open daily' }]);
+    expect(addPoints(p.state(), p.owner, p.placement).map((x) => [x.slot, x.onSlot])).toEqual([['main', true]]);
+    p.step([{ type: 'node.insert', owner: p.owner, parentId: p.id, slot: 'main', primitive: 'paragraph', text: 'Menu' }]);
+    expect(addPoints(p.state(), p.owner, p.placement)).toEqual([]);
+  });
+
+  it('a slot picked by its empty box gets one in it, selected or hovered, the same place as its placement’s', () => {
+    const p = split();
+    const fromPlacement = addPoints(p.state(), p.owner, p.placement);
+    for (const [i, name] of ['main', 'sidebar'].entries()) {
+      const [own, ...rest] = addPoints(p.state(), p.owner, p.slot(name));
+      expect(rest).toEqual([]);
+      expect(own).toMatchObject({ key: fromPlacement[i].key, side: 'inside', slot: name, nodeId: p.id, name: fromPlacement[i].name });
+      expect(own.onSlot).toBeUndefined();
+      expect(addPoints(p.state(), p.owner, p.slot(name), true)).toEqual([own]);
+    }
+    // Hovered once filled, it has none, as a filled container has none.
+    p.step([{ type: 'node.insert', owner: p.owner, parentId: p.id, slot: 'sidebar', primitive: 'paragraph', text: 'Open daily' }]);
+    expect(addPoints(p.state(), p.owner, p.slot('sidebar'), true)).toEqual([]);
+  });
+
+  it('a single slot keeps its button where it was: on its placement, named by it', () => {
+    const p = split();
+    const sectionPoints = addPoints(p.state(), p.owner, ref(p.owner, p.section));
+    expect(sectionPoints.map((x) => [x.side, x.slot, x.onSlot])).toEqual([
+      ['before', undefined, undefined],
+      ['after', undefined, undefined],
+      ['inside', 'content', undefined]
+    ]);
+    // Its slot picked by its empty box is the same place, by the Section's name.
+    const empty = applyOperations(p.state(), [{ type: 'node.remove', owner: p.owner, nodeId: p.id }]).state;
+    const [inside] = addPoints(empty, p.owner, { ...ref(p.owner, p.section), slot: 'content' });
+    expect(inside).toMatchObject({ key: sectionPoints[2].key, side: 'inside', slot: 'content', name: 'Section' });
+  });
+
+  it('none for a slot that is closed, shown in a list, gone, on a repeated item, or in the shared header', () => {
+    const p = split();
+    const def = p.state().components[p.definitionId];
+    // Closed to content: no box to draw one on.
+    def.slots!.sidebar = { ...def.slots!.sidebar, max: 0 };
+    expect(addPoints(p.state(), p.owner, p.placement).map((x) => x.slot)).toEqual(['main']);
+    def.slots!.sidebar = { label: 'Sidebar' };
+    // Shown once per item of a list, it would show many times, or never.
+    def.tree!.nodes.rows = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: ['side'] };
+    (def.tree!.nodes.sideCol as ElementNode).children = ['rows'];
+    // Main alone shows once: its button is the placement's own, as for any component showing one slot.
+    expect(addPoints(p.state(), p.owner, p.placement).map((x) => [x.side, x.slot, x.onSlot])).toEqual([['inside', 'main', undefined]]);
+    expect(addPoints(p.state(), p.owner, p.slot('sidebar'))).toEqual([]);
+    expect(addPoints(p.state(), p.owner, p.slot('main')).map((x) => x.slot)).toEqual(['main']);
+    // A slot its component no longer declares.
+    expect(addPoints(p.state(), p.owner, p.slot('footer'))).toEqual([]);
+    expect(addPoints(p.state(), p.owner, { ...p.slot('main'), itemPath: ['a'] })).toEqual([]);
+    const header: OwnerRef = { kind: 'shell', id: 'header' };
+    expect(addPoints(p.state(), p.owner, { ...p.slot('main'), owner: header })).toEqual([]);
   });
 });
 

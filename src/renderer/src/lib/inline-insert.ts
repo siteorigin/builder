@@ -12,7 +12,7 @@ import { catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { catalogueRole, definitionRole, heldSlots, insertOps, slotRefuses, type InsertAt, type InsertRole } from './insert-at';
 import { dropRefusal, savingProblems } from './insert-drop';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, type InsertSpec } from './insert-search';
-import { refLabel, treeFor } from './model';
+import { placedSlot, refLabel, treeFor, withoutSlot } from './model';
 
 /** Which side of its node a + sits on: above or below a section of the page, or inside a container. */
 export type AddSide = 'before' | 'after' | 'inside';
@@ -32,8 +32,11 @@ export interface AddPoint {
   nodeId: string;
   /** The placed component's slot it goes into. */
   slot?: string;
-  /** What the author sees it on, by name ("Hero", "Row"), for the button's name and the list's heading. */
+  /** What the author sees it on, by name ("Hero", "Row", "Sidebar in Split"), for the button's name and the list's heading. */
   name: string;
+  /** Drawn on its slot's own empty box, not on the box of what is selected: one of the empty slots a selected placement
+   *  shows several of (#657). */
+  onSlot?: boolean;
 }
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
@@ -48,15 +51,18 @@ const keyOf = (at: InsertAt) => JSON.stringify([at.parentId, at.slot ?? null, at
  * the page itself (not one placed inside another) gets one above and one below it. A container gets one inside, and so
  * does a placed component that shows one slot (once, not inside a repeat), or a part of a placement that holds exactly one of its slots (a
  * Section's Container holds its Content, #185); hovered, only while that list is empty, so moving over a filled page
- * does not scatter buttons over it. Where the slot it would fill is not plain (a component showing several, a part
- * holding two), there is none: what is chosen must go where the button is. Nothing for a repeated item, the shared
- * header or footer, a component being edited, or anything else.
+ * does not scatter buttons over it. A placement showing several slots gets one in each of them that is empty, each on
+ * its slot's own box (onSlot), and only while selected (#657); a slot picked by its empty box gets one in it, selected
+ * or hovered. Where the slot it would fill is not plain (a part holding two, a slot shown in a repeat), there is none:
+ * what is chosen must go where the button is. Nothing for a repeated item, the shared header or footer, a component
+ * being edited, or anything else.
  */
 export function addPoints(state: ProjectState, owner: OwnerRef, ref: ElementRef | null, hovered = false): AddPoint[] {
-  // A slot picked by its empty box is not the placement: none of the placement's Add buttons go on it.
-  if (!ref || ref.itemPath?.length || ref.slot !== undefined || !sameOwner(ref.owner, owner) || (owner.kind !== 'page' && owner.kind !== 'template')) return [];
+  if (!ref || ref.itemPath?.length || !sameOwner(ref.owner, owner) || (owner.kind !== 'page' && owner.kind !== 'template')) return [];
   const tree = treeFor(state, owner);
   if (!tree) return [];
+  // A slot picked by its empty box is not the placement: only the slot's own Add button goes on it.
+  if (ref.slot !== undefined) return slotPoint(state, owner, ref, hovered);
   const points: AddPoint[] = [];
   const name = refLabel(state, ref);
   if (!ref.instancePath.length) {
@@ -65,13 +71,49 @@ export function addPoints(state: ProjectState, owner: OwnerRef, ref: ElementRef 
       for (const side of ['before', 'after'] as const) points.push({ key: keyOf({ owner, parentId: null, index: side === 'before' ? i : i + 1 }), side, role: 'section', owner, nodeId: ref.nodeId, name });
   }
   const inside = insideOf(state, tree, ref);
-  if (!inside) return points;
+  if (!inside) return hovered ? points : [...points, ...emptySlotPoints(state, tree, owner, ref)];
   const node = own(tree.nodes, inside.nodeId);
   const list = node ? childLists(node).find((l) => (inside.slot ? l.slot === inside.slot : !l.slot)) : undefined;
   if (hovered && list?.ids.length) return points;
   const at: InsertAt = { owner, parentId: inside.nodeId, ...(inside.slot ? { slot: inside.slot } : {}) };
   points.push({ key: keyOf(at), side: 'inside', role: 'element', owner, nodeId: inside.nodeId, ...(inside.slot ? { slot: inside.slot } : {}), name });
   return points;
+}
+
+/** What a placement's slot is called on its Add button: "Sidebar in Split" where the component declares several, the
+ *  placement's own name where it has the one. */
+function slotName(state: ProjectState, placement: ElementRef, def: ComponentDefinition, label: string): string {
+  const name = refLabel(state, placement);
+  return Object.keys(def.slots ?? {}).length > 1 ? `${label} in ${name}` : name;
+}
+
+/** The Add button of a slot picked by its empty box: in it, while its placement shows it once and, hovered, while it
+ *  is empty. */
+function slotPoint(state: ProjectState, owner: OwnerRef, ref: ElementRef, hovered: boolean): AddPoint[] {
+  const placed = placedSlot(state, ref);
+  if (!placed || !shownOnceSlots(state, placed.def.id).includes(placed.slot)) return [];
+  if (hovered && own(placed.instance.slots, placed.slot)?.length) return [];
+  const at: InsertAt = { owner, parentId: placed.instance.id, slot: placed.slot };
+  return [{ key: keyOf(at), side: 'inside', role: 'element', owner, nodeId: placed.instance.id, slot: placed.slot, name: slotName(state, withoutSlot(ref), placed.def, placed.label) }];
+}
+
+/**
+ * One Add button for each empty slot a selected placement shows several of, once each (#657), drawn on that slot's
+ * own box: a Split's Main and Sidebar. A slot closed to content (max 0) shows no box to draw one on.
+ */
+function emptySlotPoints(state: ProjectState, tree: NodeTree, owner: OwnerRef, ref: ElementRef): AddPoint[] {
+  const node = ref.instancePath.length ? undefined : own(tree.nodes, ref.nodeId);
+  const def = node?.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
+  if (node?.kind !== 'instance' || !def) return [];
+  const shown = shownOnceSlots(state, def.id);
+  if (shown.length < 2) return [];
+  return shown.flatMap((slot): AddPoint[] => {
+    const decl = own(def.slots, slot);
+    if (!decl || decl.max === 0 || own(node.slots, slot)?.length) return [];
+    const label = typeof decl.label === 'string' && decl.label.trim() ? decl.label.trim() : slot;
+    const at: InsertAt = { owner, parentId: node.id, slot };
+    return [{ key: keyOf(at), side: 'inside', role: 'element', owner, nodeId: node.id, slot, name: slotName(state, ref, def, label), onSlot: true }];
+  });
 }
 
 /** The list an element goes into from inside `ref`, when there is exactly one: a container's children, the one slot a

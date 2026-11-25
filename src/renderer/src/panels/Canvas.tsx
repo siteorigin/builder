@@ -13,7 +13,7 @@ import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
-import { chainOf, descOrNull, measuredRects, pointedAt, rectList, spaceSizes, spacingOf, type FrameSpacing } from '../lib/payload';
+import { chainOf, descOrNull, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
 import { insertOps, insertRole, whereText, type InsertAt, type Where } from '../lib/insert-at';
@@ -277,6 +277,10 @@ export function Canvas() {
   /** What the page measured the selected and hovered boxes for, so an Add button is drawn only on the box of what it
    *  belongs to, never on one measured for the selection before. */
   const rectsFor = useRef<{ selected: BridgeDesc | null; hovered: BridgeDesc | null }>({ selected: null, hovered: null });
+  /** The boxes of the empty slots a selected placement shows several of, each with what it was measured for, for their
+   *  Add buttons (#657); kept only when they change, since the page reports every frame while it scrolls. */
+  const [slotRects, setSlotRects] = useState<SlotBox[]>([]);
+  const slotRectsSeen = useRef('[]');
   /**
    * The Add button whose list is open (#387): its place, its button, where the button was drawn (in the overlay) and
    * its box on screen as it opened, what it offers, and the project, page and revision it was opened on (any change
@@ -805,6 +809,12 @@ export function Canvas() {
           const kept = !hovered.length && overTag.current;
           rectsFor.current = { selected: descOrNull(p.selectedDesc), hovered: kept ? rectsFor.current.hovered : descOrNull(p.hoveredDesc) };
           setState({ rects: { selected, hovered: kept ? getState().rects.hovered : hovered, revealed: rectList(p.revealed) } });
+          const slots = slotBoxes(p.slots);
+          const slotsSeen = JSON.stringify(slots);
+          if (slotsSeen !== slotRectsSeen.current) {
+            slotRectsSeen.current = slotsSeen;
+            setSlotRects(slots);
+          }
           // An element just inserted now shows in view (mounted, and scrolled to): its outline arrives with a brief
           // highlight. Only for a report measured for it, on its own page, while its outline is drawn (editing, the
           // frame showing the page the editor has, Site styles closed).
@@ -1133,7 +1143,20 @@ export function Canvas() {
     const s = getState();
     const st = s.snapshot?.state;
     if (!st) return;
-    post('track', { selected: descFor(s.selection), hovered: descFor(s.hover, hoverPlacement.current) });
+    post('track', { selected: descFor(s.selection), hovered: descFor(s.hover, hoverPlacement.current), slots: trackedSlots() });
+  }
+
+  /** The empty slots of the selected placement whose Add buttons are drawn on their own boxes (#657), for the page to
+   *  measure with the selection's outline. */
+  function trackedSlots(): BridgeDesc[] {
+    const s = getState();
+    const st = s.snapshot?.state;
+    const owner: OwnerRef | null = s.templateMode ? templateOwner(s.templateMode) : s.pageId ? { kind: 'page', id: s.pageId } : null;
+    if (!st || !owner || !s.selection || s.definitionMode) return [];
+    const sel = s.selection;
+    return addPoints(st, owner, sel)
+      .filter((p) => p.onSlot)
+      .flatMap((p) => descFor({ ...sel, slot: p.slot }) ?? []);
   }
 
   // A click changes what the next click would select, even if the pointer has not moved.
@@ -2546,12 +2569,25 @@ export function Canvas() {
   })();
   const addReady = mode === 'edit' && !!state && !!addOwner && frameReady && !staleFrame && !stylesOpen && !definitionMode && !editing && !reorder && !resizing && !insertDrop && !dragging && !snapshot?.readOnly && !snapshot?.aiBusy && !menu.isOpen;
   const measuredFor = (a: BridgeDesc | null, b: BridgeDesc | null) => !!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '') && (a.part || '') === (b.part || '') && a.slot === b.slot;
+  /** Where a selected placement's Add button is drawn: on the selection's box, or on its own slot's (onSlot), once the
+   *  page has measured that slot for it. */
+  const selectedBox = (p: AddPoint): AddBox | null => {
+    if (!p.onSlot) return toBox(rects.selected[0]);
+    const d = selection ? descFor({ ...selection, slot: p.slot }) : null;
+    const hit = slotRects.find((r) => measuredFor(r.desc, d));
+    return hit ? toBox(hit.box) : null;
+  };
   const addButtons: Array<{ p: AddPoint; box: AddBox }> = adding
     ? [{ p: adding.point, box: adding.box }]
     : !addReady
     ? []
     : [
-        ...(rects.selected.length === 1 && measuredFor(rectsFor.current.selected, spaceDesc) ? addPoints(state!, addOwner!, selection).map((p) => ({ p, box: toBox(rects.selected[0]) })) : []),
+        ...(rects.selected.length === 1 && measuredFor(rectsFor.current.selected, spaceDesc)
+          ? addPoints(state!, addOwner!, selection).flatMap((p) => {
+              const box = selectedBox(p);
+              return box ? [{ p, box }] : [];
+            })
+          : []),
         ...(hovering && rects.hovered.length === 1 && measuredFor(rectsFor.current.hovered, descFor(hover)) ? addPoints(state!, addOwner!, hover, true).map((p) => ({ p, box: toBox(rects.hovered[0]) })) : [])
       ].filter((b, i, all) => all.findIndex((o) => o.p.key === b.p.key) === i);
   /** Where an Add button sits, in the overlay: on its section's edge three quarters across (clear of the chip at the
@@ -2908,6 +2944,7 @@ export function Canvas() {
                         data-testid="canvas-add"
                         data-side={p.side}
                         data-node={p.nodeId}
+                        data-slot={p.slot}
                         onPointerEnter={() => (overTag.current = true)}
                         onPointerLeave={leaveHoverChrome}
                         onFocus={() => (addFocused.current = true)}
