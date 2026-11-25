@@ -75,6 +75,16 @@ describe('previewDocument', () => {
     expect(p.own).toEqual({ title: true, description: true });
   });
 
+  it('says when the chosen sharing image isn’t a picture in the library, rather than that there is none', () => {
+    const { state } = seoSite();
+    const lost = copy(state);
+    lost.pages.pg_services.seo.socialImage = 'a_gone';
+    const card = preview(lost, PAGE).card;
+    expect(card.image).toBeUndefined();
+    expect(card.imageSaid).toBe('No sharing image: the one chosen (this page’s own) isn’t a picture in Assets.');
+    expect(card.language).toBe('en');
+  });
+
   it('gives a post its branded title in results, its own title on the card, and its date before the description', () => {
     const { state } = seoSite();
     const p = preview(state, POST);

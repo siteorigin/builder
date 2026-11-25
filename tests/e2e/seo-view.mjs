@@ -277,7 +277,70 @@ await apply([{ type: 'site.update', favicon: icon.assetIds[0] }], 'A favicon');
 const surface = (name) => view.getByRole('tab', { name, exact: true });
 const surfaceShown = async (name) => (await surface(name).getAttribute('aria-selected')) === 'true';
 const result = (device) => view.locator(`.serp-${device}`);
-const card = view.locator('.share-card');
+// About has a tall picture of its own; the post has none, and falls back to the site's wide one.
+const tall = await win.evaluate(() => {
+  const c = document.createElement('canvas');
+  c.width = 900;
+  c.height = 1200;
+  const g = c.getContext('2d');
+  g.fillStyle = '#8f5a2f';
+  g.fillRect(0, 0, 900, 1200);
+  return c.toDataURL('image/png').split(',')[1];
+});
+const ownPath = join(WORK, 'about-portrait.png');
+writeFileSync(ownPath, Buffer.from(tall, 'base64'));
+const ownImport = await win.evaluate((p) => window.builder.project.importAssets([p]), ownPath);
+assert.equal(ownImport.ok, true, `the picture imports: ${ownImport.message}`);
+await apply([{ type: 'page.update', pageId: about.id, socialImage: ownImport.assetIds[0] }], 'About’s own sharing image');
+const assets = (await snapshot()).state.assets.assets;
+const siteImage = (await snapshot()).state.site.socialImage;
+assert.equal(siteImage, imported.assetIds[0], 'the site still has its sharing image');
+const sample = (platform) => view.getByRole('group', { name: `${platform} link preview`, exact: true });
+/** What one platform's card draws: its width, its picture's box and shape, and how its text is clamped. */
+const cardDrawn = (platform) =>
+  sample(platform).evaluate((el) => {
+    const q = (s) => el.querySelector(s);
+    const picture = q('.share-card-image');
+    const img = q('.share-card-image img');
+    const line = (n) => (n ? { height: n.getBoundingClientRect().height, line: parseFloat(getComputedStyle(n).lineHeight), cut: n.scrollHeight > n.clientHeight + 1 || n.scrollWidth > n.clientWidth + 1 } : null);
+    const box = picture?.getBoundingClientRect();
+    return {
+      card: q('.share-card').getBoundingClientRect().width,
+      room: q('.share-card-fit').getBoundingClientRect().width,
+      natural: Number(q('.share-card').style.getPropertyValue('--w')),
+      ratio: box ? box.width / box.height : null,
+      width: box?.width ?? null,
+      fit: img ? getComputedStyle(img).objectFit : null,
+      loaded: !!img && img.complete && img.naturalWidth > 0,
+      src: img?.getAttribute('src') ?? '',
+      background: getComputedStyle(q('.share-card-frame')).backgroundColor,
+      title: line(q('.share-card-title')),
+      desc: line(q('.share-card-desc'))
+    };
+  });
+/** Every platform's card carries the document's host, title and description, and its picture, cropped or whole. */
+const checkCards = async (d) => {
+  const asset = assets[d.image];
+  const shape = asset.width / asset.height;
+  assert.equal(await view.locator('.share-card').count(), 4, 'a card for each platform');
+  assert.match(await view.locator('.share-preview-image').innerText(), d.whose, `${d.title}: whose picture it is`);
+  for (const platform of ['Facebook', 'X', 'WhatsApp', 'Slack']) {
+    const where = `${d.title} on ${platform}`;
+    assert.equal(await sample(platform).locator('.share-card-host').innerText(), 'riverside.example', `${where}: host`);
+    assert.equal(await sample(platform).locator('.share-card-title').innerText(), d.seoTitle, `${where}: title`);
+    if (platform === 'X') assert.equal(await sample(platform).locator('.share-card-desc').count(), 0, `${where}: no description beside a large picture`);
+    else assert.ok((await sample(platform).locator('.share-card-desc').textContent()).includes(d.description), `${where}: description`);
+    await eventually(async () => assert.ok((await cardDrawn(platform)).loaded, `${where}: its picture loads`));
+    const v = await cardDrawn(platform);
+    assert.ok(v.src.includes(asset.file.split('/').pop().replace(/\.[^.]+$/, '')), `${where}: the effective picture (${v.src})`);
+    const expected = { Facebook: 1.91, X: 2, WhatsApp: 1.91, Slack: shape }[platform];
+    assert.ok(Math.abs(v.ratio - expected) < 0.03, `${where}: the picture’s box is ${expected}:1 (${v.ratio})`);
+    assert.equal(v.fit, platform === 'Slack' ? 'contain' : 'cover', `${where}: cropped or whole`);
+    assert.ok(Math.abs(v.card - Math.min(v.natural, v.room)) < 1, `${where}: the card is drawn at its width, or the room there is (${v.card} of ${v.natural} in ${v.room})`);
+    if (platform === 'Slack') assert.ok(Math.abs(v.width / v.card - Math.min(360, 500 * shape, asset.width) / v.natural) < 0.01, `${where}: shrunk within its bounds`);
+  }
+};
+const card = (platform) => sample(platform);
 const graphShown = view.getByTestId('seo-graph');
 const screen = (name) => view.getByRole('radio', { name, exact: true });
 const darkResults = view.getByRole('switch', { name: 'Dark results' });
@@ -359,8 +422,8 @@ const bothScreensBothThemes = async (d) => {
   await screen('Computer').click();
 };
 const documents = [
-  { title: 'About', seoTitle: 'About the studio · Riverside', description: 'A pottery studio by the river', url: `https://riverside.example${about.route}`, trail: `riverside.example › ${about.route.split('/').filter(Boolean).join(' › ')}` },
-  { title: 'Spring open studio', dated: true, seoTitle: 'Spring open studio at Riverside', description: 'Throw, glaze and fire with us', url: 'https://riverside.example/blog/spring-open-studio/', trail: 'riverside.example › blog › spring-open-studio' }
+  { image: ownImport.assetIds[0], whose: /this page’s own\./, title: 'About', seoTitle: 'About the studio · Riverside', description: 'A pottery studio by the river', url: `https://riverside.example${about.route}`, trail: `riverside.example › ${about.route.split('/').filter(Boolean).join(' › ')}` },
+  { image: siteImage, whose: /the site’s\./, title: 'Spring open studio', dated: true, seoTitle: 'Spring open studio at Riverside', description: 'Throw, glaze and fire with us', url: 'https://riverside.example/blog/spring-open-studio/', trail: 'riverside.example › blog › spring-open-studio' }
 ];
 // The editor is dark from here on; the results page stays light until its own dark toggle is used.
 await win.evaluate(() => window.builder.app.setSettings({ appearance: 'dark' }));
@@ -376,9 +439,11 @@ for (const d of documents) {
   assert.equal((await drawn()).background, LIGHT);
   await bothScreensBothThemes(d);
   await surface('Link preview').click();
-  await eventually(async () => assert.equal(await card.locator('.share-card-host').innerText(), 'riverside.example', `${d.title}’s link preview`));
-  assert.ok((await card.locator('.share-card-desc').innerText()).includes(d.description), `${d.title}’s card carries its description`);
-  assert.equal(await card.locator('.share-card-title').innerText(), d.seoTitle, `${d.title}’s card carries its title`);
+  await eventually(async () => assert.equal(await card('Facebook').locator('.share-card-host').innerText(), 'riverside.example', `${d.title}’s link preview`));
+  await checkCards(d);
+  await win.screenshot({ path: join(SHOTS, `seo-view-cards-${d.title.split(' ')[0].toLowerCase()}.png`) });
+  await view.locator('.seo-scroll').evaluate((el) => el.scrollTo(0, el.scrollHeight));
+  await win.screenshot({ path: join(SHOTS, `seo-view-cards-${d.title.split(' ')[0].toLowerCase()}-end.png`) });
   await surface('Structured data').click();
   await eventually(async () => {
     const node = JSON.parse(await graphShown.innerText())['@graph'].find((n) => n['@type'] === 'WebPage' || n['@type'] === 'AboutPage');
@@ -386,6 +451,38 @@ for (const d of documents) {
   }, 20000);
 }
 await win.screenshot({ path: join(SHOTS, 'seo-view-structured-data.png') });
+// An overlong title and description are cut after each platform's own number of lines, in Chinese and in a word too
+// long for a line too.
+await row('About').click();
+await eventually(async () => assert.equal(await surfaceShown('Search result'), true));
+for (const long of ['WHEEL THROWING, HAND BUILDING AND GLAZING CLASSES FOR EVERY LEVEL, ALL YEAR ROUND. '.repeat(4), '河畔陶艺工作室全年开设拉坯与手工成型课程'.repeat(15), 'MWPottery'.repeat(35)]) {
+  // A search title has a shorter limit than a description.
+  const seoTitle = long.slice(0, 120).trim();
+  await apply([{ type: 'page.update', pageId: about.id, seoTitle, description: long.slice(0, 300).trim() }], 'Long text');
+  await surface('Link preview').click();
+  await eventually(async () => assert.equal(await card('Facebook').locator('.share-card-title').textContent(), seoTitle));
+  for (const [platform, titleLines, descLines] of [['Facebook', 2, 1], ['X', 1, 0], ['WhatsApp', 2, 2], ['Slack', 2, 3]]) {
+    const v = await cardDrawn(platform);
+    const lines = (t) => Math.round(t.height / t.line);
+    assert.equal(lines(v.title), titleLines, `${platform}: the title keeps ${titleLines} (${JSON.stringify(v.title)})`);
+    assert.ok(v.title.cut, `${platform}: and is cut`);
+    if (descLines) assert.equal(lines(v.desc), descLines, `${platform}: the description keeps ${descLines} (${JSON.stringify(v.desc)})`);
+  }
+  const across = await view.locator('.seo-scroll').evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+  assert.ok(across.scroll <= across.client, `long text in the link preview: nothing scrolls sideways (${JSON.stringify(across)})`);
+}
+await win.screenshot({ path: join(SHOTS, 'seo-view-cards-long.png') });
+// The cards are samples of other apps: the editor's appearance doesn't colour them.
+const grounds = () => Promise.all(['Facebook', 'X', 'WhatsApp', 'Slack'].map(async (p) => (await cardDrawn(p)).background));
+const groundsBefore = await grounds();
+const appearance = await win.evaluate(() => document.documentElement.getAttribute('data-appearance'));
+await win.evaluate((t) => document.documentElement.setAttribute('data-appearance', t === 'dark' ? 'light' : 'dark'), appearance);
+await win.screenshot({ path: join(SHOTS, 'seo-view-cards-other-appearance.png') });
+assert.deepEqual(await grounds(), groundsBefore, 'the cards keep their own colours');
+await win.evaluate((t) => (t === null ? document.documentElement.removeAttribute('data-appearance') : document.documentElement.setAttribute('data-appearance', t)), appearance);
+// The Inspector shows one platform at a time, shrunk as one piece to the room it has.
+await apply([{ type: 'page.update', pageId: about.id, seoTitle: documents[0].seoTitle, description: 'A pottery studio by the river, with wheel and hand-building classes for every level.' }], 'Short text again');
+await surface('Search result').click();
 // Back to the page: its search result, never the post's preview or surface.
 await row('About').click();
 await eventually(async () => assert.equal(await surfaceShown('Search result'), true, 'About opens on its search result again'));
