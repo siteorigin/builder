@@ -499,7 +499,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   picture(state.site.identity?.logo, 'The site’s logo', 'logo');
   for (const p of Object.values(state.pages)) picture(p.seo?.socialImage, `${p.title}: the page’s sharing image`, 'socialImage', { kind: 'page', id: p.id });
   if (opts.sectionLinks !== false) {
-    out.push(...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state), ...layoutGuardrailDiagnostics(state));
+    out.push(...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state));
+    for (const d of layoutGuardrailDiagnostics(state)) out.push(d);
     // Theme components are fixed theme data; only a project's own components are its author's to make reusable.
     const tokens = effectiveTokens(state);
     for (const def of Object.values(state.components)) {

@@ -14,6 +14,8 @@ import { listThemes } from '@catalogue/index';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
+import { themeLayoutRules } from '@engine/theme-layout-rules';
+import { layoutGuardrailDiagnostics } from '@engine/layout-guardrails';
 
 const fresh = () => createStarterState('blank', 'Blank', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -117,17 +119,20 @@ describe('a sticky element inside a container that hides overflow', () => {
 
   it('offers no one-step fix where Clip could change more than the sticking', () => {
     const sidebar = el('n_side', 'Sidebar', { base: { position: 'sticky', inset: '0' } });
-    // In a row, a box that no longer scrolls takes its content's width as its least, and may widen.
+    // In a row, stack or grid, a box that no longer scrolls takes its content's size as its least, and may grow.
     let s = page([el('n_row', 'Row', { base: { layout: 'row' } }, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar]);
     expect(guardrails(s).map((d) => [d.code, d.fix])).toEqual([[STICKY, undefined]]);
-    // In flow, or a stack free to grow, it can only stay as wide as it was.
-    s = setStyle(s, 'n_row', 'base', 'layout', 'stack');
+    for (const layout of ['stack', 'grid']) expect(guardrails(setStyle(s, 'n_row', 'base', 'layout', layout))[0].fix, layout).toBeUndefined();
+    // In plain flow it keeps the size it had.
+    s = setStyle(s, 'n_row', 'base', 'layout', 'block');
     expect(guardrails(s)[0].fix?.operations).toHaveLength(1);
-    s = setStyle(s, 'n_row', 'base', 'maxHeight', '30rem');
-    expect(guardrails(s)[0].fix).toBeUndefined();
-    // Another box further out hides overflow too: one step would only hand the job to it.
-    s = page([el('n_outer', 'Outer', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar]);
+    // A box custom CSS lays out some other way is not read, nor anything inside it.
+    expect(guardrails(setStyle(s, 'n_row', 'base', 'customCss', 'display: flex'))).toEqual([]);
+    // Another box further out hides overflow too, or may: one step would only hand the job to it.
+    s = page([el('n_outer', 'Outer', { base: { overflow: 'hidden' } }, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar]);
     expect(guardrails(s).map((d) => [d.message.includes('“Card” around it'), d.fix])).toEqual([[true, undefined]]);
+    s = page([el('n_outer', 'Outer', { base: { customCss: 'overflow: hidden' } }, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar]);
+    expect(guardrails(s).map((d) => [d.code, d.fix])).toEqual([[STICKY, undefined]]);
     // A project component's design is every placement's, though the same box on a page would take the fix.
     const t = fresh();
     addDesign(t, 'c_panel', [el('n_root', 'Panel', undefined, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar], { parts: {}, slots: {} });
@@ -153,15 +158,25 @@ describe('a sticky element inside a container that hides overflow', () => {
       s = setStyle(s, 'n_side', 'base', 'inset', inset ?? null);
       expect(guardrails(s), String(inset)).toEqual([]);
     }
-    // A bottom offset sticks as surely as a top one: `top inline bottom`.
-    s = setStyle(clipped({ base: { layout: 'stack', overflow: 'hidden' } }), 'n_side', 'base', 'inset', 'auto 0 1rem');
-    expect(guardrails(s, STICKY)).toHaveLength(1);
+    // A bottom offset sticks as surely as a top one: `top inline bottom`, and `top right bottom left`.
+    for (const inset of ['auto 0 1rem', 'auto auto 1rem auto', 'calc(1rem + 2px) auto auto auto']) {
+      s = setStyle(clipped({ base: { layout: 'stack', overflow: 'hidden' } }), 'n_side', 'base', 'inset', inset);
+      expect(guardrails(s, STICKY), inset).toHaveLength(1);
+    }
+    // An offset the browser may throw away (no length in it) is no offset to count on.
+    for (const inset of ['calc(1) auto auto auto', 'calc(100 / 3) auto']) {
+      s = setStyle(clipped({ base: { layout: 'stack', overflow: 'hidden' } }), 'n_side', 'base', 'inset', inset);
+      expect(guardrails(s), inset).toEqual([]);
+    }
     // A box displayed some other way may be no box at all (contents): it is not read.
     s = clipped({ base: { layout: 'stack', overflow: 'hidden', customCss: 'display: contents' } });
     expect(guardrails(s)).toEqual([]);
     // Overflow applies to no inline box: a hidden span around it is passed over.
-    s = page([el('n_card', 'Card', { base: { layout: 'stack' } }, ['n_wrap']), el('n_wrap', 'Words', { base: { overflow: 'hidden' } }, ['n_side'], { tag: 'span' }), el('n_side', 'Sidebar', { base: { position: 'sticky', inset: '0' } })]);
+    s = page([el('n_card', 'Card', undefined, ['n_wrap']), el('n_wrap', 'Words', { base: { overflow: 'hidden' } }, ['n_side'], { tag: 'span' }), el('n_side', 'Sidebar', { base: { position: 'sticky', inset: '0' } })]);
     expect(guardrails(s)).toEqual([]);
+    // Unless a stack or grid around it makes it a block, when it is the box that hides overflow.
+    s = setStyle(s, 'n_card', 'base', 'layout', 'stack');
+    expect(guardrails(s).map((d) => d.message.includes('but “Words” around it hides overflow'))).toEqual([true]);
     // A panel that scrolls on purpose, nearer than the hidden card: it sticks inside that panel.
     s = clipped({ base: { layout: 'stack', overflow: 'hidden' } });
     s = setStyle(s, 'n_wrap', 'base', 'customCss', 'overflow-y: auto; max-height: 20rem');
@@ -299,6 +314,26 @@ describe('a grid child spanning more columns than its grid has', () => {
     addDesign(t, 'c_card', [el('n_root', 'Frame', undefined, ['n_inner']), el('n_inner', 'Inner', undefined, ['n_slot'], { when: { $prop: 'open' } } as Partial<ElementNode>), slotNode('n_slot')]);
     page([placement('n_place', 'c_card', { slots: { content: ['n_badge'] } }), el('n_badge', 'Badge', { base: { position: 'absolute' } })], t);
     expect(guardrails(t)).toEqual([]);
+    // A box shown again keeps the sizes it stays hidden at: nothing inside shows there.
+    const v = fresh();
+    addDesign(v, 'c_card', [el('n_root', 'Frame', undefined, ['n_inner']), el('n_inner', 'Inner', undefined, ['n_slot']), slotNode('n_slot')]);
+    page([
+      placement('n_place', 'c_card', { slots: { content: ['n_feature'] }, overrides: { root: { base: { hidden: true }, desktop: { hidden: false } }, inner: { base: { layout: 'grid' }, phone: { columns: 2 } } } }),
+      el('n_feature', 'Feature', { phone: { columnSpan: '3' } })
+    ], v);
+    expect(guardrails(v)).toEqual([]);
+    (home(v).nodes.n_place as InstanceNode).overrides!.root = {};
+    expect(guardrails(v).map((d) => d.message.match(/: (on [a-z ]+),/)?.[1])).toEqual(['on phones']);
+    // Content a design passes on into a placement of its own, whose rules for it may reach in, is not read.
+    const w = fresh();
+    addDesign(w, 'c_card', [el('n_root', 'Frame', undefined, ['n_inner']), el('n_inner', 'Inner', { base: { layout: 'grid', columns: 2 } }, ['n_slot']), slotNode('n_slot')]);
+    addDesign(w, 'c_host', [el('n_root', 'Host', undefined, ['n_card']), placement('n_card', 'c_card', { slots: { content: ['n_slot'] } }), slotNode('n_slot')], { parts: {} });
+    page([placement('n_place', 'c_host', { slots: { content: ['n_feature'] } }), el('n_feature', 'Feature', { base: { columnSpan: '3' } }, ['n_side']), el('n_side', 'Sidebar', { base: { position: 'sticky', inset: '0' } })], w);
+    expect(guardrails(w)).toEqual([]);
+    // Not even what sits inside the content itself (here a card that hides overflow around a sticky element): the
+    // design's placement may hide its slot at sizes this cannot see.
+    home(w).nodes.n_feature = el('n_feature', 'Feature', { base: { overflow: 'hidden', layout: 'stack' } }, ['n_side']);
+    expect(guardrails(w)).toEqual([]);
     // Inside a code component's slot, a section's grid may be styled by the component's own stylesheet.
     const u = fresh();
     addDesign(u, 'c_code', [], { kind: 'code' });
@@ -319,6 +354,14 @@ describe('a grid child spanning more columns than its grid has', () => {
     expect(guardrails(loneHeading({ component: 'editorial-content-text', node: 'heading' }))).toEqual([]);
     // A copy of a node no theme rule hooks is read as usual.
     expect(guardrails(loneHeading({ component: 'editorial-content-text', node: 'nothing-hooks-this' })).map((d) => d.code)).toEqual([SPAN]);
+    // A placement carries its detached classes on its design's root.
+    const placed = (detachedFrom?: unknown) => {
+      const s = createStarterState('blank', 'Blank', false, 'editorial');
+      addDesign(s, 'c_tile', [el('n_root', 'Tile')], { slots: {} });
+      return page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 2 } }, ['n_place']), placement('n_place', 'c_tile', { overrides: { root: { base: { columnSpan: '3' } } }, ...(detachedFrom ? { detachedFrom } : {}) } as Partial<InstanceNode>)], s);
+    };
+    expect(guardrails(placed()).map((d) => d.code)).toEqual([SPAN]);
+    expect(guardrails(placed({ component: 'editorial-content-text', node: 'heading' }))).toEqual([]);
   });
 
   it('reads a repeat’s items as the grid’s own children, in a project component’s design', () => {
@@ -411,6 +454,55 @@ describe('an absolutely positioned element with nothing positioned around it', (
     addDesign(t, 'c_twice', [el('n_root', 'Frame', undefined, ['n_a', 'n_b']), slotNode('n_a'), slotNode('n_b')], { parts: {} });
     page([placement('n_place', 'c_twice', { slots: { content: ['n_badge'] } }), el('n_badge', 'Badge', { base: { position: 'absolute' } })], t);
     expect(guardrails(t)).toEqual([]);
+  });
+});
+
+describe('what a theme’s stylesheet may decide', () => {
+  it('finds the rules that hook a box by its classes, alternatives and modifiers read apart', () => {
+    const rules = themeLayoutRules(`
+      .card { position: relative; }
+      :is(.panel--wide, .panel--narrow) { grid-column: 1 / -1; }
+      [class$='__grid'][class$='--layout-split'] > li { grid-column: span 2; }
+      .so-rich--check li { position: relative; }
+      .tint { color: red; }
+      .x::after { content: "}"; position: absolute; }
+    `);
+    expect(rules.page).toBe(false);
+    expect(rules.reaches(['card'])).toBe(true);
+    expect(rules.reaches(['panel', 'panel--narrow'])).toBe(true);
+    expect(rules.reaches(['so-a__grid', 'so-a--layout-split'])).toBe(true);
+    // A modifier narrows its rule: the same grid in another layout is not hooked.
+    expect(rules.reaches(['so-a__grid', 'so-a--layout-stack'])).toBe(false);
+    // A rule that only paints decides nothing; a quoted brace ends no rule.
+    expect(rules.reaches(['tint'])).toBe(false);
+    expect(rules.reaches(['x'])).toBe(true);
+    expect(rules.reaches(['plain'])).toBe(false);
+  });
+
+  it('knows when a rule naming no class may position the page or an element by its tag', () => {
+    const page = (css: string) => themeLayoutRules(css).page;
+    expect(page(':is(main, .panel) { position: relative; }')).toBe(true);
+    expect(page('.other[data-label=")"], main { position: relative; }')).toBe(true);
+    expect(page('/* { */ main { position: relative; }')).toBe(true);
+    expect(page('main { content-visibility: auto; }')).toBe(true);
+    expect(page('section { container: card / inline-size; }')).toBe(true);
+    // Values that make nothing a box is placed in, keyframes, and conditions on other elements do not.
+    expect(page('main { content-visibility: visible; display: block; } body { position: static; } li { transform: none; }')).toBe(false);
+    expect(page('@keyframes rise { from { transform: translateY(1rem); } to { transform: none; } }')).toBe(false);
+    expect(page('html:has(.viewer[open]) { overflow: hidden; } section { container: card; }')).toBe(false);
+  });
+
+  it('says nothing about what is placed against a page the theme may position', () => {
+    const s = page([el('n_badge', 'Badge', { base: { position: 'absolute' } })]);
+    expect(layoutGuardrailDiagnostics(s, '').map((d) => d.code)).toEqual([ABSOLUTE]);
+    expect(layoutGuardrailDiagnostics(s, 'main { position: relative; }')).toEqual([]);
+  });
+
+  it('reads a long stylesheet in one pass', () => {
+    const css = `.a { position: relative; }${' '.repeat(200_000)}${'x'.repeat(200_000)}`;
+    const t = performance.now();
+    expect(themeLayoutRules(css).reaches(['a'])).toBe(true);
+    expect(performance.now() - t).toBeLessThan(1000);
   });
 });
 
