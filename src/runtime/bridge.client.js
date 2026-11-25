@@ -179,10 +179,9 @@ function layoutItem(el) {
   while (parent && getComputedStyle(parent).display === 'contents') parent = parent.parentElement;
   return { item, ordered: !!parent && /(^|-)(flex|grid)$/.test(getComputedStyle(parent).display) };
 }
-/** The CSS order the page lays an element out by among its siblings (see layoutItem). */
-function layoutOrder(el) {
-  const { item, ordered } = layoutItem(el);
-  if (!ordered) return 0;
+/** The CSS order a layout item's own styles give it, whether or not its container lays items out by it: a flex or
+ *  grid container it is moved into would. */
+function ownOrder(item) {
   const order = Number.parseInt(getComputedStyle(item).order, 10);
   return Number.isSafeInteger(order) ? order : 0;
 }
@@ -4633,16 +4632,19 @@ window.addEventListener('message', async (e) => {
       // the box is only the first copy's.
       send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => {
         const all = findAll(d);
-        // A slot's placeholder is measured where it first shows: a copy hidden at this width (one a component shows
-        // only on phones) is skipped. Any other element is measured where it first is.
+        // Measured where it first shows: a copy hidden at this width (one a component shows only on phones) is
+        // skipped, so content a component shows in one place at a time is found where it is.
         const boxes = all.map(rectOf);
-        const first = d && typeof d.slot === 'string' ? boxes.findIndex(Boolean) : boxes[0] ? 0 : -1;
+        const first = boxes.findIndex(Boolean);
         if (first < 0) return null;
         const el = all[first];
         const r = boxes[first];
         const shown = boxes.filter(Boolean).length;
-        const out = { ...r, order: layoutOrder(el) };
-        if (layoutItem(el).ordered) out.ordered = true;
+        const laid = layoutItem(el);
+        const own = ownOrder(laid.item);
+        const out = { ...r, order: laid.ordered ? own : 0 };
+        if (laid.ordered) out.ordered = true;
+        if (own !== out.order) out.cssOrder = own;
         if (shown > 1) out.many = true;
         return out;
       }) });

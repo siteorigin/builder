@@ -98,6 +98,11 @@ describe('bridge payload shapes', () => {
       { x: 0, y: 0, width: 1, height: 1, order: 0 }
     ]);
     // Holes in a sparse array are missing measurements, never skipped entries.
+    // An element's own Order, where its container ignores Order, comes along for a drag that moves it into one that doesn't.
+    expect(measuredRects([{ x: 0, y: 0, width: 1, height: 1, order: 0, cssOrder: 2 }, { x: 0, y: 0, width: 1, height: 1, cssOrder: '2' }], 2)).toEqual([
+      { x: 0, y: 0, width: 1, height: 1, order: 0, cssOrder: 2 },
+      { x: 0, y: 0, width: 1, height: 1, order: 0 }
+    ]);
     expect(measuredRects(new Array(2), 2)).toEqual([null, null]);
     expect(measuredRects([null], 2)).toBeNull();
     expect(measuredRects({ length: 2 }, 2)).toBeNull();

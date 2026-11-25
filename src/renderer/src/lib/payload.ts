@@ -152,14 +152,16 @@ export function spaceSizes(v: unknown, expected: number): Array<number | null> |
 
 /** Measured boxes in request order, where a missing (hidden) element is null; null for a malformed list. Each
  *  box has its element's CSS order (0 unless an Order style moves it among its siblings). */
-export function measuredRects(v: unknown, expected: number): Array<(FrameRect & { order: number; ordered?: true; many?: true }) | null> | null {
+export function measuredRects(v: unknown, expected: number): Array<(FrameRect & { order: number; ordered?: true; many?: true; cssOrder?: number }) | null> | null {
   if (!Array.isArray(v) || v.length !== expected) return null;
   // Array.from visits holes too (map would skip them and leave them empty). `ordered`: its container lays its items out
-  // by CSS order. `many`: more than one copy shows.
+  // by CSS order. `many`: more than one copy shows. `cssOrder`: its own Order, where that is not the one it is laid out
+  // by (its container ignores Order).
   return Array.from(v, (r) => {
     if (!isRect(r)) return null;
-    const f = r as { order?: unknown; ordered?: unknown; many?: unknown };
-    return { x: r.x, y: r.y, width: r.width, height: r.height, order: orderOf(f.order), ...(f.ordered === true ? { ordered: true as const } : {}), ...(f.many === true ? { many: true as const } : {}) };
+    const f = r as { order?: unknown; ordered?: unknown; many?: unknown; cssOrder?: unknown };
+    const own = typeof f.cssOrder === 'number' && Number.isSafeInteger(f.cssOrder) ? { cssOrder: f.cssOrder } : {};
+    return { x: r.x, y: r.y, width: r.width, height: r.height, order: orderOf(f.order), ...(f.ordered === true ? { ordered: true as const } : {}), ...(f.many === true ? { many: true as const } : {}), ...own };
   });
 }
 const orderOf = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) ? v : 0);
