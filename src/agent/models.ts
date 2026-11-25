@@ -1,4 +1,5 @@
 import type { ProviderId } from '@shared/api';
+import { DEFAULT_LOCAL_CONTEXT_WINDOW } from '@shared/local';
 
 /** Tested model list. The settings screen also accepts a custom model ID. */
 export const PROVIDER_MODELS: Record<ProviderId, Array<{ id: string; label: string; note?: string; contextWindow: number; maxOutput: number }>> = {
@@ -26,7 +27,7 @@ export interface LocalModelProfile {
 }
 
 /** Any model without its own entry: grammar-constrained JSON, which does not depend on its chat template. */
-export const DEFAULT_LOCAL_PROFILE: LocalModelProfile = { toolCalling: 'constrained-json', contextWindow: 32768, maxOutput: 8192, temperature: 0.2 };
+export const DEFAULT_LOCAL_PROFILE: LocalModelProfile = { toolCalling: 'constrained-json', contextWindow: DEFAULT_LOCAL_CONTEXT_WINDOW, maxOutput: 8192, temperature: 0.2 };
 
 /** Per-model overrides, first match wins. A model the app ships with is added here as one entry. */
 export const LOCAL_MODEL_PROFILES: Array<{ match: RegExp; profile: Partial<LocalModelProfile> }> = [];

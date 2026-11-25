@@ -5,10 +5,13 @@
 import type { ComponentDefinition, InstanceNode, LinkValue, ListItem, PageDoc, ProjectState } from '@shared/types';
 import type { ModelEvent } from '@agent/types';
 import { applyOperations } from '@engine/apply';
+import { richTextToPlain, type RichText } from '@shared/richtext';
+import { renderedContent, type RenderedContent } from '@generator/checks';
+import { childLists } from '@engine/tree';
 import type { Check, EvalCase, ScriptTurn } from './harness';
 
 /** Bump when cases are added, removed or re-graded. */
-export const SUITE_VERSION = 1;
+export const SUITE_VERSION = 2;
 
 let nextCall = 0;
 const call = (name: string, args: unknown): ModelEvent => ({ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: `call_${++nextCall}`, name, arguments: JSON.stringify(args) }] });
@@ -44,6 +47,226 @@ const BROKEN_SOURCE = `<script>
 </style>
 `;
 const WORKING_SOURCE = BROKEN_SOURCE.replace('{quote<', '{quote}<');
+
+/**
+ * Grading a page built from pasted copy, by what a visitor sees on it, section by section: its words, a piece per
+ * field, list item and paragraph, and its links with the label each shows. Compared without case, runs of spaces,
+ * curly quotes or dash styles, and nothing else: a changed word, figure or punctuation mark is a change.
+ */
+const plain = (t: string) => t.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/\s+/g, ' ').trim().toLowerCase();
+interface Piece {
+  text: string;
+  /** The list item it belongs to (a card, a question, a figure), so what belongs together can be told apart. */
+  item?: string;
+}
+interface Shown {
+  pieces: Piece[];
+  /** Where each link goes, and the words that can be its label: its label field's, or in a card any of the card's. */
+  links: Array<{ target: string; labels: string[] }>;
+}
+const linkTarget = (l: Partial<LinkValue> | undefined) => (l?.target ? (l.type === 'page' ? `page:${l.target}` : l.target) : '');
+/** A link field's label field, by the catalogue's naming: primaryLink → primaryLabel, link → linkLabel. */
+const labelOf = (field: string) => (field === 'link' ? 'linkLabel' : field.replace(/Link$/, 'Label'));
+const shownOn = (s: ProjectState, p: PageDoc | undefined): Shown[] => {
+  if (!p) return [];
+  // Content inside hand-built layout is reported by its own node: it belongs to the section it sits in.
+  const rootOf = new Map<string, string>();
+  const claim = (id: string, root: string) => {
+    if (rootOf.has(id) || !p.nodes[id]) return;
+    rootOf.set(id, root);
+    for (const list of childLists(p.nodes[id])) for (const child of list.ids) claim(child, root);
+  };
+  for (const root of p.rootIds) claim(root, root);
+  const content = renderedContent(s, p);
+  /** Where a piece of content is stored, so a link can find the label shown with it. */
+  const keyOf = (c: RenderedContent, field?: string) => {
+    const src = c.source;
+    return src?.kind === 'prop' ? `${c.nodeId}|${src.itemId ?? ''}|${field ?? src.field ?? src.prop}` : `${c.nodeId}|node|${field ?? src?.field ?? c.at ?? ''}`;
+  };
+  const labels = new Map<string, string>();
+  for (const c of content) if (c.kind === 'text' && typeof c.value === 'string') labels.set(keyOf(c), plain(c.value));
+  return p.rootIds.map((root) => {
+    const shown: Shown = { pieces: [], links: [] };
+    for (const c of content) {
+      if (rootOf.get(c.nodeId) !== root) continue;
+      const item = c.source?.kind === 'prop' && c.source.itemId ? `${c.nodeId}|${c.source.itemId}` : undefined;
+      if (c.kind === 'link') {
+        const target = linkTarget(c.value as Partial<LinkValue> | undefined);
+        const field = c.source?.kind === 'prop' ? labelOf(c.source.field ?? c.source.prop) : 'label';
+        const label = labels.get(keyOf(c, field));
+        // A card's link may show another of its fields as its words (a contact row's value, say).
+        const card = item ? content.filter((o) => o.kind === 'text' && typeof o.value === 'string' && o.source?.kind === 'prop' && `${o.nodeId}|${o.source.itemId}` === item).map((o) => plain(o.value as string)) : [];
+        if (target) shown.links.push({ target, labels: label ? [label] : card });
+        continue;
+      }
+      if (Array.isArray(c.value)) {
+        const blocks = c.value as RichText;
+        // A link inside text goes where its words say, and counts like any other: its words are the label, whatever
+        // their emphasis.
+        for (const b of blocks)
+          for (const spans of 'spans' in b ? [b.spans] : 'items' in b ? b.items : []) {
+            // Spans of one link are one label, also across the space between them that the link's own words leave out.
+            const runs: Array<{ target: string; text: string; gap: string | null }> = [];
+            for (const span of spans) {
+              const target = span.link ? linkTarget(span.link) : '';
+              const last = runs.at(-1);
+              if (target && last?.target === target && last.gap !== null) {
+                last.text += last.gap + span.text;
+                last.gap = '';
+              } else if (target) runs.push({ target, text: span.text, gap: '' });
+              else if (last && last.gap !== null) last.gap = /^\s*$/.test(span.text) ? last.gap + span.text : null;
+            }
+            for (const r of runs) shown.links.push({ target: r.target, labels: [plain(r.text)] });
+          }
+        shown.pieces.push(...richTextToPlain(blocks).split(/\n+/).map((w) => ({ text: plain(w), item })).filter((x) => x.text));
+      } else if (typeof c.value === 'string' && plain(c.value)) shown.pieces.push({ text: plain(c.value), item });
+    }
+    // A quote may keep the quotation marks the draft had around it.
+    for (const x of shown.pieces) x.text = x.text.replace(/^"(.*)"$/, '$1');
+    return shown;
+  });
+};
+/** `inner` inside `outer`, whole words at both ends: "146" is in "146 appliances", "46" is not. */
+const wordsIn = (outer: string, inner: string) => new RegExp(`(^|[^\\p{L}\\p{N}])${inner.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'u').test(outer);
+/** What belongs together is shown together: in one list item, in consecutive pieces in order, or in one piece. */
+const together = (x: Shown, members: string[]) => {
+  const want = members.map(plain);
+  const pieces = x.pieces;
+  const items = new Set(pieces.map((p) => p.item).filter(Boolean));
+  if ([...items].some((item) => want.every((m) => pieces.some((p) => p.item === item && p.text === m)))) return true;
+  // Consecutive pieces count only within one list item, or outside any: two cards side by side are not one.
+  if (pieces.some((first, i) => want.every((m, j) => pieces[i + j]?.text === m && pieces[i + j].item === first.item))) return true;
+  return pieces.some((p) => want.every((m) => wordsIn(p.text, m)) && want.every((m, j) => j === 0 || p.text.indexOf(m) > p.text.indexOf(want[j - 1])));
+};
+interface Block {
+  id: string;
+  /** Each shown whole, as one piece. */
+  texts: string[];
+  /** Each shown together: a question and its answer, a figure and its label, a name and a role. */
+  pairs?: string[][];
+  /** A button or link: its label and where it goes. */
+  link?: [string, string];
+}
+const blockMet = (x: Shown, b: Block) =>
+  b.texts.every((t) => x.pieces.some((p) => p.text === plain(t))) && (b.pairs ?? []).every((m) => together(x, m)) && (!b.link || x.links.some((l) => l.labels.includes(plain(b.link![0])) && l.target === b.link![1]));
+/** What a block is missing on the page, for the report. */
+const missing = (shown: Shown[], b: Block) =>
+  b.texts.find((t) => !shown.some((x) => x.pieces.some((p) => p.text === plain(t)))) ??
+  b.pairs?.find((m) => !shown.some((x) => together(x, m)))?.join(' + ') ??
+  (b.link && !shown.some((x) => x.links.some((l) => l.labels.includes(plain(b.link![0])) && l.target === b.link![1])) ? `${b.link[0]} → ${b.link[1]}` : 'a block split across sections');
+/**
+ * Each block of the draft is shown whole, in a section of its own, in the draft's order; nothing else is shown (no
+ * sample text left behind, no filler, nothing twice, no other link); and no placeholder section is left.
+ */
+const pastedChecks = (before: ProjectState, s: ProjectState, route: string, body: string, blocks: Block[]): Check[] => {
+  const was = pageAt(before, route);
+  const p = pageAt(s, route);
+  const shown = shownOn(s, p);
+  const at = blocks.map((b) => shown.findIndex((x) => blockMet(x, b)));
+  // The draft's own lines, without their Markdown or "Q:" markers. The request around the draft is not copy.
+  const lines = body.split('\n').map((l) => plain(l.replace(/^\s*(#+|[-*]|Q:|A:|Button:)\s*/i, ''))).filter(Boolean);
+  // Two lines of the draft may be shown as one piece: a question with its answer, a name with its role.
+  const joined = lines.slice(1).map((l, i) => `${lines[i]} ${l}`);
+  const all = shown.flatMap((x) => x.pieces.map((q) => q.text));
+  // Each piece is shown at most as often as the draft has it, so a figure repeated as an eyebrow is extra.
+  const inDraft = (t: string) => lines.filter((l) => wordsIn(l, t)).length || joined.filter((l) => wordsIn(l, t)).length;
+  // Two lines shown as one piece use those lines up: shown again on their own, they are shown twice.
+  const reused = (t: string) => !lines.some((l) => wordsIn(l, t)) && joined.some((j, i) => wordsIn(j, t) && (all.includes(lines[i]) || all.includes(lines[i + 1])));
+  const extra = [...new Set(all.filter((t) => all.filter((x) => x === t).length > inDraft(t) || reused(t)))];
+  // Each link is one of the draft's, with its label: no other destination, and no second way to the same one.
+  const wanted = blocks.flatMap((b) => (b.link ? [{ label: plain(b.link[0]), target: b.link[1] }] : []));
+  const links = shown.flatMap((x) => x.links);
+  const meant = (l: Shown['links'][number]) => wanted.findIndex((w) => w.target === l.target && l.labels.includes(w.label));
+  const strayLinks = links.filter((l, i) => meant(l) < 0 || links.findIndex((o) => meant(o) === meant(l)) !== i).map((l) => `${l.labels[0] ?? '(no label)'} → ${l.target}`);
+  // A section still exactly as it was, or one showing nothing at all, is a placeholder left behind.
+  const left = (p?.rootIds ?? []).filter((id, i) => (was?.rootIds.includes(id) && same(was.nodes[id], p!.nodes[id])) || (!shown[i].pieces.length && !shown[i].links.length));
+  return [
+    ...blocks.map((b, i) => check(b.id, at[i] >= 0, missing(shown, b))),
+    // Each block its own section, so a draft poured whole into one text section is not a layout.
+    check('reading-order', at.every((x, i) => x >= 0 && (i === 0 || x > at[i - 1])), at.join(', ')),
+    check('placeholders-removed', !!p && left.length === 0, left.map((id) => componentId(s, p!.nodes[id]) ?? id).join(', ')),
+    check('only-supplied-copy', extra.length === 0, extra.slice(0, 3).join(' | ')),
+    check('only-supplied-links', strayLinks.length === 0, strayLinks.join(', '))
+  ];
+};
+/** Nothing outside the page changed: every other page, the header and footer, and the site's styles. */
+const restUntouched = (before: ProjectState, after: ProjectState, route: string): Check[] => {
+  const target = pageAt(before, route)?.id;
+  const others = Object.keys(before.pages).filter((id) => id !== target);
+  return [
+    check('same-pages', same(Object.keys(before.pages).sort(), Object.keys(after.pages).sort()) && same(before.site.pageOrder, after.site.pageOrder)),
+    check('other-pages-untouched', others.every((id) => same(before.pages[id], after.pages[id])), others.filter((id) => !same(before.pages[id], after.pages[id])).join(', ')),
+    check('shell-untouched', shellUntouched(before, after))
+  ];
+};
+
+const CLINIC_ASK = 'Here is the copy for this page. Please lay it out.';
+const CLINIC_DRAFT = `# Give your kettle another winter
+Bring one broken household appliance to the Saturday repair clinic and fix it with a volunteer.
+Button: Reserve a bench (https://bench.example/book)
+
+## What to bring
+- The appliance, even if it no longer switches on.
+- Its plug, cable and any loose screws.
+
+## Last winter at the clinic
+- 146 appliances assessed
+- 73% repaired on the day
+
+## Before you visit
+Q: Can I bring a lamp?
+A: Yes. Bring the shade separately so it travels safely.
+Q: What does it cost?
+A: Assessment is free. We agree the price of parts with you first.`;
+const CLINIC_BLOCKS: Block[] = [
+  { id: 'opening', texts: ['Give your kettle another winter', 'Bring one broken household appliance to the Saturday repair clinic and fix it with a volunteer.'], link: ['Reserve a bench', 'https://bench.example/book'] },
+  { id: 'what-to-bring', texts: ['What to bring', 'The appliance, even if it no longer switches on.', 'Its plug, cable and any loose screws.'] },
+  {
+    id: 'figures',
+    texts: ['Last winter at the clinic'],
+    pairs: [
+      ['146', 'appliances assessed'],
+      ['73%', 'repaired on the day']
+    ]
+  },
+  {
+    id: 'questions',
+    texts: ['Before you visit'],
+    pairs: [
+      ['Can I bring a lamp?', 'Yes. Bring the shade separately so it travels safely.'],
+      ['What does it cost?', 'Assessment is free. We agree the price of parts with you first.']
+    ]
+  }
+];
+
+const CYCLES_ASK = 'Here is our real About copy for this page, in place of the sample text:';
+const CYCLES_DRAFT = `# The people behind North Quay Cycles
+We are a worker-owned workshop under the railway arches in Hull.
+
+## Two ways we can help
+- Bench repair: Bring us a fault you can show us. We quote before we order parts.
+- Cargo-bike check: We check the stand, steering linkage and brakes under load.
+
+## From a rider
+"They found the rattle I'd been chasing for 18 months."
+Jo Bell, school-run rider
+
+## Visit the workshop
+The blue door is beside arch 17. Ring once and bring your bike inside.
+Button: Find our opening hours (link to our Contact page, /contact/)`;
+const cyclesBlocks = (s: ProjectState): Block[] => [
+  { id: 'opening', texts: ['The people behind North Quay Cycles', 'We are a worker-owned workshop under the railway arches in Hull.'] },
+  {
+    id: 'services',
+    texts: ['Two ways we can help'],
+    pairs: [
+      ['Bench repair', 'Bring us a fault you can show us. We quote before we order parts.'],
+      ['Cargo-bike check', 'We check the stand, steering linkage and brakes under load.']
+    ]
+  },
+  { id: 'testimonial', texts: ['From a rider', "They found the rattle I'd been chasing for 18 months."], pairs: [['Jo Bell', 'school-run rider']] },
+  { id: 'closing', texts: ['Visit the workshop', 'The blue door is beside arch 17. Ring once and bring your bike inside.'], link: ['Find our opening hours', `page:${pageAt(s, '/contact/')?.id}`] }
+];
 
 const page = (slug: string, title: string, sections: unknown[], nav = true) => ({ slug, title, addToHeaderNav: nav, sections });
 const intro = (heading: string) => ({ componentId: 'intro.page', props: { heading, lead: `${heading}, explained simply.` } });
@@ -266,6 +489,66 @@ export const EVAL_CASES: EvalCase[] = [
       () => [call('request_wider_scope', { question: 'The footer is outside this selection. May I change it too?' })],
       () => [call('update_selected_props', { props: { heading: 'Calm, considered spaces' } })],
       finish('Shortened the headline and left the footer alone, as you asked.')
+    ]
+  },
+  {
+    id: 'paste-copy-onto-intro-page',
+    version: 1,
+    category: 'page',
+    prompt: `${CLINIC_ASK}\n\n${CLINIC_DRAFT}`,
+    // A page just made with only its introduction (the page's title), as Add page's Page introduction starter makes it.
+    setup: (state) => Object.assign(state, applyOperations(state, [{ type: 'page.create', title: 'Repair café', route: '/repair-cafe/', starter: 'intro' }]).state),
+    pageScope: '/repair-cafe/',
+    grade: ({ before, after }) => [...pastedChecks(before, after, '/repair-cafe/', CLINIC_DRAFT, CLINIC_BLOCKS), ...restUntouched(before, after, '/repair-cafe/')],
+    script: () => [
+      () => [
+        call('upsert_page_with_sections', {
+          slug: 'repair-cafe',
+          removeOtherSections: true,
+          sections: [
+            { componentId: 'hero.centered', props: { eyebrow: '', heading: 'Give your kettle another winter', lead: 'Bring one broken household appliance to the Saturday repair clinic and fix it with a volunteer.', primaryLabel: 'Reserve a bench', primaryLink: 'https://bench.example/book', secondaryLabel: '' } },
+            { componentId: 'content.text', props: { heading: 'What to bring', body: '- The appliance, even if it no longer switches on.\n- Its plug, cable and any loose screws.' } },
+            { componentId: 'stats.row', props: { heading: 'Last winter at the clinic', items: [{ value: '146', label: 'appliances assessed' }, { value: '73%', label: 'repaired on the day' }] } },
+            { componentId: 'faq.list', props: { eyebrow: '', heading: 'Before you visit', lead: '', items: [{ question: 'Can I bring a lamp?', answer: 'Yes. Bring the shade separately so it travels safely.' }, { question: 'What does it cost?', answer: 'Assessment is free. We agree the price of parts with you first.' }] } }
+          ]
+        })
+      ],
+      finish('Laid out the Repair café page from your copy.')
+    ]
+  },
+  {
+    id: 'paste-copy-onto-starter-page',
+    version: 1,
+    category: 'page',
+    prompt: `${CYCLES_ASK}\n\n${CYCLES_DRAFT}`,
+    // The starter's About page, still holding the theme's sample story, team and call to action.
+    pageScope: '/about/',
+    grade: ({ before, after }) => [...pastedChecks(before, after, '/about/', CYCLES_DRAFT, cyclesBlocks(after)), ...restUntouched(before, after, '/about/')],
+    script: () => [
+      () => [
+        call('upsert_page_with_sections', {
+          slug: 'about',
+          removeOtherSections: true,
+          sections: [
+            { componentId: 'intro.page', props: { eyebrow: '', heading: 'The people behind North Quay Cycles', lead: 'We are a worker-owned workshop under the railway arches in Hull.' } },
+            {
+              componentId: 'features.grid',
+              props: {
+                eyebrow: '',
+                heading: 'Two ways we can help',
+                lead: '',
+                items: [
+                  { icon: 'hammer', title: 'Bench repair', description: 'Bring us a fault you can show us. We quote before we order parts.' },
+                  { icon: 'compass', title: 'Cargo-bike check', description: 'We check the stand, steering linkage and brakes under load.' }
+                ]
+              }
+            },
+            { componentId: 'testimonials.grid', props: { eyebrow: '', heading: 'From a rider', lead: '', items: [{ quote: "They found the rattle I'd been chasing for 18 months.", name: 'Jo Bell', role: 'school-run rider' }] } },
+            { componentId: 'cta.banner', props: { heading: 'Visit the workshop', lead: 'The blue door is beside arch 17. Ring once and bring your bike inside.', primaryLabel: 'Find our opening hours', primaryLink: '/contact/', secondaryLabel: '' } }
+          ]
+        })
+      ],
+      finish('Replaced the sample About copy with yours.')
     ]
   },
   {

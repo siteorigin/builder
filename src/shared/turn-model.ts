@@ -44,6 +44,9 @@ export const PROVIDER_LABELS: Record<ProviderId, string> = { openai: 'OpenAI', a
 export const REPLAYED_MESSAGES = 12;
 
 /** The earlier messages a new request in this conversation sends to the model with it. */
+/** The longest answer to a question replayed to later requests in full; a longer one is replayed cut short. */
+export const MAX_REPLAYED_ANSWER = 4000;
+
 export function replayedHistory<T>(messages: readonly T[]): T[] {
   return messages.slice(-REPLAYED_MESSAGES);
 }

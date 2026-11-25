@@ -66,7 +66,7 @@ describe('starters for the page being edited', () => {
     const list = starters(state, second);
     expect(list).toEqual([
       // The open page is "お問い合わせ", whose intro holds only its title.
-      { kind: 'page', text: 'Build out the mostly empty “お問い合わせ” page with the sections it needs' },
+      { kind: 'page', text: 'Build out the mostly empty “お問い合わせ” page with the copy I paste below' },
       // Home is another page, and says so.
       { kind: 'cross-page', text: 'On another page, “Home”: build out its content, it is mostly empty' },
       // お問い合わせ is the contact page, so Contact is not offered again; the next missing page is.
@@ -121,7 +121,7 @@ describe('starters for the page being edited', () => {
     expect(starters(state, second)[0].text).toMatch(/^Build out the mostly empty “お問い合わせ” page/);
     // A page with nothing on it is started.
     state.pages[second].rootIds = [];
-    expect(starters(state, second)[0].text).toBe('Start the “お問い合わせ” page: add an introduction and the sections it needs');
+    expect(starters(state, second)[0].text).toBe('Start the “お問い合わせ” page with the copy I paste below');
     // A page with real content is improved rather than built out, with its own copy counted from component properties.
     const rich = createStarterState('business', 'Studio', false);
     const home = rich.site.homePageId;

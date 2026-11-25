@@ -209,8 +209,10 @@ function imageStarter(state: ProjectState, usage: Record<string, number>, page: 
 /** The one starter about the page's own copy. */
 function contentStarter(state: ProjectState, page: PageDoc, content: Content): string {
   const on = pageName(state, page);
-  if (!page.rootIds.length) return `Start the ${on} page: add an introduction and the sections it needs`;
-  if (isSparse(content)) return `Build out the mostly empty ${on} page with the sections it needs`;
+  // An empty page is where an author arrives with its copy already written: the starter is the first line of a message
+  // the copy is pasted under.
+  if (!page.rootIds.length) return `Start the ${on} page with the copy I paste below`;
+  if (isSparse(content)) return `Build out the mostly empty ${on} page with the copy I paste below`;
   return `Make the opening of the ${on} page warmer and more confident`;
 }
 
