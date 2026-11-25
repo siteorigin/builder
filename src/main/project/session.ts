@@ -20,6 +20,7 @@ import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
+import { syncedEntryChange } from '@engine/collections';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
@@ -3586,6 +3587,9 @@ export class ProjectSession extends EventEmitter {
     const already = new Set(fatal(this.state).map((d) => d.message));
     const broken = fatal(next).find((d) => !already.has(d.message));
     if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${broken.message}`, recoverable: false } };
+    // Nor one that rewrites a synced collection's entries (an edit made before it was synced, say), as no change may.
+    const synced = syncedEntryChange(this.state, next);
+    if (synced) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: it ${synced}`, recoverable: false } };
     const pin = themePinProblem(next);
     if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${pin}`, recoverable: false } };
     // That check sees the project as loaded. An edit made outside the app that has not been loaded yet would slip
@@ -3969,6 +3973,8 @@ export class ProjectSession extends EventEmitter {
     const pin = themePinProblem(next);
     if (pin) return refuse(pin);
     const problem = (why: string) => refuse(`Undoing it on its own would leave a problem: ${why}`);
+    const synced = syncedEntryChange(this.state, next);
+    if (synced) return refuse(`Undoing it on its own ${synced}`);
     // Anything the project would newly fail, warnings aside: a broken link is as much a reason as a page left out of
     // the page order.
     const broken = introducedDiagnostics(validateState(this.state), validateState(next), { byNode: true }).filter((d) => d.severity === 'error');

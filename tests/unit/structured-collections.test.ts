@@ -127,6 +127,7 @@ describe('a data-only structured collection', () => {
     // Two records with one slug are told apart: they would share an address once the collection had pages.
     const twins = structuredClone(s);
     twins.collections.team.entries.en_about2.slug = 'about';
+    twins.collections.team.entries.en_about.title = '';
     expect(validateState(twins).find((d) => d.code === 'SLUG_DUPLICATE')).toMatchObject({ severity: 'warning', owner: { id: 'en_about2' } });
   });
 
@@ -145,6 +146,20 @@ describe('a data-only structured collection', () => {
     // Turned off and on again at another address in one change, a published record's address keeps working.
     const work = run(s, { type: 'collection.update', collectionId: 'projects', pages: { detail: false, archive: false } }, { type: 'collection.update', collectionId: 'projects', route: '/projects/', pages: { detail: true, archive: false } });
     expect(work.site.redirects).toEqual([{ from: '/work/town-hall/', entryId: 'en_hall' }]);
+    // Never at an address another collection's archive pages took meanwhile.
+    const journal = run(
+      site(),
+      { type: 'collection.create', collectionId: 'journal', route: '/journal/', pages: { detail: true, archive: false } },
+      { type: 'collection.create', collectionId: 'notes', route: '/journal/category/', pages: { detail: true, archive: false } },
+      { type: 'entry.create', collectionId: 'notes', entryId: 'en_news', title: 'News', draft: false }
+    );
+    const archived = run(
+      journal,
+      { type: 'collection.update', collectionId: 'notes', pages: { detail: false, archive: false } },
+      { type: 'collection.update', collectionId: 'journal', pages: { detail: true, archive: true } },
+      { type: 'collection.update', collectionId: 'notes', route: '/notes/', pages: { detail: true, archive: false } }
+    );
+    expect(archived.site.redirects ?? []).toEqual([]);
     // A hand edit asking for an archive without entry pages is reported, and has neither.
     const hand = structuredClone(s);
     hand.collections.team.settings.route = '/team/';
@@ -277,6 +292,10 @@ describe('rich custom fields', () => {
     hand.collections.projects.entries.en_hall.values.summary = [figure, { type: 'p', spans: [{ text: 'Kept.' }] }] as never;
     expect(entryFieldValue({ state: hand, collection: hand.collections.projects, entry: hand.collections.projects.entries.en_hall, neighbours: {} }, 'field.summary')).toEqual([{ type: 'p', spans: [{ text: 'Kept.' }] }]);
     expect(validateState(hand).find((d) => d.code === 'FIELD_VALUE_INVALID')?.message).toMatch(/Summary is not a value the field takes/);
+    // Its links are still checked: the rest of it shows.
+    const gone = structuredClone(hand);
+    gone.collections.projects.entries.en_hall.values.summary = [figure, { type: 'p', spans: [{ text: 'Gone', link: { type: 'page', target: 'pg_gone' } }] }] as never;
+    expect(validateState(gone).find((d) => d.code === 'LINK_BROKEN')?.message).toMatch(/Summary goes to a page that no longer exists/);
     expect(() => apply(hand, [{ type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { summary: hand.collections.projects.entries.en_hall.values.summary } }])).toThrow(/section headings \(h2\)/);
     // A link field may go to another entry, as the entry's text may.
     expect(set({ website: { type: 'entry', target: 'en_ruiz' } }).state.collections.projects.entries.en_hall.values.website).toEqual({ type: 'entry', target: 'en_ruiz' });
@@ -353,10 +372,17 @@ describe('references when an entry goes', () => {
     hand.collections.projects.entries.en_hall.values.lead = 'en_gone';
     // Broken, as a link to an entry that is gone is: nothing else (an undo of one change, say) may leave one.
     expect(validateState(hand).find((d) => d.code === 'REFERENCE_BROKEN')).toMatchObject({ severity: 'error', message: expect.stringMatching(/Lead names "en_gone", which the Team collection has no entry for/) });
+    // Each entry named that is gone is a problem of its own, so a second going is noticed too.
+    hand.collections.projects.entries.en_hall.values.crew = ['en_gone', 'en_lost', 'en_okafor'];
+    expect(validateState(hand).filter((d) => d.code === 'REFERENCE_BROKEN').map((d) => d.site)).toEqual(['values|lead|en_gone', 'values|crew|en_gone', 'values|crew|en_lost']);
     // A collection whose own layout links to its own entries goes with them.
     const linked = structuredClone(s);
     linked.collections.projects.settings.template.nodes.n_self = { id: 'n_self', kind: 'link', label: 'Self', link: { type: 'entry', target: 'en_hall' } } as never;
     expect(run(linked, { type: 'collection.remove', collectionId: 'projects' }).collections).not.toHaveProperty('projects');
+    // Another collection's layout linking to them still holds it back.
+    const outside = run(s, { type: 'collection.create', collectionId: 'posts' });
+    outside.collections.posts.settings.template.nodes.n_out = { id: 'n_out', kind: 'link', label: 'Hall', link: { type: 'entry', target: 'en_hall' } } as never;
+    expect(() => apply(outside, [{ type: 'collection.remove', collectionId: 'projects' }])).toThrow(/1 link outside the Projects collection/);
   });
 });
 
@@ -391,7 +417,9 @@ describe('a synced collection', () => {
     expect(local.collections.team.entries.en_okafor).toMatchObject({ title: 'Ben O.', source: { ...SOURCE, externalId: 'en_okafor' } });
     expect(run(local, { type: 'entry.create', collectionId: 'team', entryId: 'en_cara', title: 'Cara' }).collections.team.entries).toHaveProperty('en_cara');
     // Removing one of them too, its provenance notwithstanding.
-    expect(run(local, { type: 'entry.remove', collectionId: 'team', entryId: 'en_okafor', replacementEntryId: 'en_ruiz' }).collections.team.entries).not.toHaveProperty('en_okafor');
+    const removed = run(local, { type: 'entry.remove', collectionId: 'team', entryId: 'en_okafor', replacementEntryId: 'en_ruiz' });
+    expect(removed.collections.team.entries).not.toHaveProperty('en_okafor');
+    expect(removed.collections.projects.entries.en_hall.values).toMatchObject({ lead: 'en_ruiz', crew: ['en_ruiz'] });
     // Only detaching is an operation: a sync attaches.
     expect(validateOperation({ type: 'collection.update', collectionId: 'team', sourceId: 'other' })).not.toMatchObject({ ok: true });
   });
@@ -407,8 +435,9 @@ describe('a synced collection', () => {
     expect(() => apply(team, [{ type: 'collection.remove', collectionId: 'projects' }, { type: 'collection.remove', collectionId: 'team' }])).toThrow(/remove the entries of the Team collection/);
     // What leaves them as they are goes ahead: a field added, a label changed.
     expect(run(team, { type: 'collection.update', collectionId: 'team', name: 'People', fields: { role: { type: 'string', label: 'Role' }, phone: { type: 'string', label: 'Phone' } } }).collections.team.settings.name).toBe('People');
-    // Detached first, in the same change, anything goes.
+    // Detached in the same change, anything goes: first, or in the very operation.
     expect(run(team, { type: 'collection.update', collectionId: 'team', sourceId: null }, { type: 'collection.update', collectionId: 'team', fields: {} }).collections.team.entries.en_ruiz.values).toEqual({});
+    expect(run(team, { type: 'collection.update', collectionId: 'team', sourceId: null, fields: {} }).collections.team.entries.en_ruiz.values).toEqual({});
   });
 
   it('refuses pointing its entries’ links or references elsewhere, as removing what they go to would', () => {
@@ -426,8 +455,11 @@ describe('a synced collection', () => {
   it('reports damaged provenance', () => {
     const s = synced();
     s.collections.team.entries.en_ruiz.source = { sourceId: 'people-api', externalId: '42', syncedAt: 'yesterday', contentHash: 'abc' };
-    expect(validateState(s).find((d) => d.code === 'ENTRY_SOURCE_INVALID')).toMatchObject({ severity: 'warning', owner: { id: 'en_ruiz' } });
-    expect(validateState(s).filter((d) => d.code === 'ENTRY_SOURCE_INVALID')).toHaveLength(1);
+    s.collections.team.entries.en_okafor.source = { sourceId: 'people-api', externalId: '', syncedAt: '2026-11-01T10:00:00.000Z', contentHash: 'abc' };
+    expect(validateState(s).filter((d) => d.code === 'ENTRY_SOURCE_INVALID').map((d) => [d.severity, d.owner?.id])).toEqual([
+      ['warning', 'en_ruiz'],
+      ['warning', 'en_okafor']
+    ]);
     s.collections.team.settings.sourceId = '  ';
     const found = validateState(s);
     expect(found.find((d) => d.code === 'COLLECTION_INVALID')?.message).toMatch(/external source it is synced from is damaged/);
@@ -448,17 +480,28 @@ describe('entry text', () => {
   });
 
   it('is never shown, searched or mirrored for records without it, whatever a hand edit left', () => {
-    const blog = run(site(), { type: 'site.update', baseUrl: 'https://example.com' }, { type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring', draft: false, body: ['Secret words.'] });
-    const hand = structuredClone(blog);
+    // With the Markdown mirrors and the full llms text on, which carry an entry's text it shows.
+    const blog = run(
+      site(),
+      { type: 'site.update', baseUrl: 'https://example.com', llmsFull: true, markdownMirrors: true },
+      { type: 'collection.create', collectionId: 'posts' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring', draft: false, body: ['Secret words.'] }
+    );
+    // Shown whatever the text, so only the setting keeps it out.
+    const body = Object.values(blog.collections.posts.settings.template.nodes).find((n) => JSON.stringify(n).includes('{"$entry":"body"}'))!;
+    const shown = run(blog, { type: 'node.setBinding', owner: { kind: 'template', id: 'posts' }, nodeId: body.id, field: 'when', binding: null });
+    const carrying = (state: ProjectState) => [...generateProject(publishedState(state))].filter(([, t]) => t.includes('Secret words')).map(([f]) => f);
+    expect(carrying(shown)).toEqual(expect.arrayContaining(['src/routes/blog/spring/+page.svelte', 'static/blog/spring/index.html.md', 'static/llms-full.txt']));
+    const hand = structuredClone(shown);
     hand.collections.posts.settings.hasBody = false;
     const read = { state: hand, collection: hand.collections.posts, entry: hand.collections.posts.entries.en_spring, neighbours: {} };
     expect(entryFieldValue(read, 'body')).toBeUndefined();
     expect(entryFieldValue(read, 'readingTime', 'raw')).toBeUndefined();
     const article = materializeTemplate(hand, hand.collections.posts, hand.collections.posts.entries.en_spring, {});
-    expect(showsBody(blog.collections.posts, materializeTemplate(blog, blog.collections.posts, blog.collections.posts.entries.en_spring, {}))).toBe(true);
+    expect(showsBody(shown.collections.posts, materializeTemplate(shown, shown.collections.posts, shown.collections.posts.entries.en_spring, {}))).toBe(true);
     expect(showsBody(hand.collections.posts, article)).toBe(false);
     expect(validateState(hand).find((d) => d.code === 'ENTRY_TEXT_HIDDEN')).toMatchObject({ severity: 'warning', owner: { id: 'en_spring' } });
-    for (const [file, text] of generateProject(publishedState(hand))) expect(text.includes('Secret words'), file).toBe(false);
+    expect(carrying(hand)).toEqual([]);
   });
 });
 
@@ -474,6 +517,13 @@ describe('checks before the website goes out', () => {
       { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { summary: 'See [the plans](entry:en_plan).' } }
     );
     expect(publicationPlan(s).draftLinks).toEqual([expect.objectContaining({ entryId: 'en_plan', owner })]);
+    // Another entry's page linking from the same place to another draft is another link.
+    const two = run(
+      s,
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_memo', title: 'Memo', draft: true },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_park', title: 'Park', draft: false, values: { summary: 'See [the memo](entry:en_memo).' } }
+    );
+    expect(publicationPlan(two).draftLinks.map((l) => l.entryId).sort()).toEqual(['en_memo', 'en_plan']);
   });
 });
 
@@ -483,6 +533,9 @@ describe('importing posts into a Posts collection without an archive', () => {
     const post = { key: 'p1', from: 'news.md', title: 'News', slug: 'news', date: '2026-01-01', draft: false, categories: [], tags: [], body: [], oldPath: '/blog/category/news/', notes: [] };
     const source: ParsedSource = { kind: 'markdown', label: 'posts', root: '/x', realRoot: '/x', posts: [post], media: [], skipped: [] };
     expect(planPostImport(s, source, '2026-11-24').posts[0]).toMatchObject({ redirectFrom: '/blog/category/news/' });
+    // Its own address too, which only an archive would hold.
+    const root = { ...source, posts: [{ ...post, oldPath: '/blog/' }] };
+    expect(planPostImport(s, root, '2026-11-24').posts[0]).toMatchObject({ redirectFrom: '/blog/' });
     // With an archive, that address is the archive's.
     const archived = run(site(), { type: 'collection.create', collectionId: 'posts' });
     expect(planPostImport(archived, source, '2026-11-24').posts[0].redirectFrom).toBeUndefined();
@@ -516,6 +569,7 @@ describe('the pages a collection asks for', () => {
     // Moving, or turning an archive on, is held to the same.
     const both = run(site(), { type: 'collection.create', collectionId: 'posts' }, { type: 'collection.create', collectionId: 'notes', route: '/notes/', pages: { detail: true, archive: false } });
     expect(() => apply(both, [{ type: 'collection.update', collectionId: 'notes', route: '/blog/category/notes/' }])).toThrow(/kept for the Posts collection's archive pages/);
+    expect(() => apply(both, [{ type: 'collection.update', collectionId: 'notes', route: '/blog/page/' }])).toThrow(/kept for the Posts collection's archive pages/);
     const nested = run(site(), { type: 'collection.create', collectionId: 'notes', route: '/journal/page/', pages: { detail: true, archive: false } }, { type: 'collection.create', collectionId: 'posts', route: '/journal/', pages: { detail: true, archive: false } });
     expect(() => apply(nested, [{ type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: true } }])).toThrow(/kept for the collection's archive pages/);
   });

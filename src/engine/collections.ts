@@ -505,7 +505,10 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     claimOwnAddresses(state, new Map(Object.values(c.entries).map((e) => [`${prefix}${e.slug}/`.toLowerCase(), e.id])));
     // Each published entry's address keeps working, sending visitors on to the entry's new one.
     const holder = routeIndex(state);
-    const kept = left.filter(({ e, from }) => keepsAddress(e.id, from, e.draft === false, atStart, holder)).map(({ e, from }): SiteRedirect => ({ from, entryId: e.id }));
+    // Never one another collection's archive pages have by now (one turned on in the same batch).
+    const kept = left
+      .filter(({ e, from }) => keepsAddress(e.id, from, e.draft === false, atStart, holder) && !archiveRouteOwner(state, from, c.settings.id))
+      .map(({ e, from }): SiteRedirect => ({ from, entryId: e.id }));
     // An address kept working is never in the archive folders the move gives the collection: it would stop its index there.
     const stranded = pages.archive ? kept.find((k) => underArchiveFolder(prefix, k.from)) : undefined;
     if (stranded) {
@@ -613,29 +616,30 @@ export function refuseSyncedHolders(state: ProjectState, holders: ReadonlyArray<
     throw new EngineError('VALIDATION_FAILED', `${synced.where} links to ${what}, and its collection is synced from an external source, so its entries are read-only here. Change that link in the source, or detach the collection first.`);
 }
 
-/** The entries of each synced collection, by collection ID, with its name: what no operation may change (see refuseSyncedChange). */
-export function syncedEntries(state: ProjectState): Map<string, { name: string; entries: string }> {
-  const out = new Map<string, { name: string; entries: string }>();
-  for (const c of Object.values(state.collections ?? {})) if (isSyncedCollection(c?.settings)) out.set(c.settings.id, { name: c.settings.name, entries: JSON.stringify(c.entries) });
-  return out;
+/** Whether two stored values say the same, whatever order their keys are in. */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) return a.length === (b as unknown[]).length && a.every((x, i) => sameValue(x, (b as unknown[])[i]));
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => Object.hasOwn(b, k) && sameValue((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
 }
 
 /**
- * Refuses an operation that changed or removed the entries of a collection synced before it (`before`, from
- * syncedEntries) and not detached by it: a field or grouping removed from them, a term renamed on them, a picture
- * replaced in them, the collection removed with them. The source is where they change, and its next sync would put
- * back what it says. Its settings (its layout, its order) stay the author's.
+ * Why going from `before` to `after` changes what a synced collection's entries say, or null: a collection synced in
+ * both whose entries differ (a field or grouping taken from them, a term renamed on them, a picture replaced in them,
+ * an undo of an edit made before it was synced), or one removed while synced. The source is where they change, and its
+ * next sync would put back what it says. Its settings (its layout, its order) stay the author's, and detaching it
+ * makes its entries local. Worded to follow "This" or "it".
  */
-export function refuseSyncedChange(state: ProjectState, before: ReadonlyMap<string, { name: string; entries: string }>) {
-  for (const [id, was] of before) {
-    const c = own(state.collections, id);
-    if (c && !isSyncedCollection(c.settings)) continue;
-    if (!c || JSON.stringify(c.entries) !== was.entries)
-      throw new EngineError(
-        'VALIDATION_FAILED',
-        `This would ${c ? 'change' : 'remove'} the entries of the ${was.name} collection, which is synced from an external source, so they are read-only here. Change them in the source, or detach the collection from it first.`
-      );
+export function syncedEntryChange(before: ProjectState, after: ProjectState): string | null {
+  for (const c of Object.values(before.collections ?? {})) {
+    if (!isSyncedCollection(c?.settings)) continue;
+    const now = own(after.collections ?? {}, c.settings.id);
+    if (now && (!isSyncedCollection(now.settings) || sameValue(c.entries, now.entries))) continue;
+    return `would ${now ? 'change' : 'remove'} the entries of the ${c.settings.name} collection, which is synced from an external source, so they are read-only here. Change them in the source, or detach the collection from it first.`;
   }
+  return null;
 }
 
 /** A stored reference to an entry: the entry naming it and its field. */
@@ -1009,7 +1013,7 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
       else if (!routed) {
         // Without pages, two entries' slugs only clash once the collection has them again.
         const twin = slugs.get(e.slug.toLowerCase());
-        if (twin) out.push({ severity: 'warning', code: 'SLUG_DUPLICATE', message: `${what} has the same slug as “${twin}”, so the two would share an address if its entries had pages.`, owner: eo, site: 'slug' });
+        if (twin !== undefined) out.push({ severity: 'warning', code: 'SLUG_DUPLICATE', message: `${what} has the same slug as “${twin}”, so the two would share an address if its entries had pages.`, owner: eo, site: 'slug' });
         else slugs.set(e.slug.toLowerCase(), e.title);
       }
       if (!collectionHasBody(s) && Array.isArray(e.body) && e.body.length)
@@ -1052,18 +1056,23 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
           continue;
         }
         if (f.type === 'link' || f.type === 'richtext') {
-          // A rich text field's text is no article: a section heading or a picture in it is left out.
-          const fits =
-            f.type === 'link' ? !!v && typeof v === 'object' && typeof (v as LinkValue).type === 'string' && typeof (v as LinkValue).target === 'string' : Array.isArray(v) && v.every((b) => isRichBlock(b) && !isArticleBlock(b));
-          if (!fits) out.push({ severity: 'warning', code: 'FIELD_VALUE_INVALID', message: `${what}: its ${f.label} is not a value the field takes.`, owner: eo, site: `values|${k}` });
-          else out.push(...linkProblems(state, v, `${what}: ${f.label}`, eo, `values|${k}`));
+          // A rich text field's text is no article: a section heading or a picture in it is left out, and the rest shows.
+          const readable = f.type === 'link' ? !!v && typeof v === 'object' && typeof (v as LinkValue).type === 'string' && typeof (v as LinkValue).target === 'string' : Array.isArray(v) && v.every(isRichBlock);
+          if (!readable || (f.type === 'richtext' && (v as unknown[]).some(isArticleBlock)))
+            out.push({ severity: 'warning', code: 'FIELD_VALUE_INVALID', message: `${what}: its ${f.label} is not a value the field takes.`, owner: eo, site: `values|${k}` });
+          if (readable) out.push(...linkProblems(state, v, `${what}: ${f.label}`, eo, `values|${k}`));
           continue;
         }
         if (f.type === 'reference') {
           // One naming an entry that is gone is broken, as a link to it would be: removing an entry never leaves one.
-          const problem = referenceProblem(state, f, v);
-          if (problem)
-            out.push({ severity: problem.broken ? 'error' : 'warning', code: problem.broken ? 'REFERENCE_BROKEN' : 'FIELD_VALUE_INVALID', message: `${what}: its ${f.label} ${problem.message}`, owner: eo, site: `values|${k}` });
+          for (const problem of referenceProblems(state, f, v))
+            out.push({
+              severity: problem.missing ? 'error' : 'warning',
+              code: problem.missing ? 'REFERENCE_BROKEN' : 'FIELD_VALUE_INVALID',
+              message: `${what}: its ${f.label} ${problem.message}`,
+              owner: eo,
+              site: `values|${k}${problem.missing ? `|${problem.missing}` : ''}`
+            });
           continue;
         }
         const fits =
@@ -1170,16 +1179,18 @@ function fieldDamaged(state: ProjectState, f: CollectionFieldSchema | undefined)
 }
 
 /**
- * What is wrong with a reference field's value, as a hand edit or a sync leaves it (it then shows nothing for it), or
- * null. `broken`: it names an entry its collection does not have.
+ * What is wrong with a reference field's value, as a hand edit or a sync leaves it (it then shows nothing for it): one
+ * problem each, and one for each entry it names that its collection does not have (`missing`), so a second one gone is
+ * a problem of its own.
  */
-function referenceProblem(state: ProjectState, f: ReferenceFieldSchema, v: unknown): { message: string; broken: boolean } | null {
+function referenceProblems(state: ProjectState, f: ReferenceFieldSchema, v: unknown): Array<{ message: string; missing?: string }> {
   const ids = f.multiple ? v : [v];
-  if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) return { message: `is not ${f.multiple ? 'a list of entry IDs' : 'an entry ID'}.`, broken: false };
-  if (new Set(ids).size !== ids.length) return { message: 'names an entry twice.', broken: false };
+  if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) return [{ message: `is not ${f.multiple ? 'a list of entry IDs' : 'an entry ID'}.` }];
   const target = own(state.collections, f.collection)!;
-  const missing = (ids as string[]).filter((id) => id !== '' && !Object.hasOwn(target.entries, id));
-  return missing.length ? { message: `names ${missing.map((id) => `"${id}"`).join(', ')}, which the ${target.settings.name} collection has no entry for, so it shows nothing there.`, broken: true } : null;
+  const out: Array<{ message: string; missing?: string }> = new Set(ids).size !== ids.length ? [{ message: 'names an entry twice.' }] : [];
+  for (const id of new Set(ids as string[]))
+    if (id !== '' && !Object.hasOwn(target.entries, id)) out.push({ message: `names "${id}", which the ${target.settings.name} collection has no entry for, so it shows nothing there.`, missing: id });
+  return out;
 }
 
 /** A block only an entry's own text (an article) has: a section heading or a picture. */

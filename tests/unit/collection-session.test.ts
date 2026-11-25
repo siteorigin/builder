@@ -268,6 +268,22 @@ describe('collections on disk', () => {
     expect(second.state.pages[contact.id]).toBeDefined();
   });
 
+  it('never undoes an edit of an entry whose collection has been synced since (#673)', async () => {
+    const { dir, s } = await make();
+    await ok(s.apply({ operations: blog }, { label: 'Start' }));
+    await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'Changed' }] }, { label: 'Retitle' }));
+    await s.close();
+    // A sync attached it while the project was closed, leaving the entry as it was.
+    writeFileSync(join(dir, `${POSTS}/collection.json`), JSON.stringify({ ...read(dir, `${POSTS}/collection.json`), sourceId: 'wordpress' }, null, 2));
+    const again = await ProjectSession.open(dir, 'reopen');
+    open.push(again);
+    expect(again.state.collections.posts.settings.sourceId).toBe('wordpress');
+    const r = await again.undo();
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/synced from an external source/);
+    expect(read(dir, `${POSTS}/entries/en_winter.json`).title).toBe('Changed');
+  });
+
   it('writes a structured collection’s settings and fields and reads them back exactly (#673)', async () => {
     const { dir, s } = await make();
     await ok(

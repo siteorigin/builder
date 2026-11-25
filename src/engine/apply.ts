@@ -49,7 +49,7 @@ import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_
 import { feedRowFields } from '@shared/entry-feed';
 import { archiveRouteOwner, collectionRouteOwner, findEntry, siteEntries } from '@shared/collections';
 import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
-import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedChange, refuseSyncedHolders, syncedEntries, type EntryAddress } from './collections';
+import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
@@ -4117,11 +4117,8 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     // Any edit but a removal may move an asset's uses: the next removal counts them again.
     if (op.type !== 'asset.remove') assetUses.counts = undefined;
     try {
-      // Synced collections' entries, which no operation may change while they stay synced (see refuseSyncedChange).
-      const synced = syncedEntries(draft);
       results.push(applyOperation(draft, op, batch));
       dropDepartedItemStyles(draft);
-      if (synced.size) refuseSyncedChange(draft, synced);
     } catch (e) {
       if (e instanceof EngineError) {
         e.message = ops.length > 1 ? `Operation ${i + 1} (${op.type}): ${e.message}` : e.message;
@@ -4129,6 +4126,9 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
       throw e;
     }
   }
+  // Synced collections' entries are what the batch began with, unless it detached them (see syncedEntryChange).
+  const synced = syncedEntryChange(state, draft);
+  if (synced) throw new EngineError('VALIDATION_FAILED', `This ${synced}`);
   // Retagged nodes must fit where they render once the batch is done (a list item in a list, say), and so must every
   // node of a design built whole, what a wrap, an ungroup or a removal that keeps content put in a new place (list items
   // wrapped out of their list), and a placement shown as another design.

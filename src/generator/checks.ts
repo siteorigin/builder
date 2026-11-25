@@ -1822,8 +1822,9 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
           issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}), ...(listing.length ? { archives: listing } : {}) };
       }
       // A link the walk reaches twice (a repeated slot, say) is reported once; one in a layout, once for all the
-      // entries that lack its section.
-      const id = JSON.stringify([src.owner, reportId, key]);
+      // entries that lack its section. A layout's link that goes somewhere else on another entry's page (a link field
+      // it shows) is another.
+      const id = JSON.stringify([src.owner, reportId, key, link.type, link.target, link.anchor ?? '']);
       if (!issue) continue;
       const had = seen.get(id);
       if (had) {
@@ -2018,8 +2019,9 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
               ? targetAtAddress(state, link.target, withheld)
               : null;
       if (!to) continue;
-      // A link the walk reaches twice (a repeated slot, say) is reported once.
-      const id = JSON.stringify([src.owner, reportId, key]);
+      // A link the walk reaches twice (a repeated slot, say) is reported once; one going to another draft on another
+      // entry's page (a link field the layout shows) is another.
+      const id = JSON.stringify([src.owner, reportId, key, to]);
       if (seen.has(id)) continue;
       seen.add(id);
       draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to });
