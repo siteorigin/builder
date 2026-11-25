@@ -1,8 +1,10 @@
 /**
- * Text refused for being longer than its field allows (issue #226), kept for the author to shorten. It belongs
- * to the field, not to the control showing it: a field that comes back (switching to another page and back,
- * selecting the image again) finds its text again, still marked as not saved. It goes when the text is saved
- * shortened, when the author puts the saved text back (Escape), or when the project closes.
+ * Text refused for being longer than its field allows (issue #226), kept for the author to shorten, and text a field's
+ * own check refused (a canonical URL that is no full address, #702), kept for the author to correct. It belongs to the
+ * field, not to the control showing it: a field that comes back (switching to another page and back, selecting the
+ * image again, the same page's settings shown in the SEO view or the Inspector) finds its text again, still marked as
+ * not saved. It goes when the text is saved corrected, when the author puts the saved text back (Escape), or when the
+ * project closes.
  *
  * Plain module state with no DOM or store import, so the rules are tested on their own; DraftInput wires it.
  */
@@ -18,6 +20,9 @@ export interface KeptDraft<Start = unknown> {
   alive?: () => boolean;
   /** The control that keeps it now; text handed over from elsewhere has none until a field takes it up. */
   owner?: object;
+  /** Why it was kept: too long to save (the default), or refused by the field's own check (a canonical URL that is no
+   *  full address), which a field showing it again checks afresh and explains beside itself. */
+  refused?: 'check';
 }
 
 const kept = new Map<string, KeptDraft>();
@@ -34,6 +39,24 @@ export function keepDraft<Start>(field: string, draft: KeptDraft<Start>): void {
 
 export function keptDraft<Start = unknown>(field: string): KeptDraft<Start> | undefined {
   return kept.get(field) as KeptDraft<Start> | undefined;
+}
+
+/** How a field shows text it finds kept for its place: too long to save, refused by its check, or none found. */
+export function keptRefusal(draft: KeptDraft | undefined): 'long' | 'check' | null {
+  return draft ? (draft.refused === 'check' ? 'check' : 'long') : null;
+}
+
+/**
+ * What becomes of a field's refused text as its control goes. Text still unsaved (`open`: typed from somewhere, not put
+ * back, in this opening) whose place is still there stays kept for the next control of that place: as too long when it
+ * is over the limit or was refused as such, else as refused by the check. Settled text (saved, put back, its place gone)
+ * is dropped. Either only by the control that keeps it (`mine`): a newer control of the same place has taken it up.
+ */
+export function keptOnLeave(f: { open: boolean; gone: boolean; over: boolean; tooLong: boolean; checked: boolean; mine: boolean }): 'long' | 'check' | 'drop' | null {
+  if (!f.mine) return null;
+  if (f.open && !f.gone && (f.over || f.tooLong)) return 'long';
+  if (f.open && !f.gone && f.checked) return 'check';
+  return f.tooLong || f.checked ? 'drop' : null;
 }
 
 /** Forget one field's kept text. Returns whether there was any. */

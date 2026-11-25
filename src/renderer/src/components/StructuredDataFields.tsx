@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { PageDoc } from '@shared/types';
+import type { PageDoc, PageStructuredType } from '@shared/types';
 import {
   checkFact,
   inspectPageStructuredData,
@@ -13,6 +13,7 @@ import {
   type StructuredDataPatch,
   type StructuredFact
 } from '@shared/page-structured-data';
+import { getState } from '../store';
 import { DraftInput, Field, type DraftProblem } from './ui';
 
 type Upd = (patch: Record<string, unknown>, label?: string) => unknown;
@@ -54,12 +55,20 @@ export function structuredSummary(page: PageDoc): string {
   return `${PAGE_STRUCTURED_TYPE_LABELS[type]}${issues.length ? ' · check details' : ''}`;
 }
 
+/** Whether a page is still in the project as the type a fact belongs to: text kept for the fact goes with either. */
+const factAlive = (pageId: string, type: PageStructuredType) => () => {
+  const pages = getState().snapshot?.state.pages ?? {};
+  if (!Object.hasOwn(pages, pageId)) return false;
+  const seo = pages[pageId].seo;
+  return inspectPageStructuredData(seo && typeof seo === 'object' ? seo.structuredData : undefined).type === type;
+};
+
 /**
  * One fact, checked as it is typed: text it can't take stays in the field as an unsaved draft, with the reason, until
- * it is corrected or discarded (Escape). A saved value that can't be used (written by hand) is pointed out the same way.
+ * it is corrected or discarded (Escape), kept for the page while its settings show elsewhere (#702). A saved value that can't be used (written by hand) is pointed out the same way.
  * It sends only its own fact, so an edit landing after the page became another type is refused, never turning it back.
  */
-function FactField({ fact, stored, saved, set }: { fact: Exclude<StructuredFact, 'availability'>; stored: Record<string, unknown>; saved?: string; set: (patch: StructuredDataPatch, label: string) => unknown }) {
+function FactField({ pageId, type, fact, stored, saved, set }: { pageId: string; type: PageStructuredType; fact: Exclude<StructuredFact, 'availability'>; stored: Record<string, unknown>; saved?: string; set: (patch: StructuredDataPatch, label: string) => unknown }) {
   const { label, hint, placeholder, multiline } = FACT_FIELDS[fact];
   const value = factText(fact, stored[fact]);
   const [problem, setProblem] = useState<DraftProblem | null>(null);
@@ -107,6 +116,8 @@ function FactField({ fact, stored, saved, set }: { fact: Exclude<StructuredFact,
         onProblem={setProblem}
         onDirty={setDirty}
         onCommit={commit}
+        keep={`page:${pageId}:structured:${type}:${fact}`}
+        keepWhile={factAlive(pageId, type)}
       />
     </Field>
   );
@@ -182,7 +193,7 @@ export function StructuredDataFields({ page, upd }: { page: PageDoc; upd: Upd })
             </select>
           </Field>
         ) : (
-          <FactField key={`${type}:${fact}`} fact={fact} stored={stored} saved={savedProblem(fact)} set={set} />
+          <FactField key={`${type}:${fact}`} pageId={page.id} type={type} fact={fact} stored={stored} saved={savedProblem(fact)} set={set} />
         )
       )}
       {missing.length > 0 && (

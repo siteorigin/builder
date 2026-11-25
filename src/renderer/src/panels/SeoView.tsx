@@ -5,9 +5,13 @@ import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { setState, useStore } from '../store';
 import { seoDocument, seoDocuments, seoSubjectKey, type SeoDocument } from '../lib/seo-view';
+import { seoOverviewOnce, seoOverviewProblems, type SeoImageStatus, type SeoOverviewRow, type SeoOverviewText } from '../lib/seo-overview';
+import { isDraftPage } from '@generator/index';
+import { activeWorkspace } from '../lib/workspace';
 import { SeoPreview, useDocumentPreview, useTypedSeo, type TypedSeoOn } from './SeoPreview';
 import type { DocumentPreview } from '../lib/seo-preview';
-import { seoOverviewOnce, seoOverviewProblems, type SeoImageStatus, type SeoOverviewRow, type SeoOverviewText } from '../lib/seo-overview';
+import { StructuredDataFields } from '../components/StructuredDataFields';
+import { PageSearchFields, pageUpdater } from './PageSearchFields';
 import { postAt } from '../lib/posts';
 import { savePostSeo } from '../lib/post-seo';
 import { PostSearchFields } from './PostSearchFields';
@@ -87,6 +91,12 @@ export function SeoPanel() {
       </div>
     </div>
   );
+}
+
+/** Leaves the text field with focus inside `root`, if there is one: its control saves or keeps what it holds. */
+function leaveField(root: HTMLElement | null) {
+  const el = document.activeElement;
+  if (root && el instanceof HTMLElement && root.contains(el) && el.matches('input, textarea')) el.blur();
 }
 
 /** What a document is, in words: the home page, a page, or an entry of its collection. */
@@ -244,19 +254,52 @@ function SeoViewPostSettings({ state, subject, preview, on }: { state: ProjectSt
 }
 
 /**
+ * A page's Search & sharing and structured data settings in the view (#702): the Inspector's own fields, saving through
+ * the same operations under the same labels, with what is typed in them reported through `on` for the previews beside
+ * them. They are on screen only while the view is in front, and the Inspector shows the page's fields only while it is
+ * not, so the page's text is never in two fields at once: text refused for being too long goes with the field, and
+ * comes back wherever the field shows next. While they are away, nothing typed is laid over the previews.
+ */
+function SeoViewPageSettings({ state, pageId, on, preview }: { state: ProjectState; pageId: string; on: TypedSeoOn; preview: DocumentPreview | null }) {
+  useEffect(() => () => on.clear(), [on]);
+  if (!Object.hasOwn(state.pages, pageId)) return null;
+  const page = state.pages[pageId];
+  const upd = pageUpdater(page);
+  return (
+    <div className="seo-settings">
+      <section className="seo-settings-group" aria-labelledby="seo-view-search-head">
+        <h3 id="seo-view-search-head">Search & sharing</h3>
+        <PageSearchFields page={page} state={state} draft={isDraftPage(state, page)} upd={upd} on={on} doc={preview} ids="seo-view" />
+      </section>
+      <section className="seo-settings-group" aria-labelledby="seo-view-structured-head">
+        <h3 id="seo-view-structured-head">Structured data</h3>
+        <p className="field-hint">What the page is for search engines: a service, product, event or guide, with its facts.</p>
+        <StructuredDataFields page={page} upd={upd} />
+      </section>
+    </div>
+  );
+}
+
+/**
  * One document in the view, which holds what is typed for it and not saved yet: one per document and opening (see
- * SeoView's key), so nothing of one document (its surface, its typed text, its structured data) shows for another.
- * Its previews at the view's width (#701), with the surface selector above them, read from the same answers as the
- * previews beside its settings elsewhere, with what its fields show as typed (`typed`) laid over the saved settings.
+ * SeoView's key), so nothing of one document (its surface, its typed text, its structured data) shows for another. Its
+ * previews (#701) read the same answers as the previews beside its settings in the Inspector, with that typed text laid
+ * over the saved settings; a page's settings sit beside them (#702), and a post's under them (#703).
  */
 function SeoViewDocument({ state, doc, collection, shown }: { state: ProjectState; doc: SeoDocument; collection: string | undefined; shown: boolean }) {
   const { typed, on } = useTypedSeo(doc.key);
   const { overlay, doc: preview } = useDocumentPreview(state, doc.subject, typed);
+  const page = doc.subject.kind === 'page' ? doc.subject.pageId : null;
   return (
-    <div className="seo-doc" data-seo-doc={doc.key}>
-      <p className="seo-doc-kind">{kindOf(doc, collection)}</p>
-      {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published.</p>}
-      <SeoPreview state={state} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} place="view" />
+    <div className={`seo-doc${page ? ' seo-doc-page' : ''}`} data-seo-doc={doc.key}>
+      <div className="seo-doc-head">
+        <p className="seo-doc-kind">{kindOf(doc, collection)}</p>
+        {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published.</p>}
+      </div>
+      <div className="seo-doc-previews">
+        <SeoPreview state={state} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} place="view" />
+      </div>
+      {page && shown && <SeoViewPageSettings state={state} pageId={page} on={on} preview={preview} />}
       {doc.subject.kind === 'entry' && <SeoViewPostSettings state={state} subject={doc.subject} preview={preview} on={on} />}
     </div>
   );
@@ -270,6 +313,21 @@ function SeoViewDocument({ state, doc, collection, shown }: { state: ProjectStat
  */
 export function SeoView({ shown }: { shown: boolean }) {
   const hidden = !shown;
+  const root = useRef<HTMLElement>(null);
+  // A page's fields are in one place at a time: the view while it is in front, else the Inspector. A field with focus
+  // in the place about to go (the sidebar's shortcut works from a field, another document chosen) is left first, as a
+  // click away would leave it, so what it holds is saved, or kept as refused, by its own control before that goes.
+  useEffect(
+    () =>
+      useStore.subscribe((s, prev) => {
+        const was = activeWorkspace(prev) === 'seo';
+        const is = activeWorkspace(s) === 'seo';
+        const subject = (x: SeoSubject | null) => (x ? seoSubjectKey(x) : null);
+        if (was && (!is || subject(s.seoSubject) !== subject(prev.seoSubject))) leaveField(root.current);
+        else if (!was && is) leaveField(document.getElementById('dock-panel-inspect'));
+      }),
+    []
+  );
   const snap = useStore((s) => s.snapshot);
   const subject = useStore((s) => s.seoSubject);
   const state = snap?.state;
@@ -302,7 +360,6 @@ export function SeoView({ shown }: { shown: boolean }) {
     returnTo.current = doc?.key ?? null;
     setState({ seoSubject: null });
   };
-  const root = useRef<HTMLElement>(null);
   // Put away (the post writer, another panel): a field being typed in commits now, as leaving it does, before anything
   // that view shows can act on the document (the writer's Publish), rather than whenever the browser lets go of it.
   useLayoutEffect(() => {

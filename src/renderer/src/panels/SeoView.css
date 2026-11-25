@@ -22,12 +22,27 @@
      that scrolls it sideways, as the Inspector does, rather than cutting its line where search results wouldn't. */
   .seo-preview-wide { gap: 12px; }
   .seo-preview-wide .code-view.seo-graph { max-height: 60vh; }
-  /* The chosen post's Search & sharing settings (#703), under its previews: the title and description, with their
-     meters, take a row each; the sharing image and canonical URL share one where there is room. */
-  .seo-settings { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--border); }
+  /* A document's settings under its previews: a post's Search & sharing (#703), its title and description, with their
+     meters, a row each, and the sharing image and canonical URL sharing one where there is room. */
+  .seo-settings { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--border); }
   .seo-settings-head { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
   .seo-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px 20px; }
   .seo-fields > [data-entry-field] > .field, .seo-fields > .switch-row { grid-column: 1 / -1; }
+  /* A page's settings (#702) under its previews, or beside them once the view is wide enough for both: the previews then
+     stay in sight while its settings scroll, so what is typed shows in them at once. Each group carries its own rule. */
+  .seo-scroll { container-type: inline-size; }
+  .seo-doc-head { display: flex; flex-direction: column; gap: 10px; }
+  .seo-doc-previews { min-width: 0; }
+  .seo-doc-page > .seo-settings { gap: 24px; margin-top: 0; padding-top: 8px; border-top: none; }
+  .seo-settings-group { display: flex; flex-direction: column; gap: 12px; }
+  .seo-settings-group > h3 { margin: 0; padding-bottom: 6px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text); }
+  .seo-settings-group > .field-hint { margin: -6px 0 0; }
+  @container (min-width: 1100px) {
+    .seo-doc-page { max-width: 1160px; display: grid; grid-template-columns: minmax(0, 1fr) 340px; column-gap: 32px; row-gap: 10px; align-items: start; }
+    .seo-doc-page > .seo-doc-head { grid-column: 1 / -1; }
+    .seo-doc-page > .seo-doc-previews { grid-column: 1; grid-row: 2; position: sticky; top: 16px; }
+    .seo-doc-page > .seo-settings { grid-column: 2; grid-row: 2; padding-top: 0; }
+  }
 
   .seo-back { width: 28px; height: 28px; padding: 0; justify-content: center; margin-left: -6px; flex: none; }
 

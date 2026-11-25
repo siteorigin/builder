@@ -47,8 +47,7 @@ import { followNote } from '@shared/site-name';
 import { headerHiddenProps } from '@shared/header-logo';
 import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
-import { routeUrl, validateRoute } from '@shared/routes';
-import { publicUrl } from '@shared/public-url';
+import { validateRoute } from '@shared/routes';
 import { isVideoContract, videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
@@ -72,7 +71,6 @@ import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
 import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
-import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
 import { StructuredDataFields, structuredSummary } from '../components/StructuredDataFields';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
@@ -99,10 +97,10 @@ import { wrapItems } from './WrapItems';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
-import { searchSummary, sharingView } from '../lib/sharing';
+import { searchSummary } from '../lib/sharing';
 import type { SeoSubject } from '@shared/seo';
-import { openSiteSharing } from './SharingPreview';
-import { LengthMeter, SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
+import { SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
+import { PageSearchFields, pageAlive, pageUpdater, type PageUpd } from './PageSearchFields';
 import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 import { footerCopyPlan } from '../lib/page-navigation';
@@ -250,7 +248,6 @@ function readProp(owner: OwnerRef, nodeId: string, prop: string): { value: unkno
 
 /** Whether a page, a node, or a list row is still in the project: text kept for a field that belongs to one that
  *  goes is dropped and offered to copy (see DraftInput's keepWhile and FieldHome). */
-const pageAlive = (id: string) => () => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id);
 const nodeAlive = (owner: OwnerRef, id: string) => () => {
   const s = getState().snapshot?.state;
   return !!s && Object.hasOwn(treeFor(s, owner)?.nodes ?? {}, id);
@@ -3003,77 +3000,16 @@ const shellSummary = (header: boolean, footer: boolean) => (header && footer ? '
  * A page's Search & sharing settings, with previews of its search result, link card and structured data that follow
  * its title, description and canonical URL as they are typed. Its own component, so typing re-renders only this.
  */
-function PageSearchSettings({ page, state, draft, upd }: { page: PageDoc; state: ProjectState; draft: boolean; upd: (patch: Record<string, unknown>, label?: string) => void }) {
+function PageSearchSettings({ page, state, draft, upd }: { page: PageDoc; state: ProjectState; draft: boolean; upd: PageUpd }) {
   // The structured data reads the whole website: it is worked out only while the Inspector shows.
   const shown = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const subject = useMemo<SeoSubject>(() => ({ kind: 'page', pageId: page.id }), [page.id]);
   const { typed, on: typedOn } = useTypedSeo(subjectKey(subject));
   const { overlay, doc: seoDoc } = useDocumentPreview(state, subject, typed);
-  const isHome = page.id === state.site.homePageId;
-  // How a shared link to the page looks, and whose sharing image it carries.
-  const sharing = sharingView(state, page);
-  const base = publicUrl(state.site);
-  const ownUrl = base ? base + routeUrl(page.route) : null;
   return (
     <>
       <SeoPreview state={state} subject={subject} overlay={overlay} typed={typed} doc={seoDoc} shown={shown} />
-      <Field
-        label="Browser title"
-        hint={
-          <>
-            Leave empty to use “{isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.
-            <LengthMeter kind="title" doc={seoDoc} />
-          </>
-        }
-      >
-        <DraftInput id="page-seo-title" limit={TEXT_LIMITS.seoTitle} keep={`page:${page.id}:seoTitle`} keepWhile={pageAlive(page.id)} value={page.seo.title ?? ''} onDirty={typedOn.title} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
-      </Field>
-      <Field
-        label="Description"
-        hint={
-          <>
-            Shown by search engines and link previews.
-            <LengthMeter kind="description" doc={seoDoc} />
-          </>
-        }
-      >
-        <DraftInput id="page-seo-description" multiline limit={TEXT_LIMITS.pageDescription} keep={`page:${page.id}:description`} keepWhile={pageAlive(page.id)} value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onDirty={typedOn.description} onCommit={(v) => upd({ description: v }, 'Change page description')} />
-      </Field>
-      {/* The page's own choice, or the site's while it has none: the picker shows both, and Use the site’s image returns to it. */}
-      <div className="col" style={{ gap: 4 }} data-seo-field="socialImage">
-        <ImageEditor
-          title="Sharing image"
-          value={{ assetId: page.seo.socialImage || null, alt: '' }}
-          state={state}
-          picture={sharing.picker}
-          onChange={(v) => upd({ socialImage: v.assetId }, v.assetId ? 'Change sharing image' : sharing.picker.inherited ? 'Use the site’s sharing image' : 'Remove sharing image')}
-        />
-        <div className="field-hint">{sharing.imageNote}</div>
-        <button type="button" className="insp-mini" style={{ alignSelf: 'flex-start', marginLeft: -6 }} onClick={() => openSiteSharing('socialImage')}>
-          Change the site’s sharing image
-        </button>
-      </div>
-      <SwitchRow
-        id="page-seo-noindex"
-        checked={!!page.seo.noindex}
-        onChange={(v) => upd({ noindex: v })}
-        label="Hide from search engines"
-        hint={
-          draft
-            ? 'Once published, search engines are asked not to list it. Anyone with the address can still open it.'
-            : 'Search engines are asked not to list it. Anyone with the address can still open it.'
-        }
-      />
-      <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint={draft ? 'Once published, leaves this page out of the site’s own Site search results.' : 'Leaves this page out of the site’s own Site search results.'} />
-      <CanonicalUrlField id="page-seo-canonical" value={page.seo.canonical} ownUrl={ownUrl} what="page" onTyped={typedOn.canonical} onCommit={(url) => upd({ canonical: url }, url ? 'Change canonical URL' : 'Clear canonical URL')} />
-      <RevisionDateField
-        id="page-seo-updated"
-        label="Last revised"
-        hint="When the page’s content last changed, for the sitemap. Leave empty to give no date."
-        value={page.updatedAt}
-        onSet={(v) => upd({ updatedAt: v }, 'Change revision date')}
-        onClear={() => upd({ updatedAt: null }, 'Clear revision date')}
-      />
+      <PageSearchFields page={page} state={state} draft={draft} upd={upd} on={typedOn} doc={seoDoc} />
     </>
   );
 }
@@ -3084,7 +3020,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const [titleError, setTitleError] = useState<string | null>(null);
   if (!page) return null;
   // History says which page each setting was changed on: "Change browser title (About)".
-  const upd = (patch: Record<string, unknown>, label = 'Update page settings') => void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], `${label} (${page.title})`);
+  const upd = pageUpdater(page);
   const isHome = page.id === state.site.homePageId;
   const draft = isDraftPage(state, page);
   const inside = pagesWithin(state.pages, page.id);

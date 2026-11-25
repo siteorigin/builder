@@ -8,7 +8,7 @@ import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'l
 import { aiActivity, api, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
 import { afterSettle, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
-import { dropKeptDraft, keepDraft, keptDraft, keptDraftKey, keptField, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
+import { dropKeptDraft, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
 import { runPhase } from '../lib/savestate';
 import type { ProjectSnapshot } from '@shared/api';
 import { RenameOffer } from './RenameOffer';
@@ -753,8 +753,8 @@ interface DraftInputProps {
    *  and text over it, typed or pasted, is kept whole and refused, with the reason beside the field. */
   limit?: number;
   /** Where this field's text belongs in the project (a page's description, an image's alt text), so text
-   *  refused for being too long is kept for it while it is off screen. Without it, that text is offered to
-   *  copy when the field goes away. */
+   *  refused for being too long, or by `check`, is kept for it while it is off screen. Without it, text too long is
+   *  offered to copy when the field goes away. */
   keep?: string;
   /** With `keep`: whether what the field belongs to is still in the project. Kept text whose page, image or row is
    *  removed goes, offered to copy. */
@@ -797,6 +797,9 @@ export function DraftInput(props: DraftInputProps) {
   // Another place is another field: one that keeps refused text starts afresh, with that place's own.
   return <DraftField key={props.keep ?? ''} {...props} />;
 }
+
+/** What is said about text a field's check refused. */
+const refusedReport = (name: string) => (name ? `What you typed in ${name} can’t be saved.` : 'Something you typed can’t be saved.');
 
 /** Where the author started typing: the project, the text and the commit as they were then (see DraftField). */
 interface DraftStart {
@@ -841,14 +844,20 @@ function DraftField({
   handle,
   inputRef
 }: DraftInputProps) {
-  // Text this field refused for being too long, kept while it was off screen (another page was open).
+  // Text this field refused, kept while it was off screen (another page was open, or the same page's settings showed in
+  // another place): too long to save, or refused by `check`.
   const [field] = useState(() => (keep ? keptField(useStore.getState().snapshot?.workspaceKey, keep) : null));
   const [restored] = useState(() => (field ? keptDraft<DraftStart>(field) : undefined));
+  const restoredAs = keptRefusal(restored);
+  // Each control keeps its place's text as its own; a newer one (text handed over from a rename, or taken up by the
+  // same field in another place) is never overwritten or dropped by a control that has gone.
+  const owner = useRef({});
+  const mine = () => !field || !keptDraft(field) || keptDraft(field)!.owner === owner.current;
   const [draft, setDraft] = useState(restored?.text ?? value);
   // Text over the limit was refused: it stays, marked as not saved, until it is shortened and saved, or the
   // saved text is put back (Escape). The project changing meanwhile never replaces it.
-  const [tooLong, setTooLongState] = useState(!!restored);
-  const tooLongRef = useRef(!!restored);
+  const [tooLong, setTooLongState] = useState(restoredAs === 'long');
+  const tooLongRef = useRef(restoredAs === 'long');
   const setTooLong = (on: boolean) => {
     tooLongRef.current = on;
     setTooLongState(on);
@@ -884,8 +893,9 @@ function DraftField({
   // commits nothing. Text the project refused stays a draft, start and all.
   const startedAt = useRef<DraftStart | null>(restored?.start ?? null);
   const forget = () => (startedAt.current = null);
-  // Text `check` refused, kept as a draft after the field was left, and the reason shown for it.
-  const kept = useRef(false);
+  // Text `check` refused, kept as a draft after the field was left (or by another control of its place), and the reason
+  // shown for it.
+  const kept = useRef(restoredAs === 'check');
   const shown = useRef<DraftProblem | null>(null);
   const showProblem = (p: DraftProblem | null) => {
     if (p?.message === shown.current?.message && p?.suggestion === shown.current?.suggestion) return;
@@ -893,6 +903,8 @@ function DraftField({
     onProblem?.(p);
   };
   const release = () => {
+    // Text its check refused, kept for its place, is settled too (unless a newer control of the place keeps it).
+    if (kept.current && field && keptRefusal(keptDraft(field)) === 'check' && mine()) dropKeptDraft(field);
     kept.current = false;
     showProblem(null);
     retainRefused(draftKey, null);
@@ -955,12 +967,7 @@ function DraftField({
   const nameRef = useRef(restored?.name ?? '');
   // Kept as soon as it is refused and kept current as it is edited, so a control of the same place that comes up
   // before this one has gone (the field moved into a group) finds it too.
-  // Each control keeps its place's text as its own; a newer one (text handed over from a rename) is never overwritten
-  // or dropped by a control that has gone. It also names the control its typed edits come from: only its own earlier
-  // save of the field is written over unseen (see commitDraft).
-  const owner = useRef({});
-  const mine = () => !field || !keptDraft(field) || keptDraft(field)!.owner === owner.current;
-  const stash = (text: string, start: DraftStart) => field && keepDraft<DraftStart>(field, { text, start, name: nameRef.current, alive: keepWhile, owner: owner.current });
+  const stash = (text: string, start: DraftStart, refused?: 'check') => field && keepDraft<DraftStart>(field, { text, start, name: nameRef.current, alive: keepWhile, owner: owner.current, ...(refused ? { refused } : {}) });
   useEffect(() => {
     mounted.current = true;
     // Text found for this place on mount is this control's to keep from now on.
@@ -977,18 +984,28 @@ function DraftField({
       // What the field belonged to was removed (its page, image or row): nothing is kept for a place that has gone. Not
       // while the AI runs: what it removed comes back if it is stopped, and the check waits for the run to end.
       const gone = !!field && !!keepWhile && !snap?.aiBusy && !keepWhile();
+      const refused = tooLongRef.current || kept.current;
+      const fate = field ? keptOnLeave({ open, gone, over, tooLong: tooLongRef.current, checked: kept.current, mine: mine() }) : null;
       // Too long to save, or refused and shortened but not saved yet: it stays with the field's place.
-      if (open && field && !gone && (over || tooLongRef.current)) {
-        if (!mine()) return;
+      if (fate === 'long') {
         stash(text, from!);
         markDraft(draftKey, true, over ? tooLongReport(nameRef.current, text.length, limit!) : unsavedReport(nameRef.current));
         return;
       }
+      // Refused by its check: it stays with the field's place too, still not saved, and leaving the project says why.
+      if (fate === 'check') {
+        stash(text, from!, 'check');
+        markDraft(draftKey, true);
+        retainRefused(draftKey, refusedReport(nameRef.current));
+        return;
+      }
+      // Refused text a newer control of the same place has taken up is that control's.
+      if (open && field && !gone && (over || refused) && !mine()) return;
       // Kept text this field held is settled; text kept by another control of the same place is left to it.
-      if (field && tooLongRef.current && mine()) dropKeptDraft(field);
+      if (fate === 'drop') dropKeptDraft(field!);
       if (!field || !keptDraft(field)) markDraft(draftKey, false);
       // Refused text kept for a place that has gone was already offered to copy as it went.
-      if (!open || !(focused.current || over) || (gone && tooLongRef.current)) return;
+      if (!open || !(focused.current || over) || (gone && refused)) return;
       const copy = { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) };
       if (over) toast(`${tooLongReport(nameRef.current, text.length, limit!)} The field went away, so copy it to keep it.`, 'error', copy);
       else if (aiRan(from!)) commitDraft(from!.base, () => from!.commit(text), text, { check: true, control: owner.current });
@@ -1000,10 +1017,7 @@ function DraftField({
   const edit = useRef(0);
   const held = useRef(false);
   const refusedLast = useRef(!!restored);
-  const named = (el: HTMLInputElement | HTMLTextAreaElement) => {
-    const name = fieldName(el, ariaLabel);
-    return name ? `What you typed in ${name} can’t be saved.` : 'Something you typed can’t be saved.';
-  };
+  const named = (el: HTMLInputElement | HTMLTextAreaElement) => refusedReport(fieldName(el, ariaLabel));
   /** Leave the field with this text: commit it, or (refused) say so; the saved value comes back after, unless
    *  `check` refused it or it is too long to save, which keeps it. */
   const leave = (text: string, el: HTMLInputElement | HTMLTextAreaElement) => {
@@ -1015,6 +1029,9 @@ function DraftField({
       kept.current = true;
       refusedLast.current = true;
       held.current = false;
+      // Kept for its place at once, so the same field shown elsewhere next (even in the same render) finds it.
+      nameRef.current = fieldName(el, ariaLabel);
+      stash(text, from!, 'check');
       mark(true);
       showProblem(problem);
       retainRefused(draftKey, named(el), revealable(el, reveal));
@@ -1125,6 +1142,7 @@ function DraftField({
       setDraft(text);
       mark(text !== value);
       if (tooLongRef.current) stash(text, startedAt.current);
+      else if (kept.current) stash(text, startedAt.current, 'check');
       onLive?.(text);
     },
     // Pasted line breaks become spaces where the text lands, so the caret stays where it should.
