@@ -37,7 +37,12 @@ interface Report {
   navId?: number;
 }
 const reports = () => page.evaluate<Report[]>(`window.reports`);
-const command = (type: string, payload: unknown) => page.evaluate(`document.querySelector('iframe').contentWindow.postMessage(${JSON.stringify({ protocolVersion: 1, sessionId: 'so-test', type, payload })}, '*')`);
+const command = (type: string, payload: unknown, navigationId = '') =>
+  page.evaluate(`document.querySelector('iframe').contentWindow.postMessage(${JSON.stringify({ protocolVersion: 1, sessionId: 'so-test', navigationId, revision: 0, type, payload })}, '*')`);
+/** The document part of a navigation ID. */
+const doc2 = (navigationId: string) => navigationId.slice(0, navigationId.lastIndexOf('.'));
+/** The navigation each `ready` and `navigated` came from, in order. */
+const navigations = () => page.evaluate<Array<{ type: string; navigationId: string }>>(`window.navigations`);
 const gotoCalls = () => frame.evaluate<number>(`window.gotoCalls`);
 const release = (n: number) => frame.evaluate(`window.releases[${n}]()`);
 /** Everything the bridge has sent so far, once it has all arrived: messages from one frame arrive in order. */
@@ -60,10 +65,11 @@ describe.skipIf(!browserInstalled)('the preview frame answering the editor’s p
       if (url.origin === HOST) return route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>host</title><body style="margin:0"><iframe name="so-test" src="${SITE}/" style="border:0;width:700px;height:400px"></iframe></body>` });
       return route.abort();
     });
-    await page.addInitScript(`if (location.origin === '${HOST}') { window.reports = []; window.flushed = false; window.addEventListener('message', (e) => {
+    await page.addInitScript(`if (location.origin === '${HOST}') { window.reports = []; window.navigations = []; window.flushed = false; window.addEventListener('message', (e) => {
       if (!e.data || e.data.sessionId !== 'so-test') return;
+      if (e.data.type === 'ready' || e.data.type === 'navigated') window.navigations.push({ type: e.data.type, navigationId: e.data.navigationId });
       if (e.data.type === 'navigated') window.reports.push(e.data.payload);
-      if (e.data.type === 'measured') window.measured = e.data.payload;
+      if (e.data.type === 'measured' || e.data.type === 'pointed' || e.data.type === 'spaceMeasured') window[e.data.type] = e.data.payload;
       if (e.data.type === 'flushed') window.flushed = true;
     }); }`);
   }, 30000);
@@ -106,6 +112,95 @@ describe.skipIf(!browserInstalled)('the preview frame answering the editor’s p
     expect(await flushed()).toEqual([{ path: '/contact/' }, { path: '/contact/', navId: 2 }]);
     expect(await frame.evaluate(`window.loads`)).toBe(1);
     expect(await frame.evaluate(`location.pathname`)).toBe('/contact/');
+  });
+
+  it('names each load of a page, and each page it moves to in place, as a navigation of its own', async () => {
+    const [loaded] = await navigations();
+    expect(loaded.type).toBe('ready');
+    expect(loaded.navigationId).toMatch(/^d[0-9a-z]+\.0$/);
+    expect(await frame.evaluate(`document.documentElement.getAttribute('data-so-navigation')`)).toBe(loaded.navigationId);
+    const doc = loaded.navigationId.slice(0, -2);
+    // The same page loaded again is another navigation, of another document.
+    await frame.evaluate(`setTimeout(() => location.reload())`);
+    await expect.poll(async () => (await navigations()).filter((n) => n.type === 'ready').length).toBe(2);
+    const reloaded = (await navigations())[1].navigationId;
+    expect(reloaded).toMatch(/^d[0-9a-z]+\.0$/);
+    expect(reloaded).not.toBe(loaded.navigationId);
+    expect(await frame.evaluate(`location.pathname`)).toBe('/');
+    // A page reached in place is the next navigation of that document: the site's report and the answer both name it.
+    await frame.waitForSelector('html[data-so-editing]', { state: 'attached' });
+    await command('navigate', { path: '/about/', navId: 1 });
+    await expect.poll(gotoCalls).toBe(1);
+    await release(1);
+    await expect.poll(async () => (await reports()).length).toBe(2);
+    const moved = reloaded.slice(0, -2) + '.1';
+    expect((await navigations()).slice(2)).toEqual([
+      { type: 'navigated', navigationId: moved },
+      { type: 'navigated', navigationId: moved }
+    ]);
+    expect(doc).not.toBe(reloaded.slice(0, -2));
+    expect(await frame.evaluate(`document.documentElement.getAttribute('data-so-navigation')`)).toBe(moved);
+    // Each later arrival is the next one, a visitor's Back included.
+    await command('navigate', { path: '/contact/', navId: 2 });
+    await expect.poll(gotoCalls).toBe(2);
+    await release(2);
+    await expect.poll(async () => (await reports()).length).toBe(4);
+    await frame.evaluate(`history.back()`);
+    await expect.poll(async () => (await reports()).length).toBe(5);
+    expect((await navigations()).slice(4).map((n) => n.navigationId)).toEqual([`${doc2(reloaded)}.2`, `${doc2(reloaded)}.2`, `${doc2(reloaded)}.3`]);
+    expect(await frame.evaluate(`document.documentElement.getAttribute('data-so-navigation')`)).toBe(`${doc2(reloaded)}.3`);
+    // A jump to a section of the page, and Back from it, is still the same page.
+    await frame.evaluate(`location.hash = 'team'`);
+    await frame.evaluate(`history.back()`);
+    await expect.poll(async () => (await reports()).length).toBe(7);
+    expect((await navigations()).slice(7).map((n) => n.navigationId)).toEqual([`${doc2(reloaded)}.3`, `${doc2(reloaded)}.3`]);
+  });
+
+  it('answers a measurement asked of a page it has since left as unmeasured', async () => {
+    const [loaded] = await navigations();
+    await command('navigate', { path: '/about/', navId: 1 });
+    await expect.poll(gotoCalls).toBe(1);
+    await release(1);
+    await expect.poll(async () => (await reports()).length).toBe(2);
+    const descs = [{ ctx: 'page:p', node: 's', items: '' }];
+    await command('measure', { requestId: 'old', descs }, loaded.navigationId);
+    await expect.poll(() => page.evaluate(`window.measured && window.measured.requestId`)).toBe('old');
+    expect(await page.evaluate(`window.measured`)).toEqual({ requestId: 'old', unmeasured: true });
+    await command('pointAt', { requestId: 'old-point', x: 10, y: 10 }, loaded.navigationId);
+    await command('measureSpace', { requestId: 'old-space', vars: ['--x'], desc: descs[0] }, loaded.navigationId);
+    await expect.poll(() => page.evaluate(`[window.pointed, window.spaceMeasured]`)).toEqual([
+      { requestId: 'old-point', unmeasured: true },
+      { requestId: 'old-space', unmeasured: true }
+    ]);
+    const now = (await navigations()).at(-1)!.navigationId;
+    await command('measure', { requestId: 'now', descs }, now);
+    await expect.poll(() => page.evaluate(`window.measured && window.measured.requestId`)).toBe('now');
+    expect(await page.evaluate(`window.measured.rects.length`)).toBe(1);
+    await command('pointAt', { requestId: 'now-point', x: 10, y: 10 }, now);
+    await expect.poll(() => page.evaluate(`window.pointed && window.pointed.requestId`)).toBe('now-point');
+    expect(await page.evaluate(`window.pointed.unmeasured`)).toBeUndefined();
+  });
+
+  it('ignores a scroll asked of a page it has since left', async () => {
+    await frame.evaluate(`document.querySelector('main').insertAdjacentHTML('beforeend', '<div style="height: 3000px"></div><p data-so-ctx="page:p" data-so-node="far">Far</p>')`);
+    const [loaded] = await navigations();
+    await command('navigate', { path: '/about/', navId: 1 });
+    await expect.poll(gotoCalls).toBe(1);
+    await release(1);
+    await expect.poll(async () => (await reports()).length).toBe(2);
+    const desc = { ctx: 'page:p', node: 'far', items: '' };
+    await command('scrollTo', { desc }, loaded.navigationId);
+    await command('scrollBy', { y: 500 }, loaded.navigationId);
+    // Commands are taken in order: once a later one is answered, the scroll has been handled (and given time to move).
+    await command('measure', { requestId: 'after', descs: [] });
+    await expect.poll(() => page.evaluate(`window.measured && window.measured.requestId`)).toBe('after');
+    await new Promise((r) => setTimeout(r, 400));
+    expect(await frame.evaluate(`window.scrollY`)).toBe(0);
+    const now = (await navigations()).at(-1)!.navigationId;
+    await command('scrollBy', { y: 500 }, now);
+    await expect.poll(() => frame.evaluate(`window.scrollY`)).toBe(500);
+    await command('scrollTo', { desc }, now);
+    await expect.poll(() => frame.evaluate(`window.scrollY`)).toBeGreaterThan(1000);
   });
 
   it('measures each sibling with the CSS order it is laid out by', async () => {
