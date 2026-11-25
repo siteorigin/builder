@@ -190,6 +190,13 @@ describe('agent benchmark', () => {
     // A faithful layout of another shape passes: each question with its answer as one point of a text section.
     const points = (a: any) => (a.sections[3] = { componentId: 'content.text', props: { heading: 'Before you visit', body: '- Can I bring a lamp? Yes. Bring the shade separately so it travels safely.\n- What does it cost? Assessment is free. We agree the price of parts with you first.' } });
     expect((await runCase(edited(clinic, points), scripted)).result.checks.filter((x) => !x.pass)).toEqual([]);
+    // So does the opening as a text section whose button is a link in its words, one of them in bold.
+    const bench = { type: 'url', target: 'https://bench.example/book' };
+    const inText = (a: any) => (a.sections[0] = { componentId: 'content.text', props: { heading: 'Give your kettle another winter', body: [
+            { type: 'p', spans: [{ text: 'Bring one broken household appliance to the Saturday repair clinic and fix it with a volunteer.' }] },
+            { type: 'p', spans: [{ text: 'Reserve a ', link: bench }, { text: 'bench', strong: true, link: bench }] }
+          ] } });
+    expect((await runCase(edited(clinic, inText), scripted)).result.checks.filter((x) => !x.pass)).toEqual([]);
     // Another page changed, a page added and a menu link with it, which only a request allowed the whole site could do.
     const wider: EvalCase = {
       ...clinic,

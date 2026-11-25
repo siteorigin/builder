@@ -101,13 +101,18 @@ const shownOn = (s: ProjectState, p: PageDoc | undefined): Shown[] => {
         // their emphasis.
         for (const b of blocks)
           for (const spans of 'spans' in b ? [b.spans] : 'items' in b ? b.items : []) {
-            let last: { target: string; label: string } | null = null;
+            // Spans of one link are one label, also across the space between them that the link's own words leave out.
+            const runs: Array<{ target: string; text: string; gap: string | null }> = [];
             for (const span of spans) {
               const target = span.link ? linkTarget(span.link) : '';
-              if (target && last?.target === target) last.label = plain(`${last.label}${span.text}`);
-              else if (target) shown.links.push((last = { target, label: plain(span.text) }));
-              else last = null;
+              const last = runs.at(-1);
+              if (target && last?.target === target && last.gap !== null) {
+                last.text += last.gap + span.text;
+                last.gap = '';
+              } else if (target) runs.push({ target, text: span.text, gap: '' });
+              else if (last && last.gap !== null) last.gap = /^\s*$/.test(span.text) ? last.gap + span.text : null;
             }
+            for (const r of runs) shown.links.push({ target: r.target, label: plain(r.text) });
           }
         shown.pieces.push(...richTextToPlain(blocks).split(/\n+/).map((w) => ({ text: plain(w), item })).filter((x) => x.text));
       } else if (typeof c.value === 'string' && plain(c.value)) shown.pieces.push({ text: plain(c.value), item });
