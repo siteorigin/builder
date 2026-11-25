@@ -150,7 +150,7 @@ function PagesSummary({ published, drafts, publishedEntries, draftEntries }: { p
       {long && (
         <>
           <button type="button" className="btn btn-sm btn-ghost export-pages-toggle" aria-expanded={open} aria-controls={listId} onClick={() => setOpen(!open)}>
-            <ChevronRight size={14} style={{ transform: open ? 'rotate(90deg)' : undefined }} /> Review all pages
+            <ChevronRight size={14} /> Review all pages
           </button>
           <div id={listId} className="export-pages-all" hidden={!open}>
             <PageList title="Published" pages={published} />
@@ -235,7 +235,7 @@ function SampleContactReview({ groups, kept, disabled, readOnly, folded, onSettl
             {/* While a job runs the rows' actions wait, so there is nothing to open. */}
             {folded && !disabled && (
               <button type="button" className="btn btn-sm export-review-toggle" aria-expanded={listOpen} aria-controls={rowsId} aria-describedby={headId} onClick={() => setListOpen(!listOpen)}>
-                <ChevronRight size={14} aria-hidden style={{ transform: listOpen ? 'rotate(90deg)' : undefined }} />
+                <ChevronRight size={14} aria-hidden />
                 {listOpen ? 'Hide' : 'Review'}
               </button>
             )}
@@ -258,7 +258,7 @@ function SampleContactReview({ groups, kept, disabled, readOnly, folded, onSettl
                       {/* Beside the places it reveals, so the row stays one decision wide. */}
                       <button type="button" className="export-inline-toggle" aria-expanded={shown} aria-controls={listId} aria-describedby={nameId} onClick={() => setOpen(shown ? null : g.kind)}>
                         Show where
-                        <ChevronRight size={13} aria-hidden style={{ transform: shown ? 'rotate(90deg)' : undefined }} />
+                        <ChevronRight size={13} aria-hidden />
                       </button>
                     </div>
                     <div className="export-review-actions">
@@ -322,7 +322,7 @@ function FormReview({ notes, disabled, folded }: { notes: ExportNote[]; disabled
         </div>
         {folded && !disabled && (
           <button type="button" className="btn btn-sm export-review-toggle" aria-expanded={listOpen} aria-controls={rowsId} aria-describedby={headId} onClick={() => setListOpen(!listOpen)}>
-            <ChevronRight size={14} aria-hidden style={{ transform: listOpen ? 'rotate(90deg)' : undefined }} />
+            <ChevronRight size={14} aria-hidden />
             {listOpen ? 'Hide' : 'Review'}
           </button>
         )}
@@ -392,7 +392,7 @@ function SeoPreflight({ audit, state, disabled, folded }: { audit: SeoAuditResul
         </div>
         {folded && !disabled && (
           <button type="button" className="btn btn-sm export-review-toggle" aria-expanded={listOpen} aria-controls={rowsId} aria-describedby={headId} onClick={() => setListOpen(!listOpen)}>
-            <ChevronRight size={14} aria-hidden style={{ transform: listOpen ? 'rotate(90deg)' : undefined }} />
+            <ChevronRight size={14} aria-hidden />
             {listOpen ? 'Hide' : 'Review'}
           </button>
         )}
@@ -481,7 +481,7 @@ function BuildDetails({ text, fix }: { text: string; fix?: ReactNode }) {
       <div className="row wrap" style={{ gap: 6 }}>
         {fix}
         <button type="button" className="btn btn-sm btn-ghost export-details-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}>
-          <ChevronRight size={14} style={{ transform: open ? 'rotate(90deg)' : undefined }} /> Technical details
+          <ChevronRight size={14} /> Technical details
         </button>
         <button type="button" className="btn btn-sm" onClick={() => void copy()}>
           <Copy size={13} /> Copy details
@@ -665,7 +665,7 @@ export function ExportModal() {
                 <div className="export-row-notes-wrap">
                   {foldNotes ? (
                     <button type="button" className="btn btn-sm btn-ghost export-note-toggle" aria-expanded={notesOpen} aria-controls={notesId} onClick={() => setNotesOpen(!notesOpen)}>
-                      <ChevronRight size={14} style={{ transform: notesOpen ? 'rotate(90deg)' : undefined }} /> Review {rowNotes.length} export notes
+                      <ChevronRight size={14} /> Review {rowNotes.length} export notes
                     </button>
                   ) : (
                     <h4 className="export-row-notes-title">{rowNotes.length === 1 ? 'A note about this export' : 'Notes about this export'}</h4>
@@ -802,7 +802,7 @@ export function ExportModal() {
                     {/* Only a folded list has a disclosure, so nothing hidden can take focus. It sits before the list it opens. */}
                     {longLinks && (
                       <button type="button" className="btn btn-sm export-blocker-toggle" aria-expanded={linksOpen} aria-controls={linksId} aria-describedby="export-draft-links-summary" onClick={() => setLinksOpen(!linksOpen)}>
-                        <ChevronRight size={14} aria-hidden style={{ transform: linksOpen ? 'rotate(90deg)' : undefined }} /> Review links to drafts
+                        <ChevronRight size={14} aria-hidden /> Review links to drafts
                       </button>
                     )}
                   </div>

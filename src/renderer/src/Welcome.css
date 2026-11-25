@@ -72,8 +72,7 @@
   .recent-filter .clear { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); color: var(--text-3); }
   .recent-filter .clear svg { width: 14px; height: 14px; }
   .recent-filter .clear:disabled { opacity: 1; visibility: hidden; }
-  .recent-none { display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 560px; margin-top: 22px; padding: 14px 14px 14px 18px; border-radius: var(--r-md); background: var(--raised); color: var(--text-2); box-shadow: 0 0 0 1px var(--border), var(--shadow-sm); }
-  :where(:root[data-appearance='dark']) { .recent-none { box-shadow: 0 0 0 1px var(--border-strong); } }
+  .recent-none { display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 560px; margin-top: 22px; padding: 14px 14px 14px 18px; border-radius: var(--r-md); background: var(--raised); color: var(--text-2); box-shadow: var(--card-ring); }
   .recent-none p { min-width: 0; margin: 0; overflow-wrap: anywhere; }
   .recent-none .btn { flex: none; }
   .recent-none .btn:disabled { opacity: 1; background: var(--panel-2); border-color: var(--border-strong); color: var(--text-3); box-shadow: none; }
@@ -88,14 +87,9 @@
   .recent-grid > .recent-item { display: flex; }
   .recent-item { position: relative; }
   /* Name first: a small neutral monogram, then the name, where it lives and when it was last open. */
-  .recent-card { position: relative; display: flex; align-items: stretch; gap: 12px; width: 100%; height: 100%; border-radius: var(--r-md); border: 0; background: var(--raised); overflow: hidden; text-align: left; padding: 12px 44px 12px 12px; box-shadow: 0 0 0 1px var(--border), 0 1px 2px rgb(28 39 66 / 0.06); transition: box-shadow 160ms, transform 160ms, background 120ms; }
-  .recent-card:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 0 0 1px var(--border-strong), 0 8px 20px -10px rgb(28 39 66 / 0.25); }
+  .recent-card { position: relative; display: flex; align-items: stretch; gap: 12px; width: 100%; height: 100%; border-radius: var(--r-md); border: 0; background: var(--raised); overflow: hidden; text-align: left; padding: 12px 44px 12px 12px; box-shadow: var(--card-ring); transition: box-shadow 160ms, transform 160ms, background 120ms; }
+  .recent-card:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--card-ring-hover); }
   .recent-card:focus-visible { outline-offset: 2px; }
-  :where(:root[data-appearance='dark']) {
-    .recent-card { box-shadow: 0 0 0 1px var(--border-strong); }
-    /* At rest these cards already use the strong edge, so hover steps up to the control edge. */
-    .recent-card:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--border-control), 0 8px 20px -10px rgb(0 0 0 / 0.65); }
-  }
   .recent-thumb { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); font-size: 13px; font-weight: 650; letter-spacing: 0; }
   .recent-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
   .recent-meta strong { font-size: 13px; font-weight: 600; line-height: 1.35; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -171,8 +165,7 @@
   /* First run: the promise and the one action, a sketch of what it makes, then the three steps. */
   /* First run has nothing else on the pane, so the panel sits in its optical centre (a little above the middle). */
   .welcome-main:has(> .welcome-hero) { display: flex; flex-direction: column; padding-bottom: 72px; }
-  .welcome-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: 28px 44px; align-items: center; width: 100%; max-width: 1000px; margin: auto; padding: 40px 40px 30px; border-radius: var(--r-md); background: var(--raised); color: var(--text-2); box-shadow: 0 0 0 1px var(--border), var(--shadow-sm); }
-  :where(:root[data-appearance='dark']) { .welcome-hero { box-shadow: 0 0 0 1px var(--border-strong); } }
+  .welcome-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: 28px 44px; align-items: center; width: 100%; max-width: 1000px; margin: auto; padding: 40px 40px 30px; border-radius: var(--r-md); background: var(--raised); color: var(--text-2); box-shadow: var(--card-ring); }
   /* Its button waits like everything else while a project opens: drawn, not faded. */
   .welcome-hero .btn-primary:disabled { opacity: 1; background: var(--panel-2); border-color: var(--border-strong); color: var(--text-3); box-shadow: none; }
   .welcome-hero .hero-copy { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; }

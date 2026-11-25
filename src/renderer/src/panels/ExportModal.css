@@ -205,4 +205,5 @@
   .export-note-go:hover:not(:disabled) { text-decoration: underline; }
   .export-note-since { display: flex; align-items: flex-start; gap: 5px; margin-top: 2px; text-indent: 0; color: var(--text); }
   .export-note-since > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--green); }
+  :is(.export-pages-toggle, .export-review-toggle, .export-inline-toggle, .export-details-toggle, .export-note-toggle, .export-blocker-toggle)[aria-expanded='true'] > svg { transform: rotate(90deg); }
 }
