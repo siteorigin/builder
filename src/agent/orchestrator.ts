@@ -24,6 +24,7 @@ import { completenessNudge, describePage, findStubPages, missingPages, pageCreat
 import { blueprintSection, exampleSection, retrieveBlueprints, retrieveExamples } from './examples';
 import { changedComponents, introducedReusability, reusabilityNudge } from './reusability';
 import { modelInfo } from './models';
+import { hasBrief, withBrief } from './brief';
 import { MAX_REPLAYED_ANSWER, readRecipient, replayedHistory, turnModelText, type Recipient } from '@shared/turn-model';
 
 /**
@@ -388,8 +389,18 @@ Theme guidance for ${theme.name} (reference data):
 ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
 }
 
-/** `constrained`: the model answers in grammar-constrained JSON, reading each tool's signature in the prompt. */
-function systemPrompt(state: ProjectState, run: RunTools, constrained = false): string {
+/**
+ * `constrained`: the model answers in grammar-constrained JSON, reading each tool's signature in the prompt. Every run,
+ * a question included, reads the project brief after its instructions when the project has one (#519), unless `brief`
+ * is false: a run whose first request fits its window only without the brief.
+ */
+function systemPrompt(state: ProjectState, run: RunTools, constrained = false, brief = true): string {
+  const text = instructions(state, run, constrained);
+  return brief ? withBrief(text, state, constrained) : text;
+}
+
+/** The instructions for a run, by what it may do and the model it goes to. */
+function instructions(state: ProjectState, run: RunTools, constrained: boolean): string {
   if (run.mode === 'ask') return askPrompt(state, constrained);
   if (run.focused && run.task === 'component') return componentPrompt(state);
   if (run.focused)
@@ -1096,6 +1107,8 @@ export class Orchestrator {
     const constrainedJson = capabilities.toolCalling === 'constrained-json';
     /** Set on the first turn, before any call, when the model's window cannot hold the request beside the general tools. */
     let onlyFocused = false;
+    /** Cleared on the first turn, before any call, when the request fits the model's window only without the brief. */
+    let briefShown = true;
     /** Re-chosen each turn, because the user can widen a selection run to the whole site part way through. */
     const runTools = (): RunTools =>
       toolsForRun({
@@ -1497,7 +1510,7 @@ export class Orchestrator {
      */
     const narrowTools = () => {
       if (onlyFocused) return false;
-      const size = (run: RunTools) => estimateRequestTokens(systemPrompt(readState(), run, constrainedJson), run.tools, [], constrainedJson);
+      const size = (run: RunTools) => estimateRequestTokens(systemPrompt(readState(), run, constrainedJson, briefShown), run.tools, [], constrainedJson);
       const before = size(runTools());
       onlyFocused = true;
       if (size(runTools()) < before) return true;
@@ -1529,7 +1542,7 @@ export class Orchestrator {
         }
         current = runTools();
         let tools = current.tools;
-        let system = systemPrompt(readState(), current, constrainedJson);
+        let system = systemPrompt(readState(), current, constrainedJson, briefShown);
         const caps = ad.adapter.capabilities();
         const fit = () => applyContextBudget(items, { system, tools, capabilities: caps, isMutation: (n) => MUTATING_TOOLS.has(n as never), revision: readRevision() });
         let budget = fit();
@@ -1541,12 +1554,20 @@ export class Orchestrator {
           requestItem.text = requestMessage();
           budget = fit();
         }
+        // The brief is background the author can read for themselves: a request that fits only without it goes out
+        // without it, for the rest of the run, before any tool is given up or the run stops. No call names it, so
+        // unlike the tools it can go on any step.
+        if (budget.overflow && (turns > 1 || caps.contextWindowKnown) && briefShown && hasBrief(readState())) {
+          briefShown = false;
+          system = systemPrompt(readState(), current, constrainedJson, briefShown);
+          budget = fit();
+        }
         // A known window that cannot hold the general tools may still hold the small set. Only before this run's
         // first call, so no call in the history names a tool that is no longer offered.
         if (budget.overflow && turns === 1 && caps.contextWindowKnown && !current.focused && narrowTools()) {
           current = runTools();
           tools = current.tools;
-          system = systemPrompt(readState(), current, constrainedJson);
+          system = systemPrompt(readState(), current, constrainedJson, briefShown);
           budget = fit();
         }
         // With only a guessed window the first request goes out regardless: only the server knows its exact count.
@@ -1623,6 +1644,15 @@ export class Orchestrator {
         if (failed) {
           // The provider's count is the real one: a request it finds too long keeps the valid work so far.
           const tooLong = failed.code === 'invalid_request' && (!!failed.context || /context.{0,20}(length|window|limit)|too long|too many tokens|maximum context/i.test(failed.message));
+          // The same step is asked again without the brief, before anything else gives way, as when the app's own
+          // estimate finds it too long. It does not count against the step limit, and nothing it showed is kept.
+          if (tooLong && briefShown && hasBrief(readState())) {
+            briefShown = false;
+            turns--;
+            msg.text = finalText;
+            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
+            continue outer;
+          }
           if (tooLong && session.runChanged()) {
             await stopAtLimit("the model's context limit", 'context limit');
             return;
