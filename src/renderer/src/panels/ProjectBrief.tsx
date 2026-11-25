@@ -29,7 +29,7 @@ export function ProjectBrief() {
           <DraftInput multiline rows={3} limit={TEXT_LIMITS.projectDescription} keep="brief:description" value={briefText(brief, 'description')} placeholder="A brochure site for a family-run pottery studio in Leeds." onCommit={(v) => void applyOps([{ type: 'brief.update', description: v }], 'Edit project description')} />
         </Field>
         <Field label="Working notes" hint="The client, the audience, what the site should achieve: anything worth keeping while you build it.">
-          <DraftInput multiline rows={14} limit={TEXT_LIMITS.projectNotes} keep="brief:notes" value={briefText(brief, 'notes')} onCommit={(v) => void applyOps([{ type: 'brief.update', notes: v }], 'Edit project notes')} />
+          <DraftInput multiline className="textarea brief-notes" limit={TEXT_LIMITS.projectNotes} keep="brief:notes" value={briefText(brief, 'notes')} onCommit={(v) => void applyOps([{ type: 'brief.update', notes: v }], 'Edit project notes')} />
         </Field>
       </div>
     </div>

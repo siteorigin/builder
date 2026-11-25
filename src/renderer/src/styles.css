@@ -1033,6 +1033,14 @@ button.save-state { transition: background 120ms, border-color 120ms; }
 #dock-tab-chat[aria-selected='true']::after { right: 14px; }
 @keyframes live-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-fill) 45%, transparent); } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-fill) 0%, transparent); } }
 .dock-tabs .spacer + .icon-btn { margin-left: auto; }
+/* The dock's four views fit with their icons only in a wide dock. Narrower, each tab gives its name alone: plain words
+   are what tell the views apart. */
+.dock > .dock-tabs { container: dock-views / inline-size; }
+@container dock-views (max-width: 361px) {
+  .dock-tab { padding: 0 8px; }
+  .dock-tab > svg { display: none; }
+  .dock-tab[aria-selected='true']::after { left: 6px; right: 6px; }
+}
 
 .status-bar { display: flex; align-items: center; gap: 12px; padding: 0 12px 0 14px; font-size: 12px; color: var(--text-2); background: var(--panel); border-top: 1px solid var(--border); }
 .status-bar > button, .status-bar .crumbs button { border: 0; background: transparent; color: inherit; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 6px; border-radius: var(--r-sm); font-size: 12px; transition: background 120ms, color 120ms; }
@@ -4201,7 +4209,8 @@ button.asset-use:hover svg.go { color: var(--text); }
 .brief-private { margin: 0; display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
 .brief-private > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
 .brief-fields { padding: 14px; display: flex; flex-direction: column; gap: 16px; }
-.brief-fields textarea { resize: vertical; }
+/* Notes grow with what is written in them; the panel scrolls. */
+.brief-fields .brief-notes { min-height: 220px; max-height: none; }
 .insp-scope { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
 .insp-scope > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
 /* Wrap without leaving one word on a line of its own at narrow widths. */
