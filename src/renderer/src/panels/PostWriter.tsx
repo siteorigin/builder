@@ -280,10 +280,13 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     return () => document.removeEventListener('selectionchange', onSel);
   }, []);
 
-  /** Change fields of the post, followed so Publish and Save draft know whether it was saved. */
-  const update = (fields: Record<string, unknown>, label: string) => {
+  /**
+   * Change fields of the post, followed so Publish and Save draft know whether it was saved. `held`: the post already
+   * has these values (an image imported again is only checked, never written), so having nothing to write is no refusal.
+   */
+  const update = (fields: Record<string, unknown>, label: string, held = false) => {
     const p = applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label).then((r) => {
-      if (!r) fieldRefusedAt.current = performance.now();
+      if (!r && !held) fieldRefusedAt.current = performance.now();
       return r;
     });
     fieldCommits.current.add(p);
@@ -589,7 +592,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
                 </Field>
               </div>
               {/* The image editor's picker: a thumbnail of the one chosen, the library to browse, import or drop, and Remove. */}
-              <SiteImageField title="Featured image" plain="featured" state={state} value={entry.featuredImage} onChange={(id) => void update({ featuredImage: id }, 'Change featured image')} />
+              <SiteImageField title="Featured image" plain="featured" state={state} value={entry.featuredImage} onChange={(id) => void update({ featuredImage: id }, 'Change featured image', id === (entry.featuredImage ?? null))} />
             </div>
           </details>
           <PostSearchSettings state={state} post={post} entry={entry} route={route} published={published} hidden={hidden} images={images} labels={labels} update={update} />

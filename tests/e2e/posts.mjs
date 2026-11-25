@@ -323,6 +323,14 @@ assert.equal(featuredSteps, 3, 'choosing, importing and removing are each an und
 await win.locator('.post-tools').getByRole('button', { name: 'Undo' }).click();
 await eventually(() => assert.equal(featuredNow(), glazeId, 'Undo brings the featured image back'), 20000);
 await eventually(async () => assert.equal(await featured.locator('.insp-image-name').innerText(), 'glaze', 'and the picker shows it'));
+// The same photo imported again is the featured image already: nothing changes, and nothing stops Publish next.
+const stepsBefore = (await snapshot()).history.entries.filter((e) => e.applied).length;
+await featured.getByRole('button', { name: 'Change…' }).click();
+await answerChoosers(app, [{ dialog: 'open', paths: [glazePath] }]);
+await featured.getByRole('button', { name: 'Import…' }).click();
+await eventually(async () => assert.equal(await featured.locator('.insp-pick').count(), 0, 'the picker closed after importing the same photo'), 20000);
+assert.equal(featuredNow(), glazeId, 'the same photo stays the featured image');
+assert.equal((await snapshot()).history.entries.filter((e) => e.applied).length, stepsBefore, 'and no undo step is added');
 await win.getByRole('button', { name: 'Publish' }).click();
 await eventually(() => assert.equal(entryFile(entryId).draft, false, 'the post is published'), 20000);
 await eventually(async () => assert.equal(await win.locator('.post-row .post-status').innerText(), 'Published'));
