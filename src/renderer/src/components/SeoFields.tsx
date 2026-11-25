@@ -23,9 +23,14 @@ export function CanonicalUrlField({
   ownUrl,
   what,
   onCommit,
-  onTyped
+  onTyped,
+  keep,
+  keepWhile
 }: {
   id?: string;
+  /** Where its text belongs (a page's canonical URL), so text it refused is kept for it while it shows elsewhere. */
+  keep?: string;
+  keepWhile?: () => boolean;
   value: unknown;
   ownUrl: string | null;
   what: 'page' | 'post';
@@ -53,7 +58,7 @@ export function CanonicalUrlField({
   );
   return (
     <Field label="Canonical URL" hint={stored ? `${stored.message} The ${what}’s own address is used until it is corrected.` : hint} error={error}>
-      <DraftInput id={id} value={value} placeholder={ownUrl ?? 'https://example.com/original/'} check={canonicalProblem} onProblem={setProblem} onDirty={dirtied} onCommit={(v) => (v.trim() !== value ? onCommit(v.trim()) : undefined)} />
+      <DraftInput id={id} keep={keep} keepWhile={keepWhile} value={value} placeholder={ownUrl ?? 'https://example.com/original/'} check={canonicalProblem} onProblem={setProblem} onDirty={dirtied} onCommit={(v) => (v.trim() !== value ? onCommit(v.trim()) : undefined)} />
     </Field>
   );
 }

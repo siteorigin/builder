@@ -43,7 +43,9 @@ export function useTypedSeo(key: string) {
     return {
       title: (dirty: boolean, draft: string) => set('title', dirty ? draft : undefined),
       description: (dirty: boolean, draft: string) => set('description', dirty ? draft : undefined),
-      canonical: (url: string | undefined) => set('canonical', url)
+      canonical: (url: string | undefined) => set('canonical', url),
+      /** Forget everything typed: the fields have gone. */
+      clear: () => setTyped((prev) => (prev.key === key && !Object.keys(prev.seo).length ? prev : { key, seo: {} }))
     };
   }, [key]);
   return { typed: typed.key === key ? typed.seo : {}, on };
