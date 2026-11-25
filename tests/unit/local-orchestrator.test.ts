@@ -488,6 +488,8 @@ describe('the loaded context window', () => {
     expect(body.max_tokens).toBeLessThan(DEFAULT_LOCAL_PROFILE.maxOutput);
     expect(body.max_tokens).toBeGreaterThanOrEqual(1024);
     expect(estimateOf(body) + body.max_tokens).toBeLessThanOrEqual(window);
+    // The request itself stays small: 11,763 tokens measured with the source patch's revision and scope (#740).
+    expect(estimateOf(body)).toBeLessThanOrEqual(11_800);
   });
 
   it('keeps the full reply budget in a normal larger window', async () => {

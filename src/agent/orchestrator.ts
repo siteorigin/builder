@@ -85,7 +85,7 @@ export interface RunSession {
   /** Keep a source the run wrote or tried to write in the recovery folder; its project-relative path, or null. */
   keepSourceDraft(runId: string, definitionId: string, source: string, kind: 'rejected' | 'applied'): Promise<string | null>;
   /** Let go of the kept sources of patches that landed, once the run that made them is kept. */
-  discardAppliedDrafts(runId: string): Promise<void>;
+  discardAppliedDrafts(runId: string, paths: string[]): Promise<void>;
   runChanged(): boolean;
   /** `collectionWrite`: the post tool's grant for this one batch, never the model's (see shared/collection-grant). */
   apply(batch: { operations: EditOperation[]; expectedRevision?: number }, opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant }): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
@@ -1069,7 +1069,7 @@ export class Orchestrator {
       if (!drafts.reverted && drafts.applied.length) {
         // The run's changes are kept: the project holds what those copies hold. A copy that cannot be removed is
         // left in the recovery folder, which costs nothing but space.
-        await session.discardAppliedDrafts(runId).catch(() => undefined);
+        await session.discardAppliedDrafts(runId, drafts.applied.map((d) => d.path)).catch(() => undefined);
         drafts.applied = [];
       }
       const sourceDrafts = [...drafts.rejected, ...drafts.applied];
@@ -1442,7 +1442,8 @@ export class Orchestrator {
 
     /** A source patch the checks refused is kept now; one that landed is kept until the run is kept or undone. */
     const keepDrafts = async (operations: EditOperation[], res: { ok: boolean; error?: { code: string } }) => {
-      const kind = res.ok ? 'applied' : res.error?.code === 'VALIDATION_FAILED' ? 'rejected' : null;
+      // Refused for what it says: the code checks, or the operation's own limits (a source grown too long, say).
+      const kind = res.ok ? 'applied' : res.error?.code === 'VALIDATION_FAILED' || res.error?.code === 'INVALID_ARGUMENT' ? 'rejected' : null;
       if (!kind) return;
       for (const op of operations) {
         if (op.type !== 'component.updateSource') continue;
@@ -1512,7 +1513,9 @@ export class Orchestrator {
         // further is refused, and a narrower one limits the call on top of the run's own limits.
         const asked = requested ? requestedAuthority(session.state, requested, authority) : null;
         if (asked && 'code' in asked) {
-          if (asked.code === 'INVALID_ARGUMENT') return { ok: false, revision: session.revision, error: { code: 'INVALID_ARGUMENT', message: `${asked.message} Nothing in this batch was applied.` } };
+          // A scope that names nothing (or something it cannot tell apart) is a wrong ID, not a request for more.
+          if (asked.code === 'INVALID_ARGUMENT' || asked.reread)
+            return { ok: false, revision: session.revision, error: { code: asked.code, message: `${asked.message} Nothing in this batch was applied.${asked.reread ? ' Read the project again for the right ID.' : ''}` } };
           return beyond(asked.message);
         }
         const denied = checkAuthority(session.state, operations, authority, grants);
@@ -1530,7 +1533,14 @@ export class Orchestrator {
         if (signal.aborted) return { ok: false, revision: session.revision, error: { code: 'CANCELLED', message: 'Cancelled' } };
         const before = session.state;
         const revision = session.revision;
-        const res = await session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}) });
+        let res: Awaited<ReturnType<typeof session.apply>>;
+        try {
+          res = await session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}) });
+        } catch (e) {
+          // A save that failed part way may have published the source before it threw: the run is undone, so it is kept.
+          await keepDrafts(operations, { ok: true });
+          throw e;
+        }
         if (res.ok && session.revision !== revision) {
           const reach = preview.landed(operations, before, session.state);
           // A page check made before the change no longer describes a page it changed the look of; a component check

@@ -451,6 +451,8 @@ const CONTRACT_EDITS = new Set<OperationType>([
 /** Returns null when every operation stays within one component's own design, otherwise a reason. */
 function checkComponentAuthority(state: ProjectState, ops: EditOperation[], authority: Extract<Authority, { kind: 'component' }>): string | null {
   const def = state.components[authority.definitionId];
+  // A code component's design is its source: a patch to it is a change to that component alone.
+  if (def?.kind === 'code' && ops.every((op) => op.type === 'component.updateSource' && op.definitionId === def.id)) return null;
   if (!def?.tree) return `${authority.label} is no longer in the site.`;
   const nodes = def.tree.nodes;
   // The first top-level node is the component's own root: placements' classes and variants style it, so it stays
@@ -681,9 +683,15 @@ function sourceWithin(state: ProjectState, definitionId: string, authority: Extr
   const def = Object.hasOwn(state.components, definitionId) ? state.components[definitionId] : undefined;
   if (!def || def.kind !== 'code' || def.owner !== 'project') return `component.updateSource changes more than ${authority.label}.`;
   const placed = instancesOf(state, def.id);
-  if (placed.length && placed.every((p) => sameOwner(p.owner) && allowed.has(p.node.id)) && !dependentsOf(state, def.id).length) return null;
-  return `Changing the source of "${def.name}" changes every placement of it, and it is used outside ${authority.label}. Convert the selected placement to its own code with component.convertToCode, then patch that copy.`;
+  // Code that loads components by pattern or at run time can render this one without naming its file: who shows it
+  // cannot be told, so it is not the selection's alone.
+  const unknown = Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && DYNAMIC_IMPORT.test(d.source ?? ''));
+  if (placed.length && placed.every((p) => sameOwner(p.owner) && allowed.has(p.node.id)) && !dependentsOf(state, def.id).length && !unknown) return null;
+  return `Changing the source of "${def.name}" changes every placement of it, and it is used outside ${authority.label}. Give the selected placement a component of its own first (component.convertToCode for a managed component, component.makeUnique for code), then patch that copy.`;
 }
+
+/** An import whose target is chosen by a pattern or at run time (developer code may use them; the assistant's may not). */
+const DYNAMIC_IMPORT = /import\.meta\.glob|\bimport\s*\(/;
 
 /** What a mutating call asks to change (spec 13.3): the whole site, or one page, component design or element by its ID. */
 export interface RequestedScope {
@@ -704,22 +712,22 @@ export function authorityLabel(authority: Authority): string {
  * narrower scope limits it and never grants what the run's own authority refuses (a page run naming an element of the
  * page still may not convert it to code). A selected part is named by its placement's ID and stays that part.
  */
-export function requestedAuthority(state: ProjectState, requested: RequestedScope, run: Authority): { authority: Authority } | { code: 'INVALID_ARGUMENT' | 'SCOPE_MISMATCH'; message: string } {
+export function requestedAuthority(state: ProjectState, requested: RequestedScope, run: Authority): { authority: Authority } | { code: 'INVALID_ARGUMENT' | 'SCOPE_MISMATCH'; message: string; reread?: true } {
   const wider = (what: string) => ({ code: 'SCOPE_MISMATCH' as const, message: `This call asks to change ${what}, which is more than ${authorityLabel(run)}.` });
   if (requested.kind === 'site') return run.kind === 'site' ? { authority: run } : wider('the whole site');
   const ids = requested.targetIds ?? [];
-  if (ids.length !== 1 || typeof ids[0] !== 'string' || !ids[0]) return { code: 'INVALID_ARGUMENT', message: `scope.targetIds: a ${requested.kind} scope names exactly one ${requested.kind === 'page' ? 'page ID' : requested.kind === 'component' ? 'definitionId' : 'node ID'}.` };
+  if (ids.length !== 1 || typeof ids[0] !== 'string' || !ids[0].trim()) return { code: 'INVALID_ARGUMENT', message: `scope.targetIds: a ${requested.kind} scope names exactly one ${requested.kind === 'page' ? 'page ID' : requested.kind === 'component' ? 'definitionId' : 'node ID'}.` };
   const id = ids[0];
   if (requested.kind === 'page') {
     const route = normalizeRoute(id.trim());
     const pageId = Object.hasOwn(state.pages, id) ? id : Object.values(state.pages).find((p) => p?.route === route)?.id;
-    if (!pageId) return { code: 'SCOPE_MISMATCH', message: `scope names the page "${id}", which is not in the site.` };
+    if (!pageId) return { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the page "${id}", which is not in the site.` };
     const label = pageLabel(state.pages[pageId].title);
     if (run.kind === 'site') return { authority: { kind: 'page', pageId, label } };
     return run.kind === 'page' && run.pageId === pageId ? { authority: run } : wider(label);
   }
   if (requested.kind === 'component') {
-    if (!Object.hasOwn(state.components, id)) return { code: 'SCOPE_MISMATCH', message: `scope names the component "${id}", which is not in the site.` };
+    if (!Object.hasOwn(state.components, id)) return { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the component "${id}", which is not in the site.` };
     const label = state.components[id].name;
     if (run.kind === 'site') return { authority: { kind: 'component', definitionId: id, label } };
     return run.kind === 'component' && run.definitionId === id ? { authority: run } : wider(`the ${label} component`);
@@ -743,13 +751,17 @@ export function requestedAuthority(state: ProjectState, requested: RequestedScop
       return false;
     }
   });
-  if (found.length > 1) return { code: 'SCOPE_MISMATCH', message: `scope names the element "${id}", which is in more than one place in the site. Name the page or component instead.` };
-  if (!found.length) return run.kind === 'site' ? { code: 'SCOPE_MISMATCH', message: `scope names the element "${id}", which is not in the site.` } : wider(`the element "${id}"`);
+  if (found.length > 1) return { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the element "${id}", which is in more than one place in the site. Name the page or component instead.` };
+  if (!found.length) return run.kind === 'site' ? { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the element "${id}", which is not in the site.` } : wider(`the element "${id}"`);
   const owner = found[0];
   const node = getTree(state, owner).nodes[id];
   const label = `the ${displayName(state, node)} element`;
-  // Inside a selection: a part is named by its placement alone, so any other element is outside it.
-  if (run.kind === 'selection' && (run.part || !subtreeIds(getTree(state, run.owner), run.nodeId).includes(id))) return wider(label);
+  // Inside a selection: an element in it. A part is named by its placement, or by content placed in a slot it renders.
+  if (run.kind === 'selection') {
+    const part = run.part ? selectedPart(state, run) : null;
+    const inside = run.part ? !!part && slotContent(state, run.owner, part).has(id) : subtreeIds(getTree(state, run.owner), run.nodeId).includes(id);
+    if (!inside) return wider(label);
+  }
   return { authority: { kind: 'selection', owner, nodeId: id, label } };
 }
 

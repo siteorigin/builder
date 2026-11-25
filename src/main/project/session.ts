@@ -3863,14 +3863,17 @@ export class ProjectSession extends EventEmitter {
     });
   }
 
-  /** Let go of the drafts a finished run kept of patches that landed: the project has them now. Refused ones stay. */
-  discardAppliedDrafts(runId: string): Promise<void> {
+  /**
+   * Let go of the copies keepSourceDraft made of a finished run's patches that landed: the project has them now. Only
+   * those files go; refused drafts stay, and so does anything else in the folder.
+   */
+  discardAppliedDrafts(runId: string, paths: string[]): Promise<void> {
     return this.serialize(async () => {
       if (this.readOnly || !RUN_ID.test(runId)) return;
-      const run = safeJoin(this.dir, `${LOCAL_DIR}/recovery/${SOURCE_DRAFTS}/${runId}`);
-      await fs.rm(join(run, 'applied'), { recursive: true, force: true });
-      // Nothing else was kept for the run (or nothing ever was): its folder goes too.
-      await fs.rmdir(run).catch(() => undefined);
+      const run = `${LOCAL_DIR}/recovery/${SOURCE_DRAFTS}/${runId}`;
+      for (const p of paths) if (p.startsWith(`${run}/applied/`) && !p.slice(run.length).split('/').includes('..')) await removeDurable(safeJoin(this.dir, p));
+      // Emptied folders go too; one that still holds something stays.
+      for (const dir of [`${run}/applied`, run]) await fs.rmdir(safeJoin(this.dir, dir)).catch(() => undefined);
     });
   }
 

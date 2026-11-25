@@ -3463,6 +3463,9 @@ describe('part scope rules (#132)', () => {
     const paragraph = (results[0] as { nodeId: string }).nodeId;
     const authority = partOf(owner, nodeId, 'inner', { partId: 'container' });
     expect(checkAuthority(state, [{ type: 'node.setContent', owner, nodeId: paragraph, field: 'text', value: 'Changed' }], authority)).toBeNull();
+    // A call may name that content as its scope (#740): narrower than the part, never more.
+    expect(requestedAuthority(state, { kind: 'selection', targetIds: [paragraph] }, authority)).toMatchObject({ authority: { kind: 'selection', owner, nodeId: paragraph } });
+    expect(requestedAuthority(state, { kind: 'selection', targetIds: [nodeId] }, authority)).toEqual({ authority });
     // A second placeholder for the same slot outside the part shows the same content there.
     const def = state.components[(state.pages[owner.id].nodes[nodeId] as InstanceNode).definitionId];
     const twice = structuredClone(def);
@@ -5085,11 +5088,10 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     const before = sourceOf(session.state, id);
     const { result } = await env.run('Tidy the hero code');
     expect(resultOf(env.adapter.requests[2])).toMatchObject({ ok: true, revision: 2 });
-    const stale = JSON.stringify(resultOf(env.adapter.requests[3]));
-    expect(stale).toContain('STALE_REVISION');
-    expect(stale).toMatch(/read_source/);
+    // Checked first, and said as a revision: the project moved on since the read.
+    expect(resultOf(env.adapter.requests[3])).toMatchObject({ error: 'STALE_REVISION', revision: 2, message: expect.stringMatching(/written against revision 1, but the project is at 2\. Call read_source again/) });
     // The revision matches, but the source is not the one that was read.
-    expect(JSON.stringify(resultOf(env.adapter.requests[4]))).toContain('STALE_REVISION');
+    expect(resultOf(env.adapter.requests[4])).toMatchObject({ error: 'STALE_REVISION', revision: 2, message: 'The source changed. Call read_source again.' });
     expect(JSON.stringify(resultOf(env.adapter.requests[5]))).toMatch(/INVALID_ARGUMENT.*expectedRevision/);
     expect(sourceOf(session.state, id)).toBe(tidied(before));
     expect(result?.status).toBe('completed');
@@ -5102,17 +5104,19 @@ describe('source patches bound to a revision and a scope (#740)', () => {
       // The change is inside the selection, but the call asks for the whole site.
       () => [call('w1', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [heading('Wide')] })],
       () => [call('w2', 'apply_operations', { expectedRevision: 0, scope: { kind: 'page', targetIds: [session.state.site.homePageId] }, operations: [heading('Page')] })],
+      // A sibling of the selection, though the change itself is inside it.
+      () => [call('w4', 'apply_operations', { expectedRevision: 0, scope: { kind: 'selection', targetIds: [homeOf(session.state).rootIds[1]] }, operations: [heading('Sibling')] })],
       () => [call('w3', 'apply_operations', { expectedRevision: 0, scope: { kind: 'selection', targetIds: [hero(session.state)] }, operations: [heading('Mine')] })],
       () => finish('Done.')
     ]);
     session = env.session;
     const { result } = await env.run('Change this heading', selected(session.state));
-    for (const i of [1, 2]) {
+    for (const i of [1, 2, 3]) {
       const refused = resultOf(env.adapter.requests[i]);
       expect(refused.error?.code).toBe('SCOPE_MISMATCH');
       expect(refused.error?.message).toMatch(/Nothing in this batch was applied/);
     }
-    expect(resultOf(env.adapter.requests[3])).toMatchObject({ ok: true, revision: 1 });
+    expect(resultOf(env.adapter.requests[4])).toMatchObject({ ok: true, revision: 1 });
     expect((homeOf(session.state).nodes[hero(session.state)] as InstanceNode).props.heading).toBe('Mine');
     expect(result?.status).toBe('completed');
   });
@@ -5126,13 +5130,24 @@ describe('source patches bound to a revision and a scope (#740)', () => {
       () => [call('n1', 'apply_operations', { expectedRevision: 0, scope: { kind: 'selection', targetIds: [hero(session.state)] }, operations: [{ type: 'node.rename', owner: owner(session.state), nodeId: second(session.state), name: 'Elsewhere' }] })],
       // Asks for another page, then changes the home page.
       () => [call('n2', 'apply_operations', { expectedRevision: 0, scope: { kind: 'page', targetIds: [about(session.state)] }, operations: [{ type: 'page.update', pageId: session.state.site.homePageId, title: 'Start' }] })],
+      // Asks for one component's design, then changes a site colour.
+      () => [call('n4', 'apply_operations', { expectedRevision: 0, scope: { kind: 'component', targetIds: [(homeOf(session.state).nodes[hero(session.state)] as InstanceNode).definitionId] }, operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#000080' }] })],
+      // Names an element that is not in the site: a wrong ID, not a request for more.
+      () => [call('n5', 'apply_operations', { expectedRevision: 0, scope: { kind: 'selection', targetIds: ['n_nowhere'] }, operations: [{ type: 'page.update', pageId: session.state.site.homePageId, title: 'Start' }] })],
       () => [call('n3', 'apply_operations', { expectedRevision: 0, scope: { kind: 'page', targetIds: [session.state.site.homePageId] }, operations: [{ type: 'page.update', pageId: session.state.site.homePageId, title: 'Start' }] })],
       () => finish('Done.')
     ]);
     session = env.session;
     const { result } = await env.run('Rename the home page');
-    for (const i of [1, 2]) expect(resultOf(env.adapter.requests[i]).error?.code).toBe('SCOPE_MISMATCH');
-    expect(resultOf(env.adapter.requests[3])).toMatchObject({ ok: true, revision: 1 });
+    for (const i of [1, 2, 3]) {
+      const refused = resultOf(env.adapter.requests[i]);
+      expect(refused.error?.code).toBe('SCOPE_MISMATCH');
+      expect(refused.error?.message).toMatch(/This call asked to change only .*Nothing in this batch was applied/);
+    }
+    expect(resultOf(env.adapter.requests[4]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/not in the site\. Nothing in this batch was applied\. Read the project again/) });
+    expect(resultOf(env.adapter.requests[4]).error.message).not.toMatch(/Ask the user/);
+    expect(session.state.tokens.overrides['color.brand']).toBeUndefined();
+    expect(resultOf(env.adapter.requests[5])).toMatchObject({ ok: true, revision: 1 });
     expect(homeOf(session.state).nodes[second(session.state)].name).not.toBe('Elsewhere');
     expect(homeOf(session.state).title).toBe('Start');
     expect(result?.status).toBe('completed');
@@ -5238,6 +5253,67 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(Object.keys(session.state.components)).toHaveLength(before);
   });
 
+  it('limits a page run’s call to the element it names, though the page may change more', async () => {
+    let session: ProjectSession;
+    const env = await setup([
+      () => [call('c1', 'apply_operations', { expectedRevision: 0, scope: { kind: 'selection', targetIds: [hero(session.state)] }, operations: [{ type: 'page.update', pageId: session.state.site.homePageId, title: 'Start' }] })],
+      () => finish('Could not.')
+    ]);
+    session = env.session;
+    await env.run('Rename this page', { scope: 'page' });
+    expect(resultOf(env.adapter.requests[1]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/asked to change only the Split hero element/) });
+    expect(homeOf(session.state).title).not.toBe('Start');
+  });
+
+  it('holds a source patch to the scope it names, and never lets a raw source update past the patch tool', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let read = { hash: '', revision: -1 };
+    const patch = (scope?: unknown) => ({ definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, ...(scope ? { scope } : {}), source: tidied(sourceOf(session.state, id)) });
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        read = resultOf(req);
+        return [call('p1', 'apply_source_patch', patch())];
+      },
+      // The whole site, from a run limited to the selected hero.
+      () => [call('p2', 'apply_source_patch', patch({ kind: 'site' }))],
+      // The source without the patch tool: no hash, no draft.
+      () => [call('p3', 'apply_operations', { expectedRevision: read.revision, operations: [{ type: 'component.updateSource', definitionId: id, source: '<p>raw</p>\n' }] })],
+      () => finish('Could not.')
+    ]);
+    session = env.session;
+    id = await heroInCode(session);
+    const before = sourceOf(session.state, id);
+    await env.run('Tidy this code', selected(session.state));
+    expect(JSON.stringify(resultOf(env.adapter.requests[2]))).toMatch(/INVALID_ARGUMENT.*scope/);
+    expect(resultOf(env.adapter.requests[3]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/asks to change the whole site, which is more than Split hero/) });
+    expect(resultOf(env.adapter.requests[4])).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringMatching(/apply_source_patch/) });
+    expect(sourceOf(session.state, id)).toBe(before);
+  });
+
+  it('limits a site run’s source patch to the scope it names: the component itself, never another element', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let read = { hash: '', revision: -1 };
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        read = resultOf(req);
+        // An element that is not the code's placement.
+        return [call('p1', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'selection', targetIds: [homeOf(session.state).rootIds[1]] }, source: tidied(sourceOf(session.state, id)) })];
+      },
+      () => [call('p2', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'component', targetIds: [id] }, source: tidied(sourceOf(session.state, id)) })],
+      () => finish('Done.')
+    ]);
+    session = env.session;
+    id = await heroInCode(session);
+    await env.run('Tidy the hero code');
+    expect(resultOf(env.adapter.requests[2]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/This call asked to change only/) });
+    expect(resultOf(env.adapter.requests[3])).toMatchObject({ ok: true, revision: 2 });
+    expect(sourceOf(session.state, id)).toMatch(/<!-- tidied -->\n$/);
+  });
+
   it('lets a selection change code only it shows: never from a part, with another placement, unplaced, or rendered by other code', () => {
     let state = createStarterState('business', 'Test', false);
     const own = { kind: 'page' as const, id: state.site.homePageId };
@@ -5258,6 +5334,13 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     const file = state.components[id].sourcePath!.split('/').pop();
     const wrapper = applyOperations(state, [{ type: 'component.createCode', name: 'Wrapper', source: `<script>\n\timport Hero from './${file}';\n</script>\n<Hero />\n` }]).state;
     expect(checkAuthority(wrapper, [patch()], whole)).toMatch(/used outside/);
+    // So does code that loads components by a pattern, which never names the file.
+    const gallery = applyOperations(state, [{ type: 'component.createCode', name: 'Gallery', source: `<script>\n\tconst all = import.meta.glob('./*.svelte', { eager: true });\n</script>\n` }]).state;
+    expect(checkAuthority(gallery, [patch()], whole)).toMatch(/makeUnique for code/);
+    // A selection inside a component's design: the code shows wherever that design is placed.
+    const heroDef = state.components[id].provenance!.forkedFrom!;
+    const inDesign: Authority = { kind: 'selection', owner: { kind: 'component', id: heroDef }, nodeId: state.components[heroDef].tree!.rootIds[0], label: 'the hero design' };
+    expect(checkAuthority(state, [patch()], inDesign)).toMatch(/wherever this design is placed/);
   });
 
   it('resolves a requested scope within the run’s authority, and refuses one that reaches further', () => {
@@ -5279,7 +5362,9 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     // One ID, never none or two; an unknown one names nothing that may change.
     expect(requestedAuthority(state, { kind: 'page', targetIds: [] }, site)).toMatchObject({ code: 'INVALID_ARGUMENT' });
     expect(requestedAuthority(state, { kind: 'selection', targetIds: [heroId, nextId] }, site)).toMatchObject({ code: 'INVALID_ARGUMENT' });
-    expect(requestedAuthority(state, { kind: 'page', targetIds: ['nowhere'] }, site)).toMatchObject({ code: 'SCOPE_MISMATCH' });
+    expect(requestedAuthority(state, { kind: 'page', targetIds: ['  '] }, site)).toMatchObject({ code: 'INVALID_ARGUMENT' });
+    expect(requestedAuthority(state, { kind: 'page', targetIds: ['nowhere'] }, site)).toMatchObject({ code: 'SCOPE_MISMATCH', reread: true });
+    expect(requestedAuthority(state, { kind: 'component', targetIds: ['constructor'] }, site)).toMatchObject({ code: 'SCOPE_MISMATCH', reread: true });
     expect(requestedAuthority(state, { kind: 'selection', targetIds: ['n_nowhere'] }, site)).toMatchObject({ code: 'SCOPE_MISMATCH' });
     // A page run: that page, or an element on it.
     expect(requestedAuthority(state, { kind: 'page', targetIds: [homeId] }, page)).toEqual({ authority: page });
@@ -5324,7 +5409,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(result?.status).toBe('no-changes');
     expect(result?.sourceDrafts).toEqual([expect.objectContaining({ definitionId: id, reason: 'rejected' })]);
     const path = result!.sourceDrafts![0].path;
-    expect(path).toContain(runId);
+    expect(path.startsWith(`.siteorigin/recovery/ai-runs/${runId}/`)).toBe(true);
     expect(readFileSync(join(session.dir, path), 'utf8')).toBe(attempted);
   });
 
@@ -5333,6 +5418,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     let orchRef: Orchestrator | null = null;
     let id = '';
     let patched = '';
+    let landed = '';
     const env = await setup([
       () => [call('r1', 'read_source', { definitionId: id })],
       (req) => {
@@ -5340,7 +5426,10 @@ describe('source patches bound to a revision and a scope (#740)', () => {
         patched = tidied(sourceOf(session.state, id));
         return [call('p1', 'apply_source_patch', { definitionId: id, scope: site, expectedRevision: read.revision, expectedHash: read.hash, source: patched })];
       },
-      async () => {
+      async (req) => {
+        // The patch landed before Stop.
+        expect(resultOf(req)).toMatchObject({ ok: true });
+        landed = sourceOf(session.state, id);
         orchRef!.stop();
         await new Promise((r) => setTimeout(r, 5));
         return [call('r2', 'read_project', {})];
@@ -5351,11 +5440,79 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     id = await heroInCode(session);
     const before = sourceOf(session.state, id);
     const { result, runId } = await env.run('Tidy the hero code');
+    expect(landed).toBe(patched);
     expect(result?.status).toBe('cancelled');
     expect(sourceOf(session.state, id)).toBe(before);
     expect(result?.sourceDrafts).toEqual([expect.objectContaining({ definitionId: id, reason: 'reverted' })]);
     const path = result!.sourceDrafts![0].path;
-    expect(path).toContain(runId);
+    expect(path.startsWith(`.siteorigin/recovery/ai-runs/${runId}/`)).toBe(true);
     expect(readFileSync(join(session.dir, path), 'utf8')).toBe(patched);
+  });
+
+  it('keeps a refused draft and lets go of a landed patch’s copy when the run is kept', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let refused = '';
+    const read = (req: CanonicalModelRequest) => resultOf(req) as { hash: string; revision: number };
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        const r = read(req);
+        refused = `<script>fetch('https://example.com/collect');</script>\n${sourceOf(session.state, id)}`;
+        return [call('p1', 'apply_source_patch', { definitionId: id, scope: site, expectedRevision: r.revision, expectedHash: r.hash, source: refused })];
+      },
+      () => [call('r2', 'read_source', { definitionId: id })],
+      (req) => {
+        const r = read(req);
+        return [call('p2', 'apply_source_patch', { definitionId: id, scope: site, expectedRevision: r.revision, expectedHash: r.hash, source: tidied(sourceOf(session.state, id)) })];
+      },
+      () => finish('Tidied it.')
+    ]);
+    session = env.session;
+    id = await heroInCode(session);
+    const { result, runId } = await env.run('Tidy the hero code');
+    expect(result?.status).toBe('completed');
+    expect(sourceOf(session.state, id)).toMatch(/<!-- tidied -->\n$/);
+    // Only the refused draft is named and kept; the landed patch is in the project.
+    expect(result?.sourceDrafts).toEqual([expect.objectContaining({ definitionId: id, reason: 'rejected' })]);
+    expect(readFileSync(join(session.dir, result!.sourceDrafts![0].path), 'utf8')).toBe(refused);
+    expect(existsSync(join(session.dir, '.siteorigin', 'recovery', 'ai-runs', runId, 'applied'))).toBe(false);
+  });
+
+  it('keeps a source a failed save may have published, and one refused for its length', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let long = '';
+    let attempted = '';
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        const r = resultOf(req);
+        long = `${sourceOf(session.state, id)}\n<!-- ${'x'.repeat(60_000)} -->\n`;
+        return [call('p1', 'apply_source_patch', { definitionId: id, scope: site, expectedRevision: r.revision, expectedHash: r.hash, source: long })];
+      },
+      () => [call('r2', 'read_source', { definitionId: id })],
+      (req) => {
+        const r = resultOf(req);
+        attempted = tidied(sourceOf(session.state, id));
+        return [call('p2', 'apply_source_patch', { definitionId: id, scope: site, expectedRevision: r.revision, expectedHash: r.hash, source: attempted })];
+      }
+    ]);
+    session = env.session;
+    id = await heroInCode(session);
+    const before = sourceOf(session.state, id);
+    // The save goes through, then fails before it can say so.
+    const save = session.apply.bind(session);
+    session.apply = (async (batch, opts) => {
+      const r = await save(batch, opts);
+      if (batch.operations.some((o) => o.type === 'component.updateSource') && r.ok) throw new Error('The disk is full.');
+      return r;
+    }) as typeof session.apply;
+    const { result } = await env.run('Tidy the hero code');
+    expect(JSON.stringify(resultOf(env.adapter.requests[2]))).toContain('INVALID_ARGUMENT');
+    expect(result?.status).toBe('failed');
+    expect(sourceOf(session.state, id)).toBe(before);
+    const kept = Object.fromEntries((result?.sourceDrafts ?? []).map((d) => [d.reason, readFileSync(join(session.dir, d.path), 'utf8')]));
+    expect(kept).toEqual({ rejected: long, reverted: attempted });
   });
 });
