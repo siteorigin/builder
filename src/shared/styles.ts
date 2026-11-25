@@ -887,7 +887,7 @@ export function isScrim(raw: string): boolean {
   // A direction or shape first, when there is one; then two colour stops or more, each at up to two places.
   const words = (p: string) => splitTop(p, (ch) => /\s/.test(ch));
   const lead = parts.length && !isScrimColor(words(parts[0])[0] ?? '') ? parts.shift()! : null;
-  if (lead !== null && !(m[1].toLowerCase() === 'linear' ? SCRIM_DIRECTION_RE : SCRIM_SHAPE_RE).test(words(lead).join(' '))) return false;
+  if (lead !== null && !(m[1].toLowerCase() === 'linear' ? SCRIM_DIRECTION_RE.test(words(lead).join(' ')) : SCRIM_SHAPE_RE.test(words(lead).join(' ')) && scrimPosition(words(lead).join(' ')))) return false;
   return parts.length >= 2 && parts.every((p) => {
     const [color, ...at] = words(p);
     return isScrimColor(color) && at.length <= 2 && at.every((x) => SCRIM_STOP_RE.test(x));
@@ -909,19 +909,31 @@ function isScrimColor(raw: string): boolean {
   if (!m) return false;
   // Each channel by its place: red, green and blue are numbers or percentages; a hue a number or degrees, then
   // saturation and lightness percentages; the alpha a number or a percentage.
-  const kinds = m[1].toLowerCase().startsWith('hsl') ? [SCRIM_CHANNEL.hue, SCRIM_CHANNEL.percent, SCRIM_CHANNEL.percent] : [SCRIM_CHANNEL.number, SCRIM_CHANNEL.number, SCRIM_CHANNEL.number];
-  const fits = (channels: string[], alpha?: string) => channels.length === 3 && channels.every((x, i) => kinds[i].test(x)) && (alpha === undefined || SCRIM_CHANNEL.number.test(alpha));
+  const hsl = m[1].toLowerCase().startsWith('hsl');
+  // Written with spaces, saturation and lightness may also be plain numbers.
+  const kinds = (spaced: boolean) => (hsl ? [SCRIM_CHANNEL.hue, spaced ? SCRIM_CHANNEL.number : SCRIM_CHANNEL.percent, spaced ? SCRIM_CHANNEL.number : SCRIM_CHANNEL.percent] : [SCRIM_CHANNEL.number, SCRIM_CHANNEL.number, SCRIM_CHANNEL.number]);
+  const fits = (channels: string[], alpha: string | undefined, spaced: boolean) => channels.length === 3 && channels.every((x, i) => kinds(spaced)[i].test(x)) && (alpha === undefined || SCRIM_CHANNEL.number.test(alpha));
   // Commas between every channel, or spaces with the alpha after a slash: never the two mixed.
   if (m[2].includes(',')) {
     const parts = m[2].split(',').map((x) => x.trim());
-    return !m[2].includes('/') && (parts.length === 3 || parts.length === 4) && fits(parts.slice(0, 3), parts[3]);
+    return !m[2].includes('/') && (parts.length === 3 || parts.length === 4) && fits(parts.slice(0, 3), parts[3], false);
   }
   const [rgb, alpha, ...more] = m[2].split('/');
-  return !more.length && fits(rgb.trim().split(/\s+/), alpha?.trim());
+  return !more.length && fits(rgb.trim().split(/\s+/), alpha?.trim(), true);
 }
 const SCRIM_DIRECTION_RE = /^(to (top|bottom)( (left|right))?|to (left|right)( (top|bottom))?|-?(\d+(\.\d+)?|\.\d+)(deg|turn|rad|grad))$/i;
 /** A radial gradient's shape and extent, each at most once and in either order, then where it is centred. */
-const SCRIM_SHAPE_RE = /^(((circle|ellipse)( (closest-side|closest-corner|farthest-side|farthest-corner))?|(closest-side|closest-corner|farthest-side|farthest-corner)( (circle|ellipse))?)( at( (center|top|bottom|left|right|-?\d+(\.\d+)?%)){1,2})?|at( (center|top|bottom|left|right|-?\d+(\.\d+)?%)){1,2})$/i;
+const SCRIM_SHAPE_RE = /^(((circle|ellipse)( (closest-side|closest-corner|farthest-side|farthest-corner))?|(closest-side|closest-corner|farthest-side|farthest-corner)( (circle|ellipse))?)( at( [^ ]+){1,2})?|at( [^ ]+){1,2})$/i;
+/** Where a radial gradient is centred: one keyword or percentage, across then down, or a down keyword then an across one. */
+function scrimPosition(lead: string): boolean {
+  const at = lead.toLowerCase().split(' at ').length > 1 ? lead.toLowerCase().split(' at ')[1] : lead.toLowerCase().startsWith('at ') ? lead.slice(3).toLowerCase() : null;
+  if (at === null) return true;
+  const pct = (x: string) => /^-?\d+(\.\d+)?%$/.test(x);
+  const [a, b, ...more] = at.trim().split(' ');
+  if (more.length) return false;
+  if (b === undefined) return pct(a) || ['center', 'top', 'bottom', 'left', 'right'].includes(a);
+  return ((pct(a) || ['left', 'center', 'right'].includes(a)) && (pct(b) || ['top', 'center', 'bottom'].includes(b))) || (['top', 'center', 'bottom'].includes(a) && ['left', 'center', 'right'].includes(b));
+}
 const SCRIM_STOP_RE = /^(0|-?(\d+(\.\d+)?|\.\d+)(%|px))$/;
 
 /**
