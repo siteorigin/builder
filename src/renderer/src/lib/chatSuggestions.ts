@@ -368,8 +368,8 @@ function seoStarter(state: ProjectState, findings: readonly SeoFinding[], page: 
   const identity = findings.some((f) => IDENTITY_CODES.has(f.code));
   if ((llms || identity) && state.site.pageOrder.some((id) => hasCopy(own(state.pages, id))))
     return { kind: 'site', text: identity ? `Set up the site’s structured data${llms ? ' and llms.txt' : ''} for search engines and AI agents, and ask me for any details you need` : 'Turn on llms.txt so AI agents get an index of the site’s pages' };
-  // Titles and descriptions of pages with no copy yet wait for it.
-  if (findings.some((f) => f.aiFixable && !isPageText(f))) return { kind: 'site', text: 'Audit the site’s SEO and AI readiness and fix what you can' };
+  // Titles and descriptions of pages with no copy yet, and llms.txt for a site with none, wait for it.
+  if (findings.some((f) => f.aiFixable && !isPageText(f) && f.code !== 'SEO_LLMS_TXT_OFF')) return { kind: 'site', text: 'Audit the site’s SEO and AI readiness and fix what you can' };
   return null;
 }
 

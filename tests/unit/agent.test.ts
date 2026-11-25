@@ -28,6 +28,8 @@ import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { BRIEF_NOTES_CONSTRAINED_TOKENS, BRIEF_NOTES_TOKENS, NOTES_SHORTENED, briefContext, trimNotes } from '@agent/brief';
 import { estimateTokens } from '@shared/tokens';
 import { TEXT_LIMITS } from '@shared/text-limits';
+import { runSeoAudit } from '@engine/seo-audit';
+import { findingHandoff } from '../../src/renderer/src/lib/seoHandoff';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -3407,6 +3409,100 @@ describe('components that are not reusable yet (#363)', () => {
     expect(env.adapter.requests).toHaveLength(2);
     expect(result?.status).toBe('completed');
     expect(result?.checks?.filter((c) => c.status === 'issue').map((c) => c.text)).toEqual([expect.stringContaining('the heading “Spring offers”')]);
+  });
+});
+
+describe('from an SEO finding to its fix in one undoable turn (#599)', () => {
+  const lastResult = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const routeId = (s: ProjectState, route: string) => Object.values(s.pages).find((p) => p.route === route)!.id;
+  const codesOf = (report: { findings: Array<{ code: string }> }) => report.findings.map((f) => f.code);
+
+  it('runs Fix with AI’s request as an edit of the page it names: it audits the page, writes the description, finds it fixed, and one undo takes it back', async () => {
+    let about = '';
+    const description = 'Meet the designers behind Test and see how they plan calm, practical homes.';
+    const env = await setup([
+      (req) => {
+        const names = req.tools.map((t) => t.name);
+        // The page's own search settings and the audit, and nothing of the whole site's.
+        expect(names).toEqual(expect.arrayContaining(['audit_seo', 'update_page_seo']));
+        expect(names).not.toContain('update_site_seo');
+        return [call('f1', 'audit_seo', { pageId: about })];
+      },
+      (req) => {
+        const report = lastResult(req);
+        expect(report.findings).toContainEqual(expect.objectContaining({ code: 'SEO_DESCRIPTION_MISSING', aiFixable: true, fix: { kind: 'pageSeo', pageId: about, field: 'description' } }));
+        return [call('f2', 'update_page_seo', { pageId: about, description })];
+      },
+      (req) => {
+        expect(lastResult(req)).toMatchObject({ ok: true });
+        return [call('f3', 'audit_seo', { pageId: about })];
+      },
+      (req) => {
+        expect(codesOf(lastResult(req))).not.toContain('SEO_DESCRIPTION_MISSING');
+        return finish('The About page has a meta description now.');
+      }
+    ]);
+    about = routeId(env.session.state, '/about/');
+    // Neither the page nor the site says what the page is about.
+    expect((await env.session.apply({ operations: [{ type: 'site.update', description: '' }, { type: 'page.update', pageId: about, description: '' }] }, { label: 'Clear', source: 'user' })).ok).toBe(true);
+    const missing = runSeoAudit(env.session.state).find((f) => f.code === 'SEO_DESCRIPTION_MISSING' && f.owner?.id === about)!;
+    const h = findingHandoff(env.session.state, missing);
+    expect(h).toEqual({ mode: 'edit', scope: 'page', pageId: about, text: 'Write a meta description for the “About” page' });
+    if (h?.mode !== 'edit' || h.scope !== 'page') throw new Error('expected a page edit');
+    const before = { page: structuredClone(env.session.state.pages[about]), revision: env.session.revision, steps: env.session.historyInfo().entries.length };
+    // Sent as the chat sends it: the request in the box, about the page it names, as an edit of that page.
+    const { runId, result } = await env.run(h.text, { pageId: h.pageId, pageTitle: 'About', scope: h.scope });
+    expect(result?.status).toBe('completed');
+    expect(env.session.revision).toBe(before.revision + 1);
+    expect(env.session.state.pages[about].seo.description).toBe(description);
+    expect(runSeoAudit(env.session.state).filter((f) => f.owner?.id === about).map((f) => f.code)).not.toContain('SEO_DESCRIPTION_MISSING');
+    expect(env.session.historyInfo().entries.length).toBe(before.steps + 1);
+    expect((await env.session.undoGroup(runId)).ok).toBe(true);
+    expect(env.session.state.pages[about]).toEqual(before.page);
+    expect(runSeoAudit(env.session.state)).toContainEqual(expect.objectContaining({ code: 'SEO_DESCRIPTION_MISSING', owner: { kind: 'page', id: about } }));
+  });
+
+  it('audits the whole site and fixes what it can, a page’s setting and the site’s, in one step of history', async () => {
+    let home = '';
+    const env = await setup([
+      () => [call('s1', 'audit_seo', {})],
+      (req) => {
+        const report = lastResult(req);
+        expect(report.findings).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: 'SEO_HOME_NOINDEX', aiFixable: true, fix: { kind: 'pageSeo', pageId: home, field: 'noindex' } }),
+            expect.objectContaining({ code: 'SEO_LLMS_TXT_OFF', aiFixable: true, fix: { kind: 'site', field: 'llmsTxt' } })
+          ])
+        );
+        return [calls(['s2', 'update_page_seo', { pageId: home, noindex: false }], ['s3', 'update_site_seo', { llmsTxt: true }])];
+      },
+      (req) => {
+        const results = req.items.filter((i) => (i as { kind?: string }).kind === 'tool_result').slice(-2).map((i) => JSON.parse((i as { content: string }).content));
+        expect(results.map((r) => r.ok)).toEqual([true, true]);
+        return [call('s4', 'audit_seo', {})];
+      },
+      (req) => {
+        expect(codesOf(lastResult(req))).not.toContain('SEO_HOME_NOINDEX');
+        expect(codesOf(lastResult(req))).not.toContain('SEO_LLMS_TXT_OFF');
+        return finish('Home can be listed again, and llms.txt is on.');
+      }
+    ]);
+    home = env.session.state.site.homePageId;
+    expect((await env.session.apply({ operations: [{ type: 'page.update', pageId: home, noindex: true }, { type: 'site.update', llmsTxt: false }] }, { label: 'Hide', source: 'user' })).ok).toBe(true);
+    expect(runSeoAudit(env.session.state).map((f) => f.code)).toEqual(expect.arrayContaining(['SEO_HOME_NOINDEX', 'SEO_LLMS_TXT_OFF']));
+    const before = { page: structuredClone(env.session.state.pages[home]), site: structuredClone(env.session.state.site), steps: env.session.historyInfo().entries.length };
+    const { runId, result } = await env.run('Audit the site’s SEO and AI readiness and fix what you can', { scope: 'site' });
+    expect(result?.status).toBe('completed');
+    expect(env.session.state.pages[home].seo.noindex).toBeFalsy();
+    expect(env.session.state.site.llmsTxt).not.toBe(false);
+    expect(runSeoAudit(env.session.state).map((f) => f.code)).not.toContain('SEO_HOME_NOINDEX');
+    expect(runSeoAudit(env.session.state).map((f) => f.code)).not.toContain('SEO_LLMS_TXT_OFF');
+    // Both changes are one step, and one undo takes both back, with what the audit found.
+    expect(env.session.historyInfo().entries.length).toBe(before.steps + 1);
+    expect((await env.session.undoGroup(runId)).ok).toBe(true);
+    expect(env.session.state.pages[home]).toEqual(before.page);
+    expect(env.session.state.site).toEqual(before.site);
+    expect(runSeoAudit(env.session.state).map((f) => f.code)).toEqual(expect.arrayContaining(['SEO_HOME_NOINDEX', 'SEO_LLMS_TXT_OFF']));
   });
 });
 
