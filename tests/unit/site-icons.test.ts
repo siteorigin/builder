@@ -5,6 +5,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -18,10 +19,14 @@ import { APPLE_TOUCH_ICON, SITE_ICON_FILES, WEB_MANIFEST } from '@shared/site-ic
 import { validateRoute } from '@shared/routes';
 import { heldAsMedia } from '../../src/main/project/versions';
 import { handleVariantRequest, renderSiteIcons } from '../../src/main/project/image-variants';
-import { setSiteIconRenderer, SiteIconMaker, SITE_ICON_PATHS, type SiteIconRenderer } from '../../src/main/project/site-icons';
+import { setSiteIconRenderer, SiteIconMaker, siteIconTiming, SITE_ICON_PATHS, type SiteIconRenderer } from '../../src/main/project/site-icons';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const dirs: string[] = [];
+// Waited for however busy the machine is; the test of a late set passes its own budget. Drawing on a loaded machine
+// can take a while.
+siteIconTiming.budgetMs = 60_000;
+vi.setConfig({ testTimeout: 30_000 });
 afterEach(() => {
   setSiteIconRenderer(null);
   vi.restoreAllMocks();
@@ -185,6 +190,9 @@ describe('the web app manifest', () => {
     expect(colors(s)).toEqual(['#000000', '#808080']);
     s.tokens.overrides['color.brand'] = 'oklch(0.628 0.2577 29.23)';
     expect(colors(s)[1]).toBe('#ff0000');
+    // A see-through background is laid over white.
+    s.tokens.overrides['color.background'] = 'rgb(0 0 0 / 50%)';
+    expect(colors(s)[0]).toBe('#808080');
     // Nothing readable at all: the built-in colours.
     for (const id of ['color.background', 'color.surface', 'color.brand', 'color.accent']) s.tokens.overrides[id] = 'currentcolor';
     expect(colors(s)).toEqual(['#ffffff', '#1f5a4c']);
@@ -223,6 +231,11 @@ describe('what the icons are made from', () => {
     ]);
     const chosen = withFavicon(tmp(), Buffer.from('png'));
     expect(siteIconSet(chosen).source).toEqual({ kind: 'file', file: 'static/assets/logo-1a2b3c4d.png', mime: 'image/png' });
+    // A hand edit pointing the favicon at a document, or naming the site with something other than text.
+    chosen.assets.assets.as_logo.kind = 'document';
+    expect(siteIconSet(chosen).source.kind).toBe('svg');
+    (chosen.site as { name: unknown }).name = 7;
+    expect(siteIconSet(chosen).monogram).toContain('>S</text>');
   });
 
   it('keeps every generated file’s address from pages and from saved versions', () => {
@@ -279,7 +292,7 @@ describe('drawing the icons', () => {
     expect(ok).toMatchObject({ id: 1, ok: true });
     const replied = ok.ok ? (ok.icons ?? []) : [];
     expect(replied).toHaveLength(2);
-    for (const [i, size] of [180, 192].entries()) expect(await sharp(Buffer.from(replied[i])).metadata()).toMatchObject({ format: 'png', width: size, height: size });
+    for (const [i, size] of [180, 192].entries()) expect(await sharp(Buffer.from(replied[i])).metadata()).toMatchObject({ format: 'png', width: size, height: size, hasAlpha: i === 1 });
     const bad = await handleVariantRequest({ id: 2, kind: 'icons', data: bytes(Buffer.from('not a picture at all')), mime: 'image/png', width: 0, icons: [{ size: 192 }] });
     expect(bad).toMatchObject({ id: 2, ok: false, unreadable: true });
     // Too many pixels to decode is the picture's doing as well, so its icons come from the monogram.
@@ -307,7 +320,7 @@ describe('a project’s icons', () => {
     expect(maker.key).toBe(first.key);
     // The same state, or another with the same name and colours, draws nothing; the same buffers come back.
     expect((await maker.make(dir, s)).files!.get(SITE_ICON_PATHS[0])).toBe(first.files!.get(SITE_ICON_PATHS[0]));
-    expect(await maker.make(dir, fresh())).toBe(first);
+    expect((await maker.make(dir, fresh())).files).toBe(first.files);
     expect(calls).toEqual(['image/svg+xml']);
     // A new name is a new monogram, and a new background a new iOS icon.
     s.site.name = 'Harbour';
@@ -318,8 +331,8 @@ describe('a project’s icons', () => {
     expect(calls).toHaveLength(3);
     // The new background is the one the iOS icon of a see-through favicon is filled with.
     const withPicture = withFavicon(dir, await wideLogo());
-    withPicture.tokens.overrides['color.background'] = '#000000';
-    expect(await pixel((await maker.make(dir, withPicture)).files!.get('static/apple-touch-icon.png')!, 2, 2)).toEqual({ r: 0, g: 0, b: 0, a: 255 });
+    withPicture.tokens.overrides['color.background'] = '#123456';
+    expect(await pixel((await maker.make(dir, withPicture)).files!.get('static/apple-touch-icon.png')!, 2, 2)).toEqual({ r: 0x12, g: 0x34, b: 0x56, a: 255 });
   });
 
   it('are drawn from the favicon’s bytes as they are now, and from the monogram when its file cannot be used', async () => {
@@ -349,6 +362,13 @@ describe('a project’s icons', () => {
     const refused = await maker.make(dir, s);
     expect(calls).toEqual(['image/png', 'image/svg+xml']);
     expect(hex(await pixel(refused.files!.get('static/icon-192.png')!, 1, 1))).toBe('#1f5a4c');
+    // The monogram standing in is kept a while, then the picture is tried again (a refusal can be passing).
+    expect((await maker.make(dir, s)).files).toBe(refused.files);
+    expect(calls).toHaveLength(2);
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+    await maker.make(dir, s);
+    expect(calls).toEqual(['image/png', 'image/svg+xml', 'image/png', 'image/svg+xml']);
+    vi.restoreAllMocks();
     // Only a regular file directly in static/assets/ is read: a record pointing elsewhere gets the monogram.
     s.assets.assets.as_logo.file = 'siteorigin/site.json';
     expect((await maker.input(dir, s)).mime).toBe('image/svg+xml');
@@ -375,6 +395,41 @@ describe('a project’s icons', () => {
     // A JPEG kept under a PNG's record is drawn as the JPEG it is.
     const jpeg = withFavicon(dir, await sharp({ create: { width: 8, height: 8, channels: 3, background: '#00ff00' } }).jpeg().toBuffer());
     expect((await new SiteIconMaker().input(dir, jpeg)).mime).toBe('image/jpeg');
+    // A link, or a pipe whose opening would wait for a writer, is never opened.
+    rmSync(join(dir, 'static/assets/logo-1a2b3c4d.png'));
+    writeFileSync(join(dir, 'static/assets/real-1a2b3c4d.png'), await wideLogo());
+    symlinkSync(join(dir, 'static/assets/real-1a2b3c4d.png'), join(dir, 'static/assets/logo-1a2b3c4d.png'));
+    expect((await new SiteIconMaker().input(dir, jpeg)).key).toBe(await monogram(jpeg));
+    if (process.platform !== 'win32') {
+      rmSync(join(dir, 'static/assets/logo-1a2b3c4d.png'));
+      execFileSync('mkfifo', [join(dir, 'static/assets/logo-1a2b3c4d.png')]);
+      expect((await new SiteIconMaker().input(dir, jpeg)).key).toBe(await monogram(jpeg));
+    }
+  });
+
+  it('keep a set drawn for one input apart from another’s, however the draws finish', async () => {
+    const dir = tmp();
+    const gates: Array<() => void> = [];
+    let calls = 0;
+    setSiteIconRenderer(async (data, mime, icons) => (calls++, await new Promise<void>((r) => gates.push(r)), inProcess(data, mime, icons)));
+    const maker = new SiteIconMaker();
+    const a = fresh();
+    const b = fresh();
+    b.site.name = 'Bravo';
+    // A, then B, then A again while A is still being drawn: A is drawn once, and neither draw displaces the other.
+    const first = maker.make(dir, a, Infinity);
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    const second = maker.make(dir, b, Infinity);
+    const again = maker.make(dir, a, Infinity);
+    await vi.waitFor(() => expect(gates).toHaveLength(2));
+    gates[1]();
+    expect((await second).files?.size).toBe(3);
+    gates[0]();
+    expect((await first).files?.size).toBe(3);
+    expect((await again).files).toBe((await first).files);
+    expect(calls).toBe(2);
+    expect((await maker.make(dir, b)).files).toBe((await second).files);
+    expect(calls).toBe(2);
   });
 
   it('stop holding up a save that takes too long for them, and say so once they are ready', async () => {
@@ -438,8 +493,9 @@ describe('a project’s icons', () => {
       return r.ok ? { ok: true, icons: r.icons.slice(1) } : r;
     });
     expect((await maker.make(dir, s)).files).toBeNull();
+    // (The monogram shows the first letter only: a name with another one is another set.)
     counting();
-    s.site.name = 'Third';
+    s.site.name = 'Zulu';
     expect((await maker.make(dir, s)).files?.size).toBe(3);
   });
 });

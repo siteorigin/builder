@@ -49,7 +49,7 @@ const { ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
 const { editedGeneratedFile } = await import('../../src/main/export');
 const { applyOperations } = await import('@engine/apply');
-const { setSiteIconRenderer, SITE_ICON_PATHS } = await import('../../src/main/project/site-icons');
+const { setSiteIconRenderer, siteIconTiming, SITE_ICON_PATHS } = await import('../../src/main/project/site-icons');
 const { renderSiteIcons } = await import('../../src/main/project/image-variants');
 const { sha } = await import('../../src/main/project/fsutil');
 const sharp = (await import('sharp')).default;
@@ -69,6 +69,7 @@ beforeEach(() => {
 });
 afterEach(async () => {
   setSiteIconRenderer(null);
+  siteIconTiming.budgetMs = 2_000;
   for (const c of controllers.splice(0)) await c.close();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
@@ -331,8 +332,11 @@ describe('exporting a project with a crawler policy', () => {
 });
 
 describe('issue 584: the web app manifest and home-screen icons through the export', () => {
-  /** The icons drawn in this process, as the app's media worker draws them. */
-  const drawHere = () => setSiteIconRenderer(async (data, mime, icons) => ({ ok: true, icons: await renderSiteIcons(data, mime, icons) }));
+  /** The icons drawn in this process, as the app's media worker draws them, and waited for however busy the machine is. */
+  const drawHere = () => {
+    siteIconTiming.budgetMs = 60_000;
+    setSiteIconRenderer(async (data, mime, icons) => ({ ok: true, icons: await renderSiteIcons(data, mime, icons) }));
+  };
   const centre = async (png: Buffer) => {
     const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const i = ((info.height >> 1) * info.width + (info.width >> 1)) * 4;
@@ -364,7 +368,7 @@ describe('issue 584: the web app manifest and home-screen icons through the expo
       expect(bytes.equals(readFileSync(join(dir, p)))).toBe(true);
       expect(claims[p]).toBe(sha(bytes));
     }
-  });
+  }, 30_000);
 
   it('makes the icons from the favicon picture, and again from its file replaced in the folder, before it exports', async () => {
     drawHere();
@@ -386,5 +390,5 @@ describe('issue 584: the web app manifest and home-screen icons through the expo
     for (const f of ['apple-touch-icon.png', 'icon-192.png', 'icon-512.png']) expect(await centre(readFileSync(join(dest, f)))).toEqual([255, 0, 0]);
     // The tab's own favicon is the picture itself, which the website keeps.
     expect(readFileSync(join(dest, 'assets/logo-1a2b3c4d.png')).equals(readFileSync(join(dir, 'static/assets/logo-1a2b3c4d.png')))).toBe(true);
-  });
+  }, 30_000);
 });

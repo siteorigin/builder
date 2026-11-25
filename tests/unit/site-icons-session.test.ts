@@ -3,7 +3,7 @@
  * the same ownership rules as a theme's fonts: claimed by their bytes, never written over someone else's file, kept as
  * they are when they cannot be made, and drawn again only when what they are made from changes.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,11 +16,16 @@ import { ProjectSession } from '../../src/main/project/session';
 import { editedGeneratedFile } from '../../src/main/export';
 import { sha } from '../../src/main/project/fsutil';
 import { renderSiteIcons } from '../../src/main/project/image-variants';
-import { setSiteIconRenderer, SITE_ICON_PATHS, type SiteIconRenderer } from '../../src/main/project/site-icons';
+import { setSiteIconRenderer, siteIconTiming, SITE_ICON_PATHS, type SiteIconRenderer } from '../../src/main/project/site-icons';
 
 const dirs: string[] = [];
 const sessions: ProjectSession[] = [];
+// Saves wait for their icons here however busy the machine is; the tests of a late set shorten the wait. Drawing on a
+// loaded machine can take a while.
+beforeEach(() => void (siteIconTiming.budgetMs = 60_000));
+vi.setConfig({ testTimeout: 30_000 });
 afterEach(async () => {
+  siteIconTiming.budgetMs = 2_000;
   setSiteIconRenderer(null);
   for (const s of sessions.splice(0)) await s.close().catch(() => undefined);
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
@@ -97,9 +102,11 @@ describe('the website’s icons in a project', () => {
     expect(await editedGeneratedFile(d)).toBeNull();
     const dev = join(d, '.siteorigin/cache/dev');
     expect(pngsIn(dev)).toEqual([]);
-    // Nor on a later save that draws them again.
+    // Nor on a later save that draws them again, which replaces every one of them in the project.
+    const before = SITE_ICON_PATHS.map((p) => readFileSync(join(d, p)));
     expect((await rename(sessions[0], 'Renamed')).ok).toBe(true);
     expect(pngsIn(dev)).toEqual([]);
+    SITE_ICON_PATHS.forEach((p, i) => expect(readFileSync(join(d, p)).equals(before[i])).toBe(false));
   });
 
   it('are drawn again only when what they are made from changes', async () => {
@@ -127,19 +134,38 @@ describe('the website’s icons in a project', () => {
   });
 
   it('are published on their own once ready when a save stopped waiting for them', async () => {
+    renderer();
+    const d = tmp();
+    const s = await create(d);
+    const before = readFileSync(join(d, SITE_ICON_PATHS[2]));
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     setSiteIconRenderer(async (data, mime, icons) => (await gate, { ok: true, icons: await renderSiteIcons(data, mime, icons) }));
-    const d = tmp();
-    // The save waits no longer than its budget, and goes ahead without them.
-    const s = await create(d);
-    for (const p of SITE_ICON_PATHS) expect(existsSync(join(d, p))).toBe(false);
+    siteIconTiming.budgetMs = 50;
+    // The save waits no longer than its budget, and goes ahead with the icons as they were.
+    expect((await rename(s, 'Slow')).ok).toBe(true);
+    expect(readFileSync(join(d, SITE_ICON_PATHS[2])).equals(before)).toBe(true);
+    expect(manifest(d)[SITE_ICON_PATHS[2]]).toBe(sha(before));
     const changed = vi.fn();
     s.on('changed', changed);
     release();
-    await vi.waitFor(() => expect(existsSync(join(d, SITE_ICON_PATHS[2]))).toBe(true), { timeout: 5000 });
+    await vi.waitFor(() => expect(readFileSync(join(d, SITE_ICON_PATHS[2])).equals(before)).toBe(false), { timeout: 20_000 });
     await vi.waitFor(() => expect(manifest(d)[SITE_ICON_PATHS[2]]).toBe(sha(readFileSync(join(d, SITE_ICON_PATHS[2])))));
     expect(changed).toHaveBeenCalledWith(expect.objectContaining({ changedDocs: [], label: 'Update site icons' }));
+    expect(s.siteIconsPublished).toBe(await s.siteIconSource());
+  });
+
+  it('are drawn in full before a new project is first published', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    setSiteIconRenderer(async (data, mime, icons) => (await gate, { ok: true, icons: await renderSiteIcons(data, mime, icons) }));
+    // Far longer than a save would wait.
+    siteIconTiming.budgetMs = 50;
+    const d = tmp();
+    const made = create(d);
+    setTimeout(release, 300);
+    const s = await made;
+    for (const p of SITE_ICON_PATHS) expect(manifest(d)[p]).toBe(sha(readFileSync(join(d, p))));
     expect(s.siteIconsPublished).toBe(await s.siteIconSource());
   });
 
@@ -150,7 +176,7 @@ describe('the website’s icons in a project', () => {
     expect(await centre(readFileSync(join(d, 'static/icon-192.png')))).toEqual({ r: 255, g: 0, b: 0 });
     writeFileSync(join(d, 'static/assets/logo-1a2b3c4d.png'), await square('#0000ff'));
     // Seen when the library's files are looked at again (the app does so when static/ changes, and before an export).
-    expect(await s.refreshSiteIcons()).toEqual({ key: await s.siteIconSource(), published: true });
+    expect(await s.refreshSiteIcons()).toEqual({ key: await s.siteIconSource(), published: true, drawing: false });
     expect(await centre(readFileSync(join(d, 'static/icon-192.png')))).toEqual({ r: 0, g: 0, b: 255 });
     expect(s.siteIconsPublished).toBe(await s.siteIconSource());
     expect(await editedGeneratedFile(d)).toBeNull();
@@ -186,12 +212,16 @@ describe('the website’s icons in a project', () => {
     SITE_ICON_PATHS.forEach((p, i) => expect(readFileSync(join(d, p)).equals(made[i])).toBe(true));
     SITE_ICON_PATHS.forEach((p, i) => expect(manifest(d)[p]).toBe(sha(made[i])));
     expect(await editedGeneratedFile(d)).toBeNull();
-    // An icon edited outside the app meanwhile is still named, though it cannot be made again now.
+    // An icon edited outside the app meanwhile is still named, though it cannot be made again now; one gone missing
+    // stays claimed, so the export notices.
     writeFileSync(join(d, SITE_ICON_PATHS[1]), 'edited');
+    rmSync(join(d, SITE_ICON_PATHS[2]));
     expect((await rename(s, 'Fourth')).ok).toBe(true);
     expect(s.conflicts.map((c) => c.path)).toEqual([SITE_ICON_PATHS[1]]);
     expect(readFileSync(join(d, SITE_ICON_PATHS[1]), 'utf8')).toBe('edited');
     expect(manifest(d)[SITE_ICON_PATHS[1]]).toBe(sha(made[1]));
+    expect(manifest(d)[SITE_ICON_PATHS[2]]).toBe(sha(made[2]));
+    expect(await editedGeneratedFile(d)).toBe(SITE_ICON_PATHS[1]);
   });
 
   it('keep claiming the icon a publication that stopped part way left, when they cannot be made again', async () => {
@@ -206,10 +236,18 @@ describe('the website’s icons in a project', () => {
     m.pending = { [path]: disk };
     writeFileSync(join(d, 'siteorigin/generated-manifest.json'), JSON.stringify(m));
     r.fail = true;
-    const s = await open(d);
+    let s = await open(d);
     expect(manifest(d)[path]).toBe(disk);
     expect(s.conflicts).toEqual([]);
     expect(await editedGeneratedFile(d)).toBeNull();
+    await s.close();
+    // The settled version on disk, with a newer one only pending, keeps the settled claim.
+    const m2 = JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8'));
+    m2.pending = { [path]: 'b'.repeat(64) };
+    writeFileSync(join(d, 'siteorigin/generated-manifest.json'), JSON.stringify(m2));
+    s = await open(d);
+    expect(manifest(d)[path]).toBe(disk);
+    expect(s.conflicts).toEqual([]);
   });
 
   it('never replace a file of someone else’s at an icon’s address, whether or not they can be made', async () => {

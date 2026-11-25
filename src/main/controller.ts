@@ -2470,8 +2470,13 @@ export class Controller {
     // The website's icons follow a favicon file changed with no document changing (put back by Locate, replaced in the
     // folder), so the export never carries icons of another picture than its favicon. They are drawn without holding
     // the project's lock, then published under it.
-    await s.prepareSiteIcons();
-    const icons = await s.refreshSiteIcons();
+    // A set a save stopped waiting for, or one for a change made meanwhile, is waited for again, a few times at most.
+    let icons: Awaited<ReturnType<ProjectSession['refreshSiteIcons']>> = null;
+    for (let tries = 0; tries < 3; tries++) {
+      await s.prepareSiteIcons();
+      icons = await s.refreshSiteIcons();
+      if (!icons?.drawing) break;
+    }
     return s.exclusive(async () => {
       // The native dialog and the queue for the lock both give the project time to change.
       if (this.session !== s) return stop('The project was closed before the export started.');
@@ -2489,7 +2494,7 @@ export class Controller {
       // The icons go out with the favicon they were made from: one replaced since would go out beside icons of the
       // picture it replaced. Only while icons cannot be made at all do those the project has go out as they are.
       const iconSource = await s.siteIconSource(dest);
-      const unmade = icons && !icons.published && iconSource === icons.key;
+      const unmade = icons && !icons.published && !icons.drawing && iconSource === icons.key;
       if (iconSource !== s.siteIconsPublished && !unmade) return stop('The project changed on disk while it was being exported. Export again.');
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
       await leaveOutDrafts(dest, s.state);

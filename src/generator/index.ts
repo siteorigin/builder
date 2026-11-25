@@ -4062,7 +4062,8 @@ export const DEFAULT_FAVICON = 'favicon.svg';
  */
 export function generateFaviconSvg(state: ProjectState, opts: { square?: boolean } = {}): string {
   const { brand, onBrand } = siteColors(effectiveTokens(state));
-  const letter = ([...state.site.name.trim()][0] ?? 'S').toUpperCase();
+  // The documents can be edited by hand: a name that is not text gives the default letter.
+  const letter = ([...(typeof state.site.name === 'string' ? state.site.name.trim() : '')][0] ?? 'S').toUpperCase();
   const esc = letter.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64"${opts.square ? '' : ' rx="14"'} fill="${brand}"/><text x="32" y="43" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="34" font-weight="600" fill="${onBrand}">${esc}</text></svg>\n`;
 }

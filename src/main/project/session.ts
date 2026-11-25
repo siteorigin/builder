@@ -546,6 +546,9 @@ export class ProjectSession extends EventEmitter {
     s.state = state;
     await s.ensureLocalDirs();
     await s.writeAllDocs();
+    // The icons are drawn in full first: a new project holds no lock yet, so nothing waits on it, and no set is left to
+    // be published later by a session that may never get the project's lock.
+    await s.siteIcons.make(dir, state, Infinity);
     await s.publishGenerated(true);
     await s.saveLocalState();
     return s;
@@ -1179,19 +1182,20 @@ export class ProjectSession extends EventEmitter {
   /**
    * Make the website's icons again when what they are made from changed with no document changing (a favicon file put
    * back or replaced in the folder, or a set a save stopped waiting for now ready), publishing them as any save does.
-   * Gives the key of what the publication made them from, and whether it carried them, or null when the project is
-   * not this app's to write.
+   * Gives the key of what the publication made them from, whether it carried them and, when not, whether they are
+   * still being drawn (rather than impossible to make now), or null when the project is not this app's to write.
    */
-  refreshSiteIcons(): Promise<{ key: string; published: boolean } | null> {
+  refreshSiteIcons(): Promise<{ key: string; published: boolean; drawing: boolean } | null> {
     return this.serialize(async () => {
       if (this.readOnly || this.unsettled || !(await this.stillOwner())) return null;
       const key = await this.siteIconSource();
-      if (key === this.iconsPublished) return { key, published: true };
+      if (key === this.iconsPublished) return { key, published: true, drawing: false };
       const before = JSON.stringify(this.conflicts);
       const changedFiles = await this.publishInstalled();
       if (changedFiles.length || JSON.stringify(this.conflicts) !== before) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles, label: 'Update site icons', source: 'system' } satisfies SessionEvent);
       const asked = this.iconsAsked ?? key;
-      return { key: asked, published: asked === this.iconsPublished };
+      const published = asked === this.iconsPublished;
+      return { key: asked, published, drawing: !published && this.siteIcons.drawing(asked) };
     });
   }
 
@@ -1685,16 +1689,21 @@ export class ProjectSession extends EventEmitter {
         copies.set(path, made);
         continue;
       }
-      // Kept as it is: claimed as whichever of this app's own versions is there (a publication that stopped part way
-      // may have left the newer one), named when it is neither, and still claimed when it has gone missing.
-      const { hash } = await this.readHash(safeJoin(this.dir, path));
-      if (hash === null) {
-        if (known(path)) nextFiles[path] = prev[path] ?? inflight[path];
-      } else if (known(path) && ours(path, hash)) nextFiles[path] = hash;
-      else if (known(path)) {
+      // A file there that this app never wrote is someone else's, whatever it holds: named, never read.
+      const abs = safeJoin(this.dir, path);
+      if (!known(path)) {
+        if (!initial && (await fs.lstat(abs).catch(() => null)))
+          this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
+        continue;
+      }
+      // One of this app's is kept as it is: claimed as whichever of its own versions is there (a publication that
+      // stopped part way may have left the newer one), named when it is neither, and still claimed when it has gone.
+      const { hash } = await this.readHash(abs);
+      if (hash !== null && ours(path, hash)) nextFiles[path] = hash;
+      else {
         nextFiles[path] = prev[path] ?? inflight[path];
-        this.conflicts.push({ path, reason: hash === UNREADABLE ? UNREADABLE_REASON : 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
-      } else if (!initial) this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
+        if (hash !== null) this.conflicts.push({ path, reason: hash === UNREADABLE ? UNREADABLE_REASON : 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
+      }
     }
     // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.
     const project = [...copies, ...clean].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(this.dir, path) }));
