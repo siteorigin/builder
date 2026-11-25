@@ -6,7 +6,6 @@ import { relativeLuminance, type ContrastPair } from '@shared/contrast';
 import { parseColor } from '@shared/color';
 import { PALETTE_MOODS, PALETTE_MOOD_INFO, darkPins, harmonizePalette, paletteChanges, paletteSeed, type PaletteMood, type PaletteRole } from '@shared/palette';
 import { applyOps } from '../store';
-import { resolveCssColor } from '../lib/color';
 
 /** The colours the preview names, in the order an owner reads a page: grounds, text, the brand, dark sections. */
 const SHOWN: Array<[PaletteRole, string]> = [
@@ -49,7 +48,9 @@ export function PaletteHarmony({
   const uid = useId();
   const [mood, setMood] = useState<PaletteMood>('neutral');
   const seed = useMemo(() => paletteSeed(tokens), [tokens]);
-  const palette = useMemo(() => (seed ? harmonizePalette({ brand: seed, mood, tokens, pairs, read: resolveCssColor }) : null), [seed, mood, tokens, pairs]);
+  // Measured with the plain parser, as the AI's palette is: the browser would read a colour in the editor's own scheme
+  // (a light-dark() one), not the site's, so a colour only it can read stays unknown and holds the palette back.
+  const palette = useMemo(() => (seed ? harmonizePalette({ brand: seed, mood, tokens, pairs }) : null), [seed, mood, tokens, pairs]);
   const label = (
     <div className="ss-group-label" id={`${uid}-label`}>
       Palette from brand

@@ -214,6 +214,23 @@ describe('the palette follows the brand (#357)', () => {
     expect(blocked(pair('ink-brand', 'color.custom-ink', 'color.brand'), '#1e3a5f')).toEqual(['ink-brand']);
   });
 
+  it('follows a CSS variable through a relay, and never mistakes a longer name for a palette colour', () => {
+    const custom = (id: string, value: unknown) => ({ id, label: id, group: 'color', value }) as TokenDef;
+    const theme = getTheme('foundation').contrastPairs ?? [];
+    const tokens = [
+      ...(getTheme('foundation').tokens as TokenDef[]),
+      custom('color.custom-relay', 'color-mix(in srgb, var(--so-color-brand) 100%, #fff)'),
+      custom('color.custom-uses', 'var(--so-color-custom-relay)'),
+      custom('color.custom-linked', { token: 'color.custom-uses' }),
+      custom('color.custom-static', 'var(--so-color-brand-static, #000)'),
+      custom('color.custom-white', '#ffffff')
+    ];
+    const blocked = (fg: string) =>
+      harmonizePalette({ brand: '#f5c518', mood: 'neutral', tokens, pairs: [...theme, { id: fg, use: fg, fg, bg: 'color.custom-white', state: 'rest', group: fg }] }).unreadable.map((r) => r.pair.id);
+    expect(blocked('color.custom-linked')).toEqual(['color.custom-linked']);
+    expect(blocked('color.custom-static')).toEqual([]);
+  });
+
   it('is held back, naming the pair, when a fixed accent cannot be read on dark sections', () => {
     const h = make('#1e3a5f', 'tinted', 'foundation', '#000000');
     expect(h.values['color.accent']).toBe('#000000');
@@ -238,12 +255,20 @@ describe('the palette follows the brand (#357)', () => {
     const near = base.map((t) => (t.id === 'color.brand' ? { ...t, value: `oklab(${L + 0.0004} ${a} ${b})` } : t)) as TokenDef[];
     expect(parseColor(`oklab(${L + 0.0004} ${a} ${b})`)!.r).not.toBe(30);
     expect(Object.fromEntries(paletteChanges(near, h.values))['color.brand']).toBe('#1e3a5f');
+    // Missing channels read as black alone, but a hover mix fills them from the other colour: saved as the palette has it.
+    const none = base.map((t) => (t.id === 'color.on-brand' ? { ...t, value: 'rgb(none none none)' } : t)) as TokenDef[];
+    const grey = make('#777777', 'neutral');
+    expect(grey.values['color.on-brand']).toBe('#000000');
+    expect(Object.fromEntries(paletteChanges(none, grey.values))['color.on-brand']).toBe('#000000');
   });
 
-  it('pins the colours a dark palette takes from the light ones, and leaves its own', () => {
-    const light = getTheme('foundation').tokens.map((t) => (t.id === 'color.brand' ? { ...t, value: { token: 'color.accent' } } : t)) as TokenDef[];
-    const pins = Object.fromEntries(darkPins(light, { 'color.background': '#101010' }, ['color.background', 'color.brand', 'color.text']));
-    expect(pins).toEqual({ 'color.brand': { token: 'color.accent' }, 'color.text': '#191a18' });
+  it('pins the colours a dark palette takes from the light ones as it shows them, and leaves its own', () => {
+    const light = getTheme('foundation').tokens.map((t) => (t.id === 'color.brand' ? { ...t, value: { token: 'color.accent' } } : t.id === 'color.muted' ? { ...t, value: 'var(--muted)' } : t)) as TokenDef[];
+    const dark = { 'color.background': '#101010', 'color.accent': '#ffcc00', 'color.surface': { token: 'color.gone' } };
+    const pins = Object.fromEntries(darkPins(light, dark, ['color.background', 'color.brand', 'color.text', 'color.surface', 'color.muted']));
+    // Brand shows the dark accent through its link: pinned as that colour, written out. A dark link that lands
+    // nowhere is no colour of its own, so Surface is pinned as the light one it shows. Muted cannot be shown as a colour.
+    expect(pins).toEqual({ 'color.brand': '#ffcc00', 'color.text': '#191a18', 'color.surface': '#ffffff' });
   });
 });
 

@@ -880,9 +880,25 @@ describe('update_site_brand', () => {
     expect(session.state.tokens.darkOverrides!['color.brand']).toBe('#a7c7e7');
     expect(colors(session.state)).toEqual(darkBefore);
     expect(unreadable(session.state, 'dark')).toEqual(failingBefore);
-    expect(lastResult(adapter.requests[1]).warnings).toEqual(['The dark palette kept its colors. token.setColorScheme with regenerate: true makes them again from the new palette.']);
+    expect(lastResult(adapter.requests[1]).warnings).toEqual(['The dark palette kept its colors. token.setColorScheme with regenerate: true makes the dark colors again from the new palette.']);
     await session.undo();
     expect(session.state.tokens.darkOverrides!['color.brand']).toBeUndefined();
+  });
+
+  it('names the dark pairs a palette leaves newly hard to read when a dark color cannot be kept', async () => {
+    // The dark palette shows the light brand, which is a CSS variable no pin can hold.
+    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { brandColor: '#1e3a5f', paletteMood: 'neutral' })], () => finish()], {}, 'business', (s) => {
+      Object.assign(s, applyOperations(s, [{ type: 'token.setColorScheme', mode: 'system' }]).state);
+      delete s.tokens.darkOverrides!['color.brand'];
+      s.tokens.overrides['color.brand'] = 'var(--brand, #a7c7e7)';
+    });
+    await run('Make it navy');
+    expect(unreadable(session.state)).toEqual([]);
+    expect(session.state.tokens.darkOverrides!['color.brand']).toBeUndefined();
+    expect(unreadable(session.state, 'dark')).toEqual(expect.arrayContaining(['brand-text-background']));
+    expect(lastResult(adapter.requests[1]).warnings).toEqual([
+      expect.stringMatching(/^The dark palette kept its colors, and \d+ pairs there are now hard to read \(.*brand-colored links on the page.*\)\. token\.setColorScheme with regenerate: true makes the dark colors again from the new palette\.$/)
+    ]);
   });
 
   it('refuses a theme that is not offered, naming the field, and changes nothing else in the call', async () => {
