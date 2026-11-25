@@ -738,11 +738,10 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
  * Copy a component's definition as a new project component (spec §8.4). Nothing placed moves to the copy, which is
  * what sets it apart from Make unique.
  */
-export function DuplicateComponentModal({ definitionId }: { definitionId: string }) {
+export function DuplicateComponentModal({ definitionId, openedIn }: { definitionId: string; openedIn?: string }) {
   const st = useStore((s) => s.snapshot?.state);
   const workspaceKey = useStore((s) => s.snapshot?.workspaceKey);
-  // Bound to the project it was opened in: another project made from the same theme can hold the same component ID.
-  const [openedIn] = useState(() => getState().snapshot?.workspaceKey);
+  // Bound to the project it was asked for in: another made from the same theme can hold the same component ID.
   const def = st && workspaceKey === openedIn && Object.hasOwn(st.components, definitionId) ? st.components[definitionId] : undefined;
   // Suggested once, as the dialog opens, so the field never changes under the author.
   const [suggested] = useState(() => (st && def ? duplicateName(st, def.name) : ''));

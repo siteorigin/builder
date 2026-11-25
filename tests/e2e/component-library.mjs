@@ -209,6 +209,7 @@ await openInsert();
 await manage('Exhibitor card').click();
 await menu.getByRole('menuitem', { name: 'Duplicate…', exact: true }).click();
 assert.equal(await nameField.inputValue(), 'Exhibitor card copy', 'the dialog suggests a name');
+assert.match(await dialog.innerText(), /All 2 placements keep following Exhibitor card\./, 'and says the placements stay');
 await dialog.getByRole('button', { name: 'Duplicate', exact: true }).click();
 await dialog.waitFor({ state: 'detached' });
 await eventually(async () => assert.deepEqual(await library(), { ...usesBefore, 'Exhibitor card copy': 0 }, 'the copy is placed nowhere, and every placement stays'));
@@ -221,24 +222,40 @@ const showAllMine = panel.getByRole('button', { name: /^Show all \d+ components/
 if (await showAllMine.isVisible()) await showAllMine.click();
 await tile('Exhibitor card copy').waitFor();
 assert.match(await tile('Exhibitor card copy').innerText(), /Not used/);
-const order = await panel.locator('.insert-group[data-kind="component"] .insert-tile.project strong').allInnerTexts();
-const from = order.indexOf('Exhibitor card');
-// Its family: the original, then its copies by name.
-assert.ok(order.indexOf('Exhibitor card copy') > from, `listed under the original (${order.join(', ')})`);
+const rows = await panel.locator('.insert-group[data-kind="component"] .insert-tile.project').evaluateAll((els) => els.map((el) => ({ name: el.querySelector('strong').textContent, sub: el.classList.contains('sub') })));
+const from = rows.findIndex((r) => r.name === 'Exhibitor card');
+const at = rows.findIndex((r) => r.name === 'Exhibitor card copy');
+// Its family: the original, then nothing but copies down to the new one.
+assert.ok(from >= 0 && at > from && rows.slice(from + 1, at + 1).every((r) => r.sub), `listed under the original (${JSON.stringify(rows)})`);
 await manage('Exhibitor card copy').click();
 await menu.getByText('Copy of Exhibitor card', { exact: true }).waitFor();
 await win.keyboard.press('Escape');
 await menu.waitFor({ state: 'detached' });
-assert.match(await tile('Exhibitor card copy').getAttribute('class'), /\bsub\b/, 'and indented as part of its family');
+// The list is closed up while it still has more than four to show.
+await panel.getByRole('button', { name: 'Show fewer', exact: true }).click();
 await win.evaluate(() => window.builder.project.undo());
 await eventually(async () => assert.deepEqual(await library(), usesBefore, 'one Undo removes the copy'));
+await tile('Exhibitor card copy').waitFor({ state: 'detached' });
+assert.deepEqual((await snapshot()).pages, beforeCopy.pages, 'and leaves every placement as it was');
 await win.evaluate(() => window.builder.project.redo());
 await eventually(async () => assert.ok((await snapshot()).components[copied.id], 'Redo brings it back with the same ID'));
 await win.evaluate(() => window.builder.project.undo());
 await eventually(async () => assert.deepEqual(await library(), usesBefore));
-// Later steps start from the list as it opens.
-const showFewer = panel.getByRole('button', { name: 'Show fewer', exact: true });
-if (await showFewer.isVisible()) await showFewer.click();
+// From the Inspector, beside Make unique, with a name of the author's own, then opened from the announcement.
+await manage('Exhibitor card').click();
+await menu.getByRole('menuitem', { name: (await snapshot()).pages[pageId].title }).click();
+await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Exhibitor card' }).waitFor();
+await win.getByRole('button', { name: 'More actions for Exhibitor card' }).click();
+await menu.getByRole('menuitem', { name: /Duplicate component….*This one keeps the original/ }).click();
+await nameField.fill('Exhibitor card (wide)');
+await nameField.press('Enter');
+await win.locator('.toast', { hasText: 'Duplicated Exhibitor card as Exhibitor card (wide)' }).getByRole('button', { name: 'Open in Component Studio' }).click();
+await win.locator('.mode-band', { hasText: 'Exhibitor card (wide)' }).waitFor();
+assert.deepEqual(await library(), { ...usesBefore, 'Exhibitor card (wide)': 0 }, 'the selected placement stays on the original');
+await win.locator('.mode-band-done').click();
+await win.locator('.mode-band').waitFor({ state: 'detached' });
+await win.evaluate(() => window.builder.project.undo());
+await eventually(async () => assert.deepEqual(await library(), usesBefore));
 
 step('deleting an unused variant keeps the others, and Undo brings it back');
 const before = await snapshot();

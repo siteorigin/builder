@@ -762,7 +762,7 @@ export function Editor() {
       {modal?.kind === 'make-unique' && <MakeUniqueModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
       {modal?.kind === 'swap-component' && <SwapComponentModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
       {modal?.kind === 'rename-component' && <RenameComponentModal definitionId={modal.definitionId} />}
-      {modal?.kind === 'duplicate-component' && <DuplicateComponentModal definitionId={modal.definitionId} />}
+      {modal?.kind === 'duplicate-component' && <DuplicateComponentModal definitionId={modal.definitionId} openedIn={modal.workspaceKey} />}
       {modal?.kind === 'delete-page' && <DeletePageModal pageId={modal.pageId} />}
       {modal?.kind === 'set-home' && <SetHomeModal pageId={modal.pageId} />}
       {modal?.kind === 'edit-definition' && <EditDefinitionModal target={modal.ref} />}

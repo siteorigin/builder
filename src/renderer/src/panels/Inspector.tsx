@@ -1076,7 +1076,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const editEverywhere = () => setState({ modal: { kind: 'edit-definition', ref: selection } });
   const makeUnique = () => setState({ modal: { kind: 'make-unique', owner, nodeId: node.id, definitionId: def.id } });
   // A copy of the component alone: this placement stays on the original. Named apart from the layer's own Duplicate.
-  const duplicateComponent = () => setState({ modal: { kind: 'duplicate-component', definitionId: def.id } });
+  const duplicateComponent = () => setState({ modal: { kind: 'duplicate-component', definitionId: def.id, workspaceKey: getState().snapshot?.workspaceKey } });
   // A section (or a card inside one) can show another design where it is, keeping its content (#374). The shared
   // header and footer keep theirs, and a placement inside a design is changed in that design.
   const swappable = !shell && !readOnly && !selection.instancePath.length && !selection.partId && (owner.kind === 'page' || owner.kind === 'template');

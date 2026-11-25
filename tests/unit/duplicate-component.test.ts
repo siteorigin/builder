@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { InstanceNode, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { instancesOf } from '@engine/tree';
 import { applyOperations } from '@engine/apply';
@@ -43,14 +43,20 @@ describe('the name a duplicate is offered', () => {
     expect(duplicateName(state, 'Service card')).toBe('Service card copy 3');
     // A copy of a copy carries on the series.
     expect(duplicateName(state, 'Service card copy 2')).toBe('Service card copy 3');
+    expect(duplicateName(state, 'Service card COPY')).toBe('Service card copy 3');
   });
 
   it('stays within the name limit without splitting a character, and never comes out empty', () => {
     const { state } = business();
-    expect(duplicateName(state, 'x'.repeat(60))).toBe(`${'x'.repeat(55)} copy`);
-    expect(duplicateName(state, `${'x'.repeat(54)}😀yyy`)).toBe(`${'x'.repeat(54)} copy`);
-    const taken = named(state, `${'x'.repeat(55)} copy`);
-    expect(duplicateName(taken, 'x'.repeat(60))).toBe(`${'x'.repeat(53)} copy 2`);
+    expect(duplicateName(state, `${'x'.repeat(51)}😀yyyyyyy`)).toBe(`${'x'.repeat(51)} copy`);
+    expect(duplicateName(state, 'x'.repeat(60))).toBe(`${'x'.repeat(52)} copy`);
+    expect(duplicateName(state, `${'x'.repeat(51)} yyyyyyyy`)).toBe(`${'x'.repeat(51)} copy`);
+    // A long series keeps one stem, so duplicating a numbered copy carries it on.
+    let long = named(state, duplicateName(state, 'x'.repeat(60)));
+    const second = duplicateName(long, 'x'.repeat(60));
+    expect(second).toBe(`${'x'.repeat(52)} copy 2`);
+    long = named(long, second);
+    expect(duplicateName(long, second)).toBe(`${'x'.repeat(52)} copy 3`);
     expect(duplicateName(state, '   ')).toBe('Component copy');
   });
 });
@@ -81,7 +87,10 @@ describe('what the Duplicate dialog sends', () => {
     const copy = s.state.components[id];
     expect(id).not.toBe(def.id);
     expect(copy).toMatchObject({ name: 'Service card copy', owner: 'project', provenance: { forkedFrom: def.id } });
-    for (const key of ['properties', 'tree', 'parts', 'variants', 'slots', 'state'] as const) expect(copy[key], key).toEqual(original[key]);
+    // Everything but what makes it a component of its own: properties and defaults, design, parts, variants, the rest.
+    const contract = ({ id: _id, name: _name, componentId: _componentId, owner: _owner, category: _category, provenance: _provenance, ...rest }: ComponentDefinition) => rest;
+    expect(Object.keys(original.variantAxes ?? {}).length).toBeGreaterThan(0);
+    expect(contract(copy)).toEqual(contract(original));
     expect(uses()).toEqual(before);
     expect(instancesOf(s.state, id)).toEqual([]);
     expect(s.state.pages).toEqual(pages);
@@ -92,6 +101,7 @@ describe('what the Duplicate dialog sends', () => {
     expect(uses()).toEqual(before);
     await s.redo();
     expect(s.state.components[id]).toEqual(copy);
+    expect(s.state.pages).toEqual(pages);
   });
 
   it('sends a name the author chose as it is, and settles an untouched suggestion against the project as it is by then', () => {
@@ -114,11 +124,13 @@ describe('what the Duplicate dialog sends', () => {
     const dir = mkdtempSync(join(tmpdir(), 'so-duplicate-'));
     dirs.push(dir);
     const s = await ProjectSession.create(dir, code);
-    const components = Object.keys(s.state.components);
+    const components = structuredClone(s.state.components);
     const r = await s.apply({ operations: [op] }, { label: 'Duplicate component Service card', codeAllowed: false });
     expect(r.ok).toBe(false);
     expect(r.error?.message).toBe(`${reason} Turn on Developer mode in Settings to work with code.`);
-    expect(Object.keys(s.state.components)).toEqual(components);
+    expect(s.state.components).toEqual(components);
+    // Developer mode is what it lacks: with it, the same change applies.
+    expect((await s.apply({ operations: [op] }, { label: 'Duplicate component Service card', codeAllowed: true })).ok).toBe(true);
   });
 });
 
@@ -133,6 +145,6 @@ describe('where Duplicate is offered', () => {
     expect(canDuplicate({ ...def, kind: 'code' }, true)).toBe(true);
     const shell = Object.values(state.components).filter((d) => d.category === 'shell');
     expect(shell.length).toBeGreaterThan(0);
-    for (const d of shell) expect(canDuplicate(d, true)).toBe(false);
+    for (const d of shell) expect([canDuplicate(d, false), canDuplicate(d, true)]).toEqual([false, false]);
   });
 });

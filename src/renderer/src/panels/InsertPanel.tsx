@@ -1671,7 +1671,7 @@ export function InsertPanel() {
       { heading: def.name },
       ...(source ? [{ heading: source }] : []),
       { label: 'Rename', icon: <Pencil />, onSelect: () => setState({ modal: { kind: 'rename-component', definitionId: def.id } }) },
-      ...(canDuplicate(def, dev) ? [{ label: 'Duplicate…', icon: <Copy />, onSelect: () => setState({ modal: { kind: 'duplicate-component', definitionId: def.id } }) }] : []),
+      ...(canDuplicate(def, dev) ? [{ label: 'Duplicate…', icon: <Copy />, onSelect: () => setState({ modal: { kind: 'duplicate-component', definitionId: def.id, workspaceKey: getState().snapshot?.workspaceKey } }) }] : []),
       ...edit,
       { label: 'Save to personal library', icon: <BookmarkPlus />, hint: 'For every project', onSelect: () => void saveToLibrary(def) },
       { label: 'Export component…', icon: <Download />, hint: 'As a file', onSelect: () => void exportComponentFile(def) },
