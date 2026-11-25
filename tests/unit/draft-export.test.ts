@@ -49,6 +49,10 @@ const { ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
 const { editedGeneratedFile } = await import('../../src/main/export');
 const { applyOperations } = await import('@engine/apply');
+const { setSiteIconRenderer, SITE_ICON_PATHS } = await import('../../src/main/project/site-icons');
+const { renderSiteIcons } = await import('../../src/main/project/image-variants');
+const { sha } = await import('../../src/main/project/fsutil');
+const sharp = (await import('sharp')).default;
 
 const dirs: string[] = [];
 const controllers: Array<InstanceType<typeof Controller>> = [];
@@ -64,6 +68,7 @@ beforeEach(() => {
   env.builds = 0;
 });
 afterEach(async () => {
+  setSiteIconRenderer(null);
   for (const c of controllers.splice(0)) await c.close();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
@@ -322,5 +327,64 @@ describe('exporting a project with a crawler policy', () => {
     expect(readFileSync(join(plain, 'static/robots.txt'), 'utf8')).toBe('User-agent: *\nAllow: /\n\nSitemap: https://books.example/sitemap.xml\n');
     expect(readFileSync(join(plain, 'src/routes/+layout.svelte'), 'utf8')).not.toContain('noai');
     expect(JSON.parse(readFileSync(join(plain, 'siteorigin/site.json'), 'utf8'))).not.toHaveProperty('crawlerPolicy');
+  });
+});
+
+describe('issue 584: the web app manifest and home-screen icons through the export', () => {
+  /** The icons drawn in this process, as the app's media worker draws them. */
+  const drawHere = () => setSiteIconRenderer(async (data, mime, icons) => ({ ok: true, icons: await renderSiteIcons(data, mime, icons) }));
+  const centre = async (png: Buffer) => {
+    const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const i = ((info.height >> 1) * info.width + (info.width >> 1)) * 4;
+    return [data[i], data[i + 1], data[i + 2]];
+  };
+
+  it('builds the website and hands over the project with a valid manifest, its icons and their claims', async () => {
+    drawHere();
+    const { c, dir } = await projectWithDraft();
+    const dest = join(temp('out'), 'site');
+    expect((await c.buildStaticTo(dest)).ok).toBe(true);
+    const manifest = JSON.parse(readFileSync(join(dest, 'manifest.webmanifest'), 'utf8'));
+    expect(manifest).toMatchObject({ name: 'Bookshop', lang: 'en', dir: 'ltr', start_url: './', scope: './', theme_color: '#1f5a4c' });
+    // Every icon the manifest names is at the address it gives, relative to the manifest, at the size it says.
+    expect(manifest.icons).toHaveLength(2);
+    for (const icon of manifest.icons as Array<{ src: string; sizes: string; type: string }>) {
+      const size = Number(icon.sizes.split('x')[0]);
+      expect(icon.type).toBe('image/png');
+      expect(await sharp(readFileSync(join(dest, icon.src))).metadata()).toMatchObject({ format: 'png', width: size, height: size });
+    }
+    expect(await sharp(readFileSync(join(dest, 'apple-touch-icon.png'))).metadata()).toMatchObject({ format: 'png', width: 180, height: 180, hasAlpha: false });
+    // The editable project carries the same files, still claimed as generated, so it reopens without conflicts.
+    const out = join(temp('out'), 'handoff');
+    expect((await c.exportSourceTo(out)).ok).toBe(true);
+    expect(await editedGeneratedFile(out)).toBeNull();
+    const claims = JSON.parse(readFileSync(join(out, 'siteorigin/generated-manifest.json'), 'utf8')).files as Record<string, string>;
+    for (const p of ['static/manifest.webmanifest', ...SITE_ICON_PATHS]) {
+      const bytes = readFileSync(join(out, p));
+      expect(bytes.equals(readFileSync(join(dir, p)))).toBe(true);
+      expect(claims[p]).toBe(sha(bytes));
+    }
+  });
+
+  it('makes the icons from the favicon picture, and again from its file replaced in the folder, before it exports', async () => {
+    drawHere();
+    const dir = temp('project');
+    const square = (background: string) => sharp({ create: { width: 64, height: 64, channels: 3, background } }).png().toBuffer();
+    const blue = await square('#0000ff');
+    mkdirSync(join(dir, 'static/assets'), { recursive: true });
+    writeFileSync(join(dir, 'static/assets/logo-1a2b3c4d.png'), blue);
+    const state = createStarterState('business', 'Bookshop', false);
+    state.assets.assets.as_logo = { id: 'as_logo', name: 'Logo', file: 'static/assets/logo-1a2b3c4d.png', mime: 'image/png', bytes: blue.length, width: 64, height: 64, hash: sha(blue), kind: 'image', createdAt: '' };
+    state.site.favicon = 'as_logo';
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    expect(await centre(readFileSync(join(dir, 'static/icon-512.png')))).toEqual([0, 0, 255]);
+    // Replaced in place with no document changing, and exported straight away.
+    writeFileSync(join(dir, 'static/assets/logo-1a2b3c4d.png'), await square('#ff0000'));
+    const dest = join(temp('out'), 'site');
+    expect((await c.buildStaticTo(dest)).ok).toBe(true);
+    for (const f of ['apple-touch-icon.png', 'icon-192.png', 'icon-512.png']) expect(await centre(readFileSync(join(dest, f)))).toEqual([255, 0, 0]);
+    // The tab's own favicon is the picture itself, which the website keeps.
+    expect(readFileSync(join(dest, 'assets/logo-1a2b3c4d.png')).equals(readFileSync(join(dir, 'static/assets/logo-1a2b3c4d.png')))).toBe(true);
   });
 });

@@ -14,6 +14,7 @@ import { validateState } from '@engine/validate';
 import { RUNTIME_DIR, STYLES_DIR, effectiveTokens, generateProject, generateTokensCss } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { THEME_TOGGLE_FILE, themeBootstrap, themeStorageKey, themeToggleJs } from '@generator/color-scheme';
+import { siteColors, themeColorMeta } from '@generator/site-icons';
 import { colorSchemeMode, deriveDarkPalette, withDarkPalette } from '@shared/color-scheme';
 import { evaluatePairs, type ContrastPair } from '@shared/contrast';
 import { parseColor, rgbToOklab } from '@shared/color';
@@ -213,8 +214,13 @@ describe('what the site gets in each mode', () => {
     expect(css).toContain(`\t\t--so-color-text: ${s.tokens.darkOverrides!['color.text']};`);
     expect(css).toContain('@media print {\n\t:root {\n\t\tcolor-scheme: light;');
     expect(css).not.toContain('data-so-theme');
-    // Only the stylesheet changes: no switch, no script.
-    expect(files(s).get('src/routes/+layout.svelte')).toEqual(files(base).get('src/routes/+layout.svelte'));
+    // Only the stylesheet and the browser's theme colour change: no switch, no script. The dark colour comes first,
+    // for a device set to dark, and the light one applies otherwise.
+    const layout = files(s).get('src/routes/+layout.svelte')!;
+    expect(themeColorMeta(base)).toBe(`<meta name="theme-color" content="${s.tokens.overrides['color.brand'] ?? '#1f5a4c'}" />`);
+    expect(themeColorMeta(s)).toBe(`<meta name="theme-color" content="${s.tokens.darkOverrides!['color.brand']}" media="(prefers-color-scheme: dark)" />\n\t${themeColorMeta(base)}`);
+    expect(layout).toEqual(files(base).get('src/routes/+layout.svelte')!.replace(themeColorMeta(base), themeColorMeta(s)));
+    expect(layout).not.toContain('MutationObserver');
     expect(files(s).has(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).toBe(false);
   });
 
@@ -231,6 +237,12 @@ describe('what the site gets in each mode', () => {
     expect(themeStorageKey(s)).toBe(`so-theme:${s.manifest.projectId}`);
     expect(layout).toContain(`import { startThemeToggle } from '../lib/siteorigin/runtime/${THEME_TOGGLE_FILE}';`);
     expect(layout).toContain('return startThemeToggle(() => text().themeToggle);');
+    // The browser's theme colour follows the visitor's choice as well as the device, on every page.
+    const [light, dark] = [siteColors(effectiveTokens(s)).brand, siteColors(effectiveTokens(s, 'dark')).brand];
+    expect(light).not.toBe(dark);
+    expect(layout).toContain(`<meta name="theme-color" content={chosenScheme === 'light' ? "${light}" : "${dark}"} media="(prefers-color-scheme: dark)" />\n\t<meta name="theme-color" content={chosenScheme === 'dark' ? "${dark}" : "${light}"} />`);
+    expect(layout).toContain("watch.observe(root, { attributes: true, attributeFilter: ['data-so-theme'] });");
+    expect(layout).toContain('return () => watch.disconnect();');
     expect(clean.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).toContain('localStorage.setItem(KEY, next)');
     expect(clean.get(`${RUNTIME_DIR}/visitor-text.js`)).toContain('"themeToggle": "Dark mode"');
     expect(clean.get(`${STYLES_DIR}/site.css`)).toContain('.so-theme-toggle {');
