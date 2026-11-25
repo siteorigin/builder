@@ -92,6 +92,8 @@ h1{font-size:48px;margin:0 0 16px}h2{font-size:32px;margin:0 0 16px}h3{font-size
 .pic{display:block;width:100%;aspect-ratio:4/3;background:#ccc}
 .btn{display:inline-block;padding:12px 20px;border-radius:6px;text-decoration:none;background:#1f5a4c;color:#fff}
 .btn.outline{background:transparent;color:#1f5a4c;border:1px solid currentColor}
+.btn.gradient{background:linear-gradient(#1f5a4c,#2a7a66)}.btn.washed{background:linear-gradient(#fff,#fff);color:#1f5a4c}
+@media (max-width:767px){.cards.stack{grid-template-columns:1fr}.cards.pair{grid-template-columns:repeat(2,minmax(0,1fr))}}
 `;
 const doc = (body: string) => `<!doctype html><html><head><meta charset="utf-8"><style>${CSS}</style></head><body><main id="main">${body}</main><script type="module" src="/bridge.js"></script></body></html>`;
 const at = (id: string, node: string) => `data-so-ctx="page:p|${id}" data-so-node="${node}"`;
@@ -104,14 +106,16 @@ const hero = (id = 's1') =>
 interface CardsOptions {
   tone?: 'muted' | 'dark' | 'fade';
   columns?: 2 | 3;
-  button?: 'filled' | 'outline' | 'none';
+  /** How the cards lay out at phone width: as wide (the default), stacked in one column, or in two columns. */
+  phone?: 'stack' | 'pair';
+  button?: 'filled' | 'outline' | 'gradient' | 'washed' | 'none';
   headingStyle?: string;
 }
 /** A section of a heading over a grid of cards, with a button under it. */
-function cards(id: string, { tone, columns = 3, button = 'filled', headingStyle = '' }: CardsOptions = {}) {
+function cards(id: string, { tone, columns = 3, phone, button = 'filled', headingStyle = '' }: CardsOptions = {}) {
   const items = Array.from({ length: columns }, (_, i) => `<li class="card"><h3>Service ${i + 1}</h3><p>What it covers, in a sentence or two.</p></li>`).join('');
-  const action = button === 'none' ? '' : `<a class="btn${button === 'outline' ? ' outline' : ''}" href="/services/" ${at(id, 'action')}>See more</a>`;
-  return `<section ${at(id, 'root')}${tone ? ` class="${tone}"` : ''}><h2 ${at(id, 'heading')}${headingStyle ? ` style="${headingStyle}"` : ''}>What we do ${id}</h2><ul class="cards${columns === 2 ? ' two' : ''}">${items}</ul>${action}</section>`;
+  const action = button === 'none' ? '' : `<a class="btn${button === 'filled' ? '' : ` ${button}`}" href="/services/" ${at(id, 'action')}>See more</a>`;
+  return `<section ${at(id, 'root')}${tone ? ` class="${tone}"` : ''}><h2 ${at(id, 'heading')}${headingStyle ? ` style="${headingStyle}"` : ''}>What we do ${id}</h2><ul class="cards${columns === 2 ? ' two' : ''}${phone ? ` ${phone}` : ''}">${items}</ul>${action}</section>`;
 }
 
 /** A closing section on a muted band, with no filled button. */
@@ -149,10 +153,14 @@ describe.skipIf(!browserInstalled)('rhythm notes on a page', () => {
       const r = await inspect(monotonous(change), PAGE(ids(5)));
       expect(note(r, 'repeated-layout'), JSON.stringify(change)).toBeUndefined();
     }
-    // An outlined button in the middle leaves two runs of two.
-    const outlined = await inspect(monotonous({ button: 'outline' }), PAGE(ids(5)));
-    expect(note(outlined, 'crowded-actions')).toBeUndefined();
-    expect(note(outlined, 'repeated-layout')).toBeDefined();
+    // An outlined button in the middle leaves two runs of two, as does one whose gradient is the colour around it.
+    for (const button of ['outline', 'washed'] as const) {
+      const r = await inspect(monotonous({ button }), PAGE(ids(5)));
+      expect(note(r, 'crowded-actions'), button).toBeUndefined();
+      expect(note(r, 'repeated-layout'), button).toBeDefined();
+    }
+    // A button filled with a gradient is filled.
+    expect(note(await inspect(monotonous({ button: 'gradient' }), PAGE(ids(5))), 'crowded-actions')).toMatchObject({ sections: { first: 1, last: 4 } });
     // A heading a fraction smaller than the h1 is smaller.
     const smaller = await inspect(monotonous({ headingStyle: 'font-size:47.5px' }), PAGE(ids(5)));
     expect(note(smaller, 'heading-scale')).toBeUndefined();
@@ -167,11 +175,25 @@ describe.skipIf(!browserInstalled)('rhythm notes on a page', () => {
     expect(note(r, 'heading-scale')!.message).toMatch(/larger than the page's h1 \(48px\), as is one other inner heading/);
   }, 30000);
 
-  it('compares layouts only above phone width, where sections still have columns', async () => {
-    const phone = await inspect(monotonous(), PAGE(ids(5)), 390);
-    expect(kinds(phone)).toEqual(['crowded-actions', 'heading-scale']);
-    const tablet = await inspect(monotonous(), PAGE(ids(5)), 834);
-    expect(note(tablet, 'repeated-layout')).toMatchObject({ sections: { first: 2, last: 4 } });
+  it('at phone width, compares only sections that still set columns side by side', async () => {
+    // Card grids that stack into one column on a phone: nothing to compare there, though they repeat at tablet width.
+    const stacked = doc(hero() + cards('s2', { phone: 'stack' }) + cards('s3', { phone: 'stack', headingStyle: 'font-size:48px' }) + cards('s4', { phone: 'stack' }) + closing('s5'));
+    expect(kinds(await inspect(stacked, PAGE(ids(5)), 390))).toEqual(['crowded-actions', 'heading-scale']);
+    expect(note(await inspect(stacked, PAGE(ids(5)), 834), 'repeated-layout')).toMatchObject({ sections: { first: 2, last: 4 } });
+    // Three, two and three cards that all show two columns on a phone: a repeat only that width shows.
+    const pairs = doc(hero() + cards('s2', { phone: 'pair', button: 'none' }) + cards('s3', { columns: 2, phone: 'pair', button: 'none' }) + cards('s4', { phone: 'pair', button: 'none' }) + closing('s5'));
+    expect(note(await inspect(pairs, PAGE(ids(5)), 390), 'repeated-layout')).toMatchObject({ sections: { first: 2, last: 4 }, layout: 'two card columns' });
+    expect((await inspect(pairs, PAGE(ids(5)), 1280)).rhythm).toEqual([]);
+  }, 30000);
+
+  it('takes runs from where sections show, when the page shows them in another order than it lists them', async () => {
+    // Listed: three alike card sections, then a dark band; shown: the dark band second.
+    const order = (html: string, n: number) => html.replace('<section ', `<section style="order:${n}" `);
+    const html = doc(order(cards('s1', { button: 'none' }), 1) + order(cards('s2', { button: 'none' }), 3) + order(cards('s3', { button: 'none' }), 4) + order(cards('s4', { tone: 'dark', button: 'none' }), 2)).replace('<main id="main">', '<main id="main" style="display:flex;flex-direction:column">');
+    expect((await inspect(html, PAGE(ids(4)))).rhythm).toEqual([]);
+    // Shown in the order listed, they repeat.
+    const listed = html.replace(/order:\d/g, 'order:0');
+    expect(note(await inspect(listed, PAGE(ids(4))), 'repeated-layout')).toMatchObject({ sections: { first: 1, last: 3 } });
   }, 30000);
 
   it('reads a section through a wrapper that makes no box, and a section that rendered nothing breaks a run', async () => {

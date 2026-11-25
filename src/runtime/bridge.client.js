@@ -3494,12 +3494,10 @@ function filledButtons(section, layerOf, read, budget) {
       const fill = read(s.backgroundColor);
       const image = backgroundOf(s.backgroundImage, read);
       const around = surfaceOf(parentOf(el), layerOf);
-      if (image.kind === 'gradient') {
-        if (image.stops.every((c) => c.a >= BUTTON_MIN_ALPHA)) n++;
-        continue;
-      }
-      if (image.kind !== 'none' || !fill || fill.a < BUTTON_MIN_ALPHA || !around) continue;
-      if (contrastOf(onCanvas(over(pm(fill), pm(around))), around) >= BUTTON_MIN_CONTRAST) n++;
+      if (!around) continue;
+      // Filled all over (a gradient at every one of its colours) and standing out from the surface around it.
+      const stands = (c) => c.a >= BUTTON_MIN_ALPHA && contrastOf(onCanvas(over(pm(c), pm(around))), around) >= BUTTON_MIN_CONTRAST;
+      if (image.kind === 'gradient' ? image.stops.every(stands) : image.kind === 'none' && !!fill && stands(fill)) n++;
     }
   }
   return n;
@@ -3507,8 +3505,9 @@ function filledButtons(section, layerOf, read, budget) {
 
 /**
  * Notes on the page's rhythm (see the section above), for a page of two or more sections; null when the page cannot
- * be measured in time. Layouts are compared only above phone width, where every section stacks into one column by
- * design. Each rule gives at most one note: its longest run, or its largest heading.
+ * be measured in time. At phone width, where sections stack into one column by design, only sections that still set
+ * columns side by side compare layouts. Runs are of sections the page lists one after another that also show one
+ * after another. Each rule gives at most one note: its longest run, or its largest heading.
  */
 function rhythm(vw, page, deadline) {
   const read = colorReader();
@@ -3521,16 +3520,24 @@ function rhythm(vw, page, deadline) {
       if (Date.now() > deadline) return null;
       if (!s.boxes.length) continue;
       s.surface = s.boxes.length === 1 && pictureShare(s.boxes[0], boxOf(boxRect(s.boxes[0]))) < 0.5 ? surfaceOf(s.boxes[0], layerOf) : null;
-      s.layout = vw >= PHONE_MAX_WIDTH ? layoutOf(s, layerOf) : null;
+      // At phone width most sections stack into one column by design: only columns still side by side compare.
+      s.layout = layoutOf(s, layerOf);
+      if (vw < PHONE_MAX_WIDTH && s.layout.key.startsWith('column:')) s.layout = null;
       s.buttons = filledButtons(s, layerOf, read, budget);
     }
     const notes = [];
+    // Where each section shows down the page: a page's styles can show them in another order than it lists them.
+    sections
+      .filter((s) => s.boxes.length)
+      .sort((a, b) => a.area.top - b.area.top || a.n - b.n)
+      .forEach((s, i) => (s.shown = i));
     // Runs of sections in a row, unbroken by one that rendered nothing (a page the preview has not caught up with).
+    const next = (prev, s) => !!prev.boxes.length && !!s.boxes.length && s.shown === prev.shown + 1;
     const longest = (same) => {
       let best = null;
       let start = 0;
       for (let i = 1; i <= sections.length; i++) {
-        if (i < sections.length && sections[i].boxes.length && sections[start].boxes.length && same(sections[start], sections[i])) continue;
+        if (i < sections.length && next(sections[i - 1], sections[i]) && same(sections[start], sections[i])) continue;
         if (sections[start].boxes.length && i - start >= RHYTHM_RUN && (!best || i - start > best.length)) best = sections.slice(start, i);
         start = i;
       }
