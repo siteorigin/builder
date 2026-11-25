@@ -216,6 +216,9 @@ const copied = Object.values((await snapshot()).components).find((d) => d.name =
 const toastCopy = win.locator('.toast', { hasText: 'Duplicated Exhibitor card as Exhibitor card copy' });
 await toastCopy.getByRole('button', { name: 'Open in Component Studio' }).waitFor();
 assert.deepEqual((await snapshot()).pages, beforeCopy.pages, 'no page changes');
+// The list shows four until asked for the rest.
+const showAllMine = panel.getByRole('button', { name: /^Show all \d+ components/ });
+if (await showAllMine.isVisible()) await showAllMine.click();
 await tile('Exhibitor card copy').waitFor();
 assert.match(await tile('Exhibitor card copy').innerText(), /Not used/);
 const order = await panel.locator('.insert-group[data-kind="component"] .insert-tile.project strong').allInnerTexts();
@@ -233,6 +236,9 @@ await win.evaluate(() => window.builder.project.redo());
 await eventually(async () => assert.ok((await snapshot()).components[copied.id], 'Redo brings it back with the same ID'));
 await win.evaluate(() => window.builder.project.undo());
 await eventually(async () => assert.deepEqual(await library(), usesBefore));
+// Later steps start from the list as it opens.
+const showFewer = panel.getByRole('button', { name: 'Show fewer', exact: true });
+if (await showFewer.isVisible()) await showFewer.click();
 
 step('deleting an unused variant keeps the others, and Undo brings it back');
 const before = await snapshot();
@@ -439,7 +445,7 @@ await apply(
   'Make the card red'
 );
 await openInsert();
-if (await showAll.isVisible()) await showAll.click();
+if (await showAllMine.isVisible()) await showAllMine.click();
 // Insert may have shown the card before it was red: its picture is drawn again.
 let redPic;
 let redShot;
@@ -502,7 +508,7 @@ await eventually(async () => assert.equal(await devSwitch.getAttribute('aria-che
 await win.keyboard.press('Escape');
 await win.locator('.modal').waitFor({ state: 'detached' });
 await openInsert();
-if (await showAll.isVisible()) await showAll.click();
+if (await showAllMine.isVisible()) await showAllMine.click();
 const noteId = Object.values((await snapshot()).components).find((d) => d.name === 'Sample note').id;
 const opening = await win.evaluate(async () => (await window.builder.project.snapshot()).workspaceKey);
 await eventually(async () => {
