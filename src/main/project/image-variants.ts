@@ -3,7 +3,7 @@
  * editor's main process: decoding and resizing a large photo takes long enough to freeze the window.
  */
 import { readFile } from 'node:fs/promises';
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type IconSpec, type VariantReply, type VariantRequest } from './media-client';
 import { isAnimatedPng } from './media';
 import { cleanPhoto, creditText, type CreditText } from './photo-metadata';
@@ -34,7 +34,7 @@ sharp.cache(false);
  * copies. AVIF's effort trades import time for size: on the starter photos, effort 2 makes copies about half the size
  * of the WebP ones in a fifth of the time effort 4 takes, which saves only 5% more.
  */
-const ENCODE: Record<CopyMime, (img: sharp.Sharp) => sharp.Sharp> = {
+const ENCODE: Record<CopyMime, (img: Sharp) => Sharp> = {
   'image/jpeg': (img) => img.jpeg({ quality: 82 }),
   'image/png': (img) => img.png(),
   'image/webp': (img) => img.webp({ quality: 80 }),
