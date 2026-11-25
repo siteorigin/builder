@@ -1380,10 +1380,10 @@ export class Orchestrator {
      */
     const measureLive = async (pageId: string, viewport: Viewport) => {
       const left = limitMs - (activeMs + Date.now() - lastResume);
+      // Stopped, or out of time: the preview is not asked at all.
+      if (signal.aborted || left <= 0) return measurePage(() => Promise.reject(new Error(signal.aborted ? 'Stopped.' : 'The request reached its time limit.')), pageId, viewport, session.revision);
       let release = () => {};
       const cut = new Promise<never>((_, reject) => {
-        if (signal.aborted) return reject(new Error('Stopped.'));
-        if (left <= 0) return reject(new Error('The request reached its time limit.'));
         const timer = setTimeout(() => reject(new Error('The request reached its time limit.')), left);
         const stop = () => reject(new Error('Stopped.'));
         signal.addEventListener('abort', stop, { once: true });
@@ -1392,7 +1392,7 @@ export class Orchestrator {
           signal.removeEventListener('abort', stop);
         };
       });
-      // Settled already, or never raced when the preview call throws at once: never an unhandled rejection.
+      // Never raced when the preview call throws at once: never an unhandled rejection.
       cut.catch(() => undefined);
       try {
         return await measurePage((id, width) => Promise.race([this.deps.inspectLayout(id, width), cut]), pageId, viewport, session.revision);
@@ -1464,7 +1464,7 @@ export class Orchestrator {
           const reach = preview.landed(operations, before, session.state);
           // A page check made before the change no longer describes a page it changed the look of; a component check
           // stops vouching for any page whose content it sampled.
-          inspections.invalidate(reach.shared ? 'all' : reach.pages, pagesTouched(operations, session.state));
+          inspections.invalidate(reach.shared || reach.lists ? 'all' : reach.pages, pagesTouched(operations, session.state));
         }
         return res;
       },
@@ -1535,7 +1535,7 @@ export class Orchestrator {
       `Links to ${route} on other pages are still waiting, because this request may change only ${authority.kind === 'page' ? authority.label : 'one page'}. To connect them, choose Whole site and reply "continue".`;
 
     /** `repair`: the AI setup failed, not the request, and the card offers the way to fix it and send it again. */
-    const revertAndFinish = async (status: RunStatus, summary: string, error?: string, repair?: 'settings' | 'key') => {
+    const revertAndFinish = async (status: RunStatus, summary: string, error?: string, repair?: 'settings' | 'key', evidence: ChatCheck[] = []) => {
       // A question holds nothing and changed nothing, so it just ends.
       if (ask) {
         await finish(status, summary, { error, usage, repair });
@@ -1556,7 +1556,7 @@ export class Orchestrator {
         return;
       }
       // Pages the request still lacks are named, so "Edit and try again" knows what is left.
-      const lost = status === 'failed' ? missing().map((w): ChatCheck => ({ status: 'issue', text: notCreated(w) })) : [];
+      const lost = [...evidence, ...(status === 'failed' ? missing().map((w): ChatCheck => ({ status: 'issue', text: notCreated(w) })) : [])];
       // A setup failure says plainly whether the site changed, since the request is about to be sent again. Changes
       // that could not be confirmed undone are checked first, so the request is not offered again until they are.
       const outcome = mutated && r.restored ? ' The project was restored to how it was before this request.' : repair && !mutated ? ` ${UNCHANGED}` : '';
@@ -1971,16 +1971,22 @@ export class Orchestrator {
             if (unmeasured.length) {
               const p = addActivity('Checking the changed pages in the preview', 'inspect_layout');
               for (const t of unmeasured) {
+                if (signal.aborted) throw new Error('Cancelled');
                 const m = await measureLive(t.pageId, t.viewport);
                 if (signal.aborted) throw new Error('Cancelled');
                 inspections.record(t.pageId, t.viewport, m.ok, m.content, m.report);
               }
               p.status = 'done';
             }
-            const broke = preview.introduced(session.state, targets.map((t) => ({ ...t, m: inspections.fresh(t.pageId, t.viewport) })));
+            // Every current check of a page in the set counts, the model's at other widths too.
+            const checkedPages = [...new Set(targets.map((t) => t.pageId))];
+            const latest = checkedPages.flatMap((pageId) => (['phone', 'tablet', 'desktop'] as const).map((viewport) => ({ pageId, viewport, m: inspections.fresh(pageId, viewport) })));
+            const broke = preview.introduced(session.state, latest);
             if (broke.length) {
               if (repairs >= LIMITS.repairPasses) {
-                await revertAndFinish('failed', 'The changes caused problems in the preview that could not be repaired.', broke.join(' '));
+                // What the preview found is shown with the rollback: the changes it describes are gone.
+                const evidence = inspections.checks(session.state).filter((c) => c.status === 'issue');
+                await revertAndFinish('failed', 'The changes caused problems in the preview that could not be repaired.', broke.join(' '), undefined, evidence);
                 return;
               }
               repairs++;

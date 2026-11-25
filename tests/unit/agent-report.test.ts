@@ -267,6 +267,11 @@ describe('check results', () => {
     expect(rows[1].status).toBe('issue');
     expect(rows[1].text).toMatch(/^Found 2 script errors at phone width \(TypeError: x+…\)\.$/);
     expect(rows[1].text.length).toBeLessThan(180);
+    // A page too wide and failing a script has both rows.
+    expect(inspectionChecks(true, { pageId: 'p', viewport: 'phone', report: { issues: [], documentWidth: 520, viewportWidth: 390, runtimeErrors: ['Boom'] } })).toEqual([
+      { status: 'issue', text: 'Content is wider than the screen at phone width.' },
+      { status: 'issue', text: 'Found a script error at phone width (Boom).' }
+    ]);
     // No errors, or only blank ones: no row, and no pass claimed for scripts.
     expect(inspectionChecks(true, withErrors([]))).toHaveLength(1);
     expect(inspectionChecks(true, withErrors(['  ']))).toHaveLength(1);

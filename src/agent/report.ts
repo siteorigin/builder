@@ -676,7 +676,8 @@ export class InspectionLog {
       const page = Object.hasOwn(state.pages, e.pageId) ? state.pages[e.pageId] : undefined;
       // A page the run removed after checking it has nothing left to report on; an unknown page has no title.
       if (!page && !e.pageId.startsWith('?')) return [];
-      const rows = inspectionChecks(e.ok, e.content, page ? ` on ${page.title}` : '');
+      // The card reads the measurement whole; the copy cut to fit the model's result may have dropped some of it.
+      const rows = inspectionChecks(e.ok, e.ok && e.report && typeof e.content === 'object' ? { ...(e.content as object), report: e.report } : e.content, page ? ` on ${page.title}` : '');
       return e.stale ? stale(rows) : rows;
     });
     const components = [...this.components.values()].flatMap((e) => {
