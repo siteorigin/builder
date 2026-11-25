@@ -66,6 +66,31 @@ describe('locateField', () => {
     expect(at(rows[2].id)).toMatchObject({ ok: true, path: ['Home', 'Gallery', 'Content', 'Images', 'Image 3', 'Caption'] });
   });
 
+  it('offers the header logo size only while the header shows a logo (#576)', () => {
+    const { state, pageNamed } = business();
+    const header = state.site.shell.header;
+    const nodeId = header.rootIds[0];
+    const node = header.nodes[nodeId] as InstanceNode;
+    const about = pageNamed('About');
+    const at = () => locateField(state, { owner: { kind: 'shell', id: 'header' }, nodeId, prop: 'logoSize' }, about.id);
+    node.props.logo = { assetId: null, alt: '' };
+    expect(at()).toMatchObject({ ok: false, message: 'Header has no such field in its Content.' });
+    // A logo whose file is gone shows nothing, so neither does its size.
+    node.props.logo = { assetId: 'img_mark', alt: 'Test Studio' };
+    expect(at().ok).toBe(false);
+    state.assets.assets.img_mark = { id: 'img_mark', name: 'mark.svg', file: 'static/assets/mark.svg', mime: 'image/svg+xml', bytes: 1, hash: 'h', kind: 'image', createdAt: '2026-01-01T00:00:00Z' };
+    for (const showSiteName of [true, false]) {
+      node.props.showSiteName = showSiteName;
+      expect(at()).toMatchObject({ ok: true, path: ['Header', 'Header', 'Content', 'Logo size'], shown: 'Medium' });
+    }
+    // Clearing the logo hides the size again and keeps the one chosen.
+    node.props.logoSize = 'large';
+    expect(at()).toMatchObject({ ok: true, shown: 'Large' });
+    node.props.logo = { assetId: null, alt: '' };
+    expect(at().ok).toBe(false);
+    expect(node.props.logoSize).toBe('large');
+  });
+
   it('finds a field in the shared header from a page that shows it', () => {
     const { state, pageNamed } = business();
     const header = state.site.shell.header;

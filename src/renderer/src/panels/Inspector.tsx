@@ -41,6 +41,7 @@ import {
 import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveScope, ResponsiveStyles, ScalarPropSchema, StyleState, StyleValue, TextNode } from '@shared/types';
 import { isBinding, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { followNote } from '@shared/site-name';
+import { headerHiddenProps } from '@shared/header-logo';
 import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
 import { routeUrl, validateRoute } from '@shared/routes';
@@ -997,11 +998,13 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   );
   // A contact form shows only the setting its service needs. The others keep their values for a switch back.
   const service = formServiceSetup(def, node.props);
+  // A header without a logo leaves out the logo's size; it keeps its value for the next logo.
+  const headerHidden = headerHiddenProps(state, def, node.props);
   // A heading level changes the page outline, not the look: it comes after the content rather than between a
   // heading and the words under it.
   const fields = groupFields(
     placementOrder(def)
-      .filter((key) => !service?.hidden.includes(key))
+      .filter((key) => !service?.hidden.includes(key) && !headerHidden.includes(key))
       .map((key) => ({ key, schema: def.properties[key], data: null }))
   );
   // Buttons with no link are left out of the site: flag each at the field that sets its link. Hide is offered there

@@ -486,7 +486,7 @@ describe('shell.header', () => {
     // The default keeps the header every site already has.
     expect(img({})).toMatch(/class="[^"]*\bso-header__logo so-header__logo--medium\b/);
     expect(sizesOf(img({}))).toBe('160px');
-    // A 6:1 wordmark: 26px tall is 156px wide (under small's 130px cap), 46px tall stops at large's 220px.
+    // A 6:1 wordmark would be 156px wide at 26px tall and 276px at 46px: each stops at its size's widest.
     expect(img({ logoSize: 'small' })).toMatch(/\bso-header__logo--small\b/);
     expect(sizesOf(img({ logoSize: 'small' }))).toBe('130px');
     expect(img({ logoSize: 'large' })).toMatch(/\bso-header__logo--large\b/);
