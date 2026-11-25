@@ -5,6 +5,7 @@ import type { SeoSubject } from '@shared/seo';
 import { createSeoResolver } from '@generator/seo-metadata';
 import { getState, useStore } from '../store';
 import { saveOpenPost } from '../lib/post-draft';
+import { postWorkspace } from '../lib/posts';
 import { AssetImage } from '../components/AssetImage';
 import { Tabs } from '../components/ui';
 import { lengthMeter, previewDocument, structuredPreview, withTypedSeo, type DocumentPreview, type LengthMeter as Meter, type StructuredPreview, type TypedSeo } from '../lib/seo-preview';
@@ -228,8 +229,10 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
               const opening = getState().snapshot?.workspaceKey;
               await saveOpenPost();
               const now = getState();
-              // The author moved on while it saved (another post, a dialog, another project): the question is not asked.
-              if (!now.snapshot || now.snapshot.workspaceKey !== opening || now.modal || now.post?.collectionId !== subject.collectionId || now.post?.entryId !== subject.entryId) return null;
+              // The author moved on while it saved (another post, the writer put away, a dialog, another project): the
+              // question is not asked.
+              const writing = postWorkspace(now) === 'write' && now.post?.collectionId === subject.collectionId && now.post?.entryId === subject.entryId;
+              if (!now.snapshot || now.snapshot.workspaceKey !== opening || now.modal || !writing) return null;
               return previewHandoff(now.snapshot.state, subject, overlay);
             }}
           />

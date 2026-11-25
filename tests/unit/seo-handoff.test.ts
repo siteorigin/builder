@@ -310,6 +310,14 @@ describe('opening the chat with the request', () => {
     expect(store.getState().pageId).toBe(home);
     expect(store.getState().chatDrafts).toEqual({ c_1: 'Mine' });
     expect(store.getState().toasts.map((t) => t.text)).toContain('That page is no longer on the site.');
+    // A dialog the author opened meanwhile stays open, and the chat stays where it is.
+    newConversation.mockReset().mockResolvedValue({ id: 'c_4' });
+    store.setState({ snapshot: { state: base, revision: 3, workspaceKey: 'opening#2' } as unknown as ProjectSnapshot, conversation: { id: 'c_1' }, modal: null });
+    const meanwhile = actions.openSeoChat(toAbout);
+    store.setState({ modal: { kind: 'settings', tab: 'ai' } });
+    expect(await meanwhile).toBe(false);
+    expect([store.getState().modal, store.getState().rightTab, store.getState().conversation]).toEqual([{ kind: 'settings', tab: 'ai' }, 'inspect', { id: 'c_4' }]);
+    store.setState({ snapshot: { state: gone, revision: 2, workspaceKey: 'opening#2' } as unknown as ProjectSnapshot, modal: { kind: 'health', section: 'seo' } });
     // Gone before it is asked for: nothing opens at all.
     newConversation.mockReset();
     expect(await actions.openSeoChat(toAbout)).toBe(false);

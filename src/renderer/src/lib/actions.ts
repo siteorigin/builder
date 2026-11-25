@@ -955,6 +955,8 @@ export async function openSeoChat(h: SeoHandoff): Promise<boolean> {
     // The AI now writes to the new conversation, so the chat shows it whatever follows; the message being written stays
     // with its own (under Not sent yet).
     setState({ conversation });
+    // A dialog opened meanwhile is the author's latest choice: the request doesn't close it to open the chat.
+    if (getState().modal !== s.modal) return false;
   }
   const now = getState();
   const st = now.snapshot!.state;
