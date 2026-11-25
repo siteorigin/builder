@@ -489,9 +489,10 @@ describe('the loaded context window', () => {
     expect(body.max_tokens).toBeLessThan(DEFAULT_LOCAL_PROFILE.maxOutput);
     expect(body.max_tokens).toBeGreaterThanOrEqual(1024);
     expect(estimateOf(body) + body.max_tokens).toBeLessThanOrEqual(window);
-    // The request itself stays small: 11,763 tokens measured with the source patch's revision and scope (#740).
+    // The request itself stays small: 11,918 tokens measured with the source patch's revision and scope (#740) and
+    // inspect_layout's refs (#743).
     expect(body.tools.map((t: { function: { name: string } }) => t.function.name)).toContain('apply_source_patch');
-    expect(estimateOf(body)).toBeLessThanOrEqual(11_800);
+    expect(estimateOf(body)).toBeLessThanOrEqual(11_950);
   });
 
   it('keeps the full reply budget in a normal larger window', async () => {
