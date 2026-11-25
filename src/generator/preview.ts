@@ -3,7 +3,7 @@
  * project or the theme catalogue, rendered on its own with chosen variants and sample property values. Editor-only:
  * the files are written to the dev cache and generateProject never makes any of them.
  */
-import type { ComponentDefinition, InstanceNode, ListItem, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, ListItem, ProjectState, UiStateSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { PREVIEW_COMPONENT_STYLES, PREVIEW_META, PREVIEW_MODULE, PREVIEW_NODE_ID, previewCtx, type ComponentPreviewSpec } from '@shared/component-preview';
 import { axesOf } from '@shared/variants';
@@ -11,6 +11,7 @@ import { siteDirection, siteLanguage } from '@shared/languages';
 import { catalogueComponent } from '@catalogue/index';
 import { namesFormFields } from '@catalogue/foundation/form';
 import { defaultProps, installComponent } from '@engine/install';
+import { declaredState } from '@engine/schema';
 import { normalizeProp } from '@engine/values';
 import { formDefaults, settleFormKeys } from '@engine/form-keys';
 import { RUNTIME_DIR, STYLES_DIR, FONTS_DIR, generateIsolatedInstance, generateLibrary, type FileMap } from './index';
@@ -84,6 +85,23 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
     variants[axis] = option;
   }
 
+  // UI state previewed at another value (a hidden tab chosen, a drawer open): the preview's own copy of the design
+  // starts there, so the component file it generates shows it. The project's design is never changed.
+  const started: Record<string, boolean | string> = {};
+  for (const [name, value] of Object.entries(spec.states ?? {})) {
+    const declared = def.kind === 'managed' ? declaredState(def, name) : undefined;
+    if (!declared) return { error: `"${def.name}" has no UI state "${name}".` };
+    const fits = declared.type === 'boolean' ? typeof value === 'boolean' : typeof value === 'string' && declared.options.some((o) => o.value === value);
+    if (!fits) return { error: `"${def.name}" → ${declared.label || name}: ${JSON.stringify(value)?.slice(0, 80)} is not one of its values.` };
+    if (value !== declared.initial) started[name] = value;
+  }
+  if (Object.keys(started).length) {
+    const state = { ...def.state } as Record<string, UiStateSchema>;
+    for (const [name, value] of Object.entries(started)) state[name] = { ...state[name], initial: value } as UiStateSchema;
+    def = { ...def, state };
+    shown = { ...shown, components: { ...shown.components, [def.id]: def } };
+  }
+
   // Made as inserting it on a page makes a placement, but with the design's own list items, under their own IDs: the
   // same in every preview of it, so an item picked in Component Studio is still there after the next edit. Then the
   // sample values checked and stored as an edit stores them, and the fields of a new form given keys of their own.
@@ -101,7 +119,7 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
   if (Array.isArray(node.props.fields) && spec.props && 'fields' in spec.props && namesFormFields(def)) node.props.fields = settleFormKeys([], node.props.fields as ListItem[], new Set(), formDefaults(def));
 
   const files: FileMap = new Map();
-  for (const [path, content] of generateLibrary(shown, { instrument: true })) {
+  for (const [path, content] of generateLibrary(shown, { instrument: true, previewOpen: true })) {
     // Tokens, base styles and fonts are the project's own; page styles belong to pages.
     if (path.startsWith(`${FONTS_DIR}/`) || (path.startsWith(`${STYLES_DIR}/`) && path !== PREVIEW_COMPONENT_STYLES)) continue;
     files.set(path, content);

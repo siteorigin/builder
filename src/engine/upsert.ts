@@ -6,7 +6,7 @@
  * code the single-step edits use, and refuses (leaving everything as it was) where a placement holds what the new
  * contract can no longer take.
  */
-import type { Binding, ComponentDefinition, ElementNode, GraphNode, InstanceNode, LinkNode, LinkValue, ListProp, NodeTree, ObjectProp, PartDef, ProjectState, PropSchema, SlotDef, StyleValue, TextNode, VariantAxis } from '@shared/types';
+import type { Binding, ComponentDefinition, ElementNode, GraphNode, InstanceNode, LinkNode, LinkValue, ListProp, NodeTree, ObjectProp, OverlayMode, PartDef, ProjectState, PropSchema, SlotDef, StateAction, StyleValue, TextNode, UiStateSchema, VariantAxis } from '@shared/types';
 import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isAppearPreset, isBinding, isStateRef, parseStyleScopeKey } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
@@ -23,7 +23,24 @@ import { clone } from './install';
 import { normalizeImage, normalizeLink, normalizeRichText } from './values';
 import { tagKindProblem } from './semantic-tags';
 import { slotDeclProblem } from './slots';
-import { acceptedTypes, bindingProblem, bindingSites, boundSchema, enclosingList, isProtoKey, normalizeProperties, repeatFilterProblem, stateRefProblem, stateUsers, type BindingSite } from './schema';
+import {
+  MAX_UI_STATES,
+  acceptedTypes,
+  bindingProblem,
+  bindingSites,
+  boundSchema,
+  checkStateName,
+  enclosingList,
+  isProtoKey,
+  normalizeProperties,
+  normalizeUiState,
+  overlayProblem,
+  repeatFilterProblem,
+  stateActionProblem,
+  stateRefProblem,
+  stateUsers,
+  type BindingSite
+} from './schema';
 import { dropPartOverrides, removeSlot, removeVariant, replaceProperties, setSlot } from './definitions';
 import { shownSlots } from './theme-updates';
 
@@ -59,11 +76,18 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   const slots = designSlots(op, tree);
   const variantAxes = designAxes(op, tree, was);
   const candidate: ComponentDefinition = { ...(was ?? newDefinition(state, op, name)), properties, parts, tree, slots, variantAxes };
+  // UI state the description gives replaces the component's whole ({} removes it); left out, what a rebuild's
+  // component declares stays (checked again against the new properties), unless its design used it: a description
+  // that does not say what becomes of working tabs or toggles is refused rather than dropping them unseen.
+  const uiState = op.state !== undefined ? designState(op, candidate) : was && keptState(was, candidate);
+  if (uiState) candidate.state = uiState;
+  else delete candidate.state;
   checkBindings(state, candidate, bindingSites(candidate));
-  // A filter that would not work is refused here, where load validation would only report it.
+  // A filter, a button's state action or a dialog that would not work is refused here, where load validation would
+  // only report it.
   for (const n of Object.values(tree.nodes)) {
-    const problem = repeatFilterProblem(candidate, n);
-    if (problem) fail(`"${n.id}" ${problem}`);
+    const problem = repeatFilterProblem(candidate, n) ?? (n.kind === 'link' && n.stateAction !== undefined ? stateActionProblem(candidate, n.stateAction) : null) ?? overlayProblem(candidate, n);
+    if (problem) fail(`${describeNode(n)} ${problem}`);
   }
 
   const id = was?.id ?? candidate.id;
@@ -92,6 +116,8 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   def.parts = parts;
   if (variantAxes) def.variantAxes = variantAxes;
   else delete def.variantAxes;
+  if (uiState) def.state = uiState;
+  else delete def.state;
   delete def.slots;
   // Every placement's values move to the new schema: kept where they still fit, refused where they no longer do. The
   // design's bindings were checked against it above.
@@ -160,9 +186,36 @@ function rebuildTarget(state: ProjectState, id: string): ComponentDefinition {
   if (def.category === 'shell') fail(`"${def.name}" is the site's shared header or footer, which is changed one element at a time.`);
   // What the description cannot say yet would be lost without a word: refused until it can.
   if (Object.values(def.tree.nodes).some((n) => n.kind === 'instance')) fail(`"${def.name}" places other components in its design, which component.upsert cannot describe yet. Change it with the node operations instead.`);
-  const reads = Object.keys(def.state ?? {}).filter((s) => stateUsers(def, s).length);
-  if (reads.length) fail(`"${def.name}" has UI state its design reads or its buttons change (${reads.join(', ')}), which component.upsert cannot describe yet. Change it with the node operations instead.`);
   return def;
+}
+
+/**
+ * The UI state the description declares, each variable checked and settled as component.setState settles one: a name
+ * no property has, a label (the name when left out), its options and the value every placement starts at. Undefined
+ * when it declares none.
+ */
+function designState(op: UpsertOp, candidate: ComponentDefinition): Record<string, UiStateSchema> | undefined {
+  const entries = Object.entries(op.state ?? {});
+  if (!entries.length) return undefined;
+  if (entries.length > MAX_UI_STATES) fail(`A component can have at most ${MAX_UI_STATES} UI state variables.`);
+  const out: Record<string, UiStateSchema> = {};
+  for (const [name, decl] of entries) {
+    checkStateName(candidate, name);
+    out[name] = normalizeUiState(decl, name);
+  }
+  return out;
+}
+
+/** A rebuilt component's own UI state, when the description leaves it out: kept while its design does not use it. */
+function keptState(was: ComponentDefinition, candidate: ComponentDefinition): Record<string, UiStateSchema> | undefined {
+  if (was.state === undefined) return undefined;
+  // A map a hand edit damaged stays as it was, for validation to report.
+  if (!was.state || typeof was.state !== 'object' || Array.isArray(was.state)) return clone(was.state);
+  const used = Object.keys(was.state).filter((name) => stateUsers(was, name).length);
+  if (used.length) fail(`"${was.name}" has UI state its design reads or its buttons change (${used.join(', ')}). Describe it again with state (state: {} removes it) when rebuilding the design.`);
+  const taken = Object.keys(was.state).find((name) => Object.hasOwn(candidate.properties, name));
+  if (taken) fail(`"${taken}" is both a new property and UI state "${was.name}" keeps. Rename the property, or describe the state again with state.`);
+  return Object.keys(was.state).length ? clone(was.state) : undefined;
 }
 
 /** A new component's identity: the ID the batch named for it, or a fresh one. */
@@ -319,6 +372,8 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
         n.carousel = true;
         if (!isCarouselTrack(n)) refuse('only a bulleted list (ul) that is not itself a link can be a carousel.');
       }
+      // Checked against the finished component (overlayProblem), which knows the UI state that opens it.
+      if (s.overlay !== undefined) n.overlay = s.overlay as OverlayMode;
       return n;
     }
     case 'text': {
@@ -355,6 +410,8 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
       if (s.icon !== undefined && (bound(s.icon) || s.icon.trim())) n.icon = bound(s.icon) ? clone(s.icon) : icon(s.icon.trim());
       if (s.iconPosition !== undefined) n.iconPosition = oneOf(s.iconPosition, ICON_POSITIONS, 'The icon\'s side') as LinkNode['iconPosition'];
       if (s.ariaLabel !== undefined && text(s.ariaLabel)) n.ariaLabel = text(s.ariaLabel) as LinkNode['ariaLabel'];
+      // Checked against the finished component (stateActionProblem), which declares the state it changes.
+      if (s.stateAction !== undefined) n.stateAction = clone(s.stateAction) as StateAction;
       return n;
     }
     case 'icon': {
@@ -484,8 +541,6 @@ function checkBindings(state: ProjectState, def: ComponentDefinition, sites: Bin
     const { node, field, binding: b } = site;
     const at = `${where}${describeNode(node)}`;
     if (isStateRef(b)) {
-      // A component around this one may read its own UI state there; a design built whole never does yet.
-      if (!where) fail(`${at} reads UI state, which component.upsert cannot describe yet.`);
       const problem = stateRefProblem(state, def, site, b);
       if (problem) fail(`${at} ${problem}`);
       continue;

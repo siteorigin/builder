@@ -6,11 +6,11 @@
  * what may change.
  */
 import { z } from 'zod';
-import { STYLE_STATES, isBinding, type ComponentDefinition, type GraphNode, type NodeTree, type ProjectState, type PropSchema } from '@shared/types';
+import { STYLE_STATES, isBinding, type ComponentDefinition, type GraphNode, type NodeTree, type ProjectState, type PropSchema, type StateAction } from '@shared/types';
 import { STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
 import { STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { axesOf } from '@shared/variants';
-import { bindingSlots, enclosingList, normalizePropSchema } from '@engine/schema';
+import { bindingSlots, declaredState, enclosingList, normalizePropSchema } from '@engine/schema';
 import { subtreeIds } from '@engine/tree';
 import { selectionAbridged } from './context';
 import { checkProps, fieldError, type FieldIssue } from './macros';
@@ -60,9 +60,36 @@ export const DEFINITION_ARGS = {
     .object({
       nodeId: z.string(),
       field: z.string(),
-      binding: z.union([z.object({ $prop: z.string(), field: z.string().optional() }).strict(), z.object({ $item: z.string() }).strict()]).nullable(),
+      binding: z.union([z.object({ $prop: z.string(), field: z.string().optional() }).strict(), z.object({ $item: z.string() }).strict(), z.object({ $state: z.string() }).strict()]).nullable(),
       eq: scalar.optional(),
       ne: scalar.optional()
+    })
+    .strict(),
+  manage_component_state: z
+    .object({
+      change: z.discriminatedUnion('action', [
+        z
+          .object({
+            action: z.literal('add'),
+            state: z.string(),
+            label: z.string().min(1).max(80),
+            type: z.enum(['boolean', 'enum']),
+            options: z.array(z.string().min(1).max(60)).min(2).max(50).optional(),
+            initial: z.union([z.boolean(), z.string()]).optional()
+          })
+          .strict(),
+        z.object({ action: z.literal('remove'), state: z.string() }).strict(),
+        z
+          .object({
+            action: z.literal('on_click'),
+            nodeId: z.string(),
+            op: z.enum(['set', 'toggle', 'next', 'prev', 'none']),
+            state: z.string().optional(),
+            value: z.union([z.boolean(), z.string()]).optional(),
+            wrap: z.boolean().optional()
+          })
+          .strict()
+      ])
     })
     .strict(),
   manage_component_prop: z
@@ -107,9 +134,11 @@ export const DEFINITION_DESCRIPTIONS: Record<DefinitionToolName, string> = {
   edit_definition_node:
     "Change one node of the component's design: its content (text and heading tag, an image, a button's label, link and style, an icon), which every placement shows unless the node is bound to a property, and/or expose it as a new part (exposeAsPart) that authors can style on each placement.",
   bind_definition_field:
-    'Bind a node\'s content or condition to a property ({"$prop": name}, {"$prop": name, "field": objectField}) or, inside a repeat, to a field of each list item ({"$item": field}); null unbinds it, keeping what it shows. A "when" condition shows the node only when the value is set (or equals eq, or differs from ne); "unless" shows it only when it is not. Add a property with manage_component_prop first.',
+    'Bind a node\'s content or condition to a property ({"$prop": name}, {"$prop": name, "field": objectField}) or, inside a repeat, to a field of each list item ({"$item": field}); a condition can also read UI state ({"$state": name}). null unbinds it, keeping what it shows. A "when" condition shows the node only when the value is set (or equals eq, or differs from ne); "unless" shows it only when it is not. Add a property with manage_component_prop, or UI state with manage_component_state, first.',
   manage_component_prop:
     "Change the component's properties, which every placement fills in: add one (a camelCase name, its label, type and an optional default), set an existing one's default, or remove one.",
+  manage_component_state:
+    'Change the component\'s UI state, which each placement holds and visitors change with its buttons (tabs, a toggle, a dialog): add a variable (a camelCase name; type "boolean" for yes/no, or "enum" with its option values), remove one nothing uses, or set what clicking a button does (on_click: op "set" with a value, "toggle" a yes/no state, "next" or "prev" through a choice\'s options, "none" to clear). Then show each panel only for one value with bind_definition_field: field "when", binding {"$state": name} and eq the value.',
   style_definition_element:
     'Style a node of the design, by nodeId or by one of its parts. Without variant this is the base style every placement starts from; with variant { axis, option } it is that option\'s rule, which applies only to placements that choose it. scope "phone", "tablet" or "desktop" styles one screen size, "base" all; state "hover", "focus" or "active" styles that state only (colors, background, border, radius, shadow, opacity). Prefer token values such as {"token":"space.lg"}; null clears a value.',
   add_definition_variant: 'Add a variant option that placements can choose, on an axis such as tone or layout. Then style it with style_definition_element and its variant.',
@@ -121,8 +150,9 @@ export const DEFINITION_DESCRIPTIONS: Record<DefinitionToolName, string> = {
 /** The same rules for a grammar-constrained local model, which reads every byte before it answers. */
 export const DEFINITION_BRIEFS: Record<DefinitionToolName, string> = {
   edit_definition_node: 'Content every placement shows unless the node is bound; exposeAsPart lets authors style it on each placement.',
-  bind_definition_field: '$prop binds a property ($prop with field: one field of an object property), $item a list item field inside a repeat; null unbinds. when shows the node when the value is set (or eq, or not ne); unless when not. Add the property first.',
+  bind_definition_field: '$prop binds a property ($prop with field: one field of an object property), $item a list item field inside a repeat, $state UI state (when/unless only); null unbinds. when shows the node when the value is set (or eq, or not ne); unless when not. Add the property or state first.',
   manage_component_prop: 'add a property (camelCase name), set an existing default, or remove one.',
+  manage_component_state: 'add UI state (boolean, or enum with options), remove one, or on_click: what a button does (set a value, toggle, next, prev, none). Show panels with bind_definition_field when {"$state": name} eq a value.',
   style_definition_element:
     'Without variant: the base style; with variant: that option\'s rule. scope styles one screen size, base all; state, that state only. Prefer tokens such as {"token":"space.lg"}; null clears.',
   add_definition_variant: 'A new option placements can choose; style it next with style_definition_element.',
@@ -244,6 +274,7 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
   const objectFields = [...new Set(Object.values(def.properties).flatMap((p) => (p.type === 'object' ? Object.keys(p.fields) : [])))];
   const fields = [...new Set(nodes.flatMap((id) => itemFields(def, id)))];
   const bindable = [...new Set(nodes.flatMap((id) => bindableFields(tree.nodes[id])))];
+  const states = Object.keys(def.state ?? {}).filter((name) => declaredState(def, name));
   if (bindable.length)
     tools.push({
       ...describe('bind_definition_field'),
@@ -257,6 +288,7 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
                 ? [closed({ $prop: { type: 'string', enum: props }, ...(objectFields.length ? { field: { type: 'string', enum: objectFields, description: 'One field of an object property.' } } : {}) }, ['$prop'])]
                 : []),
               ...(fields.length ? [closed({ $item: { type: 'string', enum: fields } }, ['$item'])] : []),
+              ...(states.length && bindable.some((f) => f === 'when' || f === 'unless') ? [{ ...closed({ $state: { type: 'string', enum: states } }, ['$state']), description: 'UI state, for when or unless.' }] : []),
               { type: 'null' }
             ]
           },
@@ -285,6 +317,38 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
     ...(whole && props.length ? [closed({ action: { type: 'string', enum: ['remove'] }, prop: { type: 'string', enum: props } }, ['action', 'prop'])] : [])
   ];
   tools.push({ ...describe('manage_component_prop'), parameters: closed({ change: oneOf(changes) }, ['change']) });
+  // UI state: a node selected in the design may add a variable and wire its own buttons; removing one reaches the whole design.
+  const buttons = nodes.filter((id) => tree.nodes[id]?.kind === 'link');
+  const stateChanges = [
+    closed(
+      {
+        action: { type: 'string', enum: ['add'] },
+        state: { type: 'string', description: 'A new camelCase name, such as "tab" or "open"; not a property name.' },
+        label: { type: 'string', minLength: 1, maxLength: 80 },
+        type: { type: 'string', enum: ['boolean', 'enum'] },
+        options: { type: 'array', minItems: 2, maxItems: 50, items: { type: 'string', minLength: 1, maxLength: 60 }, description: 'enum only: its option values, in order.' },
+        initial: { anyOf: [{ type: 'boolean' }, { type: 'string' }], description: 'What every placement starts with: true or false, or an option. Defaults to false, or the first option.' }
+      },
+      ['action', 'state', 'label', 'type']
+    ),
+    ...(whole && states.length ? [closed({ action: { type: 'string', enum: ['remove'] }, state: { type: 'string', enum: states } }, ['action', 'state'])] : []),
+    ...(buttons.length && states.length
+      ? [
+          closed(
+            {
+              action: { type: 'string', enum: ['on_click'] },
+              nodeId: idSchema(buttons, 'The button.'),
+              op: { type: 'string', enum: ['set', 'toggle', 'next', 'prev', 'none'] },
+              state: { type: 'string', enum: states, description: 'The state it changes; leave out for none.' },
+              value: { anyOf: [{ type: 'boolean' }, { type: 'string' }], description: 'set only: true or false, or an option value.' },
+              wrap: { type: 'boolean', description: 'next/prev only: go round from the last option to the first.' }
+            },
+            ['action', 'nodeId', 'op']
+          )
+        ]
+      : [])
+  ];
+  tools.push({ ...describe('manage_component_state'), parameters: closed({ change: oneOf(stateChanges) }, ['change']) });
   // Styles: any rendered node, by ID or by part; a variant's rule is set on a node of its first top-level element.
   const styled = nodes.filter((id) => rendered(tree.nodes[id]));
   const parts = Object.keys(def.parts).filter((p) => styled.includes(def.parts[p].nodeId));
@@ -424,7 +488,11 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
       const own = itemFields(def, node.id);
       if (!own.includes(a.binding.$item)) return fieldError([{ field: 'binding.$item', message: own.length ? `this node is inside a list whose items have ${own.join(', ')}` : 'this node is not inside a repeat, so it has no list item fields' }], NOTHING_APPLIED);
     }
-    // The engine checks the property, the item field and the comparison against this node.
+    if (a.binding && '$state' in a.binding) {
+      if (a.field !== 'when' && a.field !== 'unless') return fieldError([{ field: 'binding.$state', message: 'UI state shows or hides a node: bind it to when or unless' }], NOTHING_APPLIED);
+      if (!declaredState(def, a.binding.$state)) return fieldError([{ field: 'binding.$state', message: `"${def.name}" has no UI state "${a.binding.$state}". ${Object.keys(def.state ?? {}).length ? `States: ${Object.keys(def.state ?? {}).join(', ')}` : 'Add it with manage_component_state first'}` }], NOTHING_APPLIED);
+    }
+    // The engine checks the property, the item field, the state and the comparison against this node.
     const op = { type: 'node.setBinding', owner, nodeId: node.id, field: a.field, binding: a.binding, ...(a.eq !== undefined ? { eq: a.eq } : {}), ...(a.ne !== undefined ? { ne: a.ne } : {}) } as EditOperation;
     return applySelected([op], host, a.binding === null ? `Unbind ${a.field}` : `Bind ${a.field}`, callId);
   }
@@ -462,6 +530,34 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
     for (const d of checked.deferred) issues.push({ field: 'change.value', message: `no page uses the route ${d.route}` });
     if (issues.length) return fieldError(issues.map((i) => ({ ...i, field: 'change.value' })), NOTHING_APPLIED);
     return applySelected([{ type: 'component.setPropDefault', definitionId: def.id, prop: change.prop, value: checked.props[change.prop] }], host, `Change ${schema.label}`, callId);
+  }
+
+  if (name === 'manage_component_state') {
+    const { change } = args as z.infer<(typeof DEFINITION_ARGS)['manage_component_state']>;
+    const known = () => (Object.keys(def.state ?? {}).length ? `States: ${Object.keys(def.state ?? {}).join(', ')}` : 'It has none: add one first');
+    if (change.action === 'add') {
+      // Setting one it has would change it, and every button and panel that uses it.
+      if (Object.hasOwn(def.state ?? {}, change.state)) return fieldError([{ field: 'change.state', message: `"${def.name}" already has the UI state "${change.state}". ${known()}` }], NOTHING_APPLIED);
+      if (change.options !== undefined && change.type !== 'enum') return fieldError([{ field: 'change.options', message: 'only an enum state has options' }], NOTHING_APPLIED);
+      if (change.type === 'enum' && change.options === undefined) return fieldError([{ field: 'change.options', message: 'an enum state needs its option values' }], NOTHING_APPLIED);
+      const schema = { type: change.type, label: change.label, ...(change.options ? { options: change.options } : {}), ...(change.initial !== undefined ? { initial: change.initial } : {}) };
+      return applySelected([{ type: 'component.setState', definitionId: def.id, state: change.state, schema }], host, `Add ${change.label}`, callId);
+    }
+    if (change.action === 'remove') {
+      if (!Object.hasOwn(def.state ?? {}, change.state)) return fieldError([{ field: 'change.state', message: `"${def.name}" has no UI state "${change.state}". ${known()}` }], NOTHING_APPLIED);
+      return applySelected([{ type: 'component.removeState', definitionId: def.id, state: change.state }], host, `Remove ${def.state![change.state].label || change.state}`, callId);
+    }
+    const button = namedNode(s, change.nodeId, s.nodes.filter((id) => tree.nodes[id]?.kind === 'link'), issues, 'change.nodeId', 'is not a button');
+    if (!button) return fieldError(issues, NOTHING_APPLIED);
+    if (change.op === 'none') return applySelected([{ type: 'node.setStateAction', owner, nodeId: button.id, action: null }], host, `Clear what ${button.name ?? button.id} does`, callId);
+    if (change.state === undefined) return fieldError([{ field: 'change.state', message: `name the state it changes. ${known()}` }], NOTHING_APPLIED);
+    if (change.op !== 'set' && change.value !== undefined) issues.push({ field: 'change.value', message: 'only op "set" takes a value' });
+    if (change.op === 'set' && change.value === undefined) issues.push({ field: 'change.value', message: 'op "set" needs the value: true or false, or an option' });
+    if (change.op !== 'next' && change.op !== 'prev' && change.wrap !== undefined) issues.push({ field: 'change.wrap', message: 'only next and prev take wrap' });
+    if (issues.length) return fieldError(issues, NOTHING_APPLIED);
+    const action = (change.op === 'set' ? { state: change.state, op: 'set', value: change.value! } : change.op === 'toggle' ? { state: change.state, op: 'toggle' } : { state: change.state, op: change.op, ...(change.wrap !== undefined ? { wrap: change.wrap } : {}) }) as StateAction;
+    // The engine checks the state and that the action is one it can make.
+    return applySelected([{ type: 'node.setStateAction', owner, nodeId: button.id, action }], host, `Set what ${button.name ?? button.id} does`, callId);
   }
 
   if (name === 'insert_definition_node') {

@@ -1,0 +1,331 @@
+/**
+ * Edit everywhere's UI State & Interaction controls: the UI state a component's placements each hold (which tab
+ * shows, whether a panel is open), what clicking one of its buttons does to it, and a container shown over the page
+ * as a dialog or drawer while a yes/no state is on. Which elements show for which value is set under Conditions
+ * (ConditionControls), and Component Studio's toolbar previews the component at any value, so a hidden tab or a
+ * closed drawer can be selected and styled. Each change is planned from the project as it is when the author acts
+ * (lib/ui-state) and sent against that revision, as the contract controls do, and is one Undo.
+ */
+import { useId, useState, type KeyboardEvent } from 'react';
+import { Plus, Trash2 } from 'lucide-react';
+import type { ProjectSnapshot } from '@shared/api';
+import type { ComponentDefinition, ElementNode, GraphNode, OverlayMode, UiStateSchema } from '@shared/types';
+import { OVERLAY_MODES } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
+import { declaredState } from '@engine/schema';
+import { applyOps, getState } from '../store';
+import { DraftInput, Field, Section, SwitchRow } from '../components/ui';
+import { isImeComposing } from '../lib/ime';
+import {
+  OVERLAY_LABEL,
+  actionWords,
+  addOptionOp,
+  addStateOp,
+  clickActionOp,
+  clickChoices,
+  clickKey,
+  initialStateOp,
+  newStateProblem,
+  optionLabels,
+  overlayOp,
+  overlayRefusal,
+  removeOptionOp,
+  removeStateOp,
+  renameOptionOp,
+  renameStateOp,
+  stateUseWords
+} from '../lib/ui-state';
+
+/** The longest labels the operations take: a state's, and one option's. */
+const LABEL_MAX = 80;
+
+/** The definition as the project holds it now, for a change planned when the author acts. */
+function current(defId: string): { snap: ProjectSnapshot; def: ComponentDefinition } | null {
+  const snap = getState().snapshot;
+  const def = snap && Object.hasOwn(snap.state.components, defId) ? snap.state.components[defId] : undefined;
+  return snap && def ? { snap, def } : null;
+}
+
+/**
+ * Plan a change on the project as it is now and send it against that revision: refused if the project moves on
+ * before it lands, never applied to another project opened meanwhile. Null when there is nothing to change.
+ */
+function run(defId: string, plan: (def: ComponentDefinition) => EditOperation | null, label: string | ((def: ComponentDefinition) => string)) {
+  const now = current(defId);
+  const op = now && plan(now.def);
+  if (!now || !op) return null;
+  const words = typeof label === 'string' ? label : label(now.def);
+  return getState().snapshot?.workspaceKey === now.snap.workspaceKey ? applyOps([op], words, undefined, now.snap.revision) : Promise.resolve(null);
+}
+
+const KIND_WORDS: Record<UiStateSchema['type'], string> = { boolean: 'Yes/no', enum: 'Choice' };
+
+/**
+ * The component's UI state variables: add a yes/no state or a choice, rename it, its options and where every placement
+ * starts, and remove what nothing uses any more (the engine names what still does).
+ */
+export function UiStateSection({ def, level }: { def: ComponentDefinition; level: number }) {
+  const names = Object.keys(def.state ?? {});
+  return (
+    <Section title="UI state" id="def-state" level={level} scope={names.length ? (names.length === 1 ? '1 state' : `${names.length} states`) : undefined}>
+      <p className="insp-note muted">
+        What each placement holds and visitors change with its buttons, such as which tab shows or whether a panel is open. Choose what a button does under When clicked, show elements for a value under Conditions, and preview a value in Component Studio.
+      </p>
+      {names.map((name) => (
+        <StateGroup key={name} def={def} name={name} />
+      ))}
+      <NewState def={def} />
+    </Section>
+  );
+}
+
+function StateGroup({ def, name }: { def: ComponentDefinition; name: string }) {
+  const id = useId();
+  const s = declaredState(def, name);
+  const uses = stateUseWords(def, name);
+  if (!s) {
+    return (
+      <div className="contract-group" role="group" aria-label={name} data-state={name}>
+        <div className="field-error">The UI state “{name}” is damaged. Remove it, or undo the change that damaged it.</div>
+        <button className="btn btn-sm" onClick={() => void run(def.id, (d) => removeStateOp(d, name), `Remove ${name} state`)}>
+          <Trash2 aria-hidden="true" /> Remove
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="contract-group" role="group" aria-label={s.label || name} data-state={name}>
+      <div className="contract-row">
+        <div className="contract-row-main">
+          <Field label="State" controlId={`${id}-label`}>
+            <DraftInput
+              id={`${id}-label`}
+              value={s.label}
+              limit={LABEL_MAX}
+              onCommit={(v) => {
+                if (!v.trim()) return false;
+                void run(def.id, (d) => renameStateOp(d, name, v), `Rename ${s.label || name} state`);
+              }}
+            />
+          </Field>
+          <span className="faint contract-meta">
+            {KIND_WORDS[s.type]} · {uses.length ? `used by ${uses.join(', ')}` : 'not used yet'}
+          </span>
+        </div>
+        <button
+          className="icon-btn sm"
+          aria-label={`Remove ${s.label || name}`}
+          title={uses.length ? 'Still used: clear those first' : 'Remove'}
+          onClick={() => void run(def.id, (d) => removeStateOp(d, name), `Remove ${s.label || name} state`)}
+        >
+          <Trash2 />
+        </button>
+      </div>
+      {s.type === 'boolean' ? (
+        <Field label="Each placement starts">
+          <select
+            className="select sm"
+            aria-label={`Where ${s.label || name} starts`}
+            value={s.initial ? 'on' : 'off'}
+            onChange={(e) => void run(def.id, (d) => initialStateOp(d, name, e.target.value === 'on'), `Start ${s.label || name} ${e.target.value}`)}
+          >
+            <option value="off">Off</option>
+            <option value="on">On</option>
+          </select>
+        </Field>
+      ) : (
+        <>
+          <ul className="contract-list" aria-label={`${s.label || name} options`}>
+            {s.options.map((o) => (
+              <li key={o.value} className="contract-row" data-option={o.value}>
+                <div className="contract-row-main">
+                  <DraftInput
+                    className="sm"
+                    value={o.label}
+                    limit={LABEL_MAX}
+                    ariaLabel={`Name of the ${o.label} option`}
+                    onCommit={(v) => {
+                      if (!v.trim()) return false;
+                      void run(def.id, (d) => renameOptionOp(d, name, o.value, v), `Rename ${o.label} option`);
+                    }}
+                  />
+                  <span className="faint contract-meta">
+                    {s.initial === o.value ? (
+                      'Each placement starts here'
+                    ) : (
+                      <button className="link-btn" onClick={() => void run(def.id, (d) => initialStateOp(d, name, o.value), `Start ${s.label || name} at ${o.label}`)}>
+                        Start here
+                      </button>
+                    )}
+                  </span>
+                </div>
+                <button
+                  className="icon-btn sm"
+                  aria-label={`Remove ${o.label}`}
+                  title={s.options.length <= 2 ? 'A choice keeps two options or more' : 'Remove'}
+                  disabled={s.options.length <= 2}
+                  onClick={() => void run(def.id, (d) => removeOptionOp(d, name, o.value), `Remove ${o.label} option`)}
+                >
+                  <Trash2 />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <AddOption def={def} name={name} label={s.label || name} />
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Enter (not one that ends an input method's composition) adds. */
+const onEnter = (add: () => void) => (e: KeyboardEvent<HTMLInputElement>) => {
+  if (!isImeComposing(e) && e.key === 'Enter') add();
+};
+
+function AddOption({ def, name, label }: { def: ComponentDefinition; name: string; label: string }) {
+  const [text, setText] = useState('');
+  const add = async () => {
+    if (!text.trim()) return;
+    if ((await run(def.id, (d) => addOptionOp(d, name, text), `Add ${text.trim()} option`)) !== null) setText('');
+  };
+  return (
+    <div className="contract-add">
+      <input className="input sm" value={text} placeholder="New option" aria-label={`New ${label.toLowerCase()} option`} maxLength={LABEL_MAX} onChange={(e) => setText(e.target.value)} onKeyDown={onEnter(() => void add())} />
+      <button className="btn btn-sm" disabled={!text.trim()} onClick={() => void add()}>
+        <Plus aria-hidden="true" /> Add
+      </button>
+    </div>
+  );
+}
+
+function NewState({ def }: { def: ComponentDefinition }) {
+  const [label, setLabel] = useState('');
+  const [type, setType] = useState<UiStateSchema['type']>('enum');
+  const [options, setOptions] = useState('');
+  const listed = optionLabels(options);
+  const problem = newStateProblem(def, label, type, listed);
+  const add = async () => {
+    if (problem) return;
+    const done = await run(def.id, (d) => (newStateProblem(d, label, type, listed) ? null : addStateOp(d, label, type, listed)), `Add ${label.trim()} state`);
+    if (done !== null) {
+      setLabel('');
+      setOptions('');
+    }
+  };
+  const any = Object.keys(def.state ?? {}).length > 0;
+  return (
+    <div className="contract-group" role="group" aria-label="New UI state">
+      <div className="field-label">{any ? 'Another state' : 'New state'}</div>
+      <div className="contract-add">
+        <input className="input sm" value={label} placeholder={type === 'enum' ? 'Name, e.g. Billing' : 'Name, e.g. Menu open'} aria-label="Name of the state" maxLength={LABEL_MAX} onChange={(e) => setLabel(e.target.value)} onKeyDown={onEnter(() => void add())} />
+        <select className="select sm" aria-label="Kind of state" value={type} onChange={(e) => setType(e.target.value as UiStateSchema['type'])}>
+          <option value="enum">Choice</option>
+          <option value="boolean">Yes/no</option>
+        </select>
+      </div>
+      {type === 'enum' && (
+        <div className="contract-add">
+          <input className="input sm" value={options} placeholder="Options, e.g. Monthly, Annual" aria-label="Its options, separated by commas" onChange={(e) => setOptions(e.target.value)} onKeyDown={onEnter(() => void add())} />
+        </div>
+      )}
+      <div className="contract-add">
+        <button className="btn btn-sm" disabled={!!problem} title={problem ?? undefined} onClick={() => void add()}>
+          <Plus aria-hidden="true" /> Add state
+        </button>
+      </div>
+      <p className="insp-note faint">{type === 'enum' ? 'Each placement starts at the first option, such as the first tab.' : 'Each placement starts off, such as a closed panel.'}</p>
+    </div>
+  );
+}
+
+/** What clicking a button of the design does to the component's UI state: nothing else, or one change to one state. */
+export function ClickActionSection({ def, node, level }: { def: ComponentDefinition; node: GraphNode & { kind: 'link' }; level: number }) {
+  const id = useId();
+  const choices = clickChoices(def);
+  const action = node.stateAction;
+  const key = clickKey(action);
+  const known = choices.some((c) => c.key === key);
+  const stepping = !!action && (action.op === 'next' || action.op === 'prev');
+  const name = node.name?.trim() || 'the button';
+  return (
+    <Section title="When clicked" id="def-click" level={level} scope={action ? actionWords(def, action) : undefined}>
+      {choices.length > 1 ? (
+        <>
+          <Field label="Also changes" controlId={id} hint="The button keeps its link. With no link it only does this, and every placement shows it.">
+            <select
+              id={id}
+              className="select"
+              value={known ? key : `missing:${key}`}
+              onChange={(e) => {
+                const choice = choices.find((c) => c.key === e.target.value);
+                if (choice) void run(def.id, (d) => clickActionOp(d, node, choice), choice.action ? `${choice.label} when ${name} is clicked` : `Clear what ${name} changes`);
+              }}
+            >
+              {choices.map((c) => (
+                <option key={c.key} value={c.key}>
+                  {c.label}
+                </option>
+              ))}
+              {!known && action && <option value={`missing:${key}`}>{actionWords(def, action)} (missing)</option>}
+            </select>
+          </Field>
+          {!known && action && <div className="field-error">This changes “{action.state}” in a way the component’s UI state no longer allows. Choose another, or clear it.</div>}
+          {stepping && (
+            <SwitchRow
+              checked={action.wrap === true}
+              label="Go round at the end"
+              hint="After the last option it goes back to the first (and before the first, to the last)."
+              onChange={(v) => {
+                const choice = choices.find((c) => c.key === key);
+                if (choice) void run(def.id, (d) => clickActionOp(d, node, choice, v), v ? `Go round when ${name} is clicked` : `Stop at the end when ${name} is clicked`);
+              }}
+            />
+          )}
+        </>
+      ) : (
+        <p className="insp-note muted">Add UI state to the component (UI state, on the whole component) to make this button switch a tab or open a panel.</p>
+      )}
+    </Section>
+  );
+}
+
+/** Whether to offer the Dialog or drawer control for a node: a container below the top, while the design has a yes/no state or it already is one. */
+export function overlayOffered(def: ComponentDefinition, node: GraphNode): node is ElementNode {
+  if (node.kind !== 'element' || def.tree?.rootIds.includes(node.id)) return false;
+  return node.overlay !== undefined || Object.keys(def.state ?? {}).some((n) => declaredState(def, n)?.type === 'boolean');
+}
+
+/** Show a container over the page as a dialog or drawer while its yes/no state is on, or in its place. */
+export function OverlaySection({ def, node, level }: { def: ComponentDefinition; node: ElementNode; level: number }) {
+  const id = useId();
+  const refusal = overlayRefusal(def, node);
+  const mode = node.overlay;
+  return (
+    <Section title="Dialog or drawer" id="def-overlay" level={level} defaultOpen={!!mode} scope={mode ? OVERLAY_LABEL[mode] : undefined}>
+      <Field
+        label="Show it"
+        controlId={id}
+        hint={mode && !refusal ? 'Over the page while its state is on: the state’s buttons open and close it, and Escape closes it. Preview it open in Component Studio to edit what is inside.' : undefined}
+      >
+        <select
+          id={id}
+          className="select"
+          value={mode ?? ''}
+          onChange={(e) => {
+            const next = (e.target.value || null) as OverlayMode | null;
+            void run(def.id, (d) => overlayOp(d, node, next), next ? `Show ${node.name?.trim() || 'container'} as a ${next === 'dialog' ? 'dialog' : 'drawer'}` : `Show ${node.name?.trim() || 'container'} in its place`);
+          }}
+        >
+          <option value="">In its place</option>
+          {OVERLAY_MODES.map((m) => (
+            <option key={m} value={m} disabled={!!refusal && m !== mode}>
+              {OVERLAY_LABEL[m]}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {refusal && <p className={mode ? 'field-error' : 'insp-note faint'}>{mode ? `It shows in its place for now: this container ${refusal}` : `This container ${refusal}`}</p>}
+    </Section>
+  );
+}

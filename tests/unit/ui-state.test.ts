@@ -1123,7 +1123,7 @@ describe('the document format and the assistant', () => {
     expect(errors(out)).toEqual([]);
   });
 
-  it('classifies the state operations, but offers none to the assistant until generated buttons work', () => {
+  it('classifies the state operations and offers them to a run that may change a design, now that generated buttons work', () => {
     const types = ['component.setState', 'component.removeState', 'node.setStateAction'] as const;
     for (const t of types) expect(Object.hasOwn(OPERATION_SCHEMAS, t)).toBe(true);
     // A new state is the design's own addition; removing one changes every placement; a button is one node.
@@ -1131,29 +1131,34 @@ describe('the document format and the assistant', () => {
     const offered = JSON.stringify(toolDefinitions({ codeEnabled: true, definitionOps: true }).find((t) => t.name === 'apply_operations')!.parameters);
     expect(offered).toContain('component.setPropSchema');
     expect(offered).toContain('node.setBinding');
-    for (const t of types) expect(offered).not.toContain(t);
-    expect(offered).not.toContain('$state');
+    for (const t of types) expect(offered).toContain(t);
+    expect(offered).toContain('$state');
+    // A collection entry's field stays the layout's own: never offered for a design.
+    expect(offered).not.toContain('$entry');
+    // A run that may not change a design is offered none of them.
+    const page = JSON.stringify(toolDefinitions({ codeEnabled: true, definitionOps: false }).find((t) => t.name === 'apply_operations')!.parameters);
+    for (const t of types) expect(page).not.toContain(t);
   });
 
-  it('refuses state the assistant sends anyway, before anything is applied', async () => {
+  it('applies state the assistant sends, checked by the engine like any edit', async () => {
     const s = fresh();
     const { def } = billingDef(s);
-    let applied = 0;
-    const host = { state: () => s, revision: () => 1, diagnostics: () => validateState(s), apply: async () => ((applied += 1), { ok: true, revision: 2, results: [] }) } as unknown as Parameters<typeof executeTool>[2];
+    const sent: unknown[][] = [];
+    const host = {
+      state: () => s,
+      revision: () => 1,
+      diagnostics: () => validateState(s),
+      apply: async (ops: unknown[]) => (sent.push(ops), { ok: true, revision: 2, results: [] })
+    } as unknown as Parameters<typeof executeTool>[2];
     const send = (operations: unknown[]) => executeTool('apply_operations', JSON.stringify({ expectedRevision: 1, operations }), host, 'c1');
     for (const op of [
       { type: 'component.setState', definitionId: def.id, state: 'tab', schema: { type: 'boolean' } },
-      { type: 'component.removeState', definitionId: def.id, state: 'open' },
       { type: 'node.setStateAction', owner: owner(def), nodeId: 'toggle-btn', action: null },
       { type: 'node.setBinding', owner: owner(def), nodeId: 'title', field: 'when', binding: { $state: 'open' } }
     ]) {
       const out = await send([op]);
-      expect(out.ok).toBe(false);
-      expect(JSON.stringify(out.content)).toMatch(/UI state cannot be changed by the assistant yet/);
+      expect(out.ok, JSON.stringify(out.content)).toBe(true);
     }
-    expect(applied).toBe(0);
-    // Ordinary bindings still go through.
-    expect((await send([{ type: 'node.setBinding', owner: owner(def), nodeId: 'title', field: 'when', binding: { $prop: 'title' } }])).ok).toBe(true);
-    expect(applied).toBe(1);
+    expect(sent.map((ops) => (ops[0] as { type: string }).type)).toEqual(['component.setState', 'node.setStateAction', 'node.setBinding']);
   });
 });

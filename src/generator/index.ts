@@ -109,6 +109,12 @@ import { siteTwitterHandle } from '@shared/site-identity';
 
 export interface GenerateOptions {
   instrument?: boolean;
+  /**
+   * The editor's isolated component preview only (Component Studio, with `instrument`): a dialog or drawer whose UI
+   * state is at its open value shows in place while editing, as one the author shows does, so the state the studio
+   * previews is on the canvas to select and style. A page's placements keep the author's own Show to edit.
+   */
+  previewOpen?: boolean;
 }
 
 export type FileMap = Map<string, string>;
@@ -1153,6 +1159,8 @@ interface EmitCtx {
   usesUid?: boolean;
   /** Editor variants: set when the markup shows something only while editing (`so_editing`, see `editingState`). */
   usesEditing?: boolean;
+  /** The isolated preview's editor variant: dialogs and drawers open in their state show in place (GenerateOptions.previewOpen). */
+  previewOpen?: boolean;
   /** The list properties of the repeats currently open (outermost first), for the schema of an item field. */
   lists?: PropSchema[];
   /** Cards that render as their plain container because something interactive renders inside them. */
@@ -2526,15 +2534,20 @@ function emitOverlay(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, o: Ove
   if (!ctx.instrument) return dialog(p, children ? `\n${children}\n${p}` : '');
   ctx.usesEditing = true;
   const name = overlayName(ctx, o);
-  const peek = `${p}\t<button type="button" class="so-overlay-peek" data-so-editor-only="" data-so-overlay-peek="" aria-controls={${id}} aria-expanded="false">{${js(`${o.mode === 'dialog' ? 'Dialog' : 'Drawer'}: ${name}`)}}</button>`;
+  const peekButton = (q: string) => `${q}<button type="button" class="so-overlay-peek" data-so-editor-only="" data-so-overlay-peek="" aria-controls={${id}} aria-expanded="false">{${js(`${o.mode === 'dialog' ? 'Dialog' : 'Drawer'}: ${name}`)}}</button>`;
   const render = `\n${p}\t\t{@render ${o.snippet}()}\n${p}\t`;
+  // In Component Studio a state previewed open shows the content in place (data-so-overlay-open, which the bridge's
+  // styles show), with no button of the editor's own beside it: it closes as the studio previews it closed.
+  const open = ctx.previewOpen ? stateIs(ctx, o.state, o.shows) : null;
+  const peek = open ? [`${p}\t{#if !(${open})}`, peekButton(`${p}\t\t`), `${p}\t{/if}`].join('\n') : peekButton(`${p}\t`);
+  const opened = open ? ` data-so-overlay-open={${open} ? '' : undefined}` : '';
   return [
     `${p}{#snippet ${o.snippet}()}`,
     ...(children ? [children] : []),
     `${p}{/snippet}`,
     `${p}{#if so_editing}`,
     peek,
-    `${p}\t<div id={${id}} class=${cls} data-so-overlay=${js(o.mode)}${ids}${emptyFrameAttr(ctx, node)}>${render}</div>`,
+    `${p}\t<div id={${id}} class=${cls} data-so-overlay=${js(o.mode)}${opened}${ids}${emptyFrameAttr(ctx, node)}>${render}</div>`,
     `${p}{:else}`,
     dialog(`${p}\t`, render),
     `${p}{/if}`
@@ -3120,7 +3133,8 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
     indent: 0,
     locals,
     standalone,
-    states: stateLocals(def)
+    states: stateLocals(def),
+    previewOpen: !!opts.instrument && !!opts.previewOpen
   };
   ctx.widgets = stateWidgets(ctx);
   ctx.filters = repeatFilters(def);

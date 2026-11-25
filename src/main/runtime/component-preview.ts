@@ -17,11 +17,12 @@ const MAX_SPEC_CHARS = 200_000;
 /** A preview request as the editor sent it, kept only when it is well formed. */
 export function previewSpec(v: unknown): ComponentPreviewSpec | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  const { definitionId, componentId, variants, props } = v as Record<string, unknown>;
+  const { definitionId, componentId, variants, props, states } = v as Record<string, unknown>;
   const id = (x: unknown) => x === undefined || (typeof x === 'string' && x.length > 0 && x.length <= 200);
   const record = (x: unknown) => x === undefined || (!!x && typeof x === 'object' && !Array.isArray(x));
-  if (!id(definitionId) || !id(componentId) || !record(variants) || !record(props)) return null;
+  if (!id(definitionId) || !id(componentId) || !record(variants) || !record(props) || !record(states)) return null;
   if (variants && !Object.values(variants).every((o) => typeof o === 'string')) return null;
+  if (states && !Object.values(states).every((o) => typeof o === 'string' || typeof o === 'boolean')) return null;
   try {
     if (JSON.stringify(v).length > MAX_SPEC_CHARS) return null;
   } catch {
@@ -32,6 +33,7 @@ export function previewSpec(v: unknown): ComponentPreviewSpec | null {
   if (componentId !== undefined) spec.componentId = componentId as string;
   if (variants) spec.variants = { ...(variants as Record<string, string>) };
   if (props) spec.props = { ...(props as Record<string, unknown>) };
+  if (states) spec.states = { ...(states as Record<string, boolean | string>) };
   return spec;
 }
 

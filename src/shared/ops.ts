@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
 import { sha256Hex } from './sha256';
-import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from './types';
+import { COMPONENT_CATEGORIES, OVERLAY_MODES, SLOT_PRIMITIVES } from './types';
 import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
@@ -60,11 +60,11 @@ const styleValue = z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF
 // Strict, so a value naming two sources ({ $prop, $state }) is refused rather than read as whichever comes first.
 const contentBinding = [z.object({ $prop: z.string(), field: z.string().optional() }).strict(), z.object({ $item: z.string() }).strict()] as const;
 const binding = z.union([...contentBinding, z.object({ $state: z.string() }).strict(), z.object({ $entry: z.string().max(80) }).strict()]);
-/** node.setBinding's binding without UI state, as the assistant is offered it until it may author state. */
-export const PROP_OR_ITEM_BINDING = z
-  .union(contentBinding)
+/** node.setBinding's binding as the assistant is offered it: a property, an item field or UI state, never a collection entry's field. */
+export const MODEL_BINDING = z
+  .union([...contentBinding, z.object({ $state: z.string() }).strict()])
   .nullable()
-  .describe('{"$prop": name}, {"$prop": name, "field": objectField} for one field of an object property, or {"$item": field}; null unbinds, keeping the current default.');
+  .describe('{"$prop": name}, {"$prop": name, "field": objectField} for one field of an object property, or {"$item": field}; {"$state": name} (when, unless and variant only) reads the component\'s UI state. null unbinds, keeping the current default.');
 /** What a button does to its component's UI state (see `StateAction` in shared/types). */
 const stateAction = z.discriminatedUnion('op', [
   z.object({ state: z.string(), op: z.literal('set'), value: z.union([z.boolean(), z.string()]).describe('true or false for a yes/no state; one of the options of a choice.') }).strict(),
@@ -73,6 +73,16 @@ const stateAction = z.discriminatedUnion('op', [
   z.object({ state: z.string(), op: z.literal('prev'), wrap: z.boolean().optional().describe('Before the first option, go round to the last.') }).strict()
 ]);
 const conditionValue = z.union([z.string(), z.number(), z.boolean()]);
+/** A UI state variable as a person or the AI declares it (component.setState, component.upsert); see normalizeUiState. */
+const uiStateDecl = z.object({
+  type: z.enum(['boolean', 'enum']),
+  label: z.string().max(80).optional(),
+  options: z
+    .array(z.union([z.string(), z.object({ value: z.string(), label: z.string().optional() })]))
+    .optional()
+    .describe('enum only: 2 to 50 options, in the order next and prev step through.'),
+  initial: z.union([z.boolean(), z.string()]).optional().describe('What every placement starts with: true or false, or one of the options. Defaults to false, or the first option.')
+});
 const link = z.object({
   type: z.enum(['none', 'page', 'url', 'email', 'tel', 'anchor', 'document']),
   target: z.string().describe('Page ID for page links, https URL, email address, phone number, anchor ID or a document asset ID.'),
@@ -88,9 +98,11 @@ const link = z.object({
 const DESIGN_NODE_ID = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/);
 /** A literal value of a design node's field, or the property or list item field it shows. */
 const bindable = <T extends z.ZodType>(literal: T) => z.union([...contentBinding, literal]);
+/** What a design's condition reads: a property, a list item field, or the component's own UI state. */
+const conditionRefs = [...contentBinding, z.object({ $state: z.string() }).strict()] as const;
 const designCondition = z
-  .union([...contentBinding, z.object({ ref: z.union(contentBinding), eq: conditionValue }).strict(), z.object({ ref: z.union(contentBinding), ne: conditionValue }).strict()])
-  .describe('Shown only while the property or item field is set, or compared with "eq" / "ne".');
+  .union([...conditionRefs, z.object({ ref: z.union(conditionRefs), eq: conditionValue }).strict(), z.object({ ref: z.union(conditionRefs), ne: conditionValue }).strict()])
+  .describe('Shown only while the property, item field or UI state ({"$state": name}) is set (a yes/no state on), or compared with "eq" / "ne".');
 const designStyles = z
   .record(z.string(), z.unknown())
   .describe('Style rules: { "paddingBlock": { "token": "space.lg" } } for every size, or by size and state: { "base": {...}, "desktop": {...}, "base:hover": {...} }.');
@@ -115,7 +127,11 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
       ariaLabel: bindable(z.string()).optional(),
       collapseEmpty: z.boolean().optional().describe('Hidden when everything inside it is hidden.'),
       carousel: z.literal(true).optional(),
-      appear: z.string().optional()
+      appear: z.string().optional(),
+      overlay: z
+        .enum(OVERLAY_MODES as unknown as [string, ...string[]])
+        .optional()
+        .describe('A plain div whose one condition reads a yes/no UI state: shown over the page as a dialog or drawer while it holds, opened and closed by the state\'s buttons.')
     })
     .strict(),
   z
@@ -138,7 +154,8 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
       appearance: bindable(z.string()).optional().describe('primary, secondary, text, light, link or plain. Defaults to primary.'),
       icon: bindable(z.string()).optional(),
       iconPosition: bindable(z.string()).optional(),
-      ariaLabel: bindable(z.string()).optional()
+      ariaLabel: bindable(z.string()).optional(),
+      stateAction: stateAction.optional().describe("What clicking it does to the component's UI state; with no link it is a button that only does that.")
     })
     .strict(),
   z.object({ kind: z.literal('icon'), ...DESIGN_NODE_BASE, icon: bindable(z.string()), ariaLabel: bindable(z.string()).optional() }).strict(),
@@ -629,10 +646,14 @@ export const OPERATION_SCHEMAS = {
             .strict()
         )
         .optional()
-        .describe('Independent design choices (tone, layout), each with its options.')
+        .describe('Independent design choices (tone, layout), each with its options.'),
+      state: z
+        .record(z.string(), uiStateDecl)
+        .optional()
+        .describe('UI state the design reads in conditions ({"$state": name}) and its buttons change (stateAction), by camelCase name: { "open": { "type": "boolean" } }, { "plan": { "type": "enum", "options": ["monthly", "annual"] } }. Placements never set it.')
     })
     .describe(
-      'Create a managed project component, or rebuild one, from one description of its properties, design, parts, slots and variants. A rebuild replaces the whole design; placements keep the values, list items, style changes and slot content the new contract still takes, or nothing changes.'
+      'Create a managed project component, or rebuild one, from one description of its properties, design, parts, slots, variants and UI state. A rebuild replaces the whole design and its UI state; placements keep the values, list items, style changes and slot content the new contract still takes, or nothing changes.'
     ),
   'component.createFromNode': z.object({ type: z.literal('component.createFromNode'), owner, nodeId: z.string(), name: z.string().min(1).max(60) }),
   'component.makeUnique': z.object({ type: z.literal('component.makeUnique'), owner, nodeId: z.string(), name: z.string().max(60).optional() }),
@@ -698,15 +719,7 @@ export const OPERATION_SCHEMAS = {
       type: z.literal('component.setState'),
       definitionId: z.string(),
       state: z.string().describe('The UI state variable to add or change: a camelCase name such as "open" or "billing", not one of the properties.'),
-      schema: z.object({
-        type: z.enum(['boolean', 'enum']),
-        label: z.string().max(80).optional(),
-        options: z
-          .array(z.union([z.string(), z.object({ value: z.string(), label: z.string().optional() })]))
-          .optional()
-          .describe('enum only: 2 to 50 options, in the order next and prev step through.'),
-        initial: z.union([z.boolean(), z.string()]).optional().describe('What every placement starts with: true or false, or one of the options. Defaults to false, or the first option.')
-      })
+      schema: uiStateDecl
     })
     .describe("Declare UI state a managed component's design reads in conditions and variants and its buttons change. Placements never set it."),
   'component.removeState': z.object({ type: z.literal('component.removeState'), definitionId: z.string(), state: z.string() }),

@@ -72,6 +72,7 @@ import { TagField } from './TagField';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type ListFill, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
+import { ClickActionSection, OverlaySection, UiStateSection, overlayOffered } from './InteractionControls';
 import { EntranceField, StaggerSwitch, appearSummary } from './EntranceControls';
 import { useStyleCopyItems } from './StylePaste';
 import { platformKeys, useCopyPasteItems, type CopyPasteActions } from './CopyPaste';
@@ -2031,6 +2032,7 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
         <>
           <PropertiesSection def={def} level={LEVEL} />
           <VariantsSection def={def} level={LEVEL} onStyle={(target) => styleLook(def, target)} />
+          <UiStateSection def={def} level={LEVEL} />
         </>
       )}
     </>
@@ -2457,7 +2459,10 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       <PartSection def={def} node={node} level={LEVEL} />
       {isRoot && <PropertiesSection def={def} level={LEVEL} />}
       {isRoot && <VariantsSection def={def} level={LEVEL} onStyle={(t) => styleLook(def, t)} />}
+      {isRoot && <UiStateSection def={def} level={LEVEL} />}
       <ConditionControls def={def} node={node} level={LEVEL} />
+      {node.kind === 'link' && <ClickActionSection def={def} node={node} level={LEVEL} />}
+      {overlayOffered(def, node) && <OverlaySection def={def} node={node} level={LEVEL} />}
       {(node.kind === 'element' || node.kind === 'repeat' || (node.kind === 'instance' && anchorCapable(state, placedDef))) && (
         <Section
           title="Entrance"
