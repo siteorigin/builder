@@ -8,6 +8,8 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { definitionRole } from '@engine/insert-role';
 import { validateState } from '@engine/validate';
+import { checkAuthority, OP_REACH, type Authority } from '@agent/scope';
+import { describeOps } from '@agent/report';
 import { ProjectSession } from '../../src/main/project/session';
 
 // Delete a container or a slotted placement but keep what it holds (#656): one operation, so one change and one Undo,
@@ -371,5 +373,37 @@ describe('Undo and Redo', () => {
     expect(home(session.state)).toEqual(home(lifted));
     expect(session.state.components).toEqual(lifted.components);
     expect(session.state.themeLock).toEqual(lifted.themeLock);
+  });
+});
+
+describe('What an assistant run may delete keeping its content', () => {
+  it('reaches one node: inside a selection, never the selected element itself, whose content would land beside it', () => {
+    expect(OP_REACH['node.removeKeepContent']).toBe('node');
+    const { s } = filled(inSection);
+    const o = page(s);
+    const op = (nodeId: string): EditOperation => ({ type: 'node.removeKeepContent', owner: o, nodeId });
+    const section: Authority = { kind: 'selection', owner: o, nodeId: 'n_section', label: 'the Section' };
+    expect(checkAuthority(s, [op('n_split')], section)).toBeNull();
+    const split: Authority = { kind: 'selection', owner: o, nodeId: 'n_split', label: 'the Split' };
+    expect(checkAuthority(s, [op('n_split')], split)).toBe('node.removeKeepContent would put what the Split holds outside it.');
+    const pageRun: Authority = { kind: 'page', pageId: s.site.homePageId, label: 'Home' };
+    expect(checkAuthority(s, [op('n_section')], pageRun)).toBeNull();
+    expect(checkAuthority(s, [op('n_section')], { kind: 'page', pageId: 'pg_other', label: 'About' })).not.toBeNull();
+  });
+
+  it('keeps a component run off its design’s root', () => {
+    const { s, split } = project();
+    const own = { kind: 'component' as const, id: split };
+    const root = s.components[split].tree!.rootIds[0];
+    const run: Authority = { kind: 'component', definitionId: split, label: 'the Split design' };
+    expect(checkAuthority(s, [{ type: 'node.removeKeepContent', owner: own, nodeId: root }], run)).toMatch(/^node\.removeKeepContent: The first top-level node of the Split design is its root/);
+  });
+
+  it('reports the removal by the name the element had, and that what it held stays', () => {
+    const { s } = filled(inGrid);
+    const op: EditOperation = { type: 'node.removeKeepContent', owner: page(s), nodeId: 'n_split' };
+    const r = apply(s, [op]);
+    const [change] = describeOps([op], s, r.state, r.results);
+    expect(change.label).toBe('Removed Split from Home, keeping what it held');
   });
 });
