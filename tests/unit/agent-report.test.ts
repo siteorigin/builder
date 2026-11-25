@@ -243,6 +243,24 @@ describe('check results', () => {
     expect(inspectionChecks(true, ok())).toEqual([{ status: 'pass', text: 'Fits the screen at phone width.' }]);
   });
 
+  it("leaves the rows as they are for a page with notes on its rhythm: advice, never a problem (#366)", () => {
+    const count = (checked: number) => ({ checked, failed: 0, unverified: 0 });
+    const report = { issues: [], images: { total: 1, loaded: 1, failed: 0, unverified: 0 }, checks: { contrast: count(30), overlaps: count(12), clippedText: count(0), tapTargets: count(6) } };
+    const rhythm = [
+      { kind: 'repeated-layout', sections: { first: 2, last: 4 }, message: 'Same layout.' },
+      { kind: 'crowded-actions', sections: { first: 1, last: 4 }, message: 'Buttons.' },
+      { kind: 'heading-scale', message: 'Large.' }
+    ];
+    const rows = inspectionChecks(true, { pageId: 'p', viewport: 'desktop', report });
+    expect(rows.every((r) => r.status === 'pass')).toBe(true);
+    expect(inspectionChecks(true, { pageId: 'p', viewport: 'desktop', report: { ...report, rhythm } })).toEqual(rows);
+    // A page with problems keeps exactly its rows too.
+    const broken = { ...report, issues: [{ kind: 'text-overflow', message: 'Wide.' }], checks: { ...report.checks, contrast: { checked: 30, failed: 2, unverified: 0 } } };
+    const brokenRows = inspectionChecks(true, { pageId: 'p', viewport: 'desktop', report: broken });
+    expect(brokenRows.some((r) => r.status === 'issue')).toBe(true);
+    expect(inspectionChecks(true, { pageId: 'p', viewport: 'desktop', report: { ...broken, rhythm } })).toEqual(brokenRows);
+  });
+
   it('cuts a layout report to fit a tool result without losing a count or a kind of finding', () => {
     const issue = (kind: string, i: number) => ({ kind, ref: { owner: { kind: 'page', id: 'p' }, nodeId: `n${i}` }, text: 't'.repeat(80), with: { ref: { owner: { kind: 'page', id: 'p' }, nodeId: 'm' }, text: 'w'.repeat(80) }, message: 'm'.repeat(400) });
     const report = { checks: { contrast: { checked: 200, failed: 70, unverified: 0 } }, images: { total: 1, loaded: 1, failed: 0, unverified: 0 }, issues: [...Array.from({ length: 70 }, (_, i) => issue('low-contrast', i)), issue('overlap', 99), issue('small-tap-target', 98)], runtimeErrors: ['e'.repeat(5000)] };
@@ -259,6 +277,62 @@ describe('check results', () => {
     expect(report.issues[0].text).toHaveLength(80);
     const small = { issues: [issue('overlap', 1)] };
     expect(fitInspection(envelope, small)).toBe(small);
+  });
+
+  it("keeps every note on the page's rhythm when a layout report is cut to fit: whole but for what they quote, and shortened before a finding goes (#366)", () => {
+    const ref = (nodeId: string) => ({ owner: { kind: 'page', id: 'p' }, nodeId });
+    const rhythm = [
+      { kind: 'repeated-layout', sections: { first: 2, last: 4 }, ref: ref('a'), with: { ref: ref('b') }, layout: 'three card columns', background: '#ffffff', message: 'Same layout.' },
+      { kind: 'crowded-actions', sections: { first: 1, last: 4 }, ref: ref('c'), with: { ref: ref('d') }, buttons: 4, message: 'Buttons.' },
+      { kind: 'heading-scale', ref: ref('e'), text: 'h'.repeat(80), with: { ref: ref('f'), text: 'g'.repeat(80) }, heading: 'h2', size: 48, h1Size: 48, message: 'Large.' }
+    ];
+    const envelope = { revision: 3, pageId: 'p', viewport: 'desktop', width: 1280 };
+    // Long only for the text the findings quote: dropping that is enough.
+    const quoted = { issues: Array.from({ length: 40 }, (_, i) => ({ kind: 'low-contrast', ref: ref(`n${i}`), text: 't'.repeat(700), message: 'Pale.' })), rhythm };
+    const whole = fitInspection(envelope, quoted) as typeof quoted & { omittedIssues?: number };
+    expect(whole.omittedIssues).toBeUndefined();
+    expect(whole.rhythm).toEqual([rhythm[0], rhythm[1], { kind: 'heading-scale', ref: ref('e'), with: { ref: ref('f') }, heading: 'h2', size: 48, h1Size: 48, message: 'Large.' }]);
+    // Long findings: the notes keep what they say, and the findings are cut to fit.
+    const issue = (i: number) => ({ kind: 'low-contrast', ref: ref(`n${i}`), text: 't'.repeat(80), message: 'm'.repeat(400) });
+    const report = { issues: Array.from({ length: 70 }, (_, i) => issue(i)), rhythm };
+    const fitted = fitInspection(envelope, report) as typeof report & { omittedIssues: number };
+    expect(JSON.parse(serializeResult({ ...envelope, report: fitted })).truncated).toBeUndefined();
+    expect(fitted.omittedIssues).toBeGreaterThan(0);
+    expect(fitted.rhythm).toEqual(rhythm.map((n) => ({ kind: n.kind, message: n.message })));
+    // The notes the bridge sent are left as they were.
+    expect(rhythm[2].text).toHaveLength(80);
+    expect(rhythm[2].with.text).toHaveLength(80);
+    expect(rhythm[0].layout).toBe('three card columns');
+  });
+
+  it('shortens, then drops, the rhythm notes when one finding of each kind is still too long for a tool result (#366)', () => {
+    const envelope = { revision: 3, pageId: 'p', viewport: 'desktop', width: 1280 };
+    const ref = { owner: { kind: 'page', id: 'p' }, nodeId: 'n' };
+    const note = (kind: string) => ({ kind, ref, with: { ref }, layout: 'x'.repeat(300), message: `${kind} advice` });
+    const rhythm = [note('repeated-layout'), note('crowded-actions'), note('heading-scale')];
+    // One finding of each kind, sized to leave room for the notes' messages but not for all they measured.
+    const fill = (n: number) => ({ issues: ['overflow', 'overlap', 'low-contrast'].map((kind) => ({ kind, message: 'm'.repeat(n) })), rhythm });
+    const room = 24000 - 200;
+    const bare = JSON.stringify({ ...envelope, report: { issues: fill(0).issues } }).length;
+    const short = fitInspection(envelope, fill(Math.floor((room - bare - 300) / 3))) as Record<string, unknown>;
+    expect(short.rhythm).toEqual(rhythm.map((n) => ({ kind: n.kind, message: n.message })));
+    const dropped = fitInspection(envelope, fill(Math.floor((room - bare - 20) / 3))) as Record<string, unknown>;
+    expect(dropped.rhythm).toBeUndefined();
+    expect(dropped.omittedRhythm).toBe(3);
+    for (const r of [short, dropped]) expect(JSON.parse(serializeResult({ ...envelope, report: r })).truncated).toBeUndefined();
+    // So close to the limit that even saying the notes went would not fit: they go without a word.
+    const tight = fitInspection(envelope, fill(Math.floor((room - bare - 4) / 3))) as Record<string, unknown>;
+    expect(tight.rhythm).toBeUndefined();
+    expect(JSON.parse(serializeResult({ ...envelope, report: tight })).truncated).toBeUndefined();
+    // Advice gives way before findings: shortening the notes is enough to keep every finding of a repeated kind.
+    const compact = rhythm.map((n) => ({ kind: n.kind, message: n.message }));
+    const overlaps = (n: number) => Array.from({ length: 6 }, (_, i) => ({ kind: 'overlap', ref, message: `${i}`.repeat(n) }));
+    const empty = JSON.stringify({ ...envelope, report: { issues: overlaps(0), rhythm: compact } }).length;
+    const repeated = { issues: overlaps(Math.floor((room - empty - 300) / 6)), rhythm };
+    const kept = fitInspection(envelope, repeated) as Record<string, unknown>;
+    expect(JSON.stringify({ ...envelope, report: repeated }).length).toBeGreaterThan(room);
+    expect(kept.omittedIssues).toBeUndefined();
+    expect(kept.rhythm).toEqual(rhythm.map((n) => ({ kind: n.kind, message: n.message })));
   });
 
   it('says each check once, with its latest result, naming its page', () => {

@@ -114,7 +114,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
   inspect_layout:
-    'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text only pixels could judge (over an image). No screenshots.',
+    'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text only pixels could judge (over an image). On a page of two or more sections, report.rhythm is advice on composition (never an error): three or more sections in a row with one layout on one background (at phone width, only sections that keep columns side by side) or each with a filled button, and an inner heading as large as the h1, each with the refs of the sections or headings to vary. No screenshots.',
   inspect_component:
     'Check one component on its own, off-screen, without changing anything: it is measured at phone (390px) and desktop (1280px) width with every link set and empty text filled, in each option of every variant axis, and with stress content: long text with an unbroken long word, links and optional text left empty, one and five list items. Returns each overflow, cut-off text, low contrast, overlap, small tap target, runtime error and spacing collapse once, with the cases and widths it showed in and where it is in the design: at.nodeId is the node of its design (node.setStyle { owner: { kind: "component", id: definitionId }, nodeId } changes it on every placement) and at.partId the part it belongs to. The design of a theme component changes on a project copy: component.fork it first (one the project does not have yet is added by placing it) and use the definitionId that returns. A clean component gets a one-line summary. Use after building or changing a reusable component, then fix what it finds and check again.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
@@ -591,7 +591,17 @@ export function fitInspection<R>(envelope: Record<string, unknown>, report: R): 
     }
   }
   if (Array.isArray(r.runtimeErrors)) r.runtimeErrors = (r.runtimeErrors as unknown[]).slice(-5).map((e) => String(e).slice(0, 300));
+  // The notes on the page's rhythm are few (one of each kind) and kept whole but for the text they quote.
+  const notes = Array.isArray(r.rhythm) ? (r.rhythm as unknown[]).filter((n): n is Record<string, unknown> => !!n && typeof n === 'object') : null;
+  if (notes)
+    r.rhythm = notes.map(({ text: _text, ...n }) => {
+      if (!n.with || typeof n.with !== 'object') return n;
+      const { text: _with, ...rest } = n.with as Record<string, unknown>;
+      return { ...n, with: rest };
+    });
   r.issues = issues;
+  // Advice gives way before findings do: the notes keep only what they say before any finding goes.
+  if (notes && size(r) > room) r.rhythm = notes.map((n) => ({ kind: n.kind, message: n.message }));
   let omitted = 0;
   while (size(r) > room) {
     const byKind = new Map<string, number>();
@@ -602,6 +612,13 @@ export function fitInspection<R>(envelope: Record<string, unknown>, report: R): 
     omitted++;
   }
   if (omitted) r.omittedIssues = omitted;
+  // Still too long with one finding of each kind: the notes go, before the whole result would be cut short, saying
+  // so when that fits.
+  if (notes && size(r) > room) {
+    delete r.rhythm;
+    r.omittedRhythm = notes.length;
+    if (size(r) > room) delete r.omittedRhythm;
+  }
   return r as R;
 }
 

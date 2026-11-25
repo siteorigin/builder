@@ -62,7 +62,8 @@ async function measure(req: { requestId: string; pageId: string; width: number }
         // images that showed nothing, before measuring; loading and measuring get separate deadlines.
         clearTimeout(timer);
         timer = setTimeout(() => done({ error: 'Timed out measuring the page.' }), 8000);
-        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId });
+        // The page's sections as this load was asked for, so the frame can say how they follow one another.
+        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds] });
       } else if (m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === req.requestId) done((m.payload as { report: unknown }).report);
     };
     let timer = setTimeout(() => done({ error: 'Timed out loading the page.' }), 12000);
