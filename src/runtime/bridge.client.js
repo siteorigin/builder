@@ -255,16 +255,29 @@ function layoutParent(el) {
 /** A box's content width and height: inside its padding, border and scrollbar. */
 const contentWidth = (el, s = getComputedStyle(el)) => Math.max(0, el.clientWidth - pxOf(s.paddingLeft) - pxOf(s.paddingRight));
 const contentHeight = (el, s = getComputedStyle(el)) => Math.max(0, el.clientHeight - pxOf(s.paddingTop) - pxOf(s.paddingBottom));
-/** A computed gap in pixels: `normal` is none, a percentage is of the content box along it; null for anything else. */
+/**
+ * A computed gap in pixels: `normal` is none, a percentage is of the content box along it where that is set (a box as
+ * tall as its content takes a percentage row gap as nothing while it works out its height); null for anything else.
+ */
 function usedGap(v, along) {
   if (v === 'normal') return 0;
   if (PX.test(v)) return pxOf(v);
   const m = PCT.exec(v);
-  return m ? (Number.parseFloat(m[1]) / 100) * along : null;
+  return m && along !== null ? (Number.parseFloat(m[1]) / 100) * along : null;
+}
+/** Whether a box's height is set rather than taken from its content (a percentage row gap needs one). */
+function setHeight(el) {
+  try {
+    const v = el.computedStyleMap && el.computedStyleMap().get('height');
+    return !!v && String(v) !== 'auto';
+  } catch {
+    return false;
+  }
 }
 /**
- * A grid's resolved track sizes, in order, without the empty tracks as many as fit leaves (they and their gaps take no
- * room); null for anything but a plain list of pixel sizes (line names left out), or one too long to read.
+ * A grid's resolved track sizes, in order, without the empty tracks as many as fit leaves at the end (they and their
+ * gaps take no room); null for anything but a plain list of pixel sizes (line names left out), one too long to read,
+ * or one with an empty track between others, whose gaps may or may not have collapsed with it.
  */
 function trackSizes(text, max) {
   const t = String(text);
@@ -273,11 +286,11 @@ function trackSizes(text, max) {
   for (const part of t.replace(/\[[^\]]*\]/g, ' ').trim().split(/\s+/)) {
     if (!part) continue;
     if (!PX.test(part)) return null;
-    const n = Number.parseFloat(part);
-    if (n > 0) out.push(n);
-    if (out.length > max) return null;
+    out.push(Number.parseFloat(part));
+    if (out.length > max * 2) return null;
   }
-  return out;
+  while (out.length && out[out.length - 1] === 0) out.pop();
+  return out.length <= max && !out.includes(0) ? out : null;
 }
 /**
  * A box's children as it lays them out, in the page's order, past any laid out as their own children, leaving out
@@ -324,7 +337,8 @@ function layoutReport(el) {
   if (!box) return null;
   const flex = /(^|\s|-)flex$/.test(s.display);
   const grid = isGrid(s.display);
-  const out = { box, kind: flex ? 'flex' : grid ? 'grid' : 'block', rowGap: usedGap(s.rowGap, contentHeight(el, s)), columnGap: usedGap(s.columnGap, contentWidth(el, s)) };
+  const inner = { width: contentWidth(el, s), height: contentHeight(el, s) };
+  const out = { box, inner, kind: flex ? 'flex' : grid ? 'grid' : 'block', rowGap: usedGap(s.rowGap, setHeight(el) ? inner.height : null), columnGap: usedGap(s.columnGap, inner.width) };
   const open = s.contentVisibility !== 'hidden';
   if (flex) {
     out.column = s.flexDirection.startsWith('column');

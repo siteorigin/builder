@@ -26,6 +26,9 @@ body{margin:0;font:16px/20px sans-serif}
 #item{max-width:200px;margin-inline:auto}
 #flat{display:flex;column-gap:8px}
 #flat span{display:block;width:50px;height:20px}
+#tall{display:flex;flex-direction:column;row-gap:10%}
+#tall i{display:block;height:100px}
+#hole{display:grid;grid-template-columns:100px 0px 100px 100px;column-gap:20px}
 /* A page rule that would size anything put straight into the document: the bridge's measuring box keeps its own size. */
 html > :not(head):not(body){max-width:300px;padding:7px}
 </style><style id="site"></style></head><body><div id="wrap">
@@ -35,6 +38,8 @@ html > :not(head):not(body){max-width:300px;padding:7px}
 <div id="fit" data-so-ctx="page:p" data-so-node="fit"><i>a</i><i>b</i></div>
 <div id="cards"><div id="item" data-so-ctx="page:p" data-so-node="item">x</div></div>
 <div id="flat" data-so-ctx="page:p" data-so-node="flat"><span>1</span><div style="display:contents"><span>2</span><span style="position:fixed">f</span><span>3</span></div></div>
+<div id="tall" data-so-ctx="page:p" data-so-node="tall"><i>a</i><i>b</i></div>
+<div id="hole" data-so-ctx="page:p" data-so-node="hole"><i>a</i><i>b</i><i>c</i></div>
 </div><script type="module" src="/bridge.js"></script></body></html>`;
 
 const HOST = `<!doctype html><title>host</title>
@@ -162,6 +167,23 @@ describe.skipIf(!browserInstalled)('the page’s side of the layout handles', ()
     expect(layout.packedCols).toBe(true);
     // An auto margin on one side alone does not centre it.
     expect(layout.width).toEqual({ centered: false, max: 500, content: true, basis: 1000 });
+    expect(layout.inner).toEqual({ width: 500, height: 216 });
+    // Row gap styles are measured against the box's height, as its percentage row gap is.
+    await send('measureSpace', { requestId: 'tall', vars: ['--so-container-half'], desc: sel('pct'), basis: 'boxHeight' });
+    expect((await lastReply('spaceMeasured')).px).toEqual([108]);
+  });
+
+  it('leaves a percentage row gap unknown in a stack as tall as its content, which lays it out as nothing', async () => {
+    await send('track', { selected: sel('tall'), hovered: null });
+    const { layout } = (await lastReply('rects')).spacing;
+    expect(layout.rowGap).toBeNull();
+    // The stack's items touch: the page gave the gap no room.
+    expect(layout.items.map((r: { y: number }) => Math.round(r.y - layout.box.y))).toEqual([0, 100]);
+  });
+
+  it('reports no columns for a grid with an empty column between others, whose gaps it cannot place', async () => {
+    await send('track', { selected: sel('hole'), hovered: null });
+    expect((await lastReply('rects')).spacing.layout.cols).toEqual([]);
   });
 
   it('leaves out the empty columns as many as fit collapses, and the width of a grid\u2019s own item', async () => {

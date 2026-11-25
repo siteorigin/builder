@@ -45,6 +45,7 @@ const NONE = { top: 0, right: 0, bottom: 0, left: 0 };
 const EDGES: BoxEdges = { padding: NONE, border: NONE };
 const layout = (over: Partial<FrameLayout> = {}): FrameLayout => ({
   box: { x: 0, y: 0, width: 1000, height: 200 },
+  inner: null,
   kind: 'block',
   rowGap: 0,
   columnGap: 0,
@@ -134,6 +135,14 @@ describe('gutters: where gap handles sit', () => {
       ['x', { x: 200, y: 0, width: 24, height: 96 }],
       ['y', { x: 0, y: 40, width: 424, height: 16 }]
     ]);
+  });
+
+  it('takes the content box\u2019s size from the page, less any scrollbar', () => {
+    // A 1000px grid with a 15px scrollbar: 1fr 1fr columns share 985px less the gap.
+    const scrolled = layout({ kind: 'grid', columnGap: 24, cols: [480.5, 480.5], rows: [80], box: { x: 0, y: 0, width: 1000, height: 80 }, inner: { width: 985, height: 80 } });
+    expect(gutters(scrolled, EDGES, false)[0].rect.x).toBe(480.5);
+    const { s, t } = withSection({ layout: 'grid', columns: 2 });
+    expect(planSplit(s, t, 'base', 'desktop', scrolled, EDGES)).toMatchObject({ shares: [1, 1] });
   });
 
   it('places none for a gap the page could not size', () => {
@@ -254,6 +263,8 @@ describe('max width handles', () => {
     // An uncapped box filling 1000px, 6px in from each side: Content width (1200px) would leave it 1000px wide.
     expect(widthDragValue(988, WIDTHS, false, { most: 1000, max: null })).toEqual({ value: '992px', px: 992 });
     expect(widthDragValue(1000, WIDTHS, false, { most: 1000, max: 900 })).toMatchObject({ value: { token: 'container.content' } });
+    // One exactly as wide as the container counts the same.
+    expect(widthDragValue(988, [{ token: 'container.full', label: 'Full', px: 1000 }], false, { most: 1000, max: null })).toEqual({ value: '992px', px: 992 });
   });
 
   it('leave a box that already fills its container as it is when dragged out past it', () => {
@@ -386,6 +397,10 @@ describe('splitDragValue: where a divider gets to', () => {
     expect(splitDragValue([7, 9, 4], 0, 350, 450, 10, false, false)?.value).toBe('7fr 9fr 4fr');
     expect(splitDragValue([7, 9, 4], 0, 350, 450, -30, false, false)?.value).toBe('6.4fr 9.6fr 4fr');
     expect(splitDragValue([1, 1], 0, 500, 500, 0.3, true, false)?.value).toBe('1fr 1fr');
+    // However narrow a column started, past the least a drag gives one.
+    expect(splitDragValue([1, 24], 0, 40, 960, 0, true, false)?.value).toBe('1fr 24fr');
+    expect(splitDragValue([1, 24], 0, 40, 960, 0, false, false)?.value).toBe('1fr 24fr');
+    expect(splitDragValue([1, 24], 0, 40, 960, 6, true, false)?.value).toBe('1fr 19fr');
   });
 
   it('follows the pointer in hundredths with Alt, and never takes a column below its least share', () => {
@@ -408,6 +423,8 @@ describe('splitDragValue: where a divider gets to', () => {
     expect(splitDragValue([0.125, 0.125, 0.75], 0, 125, 125, -62.5, false, false)?.value).toBe('0.0625fr 0.1875fr 0.75fr');
     // Two columns that do not fill the grid keep their total.
     expect(splitDragValue([0.25, 0.25], 0, 100, 100, -50, false, false)?.value).toBe('0.125fr 0.375fr');
+    // Tiny shares keep four figures of their pair: 1:4 stays 1:4.
+    expect(splitDragValue([0.00015, 0.00015, 1], 0, 100, 100, -60, false, false)?.value).toBe('0.00006fr 0.00024fr 1fr');
   });
 
   it('counts returning to where a drag began as no change', () => {
@@ -436,7 +453,17 @@ describe('freeSpot: handles never cover each other', () => {
   it('slides a divider down its gutter, clear of the top padding’s handle on the same spot', () => {
     // Two columns with equal side padding: the gutter's middle is the box's, where the top padding handle sits.
     const padding = { x: 500, y: 100, axis: 'y' as const };
-    expect(freeSpot([padding], { x: 500, y: 112, axis: 'x' }, { along: 'y', from: 100, to: 180 })).toEqual({ x: 500, y: 120, axis: 'x' });
+    expect(freeSpot([padding], { x: 500, y: 112, axis: 'x' }, { along: 'y', from: 100, to: 180 })).toEqual({ x: 500, y: 118, axis: 'x' });
+  });
+
+  it('finds the clear place nearest to it, however narrow, and takes the later of two as near', () => {
+    // Clear only from 18 to 19: between the steps a coarser search would try.
+    expect(freeSpot([{ x: 10, y: 0, axis: 'y' }], { x: 10, y: 12, axis: 'x' }, { along: 'y', from: 0, to: 19 })).toEqual({ x: 10, y: 18, axis: 'x' });
+    // A short row whose top and bottom padding handles fill its height: the gap handle goes just past it, below.
+    const pads = [{ x: 500, y: 100, axis: 'y' as const }, { x: 500, y: 128, axis: 'y' as const }];
+    expect(freeSpot(pads, { x: 500, y: 114, axis: 'x' }, { along: 'y', from: 76, to: 152 })).toEqual({ x: 500, y: 146, axis: 'x' });
+    // One beside it, not level with it, is no obstacle.
+    expect(freeSpot([{ x: 540, y: 114, axis: 'y' }], { x: 500, y: 114, axis: 'x' }, { along: 'y', from: 76, to: 152 })).toEqual({ x: 500, y: 114, axis: 'x' });
   });
 
   it('gives up when the whole stretch is taken, and keeps within it', () => {
@@ -464,7 +491,9 @@ describe('layoutOf: the selected box’s layout from the page', () => {
   };
 
   it('reads a grid’s report', () => {
-    expect(layoutOf(report)).toEqual({ ...report, kind: 'grid', column: false, wrap: false, spread: false, items: [] });
+    expect(layoutOf(report)).toEqual({ ...report, inner: null, kind: 'grid', column: false, wrap: false, spread: false, items: [] });
+    expect(layoutOf({ ...report, inner: { width: 285, height: 100 } })?.inner).toEqual({ width: 285, height: 100 });
+    expect(layoutOf({ ...report, inner: { width: -1, height: 100 } })?.inner).toBeNull();
     expect(layoutOf({ ...report, width: { ...report.width, content: false } })?.width?.content).toBe(false);
   });
 

@@ -143,6 +143,7 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     const st = getState().snapshot?.state;
     if (!st) return null;
     const layout = spacing.layout;
+    // The content box the page measured, as the bridge takes a percentage of it.
     const inner = layout && contentBox(layout, spacing);
     const basis = scale === 'gapX' ? inner?.width : scale === 'gapY' ? inner?.height : scale === 'width' ? layout?.width?.basis : 0;
     return `${groupSignature(st, SCALE_GROUP[scale])}|${Math.round(basis ?? -1)}`;
@@ -237,7 +238,16 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     // Each layout handle takes the nearest place along its gutter or edge that leaves every handle already drawn
     // reachable: padding and margin first, then dividers, gaps and widths. One with no room left is not drawn.
     const placed: Spot[] = out.map((g) => ({ ...g.at, axis: g.axis }));
+    // The handle being dragged keeps the place across its drag that it had when pressed (it only follows its gutter
+    // or edge along the drag), and the others keep clear of it.
+    const held = drag.current?.grip;
+    const holding = held && held.kind !== 'padding' && held.kind !== 'margin' ? held : null;
+    if (holding) placed.push({ ...holding.at, axis: holding.axis });
     const put = (grip: Omit<Grip, 'at'>, prefer: { x: number; y: number }, slide: { along: 'x' | 'y'; from: number; to: number }) => {
+      if (holding?.id === grip.id) {
+        out.push({ ...grip, at: grip.axis === 'x' ? { x: prefer.x, y: holding.at.y } : { x: holding.at.x, y: prefer.y } });
+        return;
+      }
       const at = freeSpot(placed, { ...prefer, axis: grip.axis }, slide);
       if (!at) return;
       placed.push(at);
@@ -274,7 +284,8 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
             split
           },
           { x: r.left + r.width / 2, y: r.top + 12 },
-          { along: 'y', from: r.top, to: r.top + r.height }
+          // Above the grid when its gutter has no room.
+          { along: 'y', from: r.top - 24, to: r.top + r.height }
         );
       }
     }
@@ -303,7 +314,8 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
             text: dragLabel
           },
           { x: r.left + r.width / 2, y: r.top + r.height / 2 },
-          axis === 'x' ? { along: 'y', from: r.top, to: r.top + r.height } : { along: 'x', from: r.left, to: r.left + r.width }
+          // Just past either end of a gutter with no room in it (a short row whose padding handles fill its height).
+          axis === 'x' ? { along: 'y', from: r.top - 24, to: r.top + r.height + 24 } : { along: 'x', from: r.left - 24, to: r.left + r.width + 24 }
         );
       }
     }
@@ -373,7 +385,10 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
   /** Show where the drag in progress has got to, on the page and in the HUD. */
   const update = () => {
     const d = drag.current;
-    if (d && place(d)) setLive({ id: d.grip.id, text: d.grip.text(d.value!) });
+    if (!d) return;
+    if (place(d)) setLive({ id: d.grip.id, text: d.grip.text(d.value!) });
+    // Somewhere it cannot go: the HUD says nothing will be saved, as the page shows.
+    else if (d.moved && !d.value && (d.stops || d.at.exact)) setLive({ id: d.grip.id, text: '—' });
   };
 
   /** End the drag: listeners off, the pointer let go. What the page shows is the caller's to keep or put back. */

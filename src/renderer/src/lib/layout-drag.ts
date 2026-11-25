@@ -23,11 +23,14 @@ const sum = (list: number[]) => list.reduce((a, b) => a + b, 0);
 /** A value as the stylesheet writes it: a site style by its CSS variable, anything else as it is. */
 const cssOf = (value: StyleValue) => (typeof value === 'object' && value !== null ? `var(${tokenVar(value.token)})` : String(value));
 
-/** The box inside the selected box's border and padding, in frame pixels. */
+/** The box inside the selected box's border and padding, in frame pixels: as wide and tall as the page says its
+ *  content box is (a scrollbar takes room from it), or else its border box less its border and padding. */
 export function contentBox(layout: FrameLayout, edges: BoxEdges): FrameRect {
-  const { box } = layout;
+  const { box, inner } = layout;
   const { padding: p, border: b } = edges;
-  return { x: box.x + b.left + p.left, y: box.y + b.top + p.top, width: Math.max(0, box.width - b.left - b.right - p.left - p.right), height: Math.max(0, box.height - b.top - b.bottom - p.top - p.bottom) };
+  const width = inner ? inner.width : Math.max(0, box.width - b.left - b.right - p.left - p.right);
+  const height = inner ? inner.height : Math.max(0, box.height - b.top - b.bottom - p.top - p.bottom);
+  return { x: box.x + b.left + p.left, y: box.y + b.top + p.top, width, height };
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +232,7 @@ export function widthDragValue(px: number, stops: SpaceStop[], exact: boolean, r
   let gap = WIDTH_MAGNET;
   const atEdge = v >= most - 0.5;
   for (const s of spaceScale(stops)) {
-    const d = s.px > most ? (atEdge ? 0 : Infinity) : Math.abs(s.px - v);
+    const d = s.px >= most - 0.5 ? (atEdge ? 0 : Infinity) : Math.abs(s.px - v);
     if (d < gap) {
       best = s;
       gap = d;
@@ -316,7 +319,11 @@ export function planSplit(state: ProjectState, target: SpacingTarget, scope: Res
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
-const round4 = (n: number) => Math.round(n * 10000) / 10000;
+/** A share rounded to at least four places, and to four significant figures of a pair that small. */
+const roundIn = (n: number, pair: number) => {
+  const places = Math.min(10, Math.max(4, 4 - Math.floor(Math.log10(pair))));
+  return Math.round(n * 10 ** places) / 10 ** places;
+};
 
 /** Column sizes as written: each share as fr. */
 export const sharesText = (shares: number[]) => shares.map((n) => `${n}fr`).join(' ');
@@ -325,9 +332,9 @@ export const sharesText = (shares: number[]) => shares.map((n) => `${n}fr`).join
  * Where dragging the divider after column `index` by `travel` frame pixels gets to, from columns `a` and `b` pixels
  * wide. The two columns trade width and keep their total share; the others stay. Snapped, the split is the nearest of
  * RATIO_STOPS or the split it started at; exact, where the pointer is, in hundredths. Back where it started, the
- * columns are as they were. Two columns that fill the grid are written with the narrower one as 1fr (1fr 2fr,
- * 1.5fr 1fr); otherwise each share is kept to four places, so the pair keeps its total and the split its ratio. Null
- * when a column would get no share.
+ * columns are as they were, however narrow one of them was. Two columns that fill the grid are written with the
+ * narrower one as 1fr (1fr 2fr, 1.5fr 1fr); otherwise each share is kept to four significant figures of the pair, so
+ * the pair keeps its total and the split its ratio. Null when a column would get no share.
  */
 export function splitDragValue(shares: number[], index: number, a: number, b: number, travel: number, exact: boolean, rtl: boolean): { value: string; shares: number[] } | null {
   if (index < 0 || index + 1 >= shares.length || !(a + b > 0)) return null;
@@ -335,16 +342,16 @@ export function splitDragValue(shares: number[], index: number, a: number, b: nu
   const from = a / (a + b);
   const f = Math.min(1 - MIN_SPLIT, Math.max(MIN_SPLIT, (a + d) / (a + b)));
   const pick = exact ? f : [...RATIO_STOPS, from].reduce((best, s) => (Math.abs(s - f) < Math.abs(best - f) ? s : best));
-  if ((exact ? Math.abs(d) < 0.5 : pick === from) && from >= MIN_SPLIT && from <= 1 - MIN_SPLIT) return { value: sharesText(shares), shares: [...shares] };
+  if (exact ? Math.abs(d) < 0.5 : pick === from) return { value: sharesText(shares), shares: [...shares] };
   const pair = shares[index] + shares[index + 1];
   let next = [...shares];
   if (shares.length === 2 && pair >= 1) {
     const r = pick / (1 - pick);
     next = r >= 1 ? [round2(r), 1] : [1, round2(1 / r)];
   } else {
-    const left = round4(pair * pick);
+    const left = roundIn(pair * pick, pair);
     next[index] = left;
-    next[index + 1] = round4(pair - left);
+    next[index + 1] = roundIn(pair - left, pair);
   }
   return next.every((n) => n > 0) ? { value: sharesText(next), shares: next } : null;
 }
@@ -383,18 +390,30 @@ const overlaps = (a: Spot, b: Spot) => Math.abs(a.x - b.x) * 2 < HIT[a.axis].w +
 
 /**
  * Where a handle can sit clear of those already placed, so a press always reaches the handle it was aimed at: at
- * `prefer`, or the nearest point to it along `slide` (a stretch of its gutter or edge, `from` to `to` along one axis),
- * in 4px steps. Null when the whole stretch is taken.
+ * `prefer`, or the nearest point to it along `slide` (a stretch of its gutter or edge, `from` to `to` along one axis)
+ * where it touches none of them (of two as near, the later one along). Null when the whole stretch is taken.
  */
 export function freeSpot(placed: Spot[], prefer: Spot, slide: { along: 'x' | 'y'; from: number; to: number }): Spot | null {
   if (!(slide.to >= slide.from)) return null;
-  const start = Math.min(slide.to, Math.max(slide.from, slide.along === 'y' ? prefer.y : prefer.x));
-  for (let k = 0; ; k++) {
-    const tries = (k === 0 ? [start] : [start + k * 4, start - k * 4]).filter((v) => v >= slide.from - 0.5 && v <= slide.to + 0.5);
-    if (!tries.length) return null;
-    for (const v of tries) {
-      const s = slide.along === 'y' ? { ...prefer, y: v } : { ...prefer, x: v };
-      if (!placed.some((p) => overlaps(p, s))) return s;
-    }
-  }
+  const down = slide.along === 'y';
+  const across = down ? prefer.x : prefer.y;
+  const size = (s: Spot) => (down ? HIT[s.axis].h : HIT[s.axis].w);
+  const width = (s: Spot) => (down ? HIT[s.axis].w : HIT[s.axis].h);
+  // Each handle level with the moving one keeps it out of the open stretch around it.
+  const blocked = placed.flatMap((p) => {
+    if (Math.abs((down ? p.x : p.y) - across) * 2 >= width(p) + width(prefer)) return [];
+    const at = down ? p.y : p.x;
+    const half = (size(p) + size(prefer)) / 2;
+    return [[at - half, at + half] as const];
+  });
+  const start = Math.min(slide.to, Math.max(slide.from, down ? prefer.y : prefer.x));
+  const free = (v: number) => v >= slide.from && v <= slide.to && blocked.every(([a, b]) => v <= a || v >= b);
+  const spots = [start, ...blocked.flat()].filter(free);
+  if (!spots.length) return null;
+  const best = spots.reduce((m, v) => {
+    const d = Math.abs(v - start);
+    const dm = Math.abs(m - start);
+    return d < dm || (d === dm && v > m) ? v : m;
+  });
+  return down ? { ...prefer, y: best } : { ...prefer, x: best };
 }
