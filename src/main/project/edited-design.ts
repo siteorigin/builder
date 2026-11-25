@@ -60,7 +60,7 @@ export async function relocateSource(source: string, from: string, to: string, r
   /** A URL in styles or `new URL()`, which is relative to the file even when it does not start with a dot. */
   const movedUrl = (url: string): string | null => {
     if (!url || /^(?:[a-z][a-z0-9+.-]*:|\/|#|\$|~|%)/i.test(url)) return null;
-    return moved(url.startsWith('.') ? url : `./${url}`);
+    return moved(url.startsWith('./') || url.startsWith('../') ? url : `./${url}`);
   };
   if (fromDir === toDir && !redirect) return source;
   const edits: Array<{ start: number; end: number; text: string }> = [];
@@ -173,7 +173,7 @@ function cssUrls(css: string, imports: boolean): Array<{ at: number; url: string
     } else if (ch === '"' || ch === "'") {
       const end = string(i);
       const raw = css.slice(i + 1, end);
-      if (imports && /@import\s*$/i.test(css.slice(0, i)) && !raw.includes('\\')) out.push({ at: i + 1, url: raw });
+      if (imports && /@import(?:\s|\/\*[\s\S]*?\*\/)*$/i.test(css.slice(0, i)) && !raw.includes('\\')) out.push({ at: i + 1, url: raw });
       i = end + 1;
     } else if ((ch === 'u' || ch === 'U') && /^url\(/i.test(css.slice(i, i + 4)) && !/[\w-]$/.test(css.slice(0, i))) {
       let j = i + 4;

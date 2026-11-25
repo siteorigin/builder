@@ -173,6 +173,10 @@ export function designCalled(state: Pick<ProjectState, 'components'>, def: Compo
   const design = state.components[def.generatedFrom];
   return design.kind === 'managed' && design.tree ? design : undefined;
 }
+/** Whose part `partId` of a placement is, for its styles: the design's (see designCalled), or the code's own when only the code has it. */
+function calledFor(placed: ComponentDefinition, design: ComponentDefinition | undefined, partId: string): ComponentDefinition {
+  return design && (partId === 'root' || Object.hasOwn(design.parts, partId)) ? design : placed;
+}
 /**
  * The copy of a contact form's code that declares its WebMCP tool (generator/webmcp.ts), beside the theme's generated
  * components whatever folder the form's own code is in: both are one folder below the library, so its imports lead
@@ -1353,10 +1357,13 @@ function addOverrideRules(
   placed = false,
   lookups?: Map<string, (nodeId: string) => string | null>
 ) {
-  // Code converted from a design's file takes overrides as that design does, through the design's own classes.
-  const def = designCalled(state, state.components[inst.definitionId]) ?? state.components[inst.definitionId];
-  if (!def) return;
+  const placedDef = state.components[inst.definitionId];
+  if (!placedDef) return;
+  const design = designCalled(state, placedDef);
   for (const partId of Object.keys(inst.overrides ?? {}).sort()) {
+    // Code converted from a design's file takes overrides as that design does, through the design's own classes; a
+    // part its code added since is reached as any code component's is.
+    const def = calledFor(placedDef, design, partId);
     const part = def.parts[partId];
     // An override for a part the definition no longer declares styles nothing.
     if (partId !== 'root' && !part) continue;
@@ -1492,11 +1499,14 @@ export function generateSiteCss(state: ProjectState): string {
     for (const id of Object.keys(tree.nodes).sort()) {
       const n = tree.nodes[id];
       if (n.kind === 'instance') {
+        const placedDef = state.components[n.definitionId];
+        const design = designCalled(state, placedDef);
         // Code converted from a design's file is styled as that design's placements are (see designCalled).
-        const def = designCalled(state, state.components[n.definitionId]) ?? state.components[n.definitionId];
+        const def = design ?? placedDef;
         const placed = group(id) !== null;
         for (const partId of Object.keys(n.overrides ?? {}).sort()) {
-          if (!def) continue;
+          if (!placedDef) continue;
+          const def = calledFor(placedDef, design, partId);
           const cls = overrideClass(n.id, partId);
           // A code component's own styles are scoped (one class plus Svelte's hash class), so its overrides
           // take one more class to win whatever order the stylesheets load in.
@@ -3439,17 +3449,25 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   }
   // Inside a design, a code component's inner parts take the design's override classes the same way; its root is
   // reached through the node class `class` already passes.
-  if (ctx.def && code) {
+  if (ctx.def && (code || design)) {
     const map: Record<string, string> = {};
-    // A part its code hides is shown again through the same marker classes a page's placement passes.
-    for (const partId of Object.keys(node.overrides ?? {}).sort()) if (partId !== 'root' && Object.hasOwn(def.parts, partId)) map[partId] = nestedOverrideClass(ctx.def, node.id, partId) + shownClasses(def, node.overrides![partId]);
-    if (Object.keys(map).length) attrs.push(`so_o={${js(map)}}`);
+    // A part its code hides is shown again through the same marker classes a page's placement passes. Code converted
+    // from a design's file takes these for the parts its code added only; the design's own are below.
+    for (const partId of Object.keys(node.overrides ?? {}).sort())
+      if (partId !== 'root' && Object.hasOwn(def.parts, partId) && calledFor(def, design, partId) === def) map[partId] = nestedOverrideClass(ctx.def, node.id, partId) + shownClasses(def, node.overrides![partId]);
+    // A managed component's inner parts take a class of the design's only for its state rules (see nestedStateMarker).
+    if (design)
+      for (const partId of Object.keys(node.overrides ?? {}).sort()) {
+        const marker = calledFor(def, design, partId) === design ? nestedStateMarker(ctx.def, design, node, partId) : undefined;
+        if (marker) map[partId] = marker;
+      }
+    if (Object.keys(map).length) attrs.push(`so_o={${js(Object.fromEntries(Object.keys(map).sort().map((k) => [k, map[k]])))}}`);
   }
   // A managed component's inner parts take a class of the design's only for its state rules (see nestedStateMarker).
-  if (ctx.def && (def.kind === 'managed' || design)) {
+  if (ctx.def && def.kind === 'managed') {
     const map: Record<string, string> = {};
     for (const partId of Object.keys(node.overrides ?? {}).sort()) {
-      const marker = nestedStateMarker(ctx.def, design ?? def, node, partId);
+      const marker = nestedStateMarker(ctx.def, def, node, partId);
       if (marker) map[partId] = marker;
     }
     if (Object.keys(map).length) attrs.push(`so_o={${js(map)}}`);

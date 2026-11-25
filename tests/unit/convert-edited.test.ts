@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { convertEditedDesign } from '@engine/apply';
-import { instancesOf } from '@engine/tree';
+import { allTrees, instancesOf } from '@engine/tree';
+import { applyOperations } from '@engine/apply';
+import { usesAppear } from '@generator/appear';
+import { checkSvelteSource } from '../../src/main/codecheck';
 import { takesComponent } from '@engine/slots';
 import { defFile, generateProject } from '@generator/index';
 import { repeatedPartList } from '@shared/item-styles';
@@ -72,6 +75,8 @@ describe('a design’s file moved to the custom folder (#737)', () => {
       '\t.c { background: url(bare.png); }',
       '\t.d { background: url(/root.png), url(data:image/png;base64,AA==); }',
       '\t.e::before { content: url(./badge.svg); --caption: "url(cap.svg)"; }',
+      '\t.f { background: url(.well-known/logo.svg); }',
+      '\t@import /* note */ "./note.css";',
       '</style>',
       ''
     ].join('\n');
@@ -86,6 +91,8 @@ describe('a design’s file moved to the custom folder (#737)', () => {
         .replace('URL("./has space.png")', 'URL("../generated/has space.png")')
         .replace('url(bare.png)', 'url(../generated/bare.png)')
         .replace('url(./badge.svg)', 'url(../generated/badge.svg)')
+        .replace('url(.well-known/logo.svg)', 'url(../generated/.well-known/logo.svg)')
+        .replace('"./note.css"', '"../generated/note.css"')
     );
   });
 
@@ -184,6 +191,35 @@ describe('placements of a converted design file (#737)', () => {
     expect(() => generateProject(after, { instrument: false })).not.toThrow();
   });
 
+  it('counts a placement’s own entrance however the code reads it, when it is the only one on the site', () => {
+    const state = createStarterState('business', 'Convert', false);
+    for (const { tree } of allTrees(state)) for (const n of Object.values(tree.nodes)) if ('appear' in n) delete (n as { appear?: unknown }).appear;
+    const hero = 'foundation.hero.split';
+    const [{ node }] = instancesOf(state, hero) as Array<{ node: InstanceNode }>;
+    node.appear = 'lift';
+    expect(usesAppear(state)).toBe(true);
+    // Nothing in the code says on its own that it shows an entrance: it hands what it is given to its root.
+    convertEditedDesign(state, hero, '<script>\n\tlet { so_appear } = $props();\n</script>\n\n<section {...(so_appear ? { "data-appear": so_appear } : {})}>Hero</section>\n');
+    expect(usesAppear(state)).toBe(true);
+  });
+
+  it('styles a part the code added, where it is placed inside a design, as any code component’s', () => {
+    const { after, ids, hero } = converted();
+    const code = after.components[ids[hero]];
+    code.parts.badge = { nodeId: 'badge', label: 'Badge' };
+    const { state: next, results } = applyOperations(after, [{ type: 'component.create', name: 'Landing block' }]);
+    const design = next.components[results[0].definitionId as string];
+    const { state: placed } = applyOperations(next, [{ type: 'node.insert', owner: { kind: 'component', id: design.id }, parentId: design.tree!.rootIds[0], definitionId: ids[hero] }]);
+    const [{ node }] = instancesOf(placed, ids[hero]).filter((u) => u.owner.kind === 'component') as Array<{ node: InstanceNode }>;
+    node.overrides = { badge: { base: { color: '#123456' } }, heading: { base: { color: '#654321' } } };
+    const files = generateProject(placed, { instrument: false });
+    const designFile = files.get(defFile(placed.components[design.id]))!;
+    expect(designFile).toMatch(/so_o=\{\{[^}]*"badge":/);
+    const css = files.get('src/lib/siteorigin/styles/components.css')!;
+    expect(css).toContain('#123456');
+    expect(css).toContain('#654321');
+  });
+
   it('is called as code once it no longer names the design it was made from', () => {
     const { after, before, ids } = converted(false);
     const now = generateProject(after, { instrument: false });
@@ -210,5 +246,13 @@ describe('the code a design’s file becomes (#737)', () => {
         const { styles: _styles, ...rest } = o;
         expect(code.variantAxes?.[axis]?.options[option]).toEqual(rest);
       }
+  });
+});
+
+describe('imports of a converted file, checked against the project (#737)', () => {
+  it('checks the file a query-bearing import names, not what the query makes of the path', async () => {
+    const modules = (p: string) => p === 'src/lib/siteorigin/custom/present.js';
+    const problems = await checkSvelteSource("<script>\n\timport x from './missing.svg?raw&p=/../present.js';\n</script>\n<p>{x}</p>\n", { filename: 'src/lib/siteorigin/custom/X.svelte', modules });
+    expect(problems.some((p) => p.severity === 'error' && /missing\.svg/.test(p.message))).toBe(true);
   });
 });
