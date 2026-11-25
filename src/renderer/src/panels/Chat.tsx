@@ -610,12 +610,17 @@ export function Chat() {
     };
     if (take()) return void setState({ chatFocus: null });
     // A dialog closed by the same click (Fix with AI in Project health) keeps the rest of the window inert until it has
-    // gone: the box takes focus once it lets go, or the request lapses as one that waited too long does.
+    // gone: the box takes focus once it lets go, unless the author has put focus somewhere meanwhile or the request has
+    // waited too long, which lets it lapse.
     const req = chatFocus;
+    const unclaimed = () => {
+      const at = document.activeElement;
+      return !at || at === document.body || !!at.closest('[inert]');
+    };
     let frame = 0;
     const retry = () => {
       if (getState().chatFocus !== req) return;
-      if (take() || Date.now() - req.at > CHAT_FOCUS_WAIT_MS) return void setState({ chatFocus: null });
+      if (Date.now() - req.at > CHAT_FOCUS_WAIT_MS || !unclaimed() || take()) return void setState({ chatFocus: null });
       frame = requestAnimationFrame(retry);
     };
     frame = requestAnimationFrame(retry);

@@ -113,7 +113,7 @@ describe('the request for the Search & sharing previews', () => {
   });
 
   it('names the page it is about, whichever page that is', () => {
-    expect(previewHandoff(base, { kind: 'page', pageId: contact })?.text).toBe('Read the “Contact” page and improve its search title and meta description for search results, link previews and AI answers');
+    expect(previewHandoff(base, { kind: 'page', pageId: contact })).toEqual({ mode: 'edit', scope: 'page', pageId: contact, text: 'Read the “Contact” page and improve its search title and meta description for search results, link previews and AI answers' });
   });
 
   it('asks a question about a post, with what it holds as typed, since the AI can’t change posts yet', () => {
@@ -138,6 +138,12 @@ describe('the request for the Search & sharing previews', () => {
     expect(lines).toHaveLength(5);
     expect(h.text).not.toContain('Search title now');
     expect(previewHandoff(r.state, { ...subject, entryId: 'en_gone' })).toBeNull();
+    // Saved since the previews last drew (its excerpt), with what they show typed in its search fields laid over it:
+    // the latest save for the rest, the typed text for those.
+    const newer = applyOperations(r.state, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', excerpt: 'Evening wheel classes.' }]).state;
+    const mixed = previewHandoff(newer, subject, typed)!.text.split('\n');
+    expect(mixed).toContain('Excerpt: Evening wheel classes.');
+    expect(mixed).toContain('Meta description now: Autumn dates');
   });
 
   it('quotes the post’s own search title, clips by characters as a reader counts them, and survives damaged text', () => {
@@ -230,7 +236,7 @@ describe('opening the chat with the request', () => {
   it('asks for a change to the whole site from the page on screen, leaving what is selected there', async () => {
     expect(await actions.openSeoChat(toSite)).toBe(true);
     const s = store.getState();
-    expect([s.pageId, s.selection, s.modal, s.chatMode]).toEqual([home, headerRef, null, 'edit']);
+    expect([s.pageId, s.selection, s.modal, s.chatMode, s.rightTab, s.dockOpen]).toEqual([home, headerRef, null, 'edit', 'chat', true]);
     expect(s.chatContextEnabled).toEqual({ page: true, scope: 'site' });
     expect(s.chatDrafts).toEqual({ c_1: toSite.text });
   });
@@ -311,7 +317,9 @@ describe('opening the chat with the request', () => {
   });
 
   it('waits while the AI works on another request, or while the conversation loads', async () => {
-    store.setState({ activeRunId: 'run_1', runStatus: 'running' });
+    store.setState({ activeRunId: 'run_1', runStatus: 'awaiting-input' });
+    expect(await actions.openSeoChat(toAbout)).toBe(false);
+    store.setState({ toasts: [], runStatus: 'running' });
     expect(await actions.openSeoChat(toAbout)).toBe(false);
     store.setState({ activeRunId: null, runStatus: null, conversation: null });
     expect(await actions.openSeoChat(toAbout)).toBe(false);

@@ -94,7 +94,7 @@ function forFinding(state: ProjectState, f: SeoFinding): SeoHandoff | null {
 const POST_LINE = 300;
 const POST_OPENING = 600;
 
-/** One line of at most `max` characters as a reader counts them, so a cut never splits an emoji or an accented letter. */
+/** One line of at most `max` characters, counted by code point, so a cut never splits an emoji in two. */
 function clip(text: string, max: number): string {
   const chars = [...seoText(text)];
   return chars.length > max ? `${chars.slice(0, max - 1).join('').trimEnd()}…` : chars.join('');
@@ -110,18 +110,19 @@ function plainBody(body: unknown): string {
 }
 
 /**
- * The request for a document's Search & sharing previews. `state` is the project with the text typed into its fields
- * laid over it (lib/seo-preview's `withTypedSeo`), so a description changed a moment ago is the one asked about.
+ * The request for a document's Search & sharing previews, from `state`. A post's search title and description are read
+ * from `typed` when given: the project with the text typed into those fields laid over it (lib/seo-preview's
+ * `withTypedSeo`), so a description changed a moment ago, or one refused for being too long, is the one asked about.
  */
-export function previewHandoff(state: ProjectState, subject: SeoSubject): SeoHandoff | null {
+export function previewHandoff(state: ProjectState, subject: SeoSubject, typed: ProjectState = state): SeoHandoff | null {
   try {
-    return forPreview(state, subject);
+    return forPreview(state, subject, typed);
   } catch {
     return null;
   }
 }
 
-function forPreview(state: ProjectState, subject: SeoSubject): SeoHandoff | null {
+function forPreview(state: ProjectState, subject: SeoSubject, typed: ProjectState): SeoHandoff | null {
   if (subject.kind === 'page') {
     const page = own(state.pages, subject.pageId);
     if (!page) return null;
@@ -131,7 +132,8 @@ function forPreview(state: ProjectState, subject: SeoSubject): SeoHandoff | null
   const entry = own(collection?.entries, subject.entryId);
   if (!collection || !entry) return null;
   const title = clip(typeof entry.title === 'string' ? entry.title : '', POST_LINE);
-  const seo = entry.seo && typeof entry.seo === 'object' ? entry.seo : {};
+  const typedSeo = own(own(typed.collections, subject.collectionId)?.entries, subject.entryId)?.seo ?? entry.seo;
+  const seo = typedSeo && typeof typedSeo === 'object' ? typedSeo : {};
   const lines = [
     `Suggest a search title (${SEO_TITLE_RANGE.min} to ${SEO_TITLE_RANGE.max} characters) and a meta description (${SEO_DESCRIPTION_RANGE.min} to ${SEO_DESCRIPTION_RANGE.max} characters) for my post ${title ? quoted(title) : 'below'}, for me to paste into its Search & sharing settings.`,
     ['Post title', title],

@@ -223,10 +223,14 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
             request={async () => {
               if (subject.kind === 'page') return previewHandoff(overlay, subject);
               // The post's other fields (its excerpt, its text) are saved first, so the question quotes them as typed;
-              // what could not be saved is said in the writer, and the question quotes what the previews show.
-              const saved = await saveOpenPost();
-              const now = getState().snapshot?.state;
-              return previewHandoff(saved && now ? now : overlay, subject);
+              // what could not be saved is said in the writer. Its search title and description are what the previews
+              // show, typed or saved.
+              const opening = getState().snapshot?.workspaceKey;
+              await saveOpenPost();
+              const now = getState();
+              // The author moved on while it saved (another post, a dialog, another project): the question is not asked.
+              if (!now.snapshot || now.snapshot.workspaceKey !== opening || now.modal || now.post?.collectionId !== subject.collectionId || now.post?.entryId !== subject.entryId) return null;
+              return previewHandoff(now.snapshot.state, subject, overlay);
             }}
           />
           {subject.kind === 'entry' && <span className="field-hint">Suggests a title and description for you to paste in.</span>}

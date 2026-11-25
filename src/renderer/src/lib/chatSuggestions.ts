@@ -41,7 +41,7 @@ const own = <T>(map: Record<string, T>, key: string): T | undefined => (Object.h
 
 /** A title as a prompt names it: one line, curly-quoted, with no quote of its own to end it early. */
 export function quoted(text: string): string {
-  // By characters as a reader counts them, so a long title is never cut through an emoji.
+  // By code point, so a long title is never cut through an emoji.
   const one = [...text.replace(/\s+/g, ' ').replace(/["“”]/g, "'").trim()];
   return `“${one.length > 60 ? `${one.slice(0, 59).join('').trimEnd()}…` : one.join('')}”`;
 }
