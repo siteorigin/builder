@@ -8,7 +8,7 @@ import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'l
 import { aiActivity, api, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
 import { afterSettle, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
-import { dropKeptDraft, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
+import { dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
 import { runPhase } from '../lib/savestate';
 import type { ProjectSnapshot } from '@shared/api';
 import { RenameOffer } from './RenameOffer';
@@ -892,6 +892,8 @@ function DraftField({
   // saved outside the app) keeps both versions for the author to choose between. A field nobody typed in
   // commits nothing. Text the project refused stays a draft, start and all.
   const startedAt = useRef<DraftStart | null>(restored?.start ?? null);
+  // Refused text taken up on mount, until the project's value has first been read against it.
+  const restoringRef = useRef(restoredAs === 'check');
   const forget = () => (startedAt.current = null);
   // Text `check` refused, kept as a draft after the field was left (or by another control of its place), and the reason
   // shown for it.
@@ -926,10 +928,18 @@ function DraftField({
       }
       // The saved value it was refused against is gone, and the refusal beside the field says what is saved
       // instead: the edit that corrects it starts from that. Text already corrected shows no saved value, so it
-      // keeps its start, and a change made meanwhile is still caught as one.
-      if (shown.current) startedAt.current = { base: useStore.getState().snapshot, value, commit: onCommit, ai: aiActivity() };
+      // keeps its start, and a change made meanwhile is still caught as one. Refused text taken up from another
+      // control of its place starts from what is saved now too, when that changed while it was away (an undo); and
+      // what is kept for the place follows, so the control that shows it next starts there as well.
+      const restoring = restoringRef.current;
+      restoringRef.current = false;
+      if (shown.current || (restoring && startedAt.current.value !== value && !!check?.(draftRef.current))) {
+        startedAt.current = { base: useStore.getState().snapshot, value, commit: onCommit, ai: aiActivity() };
+        if (field) stash(draftRef.current, startedAt.current, 'check');
+      }
       return;
     }
+    restoringRef.current = false;
     if (!focused.current) forget();
     if (!startedAt.current) setDraft(value);
   }, [value]);
@@ -970,9 +980,13 @@ function DraftField({
   const stash = (text: string, start: DraftStart, refused?: 'check') => field && keepDraft<DraftStart>(field, { text, start, name: nameRef.current, alive: keepWhile, owner: owner.current, ...(refused ? { refused } : {}) });
   useEffect(() => {
     mounted.current = true;
-    // Text found for this place on mount is this control's to keep from now on.
+    // Text found for this place on mount is this control's to keep from now on, unless the project already holds it
+    // (an undo put that very text back while it was away): then it is settled, and nothing is kept.
     const found = field ? keptDraft<DraftStart>(field) : undefined;
-    if (field && restored && found) keepDraft<DraftStart>(field, { ...found, owner: owner.current });
+    if (field && restored && found) {
+      if (tooLongRef.current || kept.current) keepDraft<DraftStart>(field, { ...found, owner: owner.current });
+      else if (found.owner === restored.owner) dropKeptDraft(field);
+    }
     return () => {
       mounted.current = false;
       retainRefused(draftKey, null);
@@ -1001,13 +1015,16 @@ function DraftField({
       }
       // Refused text a newer control of the same place has taken up is that control's.
       if (open && field && !gone && (over || refused) && !mine()) return;
+      // Refused text kept for a place that has gone was offered to copy as it went, unless it was kept only after that
+      // (the field left as its page went): then it is offered here.
+      const offered = gone && refused && !keptDraft(field!);
       // Kept text this field held is settled; text kept by another control of the same place is left to it.
       if (fate === 'drop') dropKeptDraft(field!);
       if (!field || !keptDraft(field)) markDraft(draftKey, false);
-      // Refused text kept for a place that has gone was already offered to copy as it went.
-      if (!open || !(focused.current || over) || (gone && refused)) return;
+      if (!open || offered || !(focused.current || over || (gone && refused))) return;
       const copy = { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) };
       if (over) toast(`${tooLongReport(nameRef.current, text.length, limit!)} The field went away, so copy it to keep it.`, 'error', copy);
+      else if (gone && refused) toast(goneReport(nameRef.current), 'error', copy);
       else if (aiRan(from!)) commitDraft(from!.base, () => from!.commit(text), text, { check: true, control: owner.current });
       else if (text.trim()) toast('What you were typing was not saved, because the field went away.', 'error', copy);
     };

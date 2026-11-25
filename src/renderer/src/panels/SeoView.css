@@ -37,6 +37,8 @@
   .seo-settings-group { display: flex; flex-direction: column; gap: 12px; }
   .seo-settings-group > h3 { margin: 0; padding-bottom: 6px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text); }
   .seo-settings-group > .field-hint { margin: -6px 0 0; }
+  /* A long address (a canonical URL the field refused, the one saved) wraps rather than widening the view. */
+  .seo-settings :is(.field-hint, .field-error) { overflow-wrap: anywhere; }
   @container (min-width: 1100px) {
     .seo-doc-page { max-width: 1160px; display: grid; grid-template-columns: minmax(0, 1fr) 340px; column-gap: 32px; row-gap: 10px; align-items: start; }
     .seo-doc-page > .seo-doc-head { grid-column: 1 / -1; }

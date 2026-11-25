@@ -357,6 +357,11 @@ export function SeoView({ shown }: { shown: boolean }) {
     if (doc && opened.current) backRef.current?.focus();
     opened.current = false;
   }, [doc?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Another document opens at its top, its previews in sight, wherever the last one was scrolled to.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (doc && scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [doc?.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const back = () => {
     returnTo.current = doc?.key ?? null;
     setState({ seoSubject: null });
@@ -388,7 +393,7 @@ export function SeoView({ shown }: { shown: boolean }) {
           </>
         )}
       </div>
-      <div className="seo-scroll">
+      <div className="seo-scroll" ref={scrollRef}>
         {doc && state && snap ? (
           <SeoViewDocument key={`${snap.workspaceKey}\n${doc.key}`} state={state} doc={doc} collection={collection} shown={shown} />
         ) : state && !hidden ? (

@@ -1,4 +1,4 @@
-import { savesInFlight, settle, type Settled } from './pending';
+import { retainRefused, savesInFlight, settle, type Settled } from './pending';
 import { api, confirmDialog, editRunStatus, getConfirm, getState, markDraft, pendingConfirms, setState, toast, useStore } from '../store';
 import { clearKeptDrafts, goneReport, keptDraftKey, pruneKeptDrafts } from './kept-drafts';
 
@@ -66,7 +66,10 @@ export function projectClosed() {
 /** Text kept for being too long belongs to the opening it was typed in: once that has gone (leaving it was agreed,
  *  or another opening replaced it), the text goes, and so does what it held open. */
 export function forgetKeptDrafts() {
-  for (const field of clearKeptDrafts()) markDraft(keptDraftKey(field), false);
+  for (const field of clearKeptDrafts()) {
+    markDraft(keptDraftKey(field), false);
+    retainRefused(keptDraftKey(field), null);
+  }
 }
 
 // Text kept for a page, image or row the project no longer has (removed here, by the AI, or by an Undo) goes, and
@@ -77,6 +80,7 @@ useStore.subscribe((s, prev) => {
   if (s.snapshot.state === prev.snapshot?.state && !prev.snapshot?.aiBusy) return;
   for (const [field, draft] of pruneKeptDrafts()) {
     markDraft(keptDraftKey(field), false);
+    retainRefused(keptDraftKey(field), null);
     toast(goneReport(draft.name ?? ''), 'error', { label: 'Copy text', run: () => void navigator.clipboard?.writeText(draft.text).catch(() => undefined) });
   }
 });

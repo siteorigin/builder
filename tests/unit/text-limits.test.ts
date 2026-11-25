@@ -185,12 +185,13 @@ describe('text a field refused, handed between the places that show the same fie
     expect(keptOnLeave({ ...leaving, open: false, tooLong: true })).toBe('drop');
     // The page it belongs to has gone: nothing is kept for a place no field can show again.
     expect(keptOnLeave({ ...leaving, gone: true, checked: true })).toBe('drop');
+    expect(keptOnLeave({ ...leaving, gone: true, tooLong: true, over: true })).toBe('drop');
     // A field that refused nothing keeps nothing.
     expect(keptOnLeave(leaving)).toBeNull();
   });
 
   it('is never kept or dropped by a control another control of its place has taken it from', () => {
-    for (const f of [{ checked: true }, { tooLong: true }, { checked: true, open: false }, { tooLong: true, gone: true }]) expect(keptOnLeave({ ...leaving, ...f, mine: false })).toBeNull();
+    for (const f of [{ checked: true }, { tooLong: true }, { over: true }, { checked: true, over: true }, { checked: true, open: false }, { tooLong: true, gone: true }]) expect(keptOnLeave({ ...leaving, ...f, mine: false })).toBeNull();
   });
 
   it('passes from the SEO view to the Inspector and back as the same text, never to another page', () => {

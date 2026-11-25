@@ -329,6 +329,6 @@ describe('a page’s search settings in the SEO view (#702)', () => {
     expect(pageUpdate(about, { seoTitle: 'About us' }, 'Change browser title')).toEqual({ operations: [{ type: 'page.update', pageId: 'pg_about', seoTitle: 'About us' }], label: 'Change browser title (About)' });
     // The visibility switches say only that the page's settings changed, as they always have.
     expect(pageUpdate(about, { noindex: true })).toEqual({ operations: [{ type: 'page.update', pageId: 'pg_about', noindex: true }], label: 'Update page settings (About)' });
-    expect(pageUpdate(about, { structuredData: { price: '129' } }, 'Change price').label).toBe('Change price (About)');
+    expect(pageUpdate(about, { structuredData: { price: '129' } }, 'Change price')).toEqual({ operations: [{ type: 'page.update', pageId: 'pg_about', structuredData: { price: '129' } }], label: 'Change price (About)' });
   });
 });

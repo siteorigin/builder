@@ -641,6 +641,10 @@ assert.match(await meter('description').innerText(), /^45 characters/);
 await description.press('Escape');
 await eventually(async () => assert.ok((await result('desktop').locator('.serp-desc').innerText()).includes(documents[0].description), 'Escape puts the saved description back'));
 await surface('Link preview').click();
+await title.fill('Wheel classes');
+await eventually(async () => assert.equal(await card.locator('.share-card-title').innerText(), 'Wheel classes', 'the link preview follows the title being typed'));
+await title.press('Escape');
+await eventually(async () => assert.equal(await card.locator('.share-card-title').innerText(), documents[0].seoTitle));
 const canonical = viewField('canonical');
 await canonical.fill('https://journal.example/about/');
 await eventually(async () => assert.equal(await card.locator('.share-card-host').innerText(), 'journal.example', 'the link preview follows the canonical URL being typed'));
@@ -661,6 +665,7 @@ await eventually(async () => assert.equal((await aboutPage()).seo.noindex, true,
 assert.equal(await latest(), 'Update page settings (About)');
 await view.getByRole('switch', { name: 'Hide from site search' }).click();
 await eventually(async () => assert.equal((await aboutPage()).seo.searchHidden, true, 'the site search switch saves'));
+assert.equal(await latest(), 'Update page settings (About)');
 await viewField('updated').fill('2026-11-20');
 await viewField('updated').press('Enter');
 await eventually(async () => assert.equal((await aboutPage()).updatedAt, '2026-11-20', 'the revision date saves'));
@@ -704,16 +709,21 @@ assert.equal((await aboutPage()).seo.title, 'Pottery at Riverside', 'and nothing
 await title.press('Escape');
 await eventually(async () => assert.equal(await title.inputValue(), 'Pottery at Riverside', 'Escape puts the Inspector’s saved title back in the view'));
 // An address that can’t be a canonical URL, refused in the view while the caret is still in it, goes to the Inspector.
+const original = 'https://journal.example/about/';
+await canonical.fill(original);
+await canonical.press('Enter');
+await eventually(async () => assert.equal((await aboutPage()).seo.canonical, original, 'the canonical URL saves'));
+assert.equal(await latest(), 'Change canonical URL (About)');
 await canonical.fill('journal.example/about');
 await win.keyboard.press(`${MOD}+\\`);
 await eventually(async () => assert.equal(await holder.isVisible(), false));
 await eventually(async () => assert.equal(await inspField('canonical').inputValue(), 'journal.example/about', 'the Inspector shows the refused address'));
 assert.match(await fieldAlert(inspField('canonical')).innerText(), /Not saved/, 'with why it is not saved');
-assert.equal((await aboutPage()).seo.canonical, undefined, 'nothing is saved');
-// An undo of another change leaves it where it is.
+assert.equal((await aboutPage()).seo.canonical, original, 'nothing of it is saved');
+// An undo of the saved address leaves the refused one where it is, and says what is saved now.
 assert.ok((await win.evaluate(() => window.builder.project.undo())).ok);
-await eventually(async () => assert.equal((await aboutPage()).seo.title, 'Pottery classes by the river', 'the title is undone'));
-await win.waitForTimeout(400);
+await eventually(async () => assert.equal((await aboutPage()).seo.canonical, undefined, 'the saved address is undone'));
+await eventually(async () => assert.match(await fieldAlert(inspField('canonical')).innerText(), /Nothing is saved here yet/));
 assert.equal(await inspField('canonical').inputValue(), 'journal.example/about', 'the refused address stays through an undo');
 // Back in the view, and on to another page: the refused address is About’s alone.
 await rail('seo').click();
@@ -725,15 +735,24 @@ assert.equal(await canonical.inputValue(), '', 'Home’s canonical URL is its ow
 assert.equal(await fieldAlert(canonical).count(), 0, 'with nothing refused');
 await row('About').click();
 await eventually(async () => assert.equal(await canonical.inputValue(), 'journal.example/about', 'About keeps its refused address'));
+// Corrected to the address the undo took away, it is saved: the edit starts from what is saved now.
+await canonical.fill(original);
+await canonical.press('Enter');
+await eventually(async () => assert.equal((await aboutPage()).seo.canonical, original, 'the corrected address is saved'));
+assert.equal(await latest(), 'Change canonical URL (About)');
+await eventually(async () => assert.equal(await fieldAlert(canonical).count(), 0, 'with nothing refused'));
+await canonical.fill('journal.example/about');
+await canonical.press('Enter');
+await eventually(async () => assert.match(await fieldAlert(canonical).innerText(), /Not saved/));
 await canonical.press('Escape');
-await eventually(async () => assert.equal(await canonical.inputValue(), '', 'Escape puts the saved address back'));
+await eventually(async () => assert.equal(await canonical.inputValue(), original, 'Escape puts the saved address back'));
 assert.equal(await fieldAlert(canonical).count(), 0);
 // The view is left on the post it had chosen before, as the steps after expect.
 await row('Winter hours').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
 await rail('seo').click();
 await eventually(async () => assert.equal(await holder.isVisible(), false));
-await eventually(async () => assert.equal(await inspField('canonical').inputValue(), '', 'and the Inspector has nothing refused either'));
+await eventually(async () => assert.equal(await inspField('canonical').inputValue(), original, 'and the Inspector has nothing refused either'));
 assert.equal(await fieldAlert(inspField('canonical')).count(), 0);
 await allSaved();
 
