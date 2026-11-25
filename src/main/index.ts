@@ -32,6 +32,8 @@ import { desktopForLaunch, launchMode } from './headless-desktop';
 import { installAiJournal } from './ai-journal';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
+import { declareCodeContract } from '@engine/definitions';
+import type { ComponentDefinition } from '@shared/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Tests and side-by-side development can isolate settings, credentials and caches.
@@ -460,7 +462,10 @@ function registerIpc() {
   handle('project:unlock', () => controller.unlock());
   handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
   handle('project:validateSource', async (source: string) => {
-    const problems = await checkSvelteSource(String(source));
+    // The slots and parts the code declares by itself, as saving it declares them, so a slot it shows is checked.
+    const contract: ComponentDefinition = { kind: 'code', parts: { root: { nodeId: 'root', label: 'Root' } }, source: String(source) } as ComponentDefinition;
+    declareCodeContract(contract);
+    const problems = await checkSvelteSource(String(source), { contract });
     const errors = problems.filter((p) => p.severity === 'error');
     return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
   });

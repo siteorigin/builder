@@ -73,6 +73,7 @@ import { addPageStarter } from './page-starters';
 import {
   componentRemove,
   codeImports,
+  declareCodeContract,
   dependentsOf,
   directDependencies,
   dropPartOverrides,
@@ -315,6 +316,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         throw new EngineError('CONFLICT', `The properties of "${def.name}" changed since they were opened. Review them again before saving.`);
       if (op.properties) replaceProperties(state, def, op.properties, op.renames);
       def.source = op.source;
+      declareCodeContract(def);
       return { hash: sourceHash(op.source) };
     }
     case 'component.remove':
@@ -3181,6 +3183,7 @@ function createCode(state: ProjectState, op: Op<'component.createCode'>): OpResu
     provenance: { createdBy: 'user' },
     license: 'Project'
   };
+  declareCodeContract(def);
   state.components[id] = def;
   return { definitionId: id, sourcePath: def.sourcePath, hash: sourceHash(op.source) };
 }

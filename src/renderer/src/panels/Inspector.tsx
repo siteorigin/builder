@@ -75,7 +75,7 @@ import { useStyleCopyItems } from './StylePaste';
 import { platformKeys, useCopyPasteItems, type CopyPasteActions } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
-import { assetUrl, createComponentTarget, definitionView, ownerLabel, placedFeedRows, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
+import { assetUrl, createComponentTarget, definitionView, isCodePart, ownerLabel, placedFeedRows, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
 import { wrapItems } from './WrapItems';
@@ -511,6 +511,13 @@ function InspectorBody() {
   // Keyed by page: fields being typed in belong to their page, never to the one shown after it.
   if (!selection) return pageId ? <PageSettings key={`${pageId}:${handoff}`} page={st.pages[pageId]} state={st} /> : null;
   const r = resolveRef(st, selection);
+  // A part a code component's author marked: the code has no nodes, so the part is named by its contract alone.
+  if (!r.node && isCodePart(st, selection))
+    return (
+      <div className="panel-body insp" key={JSON.stringify(selection)}>
+        <CodePartInspector state={st} selection={selection} tokens={tokens} />
+      </div>
+    );
   if (!r.node)
     return (
       <div className="empty-insp">
@@ -1638,6 +1645,83 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
           )}
         </Section>
       )}
+    </>
+  );
+}
+
+/**
+ * A part of a code placement that its author marked in the code (`data-so-part`): styled for this placement through
+ * the part classes the code places, as the placement's own Part choice does.
+ */
+function CodePartInspector({ state, selection, tokens }: { state: ProjectState; selection: ElementRef & { partId: string }; tokens: Tokens }) {
+  const scope = useStore((s) => s.styleScope);
+  const styleItems = useStyleCopyItems(selection);
+  const r = resolveRef(state, selection);
+  const def = r.def!;
+  const inst = r.instance!;
+  const owner = selection.owner;
+  const partId = selection.partId;
+  const part = def.parts[partId];
+  const parent: ElementRef = { owner, instancePath: [], nodeId: inst.id };
+  const parentName = inst.name ?? def.name;
+  const here = refTo(owner, inst.id);
+  // Styles reach the part only through the classes the code places on it (so_o).
+  const codeStyled = codeTakesOverrides(def);
+  const allowed = placementStyleControls(def, partId, codeStyled);
+  const overrides = countStyles(inst.overrides?.[partId]);
+  const siblings = Object.keys(def.parts).filter((p) => p !== 'root');
+  const selectSibling = (p: string) => (p === partId ? focusName() : selectAndFocus({ owner, instancePath: [inst.id], nodeId: def.parts[p].nodeId, partId: p }));
+  return (
+    <>
+      <Header
+        title={part.label}
+        kind={
+          <>
+            Part of{' '}
+            <button className="link-btn" onClick={() => selectAndFocus(parent)} title="Select the whole section (Esc)">
+              {parentName}
+            </button>
+          </>
+        }
+        tone={owner.kind === 'shell' || owner.kind === 'template' ? 'shared' : 'local'}
+        icon={<Code />}
+        actions={<SelectionActions title={part.label} selection={selection} items={[{ label: `Select ${parentName}`, icon: <Component />, shortcut: 'Esc', onSelect: () => selectAndFocus(parent) }, ...(styleItems.length ? [{ separator: true }, ...styleItems] : [])]} />}
+      >
+        <OwnerScope
+          owner={owner}
+          state={state}
+          aside={
+            siblings.length > 1 && (
+              <span className="insp-mini-row">
+                <PartsButton title={parentName} parts={siblings.map((p) => ({ label: def.parts[p].label, current: p === partId, select: () => selectSibling(p) }))} />
+              </span>
+            )
+          }
+        />
+      </Header>
+      <Section title="Style" id="part-style" level={LEVEL} scope={overrides ? changes(overrides) : undefined}>
+        {allowed === null ? (
+          <p className="muted insp-note">
+            {def.name}’s code doesn’t place the classes it is given, so styles set here can’t reach {part.label.toLowerCase()}. Add <code>{`class={so_o?.${/^[A-Za-z_$][\w$]*$/.test(partId) ? partId : `[${JSON.stringify(partId)}]`}}`}</code> to the element in its code.
+          </p>
+        ) : (
+          <>
+            <CodeImportantNote name={def.name} props={codeImportantProps(def)} />
+            <StyleControls
+              styles={inst.overrides?.[partId]}
+              inherited={undefined}
+              wideColumns
+              allowed={allowed}
+              tokens={tokens}
+              onSet={(property, value, expectedRevision) =>
+                commitOps([{ type: 'node.setStyle', owner, nodeId: inst.id, partId, scope, property, value }], styleLabel(state, property, here, part.label, value), styleKey(property, `${inst.id}:${partId}:${scope}:${property}`), expectedRevision)
+              }
+              onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: inst.id, partId, scope: sc }], forLabel(state, 'Reset overrides', here, part.label))}
+              target={`the ${part.label.toLowerCase()}`}
+            />
+          </>
+        )}
+      </Section>
     </>
   );
 }

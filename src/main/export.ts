@@ -19,6 +19,7 @@ import { archivePages } from '@shared/archives';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
+import { withoutPartMarkers } from './codecheck';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
@@ -561,6 +562,22 @@ export async function leaveOutDrafts(dir: string, state: ProjectState): Promise<
   await fs.writeFile(join(dir, MANIFEST_PATH), toJson({ ...manifest, files: Object.fromEntries(Object.entries(files).sort()) }));
 }
 
+/**
+ * Take the editor's part markers (data-so-part) out of a staged copy's code components before the website is built from
+ * it: the preview finds each marked part of a code component by its marker, and the published site carries none. The
+ * editable project, and its export, keep them, so the parts are still found wherever the project is opened again.
+ */
+export async function stripPartMarkers(project: string, state: ProjectState): Promise<void> {
+  for (const def of Object.values(state.components)) {
+    if (def.kind !== 'code' || def.owner !== 'project' || !def.sourcePath) continue;
+    const abs = safeJoin(project, def.sourcePath);
+    const source = await readIfExists(abs);
+    if (source === null) continue;
+    const clean = await withoutPartMarkers(source);
+    if (clean !== source) await fs.writeFile(abs, clean);
+  }
+}
+
 /** Why a website export stopped: published pages link to drafts, which the website leaves out. Null when none do. */
 export function draftLinksStop(state: ProjectState): { message: string; warnings: string[] } | null {
   const { draftLinks } = publicationPlan(state);
@@ -972,7 +989,7 @@ function generalFailure(read: ExplainedBuild): { message: string; warnings: stri
 
 
 /** Markup and code only the editor's preview may carry. */
-const EDITOR_MARKUP = /data-so-(ctx|node)|siteorigin-bridge/;
+const EDITOR_MARKUP = /data-so-(ctx|node|part)|siteorigin-bridge/;
 
 /** Start tags as Svelte writes them, and whole scripts and styles; see NOT_FOUND_JS, which makes these addresses absolute. */
 const BUILT_PARTS = /<script(?=[\s/>])[^>]*>[\s\S]*?<\/script\s*>|<style(?=[\s/>])[^>]*>[\s\S]*?<\/style\s*>|<[a-zA-Z][^\s/>]*(?:\s+[^\s"'=<>/]+(?:="[^"]*")?)*\s*\/?>/gi;

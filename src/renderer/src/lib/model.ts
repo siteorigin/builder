@@ -23,6 +23,11 @@ export interface BridgeDesc {
   tag?: string;
   text?: string;
   code?: boolean;
+  /**
+   * A part a code component's author marked (`data-so-part`): its declared ID. The rest of the descriptor names the
+   * code placement it belongs to.
+   */
+  part?: string;
 }
 
 export function treeFor(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
@@ -46,6 +51,11 @@ export function ctxOf(ref: ElementRef): string {
 
 /** Descriptor the bridge uses to find the DOM element(s) for a reference. */
 export function descOf(state: ProjectState, ref: ElementRef): BridgeDesc {
+  // A declared part of a code placement is found by its author's marker inside that placement.
+  if (isCodePart(state, ref)) {
+    const placement = ref.instancePath[ref.instancePath.length - 1];
+    return { ctx: ctxOf({ ...ref, instancePath: ref.instancePath.slice(0, -1) }), node: placement, items: '', part: ref.partId };
+  }
   const items = (ref.itemPath ?? []).map(encodeItemId).join(',');
   // A managed instance boundary is rendered by its definition root (through any component that root places), which
   // carries the items the placement sits in.
@@ -162,11 +172,35 @@ function decodeItemId(segment: string): string {
 function refFromDesc(state: ProjectState, d: BridgeDesc): ElementRef | null {
   const p = parseCtx(d.ctx);
   if (!p) return null;
+  if (d.part !== undefined) return codePartRef(state, p.owner, p.path, d.node, d.part);
   const ref: ElementRef = { owner: p.owner, instancePath: p.path, nodeId: d.node };
   if (d.items) ref.itemPath = d.items.split(',').map(decodeItemId);
   const r = resolveRef(state, ref);
   if (r.def) ref.partId = partIdFor(r.def, d.node);
   return ref;
+}
+
+/**
+ * A part a code component's author marked, as the editor names it: the part its contract declares under that ID, on
+ * a code placement in the owner's own tree. Null for anything else: a part it does not declare, its root (the
+ * placement itself), or a code component placed inside another component's design, whose parts that placement styles.
+ */
+function codePartRef(state: ProjectState, owner: OwnerRef, path: string[], placementId: string, partId: string): ElementRef | null {
+  if (path.length || partId === 'root') return null;
+  const placement = own(treeFor(state, owner)?.nodes ?? {}, placementId);
+  const def = placement?.kind === 'instance' ? own(state.components, placement.definitionId) : undefined;
+  const part = def?.kind === 'code' ? own(def.parts, partId) : undefined;
+  return part && typeof part.nodeId === 'string' ? { owner, instancePath: [placementId], nodeId: part.nodeId, partId } : null;
+}
+
+/**
+ * Whether a reference is a declared part of a code placement in its owner's own tree (see codePartRef). A code
+ * component has no tree of its own, so such a part is named by its contract alone, never one item of a list.
+ */
+export function isCodePart(state: ProjectState, ref: ElementRef | null | undefined): ref is ElementRef & { partId: string } {
+  if (!ref || ref.instancePath.length !== 1 || !ref.partId || ref.partId === 'root' || ref.itemPath?.length) return false;
+  const r = resolveRef(state, ref);
+  return !r.node && !!r.instance && r.def?.kind === 'code' && own(r.def.parts, ref.partId)?.nodeId === ref.nodeId;
 }
 
 /**
@@ -304,7 +338,7 @@ function nearestPart(def: ComponentDefinition, nodeId: string): string | undefin
 
 /** Is this reference a useful selection target (a primitive, a declared part or bound content)? */
 function selectable(state: ProjectState, ref: ElementRef): boolean {
-  if (!ref.instancePath.length) return true;
+  if (!ref.instancePath.length || isCodePart(state, ref)) return true;
   const r = resolveRef(state, ref);
   if (!r.node) return false;
   if (ref.partId) return true;
@@ -361,7 +395,7 @@ function ancestry(state: ProjectState, ref: ElementRef): Set<string> {
 export function selectionFromChain(state: ProjectState, chain: BridgeDesc[], current: ElementRef | null, deep: boolean): ElementRef | null {
   // Descriptors that name nothing in the project (stale, or not the editor's) are ignored.
   const chainRefs = chain.map((d) => refFromDesc(state, d));
-  const refs = chainRefs.filter((r): r is ElementRef => !!r && !!resolveRef(state, r).node);
+  const refs = chainRefs.filter((r): r is ElementRef => !!r && (!!resolveRef(state, r).node || isCodePart(state, r)));
   if (!refs.length) return null;
   let levels: ElementRef[] = [];
   const seen = new Set<string>();

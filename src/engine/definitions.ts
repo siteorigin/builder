@@ -452,6 +452,38 @@ export function setPart(state: ProjectState, op: Op<'component.setPart'>): OpRes
   return {};
 }
 
+/** A part or slot name as its label: "priceTotal" is "Price total". */
+const labelOf = (id: string) => id.replace(/([A-Z])/g, ' $1').toLowerCase().replace(/^./, (c) => c.toUpperCase());
+
+/**
+ * Declares the parts and slots a code component's code shows that its contract does not have yet, each under its own
+ * name: an element marked data-so-part="total" is the "Total" part, and a snippet the code takes from $props() as
+ * slot_content (or renders as {@render slot_content?.()}) is the "Content" slot. Nothing is taken away: a part or slot
+ * the code no longer shows keeps its placements' styles and content until it is removed, and the code check names it.
+ * Read from the code's text: the code check, which parses it, reports any marker or slot this cannot read.
+ */
+export function declareCodeContract(def: ComponentDefinition): void {
+  if (def.kind !== 'code') return;
+  const src = def.source ?? '';
+  const scripts = [...src.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+  const markup = src
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
+  for (const m of markup.matchAll(/\sdata-so-part\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*(["'`])([^"'`{}]*)\3\s*\})/g)) {
+    const id = (m[1] ?? m[2] ?? m[4] ?? '').trim();
+    if (id === 'root' || !validId(id) || own(def.parts, id)) continue;
+    def.parts[id] = { nodeId: id, label: labelOf(id) };
+  }
+  const slots = new Set<string>();
+  for (const m of markup.matchAll(/\{@render\s+slot_([A-Za-z][A-Za-z0-9]*)\s*(?:\?\.)?\s*\(/g)) slots.add(m[1]);
+  for (const d of scripts.matchAll(/\{([^{}]*)\}\s*=\s*\$props\(\s*\)/g)) for (const m of d[1].matchAll(/(?:^|[\s,{])slot_([A-Za-z][A-Za-z0-9]*)\s*(?=[:,=}]|$)/g)) slots.add(m[1]);
+  for (const name of slots) {
+    if (!validId(name) || own(def.slots, name)) continue;
+    (def.slots ??= {})[name] = { label: labelOf(name) };
+  }
+}
+
 export function removePart(state: ProjectState, op: Op<'component.removePart'>): OpResult {
   const def = projectDef(state, op.definitionId);
   if (op.partId === 'root') fail('Every component keeps its root part.');
