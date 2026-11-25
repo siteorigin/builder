@@ -561,6 +561,27 @@ describe('copy and paste (#62)', () => {
   });
 });
 
+describe('placement role (#661)', () => {
+  it('is set in one step Undo takes back, and only from the editor', async () => {
+    const { s } = await make();
+    const home = s.state.pages[s.state.site.homePageId];
+    const themed = home.rootIds.map((id) => home.nodes[id] as InstanceNode).find((n) => s.state.components[n.definitionId]?.componentId === 'features.grid')!;
+    const fork = await s.apply({ operations: [{ type: 'component.fork', definitionId: themed.definitionId }] }, { label: 'Make a project copy', source: 'user' });
+    const definitionId = fork.results![0].definitionId as string;
+    const refused = await s.apply({ operations: [{ type: 'component.setInsertAs', definitionId, insertAs: 'element' }] }, { label: 'Set role', source: 'ai' });
+    expect(refused.ok).toBe(false);
+    expect(refused.error?.message).toMatch(/only for the editor/);
+    expect(s.state.components[definitionId].insertAs).toBeUndefined();
+    const entries = s.historyInfo().entries.length;
+    const r = await s.apply({ operations: [{ type: 'component.setInsertAs', definitionId, insertAs: 'element' }] }, { label: 'Insert as a subcomponent', source: 'user' });
+    expect(r.ok).toBe(true);
+    expect(s.state.components[definitionId].insertAs).toBe('element');
+    expect(s.historyInfo().entries.length).toBe(entries + 1);
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.components[definitionId].insertAs).toBeUndefined();
+  });
+});
+
 describe('section links', () => {
   it('saves a section pick as one step, and lets a linked section be deleted and reported', async () => {
     const { s } = await make();
