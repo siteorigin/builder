@@ -38,8 +38,8 @@ import {
   BookmarkPlus,
   Download
 } from 'lucide-react';
-import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue, TextNode } from '@shared/types';
-import { isBinding, parseStyleScopeKey } from '@shared/types';
+import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveScope, ResponsiveStyles, ScalarPropSchema, StyleState, StyleValue, TextNode } from '@shared/types';
+import { isBinding, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { followNote } from '@shared/site-name';
 import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
@@ -49,7 +49,7 @@ import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
 import { postAt, postShown, postWorkspace } from '../lib/posts';
-import { cascadeStyles, columnLayoutPart, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
+import { STATE_WORDS, cascadeStyles, columnLayoutPart, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
 import type { EditOperation } from '@shared/ops';
@@ -255,6 +255,17 @@ function applyTableEdit(owner: OwnerRef, nodeId: string, prop: string, edit: Tab
  * exception: each drag, typed value or Center is its own step, so Undo goes back one drag at a time.
  */
 const styleKey = (property: string, key: string) => (property === 'objectPosition' ? undefined : key);
+/** A style change's size, and its interactive state (hover, focus, pressed) when it is for one. */
+const styleAt = (scope: ResponsiveScope, inState?: StyleState) => (inState ? { scope, state: inState } : { scope });
+/**
+ * The resets a Style section asks for, as one step: every change at a size (or at every size), or only the changes
+ * of some interactive states there.
+ */
+function styleResets(op: Omit<Extract<EditOperation, { type: 'node.resetStyles' }>, 'scope' | 'state'>, scope?: ResponsiveScope, states?: StyleState[]): EditOperation[] {
+  return states?.length ? states.map((st) => ({ ...op, scope, state: st })) : [{ ...op, scope }];
+}
+/** A reset's name: `words`, or with only some states reset, which ones ("Reset hover and focus styles"). */
+const resetWords = (words: string, states?: StyleState[]) => (states?.length ? `Reset ${states.length > 1 ? `${states.slice(0, -1).join(', ')} and ${states[states.length - 1]}` : states[0]} styles` : words);
 
 /** Where the preview serves pictures from, once it is running. */
 const useDevUrl = () => useStore((s) => (s.runtime.state === 'ready' ? s.runtime.url : null));
@@ -867,6 +878,8 @@ function ColumnLayout({ owner, def, node, variants, tokens, onSet }: { owner: Ow
         tokens={tokens}
         onSet={onSet(columns.partId)}
         onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: columns.partId, scope: sc }], named((st) => forLabel(st, `Reset ${part.label.toLowerCase()}`, refTo(owner, node.id)), `Reset ${part.label.toLowerCase()}`))}
+        // Column layout styles a part inside the selection, which the canvas does not show in a state.
+        states={false}
         target={`the ${part.label.toLowerCase()}`}
       />
     </Section>
@@ -891,6 +904,14 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const styleItems = useStyleCopyItems(selection);
   const clipboard = useCopyPasteItems(clipboardActions(owner, plan));
   const def = state.components[node.definitionId];
+  // The part the Style section styles (see styledPart below).
+  const partStyled = def?.kind === 'code' && def.parts[codePart] ? codePart : 'root';
+  // Another part styled (chosen, or the one styled is gone: an Undo, the AI) is styled at rest until a state is chosen
+  // for it, and the canvas lets go of the part it showed in a state.
+  useEffect(() => {
+    const s = getState();
+    if (s.styleState && s.styleStatePart !== (partStyled === 'root' ? null : partStyled)) setState({ styleState: null, styleStatePart: null });
+  }, [partStyled]);
   if (!def) return null;
   const title = node.name ?? def.name;
   const shell = owner.kind === 'shell';
@@ -906,7 +927,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const codeImportant = codeStyled ? codeImportantProps(def) : [];
   // A design whose root is a placed code component: its whole-section styles land on that code's root.
   const rootCode = def.kind === 'managed' ? renderedCode(state, node) : undefined;
-  const styledPart = def.kind === 'code' && def.parts[codePart] ? codePart : 'root';
+  const styledPart = partStyled;
   // Making a code component unique copies its source into the project, which is only editable in developer mode.
   const canMakeUnique = def.kind === 'managed' || dev;
   // An entrance lands on the design's root element, which only a design built in the editor places.
@@ -914,8 +935,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
   const here = refTo(owner, node.id);
   const set = (prop: string, value: unknown, edit?: PendingEdit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], fieldLabel(state, def.properties[prop]?.label ?? prop, here), `${node.id}:${prop}`);
-  const onStyle = (partId: string) => (property: string, value: StyleValue | null, expectedRevision?: number) =>
-    commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], styleLabel(state, property, here, partId === 'root' ? undefined : (def.parts[partId]?.label ?? partId), value), styleKey(property, `${node.id}:${partId}:${scope}:${property}`), expectedRevision);
+  const onStyle = (partId: string) => (property: string, value: StyleValue | null, expectedRevision?: number, inState?: StyleState) =>
+    commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, ...styleAt(scope, inState), property, value }], styleLabel(state, property, here, partId === 'root' ? undefined : (def.parts[partId]?.label ?? partId), value, inState), styleKey(property, `${node.id}:${partId}:${styleScopeKey(scope, inState)}:${property}`), expectedRevision);
   // A component whose whole design is one image (made from a cropped page image) chooses its focus here.
   const rootNodeId = rootPart?.nodeId ?? def.tree?.rootIds[0];
   const rootNode = rootNodeId ? def.tree?.nodes[rootNodeId] : undefined;
@@ -1141,12 +1162,13 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           <StyleControls
             styles={node.overrides?.root}
             inherited={designStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants)}
+            layers={designLayers(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants)}
             wideColumns
             allowed={placementStyleControls(def, 'root', codeStyled) ?? undefined}
             tokens={tokens}
             image={rootImage}
             onSet={onStyle('root')}
-            onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: 'root', scope: sc }], forLabel(state, 'Reset overrides', refTo(owner, node.id)))}
+            onReset={(sc, states) => void applyOps(styleResets({ type: 'node.resetStyles', owner, nodeId: node.id, partId: 'root' }, sc, states), forLabel(state, resetWords('Reset overrides', states), refTo(owner, node.id)))}
             target={`the ${def.name.toLowerCase()} itself`}
           />
         </Section>
@@ -1155,7 +1177,11 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={[styledPart === 'root' ? 'Whole section' : (def.parts[styledPart]?.label ?? 'Whole section'), overrides ? changes(overrides) : ''].filter(Boolean).join(' · ')}>
           {Object.keys(def.parts).length > 1 && (
             <Field label="Part">
-              <select className="select" value={styledPart} onChange={(e) => setCodePart(e.target.value)}>
+              <select
+                className="select"
+                value={styledPart}
+                onChange={(e) => setCodePart(e.target.value)}
+              >
                 {Object.entries(def.parts).map(([id, p]) => (
                   <option key={id} value={id}>
                     {id === 'root' ? `Whole ${def.name.toLowerCase()}` : p.label}
@@ -1173,7 +1199,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             allowed={placementStyleControls(def, styledPart, codeStyled) ?? undefined}
             tokens={tokens}
             onSet={onStyle(styledPart)}
-            onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: styledPart, scope: sc }], forLabel(state, 'Reset overrides', here, styledPart === 'root' ? undefined : def.parts[styledPart]?.label))}
+            onReset={(sc, states) => void applyOps(styleResets({ type: 'node.resetStyles', owner, nodeId: node.id, partId: styledPart }, sc, states), forLabel(state, resetWords('Reset overrides', states), here, styledPart === 'root' ? undefined : def.parts[styledPart]?.label))}
+            statePart={styledPart === 'root' ? undefined : styledPart}
             target={styledPart === 'root' ? `the ${def.name.toLowerCase()} itself` : `the ${def.parts[styledPart].label.toLowerCase()}`}
           />
         </Section>
@@ -1598,15 +1625,21 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 image={itemImage}
                 resetLabel="Reset to shared style"
                 target={thisItem}
-                onSet={(property, value, expectedRevision) =>
+                layers={[...designLayers(def, part.nodeId, inst.variants), { styles: inst.overrides?.[partId!], strength: 3 }]}
+                onSet={(property, value, expectedRevision, inState) =>
                   commitOps(
-                    [{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, itemId, scope, property, value }],
-                    styleLabel(state, property, refTo(instOwner, instNodeId), thisItem, value),
-                    styleKey(property, JSON.stringify([keyAt, partId, itemId, scope, property])),
+                    [{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, itemId, ...styleAt(scope, inState), property, value }],
+                    styleLabel(state, property, refTo(instOwner, instNodeId), thisItem, value, inState),
+                    styleKey(property, JSON.stringify([keyAt, partId, itemId, styleScopeKey(scope, inState), property])),
                     expectedRevision
                   )
                 }
-                onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId, itemId, scope: sc }], `Reset ${thisItem} to shared style in ${subjectWords(state, refTo(instOwner, instNodeId))}`)}
+                onReset={(sc, states) =>
+                  void applyOps(
+                    styleResets({ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId, itemId }, sc, states),
+                    states?.length ? forLabel(state, resetWords('', states), refTo(instOwner, instNodeId), thisItem) : `Reset ${thisItem} to shared style in ${subjectWords(state, refTo(instOwner, instNodeId))}`
+                  )
+                }
               />
             </>
           ) : (
@@ -1639,14 +1672,15 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 key="all"
                 styles={inst.overrides?.[partId!]}
                 inherited={designStyles(def, part.nodeId, inst.variants)}
+                layers={designLayers(def, part.nodeId, inst.variants)}
                 wideColumns
                 allowed={partStyleControls(def, partId!)}
                 tokens={tokens}
                 image={partImage}
-                onSet={(property, value, expectedRevision) =>
-                  commitOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], styleLabel(state, property, refTo(instOwner, instNodeId), part.label, value), styleKey(property, `${keyAt}:${partId}:${scope}:${property}`), expectedRevision)
+                onSet={(property, value, expectedRevision, inState) =>
+                  commitOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, ...styleAt(scope, inState), property, value }], styleLabel(state, property, refTo(instOwner, instNodeId), part.label, value, inState), styleKey(property, `${keyAt}:${partId}:${styleScopeKey(scope, inState)}:${property}`), expectedRevision)
                 }
-                onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId, scope: sc }], forLabel(state, 'Reset overrides', refTo(instOwner, instNodeId), part.label))}
+                onReset={(sc, states) => void applyOps(styleResets({ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId }, sc, states), forLabel(state, resetWords('Reset overrides', states), refTo(instOwner, instNodeId), part.label))}
               />
             </>
           )}
@@ -1868,8 +1902,10 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
           allowed={styleSetFor(node)}
           tokens={tokens}
           image={node.kind === 'image' ? focusImage(state, devUrl, shownImage(state, selection, node.image), [], 'This picture can’t be shown here.') : undefined}
-          onSet={(property, value, expectedRevision) => commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value }], styleLabel(state, property, refTo(owner, node.id), undefined, value), styleKey(property, `${node.id}:${scope}:${property}`), expectedRevision)}
-          onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], forLabel(state, 'Reset styles', refTo(owner, node.id)))}
+          onSet={(property, value, expectedRevision, inState) =>
+            commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, ...styleAt(scope, inState), property, value }], styleLabel(state, property, refTo(owner, node.id), undefined, value, inState), styleKey(property, `${node.id}:${styleScopeKey(scope, inState)}:${property}`), expectedRevision)
+          }
+          onReset={(sc, states) => void applyOps(styleResets({ type: 'node.resetStyles', owner, nodeId: node.id }, sc, states), forLabel(state, resetWords('Reset styles', states), refTo(owner, node.id)))}
         />
       </Section>
       <Section title="Advanced" id="prim-advanced" defaultOpen={false} level={LEVEL} scope={[node.anchor && `#${node.anchor}`, node.kind === 'element' && appearSummary(node)].filter(Boolean).join(' · ') || undefined}>
@@ -2192,7 +2228,9 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   // Under a look's own rules: what the design gives this element at each size without them (its own styles and the
   // default of every other choice), and for a component placed in the design, that component's design and the
   // changes this design makes to it.
-  const lookInherited = look
+  // Every rule on this element with the look chosen, the look's own included, weakest first: what a hover, focus or
+  // pressed state of the look shows through is worked out among them (see stateUnder).
+  const lookLayers = look
     ? node.kind === 'instance'
       ? (() => {
           const placed = state.components[node.definitionId];
@@ -2200,12 +2238,18 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           const inner = placed?.kind === 'managed' && rootId ? designLayers(placed, rootId, startChoices) : [];
           // The other choices of this design style the placed component too, as their defaults. Their rules and the
           // placed design's own are equally specific, so the stylesheet's order decides: definitions by ID.
-          const outer = designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles && l.styles !== lookOption!.styles?.[node.id]);
-          const layers = def.id.localeCompare(node.definitionId) < 0 ? [...outer, ...inner] : [...inner, ...outer];
-          return cascadeStyles([...layers, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }]);
+          // Each definition's stylesheet is written whole, its states included, before the next: its block.
+          const outerFirst = def.id.localeCompare(node.definitionId) < 0;
+          const outer = designLayers(def, node.id, { [look.axis]: look.variant })
+            .filter((l) => l.styles)
+            .map((l) => ({ ...l, block: outerFirst ? 0 : 1 }));
+          const innerBlocks = inner.map((l) => ({ ...l, block: outerFirst ? 1 : 0 }));
+          const layers = outerFirst ? [...outer, ...innerBlocks] : [...innerBlocks, ...outer];
+          return [...layers, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }];
         })()
-      : cascadeStyles(designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles !== lookOption!.styles?.[node.id]))
+      : designLayers(def, node.id, { [look.axis]: look.variant })
     : undefined;
+  const lookInherited = lookLayers ? cascadeStyles(lookLayers.filter((l) => l.styles !== lookOption!.styles?.[node.id])) : undefined;
   // The look's preview renders only while the Inspector is on screen: a hidden one would prepare it again on every change.
   const inspecting = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
@@ -2389,18 +2433,24 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
               key={`${look.axis}:${look.variant}`}
               styles={lookOption!.styles?.[node.id]}
               inherited={lookInherited}
+              layers={lookLayers}
               wideColumns
               tokens={tokens}
               allowed={node.kind === 'instance' ? (placedDef?.parts.root?.styleControls ?? styleSetFor(node)) : styleSetFor(node)}
-              onSet={(property, value, expectedRevision) =>
+              onSet={(property, value, expectedRevision, inState) =>
                 commitOps(
-                  [{ type: 'node.setStyle', owner, nodeId: node.id, variant: look.variant, axis: look.axis, scope, property, value }],
-                  `${value === null ? 'Reset' : 'Set'} ${styleWords(property)} for the ${lookOption!.label} look of ${subjectWords(state, refTo(owner, node.id))}`,
-                  styleKey(property, `${def.id}:${node.id}:${look.axis}:${look.variant}:${scope}:${property}`),
+                  [{ type: 'node.setStyle', owner, nodeId: node.id, variant: look.variant, axis: look.axis, ...styleAt(scope, inState), property, value }],
+                  `${value === null ? 'Reset' : 'Set'} ${styleWords(property)}${inState ? ` ${STATE_WORDS[inState]}` : ''} for the ${lookOption!.label} look of ${subjectWords(state, refTo(owner, node.id))}`,
+                  styleKey(property, `${def.id}:${node.id}:${look.axis}:${look.variant}:${styleScopeKey(scope, inState)}:${property}`),
                   expectedRevision
                 )
               }
-              onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, variant: look.variant, axis: look.axis, scope: sc }], `Clear the ${lookOption!.label} look of ${subjectWords(state, refTo(owner, node.id))}`)}
+              onReset={(sc, states) =>
+                void applyOps(
+                  styleResets({ type: 'node.resetStyles', owner, nodeId: node.id, variant: look.variant, axis: look.axis }, sc, states),
+                  states?.length ? `${resetWords('', states)} of the ${lookOption!.label} look of ${subjectWords(state, refTo(owner, node.id))}` : `Clear the ${lookOption!.label} look of ${subjectWords(state, refTo(owner, node.id))}`
+                )
+              }
               resetLabel={`Clear the ${lookOption!.label} look here`}
               target={`the ${lookOption!.label} look of this element`}
             />
@@ -2412,10 +2462,11 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
             wideColumns
             tokens={tokens}
             allowed={placedDef?.parts.root?.styleControls ?? styleSetFor(node)}
-            onSet={(property, value, expectedRevision) =>
-              commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId: 'root', scope, property, value }], styleLabel(state, property, refTo(owner, node.id), undefined, value), styleKey(property, `${def.id}:${node.id}:root:${scope}:${property}`), expectedRevision)
+            layers={placedDef?.kind === 'managed' && placedDef.tree ? designLayers(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, def)) : undefined}
+            onSet={(property, value, expectedRevision, inState) =>
+              commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId: 'root', ...styleAt(scope, inState), property, value }], styleLabel(state, property, refTo(owner, node.id), undefined, value, inState), styleKey(property, `${def.id}:${node.id}:root:${styleScopeKey(scope, inState)}:${property}`), expectedRevision)
             }
-            onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: 'root', scope: sc }], forLabel(state, 'Reset overrides', refTo(owner, node.id)))}
+            onReset={(sc, states) => void applyOps(styleResets({ type: 'node.resetStyles', owner, nodeId: node.id, partId: 'root' }, sc, states), forLabel(state, resetWords('Reset overrides', states), refTo(owner, node.id)))}
             target={`the ${(node.name ?? placedDef?.name ?? 'component').toLowerCase()} itself`}
           />
         ) : (
@@ -2425,25 +2476,33 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           designSizesWin
           tokens={tokens}
           allowed={styleSetFor(node)}
+          // A list or a slot renders no element of its own: nothing would show a state of it.
+          states={node.kind !== 'repeat' && node.kind !== 'slot'}
           image={defImage}
-          onSet={(property, value, expectedRevision) => {
+          onSet={(property, value, expectedRevision, inState) => {
             // Resetting a value restores the original design's value, when there is one.
-            const restore = value === null ? original?.[scope]?.[property] : undefined;
-            return commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value: restore ?? value }], styleLabel(state, property, refTo(owner, node.id), undefined, restore ?? value), styleKey(property, `${def.id}:${node.id}:${scope}:${property}`), expectedRevision);
+            const restore = value === null ? original?.[styleScopeKey(scope, inState)]?.[property] : undefined;
+            return commitOps(
+              [{ type: 'node.setStyle', owner, nodeId: node.id, ...styleAt(scope, inState), property, value: restore ?? value }],
+              styleLabel(state, property, refTo(owner, node.id), undefined, restore ?? value, inState),
+              styleKey(property, `${def.id}:${node.id}:${styleScopeKey(scope, inState)}:${property}`),
+              expectedRevision
+            );
           }}
           onReset={
             original
-              ? (only) => {
+              ? (only, states) => {
                   const ops: EditOperation[] = [];
-                  // A size restores its resting style and its states; without one, every rule that changed.
+                  // A size restores its resting style and its states; without one, every rule that changed. With
+                  // states, only their rules.
                   for (const key of Object.keys(changed ?? {}) as Array<keyof ResponsiveStyles>) {
                     const at = parseStyleScopeKey(key);
-                    if (!at || (only && at.scope !== only)) continue;
+                    if (!at || (only && at.scope !== only) || (states?.length && !(at.state && states.includes(at.state)))) continue;
                     for (const prop of Object.keys(changed?.[key] ?? {})) ops.push({ type: 'node.setStyle', owner, nodeId: node.id, scope: at.scope, ...(at.state ? { state: at.state } : {}), property: prop, value: (original[key]?.[prop] ?? null) as StyleValue | null });
                   }
-                  if (ops.length) void applyOps(ops, forLabel(state, 'Restore the design’s styles', refTo(owner, node.id)));
+                  if (ops.length) void applyOps(ops, forLabel(state, states?.length ? resetWords('', states) : 'Restore the design’s styles', refTo(owner, node.id)));
                 }
-              : (sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], forLabel(state, 'Clear styles', refTo(owner, node.id)))
+              : (sc, states) => void applyOps(styleResets({ type: 'node.resetStyles', owner, nodeId: node.id }, sc, states), forLabel(state, resetWords('Clear styles', states), refTo(owner, node.id)))
           }
           resetLabel={original ? 'Restore original design' : 'Clear styles on this element'}
         />

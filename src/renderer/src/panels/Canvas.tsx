@@ -129,6 +129,8 @@ export function Canvas() {
   // While Site styles is open, edits are site-wide; the element selection steps back.
   const stylesOpen = useStore((s) => s.rightTab === 'styles' && s.dockOpen);
   const styleScope = useStore((s) => s.styleScope);
+  const styleState = useStore((s) => s.styleState);
+  const styleStatePart = useStore((s) => s.styleStatePart);
   const scrollRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
@@ -684,6 +686,7 @@ export function Canvas() {
           // A new page starts with nothing revealed.
           sentReveal.current = null;
           syncReveal();
+          syncForcedState();
           // A component preview has no address of its own to go to: the frame stays on it.
           if (studio) break;
           const request = nav.current.request;
@@ -1169,6 +1172,22 @@ export function Canvas() {
   useEffect(() => {
     if (ready) post('mode', { mode });
   }, [mode, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * The hover, focus or pressed state the Inspector edits, shown on the selected element (or the part of it being
+   * styled) so its changes can be seen without the pointer on the page: only while editing, with the inspector in
+   * view. Anything else (Default, Preview, another selection, the inspector closed) clears it.
+   */
+  function syncForcedState() {
+    const s = getState();
+    const shown = !!s.styleState && s.mode === 'edit' && s.dockOpen && s.rightTab === 'inspect';
+    const desc = shown ? descFor(s.selection) : null;
+    post('forceState', desc ? { state: s.styleState, desc, part: s.styleStatePart } : { state: null });
+  }
+  useEffect(() => {
+    if (ready) syncForcedState();
+    // The selection itself, not its key: in Edit everywhere a click on the same node in another placement shows it there.
+  }, [ready, mode, styleState, styleStatePart, inspectorShown, selection, snapshot?.revision, view?.key, definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Each visit to Preview starts practising successful sends, with nothing said about earlier ones.
   useEffect(() => {

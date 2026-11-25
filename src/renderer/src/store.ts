@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { AiEvent, AppSettings, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
-import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope } from '@shared/types';
+import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
@@ -190,6 +190,14 @@ export interface State {
   leftWidth: number;
   rightWidth: number;
   styleScope: ResponsiveScope;
+  /**
+   * The interactive state the Style section edits (hover, keyboard focus, pressed), or null for the resting style.
+   * While one is chosen in Edit mode the canvas shows the selected element in it. Selecting something else, or
+   * another page or component, goes back to the resting style.
+   */
+  styleState: StyleState | null;
+  /** The part of the selected element that `styleState` styles, when not its whole self (a code component's part). */
+  styleStatePart: string | null;
   /** `revealed`: the list item open in the inspector, outlined on the page (see revealedItem). */
   rects: { selected: Rect[]; hovered: Rect[]; revealed: Rect[] };
   /** The list item open in the inspector, revealed on the page while it is edited. Never saved. */
@@ -314,6 +322,8 @@ export const useStore = create<State>((set) => ({
   leftWidth: PANEL_DEFAULTS.left,
   rightWidth: PANEL_DEFAULTS.right,
   styleScope: 'base',
+  styleState: null,
+  styleStatePart: null,
   rects: { selected: [], hovered: [], revealed: [] },
   revealedItem: null,
   showSelection: 0,
@@ -1161,6 +1171,15 @@ export function applyAiEvent(e: AiEvent) {
 // Held edits are unsaved work: saving or leaving the project says so, as it does for any open draft.
 useStore.subscribe((s, prev) => {
   if (s.heldEdits !== prev.heldEdits) markDraft(HELD_DRAFT, s.heldEdits.length > 0);
+});
+
+// A hover, focus or pressed state is chosen for one element: selecting another, or another page or component, edits
+// (and shows) the resting style again, so the canvas never keeps an element it no longer edits in that state.
+useStore.subscribe((s, prev) => {
+  if (!s.styleState) return;
+  const key = (r: ElementRef | null) => (r ? refKey(r) : null);
+  if (key(s.selection) !== key(prev.selection) || s.pageId !== prev.pageId || s.definitionMode?.definitionId !== prev.definitionMode?.definitionId || s.templateMode?.collectionId !== prev.templateMode?.collectionId)
+    useStore.setState({ styleState: null, styleStatePart: null });
 });
 
 // The look Edit everywhere styles belongs to that one visit: leaving the component, or editing another, starts again

@@ -3895,6 +3895,140 @@ function stackReport(deadline) {
 }
 
 // ---------------------------------------------------------------------------
+// A hover, focus or pressed state shown on the selected element
+// ---------------------------------------------------------------------------
+
+/**
+ * The state the Inspector is editing, shown on the selected element (`{ state, desc, part }`), or null. The page's own
+ * stylesheets are rewritten in place so that an element marked with FORCE_ATTR matches `:hover`, `:focus`,
+ * `:focus-visible` or `:active` rules as if it were in that state, keeping each rule's order, layer and media query.
+ * Nothing of this reaches the exported site: the bridge and its marks live only in the editor's preview.
+ */
+let forced = null;
+/** The elements marked now. */
+const forcedEls = new Set();
+const FORCE_ATTR = 'data-so-force-state';
+const FORCE_STATES = ['hover', 'focus', 'active'];
+/** The pseudo-classes a state stands in for. `:focus-within` is an ancestor's, and stays as it is. */
+const FORCE_PSEUDO = /:(hover|focus-visible|focus|active)(?![\w-])/g;
+const FORCE_OF = { hover: 'hover', 'focus-visible': 'focus', focus: 'focus', active: 'active' };
+
+/**
+ * A selector whose interactive pseudo-classes an element marked as in that state also matches, or null when it has
+ * none, or is already rewritten. `:is()` takes the weight of its heaviest argument, so the rule keeps its weight.
+ */
+function forcedSelector(sel) {
+  if (!sel || sel.includes(FORCE_ATTR)) return null;
+  let found = false;
+  // Quoted attribute values (`[title=":hover"]`) are text, never a state, and stay as they are.
+  const out = sel
+    .split(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/)
+    .map((part, i) =>
+      i % 2
+        ? part
+        : part.replace(FORCE_PSEUDO, (m, p) => {
+            found = true;
+            return `:is(${m}, [${FORCE_ATTR}="${FORCE_OF[p]}"])`;
+          })
+    )
+    .join('');
+  return found ? out : null;
+}
+function forceRules(rules) {
+  for (const rule of rules) {
+    if (rule instanceof CSSStyleRule) {
+      const next = forcedSelector(rule.selectorText);
+      // A selector the browser cannot take (a state after a pseudo-element) is ignored, leaving the rule as it was.
+      if (next) rule.selectorText = next;
+    }
+    // Rules inside @media, @supports, @layer, or nested in a rule.
+    if (rule.cssRules) forceRules(rule.cssRules);
+  }
+}
+/** One stylesheet rewritten for forced states. One from another origin (a web font's), or still loading, is not readable. */
+function forceSheet(sheet) {
+  let rules;
+  try {
+    rules = sheet && sheet.cssRules;
+  } catch {
+    return;
+  }
+  if (rules) forceRules(rules);
+}
+/** Every stylesheet of the page, those a script adopted included, rewritten for forced states. */
+function forceSheets() {
+  for (const sheet of document.styleSheets) forceSheet(sheet);
+  for (const sheet of document.adoptedStyleSheets || []) forceSheet(sheet);
+}
+/**
+ * The elements to show in the state: the selection's own, or the part of it being styled. A code component's part is
+ * found as a picked one is, by its author's marker or the class the editor's preview gives it (`so-part--title`),
+ * from the start, so it shows in a state before it has any change of its own. A code component's wrapper lays
+ * nothing out, so its own root stands in for it. A card wrapped in an action's link shows focus and pressing through
+ * the link, so the link is marked too.
+ */
+function forcedTargets() {
+  if (!forced) return [];
+  const out = [];
+  for (const el of findAll(forced.part ? { ...forced.desc, part: forced.part } : forced.desc)) {
+    const own = !forced.part && el.hasAttribute('data-so-code') ? [...el.children].filter((c) => c.tagName !== 'STYLE' && c.tagName !== 'SCRIPT') : [el];
+    for (const t of own) {
+      out.push(t);
+      if (t.parentElement && t.parentElement.classList.contains('so-action')) out.push(t.parentElement);
+    }
+  }
+  return out;
+}
+/** Marks the elements to show in the state, and unmarks any that no longer are (re-rendered, or another selection). */
+function markForced() {
+  const want = new Set(forcedTargets());
+  for (const el of forcedEls) if (!want.has(el)) el.removeAttribute(FORCE_ATTR);
+  // A copy of a marked element the page made (re-rendering it, say) is no longer what is shown in the state.
+  for (const el of document.querySelectorAll(`[${FORCE_ATTR}]`)) if (!want.has(el)) el.removeAttribute(FORCE_ATTR);
+  forcedEls.clear();
+  for (const el of want) {
+    if (el.getAttribute(FORCE_ATTR) !== forced.state) el.setAttribute(FORCE_ATTR, forced.state);
+    forcedEls.add(el);
+  }
+}
+/**
+ * A stylesheet arriving or changing (Vite replaces a <style>'s text, or adds one) is rewritten before it is painted:
+ * that one alone, so a style the page keeps changing (a drag's preview) costs one sheet each time.
+ */
+const sheetWatch = new MutationObserver((records) => {
+  if (!forced) return;
+  const isSheet = (n) => !!n && (n.nodeName === 'STYLE' || (n.nodeName === 'LINK' && /\bstylesheet\b/i.test(n.rel || '')));
+  const owners = new Set();
+  for (const r of records) {
+    const at = r.target.nodeType === 1 ? r.target : r.target.parentNode;
+    if (isSheet(at)) owners.add(at);
+    for (const n of r.addedNodes) {
+      if (isSheet(n)) owners.add(n);
+      else if (n.nodeType === 1) for (const inner of n.querySelectorAll('style, link')) if (isSheet(inner)) owners.add(inner);
+    }
+  }
+  for (const n of owners) forceSheet(n.sheet);
+  // A sheet a script adopts is not in the document: checked again with any change (each one is rewritten once).
+  if (owners.size && document.adoptedStyleSheets && document.adoptedStyleSheets.length) for (const sheet of document.adoptedStyleSheets) forceSheet(sheet);
+});
+// A linked stylesheet is readable once it has loaded.
+document.addEventListener(
+  'load',
+  (e) => {
+    if (forced && e.target instanceof HTMLLinkElement) forceSheet(e.target.sheet);
+  },
+  true
+);
+function setForced(next) {
+  forced = next;
+  if (forced) {
+    forceSheets();
+    sheetWatch.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  } else sheetWatch.disconnect();
+  markForced();
+}
+
+// ---------------------------------------------------------------------------
 // Commands from the editor
 // ---------------------------------------------------------------------------
 
@@ -3921,6 +4055,8 @@ window.addEventListener('message', async (e) => {
       document.documentElement.setAttribute('data-so-bridge', mode);
       // A full-size image a visitor opened in Preview is a modal: it would cover the page being edited.
       if (mode === 'edit') for (const viewer of document.querySelectorAll('dialog.so-viewer[open]')) viewer.close();
+      // Preview shows the page as visitors find it: nothing held in a state.
+      if (mode === 'preview' && forced) setForced(null);
       hovered = null;
       pointerAt = null;
       pointerEl = null;
@@ -4125,6 +4261,13 @@ window.addEventListener('message', async (e) => {
     case 'revision':
       revision = m.payload.revision;
       break;
+    // The state the Inspector edits, shown on the selected element; a state of null clears it.
+    case 'forceState': {
+      const p = m.payload || {};
+      const next = mode === 'edit' && FORCE_STATES.includes(p.state) && p.desc ? { state: p.state, desc: p.desc, part: typeof p.part === 'string' && p.part ? p.part : null } : null;
+      setForced(next);
+      break;
+    }
     // The reply practice sends get from now on.
     case 'formPractice':
       practiceResult = m.payload.result === 'error' ? 'error' : 'success';
@@ -4182,6 +4325,8 @@ new MutationObserver(() => {
   // nothing selected, hovered while editing or revealed, the editor already has none, so a change to the page is
   // neither measured nor reported.
   if (revealDirty || selected || pendingScroll || (hovered && mode === 'edit')) scheduleRects();
+  // The element held in a state was re-rendered (an update arrived): the new one is marked before it is painted.
+  if (forced) markForced();
 }).observe(document.body, { childList: true, subtree: true, characterData: true });
 window.addEventListener('error', (e) => {
   errors.push(String(e.message));
