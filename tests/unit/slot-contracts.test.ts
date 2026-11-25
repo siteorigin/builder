@@ -228,7 +228,8 @@ describe('the Insert panel and the canvas’s Add list inside a slot that names 
     expect(keys).toContain('s:media.gallery');
     expect(keys).toContain(`c:${card}`);
     expect(keys).not.toContain('s:features.grid');
-    expect(offeredAt(open, at, 'element').some((it) => it.key.startsWith('s:'))).toBe(false);
+    // A slot that takes anything offers the theme's blocks (#664), never its sections.
+    expect(offeredAt(open, at, 'element').filter((it) => it.key.startsWith('s:')).map((it) => it.key)).toEqual(['s:block.feature', 's:block.stat', 's:block.testimonial', 's:block.callout', 's:block.signup', 's:block.video']);
     // Named by the ID of the theme's design of it, the gallery is offered by its contract all the same; a component of
     // the project's that goes in as a section is offered here too, since the slot names it.
     const galleryDef = getTheme(s.site.themeId).components.find((c) => c.componentId === 'media.gallery')!.id;

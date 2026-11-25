@@ -697,7 +697,7 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
                   Pick a design
                 </option>
               )}
-              {['Similar sections', 'Your components', 'Other sections'].map((group) => {
+              {['Similar sections', 'Similar blocks', 'Your components', 'Other sections', 'Other blocks'].map((group) => {
                 const list = offered.filter((c) => c.group === group);
                 return list.length ? (
                   <optgroup key={group} label={group}>

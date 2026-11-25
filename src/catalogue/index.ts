@@ -91,6 +91,8 @@ export interface CatalogueEntry {
   icon?: string;
   /** Option IDs on each variant axis. */
   axes: Record<string, string[]>;
+  /** A block (a feature card, a stat card): it goes inside a layout, not among a page's sections. */
+  block?: true;
 }
 
 export function catalogueEntries(themeId: string): CatalogueEntry[] {
@@ -103,7 +105,8 @@ export function catalogueEntries(themeId: string): CatalogueEntry[] {
       category: c.category,
       tags: c.tags,
       icon: c.icon,
-      axes: Object.fromEntries(Object.entries(c.variantAxes ?? {}).map(([axis, a]) => [axis, Object.keys(a.options)]))
+      axes: Object.fromEntries(Object.entries(c.variantAxes ?? {}).map(([axis, a]) => [axis, Object.keys(a.options)])),
+      ...(c.insertAs === 'element' ? { block: true as const } : {})
     }));
 }
 

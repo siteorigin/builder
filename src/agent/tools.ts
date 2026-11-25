@@ -810,7 +810,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     case 'search_components': {
       const a = args as z.infer<(typeof TOOL_ARGS)['search_components']>;
       const limit = a.limit ?? 8;
-      const themed = searchCatalogue(state.site.themeId, a.query, limit).map((e) => ({ score: searchScore(a.query, e.name, `${e.description} ${e.tags.join(' ')} ${e.category} ${e.componentId}`), hit: { componentId: e.componentId, name: e.name, description: e.description, variants: e.axes } }));
+      const themed = searchCatalogue(state.site.themeId, a.query, limit).map((e) => ({ score: searchScore(a.query, e.name, `${e.description} ${e.tags.join(' ')} ${e.category} ${e.componentId}`), hit: { componentId: e.componentId, name: e.name, description: e.description, variants: e.axes, ...(e.block ? { block: true } : {}) } }));
       const project = searchProjectComponents(state, a.query, limit).map((d) => ({ score: searchScore(a.query, d.name, `${d.description ?? ''} ${(d.tags ?? []).join(' ')}`), hit: { definitionId: d.id, name: d.name, description: d.description, kind: d.kind, projectComponent: true } }));
       // One list, best first within the limit; a theme component comes first where they match as well.
       const results = [...themed, ...project]

@@ -136,6 +136,62 @@ export function SectionSketch({ id }: { id: string }) {
           <i className="img play" />
         </span>
       );
+    // Blocks: one card each, drawn as the card it is.
+    case 'block.feature':
+      return (
+        <span className="sketch">
+          <span className="col-s card">
+            <i className="dot sm" />
+            {bar('60%', 5, 'hi')}
+            {lines(2)}
+          </span>
+        </span>
+      );
+    case 'block.stat':
+      return (
+        <span className="sketch">
+          <span className="col-s card center">
+            {bar('40%', 9, 'hi')}
+            {bar('60%', 3)}
+          </span>
+        </span>
+      );
+    case 'block.testimonial':
+      return (
+        <span className="sketch">
+          <span className="col-s card">
+            <i className="quote" />
+            {lines(2)}
+            {bar('35%', 3, 'hi')}
+          </span>
+        </span>
+      );
+    case 'block.callout':
+      return (
+        <span className="sketch">
+          <span className="col-s card">
+            {bar('55%', 5, 'hi')}
+            {lines(1)}
+            {bar('30%', 5, 'cta')}
+          </span>
+        </span>
+      );
+    case 'block.signup':
+      return (
+        <span className="sketch">
+          <span className="col-s card">
+            {bar('55%', 5, 'hi')}
+            <i className="field" />
+            {bar('30%', 5, 'cta')}
+          </span>
+        </span>
+      );
+    case 'block.video':
+      return (
+        <span className="sketch">
+          <i className="img play" />
+        </span>
+      );
     case 'faq.list':
       return <span className="sketch">{[...Array(4)].map((_, i) => <i key={i} className="row-line" />)}</span>;
     case 'data.table':
@@ -224,7 +280,8 @@ export function SectionSketch({ id }: { id: string }) {
 
 
 
-type Kind = 'section' | 'element' | 'component' | 'saved';
+/** `block`: a theme's block (a feature card, a stat card), shown like a section but placed like an element. */
+type Kind = 'section' | 'block' | 'element' | 'component' | 'saved';
 interface Item {
   key: string;
   kind: Kind;
@@ -233,7 +290,7 @@ interface Item {
   hay: string;
   group: string;
   spec: InsertSpec;
-  /** A section's thumbnail, drawn when its theme pack was built. */
+  /** A section's (or block's) thumbnail, drawn when its theme pack was built. */
   preview?: { pack: string; file: string };
   /** A section shown in one of its variants: the option's name ("Dark"), and its axis ("Tone"). */
   variant?: { option: string; axis: string };
@@ -627,12 +684,16 @@ const sameWhere = (a: Where, b: Where) => a === b || (!!a && !!b && a.lead === b
 const MINE_SHOWN = 4;
 
 /** The tiles and results that open a larger preview beside the panel: sections and saved components. */
-const peekable = (kind?: string) => kind === 'section' || kind === 'component';
+const peekable = (kind?: string) => kind === 'section' || kind === 'block' || kind === 'component';
+/** A theme component's tile: a section, or a block, which is pictured the same way. */
+const fromTheme = (it: Item) => it.kind === 'section' || it.kind === 'block';
 
 /** The group of column layouts, offered above the theme's sections. */
 const COLUMN_LAYOUTS = 'Column layouts';
+/** The theme's blocks: compact components for a column, a grid cell or a slot, offered beside the column layouts. */
+const BLOCKS = 'Blocks';
 const SLOTS = 'Slots';
-const KIND_SUBJECT: Record<Kind, string> = { section: 'Sections go', element: 'Elements go', component: 'Components go', saved: 'Saved components go' };
+const KIND_SUBJECT: Record<Kind, string> = { section: 'Sections go', block: 'Blocks go', element: 'Elements go', component: 'Components go', saved: 'Saved components go' };
 /** The personal library's group (#372): components saved from any project, for every project. */
 const SAVED_GROUP = 'Saved across projects';
 
@@ -692,7 +753,7 @@ const SPARSE = 0.05;
  * preview adds their layout sketch in a corner, so both the theme's look and the section's shape are visible. A
  * measured threshold cannot pick them out: Statistics' useful artwork reaches no further down than Gallery's heading.
  */
-const STARTS_EMPTY = new Set(['media.gallery', 'media.carousel', 'media.video']);
+const STARTS_EMPTY = new Set(['media.gallery', 'media.carousel', 'media.video', 'block.video']);
 
 function ItemIcon({ it }: { it: Item }) {
   return (
@@ -1114,16 +1175,16 @@ export function InsertPanel() {
   const st = snap.state;
 
   const theme = getTheme(st.site.themeId);
-  // Each section, then (when asked for) each variant option on its own, pictured as it inserts.
+  // Each section (or block), then (when asked for) each variant option on its own, pictured as it inserts.
   const sections: Item[] = entries.flatMap((e) => {
     const shots = theme.previews?.[e.componentId];
     const base: Item = {
       key: `s:${e.componentId}`,
-      kind: 'section',
+      kind: e.block ? 'block' : 'section',
       name: e.name,
       description: e.description,
-      hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} section`.toLowerCase(),
-      group: CATEGORY_LABELS[e.category] ?? e.category,
+      hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} ${e.block ? 'block' : 'section'}`.toLowerCase(),
+      group: e.block ? BLOCKS : (CATEGORY_LABELS[e.category] ?? e.category),
       spec: { componentId: e.componentId },
       ...(shots ? { preview: { pack: theme.id, file: shots.default } } : {})
     };
@@ -1248,7 +1309,7 @@ export function InsertPanel() {
   const query = q.toLowerCase().trim();
   // A section in Variants is ranked by the name it shows ("Centered hero Dark"), and by its own name, so typing the
   // section's name still finds it first.
-  const shown = (it: Item) => ((it.kind === 'section' && showVariants) || it.variant ? `${it.name} ${optionLabel(it)}` : it.name);
+  const shown = (it: Item) => ((fromTheme(it) && showVariants) || it.variant ? `${it.name} ${optionLabel(it)}` : it.name);
   const results = searchItems([...mine, ...savedItems, ...sections, ...slotItems, ...elements], query, shown);
   const current = results[Math.min(active, results.length - 1)];
 
@@ -1266,7 +1327,8 @@ export function InsertPanel() {
     if (!p) {
       // A saved component goes in as it went in where it was saved: among the sections, or into the selected layout.
       // A slot's placeholder goes where the Slots section puts one, not where other elements go (see insertPlan).
-      const as = it.kind === 'saved' ? it.saved!.role : it.spec.primitive === 'slot' ? 'slot' : it.kind;
+      // A theme's block goes where an element goes, into the selected layout.
+      const as = it.kind === 'saved' ? it.saved!.role : it.spec.primitive === 'slot' ? 'slot' : it.kind === 'block' ? 'element' : it.kind;
       const { role, at } = as === 'section' ? { role: 'section' as const, at: sectionAt } : as === 'element' ? { role: 'element' as const, at: elementAt } : insertPlan(it.spec, snap);
       // A picked slot takes components too; a slot's placeholder keeps its own place.
       p = { role, at, where: as === 'section' ? sectionTo : as === 'element' ? elementTo : as === 'slot' ? whereFor(st, at, role) : (slotTo ?? whereFor(st, at, role)) };
@@ -1285,7 +1347,7 @@ export function InsertPanel() {
   // Components as a group go to one place only when each of them does.
   const componentTo = mine.length && mine.every((it) => sameWhere(whereOf(it), whereOf(mine[0]))) ? whereOf(mine[0]) : null;
   const savedTo = savedItems.length && savedItems.every((it) => sameWhere(whereOf(it), whereOf(savedItems[0]))) ? whereOf(savedItems[0]) : null;
-  const where: Record<Kind, Where> = { section: sectionTo, element: elementTo, component: componentTo, saved: savedTo };
+  const where: Record<Kind, Where> = { section: sectionTo, block: elementTo, element: elementTo, component: componentTo, saved: savedTo };
   // Your components, and the saved ones beside them, lead the panel once there is any (or code can be written).
   const lead = mine.length > 0 || dev || savedItems.length > 0;
   // The first group shown speaks for the panel at rest: Your components when they lead, else the column layouts.
@@ -1661,7 +1723,8 @@ export function InsertPanel() {
     return def ? manageItems(def) : [];
   };
 
-  const groups = new Map<string, Item[]>();
+  // The blocks lead the theme's groups, right after the column layouts they are made to fill.
+  const groups = new Map<string, Item[]>(sections.some((it) => it.kind === 'block') ? [[BLOCKS, []]] : []);
   for (const it of sections) groups.set(it.group, [...(groups.get(it.group) ?? []), it]);
   // In Variants each section's options sit together, under the section's name.
   const bandsOf = (list: Item[]) => {
@@ -2014,7 +2077,7 @@ export function InsertPanel() {
         {confirmed}
         {added && added.n % 2 ? '\u00a0' : ''}
       </p>
-      {(['section', 'element'] as const).map((k) => (
+      {(['section', 'block', 'element'] as const).map((k) => (
         <span key={k} id={`${id}-to-${k}`} hidden>
           {where[k] ? `${KIND_SUBJECT[k]} ${where[k]!.lead} ${placeText(where[k]!)}` : ''}
         </span>
@@ -2042,7 +2105,7 @@ export function InsertPanel() {
                   aria-selected={it === current}
                   aria-describedby={describedBy(it)}
                   className={`insert-result${it === current ? ' active' : ''}`}
-                  title={refusalOf(it) ?? (it.kind !== 'section' && it.description ? it.description : undefined)}
+                  title={refusalOf(it) ?? (!fromTheme(it) && it.description ? it.description : undefined)}
                   onMouseDown={(e) => e.preventDefault()}
                   onContextMenu={
                     it.kind === 'component' || it.kind === 'saved'
@@ -2059,7 +2122,7 @@ export function InsertPanel() {
                     if (clickAdds(it, e)) void add(it);
                   }}
                 >
-                  {it.kind === 'section' ? (
+                  {fromTheme(it) ? (
                     <span className="insert-thumb" aria-hidden="true">
                       <SectionThumb it={it} />
                     </span>
@@ -2071,9 +2134,9 @@ export function InsertPanel() {
                     iconFor(it)
                   )}
                   <span className="txt">
-                    <strong>{(it.kind === 'section' && showVariants) || it.variant ? `${it.name} · ${optionLabel(it)}` : it.name}</strong>
+                    <strong>{(fromTheme(it) && showVariants) || it.variant ? `${it.name} · ${optionLabel(it)}` : it.name}</strong>
                     <small>
-                      {it.kind === 'section'
+                      {fromTheme(it)
                         ? it.variant
                           ? `${it.group} · ${it.variant.axis}`
                           : showVariants && it.defaults
@@ -2114,7 +2177,7 @@ export function InsertPanel() {
             {lead && savedGroup}
             {elementGroup('columns', COLUMN_LAYOUTS, elements.filter((it) => it.group === COLUMN_LAYOUTS))}
             {[...groups.entries()].map(([group, list], gi) => (
-              <section key={group} className="insert-group" data-kind="section" aria-labelledby={`${id}-g${gi}`}>
+              <section key={group} className="insert-group" data-kind={list[0].kind} data-group={list[0].kind === 'block' ? 'blocks' : undefined} aria-labelledby={`${id}-g${gi}`}>
                 <h4 className="insert-head" id={`${id}-g${gi}`}>
                   {group}
                 </h4>
@@ -2154,13 +2217,13 @@ export function InsertPanel() {
           onLeave={searching && document.activeElement === searchRef.current ? keepPeek : () => hidePeek(peek.key)}
         />
       )}
-      {peekItem && peek && panelRect && peekItem.kind === 'section' && (
+      {peekItem && peek && panelRect && fromTheme(peekItem) && (
         <InsertPeek
           it={peekItem}
           anchor={peek.rect}
           panel={panelRect}
           option={showVariants || peekItem.variant ? `${optionLabel(peekItem)}${peekItem.defaults ? ` · ${peekItem.defaults}` : ''}` : null}
-          map={neighboursAt(st, sectionAt)}
+          map={neighboursAt(st, planOf(peekItem).at)}
           onEnter={keepPeek}
           onLeave={searching && document.activeElement === searchRef.current ? keepPeek : () => hidePeek(peek.key)}
         />

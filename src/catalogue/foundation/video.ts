@@ -130,3 +130,99 @@ export const video: ComponentDefinition = {
   provenance: FOUNDATION.provenance('media.video'),
   license: FOUNDATION.meta.license
 };
+
+/**
+ * Compact video: the same player as the Video section, in a frame that fills the width it is given, with an optional
+ * caption under it. A block: no section padding and no page-width container, so it sits in a column, a Bento grid's
+ * cell or a component's slot.
+ */
+const VIDEO_BLOCK_SOURCE = `<script>
+	/**
+	 * Compact video: one YouTube or Vimeo video with an optional caption, sized to its column. Foundation theme code
+	 * component (a block).
+	 *
+	 * The player (../runtime/VideoPlayer.svelte) shows a Play button that names the video and its host, and loads
+	 * the host's player only when a visitor presses it. An empty or unsupported address shows no player.
+	 */
+	import VideoPlayer from '../runtime/VideoPlayer.svelte';
+
+	let { title = '', url = '', caption = '', variant = 'default', class: className = '' } = $props();
+	const text = (v) => (typeof v === 'string' ? v : '');
+	const captionText = $derived(text(caption).trim());
+</script>
+
+<figure class={['so-video-block', 'so-video-block--' + variant, className]}>
+	<VideoPlayer url={text(url)} title={text(title)} />
+	{#if captionText}<figcaption class="so-video-block__caption">{caption}</figcaption>{/if}
+</figure>
+
+<style>
+	.so-video-block {
+		display: flex;
+		flex-direction: column;
+		gap: var(--so-space-sm);
+		width: 100%;
+		min-width: 0;
+		max-width: 100%;
+		margin: 0;
+		color: var(--so-color-text);
+	}
+	.so-video-block--card {
+		padding-block: var(--so-space-md);
+		padding-inline: var(--so-space-md);
+		background: var(--so-color-surface);
+		border: var(--so-border-default);
+		border-radius: var(--so-radius-lg);
+	}
+	.so-video-block--inverse {
+		padding-block: var(--so-space-md);
+		padding-inline: var(--so-space-md);
+		background: var(--so-color-inverse);
+		color: var(--so-color-on-inverse);
+		border-radius: var(--so-radius-lg);
+	}
+	.so-video-block__caption {
+		font-size: var(--so-text-small-size);
+		line-height: var(--so-text-small-line-height);
+		color: var(--so-color-muted);
+	}
+	.so-video-block--inverse .so-video-block__caption {
+		color: var(--so-color-on-inverse);
+		opacity: 0.78;
+	}
+</style>
+`;
+
+export const videoBlock: ComponentDefinition = {
+  schemaVersion: SCHEMA_VERSION,
+  id: FOUNDATION.definitionId('block.video'),
+  componentId: 'block.video',
+  contractVersion: 1,
+  kind: 'code',
+  owner: 'theme',
+  name: 'Compact video',
+  description:
+    'One YouTube or Vimeo video that fills the width it is given, with an optional caption. Paste the address of a single video; the host’s player loads only when a visitor presses Play. A block: it goes inside a column, a grid cell or a component’s slot.',
+  category: 'media',
+  tags: ['video', 'youtube', 'vimeo', 'embed', 'clip', 'player', 'compact', 'block', 'column'],
+  icon: 'square-play',
+  insertAs: 'element',
+  properties: {
+    title: P.str('Video title', '', {
+      maxLength: 200,
+      description: 'What the video is, such as “Tour of our studio”. Screen readers announce it, and the Play button shows it.'
+    }),
+    url: P.str('Video address', '', {
+      maxLength: 2048,
+      description: 'The address of one YouTube or Vimeo video, such as https://www.youtube.com/watch?v=… or https://vimeo.com/…. Visitors’ browsers load the player from that site when they press Play.'
+    }),
+    caption: P.str('Caption', '', { maxLength: 300 })
+  },
+  parts: { root: { nodeId: 'root', label: 'Video', styleControls: ['paddingBlock', 'paddingInline', 'background', 'color', 'radius', 'hidden'] } },
+  variantAxes: {
+    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Plain' }, card: { label: 'Card' }, inverse: { label: 'Dark' } } }
+  },
+  source: VIDEO_BLOCK_SOURCE,
+  provenance: FOUNDATION.provenance('block.video'),
+  license: FOUNDATION.meta.license
+};

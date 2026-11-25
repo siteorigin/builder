@@ -15,8 +15,8 @@ export interface InsertChoice {
   id: string;
   name: string;
   /** What it is, shown beside the name, so a component and a basic element with the same name are told apart. */
-  kind: 'Component' | 'Code component' | 'Layout' | 'Element' | 'Section';
-  /** The Lucide icon a basic element or theme section is drawn with, as in the Insert panel. */
+  kind: 'Component' | 'Code component' | 'Layout' | 'Element' | 'Block' | 'Section';
+  /** The Lucide icon a basic element, theme block or theme section is drawn with, as in the Insert panel. */
   icon?: string;
   /** Other words it is found by: a component's description, an element's tags. */
   keywords: string;
@@ -33,7 +33,7 @@ export function insertChoices(state: ProjectState, developerMode: boolean): Inse
       (d): InsertChoice => ({ id: `ins:c:${d.id}`, name: d.name, kind: d.kind === 'code' ? 'Code component' : 'Component', keywords: `${d.description ?? ''} ${d.kind === 'code' ? 'code ' : ''}component`.trim(), spec: { definitionId: d.id } })
     ),
     ...BASICS.map((b): InsertChoice => ({ id: `ins:e:${b.id}`, name: b.name, kind: b.layout ? 'Layout' : 'Element', icon: b.icon, keywords: basicHay(b), spec: basicSpec(b) })),
-    ...catalogueEntries(state.site.themeId).map((e): InsertChoice => ({ id: `ins:${e.componentId}`, name: e.name, kind: 'Section', icon: e.icon, keywords: '', spec: { componentId: e.componentId } }))
+    ...catalogueEntries(state.site.themeId).map((e): InsertChoice => ({ id: `ins:${e.componentId}`, name: e.name, kind: e.block ? 'Block' : 'Section', icon: e.icon, keywords: '', spec: { componentId: e.componentId } }))
   ];
 }
 

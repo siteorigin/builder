@@ -82,10 +82,11 @@ export const eyebrowStyles = { textStyle: tok('text.eyebrow'), color: tok('color
 export const mutedStyles = { color: tok('color.muted') };
 
 /**
- * A section heading's place in the page outline, chosen per placement: Heading 1 is the page's title, and a section
- * below it uses Heading 2. It changes the heading's tag only; the heading looks the same at every level.
+ * A section heading's place in the page outline, chosen per placement: Heading 1 is the page's title, a section below
+ * it uses Heading 2, and a block inside a section Heading 3. It changes the heading's tag only; the heading looks the
+ * same at every level.
  */
-export function headingLevel(level: 'h1' | 'h2'): ScalarPropSchema {
+export function headingLevel(level: 'h1' | 'h2' | 'h3'): ScalarPropSchema {
   return {
     ...P.choice('Heading level', level, [
       ['h1', 'Heading 1 (page title)'],

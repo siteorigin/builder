@@ -22,6 +22,7 @@ import { hiddenLayers } from './search';
 import { resolveLink, sortedBrokenCards } from './index';
 import { cardKey, isCardLink } from './card-links';
 import { derived } from './cache';
+import { isFormContract } from '@catalogue/foundation/form';
 
 /** What the Markdown of one document is written for. */
 export interface MarkdownContext {
@@ -341,10 +342,12 @@ export function pageMarkdown(ctx: MarkdownContext, page: PageDoc): string {
   /** What the theme's own code components show: their words around the table, form or video, and a table's cells. */
   const code = (def: ComponentDefinition, props: Record<string, unknown>) => {
     const which = shippedCode(state, def);
-    if (which !== 'data.table' && which !== 'contact.form' && which !== 'media.video') return;
+    // The compact video's only words are its caption.
+    if (which === 'block.video') return void addPlain(props.caption);
+    if (which !== 'data.table' && !isFormContract(which) && which !== 'media.video') return;
     const words = (key: string) => (Array.isArray(props[key]) ? addRich(props[key]) : addPlain(props[key]));
     words('eyebrow');
-    addPlain(props.heading, 2);
+    addPlain(props.heading, which === 'block.signup' ? 3 : 2);
     words('lead');
     if (which !== 'data.table') return;
     const caption = typeof props.caption === 'string' ? inline(props.caption) : '';

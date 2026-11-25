@@ -593,6 +593,7 @@ export function componentDetail(def: ComponentDefinition) {
     ),
     variantAxes: Object.fromEntries(axesOf(def).map(([axis, a]) => [axis, { label: a.label, default: a.default, options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, v.label])) }])),
     slots: def.slots ?? {},
+    ...(def.owner === 'theme' && def.insertAs === 'element' ? { block: true } : {}),
     // UI state the design reads in conditions and variants and its buttons change; placements never set it.
     ...(def.state && Object.keys(def.state).length ? { state: def.state } : {}),
     examples: def.examples ?? []
@@ -756,7 +757,9 @@ export function catalogueIndex(themeId: string) {
       variants: e.axes,
       props: def ? Object.fromEntries(Object.entries(def.properties).map(([k, s]) => [k, propSignature(s)])) : {},
       parts: def ? Object.keys(def.parts) : [],
-      ...(def?.slots && Object.keys(def.slots).length ? { slots: Object.keys(def.slots) } : {})
+      ...(def?.slots && Object.keys(def.slots).length ? { slots: Object.keys(def.slots) } : {}),
+      // A block goes inside a section, a column or a slot with node.insert, never among a page's sections.
+      ...(e.block ? { block: true } : {})
     };
   });
 }

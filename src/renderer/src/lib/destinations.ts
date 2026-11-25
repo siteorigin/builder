@@ -2,7 +2,7 @@ import type { Diagnostic, EditorDestination, ExportNote } from '@shared/api';
 import type { ComponentDefinition, ListItem, OwnerRef, ProjectState } from '@shared/types';
 import { isEntryBinding } from '@shared/types';
 import { publicUrl } from '@shared/public-url';
-import { formConnectionProblem, formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable } from '@catalogue/foundation/form';
+import { formConnectionProblem, formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable, isFormContract } from '@catalogue/foundation/form';
 import { websiteTrees } from '@engine/validate';
 import { isDraftEntry, publishedState, siteEntries } from '@generator/index';
 import { entryInstanceProps } from '@generator/entry-template';
@@ -18,8 +18,8 @@ const FORM_SETTINGS: Record<string, FormDestination['setting']> = {
   FORM_NAME_DUPLICATE: 'formName'
 };
 
-/** The theme's contact form, or a copy of it: what a form finding is about (as netlifyFormName reads it). */
-const isContactForm = (def: ComponentDefinition | undefined) => !!def && def.kind === 'code' && (def.componentId === 'contact.form' || def.provenance?.componentId === 'contact.form');
+/** One of the theme's forms (the contact or signup form), or a copy of one: what a form finding is about (as netlifyFormName reads it). */
+const isContactForm = (def: ComponentDefinition | undefined) => !!def && def.kind === 'code' && (isFormContract(def.componentId) || isFormContract(def.provenance?.componentId));
 
 /**
  * Where a Project health finding is fixed, when that is a contact form's settings or a field of Site details: the

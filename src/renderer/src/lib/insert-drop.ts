@@ -15,6 +15,7 @@ import { dropAt, shownOrder, type Box } from './reorder';
 import { whereFor, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { treeFor } from './model';
 import { shownSlots } from './slot-target';
+import { catalogueComponent } from '@catalogue/index';
 
 /** A list a drop can go into, before it is measured: the page's top level (`parentId` null), an element's children,
  *  or one slot of a placed component. `refused` says why nothing goes here (a component that shows several slots,
@@ -299,15 +300,17 @@ export function dropTarget(lists: DropList[], role: InsertRole, x: number, y: nu
 
 const ORDER = 'An Order style puts the elements here in another order than the page shows, so it can’t go in that spot at this size.';
 
-/** The CSS order a new node of `spec` has: none for a basic element or a theme section; a component's design can set
- *  one on its root, and so can the variant options it is inserted with (null when it changes with the screen size). */
+/** The CSS order a new node of `spec` has: none for a basic element; a component's design (a theme's, as the project
+ *  has it once installed) can set one on its root, and so can the variant options it is inserted with (null when it
+ *  changes with the screen size). */
 export function incomingOrder(state: ProjectState, spec: InsertSpec): number | null {
-  if (!spec.definitionId) return 0;
-  const def = own(state.components, spec.definitionId);
+  const themed = !spec.definitionId && spec.componentId !== undefined ? catalogueComponent(state.site.themeId, spec.componentId) : undefined;
+  const def = spec.definitionId ? own(state.components, spec.definitionId) : themed ? (own(state.components, themed.id) ?? themed) : undefined;
+  if (!def) return 0;
   const rootId = def?.kind === 'managed' && def.tree ? def.tree.rootIds[0] : undefined;
-  const root = rootId ? own(def!.tree!.nodes, rootId) : undefined;
+  const root = rootId ? own(def.tree!.nodes, rootId) : undefined;
   const sources: ResponsiveStyles[] = [root && 'styles' in root && root.styles ? root.styles : {}];
-  for (const [axis, a] of Object.entries(def?.variantAxes ?? {})) {
+  for (const [axis, a] of Object.entries(def.variantAxes ?? {})) {
     const chosen = own(a.options, spec.variants?.[axis] ?? a.default);
     const styles = rootId ? own(chosen?.styles, rootId) : undefined;
     if (styles) sources.push(styles);

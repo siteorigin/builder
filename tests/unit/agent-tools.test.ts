@@ -2137,7 +2137,8 @@ describe('ai-profile examples', () => {
       const examples = theme.aiProfile.examples ?? [];
       for (const ex of examples) expect(checkExample(scoped, ex), `${theme.id}/${ex.id}`).toEqual([]);
       const covered = new Set(examples.map((e) => e.componentId));
-      for (const c of theme.components) if (c.category !== 'shell' && c.componentId !== 'layout.section') expect(covered.has(c.componentId), `${theme.id} is missing an example for ${c.componentId}`).toBe(true);
+      // Examples are ready-to-send page sections: a block goes inside one, so it has none.
+      for (const c of theme.components) if (c.category !== 'shell' && c.componentId !== 'layout.section' && c.insertAs !== 'element') expect(covered.has(c.componentId), `${theme.id} is missing an example for ${c.componentId}`).toBe(true);
       expect(new Set(examples.map((e) => e.id)).size).toBe(examples.length);
     }
   });

@@ -194,10 +194,13 @@ export function variantsJsonSchema(def: ComponentDefinition, describe = false): 
 // Section checks
 // ---------------------------------------------------------------------------
 
-/** The definition a section's componentId names: a theme component, or a project component by definition ID. */
+/** Whether a theme component is a block (a feature card, a stat card), which goes inside a layout rather than among a page's sections. */
+const isThemeBlock = (def: ComponentDefinition | undefined): boolean => def?.owner === 'theme' && def.insertAs === 'element';
+
+/** The definition a section's componentId names: a theme section, or a project component by definition ID. */
 function sectionDefinition(state: ProjectState, id: string): { def: ComponentDefinition; ref: { componentId: string } | { definitionId: string } } | null {
   const themed = catalogueComponent(state.site.themeId, id);
-  if (themed && themed.category !== 'shell') return { def: Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : themed, ref: { componentId: id } };
+  if (themed && themed.category !== 'shell' && !isThemeBlock(themed)) return { def: Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : themed, ref: { componentId: id } };
   const own = Object.hasOwn(state.components, id) ? state.components[id] : undefined;
   if (own && own.owner === 'project' && own.category !== 'shell') return { def: own, ref: { definitionId: id } };
   return null;
@@ -775,7 +778,11 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     const at = `sections[${i}]`;
     const r = resolved[i];
     if (!r) {
-      const names = catalogueEntries(state.site.themeId).map((e) => e.componentId).join(', ');
+      if (isThemeBlock(catalogueComponent(state.site.themeId, s.componentId))) {
+        issues.push({ field: `${at}.componentId`, message: `"${s.componentId}" is a block, not a section: it goes inside a section, a column or a component's slot. Leave it out here, and place it with apply_operations node.insert (into a Section's "content" slot, or a column).` });
+        return null;
+      }
+      const names = catalogueEntries(state.site.themeId).filter((e) => !e.block).map((e) => e.componentId).join(', ');
       issues.push({ field: `${at}.componentId`, message: `unknown component "${s.componentId}". Components: ${names}` });
       return null;
     }
@@ -995,7 +1002,8 @@ export function upsertToolSchema(state: ProjectState, only?: string, focused = f
     // theme's properties (a heading level, say) are not there until Project health updates it.
     ...catalogueEntries(state.site.themeId).flatMap((e) => {
       const d = catalogueComponent(state.site.themeId, e.componentId);
-      return d && offered(d) ? listed(Object.hasOwn(state.components, d.id) ? state.components[d.id] : d) : [];
+      // A block goes inside a section, not among the page's sections.
+      return d && offered(d) && !isThemeBlock(d) ? listed(Object.hasOwn(state.components, d.id) ? state.components[d.id] : d) : [];
     }),
     ...Object.values(state.components).filter((d) => d.owner === 'project' && d.category !== 'shell').flatMap(listed)
   ];

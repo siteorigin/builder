@@ -3,6 +3,15 @@ import { SCHEMA_VERSION, isBinding } from '@shared/types';
 import { P } from '../dsl';
 import { FOUNDATION } from './pack';
 
+/**
+ * The theme's forms: the Contact form, a page section, and the Signup form, a block. They share one source, the same
+ * service settings and the same checks, so every rule about a form reads them through this.
+ */
+export const FORM_CONTRACTS: readonly string[] = ['contact.form', 'block.signup'];
+
+/** Whether a contract (a component ID, or the one a copy's provenance names) is one of the theme's forms. */
+export const isFormContract = (componentId: unknown): boolean => typeof componentId === 'string' && FORM_CONTRACTS.includes(componentId);
+
 /** Hidden "honeypot" field names each service recognises as spam traps. */
 export const FORM_PROVIDERS: Array<[string, string]> = [
   ['endpoint', 'Form endpoint (Formspree, Basin, Getform…)'],
@@ -40,9 +49,18 @@ const SERVICE_SOURCE = `	const key = $derived(String(accessKey ?? '').trim());
 	const action = $derived(provider === 'web3forms' ? 'https://api.web3forms.com/submit' : provider === 'endpoint' && isEndpoint(endpoint) ? endpoint.trim() : undefined);`;
 const CONNECTED_SOURCE = `provider === 'netlify' ? !!netlifyName : provider === 'web3forms' ? !!key : !!action`;
 
-const FORM_SOURCE = `<script>
+/**
+ * The form's Svelte source. The Contact form is a page section; the Signup form a compact block, with the same
+ * fields, services and checks in a card that fills the width it is given (no section padding, no page-width
+ * container, one column of fields, a smaller heading).
+ */
+function formSource(kind: 'section' | 'block'): string {
+  const block = kind === 'block';
+  const root = block ? 'div' : 'section';
+  const heading = block ? 'h3' : 'h2';
+  return `<script>
 	/**
-	 * Contact form that sends messages to an external form service: an HTTPS form endpoint (Formspree, Basin,
+	 * ${block ? 'Compact signup form (a block) that sends' : 'Contact form that sends'} messages to an external form service: an HTTPS form endpoint (Formspree, Basin,
 	 * Getform and similar), Web3Forms or Netlify Forms. Foundation theme code component.
 	 *
 	 * Without JavaScript it is an ordinary form post. With JavaScript it sends in the background and reports
@@ -157,12 +175,12 @@ ${FIELD_NAME_SOURCE}
 	}
 </script>
 
-<section class={['so-form', 'so-form--' + variant, className]}>
+<${root} class={['so-form',${block ? " 'so-form--block'," : ''} 'so-form--' + variant, className]}>
 	<div class="so-form__inner">
 		{#if eyebrow || heading || lead}
 			<div class="so-form__intro">
 				{#if eyebrow}<p class="so-form__eyebrow">{eyebrow}</p>{/if}
-				{#if heading}<h2 class="so-form__heading" id={uid + '-heading'}>{heading}</h2>{/if}
+				{#if heading}<${heading} class="so-form__heading" id={uid + '-heading'}>{heading}</${heading}>{/if}
 				{#if lead}<p class="so-form__lead">{lead}</p>{/if}
 			</div>
 		{/if}
@@ -274,7 +292,7 @@ ${FIELD_NAME_SOURCE}
 			</p>
 		</div>
 	</div>
-</section>
+</${root}>
 
 <style>
 	.so-form {
@@ -453,9 +471,104 @@ ${FIELD_NAME_SOURCE}
 	}
 	.so-form__status--error {
 		font-weight: 550;
-	}
+	}${block ? BLOCK_CSS : ''}
 </style>
 `;
+}
+
+/** The Signup form's card: the section's padding and width give way to a card that fills its column. */
+const BLOCK_CSS = `
+	.so-form--block {
+		width: 100%;
+		min-width: 0;
+		padding-block: var(--so-space-lg);
+		padding-inline: var(--so-space-lg);
+		background: var(--so-color-surface);
+		border: var(--so-border-default);
+		border-radius: var(--so-radius-lg);
+	}
+	.so-form--block.so-form--muted {
+		background: var(--so-color-surface-alt);
+		border: 0;
+	}
+	.so-form--block.so-form--inverse {
+		background: var(--so-color-inverse);
+		border: 0;
+	}
+	.so-form--block .so-form__inner {
+		gap: var(--so-space-lg);
+		max-width: none;
+	}
+	.so-form--block .so-form__intro {
+		gap: var(--so-space-sm);
+	}
+	.so-form--block .so-form__heading {
+		font-family: var(--so-text-h3-family);
+		font-size: var(--so-text-h3-size);
+		font-weight: var(--so-text-h3-weight);
+		letter-spacing: var(--so-text-h3-tracking);
+		line-height: var(--so-text-h3-line-height);
+	}
+	.so-form--block .so-form__lead {
+		font-size: inherit;
+		line-height: inherit;
+	}
+	.so-form--block .so-form__form {
+		gap: var(--so-space-md);
+	}
+	/* One column whatever the screen: a block is as narrow as the column it sits in. */
+	.so-form--block .so-form__field:not(.so-form__field--wide) {
+		grid-column: span 2;
+	}
+	.so-form--block .so-form__messages {
+		margin-top: calc(-1 * var(--so-space-sm));
+	}`;
+
+const FORM_SOURCE = formSource('section');
+
+/** A form's service settings, sent under `formName` to Netlify Forms. */
+const sendingProps = (formName: string) =>
+  P.group('Sending', {
+    provider: P.choice('Form service', 'endpoint', FORM_PROVIDERS),
+    endpoint: P.str('Form endpoint URL', '', { description: 'The HTTPS address your form service gives you, such as https://formspree.io/f/abc123.' }),
+    accessKey: P.str('Web3Forms access key', '', { description: 'Only used with Web3Forms.' }),
+    formName: P.str('Netlify form name', formName, { description: 'Only used with Netlify Forms.' })
+  });
+
+/** A form's fields, starting as `items`. */
+const fieldsProp = (items: Array<Record<string, unknown>>) =>
+  P.list(
+    'Fields',
+    'Field',
+    {
+      label: P.str('Label', 'Field'),
+      name: P.str('Field name', '', { description: 'The name this answer is sent under. Changing the label keeps it; clear it to make a new one from the label.' }),
+      type: P.choice('Type', 'text', [
+        ['text', 'Short text'],
+        ['email', 'Email address'],
+        ['tel', 'Telephone'],
+        ['textarea', 'Long text'],
+        ['choice', 'Single choice'],
+        ['checkbox', 'Checkbox']
+      ]),
+      options: P.choices('Choices', {
+        description: 'The answers a visitor picks one of. Each is sent as the label it was first given, so renaming it keeps its answers together.'
+      }),
+      required: P.bool('Required', false),
+      placeholder: P.str('Placeholder', '')
+    },
+    items,
+    { titleField: 'label', max: 12 }
+  );
+
+// Empty, these use the site's visitor text for the page's language (Site styles > Visitor text). The button shows
+// on the page, so it starts with words of its own, as the fields do; the messages only show once a message is sent.
+const messageProps = (submitLabel: string) =>
+  P.group('Messages', {
+    submitLabel: { ...P.str('Button label', submitLabel), description: 'Empty: the send button of the site’s visitor text, in the page’s language.' },
+    successMessage: { ...P.text('Sent message', ''), description: 'Empty: the sent message of the site’s visitor text, in the page’s language.' },
+    errorMessage: { ...P.text('Error message', ''), description: 'Empty: the not-sent message of the site’s visitor text, in the page’s language.' }
+  });
 
 export const contactForm: ComponentDefinition = {
   schemaVersion: SCHEMA_VERSION,
@@ -476,47 +589,14 @@ export const contactForm: ComponentDefinition = {
       heading: P.str('Heading', 'Send us a message'),
       lead: P.text('Supporting text', 'Tell us a little about what you need and we will reply within two working days.')
     }),
-    ...P.group('Sending', {
-      provider: P.choice('Form service', 'endpoint', FORM_PROVIDERS),
-      endpoint: P.str('Form endpoint URL', '', { description: 'The HTTPS address your form service gives you, such as https://formspree.io/f/abc123.' }),
-      accessKey: P.str('Web3Forms access key', '', { description: 'Only used with Web3Forms.' }),
-      formName: P.str('Netlify form name', 'contact', { description: 'Only used with Netlify Forms.' })
-    }),
-    fields: P.list(
-      'Fields',
-      'Field',
-      {
-        label: P.str('Label', 'Field'),
-        name: P.str('Field name', '', { description: 'The name this answer is sent under. Changing the label keeps it; clear it to make a new one from the label.' }),
-        type: P.choice('Type', 'text', [
-          ['text', 'Short text'],
-          ['email', 'Email address'],
-          ['tel', 'Telephone'],
-          ['textarea', 'Long text'],
-          ['choice', 'Single choice'],
-          ['checkbox', 'Checkbox']
-        ]),
-        options: P.choices('Choices', {
-          description: 'The answers a visitor picks one of. Each is sent as the label it was first given, so renaming it keeps its answers together.'
-        }),
-        required: P.bool('Required', false),
-        placeholder: P.str('Placeholder', '')
-      },
-      [
-        { label: 'Name', name: 'name', type: 'text', required: true, placeholder: '' },
-        { label: 'Email', name: 'email', type: 'email', required: true, placeholder: '' },
-        { label: 'Phone', name: 'phone', type: 'tel', required: false, placeholder: '' },
-        { label: 'Message', name: 'message', type: 'textarea', required: true, placeholder: '' }
-      ],
-      { titleField: 'label', max: 12 }
-    ),
-    // Empty, these use the site's visitor text for the page's language (Site styles > Visitor text). The button shows
-    // on the page, so it starts with words of its own, as the fields do; the messages only show once a message is sent.
-    ...P.group('Messages', {
-      submitLabel: { ...P.str('Button label', 'Send message'), description: 'Empty: the send button of the site’s visitor text, in the page’s language.' },
-      successMessage: { ...P.text('Sent message', ''), description: 'Empty: the sent message of the site’s visitor text, in the page’s language.' },
-      errorMessage: { ...P.text('Error message', ''), description: 'Empty: the not-sent message of the site’s visitor text, in the page’s language.' }
-    })
+    ...sendingProps('contact'),
+    fields: fieldsProp([
+      { label: 'Name', name: 'name', type: 'text', required: true, placeholder: '' },
+      { label: 'Email', name: 'email', type: 'email', required: true, placeholder: '' },
+      { label: 'Phone', name: 'phone', type: 'tel', required: false, placeholder: '' },
+      { label: 'Message', name: 'message', type: 'textarea', required: true, placeholder: '' }
+    ]),
+    ...messageProps('Send message')
   },
   parts: { root: { nodeId: 'root', label: 'Form section' } },
   variantAxes: {
@@ -524,6 +604,43 @@ export const contactForm: ComponentDefinition = {
   },
   source: FORM_SOURCE,
   provenance: FOUNDATION.provenance('contact.form'),
+  license: FOUNDATION.meta.license
+};
+
+/**
+ * Signup form: the contact form as a compact block, for a newsletter or a waiting list beside other content. It asks
+ * for an email address to start with, and sends to the same form services the contact form does.
+ */
+export const signupForm: ComponentDefinition = {
+  schemaVersion: SCHEMA_VERSION,
+  id: FOUNDATION.definitionId('block.signup'),
+  componentId: 'block.signup',
+  contractVersion: 1,
+  kind: 'code',
+  owner: 'theme',
+  name: 'Signup form',
+  description:
+    'A compact signup card with a heading, a sentence and an email field, for a newsletter or a waiting list. It sends to an external form service (a Formspree-style HTTPS endpoint, Web3Forms or Netlify Forms) and cannot send until it is connected to one. A block: it goes inside a column, a grid cell or a component’s slot.',
+  category: 'conversion',
+  tags: ['signup', 'sign up', 'newsletter', 'subscribe', 'email', 'waiting list', 'form', 'compact', 'block'],
+  icon: 'mail-plus',
+  insertAs: 'element',
+  properties: {
+    ...P.group('Text', {
+      eyebrow: P.str('Eyebrow', ''),
+      heading: P.str('Heading', 'Get our newsletter'),
+      lead: P.text('Supporting text', 'A short note when there is something new. No spam, and you can leave at any time.')
+    }),
+    ...sendingProps('newsletter'),
+    fields: fieldsProp([{ label: 'Email', name: 'email', type: 'email', required: true, placeholder: '' }]),
+    ...messageProps('Sign up')
+  },
+  parts: { root: { nodeId: 'root', label: 'Form card' } },
+  variantAxes: {
+    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Card' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
+  },
+  source: formSource('block'),
+  provenance: FOUNDATION.provenance('block.signup'),
   license: FOUNDATION.meta.license
 };
 
@@ -583,7 +700,7 @@ export const FORM_DESTINATIONS = ['endpoint', 'accessKey'] as const;
 export function readsFormServices(def: ComponentDefinition | undefined): def is ComponentDefinition {
   if (!def || def.kind !== 'code' || def.properties.provider?.type !== 'enum') return false;
   // A copy made unique takes a project component ID; its provenance still names the form it came from.
-  if (def.componentId !== 'contact.form' && def.provenance?.componentId !== 'contact.form') return false;
+  if (!isFormContract(def.componentId) && !isFormContract(def.provenance?.componentId)) return false;
   if (SERVICE_SETTINGS.some((p) => def.properties[p]?.type !== 'string')) return false;
   return !!def.source?.includes(SERVICE_SOURCE) && def.source.includes(CONNECTED_SOURCE);
 }
@@ -619,7 +736,7 @@ export function formConnectionProblem(def: ComponentDefinition, props: Record<st
  */
 export function netlifyFormName(def: ComponentDefinition, props: Record<string, unknown>): string | undefined {
   // The theme's contact form or a copy of it, whatever its code now looks like: its settings are what it is sent with.
-  if (def.kind !== 'code' || (def.componentId !== 'contact.form' && def.provenance?.componentId !== 'contact.form')) return undefined;
+  if (def.kind !== 'code' || (!isFormContract(def.componentId) && !isFormContract(def.provenance?.componentId))) return undefined;
   if (def.properties.provider?.type !== 'enum' || def.properties.formName?.type !== 'string') return undefined;
   if (exported(def, props, 'provider') !== 'netlify') return undefined;
   const name = exported(def, props, 'formName');
@@ -749,7 +866,7 @@ export function formFieldsAsSent(def: ComponentDefinition, value: unknown): Form
  * code may name them differently, so the editor shows and keeps keys only for a definition this says yes to.
  */
 export function namesFormFields(def: ComponentDefinition | undefined): boolean {
-  return !!def && def.kind === 'code' && def.componentId === 'contact.form' && def.properties.fields?.type === 'list' && !!def.source?.includes(RESERVED_SOURCE) && def.source.includes(FIELD_NAME_SOURCE);
+  return !!def && def.kind === 'code' && isFormContract(def.componentId) && def.properties.fields?.type === 'list' && !!def.source?.includes(RESERVED_SOURCE) && def.source.includes(FIELD_NAME_SOURCE);
 }
 
 /** Whether the form refuses to send while two fields share a key. Older versions send both answers. */
