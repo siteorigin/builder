@@ -34,7 +34,10 @@ export async function relocateSource(source: string, from: string, to: string): 
   if (fromDir === toDir) return source;
   const moved = (spec: string): string | null => {
     if (!spec.startsWith('./') && !spec.startsWith('../')) return null;
-    const rel = posix.relative(toDir, posix.join(fromDir, spec));
+    const target = posix.join(fromDir, spec);
+    // Written as it was wherever it still leads to the same file (the runtime helpers, another custom component).
+    if (posix.join(toDir, spec) === target) return null;
+    const rel = posix.relative(toDir, target);
     const next = rel.startsWith('.') ? rel : `./${rel}`;
     // A trailing slash (a folder's index) is kept as it was written.
     const out = spec.endsWith('/') && !next.endsWith('/') ? `${next}/` : next;

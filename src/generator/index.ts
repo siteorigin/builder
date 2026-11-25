@@ -1109,7 +1109,8 @@ function usesLegacyVariantClass(state: ProjectState, def: ComponentDefinition): 
 const legacyVariantClassUsers = (state: ProjectState) => sortedDefs(state).flatMap((def) => (legacyVariantClassUser(state, def) ? [def.id] : []));
 function legacyVariantClassUser(state: ProjectState, def: ComponentDefinition): boolean {
   const prefix = `so-${defKey(def.id)}--`;
-  return Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && !!d.source?.includes(prefix));
+  // A design's own file converted to code (`generatedFrom`) names the classes of today's format, as the design does.
+  return Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && !d.generatedFrom && !!d.source?.includes(prefix));
 }
 /** Code converted in the first format still places this component with a single `variant` attribute. */
 function hasLegacyVariantCaller(state: ProjectState, def: ComponentDefinition): boolean {
@@ -1119,7 +1120,7 @@ function hasLegacyVariantCaller(state: ProjectState, def: ComponentDefinition): 
 const legacyVariantCallees = (state: ProjectState) => sortedDefs(state).flatMap((def) => (legacyVariantCallee(state, def) ? [def.id] : []));
 function legacyVariantCallee(state: ProjectState, def: ComponentDefinition): boolean {
   const file = `/${defFile(def).split('/').pop()}`;
-  return Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && !!d.source?.includes(file) && /\bvariant=/.test(d.source));
+  return Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && !d.generatedFrom && !!d.source?.includes(file) && /\bvariant=/.test(d.source));
 }
 /** The prop a component receives an axis's selected option through. */
 const variantProp = (axis: string) => `variant_${safeIdent(axis)}`;
