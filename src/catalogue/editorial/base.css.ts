@@ -24,17 +24,17 @@ export const EDITORIAL_BASE_CSS = `${SHARED}
 .so-btn:where(:not(.so-btn--text)) { padding: 0.85em 1.5em; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; }
 .so-btn { border-radius: var(--so-radius-sm); }
 .so-btn--secondary { border-color: currentColor; }
-/* Tinted over the button's own background, so one given a fill keeps it. */
-:is(a, button).so-btn--secondary:hover { background: color-mix(in srgb, currentColor 8%, var(--so-btn-bg, transparent)); }
+/* The rule thickens on hover: the button's own fill, a gradient included, is left as it is. */
+:is(a, button).so-btn--secondary:hover { box-shadow: inset 0 0 0 1px currentColor; }
 .so-btn--text { padding-block: 0.3em; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.45em; }
 :is(a, button).so-btn--text:hover { text-decoration-thickness: 2px; }
 
 .so-link { text-underline-offset: 0.2em; }
 .so-link:hover, .so-rich a:hover { text-decoration-thickness: 2px; }
 .so-plain-link:hover { text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
-/* The tab chosen, or a choice that is on, keeps the heavier underline that marks it (Foundation's rule, restated after
-   Editorial's own underlines, which would otherwise win). */
-:is(.so-btn--text, .so-link, .so-plain-link):where([aria-selected='true'], [aria-pressed='true']) { text-decoration-thickness: 3px; }
+/* The tab chosen, or a choice that is on, keeps the heavier underline that marks it, at rest and under the pointer
+   (Foundation's rule, restated after Editorial's own underlines and their hover states, which would otherwise win). */
+:is(a, button):is(.so-btn--text, .so-link, .so-plain-link):is([aria-selected='true'], [aria-pressed='true']) { text-decoration-thickness: 3px; }
 /* A card that is one link: its title underlines while the pointer is over the card. */
 .so-card-link:hover :is(h2, h3, h4) { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
 

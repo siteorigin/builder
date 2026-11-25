@@ -95,13 +95,25 @@ function tree(node: InstanceNode): NodeTree {
 export function starterProblem(starter: StarterId, themeId?: string): string | null {
   const theme = themeId === undefined ? defaultTheme() : findTheme(themeId);
   if (!theme) return `The theme "${themeId}" is not installed. Choose another theme.`;
+  const name = STARTERS.find((s) => s.id === starter)?.name ?? starter;
+  const problem = (why: string) => `The ${theme.name} theme cannot make the ${name}: ${why} Choose another theme or starter.`;
+  let made: ProjectState;
   try {
-    createStarterState(starter, 'Check', false, theme.id);
-    return null;
+    made = createStarterState(starter, 'Check', false, theme.id);
   } catch (e) {
-    const name = STARTERS.find((s) => s.id === starter)?.name ?? starter;
-    return `The ${theme.name} theme cannot make the ${name}: ${(e as Error).message} Choose another theme or starter.`;
+    return problem((e as Error).message);
   }
+  // Every section the starter places must take what it sets: a property its design does not declare would not show.
+  for (const tree of [...Object.values(made.pages), made.site.shell.header, made.site.shell.footer])
+    for (const n of Object.values(tree.nodes)) {
+      if (n.kind !== 'instance') continue;
+      const def = made.components[n.definitionId];
+      const props = Object.keys(n.props).filter((k) => !Object.hasOwn(def.properties, k));
+      if (props.length) return problem(`its ${def.name} has no ${props.map((p) => `"${p}"`).join(', ')}.`);
+      const options = Object.entries(n.variants ?? {}).filter(([axis, option]) => !Object.hasOwn(def.variantAxes?.[axis]?.options ?? {}, option));
+      if (options.length) return problem(`its ${def.name} has no ${options.map(([axis, option]) => `${axis} "${option}"`).join(', ')}.`);
+    }
+  return null;
 }
 
 /** A new project's state from a starter, on `themeId` (the default theme when it is not given or not installed). */

@@ -2965,11 +2965,20 @@ function visuallyHidden(el, s = getComputedStyle(el)) {
  * form's spam trap, a screen-reader-only label): whatever its own size, nothing of it is there to see or tap.
  */
 function clippedAway(el) {
+  // What escapes an ancestor's clip as the walk goes up: a fixed box escapes every one, an absolute box every one
+  // below the positioned ancestor it is placed against.
+  let escapes = getComputedStyle(el).position;
   for (let e = parentOf(el); e && e.nodeType === 1 && e !== document.body; e = parentOf(e)) {
+    if (escapes === 'fixed') return false;
     const s = getComputedStyle(e);
-    if (s.overflowX === 'visible' && s.overflowY === 'visible') continue;
-    const r = boxRect(e);
-    if (r.width <= 1 || r.height <= 1) return true;
+    // A box that makes no box of its own (display: contents) clips nothing.
+    const clips = s.display !== 'contents' && (s.overflowX !== 'visible' || s.overflowY !== 'visible') && (escapes !== 'absolute' || s.position !== 'static');
+    if (clips) {
+      const r = boxRect(e);
+      if (r.width <= 1 || r.height <= 1) return true;
+    }
+    if (s.position === 'fixed' || s.position === 'absolute') escapes = s.position;
+    else if (escapes === 'absolute' && s.position !== 'static') escapes = 'static';
   }
   return false;
 }

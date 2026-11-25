@@ -227,6 +227,15 @@ describe('the Editorial pack (#390)', () => {
     registerPacks([...listThemes(), buildPack(author.define(components.filter((c) => c.componentId !== 'hero.split').map((c) => author.adopt(c)))).pack]);
     expect(starterProblem('blank', 'sparse')).toBeNull();
     expect(starterProblem('business', 'sparse')).toMatch(/^The Sparse theme cannot make the Business starter: Unknown component "hero\.split"/);
+    // One with every section, but a header without the navigation the starters fill in.
+    const bare = createPack({ ...meta, id: 'bare', name: 'Bare', version: '1.0.0', license: 'MIT' });
+    const headless = components.map((c) => {
+      const d = bare.adopt(c);
+      if (d.componentId === 'shell.header') delete d.properties.links;
+      return d;
+    });
+    registerPacks([...listThemes(), buildPack(bare.define(headless)).pack]);
+    expect(starterProblem('blank', 'bare')).toMatch(/^The Bare theme cannot make the Blank site: its Header has no "links"\./);
   });
 });
 
@@ -246,6 +255,12 @@ describe('pinning an installed pack', () => {
     expect(next.themeLock.theme).toEqual({ id: 'studio', version: '1.0.0', digest: 'd1' });
     // Back to a bundled theme, the pin goes.
     expect(applyOperations(next, [{ type: 'theme.apply', themeId: 'foundation' }]).state.themeLock.theme).toEqual({ id: 'foundation', version: '0.1.0' });
+  });
+
+  it('never lets a built-in theme stand in for an installed pack that had its ID (#390)', () => {
+    // Editorial became a built-in theme: a project made with an installed "editorial" pack records its digest.
+    for (const version of ['0.1.0', '2.0.0']) expect(themePinProblem({ site: { themeId: 'editorial' }, themeLock: { theme: { id: 'editorial', version, digest: 'd1' } } }), version).toMatch(/built-in theme with that ID, which is a different design/);
+    expect(themePinProblem({ site: { themeId: 'editorial' }, themeLock: { theme: { id: 'editorial', version: '0.1.0' } } })).toBeNull();
   });
 
   it('notices a missing pack or another copy of the same version, but lets a new version through', () => {

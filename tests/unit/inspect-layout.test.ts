@@ -192,6 +192,15 @@ describe('layout inspection readability checks', () => {
     expect(of(await inspect(trap(box, '<input type="text" name="trap" tabindex="-1" style="height:20px">')), 'small-tap-target')).toHaveLength(1);
     // Hidden from assistive technology and out of the tab order, a visible control can still be tapped.
     expect(of(await inspect(`<div ${so('hidden')} aria-hidden="true"><button tabindex="-1" style="width:20px;height:20px;padding:0">+</button></div>`), 'small-tap-target')).toHaveLength(1);
+    // A clipping box that makes no box of its own clips nothing; a fixed control, or an absolute one placed against a
+    // box outside the clip, shows past it.
+    const small = (style = '') => `<button style="width:20px;height:20px;padding:0;${style}">+</button>`;
+    for (const html of [
+      `<div ${so('contents')} style="display:contents;overflow:hidden">${small()}</div>`,
+      `<div ${so('fixed')} style="height:0;overflow:hidden">${small('position:fixed;top:40px;left:20px')}</div>`,
+      `<div ${so('placed')} style="position:relative"><div style="height:0;overflow:hidden">${small('position:absolute;top:40px;left:20px')}</div></div>`
+    ])
+      expect(of(await inspect(html), 'small-tap-target'), html).toHaveLength(1);
   }, 30000);
 
   it.skipIf(!browserInstalled)('counts a repeated element once with its items, and keeps every kind under the cap', async () => {
