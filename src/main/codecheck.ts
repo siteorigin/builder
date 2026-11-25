@@ -505,12 +505,18 @@ function partMarkers(fragment: unknown): Array<{ attr: Node; host: Node }> {
 }
 
 /**
- * The props a component's script takes from $props(), by prop name: the local it is read through, and whether that
- * local has a fallback of its own that is never missing (a snippet or function written there, not `undefined` or an
- * expression that may be). `let { slot_content: body = fallback } = $props()` reads slot_content through `body`.
+ * The props a component's script takes from $props(), by prop name: the local it is read through, whether it has a
+ * default written there, and whether that default is a fallback that is never missing: a function written in place,
+ * or the name of a snippet the markup declares or a function the script declares (never a variable, which may hold
+ * undefined). `let { slot_content: body = fallback } = $props()` reads slot_content through `body`.
  */
-function propsLocals(ast: Node): Map<string, { local: string; fallback: boolean }> {
-  const locals = new Map<string, { local: string; fallback: boolean }>();
+function propsLocals(ast: Node): Map<string, { local: string; defaulted: boolean; fallback: boolean }> {
+  const callable = new Set<string>();
+  walkAst(ast.fragment, (n) => {
+    if (n.type === 'SnippetBlock' && (n.expression as Node)?.type === 'Identifier') callable.add(String((n.expression as Node).name));
+  });
+  for (const st of ((ast.instance as { content?: { body?: Node[] } } | null)?.content?.body ?? []) as Node[]) if (st.type === 'FunctionDeclaration' && (st.id as Node)?.type === 'Identifier') callable.add(String((st.id as Node).name));
+  const locals = new Map<string, { local: string; defaulted: boolean; fallback: boolean }>();
   walkAst(ast.instance, (n) => {
     if (n.type !== 'VariableDeclarator' || (n.init as Node | null)?.type !== 'CallExpression') return;
     const callee = (n.init as Node).callee as Node;
@@ -520,13 +526,15 @@ function propsLocals(ast: Node): Map<string, { local: string; fallback: boolean 
       const key = prop.key as Node;
       const name = key.type === 'Identifier' ? String(key.name) : key.type === 'Literal' ? String(key.value) : null;
       let value = prop.value as Node;
+      let defaulted = false;
       let fallback = false;
       if (value?.type === 'AssignmentPattern') {
         const right = value.right as Node;
-        fallback = (right?.type === 'Identifier' && right.name !== 'undefined') || FUNCTION_TYPES.has(String(right?.type));
+        defaulted = !(right?.type === 'Identifier' && right.name === 'undefined') && !(right?.type === 'Literal' && right.value === null);
+        fallback = FUNCTION_TYPES.has(String(right?.type)) || (right?.type === 'Identifier' && callable.has(String(right.name)));
         value = value.left as Node;
       }
-      if (name && value?.type === 'Identifier') locals.set(name, { local: String(value.name), fallback });
+      if (name && value?.type === 'Identifier') locals.set(name, { local: String(value.name), defaulted, fallback });
     }
   });
   return locals;
@@ -573,14 +581,30 @@ export async function codeContractNames(source: string): Promise<{ parts: string
   return { parts: [...parts], slots };
 }
 
-/** Whether a block's test is true only while `name` holds something: `name`, or `name && …` either way round. */
+/**
+ * Whether a block's test is true only while `name` holds something: `name`, `!!name`, `name != null`,
+ * `name !== undefined`, `typeof name === 'function'`, or an `&&` chain with one of them.
+ */
 function truthyTest(test: Node | undefined, name: string): boolean {
   if (!test) return false;
-  if (test.type === 'Identifier') return test.name === name;
+  const is = (n: Node | undefined) => n?.type === 'Identifier' && n.name === name;
+  const nothing = (n: Node | undefined, loose: boolean) => (n?.type === 'Identifier' && n.name === 'undefined') || (loose && n?.type === 'Literal' && n.value === null);
+  if (is(test)) return true;
+  if (test.type === 'UnaryExpression' && test.operator === '!' && (test.argument as Node)?.type === 'UnaryExpression' && (test.argument as Node).operator === '!') return is((test.argument as Node).argument as Node);
   if (test.type === 'LogicalExpression' && test.operator === '&&') return truthyTest(test.left as Node, name) || truthyTest(test.right as Node, name);
+  if (test.type === 'BinaryExpression') {
+    const [l, r] = [test.left as Node, test.right as Node];
+    if (test.operator === '!=' || test.operator === '!==') {
+      const loose = test.operator === '!=';
+      return (is(l) && nothing(r, loose)) || (is(r) && nothing(l, loose));
+    }
+    if (test.operator === '===' || test.operator === '==') {
+      const typed = (a: Node, b: Node) => a?.type === 'UnaryExpression' && a.operator === 'typeof' && is(a.argument as Node) && b?.type === 'Literal' && b.value === 'function';
+      return typed(l, r) || typed(r, l);
+    }
+  }
   return false;
 }
-
 
 /**
  * Where a code component's code breaks its contract: a declared slot it never renders (which hides content its
@@ -611,10 +635,13 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
   });
   const slots = contract.slots ?? {};
   const filled = new Set(contract.filled ?? []);
-  // Every name the markup reads: a slot handed on (to a component, a snippet) is shown by whatever it is handed to.
-  const read = new Set<string>();
-  walkAst(ast.fragment, (n) => {
-    if (n.type === 'Identifier') read.add(String(n.name));
+  // The names the markup hands on, to a snippet it renders or a component it places: a slot handed on is shown by
+  // whatever it is handed to. Only testing it ({#if slot_content}) shows nothing.
+  const handed = new Set<string>();
+  walkAst(ast.fragment, (n, around) => {
+    if (n.type !== 'Identifier') return;
+    const passed = around.some((a, i) => (a.type === 'RenderTag' && i < around.length - 1) || ((a.type === 'Attribute' || a.type === 'SpreadAttribute') && /^(Component|SvelteComponent|SvelteSelf)$/.test(String(around[i - 1]?.type))));
+    if (passed) handed.add(String(n.name));
   });
   // Its declared slots, and every slot_<name> it takes from $props(), declared or not yet: each must render safely.
   const taken = [...locals.keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
@@ -624,7 +651,7 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
     const from = locals.get(prop);
     const local = from?.local ?? prop;
     const shown = renders.filter((r) => r.name === local);
-    if (!shown.length && from && read.has(local)) continue;
+    if (!shown.length && from && handed.has(local)) continue;
     if (!shown.length) {
       // Content placed there already would disappear from the site: the code must show the slot, or the content go first.
       if (filled.has(slot)) out.push({ severity: 'error', message: `The “${label}” slot holds content on the site, but the code does not show it. Keep rendering it with {@render ${local}?.()}, or move that content out of the slot first.` });
@@ -639,6 +666,8 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
       if (!r.optional && !r.guarded && !from.fallback)
         out.push({ severity: 'error', message: `Render the “${label}” slot with {@render ${local}?.()} or inside {#if ${local}}: a placement with nothing in it gives no snippet, and the page would fail to render.`, node: r.node });
   }
+  // Each placement gives the code its part classes, which replace whatever the code gives so_o itself.
+  if (locals.get('so_o')?.defaulted) out.push({ severity: 'warning', message: 'Give so_o no default of its own (let { so_o } = $props()): each placement passes its own part classes, which replace it.' });
   const parts = contract.parts ?? {};
   const marked = new Set<string>();
   walkAst(ast.fragment, (n) => void (hookedPart(n) !== null && marked.add(hookedPart(n)!)));

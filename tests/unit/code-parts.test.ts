@@ -84,6 +84,22 @@ describe('a code component declares what its code shows', () => {
   });
 });
 
+describe('saving code declares what it shows inside the operation itself', () => {
+  it('lets the same batch fill a slot the code just gained, and declares again on a save of the same code', async () => {
+    const { s, owner, defId, calc } = await calculator();
+    const source = SOURCE.replace('slot_content = undefined', 'slot_content = undefined, slot_aside = undefined').replace('</section>', '\t<aside>{@render slot_aside?.()}</aside>\n</section>');
+    const names = (await codeContractNames(source))!;
+    const r = applyOperations(s, [{ type: 'component.updateSource', definitionId: defId, source }, { type: 'node.insert', owner, parentId: calc, slot: 'aside', primitive: 'button', text: 'Aside' }], { codeNames: (src) => (src === source ? names : undefined) });
+    expect(r.state.components[defId].slots?.aside).toEqual({ label: 'Aside' });
+    expect((r.state.pages[owner.id].nodes[calc] as InstanceNode).slots?.aside).toHaveLength(1);
+    // The same code saved again (after an edit outside the app, say) still declares what it shows.
+    const bare = structuredClone(s);
+    bare.components[defId].source = source;
+    const again = applyOperations(bare, [{ type: 'component.updateSource', definitionId: defId, source }], { codeNames: () => names });
+    expect(again.state.components[defId].slots?.aside).toEqual({ label: 'Aside' });
+  });
+});
+
 describe('the code check holds code to its contract', () => {
   const contract = (s: ProjectState, defId: string, more: Partial<CodeContract> = {}): CodeContract => ({ slots: s.components[defId].slots, parts: s.components[defId].parts, ...more });
   const errors = async (source: string, c: CodeContract) => (await checkSvelteSource(source, { contract: c })).filter((p) => p.severity === 'error').map((p) => p.message);
@@ -107,6 +123,13 @@ describe('the code check holds code to its contract', () => {
     expect(await errors(with_('{#if !slot_content}{@render slot_content()}{/if}'), c)).toHaveLength(1);
     expect(await errors(with_('{#if slot_content}<i></i>{:else}{@render slot_content()}{/if}'), c)).toHaveLength(1);
     expect(await errors(with_('{#if slot_content || open}{@render slot_content()}{/if}'), c)).toHaveLength(1);
+    // Tests that rule out nothing given: safe; one that lets undefined through: not.
+    expect(await errors(with_('{#if slot_content != null}{@render slot_content()}{/if}'), c)).toEqual([]);
+    expect(await errors(with_("{#if typeof slot_content === 'function'}{@render slot_content()}{/if}"), c)).toEqual([]);
+    expect(await errors(with_('{#if !!slot_content}{@render slot_content()}{/if}'), c)).toEqual([]);
+    expect(await errors(with_('{#if slot_content !== null}{@render slot_content()}{/if}'), c)).toHaveLength(1);
+    // A variable as the default may hold undefined itself: no fallback.
+    expect(await errors(SOURCE.replace('slot_content = undefined', 'slot_content = fallback').replace('{@render slot_content?.()}', '{@render slot_content()}').replace('</script>', '\tconst fallback = undefined;\n</script>'), c)).toHaveLength(1);
     // A default that may itself be missing is no fallback.
     expect(await errors(SOURCE.replace('slot_content = undefined', 'slot_content = open ? fallback : undefined').replace('{@render slot_content?.()}', '{@render slot_content()}'), c)).toHaveLength(1);
     // A fallback of the code's own is never missing.
@@ -129,6 +152,8 @@ describe('the code check holds code to its contract', () => {
     const gone = SOURCE.replace('{@render slot_content?.()}', '');
     expect(await errors(gone, contract(s, defId))).toEqual([]);
     expect(await errors(gone, contract(s, defId, { filled: ['other', 'content'] }))).toEqual([expect.stringContaining('holds content on the site')]);
+    // Only tested, never rendered or handed on, the content still disappears.
+    expect(await errors(SOURCE.replace('{@render slot_content?.()}', '{#if slot_content}<i></i>{/if}'), contract(s, defId, { filled: ['content'] }))).toEqual([expect.stringContaining('holds content on the site')]);
     // Handed on to a snippet of its own that renders it, the slot is still shown.
     const handed = SOURCE.replace('{@render slot_content?.()}', '{#snippet frame(inner)}<i>{@render inner?.()}</i>{/snippet}{@render frame(slot_content)}');
     expect(await errors(handed, contract(s, defId, { filled: ['content'] }))).toEqual([]);
@@ -150,6 +175,8 @@ describe('the code check holds code to its contract', () => {
     expect(await said(SOURCE.replace('<div class="extras">', '<div class={["extras", so_o?.note]}>'))).not.toContainEqual(expect.stringMatching(/“Note” part is not in the code/));
     expect(await errors(SOURCE.replace('data-so-part="total"', 'data-so-part=" total "'), c)).toEqual([expect.stringContaining('camelCase')]);
     expect(await errors(SOURCE.replace('<div class="extras">', `<div class="extras" {...{ "data-so-part": 'note' }}>`), c)).toEqual([expect.stringContaining('not in a spread')]);
+    // A default so_o of its own is replaced by each placement's classes.
+    expect((await checkSvelteSource(SOURCE.replace('so_o = undefined', "so_o = { total: 'amount' }"), { contract: c })).map((p) => p.message)).toContainEqual(expect.stringContaining('Give so_o no default of its own'));
     // Words that only mention a marker are not one.
     expect(await errors(SOURCE.replace('<div class="extras">', `<div class="extras" {...{ title: 'data-so-part' }}>`), c)).toEqual([]);
   });

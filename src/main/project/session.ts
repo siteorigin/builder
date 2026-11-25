@@ -16,7 +16,7 @@ import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
-import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
+import { codeNeeds, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
@@ -1964,7 +1964,11 @@ export class ProjectSession extends EventEmitter {
       // An import is a change of its own (its images and the package), checked against the project as it stands.
       if (importing && (ops.filter((o) => o.type === 'component.import').length !== 1 || ops.some((o) => o.type !== 'asset.add' && o.type !== 'component.import')))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'A component package is imported as a change of its own, with only its images.', recoverable: true } };
-      const context = { clipboards: this.clipboards, ...(opts.componentImport ? { componentImport: opts.componentImport } : {}) };
+      // The parts and slots each code source in the batch shows, read from its syntax tree before the batch is applied,
+      // so its own later operations can fill a slot or style a part the code just gained.
+      const names = new Map<string, { parts: string[]; slots: string[] } | null>();
+      for (const op of ops) if ((op.type === 'component.createCode' || op.type === 'component.updateSource') && typeof op.source === 'string' && !names.has(op.source)) names.set(op.source, await codeContractNames(op.source));
+      const context = { clipboards: this.clipboards, codeNames: (source: string) => names.get(source), ...(opts.componentImport ? { componentImport: opts.componentImport } : {}) };
       const code = opts.codeAllowed === false ? developerModeRefusal(this.state, ops, context) : null;
       if (code) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: `${code} Turn on Developer mode in Settings to work with code.`, recoverable: true } };
       // Paste places what the editor copied; an AI run never sends it.
@@ -2009,12 +2013,6 @@ export class ProjectSession extends EventEmitter {
       // A form decides in its code where visitors' messages go, so a package's code may never place one.
       const guarded = new Set(results.flatMap((r) => (Array.isArray(r?.guarded) ? (r.guarded as string[]) : [])));
       const files = brought ? new Set(brought.filter((d) => !sendsFormMessages(d) && !guarded.has(d.id)).map(defFile)) : null;
-      // A project's code that is new or changed declares the parts and slots it shows, read from its syntax tree.
-      for (const def of Object.values(next.components)) {
-        if (def.kind !== 'code' || def.owner !== 'project' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
-        const names = await codeContractNames(def.source);
-        if (names) declareCodeNames(def, names);
-      }
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
         // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
@@ -3754,9 +3752,7 @@ export class ProjectSession extends EventEmitter {
       if (lost.length) return { ok: false, message: `The changed files were not loaded: ${lost[0]} Put back the matching page files too, or choose another option first.` };
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
-        // Held to its contract as an edit in the app is, so a slot it shows still renders safely while left empty.
-        const contract = def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def) } } : {};
-        const bad = (await checkSvelteSource(def.source ?? '', contract)).filter((p) => p.severity === 'error');
+        const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
         if (bad.length) return { ok: false, message: `The edited code for "${def.name}" has problems, so it was not loaded: ${bad[0].message}` };
       }
       this.migrationDue = migrated;
