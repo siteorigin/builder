@@ -91,11 +91,12 @@ describe('the slots of a placed component', () => {
     const p = offerPage();
     const [{ definitionId: band }] = p.run([{ type: 'component.upsert', name: 'Wide band', insertAs: 'section', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'section' }] }]);
     p.run([
-      { type: 'component.setSlot', definitionId: p.definitionId, slot: 'body', label: 'Body', componentIds: [band as string] },
+      // One by definition ID, and a catalogue contract the project has not installed, named by its ID.
+      { type: 'component.setSlot', definitionId: p.definitionId, slot: 'body', label: 'Body', componentIds: [band as string, 'media.gallery'] },
       { type: 'component.setSlot', definitionId: p.definitionId, slot: 'media', label: 'Media', primitives: [], categories: [] }
     ]);
     const [media, body] = p.rows();
-    expect(body.contract).toBe('Takes “Wide band” · No limit');
+    expect(body.contract).toBe('Takes “Wide band” and “media.gallery” · No limit');
     expect(body.closed).toBeNull();
     expect(media.contract).toBe('Takes nothing · At most 1');
     expect(media.closed).toBe('This slot takes no content.');
@@ -231,6 +232,34 @@ describe('what a slot’s Add offers', () => {
     expect(rows().map((r) => r.closed)).toEqual([null, null]);
     p.run([{ type: 'node.insert', owner: p.owner, parentId: nodeId as string, slot: 'body', primitive: 'paragraph' }]);
     expect(rows().map((r) => r.closed)).toEqual([null, UNSHOWN]);
+  });
+
+  it('a slot handed into another component’s fallback is closed once the design fills the slot that fallback is for', () => {
+    const p = offerPage();
+    const [{ definitionId: inner }] = p.run([
+      {
+        type: 'component.upsert',
+        name: 'Frame',
+        insertAs: 'element',
+        properties: {},
+        slots: { a: { label: 'A' }, b: { label: 'B' } },
+        nodes: [{ kind: 'element', id: 'root', tag: 'div', children: ['a'] }, { kind: 'slot', id: 'a', slot: 'a', children: ['b'] }, { kind: 'slot', id: 'b', slot: 'b' }]
+      }
+    ]);
+    const [{ definitionId: outer }] = p.run([
+      { type: 'component.upsert', name: 'Framed', insertAs: 'element', properties: {}, slots: { body: { label: 'Body' } }, nodes: [{ kind: 'element', id: 'root', tag: 'div', children: ['body'] }, { kind: 'slot', id: 'body', slot: 'body' }] }
+    ]);
+    const design: OwnerRef = { kind: 'component', id: outer as string };
+    const { rootIds, nodes } = p.state().components[outer as string].tree!;
+    const placeholder = Object.values(nodes).find((n) => n.kind === 'slot')!.id;
+    const [{ nodeId: frame }] = p.run([{ type: 'node.insert', owner: design, parentId: rootIds[0], definitionId: inner as string }]);
+    p.run([{ type: 'node.move', owner: design, nodeId: placeholder, parentId: frame as string, slot: 'b', index: 0 }]);
+    const [{ nodeId }] = p.run([{ type: 'node.insert', owner: p.owner, parentId: p.section, slot: 'content', definitionId: outer as string }]);
+    const closed = () => slotOverviews(p.state(), p.owner, home(p.state()).nodes[nodeId as string] as InstanceNode)[0].closed;
+    // The Frame shows B while nothing fills A.
+    expect(closed()).toBeNull();
+    p.run([{ type: 'node.insert', owner: design, parentId: frame as string, slot: 'a', primitive: 'paragraph' }]);
+    expect(closed()).toBe(UNSHOWN);
   });
 
   it('a slot handed to a component placed in the design is closed when that component renders no such slot', () => {

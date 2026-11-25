@@ -11,7 +11,6 @@ import { definitionRole } from '@engine/insert-role';
 import { slotAccepts, slotDeclProblem, slotFill } from '@engine/slots';
 import { shownSlots } from '@engine/theme-updates';
 import { childLists, findParent } from '@engine/tree';
-import { slotsRendered } from '@generator/card-links';
 import { treeFor } from './model';
 import { slotLimitWords } from './slot-contract';
 
@@ -74,13 +73,20 @@ export function slotOverviews(state: ProjectState, owner: OwnerRef, node: Instan
 
 /**
  * The slots this placement shows, so that what is added to them appears: not one its design leaves out, keeps in the
- * fallback of a slot the placement fills or in a list with nothing in it, or hands to a component placed in it that
- * renders no such slot. Null for code, which renders its slots as it likes.
+ * fallback of a slot the placement fills or in a list with nothing in it, or hands to a component placed in it that,
+ * as placed there, shows no such slot. Null for code, which renders its slots as it likes.
  */
-function slotsShownBy(state: ProjectState, def: ComponentDefinition, node: InstanceNode, tree: NodeTree): Set<string> | null {
+function slotsShownBy(state: ProjectState, def: ComponentDefinition, node: InstanceNode, tree: NodeTree, within: ReadonlySet<string> = new Set()): Set<string> | null {
   if (def.kind !== 'managed' || !def.tree) return null;
-  const rendered = slotsRendered(state, def);
-  return new Set([...shownSlots(def, node, tree)].filter((slot) => rendered.has(slot)));
+  const design = def.tree;
+  const inside = new Set(within).add(def.id);
+  return shownSlots(def, node, tree, (placed) => {
+    const nested = Object.hasOwn(state.components, placed.definitionId) ? state.components[placed.definitionId] : undefined;
+    // A design placed inside itself (validation refuses it) shows nothing it is handed.
+    if (!nested || inside.has(nested.id)) return () => false;
+    const shows = slotsShownBy(state, nested, placed, design, inside);
+    return (slot) => !shows || shows.has(slot);
+  });
 }
 
 /** Whether each of `ids` is listed in one place only. A hand edit can list a node twice, and deleting or moving it

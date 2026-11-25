@@ -128,9 +128,6 @@ function once<T>(pass: Pass, memo: Map<string, T>, key: string, empty: T, work: 
   }
 }
 
-/** The slots `def` renders, wherever it is placed (see renderedSlots). */
-export const slotsRendered = (state: ProjectState, def: ComponentDefinition): Set<string> => renderedSlots(newPass(state), def);
-
 /**
  * The slots a definition renders: the slots its tree places, including those passed on to a nested component's
  * slot that the nested component renders. A code component may render any slot it declares.

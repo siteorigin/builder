@@ -111,6 +111,7 @@ assert.deepEqual(await inspector.locator('[data-slot-count]').allInnerTexts(), [
 assert.match(await row('media').innerText(), /A picture above the words\./);
 assert.equal(await addTo('Quiet').isDisabled(), true, 'a slot that takes nothing has no Add');
 const describedBy = async (button) => win.locator(`[id="${await button.getAttribute('aria-describedby')}"]`).innerText();
+assert.match(await row('quiet').innerText(), /This slot takes no content\./);
 assert.equal(await describedBy(addTo('Quiet')), 'This slot takes no content.');
 assert.equal(await inspector.getByRole('button', { name: 'Clear Actions', exact: true }).count(), 0, 'nothing to clear while empty');
 
