@@ -190,7 +190,7 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey', 'activeItem', 'stepItem', 'filterKey', 'filterCategories', 'so_text', 'so_fill', 'so_visitorText', 'overlayOpen', 'overlayDismissal', 'overlayClosed', 'beforeNavigate', 'so_previewing']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey', 'activeItem', 'stepItem', 'itemKey', 'filterKey', 'filterCategories', 'so_text', 'so_fill', 'so_visitorText', 'overlayOpen', 'overlayDismissal', 'overlayClosed', 'beforeNavigate', 'so_previewing']);
 /**
  * Svelte's runes, by the name a local would hide them under: a property local named `state` would make `$state(...)`
  * read it as a store, so properties never take these names as locals either.
@@ -1697,9 +1697,10 @@ function isBareTag(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, tag: str
  */
 function widgetId(ctx: EmitCtx, nodeId: string, role: 'tab' | 'panel' | 'dialog', perItem = false): string {
   ctx.usesUid = true;
-  // Content shown once per item of a list is named by its item too, encoded so no ID holds a space.
+  // Content shown once per item of a list is named by its item too, encoded so no ID holds a space (see itemKey).
   const item = perItem ? ctx.items.at(-1) : undefined;
-  return `\`\${uid}.${role}.${nodeId.replace(/[^A-Za-z0-9_-]/g, '_')}${item ? `.\${encodeURIComponent(${item}.id)}` : ''}\``;
+  if (item) useImport(ctx, '{ itemKey }', `${RUNTIME_DIR}/util.js`);
+  return `\`\${uid}.${role}.${nodeId.replace(/[^A-Za-z0-9_-]/g, '_')}${item ? `.\${itemKey(${item}.id)}` : ''}\``;
 }
 
 /** A state's local compared with a value, as an expression. An item state is on for the item being emitted while it is the active one. */

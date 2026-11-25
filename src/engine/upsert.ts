@@ -41,6 +41,7 @@ import {
   stateActionProblem,
   stateRefProblem,
   stateUsers,
+  itemProblemNode,
   itemStateProblems,
   type BindingSite
 } from './schema';
@@ -86,8 +87,11 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   if (uiState !== undefined) candidate.state = uiState;
   else delete candidate.state;
   // An item state holds an item of one of the design's own lists, read and selected inside repeats of that list.
-  const itemProblem = itemStateProblems(candidate).values().next().value;
-  if (itemProblem) fail(itemProblem);
+  const [itemKey, itemProblem] = itemStateProblems(candidate).entries().next().value ?? [];
+  if (itemKey && itemProblem) {
+    const nodeId = itemProblemNode(itemKey);
+    throw new EngineError('INVALID_ARGUMENT', itemProblem, nodeId ? { owner: { kind: 'component', id: candidate.id }, nodeId } : undefined);
+  }
   checkBindings(state, candidate, bindingSites(candidate));
   // A filter, a button's state action or a dialog that would not work is refused here, where load validation would
   // only report it.

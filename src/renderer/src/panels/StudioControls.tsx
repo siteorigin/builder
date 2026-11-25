@@ -11,7 +11,7 @@ import { setStudioView } from '../lib/actions';
 import { studioStates, studioVariants } from '../lib/studio';
 import { itemStatePositions } from '../lib/ui-state';
 import { declaredState } from '@engine/schema';
-import { isStudioSample, STUDIO_SAMPLES } from '../lib/studio-samples';
+import { isStudioSample, STUDIO_SAMPLES, studioSampleProps } from '../lib/studio-samples';
 
 export function StudioControls({ def }: { def: ComponentDefinition }) {
   const view = useStore((s) => (s.definitionMode?.definitionId === def.id ? s.definitionMode.studio : undefined));
@@ -20,6 +20,9 @@ export function StudioControls({ def }: { def: ComponentDefinition }) {
   const shown = studioVariants(def, view, styled);
   const states = studioStates(def, view);
   const sample = STUDIO_SAMPLES.find((o) => o.value === view.sample);
+  // An item state is previewed at a position among the items the sample shows (Long copy has more than the design).
+  const sampleProps = studioSampleProps(def, view.sample);
+  const sampleItems = (list: string) => (Array.isArray(sampleProps?.[list]) ? (sampleProps[list] as unknown[]) : undefined);
   return (
     <div className="studio-controls" role="group" aria-label="What Component Studio shows">
       {axesOf(def).map(([axis, a]) => (
@@ -53,7 +56,7 @@ export function StudioControls({ def }: { def: ComponentDefinition }) {
           declared.type === 'boolean'
             ? [{ value: 'true', label: 'On', initial: declared.initial }, { value: 'false', label: 'Off', initial: !declared.initial }]
             : declared.type === 'item'
-              ? itemStatePositions(def, declared).map((o) => ({ value: String(o.value), label: o.label, initial: o.value === declared.initial }))
+              ? itemStatePositions(def, declared, sampleItems(declared.list), Number(value)).map((o) => ({ value: String(o.value), label: o.label, initial: o.value === declared.initial }))
               : declared.options.map((o) => ({ ...o, initial: o.value === declared.initial }));
         return (
           <label key={`state:${name}`} className="studio-control" title="Previews the component with this UI state, as a visitor’s click would leave it. Visitors still start where the design says.">

@@ -39,7 +39,9 @@ function project(): ProjectState {
   };
   const cards = Array.from({ length: 8 }, (_, i) => ({ id: `card-${i + 1}`, icon: 'sparkles', title: `Service ${i + 1}`, description: 'A considered service, described in a sentence or two so the card has some height.', linkLabel: '', link: { type: 'none', target: '' } }));
   const after = home.rootIds.slice(-1);
-  home.rootIds = [add('content.steps-media'), add('content.steps-media'), add('features.grid', { items: cards }, { layout: 'sticky-split' }), ...after];
+  // A second pinned grid whose heading group was cleared, which then has nothing to pin.
+  const cleared = add('features.grid', { items: cards.slice(0, 3), eyebrow: '', heading: '', lead: '' }, { layout: 'sticky-split' });
+  home.rootIds = [add('content.steps-media'), add('content.steps-media'), add('features.grid', { items: cards }, { layout: 'sticky-split' }), cleared, ...after];
   return s;
 }
 
@@ -146,6 +148,13 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
         return found.length === 1 && b.closest('section').contains(found[0]) ? found[0].tagName : 'missing';
       }))`)) as string[][];
       expect(named).toEqual(Array(6).fill(['DIV', 'FIGURE']));
+      // Each names its own row's description (right after it) and the picture of the same item, which no other step names.
+      const own = (await site.evaluate(`[...document.querySelectorAll('[class*="steps-media__steps-layout"] button')].map((b) => {
+        const [details, figure] = b.getAttribute('aria-controls').split(' ');
+        return [b.nextElementSibling.id === details, details.split('.panel.step-details.')[1] === figure.split('.panel.step-media.')[1], figure];
+      })`)) as Array<[boolean, boolean, string]>;
+      expect(own.map(([a, b]) => [a, b])).toEqual(Array(6).fill([true, true]));
+      expect(new Set(own.map(([, , figure]) => figure)).size).toBe(6);
       expect(problems).toEqual([]);
     } finally {
       await page.close();
@@ -184,6 +193,14 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
       now = await pinned(site);
       expect(now.introBottom).toBeLessThanOrEqual(now.innerBottom + 1);
       expect(now.introTop).toBeLessThan(HEADER + GAP);
+      // With its heading group cleared, the cards take the whole row rather than the narrow column.
+      const cleared = (await site.evaluate(`(() => {
+        const root = document.querySelectorAll('[class*="features-grid--layout-sticky-split"][class*="__root"]')[1];
+        const inner = root.querySelector('[class*="features-grid__inner"]');
+        return [root.querySelector('[class*="features-grid__intro"]') === null, Math.round(root.querySelector('ul').getBoundingClientRect().width), Math.round(inner.getBoundingClientRect().width)];
+      })()`)) as [boolean, number, number];
+      expect(cleared[0]).toBe(true);
+      expect(cleared[1]).toBe(cleared[2]);
     } finally {
       await page.close();
     }

@@ -71,20 +71,22 @@ export function itemStateLists(def: ComponentDefinition): Array<{ name: string; 
 }
 
 /**
- * The positions an item state can start at (or be previewed at), named by the design's own items ("2. Design"): one
- * for each item the list starts with, and the one it starts at now, even past the end of the list (where it shows the
- * last item).
+ * The positions an item state can start at (or be previewed at), named by the items ("2. Design"): one for each of
+ * `items` (the design's own unless a preview shows others), and `current`, the one in use, even past the end of the
+ * list (where it shows the last item).
  */
-export function itemStatePositions(def: ComponentDefinition, s: Extract<UiStateSchema, { type: 'item' }>): Array<{ value: number; label: string }> {
+export function itemStatePositions(def: ComponentDefinition, s: Extract<UiStateSchema, { type: 'item' }>, items?: unknown[], current: number = s.initial): Array<{ value: number; label: string }> {
   const list = def.properties[s.list];
-  const items = list?.type === 'list' && Array.isArray(list.default) ? list.default : [];
+  const rows = items ?? (list?.type === 'list' && Array.isArray(list.default) ? list.default : []);
   const titleField = list?.type === 'list' ? list.titleField : undefined;
   const noun = list?.type === 'list' ? list.itemLabel || 'Item' : 'Item';
-  const count = Math.min(Math.max(items.length, s.initial + 1, 1), 50);
-  return Array.from({ length: count }, (_, i) => {
-    const title = titleField ? (items[i] as Record<string, unknown> | undefined)?.[titleField] : undefined;
-    return { value: i, label: typeof title === 'string' && title.trim() ? `${i + 1}. ${title.trim().slice(0, 60)}` : `${noun} ${i + 1}` };
-  });
+  const label = (i: number) => {
+    const title = titleField ? (rows[i] as Record<string, unknown> | undefined)?.[titleField] : undefined;
+    return typeof title === 'string' && title.trim() ? `${i + 1}. ${title.trim().slice(0, 60)}` : `${noun} ${i + 1}`;
+  };
+  const out = Array.from({ length: Math.min(Math.max(rows.length, 1), 50) }, (_, i) => ({ value: i, label: label(i) }));
+  if (current >= out.length) out.push({ value: current, label: label(current) });
+  return out;
 }
 
 /** Why a new state cannot be added with these, or null: a label, for a choice two options or more, and for an item state its list. */
@@ -181,8 +183,11 @@ export function actionWords(def: ComponentDefinition, action: StateAction): stri
       return `Next ${label}`;
     case 'prev':
       return `Previous ${label}`;
-    case 'select':
-      return `Make its item the ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+    case 'select': {
+      // A hand-edited action may name no state.
+      const words = String(label ?? 'active item');
+      return `Make its item the ${words.charAt(0).toLowerCase()}${words.slice(1)}`;
+    }
     default:
       return s?.type === 'boolean' ? `Turn ${label} ${action.value ? 'on' : 'off'}` : `Switch ${label} to ${s ? optionLabel(s, action.value) : String(action.value)}`;
   }

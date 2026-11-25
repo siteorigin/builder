@@ -33,6 +33,7 @@ import { newMacroMemory } from '@agent/macros';
 import { conditionSources, describeConditions } from '../../src/renderer/src/lib/conditions';
 import { actionWords, addStateOp, clickChoices, itemStatePositions, newStateProblem } from '../../src/renderer/src/lib/ui-state';
 import { studioSpec, studioStates } from '../../src/renderer/src/lib/studio';
+import { previewSpec } from '../../src/main/runtime/component-preview';
 import { ProjectSession } from '../../src/main/project/session';
 
 const { managed } = FOUNDATION;
@@ -69,13 +70,14 @@ function stepsDef(s: ProjectState) {
     componentId: 'test.steps',
     name: 'Steps',
     properties: {
-      steps: P.list('Steps', 'Step', { title: P.str('Title', 'Step'), body: P.text('Body', '') }, [
-        { title: 'One', body: 'First body' },
-        { title: 'Two', body: 'Second body' },
-        { title: 'Three', body: 'Third body' }
+      steps: P.list('Steps', 'Step', { title: P.str('Title', 'Step'), body: P.text('Body', ''), pic: P.str('Picture', '') }, [
+        { title: 'One', body: 'First body', pic: 'Pic one' },
+        { title: 'Two', body: 'Second body', pic: 'Pic two' },
+        { title: 'Three', body: 'Third body', pic: 'Pic three' }
       ], { titleField: 'title' }),
-      other: P.list('Other', 'Other', { title: P.str('Title', 'x') }, [{ title: 'Elsewhere' }]),
-      spare: P.list('Spare', 'Spare', { title: P.str('Title', 'x') }, [])
+      other: P.list('Other', 'Other', { title: P.str('Title', 'x'), pic: P.str('Picture', '') }, [{ title: 'Elsewhere', pic: '' }]),
+      spare: P.list('Spare', 'Spare', { title: P.str('Title', 'x') }, []),
+      caption: P.str('Caption', '')
     },
     parts: {},
     state: {
@@ -92,7 +94,7 @@ function stepsDef(s: ProjectState) {
             ])
           ])
         ]),
-        b.el('stage', 'div', {}, [b.repeat('pics', 'steps', [b.el('pic', 'div', { when: uiState('active') }, [b.text('pic-text', 'p', { $item: 'title' })])])]),
+        b.el('stage', 'div', {}, [b.repeat('pics', 'steps', [b.el('pic', 'div', { when: uiState('active') }, [b.text('pic-text', 'p', { $item: 'pic' })])])]),
         b.el('others', 'div', {}, [b.repeat('other-rows', 'other', [b.el('other-row', 'div', {}, [b.text('other-text', 'p', { $item: 'title' }), b.link('other-pick', NONE, 'Pick', 'text')])])]),
         b.link('next', NONE, 'Next step', 'text', { stateAction: { state: 'active', op: 'next', wrap: true } }),
         b.link('loose', NONE, 'Loose', 'text')
@@ -142,6 +144,7 @@ describe('declaring item state', () => {
     const set = (schema: Record<string, unknown>) => ({ type: 'component.setState', definitionId: def.id, state: 'focus', schema }) as EditOperation;
     expect(apply(s, [set({ type: 'item', label: 'Focus', list: 'other' })]).components[def.id].state!.focus).toEqual({ type: 'item', label: 'Focus', list: 'other', initial: 0 });
     expect(refusal(s, [set({ type: 'item', label: 'Focus', list: 'missing' })])).toMatch(/not a list property/);
+    expect(refusal(s, [set({ type: 'item', label: 'Focus', list: 'caption' })])).toMatch(/"caption", which is not a list property/);
     expect(refusal(s, [set({ type: 'item', label: 'Focus' })])).toMatch(/needs the list property/);
     expect(refusal(s, [set({ type: 'item', label: 'Focus', list: 'steps', initial: -1 })])).toMatch(/position of an item/);
     expect(refusal(s, [set({ type: 'item', label: 'Focus', list: 'steps', initial: 1.5 })])).toMatch(/position of an item/);
@@ -161,7 +164,7 @@ describe('declaring item state', () => {
 
   it('takes positions for its values, as Component Studio previews them', () => {
     const item = { type: 'item' as const, label: 'Step', list: 'steps', initial: 0 };
-    expect([stateValueFits(item, 0), stateValueFits(item, 4), stateValueFits(item, -1), stateValueFits(item, 1.5), stateValueFits(item, '1')]).toEqual([true, true, false, false, false]);
+    expect([stateValueFits(item, 0), stateValueFits(item, 4), stateValueFits(item, -1), stateValueFits(item, 1.5), stateValueFits(item, '1'), stateValueFits(item, Number.MAX_SAFE_INTEGER + 1)]).toEqual([true, true, false, false, false, false]);
   });
 });
 
@@ -193,7 +196,7 @@ describe('reading and selecting the active item', () => {
     expect(refusal(s, [act('loose', { state: 'active', op: 'set', value: 'x' })])).toMatch(/sets the active item/);
     expect(refusal(s, [act('loose', { state: 'active', op: 'toggle' })])).toMatch(/toggles the active item/);
     expect(refusal(s, [act('loose', { state: 'plan', op: 'select' })])).toMatch(/not the active item of a list/);
-    expect(refusal(s, [act('loose', { state: 'active', op: 'prev' })])).toBe('');
+    expect((apply(s, [act('loose', { state: 'active', op: 'prev' })]).components[def.id].tree!.nodes.loose as LinkNode).stateAction).toEqual({ state: 'active', op: 'prev' });
     expect(refusal(s, [act('pic-text', { state: 'active', op: 'select' })])).toMatch(/not a button/);
   });
 
@@ -209,6 +212,8 @@ describe('reading and selecting the active item', () => {
     // Removing the list an unused item state holds the active item of.
     const unused = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'spareItem', schema: { type: 'item', label: 'Spare item', list: 'spare' } }]);
     expect(refusal(unused, [{ type: 'component.removePropSchema', definitionId: def.id, prop: 'spare' }])).toMatch(/not a list property/);
+    // Judged where the batch leaves the design: a move out of the repeat that a later step makes good is fine.
+    expect(refusal(s, [unbound, { type: 'node.move', owner: owner(def), nodeId: 'pick', parentId: 'root', index: 0 }, { type: 'node.setStateAction', owner: owner(def), nodeId: 'pick', action: null }])).toBe('');
     // Removing the state with everything that uses it, in one batch, is fine; so is removing the button.
     expect(refusal(s, [{ type: 'node.remove', owner: owner(def), nodeId: 'pick' }])).toBe('');
     const cleared = [
@@ -233,8 +238,9 @@ describe('reading and selecting the active item', () => {
     const codes = errors(s).map((d) => [d.code, d.nodeId]);
     expect(codes).toEqual(expect.arrayContaining([['STATE_ACTION_INVALID', 'pick'], ['BINDING_INVALID', 'loose']]));
     expect(itemStateProblems(def).size).toBe(2);
-    // What was already wrong does not block an unrelated edit.
+    // What was already wrong does not block an unrelated edit, but a new problem beside it is still refused.
     expect(refusal(s, [{ type: 'node.setContent', owner: owner(def), nodeId: 'next', field: 'label', value: 'Onwards' } as EditOperation])).toBe('');
+    expect(refusal(s, [{ type: 'node.setBinding', owner: owner(def), nodeId: 'pics', field: 'list', binding: { $prop: 'other' } }])).toMatch(/inside a repeat of "Other", not of "Steps"/);
     // A declaration whose list is gone.
     delete def.properties.spare;
     def.state!.lost = { type: 'item', label: 'Lost', list: 'spare', initial: 0 };
@@ -254,11 +260,24 @@ describe('the generated site', () => {
     expect(source).toContain('onclick={() => (so_state_active = stepItem((steps ?? []), so_state_active_item, 1, true))}');
     // The button says whether its item's body is expanded and names that body and its picture.
     expect(source).toContain('aria-expanded={so_state_active_item === item.id}');
-    expect(source).toContain('aria-controls={[`${uid}.panel.body.${encodeURIComponent(item.id)}`, `${uid}.panel.pic.${encodeURIComponent(item.id)}`].join(\' \')}');
+    expect(source).toContain('aria-controls={[`${uid}.panel.body.${itemKey(item.id)}`, `${uid}.panel.pic.${itemKey(item.id)}`].join(\' \')}');
     // Every item's body and picture stays in the page, hidden on screen while another item is active.
     expect(source).toContain('!((so_state_active_item === item.id)) && "so-state-off"');
     expect(source).not.toMatch(/\{#if \(?so_state_active_item/);
     expect([...keptPanels(s, def)].sort()).toEqual(['body', 'pic']);
+  });
+
+  it('names each item’s content by an ID no item can break, beside a property named like the helper', async () => {
+    const s = fresh();
+    const def = stepsDef(s);
+    def.properties.itemKey = P.str('Key', 'k');
+    def.properties.encodeURIComponent = P.str('Encode', 'e');
+    home(s).rootIds = [];
+    const node = place(s, def);
+    node.props.steps = [{ id: 'a b', title: 'Spaced', body: 'Spaced body', pic: '' }, { id: '\ud800', title: 'Lone', body: 'Lone body', pic: '' }, { id: 'a_0020b', title: 'Lookalike', body: 'Lookalike body', pic: '' }];
+    const html = await renderHome(s);
+    const ids = [...html.matchAll(/ id="([^"]*\.panel\.body\.[^"]*)"/g)].map((m) => m[1].split('.panel.body.')[1]);
+    expect(ids).toEqual(['a_0020b', '_d800', 'a_005f0020b']);
   });
 
   it('compiles without a warning, in the site and the editor', () => {
@@ -306,7 +325,7 @@ describe('the generated site', () => {
     const off = (section: string, words: string) => new RegExp(`class="[^"]*so-state-off[^"]*"[^>]*>\\s*<p[^>]*>${words}<`).test(section);
     const on = (section: string, words: string) => new RegExp(`class="(?![^"]*so-state-off)[^"]*"[^>]*>\\s*<p[^>]*>${words}<`).test(section);
     // Starting at the second step: its body and picture show, the others are in the page, hidden.
-    expect([on(sections[0], 'Second body'), off(sections[0], 'First body'), off(sections[0], 'Third body'), on(sections[0], 'Two'), off(sections[0], 'One')]).toEqual([true, true, true, true, true]);
+    expect([on(sections[0], 'Second body'), off(sections[0], 'First body'), off(sections[0], 'Third body'), on(sections[0], 'Pic two'), off(sections[0], 'Pic one')]).toEqual([true, true, true, true, true]);
     expect(sections[0].match(/aria-expanded="true"/g)).toHaveLength(1);
     // One item: it is the last, so it is active.
     expect(on(sections[1], 'Only body')).toBe(true);
@@ -325,7 +344,7 @@ describe('the generated site', () => {
     };
     const rows = (...ids: string[]) => ids.map((id) => ({ id }));
     // Before any choice: the starting position, the last for a shorter list, none for an empty one.
-    expect([activeItem(rows('a', 'b', 'c'), null, 1), activeItem(rows('a'), null, 1), activeItem([], null, 0), activeItem(undefined, null, 0)]).toEqual(['b', 'a', null, null]);
+    expect([activeItem(rows('a', 'b', 'c'), null, 1), activeItem(rows('a'), null, 1), activeItem(rows('a', 'b'), null, 5), activeItem([], null, 0), activeItem(undefined, null, 0)]).toEqual(['b', 'a', 'b', null, null]);
     // A choice stays while items move or are added; once it is removed, the starting position again.
     expect([activeItem(rows('c', 'a', 'b'), 'c', 1), activeItem(rows('x', 'c'), 'c', 0), activeItem(rows('a', 'b'), 'c', 1)]).toEqual(['c', 'c', 'b']);
     expect([stepItem(rows('a', 'b', 'c'), 'a', 1, false), stepItem(rows('a', 'b', 'c'), 'c', 1, false), stepItem(rows('a', 'b', 'c'), 'c', 1, true), stepItem(rows('a', 'b', 'c'), 'a', -1, true)]).toEqual(['b', 'c', 'a', 'c']);
@@ -337,8 +356,11 @@ describe('the generated site', () => {
     const def = stepsDef(s);
     home(s).rootIds = [];
     place(s, def);
-    const words = renderedContent(s, home(s)).filter((c) => c.kind === 'text').map((c) => c.value);
-    expect(words).toEqual(expect.arrayContaining(['Second body', 'Two']));
+    const content = renderedContent(s, home(s)).filter((c) => c.kind === 'text');
+    const words = content.map((c) => c.value);
+    expect(words).toEqual(expect.arrayContaining(['Second body', 'Pic two', 'One', 'Two', 'Three']));
+    // The stage shows the starting step's picture alone; the step buttons show every title.
+    expect(content.filter((c) => c.defNodeId === 'pic-text').map((c) => c.value)).toEqual(['Pic two']);
     expect(words).not.toContain('First body');
     expect(words).not.toContain('Third body');
   });
@@ -351,10 +373,14 @@ describe('the editor and Component Studio', () => {
     const ops = (nodeId: string) => clickChoices(def, nodeId).filter((c) => c.action?.state === 'active').map((c) => c.action!.op);
     expect(ops('pick')).toEqual(['select', 'next', 'prev']);
     expect(ops('loose')).toEqual(['next', 'prev']);
+    expect(ops('other-pick')).toEqual(['next', 'prev']);
+    // A hand-edited select that names no state still reads as words, for the Inspector to offer clearing it.
+    expect(actionWords(def, { op: 'select' } as never)).toBe('Make its item the active item');
     expect(actionWords(def, { state: 'active', op: 'select' })).toBe('Make its item the active step');
     const states = (nodeId: string) => conditionSources(def, nodeId).state.map((x) => [x.key, !!x.activeItem]);
     expect(states('body')).toEqual([['state:active', true], ['state:plan', false]]);
     expect(states('loose')).toEqual([['state:plan', false]]);
+    expect(states('other-text')).toEqual([['state:plan', false]]);
     expect(describeConditions(def, def.tree!.nodes.body)).toEqual(['Show when its item is the active step']);
   });
 
@@ -367,6 +393,9 @@ describe('the editor and Component Studio', () => {
     expect(op).toEqual({ type: 'component.setState', definitionId: def.id, state: 'focus', schema: { type: 'item', label: 'Focus', list: 'other' } });
     expect(apply(s, [op]).components[def.id].state!.focus).toMatchObject({ type: 'item', initial: 0 });
     expect(itemStatePositions(def, def.state!.active as never)).toEqual([{ value: 0, label: '1. One' }, { value: 1, label: '2. Two' }, { value: 2, label: '3. Three' }]);
+    // A position past the design's items (set by the assistant) is listed as the one in use, and a preview's own items name theirs.
+    expect(itemStatePositions(def, { type: 'item', label: 'Far', list: 'steps', initial: 50 }).at(-1)).toEqual({ value: 50, label: 'Step 51' });
+    expect(itemStatePositions(def, def.state!.active as never, [{ title: 'A' }, { title: 'B' }, { title: 'C' }, { title: 'D' }]).map((o) => o.label)).toEqual(['1. A', '2. B', '3. C', '4. D']);
   });
 
   it('previews another item in Component Studio, from the position chosen', () => {
@@ -374,7 +403,11 @@ describe('the editor and Component Studio', () => {
     const def = stepsDef(s);
     expect(studioStates(def, { variants: {}, sample: 'design', states: { active: 2 } } as never).active).toBe(2);
     expect(studioStates(def, { variants: {}, sample: 'design', states: { active: 'b' } } as never).active).toBe(1);
-    expect(studioSpec(def, { variants: {}, sample: 'design', states: { active: 2 } } as never).states).toEqual({ active: 2 });
+    const spec = studioSpec(def, { variants: {}, sample: 'defaults', states: { active: 2 } } as never);
+    expect(spec.states).toEqual({ active: 2 });
+    // The preview request crosses to the main process with the position, and only a position.
+    expect(previewSpec(JSON.parse(JSON.stringify(spec)))?.states).toEqual({ active: 2 });
+    expect(previewSpec({ ...spec, states: { active: -1 } })).toBeNull();
   });
 });
 
@@ -477,6 +510,8 @@ describe('the assistant', () => {
     const refused = await executeTool('upsert_managed_component', JSON.stringify(design('after')), host, 'c1');
     expect(refused.ok).toBe(false);
     expect(JSON.stringify(refused.content)).toMatch(/not inside a repeat of \\"Steps\\"/);
+    // The refusal points at the button to move or change, not at the state.
+    expect((refused.content as { fields?: Array<{ field: string }> }).fields?.map((f) => f.field)).toEqual(['nodes[7]']);
     const made = await executeTool('upsert_managed_component', JSON.stringify(design('pick')), host, 'c2');
     expect(made.ok).toBe(true);
     const def = Object.values(session.state.components).find((d) => d.name === 'Process')!;

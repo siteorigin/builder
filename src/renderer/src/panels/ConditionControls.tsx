@@ -127,6 +127,8 @@ function ConditionRow({
         <div className="insp-condition-test">
           <select className="select" aria-label={`${ROW_LABEL[field].replace('…', '')} test`} value={rule.test} onChange={(e) => pickTest(e.target.value as ConditionTest)}>
             <option value="set">{source.activeItem ? 'is this item' : 'has a value'}</option>
+            {/* A hand edit's comparison of the active item, which validation refuses: shown as it is, so choosing "is this item" saves the plain test. */}
+            {source.activeItem && rule.test !== 'set' && <option value={rule.test}>is compared with a value (not allowed)</option>}
             {input && <option value="eq">is</option>}
             {input && <option value="ne">is not</option>}
           </select>

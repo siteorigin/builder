@@ -72,7 +72,7 @@ import { briefFilled, briefText } from '@shared/brief';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, storedAlt } from './values';
 import { editTable } from './table';
-import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, itemStateProblems, normalizeProperties, usesState } from './schema';
+import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, itemProblemNode, itemStateProblems, normalizeProperties, usesState } from './schema';
 import { declaredTokens, findTokenCycle, findTokenCycleIn, forEachTokenRef, tokenPropUsageCounts, tokenUsageCounts } from './tokens';
 import { deriveDarkPalette, hasDarkPalette } from '@shared/color-scheme';
 import { slotDecl, slotFill, slotLandingProblem } from './slots';
@@ -3760,7 +3760,7 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     if (!after.size) continue;
     const was = Object.hasOwn(state.components, d.id) ? itemStateProblems(state.components[d.id]) : new Map<string, string>();
     const added = [...after].find(([key]) => !was.has(key));
-    if (added) throw new EngineError('INVALID_ARGUMENT', `${d.name}: ${added[1]}`, { owner: { kind: 'component', id: d.id } });
+    if (added) throw new EngineError('INVALID_ARGUMENT', `${d.name}: ${added[1]}`, { owner: { kind: 'component', id: d.id }, ...(itemProblemNode(added[0]) ? { nodeId: itemProblemNode(added[0]) } : {}) });
   }
   // A theme update changes no project component, not even this derived field.
   if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };

@@ -529,6 +529,14 @@ export function stepState(options, value, by, wrap) {
 }
 
 /**
+ * A list item's ID as part of an element ID: letters, digits and hyphens as they are, every other UTF-16 unit as \`_\`
+ * and four hex digits, so two items never share one, none holds a space, and no ID (a lone surrogate) can throw.
+ */
+export function itemKey(id) {
+	return String(id).replace(/[^A-Za-z0-9-]/g, (c) => '_' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+}
+
+/**
  * The ID of a list's active item (a component's item state): the one a visitor \`chosen\` while the list still has it,
  * else the one at position \`start\` (the last when the list is shorter), or null for an empty list. A chosen item
  * stays active while others are added, moved or removed around it.

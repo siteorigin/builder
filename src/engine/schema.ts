@@ -915,7 +915,10 @@ export function itemStateProblems(def: ComponentDefinition): Map<string, string>
   return out;
 }
 
-const nodeName = (n: GraphNode) => (typeof n.name === 'string' && n.name.trim() ? `"${n.name.trim()}"` : `The ${n.kind} ${n.id}`);
+const nodeName = (n: GraphNode) => (typeof n.name === 'string' && n.name.trim() ? `"${n.name.trim()}"` : `The ${n.kind} "${n.id}"`);
+
+/** The node an item state problem (keyed as itemStateProblems keys it) is at, or undefined for a declaration's. */
+export const itemProblemNode = (key: string): string | undefined => (key.startsWith('state:') ? undefined : key.split('|')[0]);
 
 /** A copy of a definition with one UI state variable replaced (or removed with `undefined`), for checking a change before making it. */
 export function withState(def: ComponentDefinition, name: string, schema: UiStateSchema | undefined): ComponentDefinition {
