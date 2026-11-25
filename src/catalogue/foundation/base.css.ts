@@ -42,6 +42,9 @@ const PINNED = ends('--layout-sticky-split');
 const PINNED_SPLIT = `${PINNED}${ends('__inner')}`;
 const PINNED_HEADING = `${PINNED}${ends('__intro')}`;
 const STEPS_LAYOUT = ends('__steps-layout');
+/** Split layout's columns, in any copy of it, and its Secondary column while it is pinned. */
+const SPLIT_COLUMNS = ':is(' + ends('__split-primary') + ', ' + ends('__split-secondary') + ')';
+const PINNED_SECONDARY = `${ends('--sticky-pin-secondary')}${ends('__split-secondary')}`;
 
 /**
  * The reset, document defaults and primitive styles every built-in theme shares: the buttons, links and check lists,
@@ -297,6 +300,7 @@ ${PINNED_SPLIT}:has(> ${ends('__grid')}):not(:has(> ${ends('__intro')})) { grid-
      section, by the option's and the elements' class endings. */
   ${PINNED_SPLIT}:not(#so-print), ${STEPS_LAYOUT}:not(#so-print) { grid-template-columns: minmax(0, 1fr) !important; }
   ${PINNED_HEADING}:not(#so-print) { position: static !important; inset: auto !important; }
+  ${PINNED_SECONDARY}:not(#so-print) { position: static !important; inset: auto !important; }
   ${STEPS_LAYOUT} > ${ends('__media-stage')}:not(#so-print) { position: static !important; inset: auto !important; }
   ${STEPS_LAYOUT} > ${ends('__steps-stage')}:not(#so-print) { order: 0 !important; }
   /* Where the sheet has room: a heading, or a section's heading group (eyebrow, heading and lead, in any copy of
@@ -305,6 +309,9 @@ ${PINNED_SPLIT}:has(> ${ends('__grid')}):not(:has(> ${ends('__intro')})) { grid-
   h1, h2, h3, h4, h5, h6, summary, :is([class$='__intro'], [class*='__intro ']) { break-after: avoid; break-inside: avoid; }
   li, details, figure, .so-form__inner, .so-form__form, .so-form__field { break-inside: avoid; }
 }
+/* On a phone, where a Split layout's columns stack, one left empty takes no gap. From tablet up it stays, so what is
+   in the other column keeps its side. (The editor's variant puts a drop target in an empty column.) */
+@media (max-width: 767.98px) { ${SPLIT_COLUMNS}:empty { display: none; } }
 `;
 
 /** Foundation base stylesheet: reset, document defaults and shared primitive styles. */

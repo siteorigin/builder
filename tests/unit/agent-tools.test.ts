@@ -2175,8 +2175,9 @@ describe('ai-profile examples', () => {
       const examples = theme.aiProfile.examples ?? [];
       for (const ex of examples) expect(checkExample(scoped, ex), `${theme.id}/${ex.id}`).toEqual([]);
       const covered = new Set(examples.map((e) => e.componentId));
-      // Examples are ready-to-send page sections: a block goes inside one, so it has none.
-      for (const c of theme.components) if (c.category !== 'shell' && c.componentId !== 'layout.section' && c.insertAs !== 'element') expect(covered.has(c.componentId), `${theme.id} is missing an example for ${c.componentId}`).toBe(true);
+      // Examples are ready-to-send page sections: a block goes inside one, so it has none. Layout sections start
+      // empty, and an example cannot fill their slots, so they have none either.
+      for (const c of theme.components) if (c.category !== 'shell' && !['layout.section', 'layout.split'].includes(c.componentId!) && c.insertAs !== 'element') expect(covered.has(c.componentId), `${theme.id} is missing an example for ${c.componentId}`).toBe(true);
       expect(new Set(examples.map((e) => e.id)).size).toBe(examples.length);
     }
   });
@@ -2213,7 +2214,7 @@ describe('sections only a full run lists (fullListingOnly)', () => {
   it('leaves the marked sections out of a small model’s page tool and offers them to a full run', () => {
     const state = createStarterState('business', 'Test', false);
     const marked = listThemes()[0].components.filter((c) => c.fullListingOnly).map((c) => c.componentId);
-    expect(marked).toEqual(expect.arrayContaining(['content.steps-media', 'tabs.showcase', 'pricing.toggle']));
+    expect(marked).toEqual(expect.arrayContaining(['content.steps-media', 'tabs.showcase', 'pricing.toggle', 'layout.split']));
     const base = { state, codeEnabled: false, definitionOps: false, selection: null };
     for (const capabilities of [local, smallNative]) {
       for (const page of [null, { route: '/' }]) {
@@ -2232,7 +2233,7 @@ describe('sections only a full run lists (fullListingOnly)', () => {
     expect(listed(upsertToolSchema(state))).toEqual(expect.arrayContaining(marked));
   });
 
-  it.each(['content.steps-media', 'tabs.showcase', 'pricing.toggle'])('offers the marked %s to a small model once the project has it', (id) => {
+  it.each(['content.steps-media', 'tabs.showcase', 'pricing.toggle', 'layout.split'])('offers the marked %s to a small model once the project has it', (id) => {
     const state = createStarterState('business', 'Test', false);
     expect(listed(upsertToolSchema(state, undefined, true))).not.toContain(id);
     const def = structuredClone(catalogueComponent(state.site.themeId, id)!);

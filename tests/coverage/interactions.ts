@@ -773,7 +773,9 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/layers-slots.mjs', kind: 'e2e', step: 'clicking the empty Sidebar row picks it, and a Paragraph tile clicked in Insert goes into it' },
       { test: 'tests/e2e/layers-slots.mjs', kind: 'e2e', step: 'two paragraphs dragged together onto the empty Sidebar, which takes one, are refused whole' },
       { test: 'tests/e2e/layers-slots.mjs', kind: 'e2e', step: 'a paragraph dragged alone onto the empty Sidebar row moves into it, as one change' },
-      { test: 'tests/e2e/layers-slots.mjs', kind: 'e2e', step: 'the slot rows are tree items the keys reach: Up/Down pick them, Left goes back to the Split' }
+      { test: 'tests/e2e/layers-slots.mjs', kind: 'e2e', step: 'the slot rows are tree items the keys reach: Up/Down pick them, Left goes back to the Split' },
+      { test: 'tests/e2e/split-layout.mjs', kind: 'e2e', step: 'Layers lists Primary then Secondary, both empty' },
+      { test: 'tests/e2e/split-layout.mjs', kind: 'e2e', step: 'with Primary picked in Layers, Insert puts a Statistics section and then a Heading in it' }
     ]
   },
   {
@@ -1107,6 +1109,9 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/slot-targets.mjs', kind: 'e2e', step: 'with Sidebar’s column collapsed to no height, a drop below where the column shows still goes into Sidebar' },
       { test: 'tests/e2e/slot-targets.mjs', kind: 'e2e', step: 'an Image dragged over Sidebar, which takes only text, says so on Sidebar; Escape leaves everything as it was' },
       { test: 'tests/e2e/slot-targets.mjs', kind: 'e2e', step: 'Preview shows no slot placeholder, and no slot address, anywhere on the page' },
+      { test: 'tests/e2e/split-layout.mjs', kind: 'e2e', step: 'both slots show an empty drop target on the canvas, side by side' },
+      { test: 'tests/e2e/split-layout.mjs', kind: 'e2e', step: 'a Paragraph dragged from Insert drops into Secondary, which stays on the right while Primary is empty' },
+      { test: 'tests/unit/split-layout.test.ts', kind: 'unit' },
       { test: 'tests/unit/insert-drop.test.ts', kind: 'unit' }
     ]
   },
