@@ -1,3 +1,5 @@
+import { ELEMENT_TAGS, TEXT_TAGS } from '@shared/types';
+
 /**
  * What a theme's own stylesheet may decide about the layouts the guardrails read (engine/layout-guardrails): which
  * boxes its layout rules reach, by the classes they name (a design's element, a detached copy of one, a page's
@@ -32,7 +34,8 @@ const CONTAINING: Record<string, (value: string) => boolean> = {
 };
 const containingDecl = (prop: string, value: string) => {
   const inert = Object.hasOwn(CONTAINING, prop) ? CONTAINING[prop] : undefined;
-  const v = value.replace(/\s*!important$/, '').trim();
+  const trimmed = value.trim();
+  const v = trimmed.endsWith('!important') ? trimmed.slice(0, -'!important'.length).trim() : trimmed;
   return !!inert && !['initial', 'unset', 'revert', 'revert-layer'].includes(v) && !inert(v);
 };
 
@@ -43,6 +46,8 @@ const MAX_BRANCHES = 32;
  * one (far longer than any a theme writes by hand) is read as reaching any box.
  */
 const MAX_EXPANDED = 1000;
+/** The most class rules a box is matched against. */
+const MAX_HOOKS = 2000;
 
 /**
  * Walk a text outside quoted strings: `visit` sees each character's index and whether it is quoted (or escaped).
@@ -143,9 +148,12 @@ interface Token {
   op: string;
   value: string;
 }
-const TOKEN = /\[\s*class\s*([$*^~]?)=\s*(?:'([^']*)'|"([^"]*)"|([\w-]+))\s*[is]?\s*\]|\.(-?[_a-zA-Z][\w-]*)/g;
+const TOKEN = /\[\s*class\s*([$*^~]?)=\s*(?:'([^']*)'|"([^"]*)"|([\w-]+))(?:\s+[is])?\s*\]|\.(-?[_a-zA-Z][\w-]*)/g;
 const tokensOf = (selector: string): Token[] =>
   [...selector.matchAll(TOKEN)].map((t) => (t[5] !== undefined ? { op: '.', value: t[5] } : { op: t[1] === '~' ? '=' : t[1] || '=', value: (t[2] ?? t[3] ?? t[4]).trim() }));
+
+/** The tags a container or text can render as, for one whose tag a property chooses. */
+const ANY_ELEMENT = new Set([...ELEMENT_TAGS, ...TEXT_TAGS, 'a']);
 
 /** Pseudo-elements: a rule for one styles a box of the browser's making, never the element itself. */
 const PSEUDO_ELEMENT = /::|:(before|after|first-line|first-letter|marker)\b/i;
@@ -184,8 +192,8 @@ interface HookRule {
 export interface ThemeLayoutRules {
   /** A rule may make the page itself (`main`, `body`) something an absolutely positioned element is placed in. */
   page: boolean;
-  /** Whether a rule may reach a box with these classes and tag, or what is inside it. */
-  reaches(classes: string[], tag?: string): boolean;
+  /** Whether a rule may reach a box with these classes and tags it may render as (undefined: any), or what is inside it. */
+  reaches(classes: string[], tags?: string[]): boolean;
 }
 
 /**
@@ -269,18 +277,21 @@ export function themeLayoutRules(css: string): ThemeLayoutRules {
         }
         const tag = subjectTag(branch);
         if (tag === null) continue;
-        if (tag === 'html' || tag === 'body' || tag === 'main' || tag === '*' || /#main\b/.test(branch)) page ||= containing;
+        // The site's own wrappers are these (its app root is a div): positioning one may position the page.
+        if (tag === 'html' || tag === 'body' || tag === 'main' || tag === 'div' || tag === '*' || /#main\b/.test(branch)) page ||= containing;
         if (tag !== 'html' && tag !== 'body') tags.add(tag);
       }
     }
   }
+  // So many class rules that matching each box against them all would slow every validation: read as reaching any box.
+  if (hooks.length > MAX_HOOKS) tags.add('*');
   const matches = (classes: string[], t: Token) =>
     t.op === '^' ? classes.join(' ').startsWith(t.value) : classes.some((c) => (t.op === '.' || t.op === '=' ? c === t.value : t.op === '*' ? c.includes(t.value) : c.endsWith(t.value)));
   const rules: ThemeLayoutRules = {
     page,
-    reaches: (classes, tag) =>
+    reaches: (classes, as) =>
       tags.has('*') ||
-      (tag !== undefined && tags.has(tag.toLowerCase())) ||
+      (as === undefined ? [...tags].some((t) => ANY_ELEMENT.has(t)) : as.some((t) => tags.has(t.toLowerCase()))) ||
       (classes.length > 0 && hooks.some((r) => (r.any.length === 0 || r.any.some((t) => matches(classes, t))) && r.all.every((t) => matches(classes, t))))
   };
   cache.set(css, rules);

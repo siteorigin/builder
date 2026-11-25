@@ -99,6 +99,9 @@ describe('a sticky element inside a container that hides overflow', () => {
     const sidebar = el('n_side', 'Sidebar', { base: { position: 'sticky', inset: '0' } });
     let s = page([el('n_outer', 'Outer', { base: { overflow: 'hidden' } }, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar]);
     expect(guardrails(s).map((d) => d.message.includes('but “Card” around it hides overflow'))).toEqual([true]);
+    // Inside a pinned box, it stays in view with that box, whatever it sticks to.
+    s = page([el('n_pin', 'Pinned', { base: { position: 'sticky', inset: '0' } }, ['n_card']), el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden' } }, ['n_side']), sidebar]);
+    expect(guardrails(s, STICKY)).toEqual([]);
     // Placed absolutely, a span is a block that hides overflow, and the nearer one.
     s = page([
       el('n_card', 'Card', { base: { layout: 'stack', overflow: 'hidden', position: 'relative' } }, ['n_flow']),
@@ -447,11 +450,15 @@ describe('what a theme’s stylesheet may decide', () => {
     expect(rules.reaches(['plain'])).toBe(false);
     // A rule naming no class reaches every element of its tag; a pseudo-element's rule reaches none.
     const tags = themeLayoutRules('main > div { grid-template-columns: repeat(4, 1fr) !important; } details::details-content { display: block; } p { color: red; }');
-    expect([tags.reaches([], 'div'), tags.reaches([], 'details'), tags.reaches([], 'p'), tags.page]).toEqual([true, false, false, false]);
+    expect([tags.reaches([], ['div']), tags.reaches([], ['details']), tags.reaches([], ['p']), tags.page]).toEqual([true, false, false, false]);
+    // A box whose tag a property chooses may be any element; only tags no element renders as leave it alone.
+    expect([themeLayoutRules('section { position: relative; }').reaches([], undefined), themeLayoutRules('img { display: block; }').reaches([], undefined)]).toEqual([true, false]);
+    // So many class rules that matching every box against them would be slow: any box may be reached.
+    expect(themeLayoutRules(Array.from({ length: 2001 }, (_, i) => `.h${i} { position: relative; }`).join('\n')).reaches(['other'], ['div'])).toBe(true);
     // The last declaration of a rule needs no semicolon.
     expect(themeLayoutRules('.z { position: relative }').reaches(['z'])).toBe(true);
     // A page's own elements carry their generated class, which a rule can name.
-    expect(themeLayoutRules('[class^="so-n-"] { position: relative; }').reaches(['so-n-abc'], 'div')).toBe(true);
+    expect(themeLayoutRules('[class^="so-n-"] { position: relative; }').reaches(['so-n-abc'], ['div'])).toBe(true);
   });
 
   it('knows when a rule naming no class may position the page or an element by its tag', () => {
@@ -463,7 +470,9 @@ describe('what a theme’s stylesheet may decide', () => {
     expect(page('main { container: card / inline-size; }')).toBe(true);
     // One naming another tag reaches that tag's boxes, not the page.
     const sections = themeLayoutRules('section { container: card / inline-size; }');
-    expect([sections.page, sections.reaches([], 'section'), sections.reaches([], 'div')]).toEqual([false, true, false]);
+    expect([sections.page, sections.reaches([], ['section']), sections.reaches([], ['div'])]).toEqual([false, true, false]);
+    // The site's app root is a div: positioning divs may position the page.
+    expect(page('body > div { display: block !important; position: relative; }')).toBe(true);
     // A rule's own declarations count beside the rules nested in it, and quoted text hides none of them.
     expect(page('main { position: relative; @media (min-width: 768px) { padding: 1rem; } }')).toBe(true);
     expect(page('main { --a: "/*"; position: relative; --b: "*/"; }')).toBe(true);
@@ -481,6 +490,9 @@ describe('what a theme’s stylesheet may decide', () => {
     const loose = page([el('n_card', 'Card', undefined, ['n_mark']), el('n_mark', 'Mark', { base: { position: 'absolute' } })]);
     expect(layoutGuardrailDiagnostics(loose, '').map((d) => d.code)).toEqual([ABSOLUTE]);
     expect(layoutGuardrailDiagnostics(loose, '[class^="so-n-"] { position: relative; }')).toEqual([]);
+    // A card that links renders as a link, which a theme may position by its tag.
+    home(loose).nodes.n_card = el('n_card', 'Card', undefined, ['n_mark'], { link: { type: 'url', target: 'https://example.com/' } } as Partial<ElementNode>);
+    expect(layoutGuardrailDiagnostics(loose, 'a { position: relative; }')).toEqual([]);
     const grid = page([el('n_grid', 'Grid', { base: { layout: 'grid', columns: 2 } }, ['n_wide']), el('n_wide', 'Wide', { base: { columnSpan: '4' } })]);
     expect(layoutGuardrailDiagnostics(grid, 'p { grid-template-columns: none; }').map((d) => d.code)).toEqual([SPAN]);
     expect(layoutGuardrailDiagnostics(grid, 'main > div { grid-template-columns: repeat(4, 1fr) !important; }')).toEqual([]);
@@ -498,7 +510,8 @@ describe('what a theme’s stylesheet may decide', () => {
     const quoted = timed(`.q::after { content: "${'/*x'.repeat(160_000)}"; position: absolute; }`);
     const nested = timed(`${':is('.repeat(50_000)}.b${')'.repeat(50_000)} { position: relative; }`);
     const negated = timed(`.c${':not(.d)'.repeat(50_000)} { position: relative; }`);
-    for (const { ms } of [tail, quoted, nested, negated]) expect(ms).toBeLessThan(1500);
+    const spaced = timed(`main { & { color: red; } transform: translate(1px,${' '.repeat(100_000)}2px) !important; }`);
+    for (const { ms } of [tail, quoted, nested, negated, spaced]) expect(ms).toBeLessThan(1500);
     // A selector with too many alternatives to read apart may reach any box.
     expect(nested.rules.reaches(['anything'])).toBe(true);
   });

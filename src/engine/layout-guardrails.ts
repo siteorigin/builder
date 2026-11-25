@@ -282,7 +282,9 @@ function treeGuardrails(state: ProjectState, owner: OwnerRef, tree: NodeTree, la
    */
   const boxOf = (layers: StyleLayer[] | null, n: GraphNode, key: string, name: string, classes: string[]): Box | null => {
     const tag = (n as { tag?: unknown }).tag;
-    if (!layers || theme.reaches(classes, typeof tag === 'string' ? tag : undefined)) return null;
+    // A card renders as a link while its destination resolves; a tag a property chooses may be any.
+    const renders = typeof tag === 'string' && !isBinding(tag) ? [tag, ...((n as { link?: unknown }).link !== undefined ? ['a'] : [])] : undefined;
+    if (!layers || theme.reaches(classes, renders)) return null;
     const custom = new Set<string>();
     for (const layer of layers)
       for (const scope of RESTING) {
@@ -306,7 +308,9 @@ function treeGuardrails(state: ProjectState, owner: OwnerRef, tree: NodeTree, la
       // Hidden here, or inside something hidden here: nothing shows to go wrong.
       if (b.at[size].hidden === true || chain.some((c) => hiddenAt(c, size))) continue;
       const position = b.custom.has('position') ? undefined : written(b.at[size], 'position');
-      const clip = position === 'sticky' && sticksVertically(b.at[size]) ? clipAt(chain, size) : -1;
+      // Inside a pinned box, it stays in view with that box whatever it sticks to.
+      const pinned = chain.some((c) => c.kind === 'box' && written(c.at[size], 'position') === 'sticky');
+      const clip = position === 'sticky' && !pinned && sticksVertically(b.at[size]) ? clipAt(chain, size) : -1;
       if (clip >= 0) {
         const box = chain[clip] as KnownBox;
         record(JSON.stringify(['sticky', subject.id, box.key]), size, () => ({
