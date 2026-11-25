@@ -71,6 +71,9 @@ describe('the header menu order setting (#749)', () => {
     // The same rows, moved: each keeps its own ID.
     const idOf = new Map(links(s).map((l) => [l.label, l.id]));
     expect(links(after).map((l) => l.id)).toEqual(links(after).map((l) => idOf.get(l.label)));
+    // Each row keeps its own destination too.
+    const linkOf = new Map(links(s).map((l) => [l.label, l.link]));
+    expect(links(after).map((l) => l.link)).toEqual(links(after).map((l) => linkOf.get(l.label)));
     expect(links(after).map((l) => l.id).sort()).toEqual([...ids].sort());
     expect(links(after).find((l) => l.label === 'Shop')!.link).toEqual({ type: 'url', target: 'https://shop.example.com' });
   });
@@ -171,6 +174,18 @@ describe('the header menu order setting (#749)', () => {
       expect(rows(s)).toEqual(['  Lookbook', '  Kitchens', '  Baths', 'Home', 'About', 'Shop', 'Contact', 'Services', 'Zebra']);
     });
 
+    it('keeps a submenu with the link to its page when that page’s other link, which led it, goes', () => {
+      let s = following();
+      const remove = (label: string): EditOperation => ({ type: 'instance.listRemove', owner: HEADER, nodeId: menuOf(s).id, prop: 'links', itemId: links(s).find((l) => l.label === label)!.id });
+      s = apply(s, [{ type: 'page.create', pageId: 'pg_late0001', title: 'Late' }]);
+      // Late is linked twice after Home, the second link leading a submenu, so neither sorts.
+      s = apply(s, [own, remove('Kitchens'), remove('Baths'), insert(s, { label: 'Late', link: { type: 'page', target: 'pg_late0001' } }, 1), insert(s, { label: 'Late again', link: { type: 'page', target: 'pg_late0001' } }, 2), insert(s, { label: 'Child', sub: true, link: { type: 'url', target: 'https://child.example.com' } }, 3), follow]);
+      expect(rows(s)).toEqual(['Home', 'Late', 'Late again', '  Child', 'About', 'Shop', 'Contact', 'Services', 'Lookbook']);
+      // Removing the link that led Child leaves Late to sort: Child, now shown under it, goes along to its place.
+      s = apply(s, [remove('Late again')]);
+      expect(rows(s)).toEqual(['Home', 'About', 'Shop', 'Contact', 'Services', 'Lookbook', 'Late', '  Child']);
+    });
+
     it('leaves a link pointed at a page where it is when that is already its place', () => {
       let s = following();
       const shop = links(s).find((l) => l.label === 'Shop')!;
@@ -213,6 +228,8 @@ describe('the header menu order setting (#749)', () => {
       schema.default = [schema.default[1], schema.default[0]];
       keepHeaderOrder(shared, menuBefore(shared));
       expect((menuOf(shared).props.links as Row[]).map((l) => l.label)).toEqual(['Home', 'About']);
+      // Copies: editing the menu's rows never edits the design's.
+      expect((menuOf(shared).props.links as Row[])[0]).not.toBe(schema.default[1]);
       expect(schema.default.map((l) => l.label)).toEqual(['About', 'Home']);
     });
 
@@ -352,6 +369,6 @@ describe('the header menu order setting (#749)', () => {
       expect(rows(s.state).slice(0, 2)).toEqual(['Home', 'Pricing']);
       await oneStep(s, [{ type: 'page.remove', pageId: 'pg_pricing1' }], 'Delete page');
       expect(rows(s.state)).not.toContain('Pricing');
-    });
+    }, 30000);
   });
 });

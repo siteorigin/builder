@@ -166,8 +166,11 @@ export function keepHeaderOrder(state: ProjectState, before?: MenuBefore | null)
       const id = row.id as string;
       if (!under[at])
         while (end < items.length && under[end]) {
+          // A link stays behind that was at the top level before, or under a link still in the menu; one whose link
+          // went with the edit (a second link to the page, removed) keeps showing under this one.
           const child = items[end]?.id;
-          if (typeof child === 'string' && before.head.has(child) && before.head.get(child) !== id) break;
+          const was = typeof child === 'string' ? before.head.get(child) : undefined;
+          if (was === null || (was !== undefined && was !== id && items.some((it) => it?.id === was))) break;
           end++;
         }
       const rest: MenuItem[] = [...items.slice(0, at), ...items.slice(end)];
