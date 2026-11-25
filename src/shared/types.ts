@@ -627,6 +627,8 @@ export interface VariantDef {
   label: string;
   /** Style rules applied when this variant is selected, keyed by definition node ID. */
   styles?: Record<string, ResponsiveStyles>;
+  /** A theme option the assistant's page tool offers only on a full run, as ComponentDefinition.fullListingOnly does a section. Never an axis default. */
+  fullListingOnly?: true;
 }
 
 /** One independent design choice, such as tone or layout. A placement picks one option on every axis. */
@@ -741,6 +743,12 @@ export interface ComponentDefinition {
   examples?: Array<{ description: string; props: Record<string, unknown> }>;
   /** Icon name used in the insert panel. */
   icon?: string;
+  /**
+   * A theme section the assistant's page tool lists only on a full run: a small model (grammar-constrained, or a window
+   * too small for the general tools) is offered the catalogue's core sections, which its window has room for, and a
+   * project that already has this one installed. The insert panel and larger models offer every section.
+   */
+  fullListingOnly?: true;
   /**
    * Where Insert puts a new placement (project components): beside the page's sections, or where an element goes,
    * inside the selected layout. Create component records where its source sat; copies carry it on. Without it the

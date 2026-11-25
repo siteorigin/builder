@@ -3,7 +3,7 @@ import type { ComponentDefinition, ProjectState } from '@shared/types';
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import type { AiExample } from '@catalogue/foundation/ai-examples';
 import { declaredTokens } from '@engine/tokens';
-import { checkProps, chooseVariants, type FieldIssue } from './macros';
+import { checkProps, chooseVariants, focusedListing, type FieldIssue } from './macros';
 import type { ManagedComponentArgs } from './managed-component';
 import { hasCollections, listsEntries } from '@shared/entry-feed';
 
@@ -11,9 +11,11 @@ import { hasCollections, listsEntries } from '@shared/entry-feed';
  * Problems an example has against the component contract a section would be checked against: the project's installed
  * copy when it has one (it may predate the theme's current version), otherwise the theme's.
  */
-export function checkExample(state: ProjectState, ex: AiExample): FieldIssue[] {
+export function checkExample(state: ProjectState, ex: AiExample, focused = false): FieldIssue[] {
   const themed: ComponentDefinition | undefined = catalogueComponent(state.site.themeId, ex.componentId);
-  const def = themed && Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : themed;
+  const installed = themed && Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : themed;
+  // A small model's page tool may leave the section, or the option the example picks, out (focusedListing).
+  const def = installed && focused ? focusedListing(state, installed) : installed;
   if (!def || def.category === 'shell') return [{ field: 'componentId', message: `unknown component "${ex.componentId}"` }];
   const issues: FieldIssue[] = [];
   chooseVariants(def, ex.variant, ex.variants, '', issues);
@@ -23,15 +25,15 @@ export function checkExample(state: ProjectState, ex: AiExample): FieldIssue[] {
 
 const words = (text: string) => new Set(text.toLowerCase().match(/[a-z0-9]+/g) ?? []);
 
-/** The most relevant valid examples for a request, at most one per component. */
-export function retrieveExamples(state: ProjectState, request: string, limit = 3): AiExample[] {
+/** The most relevant valid examples for a request, at most one per component; `focused` keeps those a small model's page tool can send. */
+export function retrieveExamples(state: ProjectState, request: string, limit = 3, focused = false): AiExample[] {
   const asked = words(request);
   return (getTheme(state.site.themeId).aiProfile.examples ?? [])
     .map((ex, order) => ({ ex, order, score: ex.keywords.reduce((n, k) => n + (asked.has(k) ? 1 : 0), 0) }))
     .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score || a.order - b.order)
     .filter((x, i, all) => all.findIndex((y) => y.ex.componentId === x.ex.componentId) === i)
-    .filter((x) => !checkExample(state, x.ex).length)
+    .filter((x) => !checkExample(state, x.ex, focused).length)
     // A section that lists posts is suggested once the project has a collection, as the page tool offers it.
     .filter((x) => hasCollections(state) || !listsEntries(catalogueComponent(state.site.themeId, x.ex.componentId) ?? { properties: {} }))
     .slice(0, limit)

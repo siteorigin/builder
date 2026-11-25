@@ -6,7 +6,7 @@
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { propBindingValue } from '@shared/bindings';
 import { z } from 'zod';
-import type { ComponentDefinition, Condition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, Condition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema, VariantAxis } from '@shared/types';
 import { conditionHolds, conditionRef, stateInitial } from '@shared/types';
 import { effectiveItem, followsPage, teaserFields } from '@shared/page-teasers';
 import type { EditOperation } from '@shared/ops';
@@ -967,19 +967,37 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   return { ok: true, mutated: true, ops, results: res.results, content };
 }
 
+/**
+ * A section as a small model's page tool offers it, or null when it is left out: the catalogue sections marked
+ * `fullListingOnly` wait until the project has them installed, and the options marked so leave their axes (never an
+ * axis default, which a placement may already show). `def` is the definition the tool would type the section by.
+ */
+export function focusedListing(state: ProjectState, def: ComponentDefinition): ComponentDefinition | null {
+  if (def.fullListingOnly && def.owner === 'theme' && !Object.hasOwn(state.components, def.id)) return null;
+  const axes = def.variantAxes;
+  const dropped = (a: VariantAxis, id: string) => !!a.options[id]?.fullListingOnly && id !== a.default;
+  if (!axes || !Object.values(axes).some((a) => a && Object.keys(a.options ?? {}).some((id) => dropped(a, id)))) return def;
+  return { ...def, variantAxes: Object.fromEntries(Object.entries(axes).map(([axis, a]) => [axis, { ...a, options: Object.fromEntries(Object.entries(a.options).filter(([id]) => !dropped(a, id))) }])) };
+}
+
 /** Tool schema for one project: each section is typed by its component, with closed props. */
 /** `only`: the route of the one page a run may build; the call then cannot link the page to a translation either. */
-export function upsertToolSchema(state: ProjectState, only?: string): JsonSchema {
+/** `focused`: a small model's run, whose tool lists only what focusedListing keeps. */
+export function upsertToolSchema(state: ProjectState, only?: string, focused = false): JsonSchema {
   // A section that lists a collection's posts shows nothing until the project has a collection: it is offered from then.
   const offered = (d: ComponentDefinition) => hasCollections(state) || !listsEntries(d);
+  const listed = (d: ComponentDefinition): ComponentDefinition[] => {
+    const kept = focused ? focusedListing(state, d) : d;
+    return kept ? [kept] : [];
+  };
   const defs: ComponentDefinition[] = [
     // A theme component already in the project is typed as installed, as the section check reads it: a newer
     // theme's properties (a heading level, say) are not there until Project health updates it.
     ...catalogueEntries(state.site.themeId).flatMap((e) => {
       const d = catalogueComponent(state.site.themeId, e.componentId);
-      return d && offered(d) ? [Object.hasOwn(state.components, d.id) ? state.components[d.id] : d] : [];
+      return d && offered(d) ? listed(Object.hasOwn(state.components, d.id) ? state.components[d.id] : d) : [];
     }),
-    ...Object.values(state.components).filter((d) => d.owner === 'project' && d.category !== 'shell')
+    ...Object.values(state.components).filter((d) => d.owner === 'project' && d.category !== 'shell').flatMap(listed)
   ];
   const section = {
     oneOf: defs.map((d) => {

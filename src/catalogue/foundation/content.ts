@@ -64,6 +64,8 @@ export const featuresGrid = managed({
       // past beside it. Phones (and print, see base.css) show the heading above the cards as usual.
       'sticky-split': {
         label: 'Heading pinned beside cards',
+        // Kept off a small model's page tool, which every layout option of the grid grows.
+        fullListingOnly: true,
         styles: {
           inner: { tablet: STICKY_SPLIT_LAYOUT, desktop: { ...STICKY_SPLIT_LAYOUT, columnGap: tok('space.3xl') } },
           intro: { tablet: STICKY_BELOW_HEADER, desktop: STICKY_BELOW_HEADER },
@@ -159,6 +161,8 @@ export const stepsMedia = managed({
   category: 'content',
   tags: ['steps', 'process', 'how it works', 'accordion', 'tabs', 'tour', 'media', 'split', 'showcase'],
   icon: 'list-ordered',
+  // Its steps, pictures and item state cost a small model's page tool about 1 KB: offered there once a project has it.
+  fullListingOnly: true,
   properties: {
     ...P.group('Text', {
       eyebrow: P.str('Eyebrow', 'How it works'),
