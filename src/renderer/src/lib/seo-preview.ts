@@ -251,8 +251,8 @@ export function structuredPreview(state: ProjectState, subject: SeoSubject): Str
     {
       id: 'siteSearch',
       label: 'Site search',
-      value: subject.kind === 'entry' ? 'Posts aren’t in site search yet' : !v.website ? offSite : v.siteSearch ? 'May find it' : 'Hidden from site search',
-      on: subject.kind === 'page' && v.siteSearch
+      value: !v.website ? offSite : v.siteSearch ? 'May find it' : 'Hidden from site search',
+      on: v.siteSearch
     }
   ];
   let graph: GraphView;

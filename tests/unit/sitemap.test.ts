@@ -7,57 +7,10 @@ import { describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { generateProject, generateSitemap } from '@generator/index';
 import { copy, run, seoSite } from './fixtures/seo-site';
+import { assertWellFormed } from './fixtures/xml';
 
 const SITE = 'https://example.com/studio';
 const XHTML = 'http://www.w3.org/1999/xhtml';
-
-/**
- * Check a document is well-formed XML, strictly enough for what a sitemap holds: one root element, every tag closed in
- * order, quoted attributes named once each, text and values with no bare "<" or "&" outside a known entity, and every
- * namespace prefix declared on the element or one around it. Gives back the root element's name; throws with the
- * reason when the document is not well-formed.
- */
-function assertWellFormed(xml: string): string {
-  // Named entities, or a character reference to anything but character zero.
-  const entity = /&(?!(?:amp|lt|gt|quot|apos|#0*[1-9]\d*|#x0*[1-9a-f][0-9a-f]*);)/i;
-  let rest = xml.replace(/^<\?xml version="1\.0" encoding="UTF-8"\?>\n/, '');
-  if (rest === xml) throw new Error('No XML declaration at the start.');
-  const stack: Array<{ name: string; prefixes: Set<string> }> = [];
-  let roots = 0;
-  let root = '';
-  const declared = (prefix: string) => prefix === 'xml' || stack.some((e) => e.prefixes.has(prefix));
-  while (rest) {
-    const lt = rest.indexOf('<');
-    const text = lt < 0 ? rest : rest.slice(0, lt);
-    if (entity.test(text) || text.includes('>')) throw new Error(`Bad text: ${text}`);
-    if (!stack.length && text.trim()) throw new Error(`Text outside the root: ${text}`);
-    if (lt < 0) break;
-    // XML white space is space, tab, CR and LF only.
-    const tag = rest.slice(lt).match(/^<(\/?)([A-Za-z_][\w.:-]*)((?:[ \t\r\n]+[A-Za-z_][\w.:-]*="[^"<]*")*)[ \t\r\n]*(\/?)>/);
-    if (!tag) throw new Error(`Bad tag at: ${rest.slice(lt, lt + 80)}`);
-    rest = rest.slice(lt + tag[0].length);
-    const [, close, name, attrText, selfClose] = tag;
-    if (close) {
-      if (attrText || selfClose || stack.pop()?.name !== name) throw new Error(`Mismatched </${name}>`);
-      continue;
-    }
-    const attrs = [...attrText.matchAll(/([\w.:-]+)="([^"]*)"/g)];
-    const names = attrs.map((a) => a[1]);
-    if (new Set(names).size !== names.length) throw new Error(`Repeated attribute on <${name}>`);
-    if (attrs.some((a) => entity.test(a[2]))) throw new Error(`Bad attribute value on <${name}>`);
-    const prefixes = new Set(names.filter((n) => n.startsWith('xmlns:')).map((n) => n.slice(6)));
-    if (!stack.length && roots++) throw new Error('More than one root element.');
-    if (!stack.length) root = name;
-    stack.push({ name, prefixes });
-    for (const n of [name, ...names.filter((n) => !n.startsWith('xmlns'))]) {
-      const prefix = n.includes(':') ? n.split(':')[0] : null;
-      if (prefix && !declared(prefix)) throw new Error(`Undeclared prefix "${prefix}" on <${name}>`);
-    }
-    if (selfClose) stack.pop();
-  }
-  if (stack.length || roots !== 1) throw new Error('The document does not close its root element.');
-  return root;
-}
 
 /** Each listed address with its date and alternate links, in sitemap order; the sitemap checked well-formed first. */
 function sitemapOf(s: ProjectState) {

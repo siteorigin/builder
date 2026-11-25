@@ -194,7 +194,9 @@ describe('structuredPreview', () => {
     const { state } = seoSite();
     const node = webpage(graphOf(withTypedSeo(state, POST, { title: 'Throwing pots this spring', description: 'Six weeks at the wheel.' }), POST));
     expect(node).toMatchObject({ url: SPRING, name: 'Throwing pots this spring', description: 'Six weeks at the wheel.' });
-    expect(structuredPreview(state, POST)!.status.find((l) => l.id === 'siteSearch')).toMatchObject({ on: false, value: 'Posts aren’t in site search yet' });
+    expect(structuredPreview(state, POST)!.status.find((l) => l.id === 'siteSearch')).toMatchObject({ on: true, value: 'May find it' });
+    const hidden = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', searchHidden: true });
+    expect(structuredPreview(hidden, POST)!.status.find((l) => l.id === 'siteSearch')).toMatchObject({ on: false, value: 'Hidden from site search' });
   });
 
   it('follows the post’s sharing image and the site’s publisher', () => {

@@ -51,7 +51,7 @@ describe('createSeoResolver', () => {
     // The generated outputs agree, and keep the pages that are published.
     expect(sitemapUrls(s)).not.toContain('https://example.com/studio/services/');
     expect(sitemapUrls(s)).toContain('https://example.com/studio/');
-    expect(buildSearchIndex(s).map((e) => e.route)).toEqual(['/']);
+    expect(buildSearchIndex(s).map((e) => e.route)).toEqual(['/', '/blog/spring-pottery-classes/']);
     expect(page(s, home).visibility).toMatchObject({ website: true, sitemap: true, siteSearch: true });
     // A Home page marked as a draft by hand is published all the same, as the generator publishes it.
     const homeDraft = copy(state);
