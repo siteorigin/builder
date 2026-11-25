@@ -503,50 +503,53 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
     );
     await page.route(`${ENDPOINT}**`, (route) => void posts.push(route));
     await page.goto(`${ORIGIN}/`);
-    await page.waitForFunction(() => typeof (window as unknown as { startSite?: unknown }).startSite === 'function');
-    await page.evaluate(() => (window as unknown as { startSite: (v: string) => void }).startSite('clean'));
+    await page.waitForFunction("typeof window.startSite === 'function'");
+    await page.evaluate("window.startSite('clean')");
     await page.fill('input[name="name"]', 'Ana');
     await page.fill('input[name="email"]', 'ana@example.com');
     await page.fill('textarea[name="message"]', 'Hello');
     return { browser, page, posts };
   }
 
-  /** Submits the form as the browser does once the visitor sends what an agent filled in, holding what it is told. */
-  const agentSubmit = (agent: boolean) => {
-      const w = window as unknown as Record<string, unknown>;
-      const form = document.querySelector('form')!;
-      const event = new SubmitEvent('submit', { bubbles: true, cancelable: true });
-      w.told = undefined;
-      w.claimed = false;
-      if (agent) {
-        Object.defineProperty(event, 'agentInvoked', { value: true });
-        Object.defineProperty(event, 'respondWith', {
-          value: (answer: Promise<unknown>) => {
-            // Claimed while the event is still being dispatched, after the page took the submission over.
-            w.claimed = event.defaultPrevented;
-            answer.then((value) => {
-              w.told = value;
-              w.nameWhenTold = (document.querySelector('input[name="name"]') as HTMLInputElement).value;
-            });
-          }
-        });
-      }
-      form.dispatchEvent(event);
-      return event.defaultPrevented;
-    };
+  /**
+   * Submits the form as the browser does once the visitor sends what an agent filled in (or, with `agent` false, as
+   * the visitor's own send), holding what the page tells the agent. Evaluates to whether the page took the send over.
+   */
+  const agentSubmit = (agent: boolean) => `(() => {
+    const form = document.querySelector('form');
+    const event = new SubmitEvent('submit', { bubbles: true, cancelable: true });
+    window.told = undefined;
+    window.claimed = false;
+    if (${agent}) {
+      Object.defineProperty(event, 'agentInvoked', { value: true });
+      Object.defineProperty(event, 'respondWith', {
+        value: (answer) => {
+          // Claimed while the event is still being dispatched, after the page took the submission over.
+          window.claimed = event.defaultPrevented;
+          answer.then((value) => {
+            window.told = value;
+            window.nameWhenTold = document.querySelector('input[name="name"]').value;
+          });
+        }
+      });
+    }
+    form.dispatchEvent(event);
+    return event.defaultPrevented;
+  })()`;
+  const told = "window.told !== undefined";
 
   it('tells the agent the message was sent, and empties the form only after that', async () => {
     const { browser, page, posts } = await open();
     try {
-      expect(await page.evaluate(agentSubmit, true)).toBe(true);
-      expect(await page.evaluate(() => (window as unknown as { claimed: boolean }).claimed)).toBe(true);
+      expect(await page.evaluate(agentSubmit(true))).toBe(true);
+      expect(await page.evaluate('window.claimed')).toBe(true);
       await expect.poll(() => posts.length).toBe(1);
-      expect(await page.evaluate(() => (window as unknown as { told?: unknown }).told)).toBeUndefined();
+      expect(await page.evaluate('window.told')).toBeUndefined();
       await posts[0].fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
-      await page.waitForFunction(() => (window as unknown as { told?: unknown }).told !== undefined);
-      expect(await page.evaluate(() => (window as unknown as { told: unknown }).told)).toEqual({ sent: true, message: 'The message was sent.' });
+      await page.waitForFunction(told);
+      expect(await page.evaluate('window.told')).toEqual({ sent: true, message: 'The message was sent.' });
       // Still filled in when the agent was told; emptied right after.
-      expect(await page.evaluate(() => (window as unknown as { nameWhenTold: string }).nameWhenTold)).toBe('Ana');
+      expect(await page.evaluate('window.nameWhenTold')).toBe('Ana');
       await expect.poll(() => page.inputValue('input[name="name"]')).toBe('');
     } finally {
       await browser.close();
@@ -556,11 +559,11 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
   it('tells the agent when the service refuses the message, and keeps what was typed', async () => {
     const { browser, page, posts } = await open();
     try {
-      await page.evaluate(agentSubmit, true);
+      await page.evaluate(agentSubmit(true));
       await expect.poll(() => posts.length).toBe(1);
       await posts[0].fulfill({ status: 500, body: 'no' });
-      await page.waitForFunction(() => (window as unknown as { told?: unknown }).told !== undefined);
-      expect(await page.evaluate(() => (window as unknown as { told: unknown }).told)).toEqual({ sent: false, message: expect.stringContaining('could not be sent') });
+      await page.waitForFunction(told);
+      expect(await page.evaluate('window.told')).toEqual({ sent: false, message: expect.stringContaining('could not be sent') });
       expect(await page.inputValue('input[name="name"]')).toBe('Ana');
     } finally {
       await browser.close();
@@ -570,11 +573,11 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
   it('sends as before when the visitor sends without an agent', async () => {
     const { browser, page, posts } = await open();
     try {
-      expect(await page.evaluate(agentSubmit, false)).toBe(true);
+      expect(await page.evaluate(agentSubmit(false))).toBe(true);
       await expect.poll(() => posts.length).toBe(1);
       await posts[0].fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
       await expect.poll(() => page.inputValue('input[name="name"]')).toBe('');
-      expect(await page.evaluate(() => (window as unknown as { claimed: boolean }).claimed)).toBe(false);
+      expect(await page.evaluate('window.claimed')).toBe(false);
     } finally {
       await browser.close();
     }
