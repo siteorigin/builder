@@ -131,8 +131,9 @@ describe('choosing the definition tools', () => {
     expect(prop(tool(inner, 'style_definition_element'), 'partId').enum).toEqual(['eyebrow', 'heading', 'lead', 'actions']);
     expect(prop(tool(inner, 'manage_component_prop'), 'change').properties!.action.enum).toEqual(['add']);
     expect(prop(tool(inner, 'add_definition_variant'), 'axis').enum).toEqual(['tone', 'layout']);
-    // Only nodes that are not parts yet can be exposed, and the content fields are those of the nodes here.
-    expect(Object.keys(prop(tool(inner, 'edit_definition_node'), 'content').properties!)).toEqual(['text', 'tag', 'label', 'link', 'appearance']);
+    // Only nodes that are not parts yet can be exposed, and the content fields are those of the nodes here (a container
+    // can be made an interaction group).
+    expect(Object.keys(prop(tool(inner, 'edit_definition_node'), 'content').properties!)).toEqual(['interactionGroup', 'text', 'tag', 'label', 'link', 'appearance']);
     expect(Object.keys(prop(tool(inner, 'edit_definition_node'), 'exposeAsPart').properties!)).toEqual(['partId', 'label']);
     // A selected node that is already a part offers its content but nothing to expose (its level is a property's,
     // so not its tag), and cannot remove the root.
@@ -314,7 +315,8 @@ describe('running the definition tools', () => {
       ['manage_component_prop', { change: { action: 'add', prop: 'photo', label: 'Photo', type: 'image', default: 'x' } }, /change\.default/],
       ['manage_component_prop', { change: { action: 'add', prop: 'when', label: 'When', type: 'link', default: true } }, /change\.default/],
       ['manage_component_prop', { change: { action: 'remove', prop: 'nope' } }, /has no property "nope"/],
-      ['edit_definition_node', { nodeId: 'content', content: { text: 'Hi' } }, /no content of its own/],
+      // A container's one field is whether it is an interaction group: text is not one of them.
+      ['edit_definition_node', { nodeId: 'content', content: { text: 'Hi' } }, /this element node has interactionGroup/],
       ['edit_definition_node', { nodeId: 'heading', exposeAsPart: { partId: 'title', label: 'Title' } }, /already the "heading" part/],
       ['edit_definition_node', { nodeId: 'grid' }, /send the content to change/],
       ['bind_definition_field', { nodeId: 'media', field: 'text', binding: { $prop: 'heading' } }, /binds when, unless, image/],

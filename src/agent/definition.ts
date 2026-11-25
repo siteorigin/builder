@@ -117,7 +117,7 @@ export const DEFINITION_ARGS = {
       partId: z.string().optional(),
       variant: z.object({ axis: z.string(), option: z.string() }).strict().optional(),
       scope: z.enum(['base', 'phone', 'tablet', 'desktop']),
-      state: z.enum(['hover', 'focus', 'active']).optional(),
+      state: z.enum(STYLE_STATES).optional(),
       styles: z
         .array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, BACKGROUND_IMAGE, z.null()]) }).strict())
         .min(1)
@@ -150,7 +150,7 @@ export const DEFINITION_DESCRIPTIONS: Record<DefinitionToolName, string> = {
   manage_component_state:
     'Change the component\'s UI state, which each placement holds and visitors change with its buttons (tabs, a toggle, a dialog, steps): add a variable (a camelCase name; type "boolean" for yes/no, "enum" with its option values, or "item" with the list property whose active item it holds), remove one nothing uses, or set what clicking a button does (on_click: op "set" with a value, "toggle" a yes/no state, "next" or "prev" through a choice\'s options or a list\'s items, "select" for a button in a repeat of an item state\'s list to make its own item active, "none" to clear). Then show each panel only for one value with bind_definition_field: field "when", binding {"$state": name} and eq the value; for an item state, content in any repeat of its list with binding {"$state": name} and no eq shows only for the active item.',
   style_definition_element:
-    'Style a node of the design, by nodeId or by one of its parts. Without variant this is the base style every placement starts from; with variant { axis, option } it is that option\'s rule, which applies only to placements that choose it. scope "phone", "tablet" or "desktop" styles one screen size, "base" all; state "hover", "focus" or "active" styles that state only (colors, background, border, radius, shadow, opacity). Prefer token values such as {"token":"space.lg"}; null clears a value.',
+    'Style a node of the design, by nodeId or by one of its parts. Without variant this is the base style every placement starts from; with variant { axis, option } it is that option\'s rule, which applies only to placements that choose it. scope "phone", "tablet" or "desktop" styles one screen size, "base" all; state "hover", "focus" or "active" styles that state only (colors, background, border, radius, shadow, opacity); "groupHover" or "groupFocus" while the nearest interaction group around it (edit_definition_node content interactionGroup) is hovered or holds focus, and may also shift, scale and rotate it. Prefer token values such as {"token":"space.lg"}; null clears a value.',
   add_definition_variant: 'Add a variant option that placements can choose, on an axis such as tone or layout. Then style it with style_definition_element and its variant.',
   insert_definition_node:
     "Add an element to the design inside one of its containers (at index among its children, by default the end): a heading, paragraph, button, image, icon, divider (a plain line, or a decorative angle, wave or icon band), badge (a pill label with an optional leading icon), figure (an image with a caption) or a layout container. The result names the new node's nodeId, to bind, style or expose in the next step.",
@@ -235,7 +235,7 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
   const describe = (name: DefinitionToolName) => ({ name, description: DEFINITION_DESCRIPTIONS[name], brief: DEFINITION_BRIEFS[name] });
   const styleProps = {
     scope: { type: 'string', enum: ['base', 'phone', 'tablet', 'desktop'] },
-    state: { type: 'string', enum: [...STYLE_STATES], description: 'Style only this state: hover, focus (keyboard focus) or active (while pressed). Omit for the resting style.' },
+    state: { type: 'string', enum: [...STYLE_STATES], description: 'Style only this state: hover, focus (keyboard focus) or active (while pressed); groupHover or groupFocus while the nearest interaction group around it (a card) is hovered or holds focus, which can also shift, scale and rotate it. Omit for the resting style.' },
     styles: {
       type: 'array',
       minItems: 1,
@@ -626,7 +626,7 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
   const a = args as z.infer<(typeof DEFINITION_ARGS)['style_definition_element']>;
   a.styles.forEach((st, i) => {
     if (!STYLE_PROPS.some((p) => p.id === st.property)) issues.push({ field: `styles[${i}].property`, message: `unknown style property "${st.property}"` });
-    else if (a.state !== undefined && st.value !== null && !isStateStyleProp(st.property)) issues.push({ field: `styles[${i}].property`, message: stateStyleError(st.property)! });
+    else if (a.state !== undefined && st.value !== null && !isStateStyleProp(st.property, a.state)) issues.push({ field: `styles[${i}].property`, message: stateStyleError(st.property, a.state)! });
   });
   let nodeId: string;
   let partId: string | undefined;

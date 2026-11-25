@@ -183,16 +183,38 @@ export const STYLE_PROP_MAP: Record<string, StylePropDef> = Object.fromEntries(S
  * would move what is around it, or the transition that animates the change (that belongs on its resting style).
  */
 export const STATE_STYLE_PROPS: readonly string[] = STYLE_PROPS.filter((p) => p.group === 'appearance').map((p) => p.id);
+/**
+ * What a group state (the group around it hovered or focused) may set besides: a shift, scale or turn, which moves the
+ * element as drawn and nothing around it (a card's arrow nudged along). Where it turns and scales from, and how the
+ * change is animated, stay on the resting style.
+ */
+export const GROUP_STATE_EXTRA_PROPS: readonly string[] = ['translateX', 'translateY', 'scale', 'rotate'];
+export const GROUP_STATE_STYLE_PROPS: readonly string[] = [...STATE_STYLE_PROPS, ...GROUP_STATE_EXTRA_PROPS];
 const STATE_STYLE_PROP_SET = new Set(STATE_STYLE_PROPS);
-export const isStateStyleProp = (prop: string): boolean => STATE_STYLE_PROP_SET.has(prop);
-/** Why a state rule cannot set `prop`, or null when it can. */
-export function stateStyleError(prop: string): string | null {
-  if (isStateStyleProp(prop)) return null;
+const GROUP_STATE_STYLE_PROP_SET = new Set(GROUP_STATE_STYLE_PROPS);
+/** The properties a rule for `state` may set; with no state, those any state may (a group state's). */
+export const stateStyleProps = (state?: StyleState | null): readonly string[] => (state === 'hover' || state === 'focus' || state === 'active' ? STATE_STYLE_PROPS : GROUP_STATE_STYLE_PROPS);
+/** Whether a rule for `state` may set `prop`. With no state: whether the element's own hover, focus or press may. */
+export const isStateStyleProp = (prop: string, state?: StyleState | null): boolean => (state === 'groupHover' || state === 'groupFocus' ? GROUP_STATE_STYLE_PROP_SET : STATE_STYLE_PROP_SET).has(prop);
+/** Why a rule for `state` cannot set `prop`, or null when it can. */
+export function stateStyleError(prop: string, state?: StyleState | null): string | null {
+  if (isStateStyleProp(prop, state)) return null;
   const label = Object.hasOwn(STYLE_PROP_MAP, prop) ? STYLE_PROP_MAP[prop].label : prop;
-  return `${label} cannot change on hover, focus or press: a state changes only ${STATE_STYLE_PROPS.map((p) => STYLE_PROP_MAP[p].label.toLowerCase()).join(', ')}. Set it on the resting style.`;
+  const names = (ids: readonly string[]) => ids.map((p) => STYLE_PROP_MAP[p].label.toLowerCase()).join(', ');
+  if (state === 'groupHover' || state === 'groupFocus')
+    return `${label} cannot change ${STATE_WORDS[state]}: a group state changes only ${names(GROUP_STATE_STYLE_PROPS)}. Set it on the resting style.`;
+  // A shift, scale or turn is refused on the element's own state, but its group's can take it.
+  const group = GROUP_STATE_STYLE_PROP_SET.has(prop) ? ' A group state (its card hovered or focused) can change it.' : '';
+  return `${label} cannot change on hover, focus or press: a state changes only ${names(STATE_STYLE_PROPS)}. Set it on the resting style.${group}`;
 }
 /** Words for an interactive state, after a size ("on hover", "with keyboard focus", "while pressed"). */
-export const STATE_WORDS: Record<StyleState, string> = { hover: 'on hover', focus: 'with keyboard focus', active: 'while pressed' };
+export const STATE_WORDS: Record<StyleState, string> = {
+  groupHover: 'while its group is hovered',
+  groupFocus: 'while its group has focus',
+  hover: 'on hover',
+  focus: 'with keyboard focus',
+  active: 'while pressed'
+};
 /** Whether a set of styles holds any rule for an interactive state. */
 export const hasStateStyles = (styles: ResponsiveStyles | undefined): boolean => Object.keys(styles ?? {}).some((k) => !!parseStyleScopeKey(k)?.state);
 
@@ -1652,7 +1674,7 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
       if (!at || !props || typeof props !== 'object') continue;
       for (const [prop, value] of Object.entries(props)) {
         // A state value no state can hold reaches no stylesheet.
-        if (value === undefined || (at.state && !isStateStyleProp(prop))) continue;
+        if (value === undefined || (at.state && !isStateStyleProp(prop, at.state))) continue;
         decls.push({ prop, value, index, strength: layer.strength, scope: at.scope, state: at.state, names: cssNames(prop, value) });
       }
     }
@@ -1664,7 +1686,9 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
   // Whether two rules can set something in common. Borders and corners are compared as families, so a side, a
   // colour or a physical edge never slips past its shorthand.
   const family = (n: string) => (n.includes('radius') ? 'radius' : n.startsWith('border') ? 'border' : n);
-  const touch = (a: Decl, b: Decl) => !paintedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y))));
+  // The two shift axes write one translate through a variable each, so one never overrides the other.
+  const axes = (a: Decl, b: Decl) => (a.prop === 'translateX' && b.prop === 'translateY') || (a.prop === 'translateY' && b.prop === 'translateX');
+  const touch = (a: Decl, b: Decl) => !axes(a, b) && !paintedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y))));
   const order = (d: Decl) => STYLE_STATES.indexOf(d.state!);
   const own = (d: Decl) => d.index >= beneath;
   for (const a of states) {

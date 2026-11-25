@@ -13,11 +13,12 @@ import { newId } from '@shared/ids';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { isArticleDate } from '@shared/articles';
 import { flattenStates, flattenStyles, type StyleLayer } from '@shared/styles';
+import { groupLookup, partInInteractionGroup, withoutGroupStates } from '@shared/interaction-groups';
 import { designLayers, selectedVariants } from '@shared/variants';
 import { liveItemStyles } from '@shared/item-styles';
 import { defKey, keepWeakerHides, naturalDisplay, nodeAxes } from '@generator/index';
 import { effectiveProps, evaluate, filterShowsAt, rendersIn, type Scope } from '@generator/checks';
-import { anchorCapable, anchorsInUse, fail, findParent, getNode, getTree, settledRoot } from './tree';
+import { anchorCapable, anchorsInUse, fail, findParent, getNode, getTree, settledRoot, subtreeIds } from './tree';
 import { slotLandingProblem } from './slots';
 import { repeatFilterProblem } from './schema';
 import { clone } from './install';
@@ -105,22 +106,63 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   const defOrder = new Map(Object.values(state.components).sort((a, b) => a.id.localeCompare(b.id)).map((d, i) => [d.id, i]));
   const tie = (defId: string) => (defOrder.get(defId) ?? 0) / (defOrder.size + 1) / 10;
 
+  // Group states no interaction group could show here stay unshown: on the page, a group around the placement would
+  // reach them as the design's own rules never did.
+  const designGroup = groupLookup(design);
+  const placedInGroup = groupLookup(tree)(op.nodeId) !== null;
+  const groupLookups = new Map<string, (nodeId: string) => string | null>();
+  const shownHere = (styles: ResponsiveStyles | undefined, live: boolean) => (live ? styles : withoutGroupStates(styles));
+  const partLive = (pid: string) => partInInteractionGroup(def, pid, placedInGroup, groupLookups);
+  /** The nearest group around each node of a design, by its own groups (one lookup per design). */
+  const lookupIn = (d: ComponentDefinition) => {
+    let find = groupLookups.get(d.id);
+    if (!find) groupLookups.set(d.id, (find = groupLookup(d.tree)));
+    return find;
+  };
+  /**
+   * A node of this page's that moves in among the design's nodes (what the placement put in a slot) keeps only the
+   * group states a group showed where it was: the design's groups around the slot never reached it, and would now.
+   */
+  const keepShownGroups = (n: GraphNode, placed: boolean) => {
+    if (!placed && n.styles) {
+      const kept = withoutGroupStates(n.styles)!;
+      if (Object.keys(kept).length) n.styles = kept;
+      else delete n.styles;
+    }
+    if (n.kind !== 'instance') return;
+    const d = own(state.components, n.definitionId);
+    for (const pid of Object.keys(n.overrides ?? {})) if (!partInInteractionGroup(d, pid, placed, groupLookups)) n.overrides![pid] = withoutGroupStates(n.overrides![pid])!;
+    for (const [pid, entry] of Object.entries(n.itemOverrides ?? {}))
+      if (entry && typeof entry === 'object' && entry.items && typeof entry.items === 'object' && !partInInteractionGroup(d, pid, placed, groupLookups))
+        for (const item of Object.keys(entry.items)) entry.items[item] = withoutGroupStates(entry.items[item])!;
+  };
+  {
+    const before = groupLookup(tree);
+    for (const slot of Object.keys(inst.slots ?? {}))
+      for (const c of slotChildren(inst, slot))
+        for (const id of subtreeIds(tree, c)) {
+          const n = own(tree.nodes, id);
+          if (n) keepShownGroups(n, before(id) !== null);
+        }
+  }
+
   /** The layers of rules on one of the design's nodes for this placement, weakest first, as the stylesheets cascade them. */
   const layersFor = (nodeId: string, at: At, boost: number): StyleLayer[] => {
     const design = designLayers(def, nodeId, inst.variants);
     const designed = design.map((l) => l.styles);
-    const layers: StyleLayer[] = design.map((l) => ({ ...l, strength: l.strength + (boost ? tie(def.id) : 0) }));
+    const live = designGroup(nodeId) !== null;
+    const layers: StyleLayer[] = design.map((l) => ({ ...l, styles: shownHere(l.styles, live), strength: l.strength + (boost ? tie(def.id) : 0) }));
     // Each shared change is two override classes, in the site stylesheet after every component's: it beats any
     // option's rule at every size. One item's own styles carry one class more. A part that is a placed component
     // takes two classes more than either.
-    for (const pid of overrideParts) if (partNode(pid) === nodeId) layers.push({ styles: inst.overrides![pid], strength: 3 + boost, wideColumns: true, unhides: designed });
+    for (const pid of overrideParts) if (partNode(pid) === nodeId) layers.push({ styles: shownHere(inst.overrides![pid], partLive(pid)), strength: 3 + boost, wideColumns: true, unhides: designed });
     for (const pid of itemParts) {
       if (partNode(pid) !== nodeId) continue;
       const entry = liveItemStyles(def, inst, pid);
       const item = entry ? at.items[entry.list] : undefined;
       const mine = entry && item !== undefined ? own(entry.items, item) : undefined;
       if (!mine || typeof mine !== 'object') continue;
-      layers.push({ styles: keepWeakerHides(def, inst, pid, mine), strength: 4 + boost, wideColumns: true, unhides: [...designed, own(inst.overrides, pid)] });
+      layers.push({ styles: shownHere(keepWeakerHides(def, inst, pid, mine), partLive(pid)), strength: 4 + boost, wideColumns: true, unhides: [...designed, own(inst.overrides, pid)] });
     }
     return layers;
   };
@@ -301,9 +343,12 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       const chosen = Object.fromEntries(Object.entries(placed.variants ?? {}).map(([axis, v]) => [axis, isBindingRef(v) ? String(evaluate(v, scope) ?? '') : v]));
       const r: string = d.tree.rootIds[0];
       const next: GraphNode | undefined = own(d.tree.nodes, r);
-      const level: StyleLayer[] = designLayers(d, r, chosen).map((l) => ({ ...l, strength: l.strength + tie(d.id) }));
+      // Group states no group shows stay out: the generator writes none for them, so they win nothing here either.
+      const rootGrouped = lookupIn(d)(r) !== null;
+      const level: StyleLayer[] = designLayers(d, r, chosen).map((l) => ({ ...l, styles: shownHere(l.styles, rootGrouped), strength: l.strength + tie(d.id) }));
       levels.push(level);
-      if (next?.kind === 'instance' && next.overrides?.root) level.push({ styles: next.overrides.root, strength: 3 + tie(d.id), wideColumns: true, unhides: [] });
+      if (next?.kind === 'instance' && next.overrides?.root)
+        level.push({ styles: shownHere(next.overrides.root, partInInteractionGroup(own(state.components, next.definitionId), 'root', rootGrouped, groupLookups)), strength: 3 + tie(d.id), wideColumns: true, unhides: [] });
       // An option bound to the design's UI state shows the one it starts at, as the generated site does.
       scope = { props: withObjectFields(d, effectiveProps(state, d, placed, scope, op.owner.id)), ...(d.state ? { ui: Object.fromEntries(Object.keys(d.state).map((k) => [k, stateInitial(d, k)])) } : {}) };
       node = next;
@@ -344,7 +389,11 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     const beneath = chain.layers;
     // The design's own change to it is three classes: it beats every option, loses to the placement's four, and shows
     // again what the placed component's design hides.
-    const nested: StyleLayer[] = src.overrides?.root ? [{ styles: src.overrides.root, strength: 3 + tie(def.id), wideColumns: true, unhides: beneath.map((l) => l.styles), marks: chain.code }] : [];
+    // Its overrides in the design followed a group of the design around it, or none: one with none stays unshown on
+    // the page, where a group around the placement would reach it.
+    const placedHere = designGroup(src.id) !== null;
+    const shownPart = (pid: string, styles: ResponsiveStyles | undefined) => shownHere(styles, partInInteractionGroup(inner, pid, placedHere, groupLookups));
+    const nested: StyleLayer[] = src.overrides?.root ? [{ styles: shownPart('root', src.overrides.root), strength: 3 + tie(def.id), wideColumns: true, unhides: beneath.map((l) => l.styles), marks: chain.code }] : [];
     const layers = [...beneath, ...layersFor(src.id, at, 1), ...nested];
     const innerRoot = inner?.kind === 'managed' ? inner.tree?.rootIds[0] : undefined;
     const root = flattenStyles(layers, {
@@ -356,7 +405,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       shownDisplay: () => naturalDisplay(src)
     });
     Object.assign(root, states(layers, !!innerRoot && inner?.tree?.nodes[innerRoot]?.kind === 'link', beneath.length));
-    const overrides = { ...(src.overrides ?? {}) };
+    const overrides = Object.fromEntries(Object.entries(src.overrides ?? {}).map(([pid, o]) => [pid, shownPart(pid, o)!]));
     delete overrides.root;
     if (Object.keys(root).length) overrides.root = root;
     if (Object.keys(overrides).length) n.overrides = clone(overrides);

@@ -4290,10 +4290,19 @@ let forced = null;
 /** The elements marked now. */
 const forcedEls = new Set();
 const FORCE_ATTR = 'data-so-force-state';
-const FORCE_STATES = ['hover', 'focus', 'active'];
-/** The pseudo-classes a state stands in for. `:focus-within` is an ancestor's, and stays as it is. */
-const FORCE_PSEUDO = /:(hover|focus-visible|focus|active)(?![\w-])/g;
-const FORCE_OF = { hover: 'hover', 'focus-visible': 'focus', focus: 'focus', active: 'active' };
+const FORCE_STATES = ['hover', 'focus', 'active', 'groupHover', 'groupFocus'];
+/**
+ * The pseudo-classes a mark stands in for. `:focus-within` stands for an interaction group with focus inside it (its
+ * own mark, `within`), so showing an element focused never shows the groups around it as holding focus.
+ */
+const FORCE_PSEUDO = /(?<!\\):(hover|focus-visible|focus-within|focus|active)(?![\w-])/g;
+const FORCE_OF = { hover: 'hover', 'focus-visible': 'focus', 'focus-within': 'within', focus: 'focus', active: 'active' };
+/**
+ * A group state is shown on the interaction groups around the selected element (`.so-group`), not on it: each is
+ * marked hovered, or as holding focus, as a real pointer or focus inside the nearest one would make it and every
+ * group around that one, up to a modal dialog, over the page, beyond which nothing counts as hovered.
+ */
+const GROUP_MARK = { groupHover: 'hover', groupFocus: 'within' };
 
 /**
  * A selector whose interactive pseudo-classes an element marked as in that state also matches, or null when it has
@@ -4352,14 +4361,32 @@ function forceSheets() {
 function forcedTargets() {
   if (!forced) return [];
   const out = [];
+  const group = Object.hasOwn(GROUP_MARK, forced.state);
   for (const el of findAll(forced.part ? { ...forced.desc, part: forced.part } : forced.desc)) {
     const own = !forced.part && el.hasAttribute('data-so-code') ? [...el.children].filter((c) => c.tagName !== 'STYLE' && c.tagName !== 'SCRIPT') : [el];
     for (const t of own) {
+      if (group) {
+        // A dialog over the page is the top of what can be hovered: nothing around it is.
+        if (isModal(t)) continue;
+        for (let a = t.parentElement; a; a = a.parentElement) {
+          if (a.classList.contains('so-group')) out.push(a);
+          if (isModal(a)) break;
+        }
+        continue;
+      }
       out.push(t);
       if (t.parentElement && t.parentElement.classList.contains('so-action')) out.push(t.parentElement);
     }
   }
   return out;
+}
+/** Whether an element is a modal dialog shown over the page (an engine without `:modal` has none). */
+function isModal(el) {
+  try {
+    return el.matches(':modal');
+  } catch {
+    return false;
+  }
 }
 /** Marks the elements to show in the state, and unmarks any that no longer are (re-rendered, or another selection). */
 function markForced() {
@@ -4368,8 +4395,10 @@ function markForced() {
   // A copy of a marked element the page made (re-rendering it, say) is no longer what is shown in the state.
   for (const el of document.querySelectorAll(`[${FORCE_ATTR}]`)) if (!want.has(el)) el.removeAttribute(FORCE_ATTR);
   forcedEls.clear();
+  if (!forced) return;
+  const mark = Object.hasOwn(GROUP_MARK, forced.state) ? GROUP_MARK[forced.state] : forced.state;
   for (const el of want) {
-    if (el.getAttribute(FORCE_ATTR) !== forced.state) el.setAttribute(FORCE_ATTR, forced.state);
+    if (el.getAttribute(FORCE_ATTR) !== mark) el.setAttribute(FORCE_ATTR, mark);
     forcedEls.add(el);
   }
 }

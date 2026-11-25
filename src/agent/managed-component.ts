@@ -12,7 +12,7 @@ import { z } from 'zod';
 import type { EditOperation, Op } from '@shared/ops';
 import type { ComponentDefinition, LinkValue, PropSchema, ProjectState, TokenGroup, UiStateSchema } from '@shared/types';
 import { linkRels, withRels } from '@shared/link-rel';
-import { APPEAR_PRESETS, COMPONENT_CATEGORIES, DIVIDER_SHAPES, ELEMENT_ACTIONS, OVERLAY_MODES, SLOT_PRIMITIVES } from '@shared/types';
+import { APPEAR_PRESETS, COMPONENT_CATEGORIES, DIVIDER_SHAPES, ELEMENT_ACTIONS, OVERLAY_MODES, SLOT_PRIMITIVES, STYLE_STATES } from '@shared/types';
 import { TABLE_LIMITS } from '@engine/table';
 import { MAX_CHOICES } from '@engine/values';
 import { STYLE_PROP_MAP } from '@shared/styles';
@@ -33,7 +33,7 @@ import type { ToolHost, ToolOutcome } from './tools';
 const NODE_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const MAX_ISSUES = 12;
 const SCOPES = ['base', 'phone', 'tablet', 'desktop'] as const;
-const STATES = ['hover', 'focus', 'active'] as const;
+const STATES = STYLE_STATES;
 const APPEARANCES = ['primary', 'secondary', 'text', 'light', 'link', 'plain'] as const;
 const TOKEN_GROUPS = ['color', 'font', 'space', 'container', 'radius', 'shadow', 'border'] as const satisfies readonly TokenGroup[];
 const CATEGORIES = COMPONENT_CATEGORIES.filter((c) => c !== 'shell') as unknown as [string, ...string[]];
@@ -111,6 +111,10 @@ const NODE = z.discriminatedUnion('kind', [
       collapseEmpty: z.boolean().optional().describe('Hidden when everything inside it is hidden.'),
       action: bindable(z.enum(ELEMENT_ACTIONS as unknown as [string, ...string[]])).optional().describe('What clicking it does: none, image (open its image full size) or link.'),
       carousel: z.literal(true).optional().describe('A list whose items scroll sideways as a carousel.'),
+      interactionGroup: z
+        .literal(true)
+        .optional()
+        .describe('An interaction group (a card): hovering it, or focus inside it, shows the groupHover and groupFocus styles of the nodes inside it.'),
       appear: APPEAR,
       overlay: z
         .enum(OVERLAY_MODES as unknown as [string, ...string[]])

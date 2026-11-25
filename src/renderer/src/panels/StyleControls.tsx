@@ -2,7 +2,8 @@ import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { ChevronRight, EyeOff, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { ResponsiveScope, ResponsiveStyles, StyleState, StyleTokenRef, StyleValue, TokenDef } from '@shared/types';
-import { parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { isGroupStyleState, parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { hasGroupStyles } from '@shared/interaction-groups';
 import { STATE_WORDS, STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, colorAtStrength, cssRivals, hasStateStyles, isStateStyleProp, partStrength, styleDeclOrder, withColumnSizes, type StyleLayer, type StylePropDef } from '@shared/styles';
 import { parseColor } from '@shared/color';
 import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
@@ -241,6 +242,7 @@ export function StyleControls({
   wideColumns,
   layers,
   states = true,
+  grouped,
   statePart
 }: {
   styles: ResponsiveStyles | undefined;
@@ -281,6 +283,11 @@ export function StyleControls({
   layers?: StyleLayer[];
   /** False where these styles are not the selected element's own (Column layout edits a part inside it): no states. */
   states?: boolean;
+  /**
+   * Whether an interaction group encloses the element these styles are for, so its group hover and group focus states
+   * can show: they are offered there, and wherever such changes are already set (so they can be seen and reset).
+   */
+  grouped?: boolean;
   /** The part of the selected element these styles are for, when not its whole self: the canvas shows that part in a state. */
   statePart?: string;
 }) {
@@ -313,13 +320,17 @@ export function StyleControls({
   const focusNext = (...selectors: string[]) => {
     if (root.current?.contains(document.activeElement)) pendingFocus.current = selectors;
   };
+  // Group states are offered inside a group, or where one already holds changes.
+  const groupOffered = !!states && (!!grouped || hasGroupStyles(styles));
+  const candidates = allowed?.length ? allowed : STYLE_PROPS.map((p) => p.id);
   // Hover, focus and pressed states are offered where a property a state can change is, or where one is already set.
-  const statesOffered = states && (((allowed?.length ? allowed : STYLE_PROPS.map((p) => p.id)).some(isStateStyleProp)) || hasStateStyles(styles));
-  const state = statesOffered ? chosenState : null;
+  const statesOffered = states && (candidates.some((p) => isStateStyleProp(p) || (groupOffered && isStateStyleProp(p, 'groupHover'))) || hasStateStyles(styles));
+  // A group state chosen for another element is no state of this one.
+  const state = statesOffered && (!isGroupStyleState(chosenState) || groupOffered) ? chosenState : null;
   // A value set outside the offered controls (by the AI, say) still gets a row, so it can be seen and reset.
   const setOutside = allowed?.length ? [...new Set(rulesIn(styles, state).flatMap((sc) => Object.keys(sc ?? {})))].filter((id) => !allowed.includes(id)) : [];
   // In a state, only what a state can change.
-  const props = (allowed?.length ? [...allowed, ...setOutside].map((id) => STYLE_PROP_MAP[id]).filter(Boolean) : STYLE_PROPS).filter((p) => !state || isStateStyleProp(p.id));
+  const props = (allowed?.length ? [...allowed, ...setOutside].map((id) => STYLE_PROP_MAP[id]).filter(Boolean) : STYLE_PROPS).filter((p) => !state || isStateStyleProp(p.id, state));
   const groups = new Map<StylePropDef['group'], StylePropDef[]>();
   for (const p of props) groups.set(p.group, [...(groups.get(p.group) ?? []), p]);
   // Where the values shown are stored: the size being edited, in the chosen state or at rest.
@@ -614,7 +625,7 @@ export function StyleControls({
   }
   return (
     <div className="style-controls" ref={root}>
-      <ScopePicker styles={styles}>{statesOffered && <StatePicker styles={styles} state={state} part={statePart} />}</ScopePicker>
+      <ScopePicker styles={styles}>{statesOffered && <StatePicker styles={styles} state={state} part={statePart} grouped={groupOffered} />}</ScopePicker>
       {groupList.map(group)}
       {stateResets.length > 0 && (
         <div className="style-footer">
