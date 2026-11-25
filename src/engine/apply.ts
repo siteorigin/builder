@@ -1736,8 +1736,7 @@ function keptContent(state: ProjectState, owner: OwnerRef, def: ComponentDefinit
     const d = own(state.components, n.definitionId) ?? fail(`Component definition "${n.definitionId}" is missing.`);
     if (d.category === 'shell') fail(KEEP_SHELL);
     const declared = Object.keys(d.slots ?? {});
-    // Only a managed component's placement on a page can be detached into elements (see detachInstance).
-    if (!declared.length) fail(`${name} has no slots, so it holds no content of its own to keep. Delete it${d.kind === 'managed' && owner.kind === 'page' ? ', or detach it to keep its elements' : ' instead'}.`);
+    if (!declared.length) fail(`${name} has no slots, so it holds no content of its own to keep. Delete it instead.`);
     for (const [slot, ids] of Object.entries(n.slots ?? {})) {
       // Content left in a slot the component no longer has shows nowhere: kept, it would show again unasked.
       if (!declared.includes(slot) && (!Array.isArray(ids) || ids.length))
@@ -1751,9 +1750,9 @@ function keptContent(state: ProjectState, owner: OwnerRef, def: ComponentDefinit
   if (new Set(held).size !== held.length || held.includes(n.id) || held.some((c) => !Object.hasOwn(tree.nodes, c)))
     fail(`What ${name} holds is damaged (listed twice, or missing), so it can’t be kept. Delete ${name} with what it holds instead.`);
   const nodes = held.map((c) => tree.nodes[c]);
-  // Both are known by the element that holds them alone: put among others, the tabs would lose their list and the
-  // category pills their place above the list. A container holding other content beside such a button is no tab list.
-  if (nodes.length && nodes.every(choosesState)) fail(`${name} is the list of buttons that choose what the component shows (its tabs), which are known by that list, so they can’t be kept without it.`);
+  // Both are known by the element that holds them: put among others, the tabs would lose their list (or a stray one
+  // join another's) and the category pills their place above the list.
+  if (nodes.some(choosesState)) fail(`${name} holds buttons that choose what the component shows (its tabs), which are known by the element holding them, so they can’t be kept without it.`);
   if (nodes.some((c) => c?.kind === 'repeat' && !!c.filter)) fail(`${name} holds a list with category filter pills, which go just above the element holding the list, so the list can’t be kept without it.`);
   return held;
 }

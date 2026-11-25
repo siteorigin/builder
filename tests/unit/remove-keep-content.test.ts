@@ -347,7 +347,7 @@ describe('What can’t be deleted keeping its content', () => {
     expect(() => lift(ghost, 'n_split')).toThrow(/holds content in “old”, a slot its component no longer has/);
   });
 
-  it('refuses content listed twice or under the placement itself', () => {
+  it('refuses content listed twice, under the placement itself, or missing', () => {
     const { s } = filled(inGrid);
     const twice = structuredClone(s);
     inst(twice, 'n_split').slots!.right = ['n_hero', 'n_heading'];
@@ -355,17 +355,20 @@ describe('What can’t be deleted keeping its content', () => {
     const self = structuredClone(s);
     inst(self, 'n_split').slots!.right = ['n_split'];
     expect(() => lift(self, 'n_split')).toThrow(/is damaged/);
+    const missing = structuredClone(s);
+    inst(missing, 'n_split').slots!.right = ['n_hero', 'n_gone'];
+    expect(() => lift(missing, 'n_split')).toThrow(/is damaged/);
   });
 
-  it('suggests detaching a slotless placement only where it can be detached', () => {
+  it('refuses a placement without slots, on a page or in a design', () => {
     const { s, split, card } = filled(atTop);
-    expect(() => lift(s, 'n_card')).toThrow('“Card” has no slots, so it holds no content of its own to keep. Delete it, or detach it to keep its elements.');
+    expect(() => lift(s, 'n_card')).toThrow('“Card” has no slots, so it holds no content of its own to keep. Delete it instead.');
     const own = { kind: 'component' as const, id: split };
     const d = apply(s, [{ type: 'node.insert', newNodeId: 'n_inner', owner: own, parentId: s.components[split].tree!.rootIds[0], definitionId: card }]).state;
     expect(() => lift(d, 'n_inner', own)).toThrow('“Card” has no slots, so it holds no content of its own to keep. Delete it instead.');
   });
 
-  it('refuses a list of tab buttons, and keeps a state’s button held beside other content', () => {
+  it('refuses what holds tab buttons, alone or beside other content, and keeps a yes/no state’s button', () => {
     const s = createStarterState('business', 'Test Studio', false);
     const placed = home(s).rootIds.map((id) => home(s).nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'features.grid')!;
     const f = apply(s, [{ type: 'component.fork', definitionId: placed.definitionId }]);
@@ -379,10 +382,14 @@ describe('What can’t be deleted keeping its content', () => {
     t.nodes.mixed = { id: 'mixed', kind: 'element', tag: 'div', children: ['t3', 'note'] };
     t.nodes.t3 = tab('t3', 'a');
     t.nodes.note = { id: 'note', kind: 'text', tag: 'p', text: 'Pick one' };
-    (t.nodes.inner as ElementNode).children.push('tabs', 'mixed');
-    expect(() => lift(f.state, 'tabs', own)).toThrow(/is the list of buttons that choose what the component shows \(its tabs\)/);
-    const r = lift(f.state, 'mixed', own);
-    expect((r.state.components[id].tree!.nodes.inner as ElementNode).children.slice(-2)).toEqual(['t3', 'note']);
+    t.nodes.toggles = { id: 'toggles', kind: 'element', tag: 'div', children: ['b1'] };
+    t.nodes.b1 = { id: 'b1', kind: 'link', link: { type: 'none', target: '' }, label: 'More', appearance: 'primary', stateAction: { state: 'open', op: 'set', value: true } };
+    (t.nodes.inner as ElementNode).children.push('tabs', 'mixed', 'toggles');
+    expect(() => lift(f.state, 'tabs', own)).toThrow(/holds buttons that choose what the component shows \(its tabs\)/);
+    // A stray tab among other content could join another tab list's panels once lifted.
+    expect(() => lift(f.state, 'mixed', own)).toThrow(/holds buttons that choose what the component shows/);
+    const r = lift(f.state, 'toggles', own);
+    expect((r.state.components[id].tree!.nodes.inner as ElementNode).children.slice(-1)).toEqual(['b1']);
   });
 
   it('refuses the shared header', () => {
