@@ -83,7 +83,7 @@ describe('agent benchmark', () => {
     expect(parsed.schemaVersion).toBe(REPORT_SCHEMA_VERSION);
     expect(parsed.adapter.name).toBe('scripted-fake');
     expect(parsed.cases.map((c: CaseResult) => `${c.id}@${c.version}`)).toEqual(['copy-edit-hero-heading@1', 'brand-retheme@1']);
-    for (const key of ['pass', 'score', 'turns', 'toolCalls', 'inputTokens', 'outputTokens', 'latencyMs', 'invalidOps', 'scopeViolations', 'validateClean', 'compileClean']) expect(parsed.cases[0]).toHaveProperty(key);
+    for (const key of ['pass', 'score', 'turns', 'toolCalls', 'inputTokens', 'outputTokens', 'latencyMs', 'invalidOps', 'scopeViolations', 'validateClean', 'compileClean', 'toolCalling', 'contextWindowTokens']) expect(parsed.cases[0]).toHaveProperty(key);
     expect(parsed.cases[0].inputTokens).toBeGreaterThan(0);
     expect(parsed.cases[0].tokensEstimated).toBe(true);
     const lines = tracesToJsonl(traces).trim().split('\n').map((l) => JSON.parse(l));
@@ -225,6 +225,194 @@ describe('agent benchmark', () => {
     };
     expect(await failing(wider)).toEqual(['same-pages', 'other-pages-untouched', 'shell-untouched']);
   }, 120000);
+
+  describe('component authoring (#365)', () => {
+    const COMPONENT_CASES = ['create-workshop-notice', 'create-repeated-workshop-cards', 'add-panel-tone-axis', 'show-booking-status-conditionally', 'style-component-with-site-tokens', 'make-panel-caption-editable', 'repair-component-on-phones'];
+    /** The case with every tool call its script makes changed by `edit` (by tool name, arguments and turn) first. */
+    const editCalls = (c: EvalCase, edit: (name: string, args: any, turn: number) => void): EvalCase => ({
+      ...c,
+      script: (state) =>
+        c.script(state).map((turn, i) => (req) =>
+          turn(req).map((e) =>
+            e.type !== 'done'
+              ? e
+              : {
+                  ...e,
+                  toolCalls: e.toolCalls.map((t) => {
+                    const a = JSON.parse(t.arguments);
+                    edit(t.name, a, i);
+                    return { ...t, arguments: JSON.stringify(a) };
+                  })
+                }
+          )
+        )
+    });
+    const failing = async (c: EvalCase) => (await runCase(c, scripted)).result.checks.filter((x) => !x.pass).map((x) => x.id);
+
+    it('adds seven component cases in a new suite, played by both a cloud and a constrained local model', () => {
+      expect(SUITE_VERSION).toBe(4);
+      const cases = COMPONENT_CASES.map(byId);
+      expect(cases.map((c) => `${c?.id}@${c?.version}:${c?.category}`)).toEqual(COMPONENT_CASES.map((id) => `${id}@1:component`));
+      expect(cases.map((c) => c.scriptedProfile)).toEqual(['cloud', 'constrained-json', 'constrained-json', 'cloud', 'constrained-json', 'constrained-json', 'cloud']);
+      expect(EVAL_CASES.filter((c) => c.category === 'component').map((c) => c.id)).toEqual(COMPONENT_CASES);
+    });
+
+    it('sends each case as the editor would, so its model gets the tools that request gets', async () => {
+      const seen: Record<string, { tools: string[]; result: CaseResult }> = {};
+      for (const id of COMPONENT_CASES) {
+        const c = byId(id);
+        let tools: string[] = [];
+        const spied: EvalCase = {
+          ...c,
+          script: (state) => {
+            const [first, ...rest] = c.script(state);
+            return [(req) => ((tools = req.tools.map((t) => t.name)), first(req)), ...rest];
+          }
+        };
+        const { result } = await runCase(spied, scripted);
+        expect(result.pass, id).toBe(true);
+        seen[id] = { tools, result };
+      }
+      // Create component: the whole component in one call first, with the operations and the inspector beside it.
+      for (const id of ['create-workshop-notice', 'show-booking-status-conditionally', 'create-repeated-workshop-cards']) {
+        expect(seen[id].tools[0], id).toBe('upsert_managed_component');
+        expect(seen[id].tools, id).toEqual(expect.arrayContaining(['apply_operations', 'inspect_component']));
+        expect(seen[id].tools, id).not.toContain('upsert_page_with_sections');
+      }
+      expect(seen['create-workshop-notice'].result).toMatchObject({ toolCalling: 'native', contextWindowTokens: 200_000 });
+      expect(seen['create-repeated-workshop-cards'].result).toMatchObject({ toolCalling: 'constrained-json', contextWindowTokens: 32_768 });
+      // A design edited everywhere on a small model: its own definition tools, and no general operations.
+      for (const id of ['add-panel-tone-axis', 'make-panel-caption-editable']) {
+        expect(seen[id].tools, id).toEqual(expect.arrayContaining(['manage_component_prop', 'bind_definition_field', 'edit_definition_node', 'style_definition_element', 'add_definition_variant', 'read_component']));
+        expect(seen[id].tools, id).not.toContain('apply_operations');
+        expect(seen[id].result.toolCalling, id).toBe('constrained-json');
+      }
+      // A small site request that asks for a component gets the tool that builds one whole, beside the page tools.
+      expect(seen['style-component-with-site-tokens'].tools).toEqual(expect.arrayContaining(['upsert_managed_component', 'upsert_page_with_sections']));
+      expect(seen['style-component-with-site-tokens'].tools).not.toContain('apply_operations');
+      // The same design edited everywhere on a cloud model: the general tools, which measure it too.
+      expect(seen['repair-component-on-phones'].tools).toEqual(expect.arrayContaining(['inspect_component', 'apply_operations', 'read_component']));
+      expect(seen['repair-component-on-phones'].tools).not.toContain('style_definition_element');
+      // A design that is not in the project is not a request the harness can send.
+      await expect(runCase({ ...byId('add-panel-tone-axis'), setup: undefined }, scripted)).rejects.toThrow('No component Studio panel');
+    }, 120000);
+
+    it('repairs a component from what inspect_component measured, and measures it clean after', async () => {
+      const { result, trace } = await runCase(byId('repair-component-on-phones'), scripted);
+      expect(result.pass).toBe(true);
+      const calls = trace.turns.flatMap((t) => t.toolCalls);
+      expect(calls.map((t) => t.name)).toEqual(['inspect_component', 'apply_operations', 'inspect_component']);
+      const first = JSON.parse(calls[0].result!);
+      expect(first.findings.map((f: { kind: string; at: { nodeId: string } }) => `${f.kind}@${f.at.nodeId}`)).toEqual(['element-overflow@panel', 'low-contrast@line']);
+      expect(JSON.parse(calls[1].result!).ok).toBe(true);
+      // Measured again from the project as it is now, not as it was.
+      const second = JSON.parse(calls[2].result!);
+      expect(second.findings).toBeUndefined();
+      expect(second.summary).toContain('Counter hours');
+      // Without the benchmark's measurer the tool says it cannot measure, the script fixes nothing, and the case fails.
+      const blind = await runCase({ ...byId('repair-component-on-phones'), measureComponents: false }, scripted);
+      expect(JSON.parse(blind.trace.turns[0].toolCalls[0].result!).message).toContain('not available here');
+      expect(blind.result.checks.filter((x) => !x.pass).map((x) => x.id)).toEqual(['fits-on-phone', 'readable-on-phone']);
+    }, 60000);
+
+    it('grades what a placement shows and how it is styled, so near misses fail and other ways of doing it pass', async () => {
+      const notice = byId('create-workshop-notice');
+      expect(await failing(editCalls(notice, (_n, a) => delete a.placeOnPage))).toEqual(['placed-last-on-home']);
+      expect(await failing(editCalls(notice, (_n, a) => (a.nodes[1].text = 'Saturday workshop')))).toEqual(['heading-editable']);
+      // Other node IDs, and a name in another case, are the same component.
+      expect(await failing(editCalls(notice, (_n, a) => ((a.name = 'WORKSHOP NOTICE'), (a.nodes[0].id = 'box'), (a.nodes[0].children = ['title', 'body']))))).toEqual([]);
+
+      // A room fixed in the card is shown on every card, whatever its item says.
+      const cards = byId('create-repeated-workshop-cards');
+      expect(await failing(editCalls(cards, (_n, a) => (a.nodes[5].text = 'Kiln room')))).toEqual(['starts-with-two-cards', 'card-per-item']);
+      expect(await failing(editCalls(cards, (_n, a) => a.properties[0].default.pop()))).toEqual(['starts-with-two-cards']);
+
+      // The dark colors set for every placement, a dark background behind dark text, and a raw color.
+      const tone = byId('add-panel-tone-axis');
+      expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && delete a.variant))).toEqual(['default-unchanged']);
+      expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && a.styles.pop()))).toEqual(['inverse-text']);
+      expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && (a.styles[0].value = '#14211d')))).toEqual(['inverse-background']);
+
+      // Both messages always shown; and the same switch written as comparisons, which passes.
+      const booking = byId('show-booking-status-conditionally');
+      expect(await failing(editCalls(booking, (_n, a) => (delete a.nodes[1].when, delete a.nodes[2].unless)))).toEqual(['yes-no-setting', 'starts-off', 'open-message-editable', 'closed-message-editable']);
+      const compared = (_n: string, a: any) => {
+        a.nodes[1].when = { ref: { $prop: 'open' }, eq: true };
+        delete a.nodes[2].unless;
+        a.nodes[2].when = { ref: { $prop: 'open' }, ne: true };
+      };
+      expect(await failing(editCalls(booking, compared))).toEqual([]);
+
+      // The same colors and padding as raw values; padding above and below only; text left to the page's color passes.
+      const tokens = byId('style-component-with-site-tokens');
+      const raw = (_n: string, a: any) =>
+        (a.nodes[0].styles = [
+          { property: 'background', value: '#ffffff' },
+          { property: 'color', value: '#191a18' },
+          { property: 'paddingBlock', value: '24px' },
+          { property: 'paddingInline', value: '24px' }
+        ]);
+      expect(await failing(editCalls(tokens, raw))).toEqual(['surface-background', 'text-color', 'large-padding', 'only-site-styles']);
+      expect(await failing(editCalls(tokens, (_n, a) => a.nodes[0].styles.pop()))).toEqual(['large-padding']);
+      expect(await failing(editCalls(tokens, (_n, a) => a.nodes[0].styles.splice(1, 1)))).toEqual([]);
+
+      // A Caption field the caption never shows.
+      const caption = byId('make-panel-caption-editable');
+      const unbound: EvalCase = {
+        ...caption,
+        script: (state) => {
+          const turns = caption.script(state);
+          return [turns[0], turns[2], turns[3]];
+        }
+      };
+      expect(await failing(unbound)).toEqual(['caption-editable', 'caption-field']);
+      // A cloud model makes the same change with the general operations, which grades the same.
+      const general: EvalCase = {
+        ...caption,
+        scriptedProfile: 'cloud',
+        script: (state) => {
+          const def = Object.values(state().components).find((d) => d.name === 'Service panel')!;
+          const owner = { kind: 'component', id: def.id };
+          return [
+            () => [
+              {
+                type: 'done',
+                stopReason: 'tool_use',
+                text: '',
+                toolCalls: [
+                  {
+                    id: 'g1',
+                    name: 'apply_operations',
+                    arguments: JSON.stringify({
+                      expectedRevision: 0,
+                      operations: [
+                        { type: 'component.setPropSchema', definitionId: def.id, prop: 'note', schema: { type: 'string', label: 'Caption', default: 'Ask at reception' } },
+                        { type: 'node.setBinding', owner, nodeId: 'caption', field: 'text', binding: { $prop: 'note' } },
+                        { type: 'component.setPart', definitionId: def.id, partId: 'note', nodeId: 'caption', label: 'Caption' }
+                      ]
+                    })
+                  }
+                ]
+              }
+            ],
+            () => [{ type: 'done', stopReason: 'end', text: 'Done.', toolCalls: [] }]
+          ];
+        }
+      };
+      const viaGeneral = await runCase(general, scripted);
+      expect(viaGeneral.trace.turns[0].toolCalls[0].isError).toBe(false);
+      expect(viaGeneral.result.checks.filter((x) => !x.pass)).toEqual([]);
+
+      // Only the width fixed; the text hidden on phones rather than made readable; the panel made full width on desktop
+      // too; and a cap on its width in place of a phone width, which passes.
+      const repair = byId('repair-component-on-phones');
+      const ops = (edit: (list: any[]) => void) => editCalls(repair, (n, a) => n === 'apply_operations' && edit(a.operations));
+      expect(await failing(ops((list) => list.pop()))).toEqual(['readable-on-phone']);
+      expect(await failing(ops((list) => Object.assign(list[1], { property: 'hidden', value: true })))).toEqual(['readable-on-phone']);
+      expect(await failing(ops((list) => (list[0].scope = 'base')))).toEqual(['desktop-kept']);
+      expect(await failing(ops((list) => Object.assign(list[0], { scope: 'base', property: 'maxWidth', value: '100%' })))).toEqual([]);
+    }, 180000);
+  });
 
   it('summarizes and estimates cost', () => {
     const base = { version: 1, category: 'copy', status: 'completed', checks: [], tokensEstimated: false, validationErrors: [], compileErrors: [] } as unknown as CaseResult;
