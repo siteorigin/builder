@@ -199,6 +199,8 @@ export function Canvas() {
   /** Ways the selection chip's Previous or Next item found no item showing the part in, for the selection and page as
    *  they were (see stepItemSelection). */
   const [stepBlocked, setStepBlocked] = useState<{ key: string; prev: boolean; next: boolean } | null>(null);
+  // What the page shows can change without a new version of the project (an answer opened): a new pick asks again.
+  useEffect(() => setStepBlocked(null), [selection && refKey(selection)]); // eslint-disable-line react-hooks/exhaustive-deps
   const menu = useMenu();
   /** The inline edit the editor started; the preview cannot commit text on its own. */
   /** Inline text edits in progress, with the project and the AI's activity when each began. */
@@ -1618,6 +1620,9 @@ export function Canvas() {
     if (asked !== q.from) return;
     const info = st && from ? itemStep(st, from, s.templateMode ?? undefined) : null;
     if (!st || !from || !info || !stepItem(info.parts, info.n, dir)) return;
+    // A page still showing an older version of the project tells nothing, and one that catches up while it answers may
+    // have answered part of it from the older one.
+    const current = shownRevision.current >= (s.snapshot?.revision ?? 0);
     const requests: string[] = [];
     const descs = info.parts.map((p) => (p && descFor(p)) ?? { ctx: '', node: '', items: '' });
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1629,10 +1634,10 @@ export function Canvas() {
       for (const id of requests) measureWaiters.current.delete(id);
     }
     // A step answered after the selection, the project or what the page shows moved on (another click, an Undo, another
-    // entry for a layout) is dropped. A page still showing an older version of the project tells nothing.
+    // entry for a layout) is dropped.
     const now = getState();
     if (stepKey(now) !== asked) return;
-    if (shownRevision.current < (now.snapshot?.revision ?? 0)) measured = null;
+    if (!current) measured = null;
     const to = stepItem(info.parts, info.n, dir, measured?.map((m) => !!m));
     if (!to) {
       if (measured) setStepBlocked((b) => ({ key: asked, prev: dir === -1 || (b?.key === asked && b.prev), next: dir === 1 || (b?.key === asked && b.next) }));
