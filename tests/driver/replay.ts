@@ -49,6 +49,10 @@ export interface ReplayReport {
 /** Observations a replay repeats: the waits that pace it, and the checks of what the run produced. */
 const REPEATED = new Set(['wait.for', 'project.summary', 'exports.inspect']);
 
+/** How often an input whose target moved as the pointer arrived is sent again, and how long it settles first. */
+export const UNSTABLE_RETRIES = 3;
+const UNSTABLE_SETTLE_MS = 300;
+
 /** Failures of an input that come before anything is sent: such a step changed nothing and is passed over. */
 const REFUSED_BEFORE_INPUT = new Set(['BAD_REQUEST', 'UNKNOWN_OP', 'BUSY', 'NOT_STARTED', 'CLOSED', 'STALE_REF', 'STALE_OBSERVATION', 'AMBIGUOUS_TARGET', 'TARGET_NOT_FOUND', 'WINDOW_CLOSED', 'WINDOW_REPLACED', 'APP_EXITED']);
 
@@ -152,6 +156,12 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
     }
     const send = () => call(e.op, Object.keys(args).length ? args : undefined, { ...(e.timeoutMs !== undefined ? { timeoutMs: e.timeoutMs } : {}), ...on(e) });
     let reply = await send();
+    // A target still moving when the pointer arrived (a dialog settling) was not pressed: only the pointer moved. A person
+    // aims again; so does the replay, a few times, once it has had a moment to settle.
+    for (let again = 0; again < UNSTABLE_RETRIES && e.class === 'input' && !reply.ok && reply.error.code === 'NOT_ACTIONABLE' && reply.error.details?.reason === 'unstable'; again++) {
+      await new Promise((r) => setTimeout(r, UNSTABLE_SETTLE_MS));
+      reply = await send();
+    }
     // The recording moved to a newer window first: that one is now the window to use.
     if (!reply.ok && reply.error.code === 'WINDOW_REPLACED' && typeof reply.error.details?.to === 'number' && e.window !== null) {
       window = reply.error.details.to;

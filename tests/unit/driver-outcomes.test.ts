@@ -11,7 +11,7 @@ import type { Area } from '../driver/desktop.ts';
 import { DOC_LIMITS, EXPORT_LIMITS, WALK_LIMITS, inspectExport, judgeApp, judgeContext, judgeLocate, judgeTerminal, parseCondition, parseInspectArgs, readProjectDocs, toSessionPath } from '../driver/outcomes.ts';
 import type { AppProbe, Checkpoint, Condition } from '../driver/outcomes.ts';
 import { errorInfo } from '../driver/protocol.ts';
-import { isReplayRecord, replay } from '../driver/replay.ts';
+import { isReplayRecord, replay, UNSTABLE_RETRIES } from '../driver/replay.ts';
 import { Session, printableKey } from '../driver/session.ts';
 import type { UiContext } from '../driver/observe.ts';
 
@@ -654,6 +654,23 @@ describe('replay', () => {
       expect(r.ok).toBe(false);
       expect([r.divergence?.seq, r.divergence?.reason]).toEqual([seq, expect.stringMatching(reason)]);
     }
+  });
+
+  it('aims again at a target that moved as the pointer arrived, a few times, and diverges if it never settles', async () => {
+    const moving = (times: number) => {
+      let left = times;
+      return (f: Frame) => (f.op === 'ui.click' && left-- > 0 ? failure(f, 'NOT_ACTIONABLE', { reason: 'unstable', dispatched: 'partial' }) : answers()(f));
+    };
+    const settles = fake(moving(2));
+    const r = await replay(record(journey.slice(0, 2)), { make: () => settles });
+    expect(r.ok, JSON.stringify(r.divergence)).toBe(true);
+    expect(settles.sent.filter((f) => f.op === 'ui.click')).toHaveLength(3);
+    const never = await replay(record(journey.slice(0, 2)), { make: () => fake(moving(UNSTABLE_RETRIES + 1)) });
+    expect([never.ok, never.divergence?.seq, never.divergence?.reason]).toEqual([false, 2, expect.stringMatching(/NOT_ACTIONABLE/)]);
+    // Any other refusal is not tried again: something may have come up over the target.
+    const covered = fake((f) => (f.op === 'ui.click' ? failure(f, 'NOT_ACTIONABLE', { reason: 'obscured', dispatched: 'partial' }) : answers()(f)));
+    expect((await replay(record(journey.slice(0, 2)), { make: () => covered })).ok).toBe(false);
+    expect(covered.sent.filter((f) => f.op === 'ui.click')).toHaveLength(1);
   });
 
   it('does not repeat an input that may have sent something before it failed, or a record that lost its start', async () => {
