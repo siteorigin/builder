@@ -48,7 +48,7 @@ export function trimNotes(notes: string, maxTokens: number): { text: string; tri
 }
 
 /** The brief's own words, kept as written, can never open or close the block they are quoted in. */
-const unframed = (text: string) => text.replace(/<(\s*\/?\s*project_brief)(?![\w-])/gi, '‹$1');
+const unframed = (text: string) => text.replace(/<(\s*\/?\s*project_brief)(?=[\s/>]|$)/gi, '‹$1');
 
 /** The guidance before the brief: how the author's notes steer a run, and what they never are. */
 const FRAMING =
@@ -71,6 +71,9 @@ export function briefContext(state: Pick<ProjectState, 'brief'>, constrained = f
   const body = [description && `Description: ${unframed(description)}`, notes.text && `Notes:\n${unframed(notes.text)}${notes.trimmed ? `\n${NOTES_SHORTENED}` : ''}`].filter(Boolean).join('\n');
   return `${constrained ? FRAMING_CONSTRAINED : FRAMING}\n<project_brief>\n${body}\n</project_brief>`;
 }
+
+/** Whether the project has a brief a prompt would show: one left blank shows nothing. */
+export const hasBrief = (state: Pick<ProjectState, 'brief'>): boolean => briefContext(state) !== '';
 
 /** A system prompt with the project brief after it, when the project has one. */
 export function withBrief(system: string, state: Pick<ProjectState, 'brief'>, constrained = false): string {

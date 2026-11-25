@@ -24,7 +24,7 @@ import { completenessNudge, describePage, findStubPages, missingPages, pageCreat
 import { blueprintSection, exampleSection, retrieveBlueprints, retrieveExamples } from './examples';
 import { changedComponents, introducedReusability, reusabilityNudge } from './reusability';
 import { modelInfo } from './models';
-import { withBrief } from './brief';
+import { hasBrief, withBrief } from './brief';
 import { MAX_REPLAYED_ANSWER, readRecipient, replayedHistory, turnModelText, type Recipient } from '@shared/turn-model';
 
 /**
@@ -1554,18 +1554,19 @@ export class Orchestrator {
           requestItem.text = requestMessage();
           budget = fit();
         }
+        // The brief is background the author can read for themselves: a request that fits only without it goes out
+        // without it, for the rest of the run, before any tool is given up or the run stops. No call names it, so
+        // unlike the tools it can go on any step.
+        if (budget.overflow && (turns > 1 || caps.contextWindowKnown) && briefShown && hasBrief(readState())) {
+          briefShown = false;
+          system = systemPrompt(readState(), current, constrainedJson, briefShown);
+          budget = fit();
+        }
         // A known window that cannot hold the general tools may still hold the small set. Only before this run's
         // first call, so no call in the history names a tool that is no longer offered.
         if (budget.overflow && turns === 1 && caps.contextWindowKnown && !current.focused && narrowTools()) {
           current = runTools();
           tools = current.tools;
-          system = systemPrompt(readState(), current, constrainedJson, briefShown);
-          budget = fit();
-        }
-        // The brief is background the author can read for themselves: a request that fits only without it goes out
-        // without it, for the rest of the run, rather than failing over it.
-        if (budget.overflow && turns === 1 && caps.contextWindowKnown && briefShown && readState().brief) {
-          briefShown = false;
           system = systemPrompt(readState(), current, constrainedJson, briefShown);
           budget = fit();
         }
@@ -1643,6 +1644,15 @@ export class Orchestrator {
         if (failed) {
           // The provider's count is the real one: a request it finds too long keeps the valid work so far.
           const tooLong = failed.code === 'invalid_request' && (!!failed.context || /context.{0,20}(length|window|limit)|too long|too many tokens|maximum context/i.test(failed.message));
+          // The same step is asked again without the brief, before anything else gives way, as when the app's own
+          // estimate finds it too long. It does not count against the step limit, and nothing it showed is kept.
+          if (tooLong && briefShown && hasBrief(readState())) {
+            briefShown = false;
+            turns--;
+            msg.text = finalText;
+            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
+            continue outer;
+          }
           if (tooLong && session.runChanged()) {
             await stopAtLimit("the model's context limit", 'context limit');
             return;
