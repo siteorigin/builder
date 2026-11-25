@@ -1,5 +1,6 @@
 import type { ChatCheck } from '@shared/api';
 import { pageArticle } from '@shared/articles';
+import { pageDirection, siteDirection } from '@shared/languages';
 import type { EditOperation, OperationType } from '@shared/ops';
 import { scopeForWidth } from '@shared/styles';
 import type { ProjectState } from '@shared/types';
@@ -114,12 +115,12 @@ const LOOK: Record<OperationType, Look> = {
   'entry.remove': 'none'
 };
 
-/** page.update fields only search engines, sharing previews and the editor read. */
-const PAGE_METADATA = new Set(['type', 'pageId', 'seoTitle', 'description', 'noindex', 'searchHidden', 'socialImage', 'canonical', 'updatedAt', 'structuredData', 'linkTranslationTo']);
+/** page.update fields only search engines, sharing previews and the editor read; a language counts once it turns the text. */
+const PAGE_METADATA = new Set(['type', 'pageId', 'seoTitle', 'description', 'noindex', 'searchHidden', 'socialImage', 'canonical', 'updatedAt', 'structuredData', 'linkTranslationTo', 'language']);
 /** page.update fields other pages show too: navigation, links to the page and News lists. */
 const PAGE_ELSEWHERE = new Set(['title', 'route', 'navLabel', 'articleDate', 'byline', 'excerpt', 'article', 'newsHidden']);
-/** site.update fields every page shows: the site's name, its language and direction, and what the site says itself. */
-const SITE_SHOWN = new Set(['name', 'language', 'direction', 'visitorText']);
+/** site.update fields every page shows: the site's name and what the site says itself (a language counts once it turns the text). */
+const SITE_SHOWN = new Set(['name', 'visitorText']);
 
 /** What one batch changes of what pages show. */
 export interface Reach {
@@ -168,7 +169,7 @@ export function visibleReach(ops: EditOperation[], before: ProjectState, after?:
         break;
       }
       case 'fields':
-        fieldsReach(op, reach, article);
+        fieldsReach(op, reach, before, article);
         break;
     }
   }
@@ -179,7 +180,7 @@ export function visibleReach(ops: EditOperation[], before: ProjectState, after?:
   return reach;
 }
 
-function fieldsReach(op: EditOperation, reach: Reach, article: (pageId: string) => boolean) {
+function fieldsReach(op: EditOperation, reach: Reach, before: ProjectState, article: (pageId: string) => boolean) {
   const set = (o: object) => Object.entries(o).filter(([, v]) => v !== undefined).map(([k]) => k);
   if (op.type === 'page.create') {
     // The page itself is found from the state it led to; a linked or dated page also shows on the others.
@@ -187,12 +188,16 @@ function fieldsReach(op: EditOperation, reach: Reach, article: (pageId: string) 
   } else if (op.type === 'page.duplicate') {
     if (article(op.pageId)) reach.shared = true;
   } else if (op.type === 'page.update') {
-    const fields = set(op).filter((k) => !PAGE_METADATA.has(k));
+    const page = Object.hasOwn(before.pages, op.pageId) ? before.pages[op.pageId] : undefined;
+    // A language written the other way round turns the page's text and layout; another code (en-AU) changes no pixel.
+    const turned = op.language !== undefined && !!page && pageDirection(before.site, page) !== pageDirection(before.site, { language: op.language });
+    const fields = [...set(op).filter((k) => !PAGE_METADATA.has(k)), ...(turned ? ['language'] : [])];
     if (!fields.length) return;
     reach.pages.add(op.pageId);
     if (fields.some((k) => PAGE_ELSEWHERE.has(k)) || (fields.includes('draft') && article(op.pageId))) reach.shared = true;
   } else if (op.type === 'site.update') {
-    if (set(op).some((k) => SITE_SHOWN.has(k))) reach.shared = true;
+    const turned = (op.language !== undefined || op.direction !== undefined) && siteDirection(before.site) !== siteDirection({ language: op.language ?? before.site.language, direction: op.direction ?? before.site.direction });
+    if (turned || set(op).some((k) => SITE_SHOWN.has(k))) reach.shared = true;
   } else if (op.type === 'asset.update') {
     // A font's files change how its text is drawn everywhere; a name or description shows in the editor only.
     if (op.font !== undefined) reach.shared = true;

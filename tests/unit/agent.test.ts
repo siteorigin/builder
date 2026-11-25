@@ -10,6 +10,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
 import { copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
+import { requestedWidths } from '@agent/preview-check';
 import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, requestAuthority, widenChoices, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
@@ -2003,7 +2004,8 @@ describe('run budget, parallel calls and validation', () => {
     let homeId = '';
     const env = await setup(
       [() => [call('p1', 'apply_operations', create('Gallery', 0))], () => [call('i1', 'inspect_layout', { pageId: homeId, viewport: 'phone' })], () => finish('Added the gallery.')],
-      { inspectLayout: async () => ({ issues: [{ kind: 'broken-image', message: 'Image /assets/gone.jpg failed to load.' }], images: { total: 2, loaded: 1, failed: 1, unverified: 0, failedFiles: ['gone.jpg'] } }) }
+      // Home's image is missing; the new Gallery page, which the app checks itself, has none.
+      { inspectLayout: async (pageId) => (pageId === homeId ? { issues: [{ kind: 'broken-image', message: 'Image /assets/gone.jpg failed to load.' }], images: { total: 2, loaded: 1, failed: 1, unverified: 0, failedFiles: ['gone.jpg'] } } : { issues: [] }) }
     );
     homeId = env.session.state.site.homePageId;
     const { result } = await env.run('Add a gallery page');
@@ -2011,6 +2013,7 @@ describe('run budget, parallel calls and validation', () => {
     expect(result!.checks).toEqual([
       { status: 'pass', text: 'Fits the screen at phone width on Home.' },
       { status: 'issue', text: 'An image failed to load at phone width on Home (gone.jpg).' },
+      { status: 'pass', text: 'Fits the screen at desktop width on Gallery.' },
       { status: 'pass', text: 'Project structure, links and references are valid.' },
       { status: 'pass', text: 'All components build without errors.' },
       { status: 'issue', text: 'Gallery still has no sections.' }
@@ -2937,12 +2940,18 @@ describe('requests that create pages over several steps (#88)', () => {
     // Both destinations, the link between them and the requested widths, read from the exported project.
     const staff = pageAt(session.state, '/staff-picks/')!;
     const reader = pageAt(session.state, '/reader-requests/')!;
+    // The model's own checks, plus the app's: Staff picks at both requested widths when the first request ended, and
+    // again on Continue before the change that links it, as it was before that request changed it.
     expect(inspected.sort()).toEqual(
       [
         [staff.id, 390],
         [staff.id, 1280],
         [reader.id, 390],
-        [reader.id, 1280]
+        [reader.id, 1280],
+        [staff.id, 390],
+        [staff.id, 1280],
+        [staff.id, 390],
+        [staff.id, 1280]
       ].sort()
     );
     const out = mkdtempSync(join(tmpdir(), 'so-export-'));
@@ -4463,20 +4472,213 @@ describe('the project diagnostics in the editor context (#757)', () => {
 });
 
 describe('the preview check before a changed run finishes (#742)', () => {
-  /** A style change on the home page's first section, against the current revision. */
-  const restyle = (session: ProjectSession, scope = 'base') => {
-    const homeId = session.state.site.homePageId;
-    return call('s1', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'node.setStyle', owner: { kind: 'page', id: homeId }, nodeId: session.state.pages[homeId].rootIds[0], scope, property: 'paddingBlock', value: { token: 'space.lg' } }] });
+  /** A style change on a page's first section (Home by default), against the current revision. */
+  const restyle = (session: ProjectSession, opts: { scope?: string; pageId?: string; value?: string; id?: string } = {}) => {
+    const pageId = opts.pageId ?? session.state.site.homePageId;
+    return call(opts.id ?? 's1', 'apply_operations', {
+      expectedRevision: session.revision,
+      operations: [{ type: 'node.setStyle', owner: { kind: 'page', id: pageId }, nodeId: session.state.pages[pageId].rootIds[0], scope: opts.scope ?? 'base', property: 'paddingBlock', value: { token: opts.value ?? 'space.lg' } }]
+    });
   };
+  const clean = (width: number) => ({ viewportWidth: width, documentWidth: width, issues: [] });
+  const wide = (width: number, documentWidth = 520) => ({ viewportWidth: width, documentWidth, issues: [{ kind: 'horizontal-overflow', message: `The page is ${documentWidth}px wide.` }] });
+  /** What the app sent back for repair, from the request that followed it. */
+  const repairPrompts = (adapter: FakeAdapter) =>
+    (adapter.requests.at(-1)?.items ?? []).filter((i): i is Extract<typeof i, { kind: 'user' }> => i.kind === 'user' && i.text.startsWith('The app checked the changed pages in the preview')).map((i) => i.text);
+  const aboutOf = (session: ProjectSession) => Object.values(session.state.pages).find((p) => p.route === '/about/')!;
 
-  it('inspects a page whose layout changed when the model never did', async () => {
+  it('inspects a page whose layout changed when the model never did, before and after the change', async () => {
     const inspected: Array<[string, number]> = [];
-    const env = await setup([() => [restyle(env.session)], () => finish('Gave the hero more room.')], { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), { issues: [] }) });
+    const env = await setup([() => [restyle(env.session)], () => finish('Gave the hero more room.')], { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), clean(width)) });
     const homeId = env.session.state.site.homePageId;
     const { result } = await env.run('Give the hero more room');
     expect(result?.status).toBe('completed');
-    expect(inspected.length).toBeGreaterThan(0);
-    expect(inspected.every(([p]) => p === homeId)).toBe(true);
-    expect(result!.validation.join(' | ')).toMatch(/Fits the screen at \w+ width on Home/);
+    // As it was before the run reached it, then as it finished, at the width the preview was at.
+    expect(inspected).toEqual([
+      [homeId, 1280],
+      [homeId, 1280]
+    ]);
+    expect(result!.checks?.[0]).toEqual({ status: 'pass', text: 'Fits the screen at desktop width on Home.' });
+    expect(env.adapter.requests).toHaveLength(2);
+  });
+
+  it('checks a request about phones at phone width, and phone styles at phone width too', async () => {
+    const inspected: Array<[string, number]> = [];
+    const env = await setup([() => [restyle(env.session)], () => finish('Gave the hero more room on phones.')], { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), clean(width)) });
+    const homeId = env.session.state.site.homePageId;
+    const { result } = await env.run('Make the hero work better on mobile');
+    expect(result?.status).toBe('completed');
+    expect(inspected).toEqual([
+      [homeId, 390],
+      [homeId, 390]
+    ]);
+    expect(result!.validation).toContain('Fits the screen at phone width on Home.');
+
+    // Not asked about phones, but the run styled phones: phone joins the preview's width.
+    const seen: Array<[string, number]> = [];
+    const again = await setup([() => [restyle(again.session, { scope: 'phone' })], () => finish('Tightened the hero on phones.')], { inspectLayout: async (pageId, width) => (seen.push([pageId, width]), clean(width)) });
+    const second = await again.run('Tighten the hero');
+    expect(second.result?.status).toBe('completed');
+    expect(seen.map(([, w]) => w)).toEqual([390, 1280, 390, 1280]);
+    // A phone number is not a phone screen.
+    expect(requestedWidths('Put our phone number in the footer')).toEqual(new Set());
+    expect(requestedWidths('Check it on a tablet and on desktop')).toEqual(new Set(['tablet', 'desktop']));
+  });
+
+  it('sends overflow the run brought in back to the model, and finishes once it is fixed', async () => {
+    const env = await setup([() => [restyle(env.session)], () => finish('Done.'), () => [restyle(env.session, { value: 'space.sm', id: 's2' })], () => finish('Fixed the hero on phones.')], {
+      // Fine before the run, too wide after its first change, fine again after the fix.
+      inspectLayout: async (_p, width) => (env.session.revision === 1 ? wide(width) : clean(width))
+    });
+    const { result } = await env.run('Make the pricing cards work better on mobile');
+    expect(result?.status).toBe('completed');
+    expect(result?.summary).toBe('Fixed the hero on phones.');
+    const prompts = repairPrompts(env.adapter);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatch(/Fix them, then finish:\n- Home \(page pg_\w+\) at phone width: The page is 520px wide on a 390px screen\./);
+    expect(env.events.some((e) => e.kind === 'status' && e.status === 'repairing')).toBe(true);
+    // The card has the latest check, after the fix.
+    expect(result!.checks?.[0]).toEqual({ status: 'pass', text: 'Fits the screen at phone width on Home.' });
+    expect(result?.canUndo).toBe(true);
+  });
+
+  it('reverts the run when the overflow is still there after the repairs, like an error validation found', async () => {
+    const env = await setup([() => [restyle(env.session)], () => finish('Done.'), () => finish('Done.'), () => finish('Done.')], { inspectLayout: async (_p, width) => (env.session.revision >= 1 ? wide(width) : clean(width)) });
+    const homeId = env.session.state.site.homePageId;
+    const before = JSON.stringify(env.session.state.pages[homeId]);
+    const { result } = await env.run('Make the hero work better on phones');
+    expect(result?.status).toBe('failed');
+    expect(result?.summary).toMatch(/problems in the preview that could not be repaired.*restored/);
+    expect(repairPrompts(env.adapter)).toHaveLength(LIMITS.repairPasses);
+    expect(JSON.stringify(env.session.state.pages[homeId])).toBe(before);
+  });
+
+  it('calls a check the preview could not run unverified, with no repair', async () => {
+    const env = await setup([() => [restyle(env.session)], () => finish('Gave the hero more room.')], { inspectLayout: async () => ({ error: 'The preview is not running.' }) });
+    const { result } = await env.run('Give the hero more room');
+    expect(result?.status).toBe('completed');
+    expect(result!.checks).toContainEqual({ status: 'unverified', text: "Couldn't check the layout at desktop width on Home." });
+    expect(result!.checks?.some((c) => /Fits the screen/.test(c.text))).toBe(false);
+    expect(repairPrompts(env.adapter)).toHaveLength(0);
+    expect(env.adapter.requests).toHaveLength(2);
+  });
+
+  it('measures nothing again that the model already checked, before or after its change', async () => {
+    const inspected: Array<[string, number]> = [];
+    let homeId = '';
+    const env = await setup(
+      [() => [call('i1', 'inspect_layout', { pageId: homeId, viewport: 'desktop' })], () => [restyle(env.session)], () => [call('i2', 'inspect_layout', { pageId: homeId, viewport: 'desktop' })], () => finish('Gave the hero more room.')],
+      { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), clean(width)) }
+    );
+    homeId = env.session.state.site.homePageId;
+    const { result } = await env.run('Give the hero more room');
+    expect(result?.status).toBe('completed');
+    // The model's first check is the page before the change; its second, after it.
+    expect(inspected).toEqual([
+      [homeId, 1280],
+      [homeId, 1280]
+    ]);
+    expect(result!.checks?.filter((c) => /desktop width on Home/.test(c.text))).toEqual([{ status: 'pass', text: 'Fits the screen at desktop width on Home.' }]);
+  });
+
+  it('measures nothing for a run that changed only settings and search details', async () => {
+    const inspected: string[] = [];
+    let homeId = '';
+    const env = await setup(
+      [
+        () => [
+          call('s1', 'apply_operations', {
+            expectedRevision: 0,
+            operations: [
+              { type: 'site.update', llmsTxt: false, language: 'en-AU' },
+              { type: 'page.update', pageId: homeId, seoTitle: 'Test, at home', description: 'What we do.', noindex: false }
+            ]
+          })
+        ],
+        () => finish('Updated the search settings.')
+      ],
+      { inspectLayout: async (pageId) => (inspected.push(pageId), { issues: [] }) }
+    );
+    homeId = env.session.state.site.homePageId;
+    const { result } = await env.run('Turn off llms.txt and give the home page a better search title');
+    expect(result?.status).toBe('completed');
+    expect(env.session.state.pages[homeId].seo.title).toBe('Test, at home');
+    expect(inspected).toEqual([]);
+    expect(result!.checks?.some((c) => /width/.test(c.text))).toBe(false);
+  });
+
+  it('keeps a problem the page already had out of the repair, and still shows it', async () => {
+    const env = await setup([() => [restyle(env.session)], () => finish('Gave the hero more room.')], { inspectLayout: async (_p, width) => wide(width) });
+    const { result } = await env.run('Give the hero more room');
+    expect(result?.status).toBe('completed');
+    expect(repairPrompts(env.adapter)).toHaveLength(0);
+    expect(result!.checks).toContainEqual({ status: 'issue', text: 'Content is wider than the screen at desktop width on Home.' });
+  });
+
+  it('sends a script error the run brought in back, never one the page already had, and puts both on the card', async () => {
+    const report = (errors: string[]) => ({ ...clean(1280), runtimeErrors: errors });
+    const env = await setup([() => [restyle(env.session)], () => finish('Done.'), () => [restyle(env.session, { value: 'space.sm', id: 's2' })], () => finish('Fixed it.')], {
+      inspectLayout: async () => report(env.session.revision === 1 ? ['Old error', 'TypeError: price is undefined'] : ['Old error'])
+    });
+    const { result } = await env.run('Give the hero more room');
+    expect(result?.status).toBe('completed');
+    const prompts = repairPrompts(env.adapter);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('A script failed: TypeError: price is undefined');
+    expect(prompts[0]).not.toContain('Old error');
+    expect(result!.checks).toContainEqual({ status: 'issue', text: 'Found a script error at desktop width on Home (Old error).' });
+  });
+
+  it('checks a change every page shares on the pages the request names, and says the others were not checked', async () => {
+    const inspected: Array<[string, number]> = [];
+    const env = await setup([() => [call('t1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#000080' }] })], () => finish('Made the brand colour navy.')], {
+      inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), clean(width))
+    });
+    const about = aboutOf(env.session);
+    const { result } = await env.run('Make the brand colour navy, and check the About page');
+    expect(result?.status).toBe('completed');
+    expect(inspected).toEqual([
+      [about.id, 1280],
+      [about.id, 1280]
+    ]);
+    expect(result!.checks?.slice(0, 2)).toEqual([
+      { status: 'pass', text: 'Fits the screen at desktop width on About.' },
+      { status: 'unverified', text: "Didn't check the other pages that show the changes to what pages share in the preview." }
+    ]);
+  });
+
+  it('shows, never repairs, a problem on a page the run had already reached through what pages share', async () => {
+    const env = await setup(
+      [
+        () => [call('t1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#000080' }] })],
+        () => [restyle(env.session, { pageId: aboutOf(env.session).id, id: 's2' })],
+        () => finish('Done.')
+      ],
+      // The colour change already made the second page too wide; measured only after it, that cannot be told apart.
+      { inspectLayout: async (pageId, width) => (pageId !== env.session.state.site.homePageId && env.session.revision >= 1 ? wide(width) : clean(width)) }
+    );
+    const { result } = await env.run('Make the brand colour navy and give the second page more room');
+    expect(result?.status).toBe('completed');
+    expect(repairPrompts(env.adapter)).toHaveLength(0);
+    expect(result!.checks).toContainEqual({ status: 'issue', text: 'Content is wider than the screen at desktop width on About.' });
+  });
+
+  it('never lands a change when the request is stopped while the page is measured before it', async () => {
+    let started = false;
+    const env = await setup([() => [restyle(env.session)], () => finish('Done.')], {
+      inspectLayout: () => {
+        started = true;
+        return new Promise(() => undefined);
+      }
+    });
+    const homeId = env.session.state.site.homePageId;
+    const before = JSON.stringify(env.session.state.pages[homeId]);
+    const pending = env.run('Give the hero more room');
+    while (!started) await new Promise((r) => setTimeout(r, 5));
+    env.orch.stop();
+    const { result } = await pending;
+    expect(result?.status).toBe('cancelled');
+    expect(env.session.revision).toBe(0);
+    expect(JSON.stringify(env.session.state.pages[homeId])).toBe(before);
   });
 });
