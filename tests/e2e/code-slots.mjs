@@ -45,6 +45,20 @@ const insertBasic = async (label) => {
   await panel.locator('.insert-tile.basic', { has: win.locator('strong', { hasText: new RegExp(`^${label}$`) }) }).click();
 };
 const inspector = win.locator('#dock-panel-inspect');
+/**
+ * A plain click near the start of an element in the frame, through the page's own pointer as the author clicks: the
+ * canvas is zoomed out, so the point inside the frame is scaled to the window.
+ */
+const clickOn = async (locator) => {
+  const at = await locator.evaluate((el) => {
+    el.scrollIntoView({ block: 'center' });
+    const r = el.getBoundingClientRect();
+    return { x: r.left + Math.min(12, r.width / 2), y: r.top + r.height / 2, width: innerWidth };
+  });
+  const box = await win.locator('.frame-box iframe').boundingBox();
+  const scale = box.width / at.width;
+  await win.mouse.click(box.x + at.x * scale, box.y + at.y * scale);
+};
 const total = frame.locator('[data-so-part="total"]');
 /** Every file under `root`, by its path from there. */
 const files = (root, rel = '') =>
@@ -81,7 +95,7 @@ try {
   step('a Stack and a Button inserted on the canvas go into the code component’s slot');
   await win.keyboard.press('Escape');
   await eventually(async () => {
-    await frame.locator('section.calc').click({ position: { x: 4, y: 4 }, timeout: 3000 });
+    await clickOn(frame.locator('section.calc'));
     assert.match((await selected()) ?? '', /Price calculator/, 'the placement is selected');
   }, 15000);
   await insertBasic('Stack');
@@ -107,14 +121,12 @@ try {
   step('a click on the marked element selects the placement, the next one its part');
   await win.keyboard.press('Escape');
   await eventually(async () => assert.equal(await selected(), null, 'nothing is selected'));
-  await eventually(async () => {
-    await total.click({ position: { x: 4, y: 4 }, timeout: 3000 });
-    assert.match((await selected()) ?? '', /Price calculator/, 'the first click selects the placement');
-  }, 15000);
-  await eventually(async () => {
-    await total.click({ position: { x: 4, y: 4 }, timeout: 3000 });
-    await inspector.getByText('Part of', { exact: false }).waitFor({ timeout: 3000 });
-  }, 15000);
+  // One click at a time: each click steps in from what the last one selected.
+  await clickOn(total);
+  await eventually(async () => assert.match((await selected()) ?? '', /Price calculator/, 'the first click selects the placement'), 15000);
+  await clickOn(total);
+  await eventually(async () => assert.match((await selected()) ?? '', /^Total/, 'the next click selects the marked part'), 15000);
+  await inspector.getByText('Part of', { exact: false }).first().waitFor({ timeout: 15000 });
   assert.equal(await inspector.locator('.insp-name h3').first().textContent(), 'Total', 'the Inspector shows the part');
 
   step('a background set in the Inspector reaches the marked element, through the class its code places');
@@ -130,10 +142,11 @@ try {
   await win.screenshot({ path: join(OUT, 'code-part-styled.png') });
 
   step('content placed in the slot is still picked on its own');
-  await eventually(async () => {
-    await slotted.click({ timeout: 3000 });
-    assert.match((await selected()) ?? '', /Button/, 'the click on the slotted Button selects it');
-  }, 15000);
+  // From the part, a click steps into what the slot holds (the Stack), never to the part again, then to the Button.
+  await clickOn(slotted);
+  await eventually(async () => assert.match((await selected()) ?? '', /^Stack/, 'the click selects the Stack placed in the slot'), 15000);
+  await clickOn(slotted);
+  await eventually(async () => assert.match((await selected()) ?? '', /^Button/, 'the next click selects the Button in it'), 15000);
 
   step('the website’s build carries no marker; the editable project and its export keep them');
   const out = join(WORK, 'export-static');
