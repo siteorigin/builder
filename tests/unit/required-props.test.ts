@@ -287,6 +287,34 @@ describe('required properties in a component package', () => {
     const web = placed(project(), { links: { type: 'list', label: 'Links', itemLabel: 'Link', fields: { to: { type: 'link', label: 'To', default: 'https://example.com/', required: true } }, default: [] } });
     expect(() => planComponentPackage(web.state, web.definitionId)).not.toThrow();
   });
+
+  it('blames only what the export empties: a problem the component already had, or an optional link, lets it go', () => {
+    const s = project();
+    const { state, definitionId } = placed(s, {
+      title: { type: 'string', label: 'Title', default: 'Hi', required: true },
+      more: { type: 'link', label: 'More', default: { type: 'page', target: s.site.homePageId } }
+    });
+    const damaged = structuredClone(state);
+    (damaged.components[definitionId].properties.title as { default: unknown }).default = '';
+    expect(() => planComponentPackage(damaged, definitionId)).not.toThrow();
+  });
+
+  it('checks a placement in the design against the packaged copy of its component', () => {
+    const s = project();
+    const inner = placed(s, { action: { type: 'object', label: 'Action', required: true, fields: { label: { type: 'string', label: 'Label' }, to: { type: 'link', label: 'To' } }, default: { label: '', to: { type: 'page', target: s.site.homePageId } } } });
+    const made = applyOperations(inner.state, [{ type: 'component.create', name: 'Wrapper' }]);
+    const { definitionId: wrapper, rootNodeId } = made.results[0] as { definitionId: string; rootNodeId: string };
+    const st = applyOperations(made.state, [{ type: 'node.insert', owner: { kind: 'component', id: wrapper }, parentId: rootNodeId, definitionId: inner.definitionId, props: { action: { label: '' } } }]).state;
+    expect(() => planComponentPackage(st, wrapper)).toThrow(/Action is required: at least one of its fields needs a value\. It goes to this site's own page/);
+  });
+
+  it('reads a damaged field schema as no field, never throwing', () => {
+    const s = project();
+    const { state, definitionId } = placed(s, { cards: { type: 'list', label: 'Cards', itemLabel: 'Card', fields: { title: { type: 'string', label: 'Title', default: 'Card', required: true }, note: { type: 'string', label: 'Note' } }, default: [] } });
+    const damaged = structuredClone(state);
+    (damaged.components[definitionId].properties.cards as { fields: Record<string, unknown> }).fields.note = null;
+    expect(requiredProblems(damaged)).toEqual([]);
+  });
 });
 
 describe('required properties carried by a swap', () => {

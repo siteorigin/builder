@@ -119,6 +119,8 @@ function placementProblems(state: ProjectState, owner: OwnerRef, n: InstanceNode
  */
 export function definitionRequiredProblems(state: ProjectState, defs: ComponentDefinition[]): RequiredProblem[] {
   const out: RequiredProblem[] = [];
+  // A placement shows its component as the set has it (a package's copy), else as the project does.
+  state = { ...state, components: { ...state.components, ...Object.fromEntries(defs.map((d) => [d.id, d])) } };
   for (const def of defs) {
     if (hasRequiredProps(def)) out.push(...defaultProblems(def));
     for (const n of Object.values(def.tree?.nodes ?? {})) if (n?.kind === 'instance') out.push(...placementProblems(state, { kind: 'component', id: def.id }, n, def.name, false));

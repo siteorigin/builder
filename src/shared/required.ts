@@ -125,7 +125,7 @@ export const hasRequired = (schema: PropSchema): boolean =>
 
 /** A list's or an object's fields, as entries; none for a schema edited by hand into one without them. */
 export const fieldsOf = (schema: PropSchema): Array<[string, ScalarPropSchema]> =>
-  (schema.type === 'list' || schema.type === 'object') && schema.fields && typeof schema.fields === 'object' ? Object.entries(schema.fields) : [];
+  (schema.type === 'list' || schema.type === 'object') && schema.fields && typeof schema.fields === 'object' ? Object.entries(schema.fields).filter(([, f]) => !!f && typeof f === 'object') : [];
 
 /**
  * Why a binding of a property `to` to a value of `from` could hand `to` an empty value where it is required, or null
