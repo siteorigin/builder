@@ -9,6 +9,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { normalizeTable } from './table';
 import { declaredTokens } from './tokens';
 import { TEXT_LIMITS, tooLongMessage } from '@shared/text-limits';
+import { isEmptyPropValue, requiredMessage } from '@shared/required';
 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
 
@@ -300,6 +301,20 @@ export const storedAlt = (stored: unknown): string | undefined => (stored && typ
  * kept when it is not being changed, so editing one field never fails on another.
  */
 export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: ProjectState, label: string, stored?: unknown): unknown {
+  // Number(null) and Number("") are 0: clearing a required number is refused, not read as zero.
+  if (schema.required && schema.type === 'number' && (v === null || v === undefined || (typeof v === 'string' && !v.trim()))) fail(requiredMessage(schema, label));
+  // Checked on the value as it is kept, whichever way it was kept: a value saved under older rules stays only while it
+  // is not empty.
+  return requireValue(schema, scalarValue(schema, v, state, label, stored), label);
+}
+
+/** `v` itself when `schema` is not required or `v` is not empty; otherwise the edit fails with the property's path. */
+export function requireValue<T>(schema: PropSchema, v: T, label: string): T {
+  if (schema.required && isEmptyPropValue(schema, v)) fail(requiredMessage(schema, label));
+  return v;
+}
+
+function scalarValue(schema: ScalarPropSchema, v: unknown, state: ProjectState, label: string, stored?: unknown): unknown {
   switch (schema.type) {
     case 'string': {
       if (typeof v !== 'string' && typeof v !== 'number') fail(`${label}: expected text.`);
@@ -377,6 +392,9 @@ export function normalizeObject(schema: Extract<PropSchema, { type: 'object' }>,
   return out;
 }
 
+/** Where one item of a list is, for messages: "Hero → Cards → Card 2". */
+export const itemPath = (schema: Extract<PropSchema, { type: 'list' }>, label: string, index: number) => `${label} → ${schema.itemLabel} ${index + 1}`;
+
 export function normalizeItem(schema: Extract<PropSchema, { type: 'list' }>, item: Record<string, unknown> | undefined, state: ProjectState, label: string, base?: ListItem, stored?: Record<string, unknown>): ListItem {
   const out: ListItem = { id: base?.id ?? newId('i') };
   for (const [k, f] of Object.entries(schema.fields)) {
@@ -389,8 +407,8 @@ export function normalizeItem(schema: Extract<PropSchema, { type: 'list' }>, ite
 
 /** `stored` is the property's current value, so unchanged legacy values inside it stay accepted. */
 export function normalizeProp(schema: PropSchema, v: unknown, state: ProjectState, label: string, stored?: unknown): unknown {
-  if (schema.type === 'table') return normalizeTable(v, label);
-  if (schema.type === 'object') return normalizeObject(schema, v, state, label, stored);
+  if (schema.type === 'table') return requireValue(schema, normalizeTable(v, label), label);
+  if (schema.type === 'object') return requireValue(schema, normalizeObject(schema, v, state, label, stored), label);
   if (schema.type === 'list') {
     if (!Array.isArray(v)) fail(`${label}: expected a list.`);
     if (schema.feed) {
@@ -407,12 +425,13 @@ export function normalizeProp(schema: PropSchema, v: unknown, state: ProjectStat
     if (schema.min !== undefined && v.length < schema.min) fail(`${label}: at least ${schema.min} items.`);
     const seen = new Set<string>();
     const before = new Map(Array.isArray(stored) ? (stored as ListItem[]).filter((x) => x && typeof x.id === 'string').map((x) => [x.id, x]) : []);
-    return v.map((it) => {
+    const items = v.map((it, i) => {
       const base = it && typeof it === 'object' && typeof (it as ListItem).id === 'string' && !seen.has((it as ListItem).id) ? (it as ListItem) : undefined;
-      const n = normalizeItem(schema, it as Record<string, unknown>, state, label, base ? { id: base.id } as ListItem : undefined, base ? before.get(base.id) : undefined);
+      const n = normalizeItem(schema, it as Record<string, unknown>, state, itemPath(schema, label, i), base ? { id: base.id } as ListItem : undefined, base ? before.get(base.id) : undefined);
       seen.add(n.id);
       return n;
     });
+    return requireValue(schema, items, label);
   }
   return normalizeScalar(schema, v, state, label, stored);
 }

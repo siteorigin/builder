@@ -74,7 +74,7 @@ import { followText, joinedLines } from '@shared/contact-links';
 import { carrySiteName, releaseKept, siteNameText } from '@shared/site-name';
 import { briefFilled, briefText } from '@shared/brief';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
-import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, storedAlt } from './values';
+import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, itemPath, requireValue, storedAlt } from './values';
 import { editTable } from './table';
 import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, itemStateProblems, normalizeProperties, usesState } from './schema';
 import { declaredTokens, findTokenCycle, findTokenCycleIn, forEachTokenRef, tokenPropUsageCounts, tokenUsageCounts } from './tokens';
@@ -257,7 +257,7 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
         const at = placedItemIndex(list, op.owner, node.id, op.itemId);
         if (at < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
         if (schema.min !== undefined && list.length <= schema.min) fail(`${schema.label} needs at least ${schema.min} items.`);
-        node.props[op.prop] = list.filter((_, i) => i !== at);
+        node.props[op.prop] = requireValue(schema, list.filter((_, i) => i !== at), `${state.components[node.definitionId]?.name ?? 'The component'} → ${schema.label}`);
         return {};
       });
     case 'instance.listMove':
@@ -2688,11 +2688,11 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
     if (op.field) {
       const f = schema.fields[op.field];
       if (!f) fail(`${schema.itemLabel} has no field "${op.field}". Fields: ${Object.keys(schema.fields).join(', ')}.`);
-      next = normalizeItem(schema, { ...before, [op.field]: op.value }, state, `${schema.itemLabel}`, { id: before.id } as never, before);
+      next = normalizeItem(schema, { ...before, [op.field]: op.value }, state, itemPath(schema, `${def.name} → ${schema.label}`, idx), { id: before.id } as never, before);
       sent = { [op.field]: op.value };
     } else {
       if (!op.value || typeof op.value !== 'object' || Array.isArray(op.value)) fail(`${schema.itemLabel}: send the item's fields as an object, or name one field.`);
-      next = normalizeItem(schema, op.value as Record<string, unknown>, state, schema.itemLabel, before, before);
+      next = normalizeItem(schema, op.value as Record<string, unknown>, state, itemPath(schema, `${def.name} → ${schema.label}`, idx), before, before);
       sent = op.value && typeof op.value === 'object' && !Array.isArray(op.value) ? (op.value as Record<string, unknown>) : {};
     }
     const followed = followItemLinks(state, def, op, before, next, sent, ctx);
@@ -2747,7 +2747,7 @@ function tableEdit(state: ProjectState, op: Op<'instance.editTable'>): OpResult 
   refuseBound(state, op.owner, node.props[op.prop], schema.label);
   const current = Object.hasOwn(node.props, op.prop) ? node.props[op.prop] : clone(schema.default);
   const r = editTable(current, op, `${def.name} → ${schema.label}`);
-  node.props[op.prop] = r.value;
+  node.props[op.prop] = requireValue(schema, r.value, `${def.name} → ${schema.label}`);
   return r.rowId ? { rowId: r.rowId } : r.columnId ? { columnId: r.columnId } : {};
 }
 
@@ -2755,10 +2755,11 @@ function listInsert(state: ProjectState, op: Op<'instance.listInsert'>): OpResul
   const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
   const list = [...(node.props[op.prop] as Array<{ id: string }>)];
   if (schema.max !== undefined && list.length >= schema.max) fail(`${schema.label} allows at most ${schema.max} items.`);
+  const at = op.index === undefined ? list.length : Math.min(op.index, list.length);
   // New items start from the schema's field defaults, never from another item's content.
-  const item = normalizeItem(schema, op.item, state, schema.itemLabel);
+  const item = normalizeItem(schema, op.item, state, itemPath(schema, `${state.components[node.definitionId]?.name ?? 'The component'} → ${schema.label}`, at));
   item.id = newId('i');
-  list.splice(op.index === undefined ? list.length : Math.min(op.index, list.length), 0, item);
+  list.splice(at, 0, item);
   node.props[op.prop] = list;
   return { itemId: item.id };
 }

@@ -55,7 +55,8 @@ const CATEGORIES = 'categories';
 const text = (label: string, description?: string): PropSchema => ({ type: 'string', label, default: '', ...(description ? { description } : {}) });
 
 const BUILT_IN: Record<(typeof ENTRY_FIELD_NAMES)[number], PropSchema> = {
-  title: text('Title'),
+  // Every entry has a title: a layout can pass it on to a property that requires one.
+  title: { ...text('Title'), required: true },
   publishedAt: text('Publication date'),
   updatedAt: text('Last updated'),
   author: text('Author'),
