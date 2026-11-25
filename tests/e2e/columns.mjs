@@ -76,7 +76,8 @@ try {
     assert.ok(section, 'in a new Section');
     return { gridId: grid.id, columns: grid.children, sectionId: section.id };
   }, 30000);
-  assert.equal(await applied(), before + 1, 'one change');
+  // History is installed just after the change itself, so the count is read once it has caught up.
+  await eventually(async () => assert.equal(await applied(), before + 1, 'one change'), 15000);
   await eventually(async () => assert.equal(await selected(), 'Column 1 actions', 'the first column is selected, ready to fill'), 15000);
   const [left, right] = columns;
   await eventually(async () => {
@@ -103,7 +104,7 @@ try {
       assert.deepEqual([c.kind, c.tag], ['text', tag]);
       return c.id;
     }, 30000);
-    assert.equal(await applied(), n + 1, 'one change');
+    await eventually(async () => assert.equal(await applied(), n + 1, 'one change'), 15000);
     await eventually(async () => assert.equal(await at(column).evaluate((el, id) => !!el.querySelector(`[data-so-node="${id}"]`), child), true, `${label} shows inside ${name}`), 30000);
     return child;
   };
@@ -129,6 +130,7 @@ try {
     assert.equal(p.nodes[sectionId], undefined, 'with the Section made for it');
     assert.equal(p.rootIds.length, rootsBefore);
   }, 15000);
+  await eventually(async () => assert.equal(await applied(), before, 'History is back where it started'), 15000);
 
   /** Each cell's box, by name. */
   const boxes = async (cells) => {
@@ -193,7 +195,7 @@ try {
       assert.ok(s, 'in a new Section');
       return { gridId: g.id, cells: g.children, sectionId: s.id };
     }, 30000);
-    assert.equal(await applied(), n + 1, 'one change');
+    await eventually(async () => assert.equal(await applied(), n + 1, 'one change'), 15000);
     await eventually(async () => assert.equal(await selected(), `${starter.cells[0]} actions`, 'the first cell is selected, ready to fill'), 15000);
     await eventually(async () => {
       const b = await boxes(cells);
@@ -270,6 +272,7 @@ try {
       assert.equal(p.nodes[section], undefined, 'with the Section made for it');
       assert.equal(p.rootIds.length, roots);
     }, 15000);
+    await eventually(async () => assert.equal(await applied(), n, 'History is back where it started'), 15000);
   }
 
   step('a Section placement arranges its columns from the Inspector, without Parts');
@@ -326,7 +329,7 @@ try {
     assert.deepEqual(p.nodes[made.one].overrides?.container?.base, { layout: 'grid', gridTemplate: '1fr 2fr', rowGap: { token: 'space.xl' }, columnGap: { token: 'space.sm' } });
     assert.equal(p.nodes[made.two].overrides, undefined, 'the other Section keeps its own layout');
   }, 15000);
-  assert.match(await columnLayout.locator('.section-head').innerText(), /4 changes/);
+  await eventually(async () => assert.match(await columnLayout.locator('.section-head').innerText(), /4 changes/), 15000);
   await columnLayout.screenshot({ path: join(OUT, 'section-column-layout.png') });
 
   assert.deepEqual(errors, [], 'no page errors');
