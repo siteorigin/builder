@@ -32,15 +32,16 @@ async function site() {
   return `<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body>${html}</body></html>`;
 }
 
-/** How the card titled `title` is laid out: its direction, its box and its column's, and where its title sits beside its picture. */
-const cardLayout = (page: Page, title: string) =>
-  page.evaluate((title) => {
-    const heading = [...document.querySelectorAll('h3')].find((h) => h.textContent?.trim() === title);
-    if (!heading) throw new Error(`No card titled ${title}`);
-    const card = heading.parentElement!;
-    const media = card.firstElementChild!.getBoundingClientRect();
+type CardLayout = { direction: string; column: number; columnTop: number; beside: boolean; below: boolean };
+/** How the card titled `title` is laid out: its direction, its column's width and top, and where its title sits beside its picture. */
+const cardLayout = (page: Page, title: string): Promise<CardLayout> =>
+  page.evaluate(`(() => {
+    const heading = [...document.querySelectorAll('h3')].find((h) => h.textContent.trim() === ${JSON.stringify(title)});
+    if (!heading) throw new Error('No card titled ' + ${JSON.stringify(title)});
+    const card = heading.parentElement;
+    const media = card.firstElementChild.getBoundingClientRect();
     const text = heading.getBoundingClientRect();
-    const column = card.parentElement!.getBoundingClientRect();
+    const column = card.parentElement.getBoundingClientRect();
     return {
       direction: getComputedStyle(card).flexDirection,
       column: Math.round(column.width),
@@ -48,7 +49,7 @@ const cardLayout = (page: Page, title: string) =>
       beside: text.left >= media.right - 0.5 && Math.abs(text.top - media.top) < 1,
       below: text.top >= media.bottom - 0.5
     };
-  }, title);
+  })()`);
 
 if (!ENGINES.length) describe.skip('container queries in a browser (needs Chromium or WebKit)', () => it('runs in a browser', () => {}));
 
@@ -88,11 +89,11 @@ describe.each(ENGINES)('container queries in %s', (_name, engine) => {
 
   it('keeps a sticky query container stuck while its row scrolls by', async () => {
     // Well into the 2000px main column, short of its end.
-    await page.evaluate(() => window.scrollTo(0, 600));
+    await page.evaluate('window.scrollTo(0, 600)');
     const main = await cardLayout(page, 'Main column');
     const side = await cardLayout(page, 'Sidebar column');
     expect(main.columnTop).toBeLessThanOrEqual(-600);
     expect(side).toMatchObject({ columnTop: 0, direction: 'column', column: 400 });
-    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.evaluate('window.scrollTo(0, 0)');
   });
 });
