@@ -165,3 +165,69 @@ export function inHeaderMenu(state: ProjectState, pageId: string): boolean {
   const items = menu && menuItems(menu);
   return !!items?.some((it) => pageLink(it?.link, pageId));
 }
+
+/** The footer's links made from the header menu's top-level links. */
+export interface FooterCopyPlan {
+  /** The edit that replaces every footer link with a copy of a header link, as one change. */
+  op: EditOperation;
+  /** How many links the footer will list, and how many it lists now (all replaced). */
+  count: number;
+  replaces: number;
+  /** Header links left out because the footer holds fewer links than the header shows. */
+  left: number;
+  /** Whether the footer already lists exactly these links, in this order. */
+  matches: boolean;
+}
+
+/**
+ * A link's type, target, section and new-tab choice, for comparing: as the engine would save it (`saved`, for the
+ * header link a copy is made from) or exactly as it is stored (for the footer's own link), so a footer link written
+ * outside the app that goes nowhere never passes for its header link.
+ */
+const linkKey = (v: unknown, saved: boolean): string => {
+  if (!saved) {
+    // Stored, each part is taken as it is, kinds and all: a link written outside the app that goes nowhere (a target
+    // that is not text, a link that is not an object) matches no header link.
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return JSON.stringify({ stored: v ?? null });
+    const l = v as Record<string, unknown>;
+    return JSON.stringify([l.type ?? 'none', l.target ?? '', l.anchor || '', l.newTab === true]);
+  }
+  if (v === null || v === undefined || v === '') return JSON.stringify(['none', '', '', false]);
+  if (typeof v !== 'object') return JSON.stringify({ shorthand: v });
+  const l = v as Record<string, unknown>;
+  // Saved, as normalizeLink writes it: no link has nothing else; a download has no section and opens no tab of its own.
+  const type = typeof l.type === 'string' ? l.type : 'none';
+  if (type === 'none') return JSON.stringify(['none', '', '', false]);
+  const target = String(l.target ?? '').trim();
+  if (type === 'document') return JSON.stringify([type, target, '', false]);
+  return JSON.stringify([type, type === 'anchor' ? target.replace(/^#/, '') : target, l.anchor ? String(l.anchor).replace(/^#/, '') : '', !!l.newTab]);
+};
+
+/**
+ * Copy the header menu's top-level links into the footer's links, replacing the footer's own: each keeps its label and
+ * destination, in the header's order, and any other field a footer link has starts at its default. A link shown in a
+ * submenu stays out, and a footer that holds fewer links than the header shows takes the first ones. Null when there
+ * is no header menu with a top-level link, no footer menu, or either list comes from somewhere else.
+ */
+export function footerCopyPlan(state: ProjectState): FooterCopyPlan | null {
+  const header = headerMenu(state);
+  const footer = shellMenu(state, 'footer');
+  const from = header && menuItems(header);
+  const now = footer && menuItems(footer);
+  if (!header || !footer || !from || !now) return null;
+  const under = menuGroups(header.schema) ? shownUnder(from) : from.map(() => false);
+  const top = from.filter((it, i) => !under[i] && !!it && typeof it === 'object' && !Array.isArray(it));
+  if (!top.length) return null;
+  // Each link as the header shows it: a field it leaves out reads as the header's default for that field.
+  const shown = (it: MenuItem, menu: NonNullable<ReturnType<typeof shellMenu>>, key: 'label' | 'link') => (Object.hasOwn(it, key) ? it[key] : (menu.schema.fields[key] as { default?: unknown }).default);
+  const copied = top.slice(0, footer.schema.max ?? top.length).map((it) => ({ label: structuredClone(shown(it, header, 'label')), link: structuredClone(shown(it, header, 'link')) }));
+  if (footer.schema.min !== undefined && copied.length < footer.schema.min) return null;
+  const same = (want: (typeof copied)[number], have: MenuItem) => !!have && typeof have === 'object' && want.label === shown(have, footer, 'label') && linkKey(want.link, true) === linkKey(shown(have, footer, 'link'), false);
+  return {
+    op: { type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: footer.node.id, prop: 'links', value: copied },
+    count: copied.length,
+    replaces: now.length,
+    left: top.length - copied.length,
+    matches: now.length === copied.length && copied.every((it, i) => same(it, now[i]))
+  };
+}

@@ -58,18 +58,18 @@ import { effectiveTokens, isDraftPage } from '@generator/index';
 import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
-import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
+import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs, shellMenu } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
 import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
-import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
+import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
 import { TagField } from './TagField';
-import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
+import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type ListFill, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
 import { EntranceField, StaggerSwitch, appearSummary } from './EntranceControls';
@@ -90,6 +90,8 @@ import { openSiteSharing } from './SharingPreview';
 import { LengthMeter, SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
 import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
+import { footerCopyPlan } from '../lib/page-navigation';
+import { appliesLanded } from '../lib/pending';
 import { BindingControl, PartSection, PropertiesSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
 import { LivePreview } from './InsertPanel';
 import { EntryBoundNote, EntryFieldsSection } from './EntryFields';
@@ -144,6 +146,60 @@ function siteNameHint(state: ProjectState, node: InstanceNode, prop: string, use
       </button>
     </>
   );
+}
+
+const COPY_HEADER_MENU = 'Copy header menu to footer links';
+const linkCount = (n: number) => `${n} link${n === 1 ? '' : 's'}`;
+
+/**
+ * Under the shared footer's links: copy the header menu's top-level links into them, replacing the footer's own, as
+ * one step with an Undo (#575). None when the header has no links to copy.
+ */
+function footerCopyFill(state: ProjectState): ListFill | undefined {
+  const plan = footerCopyPlan(state);
+  if (!plan || plan.op.type !== 'instance.setProp') return undefined;
+  const replaces = plan.replaces === 1 ? 'Replaces the link here.' : plan.replaces ? `Replaces the ${plan.replaces} links here.` : null;
+  const fits = plan.left ? `Only the first ${plan.count} fit.` : null;
+  return {
+    id: `footer-links:${plan.op.nodeId}`,
+    label: 'Copy from header menu',
+    note: [replaces, fits].filter(Boolean).join(' ') || null,
+    blocked: plan.matches ? 'These links already match the header menu.' : null,
+    run: copyHeaderMenuToFooter
+  };
+}
+
+/** A copy on its way, by the opening of its project: asked for again there (from a list editor shown again
+ *  meanwhile), it is the same copy. */
+let copying: { key: string; run: Promise<void> } | null = null;
+/** How long a copy waits for saves already on their way before it is planned without them (and refused, if they
+ *  land first): a save that never answers does not hold it. */
+const COPY_WAIT_MS = 5000;
+
+/**
+ * Copy the header menu into the footer's links. A row edit saved as the author left it for the button lands first;
+ * the copy is then planned on the project as it is and applied only to it, and never to a project opened meanwhile.
+ * A row's field that has refused its text by then keeps the rows as they are (see ListFill).
+ */
+function copyHeaderMenuToFooter(refused: () => boolean): Promise<void> {
+  const key = getState().snapshot?.workspaceKey ?? '';
+  if (copying?.key === key) return copying.run;
+  const run: Promise<void> = (async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([appliesLanded(), new Promise<void>((r) => (timer = setTimeout(r, COPY_WAIT_MS)))]);
+    clearTimeout(timer);
+    const now = getState().snapshot;
+    if (!now || now.workspaceKey !== key || refused()) return;
+    const plan = footerCopyPlan(now.state);
+    if (!plan || plan.matches) return;
+    const r = await commitOps([plan.op], COPY_HEADER_MENU, undefined, now.revision);
+    if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
+    toast(`The footer now lists the header menu’s ${linkCount(plan.count)}.`, 'info', undoAction(r));
+  })().finally(() => {
+    if (copying?.run === run) copying = null;
+  });
+  copying = { key, run };
+  return run;
 }
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: Exclude<ListOp, { kind: 'pick' }>): EditOperation {
@@ -1025,6 +1081,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const fixedUnlinked = unlinked.filter((b) => !b.link);
   // A video section says whether its address is a video visitors can play, where it loads from, and when it needs a title.
   const video = def.componentId === 'media.video' ? videoFieldNotes(node.props) : undefined;
+  // The shared footer's menu takes the header menu's links in one step (#575).
+  const footerMenuId = owner.kind === 'shell' && owner.id === 'footer' ? shellMenu(state, 'footer')?.node.id : undefined;
   const videoNote = (key: string) => (key === 'url' || key === 'title' ? video?.[key as keyof VideoFieldNotes] : undefined);
   const videoEmpty = !!video && !String(node.props.url ?? '').trim();
   // A renamed section still says what it is: the name is the author's, the kind line the component's.
@@ -1120,6 +1178,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   action={hideAction(own)}
                   place={schema.type === 'list' ? { ref: selection, list: key } : undefined}
                   pickImages={pickImagesField(def, key, schema)}
+                  fill={key === 'links' && footerMenuId === node.id ? footerCopyFill(state) : undefined}
                 />
               );
             }}

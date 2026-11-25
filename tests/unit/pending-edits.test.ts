@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { CANVAS_DRAFT, CODE_DRAFT, PAGE_ADD_DRAFT, afterSettle, draftCount, isSettling, reportRefused, resetPendingForTests, retainRefused, savesInFlight, setCanvasCommit, setDraft, settle, trackApply, type ApplyOutcome } from '../../src/renderer/src/lib/pending';
+import { CANVAS_DRAFT, CODE_DRAFT, PAGE_ADD_DRAFT, afterSettle, draftCount, isSettling, refusedWithin, reportRefused, resetPendingForTests, retainRefused, savesInFlight, setCanvasCommit, setDraft, settle, trackApply, type ApplyOutcome } from '../../src/renderer/src/lib/pending';
 import { announcementText, saveStatusAnnouncement } from '../../src/renderer/src/lib/announce';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -10,6 +10,31 @@ const deferred = () => {
 };
 
 afterEach(() => resetPendingForTests());
+
+describe('refused text inside a list about to be replaced (#575)', () => {
+  /** A field placed in one of two lists, as `revealable` reports it. */
+  const field = (list: object) => ({ focus: () => undefined, isConnected: true, inside: (root: object) => root === list });
+  const footer = {};
+  const header = {};
+
+  it('names the field in the list that keeps text it refused, until it is corrected or discarded', () => {
+    const url = field(footer);
+    setDraft('url', true);
+    retainRefused('url', 'What you typed in Web address can’t be saved.', url);
+    expect(refusedWithin(footer)).toEqual({ message: 'What you typed in Web address can’t be saved.', field: url });
+    // Another list has nothing to settle.
+    expect(refusedWithin(header)).toBeNull();
+    retainRefused('url', null);
+    expect(refusedWithin(footer)).toBeNull();
+  });
+
+  it('ignores a field that has gone, or whose draft is closed', () => {
+    setDraft('gone', true);
+    retainRefused('gone', 'What you typed in Label can’t be saved.', { ...field(footer), isConnected: false });
+    retainRefused('closed', 'What you typed in Label can’t be saved.', field(footer));
+    expect(refusedWithin(footer)).toBeNull();
+  });
+});
 
 describe('settling pending edits', () => {
   it('commits the focused field the way leaving it does, and waits for its change to land', async () => {
