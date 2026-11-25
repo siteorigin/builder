@@ -123,6 +123,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   /** The changes to the post's fields (title, date, address…) on their way, and when one was last refused. */
   const fieldCommits = useRef(new Set<Promise<unknown>>());
   const fieldRefusedAt = useRef(-Infinity);
+  /** This post in the SEO view, where its search settings can be typed in too. */
+  const inView = `.seo-view [data-seo-doc="${CSS.escape(subjectKey({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }))}"]`;
   /** The latest saveAll, for the toolbar's Preview (see setOpenWriter). */
   const saveAllRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
   /** Why the stored text cannot be edited here, if it cannot. */
@@ -506,6 +508,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const since = performance.now() - REFUSAL_WINDOW_MS;
     const at = document.activeElement;
     if (at instanceof HTMLElement && at.closest('.post-page') && !at.closest('.post-body')) at.blur();
+    // Or this post's search settings being typed in the SEO view, should anything save it from there.
+    else if (at instanceof HTMLElement && at.closest(inView)) at.blur();
     const saved = await draft.flush();
     await Promise.allSettled([...fieldCommits.current]);
     await appliesLanded();
@@ -517,7 +521,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
    * Whether the SEO view holds text typed for this post that it could not save (too long, an address that is not one):
    * still the post's, so Publish and Save draft wait for it as for the writer's own.
    */
-  const heldInView = () => !!document.querySelector(`.seo-view [data-seo-doc="${CSS.escape(subjectKey({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }))}"] [aria-invalid="true"]`);
+  const heldInView = () => !!document.querySelector(`${inView} [aria-invalid="true"]`);
   /** Say that part of the post is not saved, and where to see why: beside it here, or in the SEO view. */
   const notSaved = (what: string) => {
     const inView = heldInView() && !document.querySelector('.post-page [aria-invalid="true"]');
