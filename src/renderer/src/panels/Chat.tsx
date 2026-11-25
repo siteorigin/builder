@@ -615,13 +615,14 @@ export function Chat() {
   const send = async (text = draft, context?: ChatContext): Promise<boolean> => {
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
-    // The assistant has no tools for collection layouts: an edit sent from one would land on the page behind it. With the
-    // Posts workspace in front, the layout is not what the message is about.
-    if (getState().templateMode && !(context ? context.post : workspace) && (context ? context.mode !== 'ask' : !askMode))
+    // The assistant has no tools for collection layouts: an edit sent from one would land on the page behind it. A post
+    // open in the Posts workspace, or the page its preview went on to, is a target of its own instead.
+    const ownTarget = context ? !!context.post : !!scope.post || shownPost?.kind === 'page';
+    if (getState().templateMode && !ownTarget && (context ? context.mode !== 'ask' : !askMode))
       return (toast('The assistant can’t change a collection’s layout yet. Click Done to go back to the page, or ask it a question.', 'info'), false);
     // A code component open in Component Studio is not one the AI edits: an edit sent now would reach the page behind
     // it. A question changes nothing, so it is still asked.
-    const code = !context && !askMode && !workspace ? uneditableDesign(st, definitionMode) : null;
+    const code = !context && !askMode && !ownTarget ? uneditableDesign(st, definitionMode) : null;
     if (code) return (toast(`From Component Studio, the AI can’t be asked to change a code component like ${code} yet. Edit its code, or click Done editing to ask for a change to a page.`, 'info'), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
@@ -1620,9 +1621,16 @@ function ResultCard({
       // A request about a post goes back to that post, in the writer, before the request goes back into the box: one the
       // writer cannot leave yet (text it could not save) stays open, and the box keeps what it holds.
       if (view?.post && !(await openPost(view.post.collectionId, view.post.entryId))) return;
-      // A request about a page leaves the Posts workspace, whose post would otherwise stay the composer's target.
+      // Anything written into the box while the open post was saving is the author's own: it is never replaced unasked.
+      if (view?.post && (draftFor(getState().chatDrafts, conv.id).trim() !== typed || imagesFor(getState().chatImages, conv.id).join('\n') !== attached.join('\n')))
+        return void toast('The post is open. What you wrote meanwhile is kept, so the earlier request was not put back.', 'info');
+      // A request about a page leaves the Posts workspace, and a collection's layout behind it, whose post or layout
+      // would otherwise stay in front of the page it is about.
       const covering = postWorkspace(getState());
-      const leavePosts = ctx?.post === undefined && covering ? { ...(getState().leftTab === 'posts' ? { leftTab: 'pages' as const } : {}), ...(covering === 'preview' ? { mode: 'edit' as const } : {}) } : {};
+      const leavePosts =
+        ctx?.post === undefined && covering
+          ? { ...(getState().leftTab === 'posts' ? { leftTab: 'pages' as const } : {}), ...(covering === 'preview' ? { mode: 'edit' as const } : {}), ...(getState().templateMode && !view?.definitionMode ? { templateMode: null } : {}) }
+          : {};
       setState({
         ...leavePosts,
         chatDrafts: withDraft(getState().chatDrafts, conv.id, user.text),

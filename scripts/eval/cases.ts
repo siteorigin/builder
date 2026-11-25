@@ -642,7 +642,7 @@ export const EVAL_CASES: EvalCase[] = [
         check('heading-and-list', blocks(post).some((b) => b === 'h2' || b === 'h3') && blocks(post).some((b) => b === 'ul' || b === 'ol'), blocks(post).join(', ')),
         check('links-to-contact', !!contact && JSON.stringify(post?.body ?? []).includes(`"type":"page","target":"${contact}"`)),
         check('notes-kept', /6\s?pm/i.test(text) && /tour/i.test(text) && /glaze demo/i.test(text) && /\btea\b/i.test(text), text.slice(0, 200)),
-        check('home-feed', (feedId === 'blog.grid' || feedId === 'blog.list') && /latest news/i.test(String(feed?.props.heading ?? '')) && feed?.props.count === 3 && (feed.props.collection === undefined || feed.props.collection === '' || feed.props.collection === 'posts'), feed ? `${feedId} ${JSON.stringify(feed.props)}` : 'none'),
+        check('home-feed', (feedId === 'blog.grid' || feedId === 'blog.list') && /latest news/i.test(String(feed?.props.heading ?? '')) && feed?.props.count === 3 && !feed.props.category && !feed.props.tag && (feed.props.collection === undefined || feed.props.collection === '' || feed.props.collection === 'posts'), feed ? `${feedId} ${JSON.stringify(feed.props)}` : 'none'),
         check('home-sections-kept', home(before).rootIds.every((id) => home(after).rootIds.includes(id))),
         check('other-posts-untouched', Object.keys(posts(before)).every((id) => same(posts(before)[id], posts(after)[id]))),
         check('shell-and-tokens-untouched', shellUntouched(before, after))
@@ -704,7 +704,7 @@ export const EVAL_CASES: EvalCase[] = [
       const now = posts(after).en_history;
       return [
         // One sentence about the studio, as a summary of the whole post would be.
-        check('excerpt-written', !!now?.excerpt && now.excerpt.trim().length >= 30 && now.excerpt.length <= 320 && !/[.!?]\s+\S/.test(now.excerpt.trim()) && /studio/i.test(now.excerpt), now?.excerpt),
+        check('excerpt-written', !!now?.excerpt && now.excerpt.trim().length >= 30 && now.excerpt.length <= 320 && !/[.!?]\s+\S/.test(now.excerpt.trim()) && /studio/i.test(now.excerpt) && /kiln|wheel|potter|cooperative|glaze|river/i.test(now.excerpt), now?.excerpt),
         check('text-kept', same(now?.body, was?.body)),
         check('other-posts-untouched', Object.keys(posts(before)).every((id) => id === 'en_history' || same(posts(before)[id], posts(after)[id])))
       ];
