@@ -321,7 +321,18 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'component.import': {
       const input = ctx.componentImport;
       if (!input || input.id !== op.importId) fail('That component package is no longer open. Import it again.');
-      return importComponentPackage(state, input, { setToken: (st, tokenId, value) => void tokenSet(st, { type: 'token.set', tokenId, value }) });
+      const r = importComponentPackage(state, input, { setToken: (st, tokenId, value) => void tokenSet(st, { type: 'token.set', tokenId, value }) });
+      const place = input.place;
+      if (!place) return r;
+      // Placed in the same change (a saved component inserted from the personal library): where Insert would put it,
+      // an element going onto a page in a new section of its own, as Insert's own tiles do (insertOps).
+      const definitionId = r.definitionId as string;
+      const at = { owner: place.owner, parentId: place.parentId, slot: place.slot, index: place.index };
+      if (place.role === 'element' && place.owner.kind === 'page' && !place.parentId) {
+        const section = nodeInsert(state, { type: 'node.insert', owner: place.owner, parentId: null, index: place.index, componentId: 'layout.section' });
+        nodeInsert(state, { type: 'node.insert', newNodeId: place.nodeId, owner: place.owner, parentId: section.nodeId as string, slot: 'content', definitionId });
+      } else nodeInsert(state, { type: 'node.insert', newNodeId: place.nodeId, ...at, definitionId });
+      return { ...r, nodeId: place.nodeId };
     }
     case 'component.setPropSchema':
       return setPropSchema(state, op);

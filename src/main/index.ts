@@ -23,6 +23,7 @@ import { listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@ag
 import { compileProject } from './compile';
 import { checkSvelteSource, componentSources } from './codecheck';
 import { stopMediaWorker } from './project/assets';
+import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
 import { playerFrameAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
@@ -393,6 +394,17 @@ function registerIpc() {
   // The file is always one the author chose in the app's own chooser.
   handle('project:exportComponent', (id: unknown) => (typeof id === 'string' ? controller.exportComponent(id) : { ok: false, message: 'That component is no longer in this project.' }));
   handle('project:importComponent', () => controller.importComponent());
+  // The personal component library (#372): files the main process names, in its own folder.
+  handle('project:savedComponents', (opening: unknown) => (typeof opening === 'string' ? controller.savedComponents(opening) : []));
+  handle('project:saveComponentToLibrary', (id: unknown, opening: unknown) =>
+    typeof id === 'string' && typeof opening === 'string' ? controller.saveComponentToLibrary(id, opening) : { ok: false, message: 'That component is no longer in this project.' }
+  );
+  handle('project:removeSavedComponent', (id: unknown) => controller.removeSavedComponent(String(id ?? '')));
+  handle('project:insertSavedComponent', (id: unknown, place: unknown, opening: unknown, revision: unknown) => {
+    const at = readInsertPlace(place);
+    if (typeof id !== 'string' || !at || typeof opening !== 'string' || !Number.isInteger(revision)) return { ok: false, message: 'That place can’t take a component.' };
+    return controller.insertSavedComponent(id, at, opening, revision as number);
+  });
   handle('project:reviewPostImport', (kind: unknown, opening: unknown) => controller.reviewPostImport(kind === 'markdown' ? 'markdown' : 'wordpress', String(opening ?? '')));
   handle('project:commitPostImport', (id: unknown, opening: unknown) => controller.commitPostImport(String(id ?? ''), String(opening ?? '')));
   handle('project:cancelPostImport', (id: unknown) => controller.cancelPostImport(String(id ?? '')));

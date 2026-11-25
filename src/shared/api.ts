@@ -697,6 +697,51 @@ export interface ComponentImportResult {
   message?: string;
 }
 
+/** A component in the personal library (#372), kept on this computer for every project (see savedComponents). */
+export interface SavedComponent {
+  id: string;
+  name: string;
+  description?: string;
+  /** How it goes into a page: as one of the page's sections, or as an element inside a layout. */
+  role: 'section' | 'element';
+  /**
+   * It would bring code components into the project it was listed for (code that project's theme doesn't already
+   * have): listed only in Developer mode, and inserted only after the author says the code may come in.
+   */
+  code: boolean;
+  savedAt: string;
+  /** The name of the project it was saved from. */
+  from?: string;
+}
+
+/** A component saved to the personal library (see saveComponentToLibrary). */
+export interface SaveToLibraryResult {
+  ok: boolean;
+  id?: string;
+  name?: string;
+  /** It replaced the copy saved from the same component before. */
+  replaced?: boolean;
+  /** What the saved copy leaves out (links to this site's pages, say). */
+  notes?: string[];
+  message?: string;
+}
+
+/** Where a saved component is inserted: the place Insert worked out for its role (see InsertAt). */
+export interface SavedInsertPlace {
+  owner: OwnerRef;
+  parentId: string | null;
+  slot?: string;
+  index?: number;
+}
+
+/** A saved component inserted (see insertSavedComponent): imported and placed as one change. */
+export interface SavedInsertResult extends ComponentImportResult {
+  /** The placement made, to select. */
+  nodeId?: string;
+  /** The saved component is no longer in the library: the list is out of date. */
+  gone?: boolean;
+}
+
 /** Where posts are imported from (#399): a WordPress export (.xml) or a folder of Markdown posts. */
 export type PostImportKind = 'wordpress' | 'markdown';
 
@@ -882,6 +927,20 @@ export interface BuilderApi {
     exportComponent(definitionId: string): Promise<ComponentExportResult>;
     /** Import a component package the author chooses, as one change: the component, what it needs, its styles and images. */
     importComponent(): Promise<ComponentImportResult>;
+    /**
+     * The personal component library (#372), for the project open as `opening`: whether each would bring code into it
+     * is worked out for that project. Empty when that project is no longer open.
+     */
+    savedComponents(opening: string): Promise<SavedComponent[]>;
+    /** Save a project component of the project open as `opening` to the personal library, replacing its earlier copy. */
+    saveComponentToLibrary(definitionId: string, opening: string): Promise<SaveToLibraryResult>;
+    /** Take a component out of the personal library. Whether it was there. */
+    removeSavedComponent(id: string): Promise<boolean>;
+    /**
+     * Insert a saved component into the project open as `opening`, still at `revision`, at `place`, going in as its
+     * role: its package is imported and placed as one change, after the author says any code it brings may come in.
+     */
+    insertSavedComponent(id: string, place: SavedInsertPlace, opening: string, revision: number): Promise<SavedInsertResult>;
     /**
      * Choose a WordPress export or a folder of Markdown posts and read it, writing nothing: what importing it into the
      * project open as `opening` would do. The review holds until it is imported, cancelled, or another takes its place.
