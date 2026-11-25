@@ -64,8 +64,11 @@ export function menuHistoryOwner(c: HistoryContext, fromKey: boolean): HistoryOw
   return owner === 'project' && fromKey ? 'none' : owner;
 }
 
-/** Shortcuts that still work from a visitor's page or a field on the page: they open editor panels or save, and never change the site or its text. */
-const PREVIEW_KEYS = new Set(['k', 's', 'e', 'j', 'f', '\\', '|']);
+/**
+ * Shortcuts that still work from a visitor's page or a field on the page: they open editor panels or save, and never
+ * change the site or its text. Ask AI is one too, on whatever key the author gave it (`askAi`).
+ */
+const PREVIEW_KEYS = new Set(['k', 's', 'e', 'f', '\\', '|']);
 
 /**
  * Whether an editor shortcut forwarded by the main process (the preview frame had focus, so the editor's own
@@ -83,9 +86,9 @@ export function forwardedVisitorStep(c: HistoryContext, k: KeyChord, mac: boolea
   return dir && c.editor && c.focus === 'canvas' && c.mode === 'preview' && !c.overlay ? dir : null;
 }
 
-export function forwardedKeyRuns(c: HistoryContext, key: string, mod: boolean): boolean {
+export function forwardedKeyRuns(c: HistoryContext, key: string, mod: boolean, askAi = false): boolean {
   if (!c.editor || c.focus !== 'canvas') return false;
   if (c.inlineEdit) return mod && key.toLowerCase() === 's';
   if (c.mode === 'edit' && !c.frameText && !c.overlay) return true;
-  return mod ? PREVIEW_KEYS.has(key.toLowerCase()) : key === 'Escape';
+  return mod ? askAi || PREVIEW_KEYS.has(key.toLowerCase()) : key === 'Escape';
 }

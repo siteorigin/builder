@@ -9,6 +9,7 @@ import { atomicWrite } from './project/fsutil';
 import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
 import type { LocalEndpoint } from '@agent/local';
+import { DEFAULT_SHORTCUTS, normalShortcut, shortcutConflict, type ShortcutSettings } from '@shared/shortcuts';
 import { checkLocalBaseURL, DEFAULT_LOCAL_SETTINGS, localContextWindow, localKeyProblem, localModelFor, localServerKey, type LocalProviderSettings } from '@shared/local';
 import { checkRelayUrl } from '@shared/live/relay-url';
 
@@ -23,6 +24,7 @@ const DEFAULTS: SettingsFile = {
     appearance: 'system',
     developerMode: false,
     liveRelayUrl: null,
+    shortcuts: DEFAULT_SHORTCUTS,
     ai: {
       provider: 'openai',
       // No local model is preselected: the running server says what it offers.
@@ -82,6 +84,15 @@ function withLocalModel(ai: AppSettings['ai']): AppSettings['ai'] {
   return { ...ai, models: { ...ai.models, local: localModelFor(ai.local) } };
 }
 
+/** The shortcuts as read from disk: a binding a hand-edited file spoils, or one now taken, goes back to the default. */
+function storedShortcuts(value: unknown): ShortcutSettings {
+  const askAi = normalShortcut((value as Partial<ShortcutSettings> | undefined)?.askAi);
+  return { askAi: askAi && !shortcutConflict(askAi, process.platform) ? askAi : DEFAULT_SHORTCUTS.askAi };
+}
+
+/** The shortcuts in use now, for key presses the main process sees before the editor does. */
+export const currentShortcuts = (): ShortcutSettings => cache?.settings.shortcuts ?? DEFAULT_SHORTCUTS;
+
 export async function loadSettings(): Promise<SettingsFile> {
   if (cache) return cache;
   try {
@@ -93,7 +104,7 @@ export async function loadSettings(): Promise<SettingsFile> {
     const legacyServer = localServerKey(local.baseURL);
     if (rawLocal?.modelsByServer === undefined && typeof legacy === 'string' && legacy && legacyServer) local.modelsByServer = { [legacyServer]: legacy };
     cache = {
-      settings: { ...DEFAULTS.settings, ...raw.settings, ai: withLocalModel({ ...DEFAULTS.settings.ai, ...raw.settings?.ai, models: { ...DEFAULTS.settings.ai.models, ...raw.settings?.ai?.models }, local }) },
+      settings: { ...DEFAULTS.settings, ...raw.settings, shortcuts: storedShortcuts(raw.settings?.shortcuts), ai: withLocalModel({ ...DEFAULTS.settings.ai, ...raw.settings?.ai, models: { ...DEFAULTS.settings.ai.models, ...raw.settings?.ai?.models }, local }) },
       recents: raw.recents ?? [],
       trusted: raw.trusted ?? {}
     };
@@ -129,6 +140,14 @@ export function saveSettings(): Promise<void> {
 
 export async function updateSettings(patch: SettingsPatch): Promise<AppSettings> {
   const s = await loadSettings();
+  // A shortcut is checked before anything changes, so a refused one leaves every setting as it was.
+  let shortcuts = s.settings.shortcuts;
+  if (patch.shortcuts && 'askAi' in patch.shortcuts) {
+    const askAi = normalShortcut(patch.shortcuts.askAi);
+    const problem = shortcutConflict(askAi ?? '', process.platform);
+    if (problem || !askAi) throw new Error(problem ?? 'That is not a shortcut SiteOrigin Builder can use.');
+    shortcuts = { ...shortcuts, askAi };
+  }
   // Null clears the context size back to automatic; any other value that is not a usable size is refused, so a
   // bad value never erases the one in use.
   const asked = patch.ai?.local;
@@ -158,10 +177,18 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
   // ones kept; an empty one goes back to the server's first model.
   for (const [server, id] of Object.entries(patch.ai?.local?.modelsByServer ?? {})) choose(localServerKey(server), id);
   const models = { ...prev.models, ...(patch.ai?.models ?? {}) };
-  s.settings = { ...s.settings, ...patch, ai: withLocalModel({ ...prev, ...(patch.ai ?? {}), models, local }) };
+  const shortcutsWere = s.settings.shortcuts;
+  s.settings = { ...s.settings, ...patch, shortcuts, ai: withLocalModel({ ...prev, ...(patch.ai ?? {}), models, local }) };
   s.settings.ai.local.contextWindow = localContextWindow(s.settings.ai.local.contextWindow);
   if (developerModeLocked()) s.settings.developerMode = false;
-  await saveSettings();
+  try {
+    await saveSettings();
+  } catch (e) {
+    // A shortcut that could not be saved is not taken up: the keys go on working as Settings still shows them
+    // (unless a later change has set them since).
+    if (s.settings.shortcuts === shortcuts) s.settings.shortcuts = shortcutsWere;
+    throw e;
+  }
   return s.settings;
 }
 

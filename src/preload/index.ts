@@ -29,7 +29,7 @@ const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:pro
 
 const api: BuilderApi = {
   platform: process.platform,
-  app: { info: invoke('app:info'), catalogue: invoke('app:catalogue'), packPreview: invoke('packs:preview'), getSettings: invoke('app:getSettings'), setSettings: invoke('app:setSettings'), openExternal: invoke('app:openExternal') } as BuilderApi['app'],
+  app: { info: invoke('app:info'), catalogue: invoke('app:catalogue'), packPreview: invoke('packs:preview'), getSettings: invoke('app:getSettings'), setSettings: invoke('app:setSettings'), openExternal: invoke('app:openExternal'), recordShortcut: invoke('app:recordShortcut') } as BuilderApi['app'],
   edit: { undo: invoke('edit:undo'), redo: invoke('edit:redo') } as BuilderApi['edit'],
   dialogs: { chooseFolder: invoke('dialogs:chooseFolder'), chooseImages: async () => [], defaultProjectsFolder: invoke('dialogs:defaultProjectsFolder') } as BuilderApi['dialogs'],
   projects: {

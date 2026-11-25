@@ -18,6 +18,7 @@ import { keepViewValid } from './lib/model';
 import { keepSeoSubject } from './lib/seo-view';
 import { placeOn, readPlaces } from './lib/page-place';
 import { startEditorFonts } from './lib/editor-fonts';
+import { isAskAiKey } from './lib/ask-ai-key';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -108,7 +109,8 @@ export function App() {
           if (!getState().leaving) stepVisitor(dir);
           return;
         }
-        if (forwardedKeyRuns(historyContext(), k.key, k.meta || k.ctrl)) handleShortcut(k.key, k.meta || k.ctrl, k.shift);
+        const askAi = isAskAiKey(k);
+        if (forwardedKeyRuns(historyContext(), k.key, k.meta || k.ctrl, askAi)) handleShortcut(k.key, k.meta || k.ctrl, k.shift, askAi);
       }),
       useStore.subscribe(persistChatState),
       useStore.subscribe(persistPlaces)

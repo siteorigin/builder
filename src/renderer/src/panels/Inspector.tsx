@@ -116,6 +116,7 @@ import { LivePreview } from './InsertPanel';
 import { EntryBoundNote, EntryFieldsSection } from './EntryFields';
 import { sampleEntries } from '../lib/template-view';
 import { isHeadingLevel, placementOrder, variantStylable, type StyleTarget } from '../lib/component-contract';
+import { useAskAiKeys } from '../lib/ask-ai-key';
 
 type Tokens = ReturnType<typeof effectiveTokens>;
 type Tone = 'local' | 'shared' | 'definition';
@@ -951,10 +952,11 @@ function clipboardActions(owner: OwnerRef, plan: ReturnType<typeof planLayers>):
 /** Ask AI, plus a menu of everything else that can be done to the selection. */
 function SelectionActions({ title, selection, items, group, ask = true }: { title: string; selection: ElementRef; items: MenuItem[]; group?: string; ask?: boolean }) {
   const menu = useMenu();
+  const askKeys = useAskAiKeys();
   return (
     <>
       {ask && (
-        <button className="icon-btn" aria-label={`Ask AI about ${title}`} title={`Ask AI about ${title} (${platformKeys('⌘J')})`} onClick={() => askAiAbout(selection)}>
+        <button className="icon-btn" aria-label={`Ask AI about ${title}`} title={`Ask AI about ${title} (${platformKeys(askKeys.hint)})`} onClick={() => askAiAbout(selection)}>
           <Sparkles />
         </button>
       )}

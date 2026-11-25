@@ -2,6 +2,7 @@ import type { ApplyResult, EditBatch } from './ops';
 import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
+import type { ShortcutSettings } from './shortcuts';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
 import type { ComponentThumb } from './component-thumbs';
 import type { ThemePack } from '@catalogue/pack';
@@ -48,6 +49,8 @@ export interface AppSettings {
    * for the default. `SITEORIGIN_LIVE_RELAY_URL` wins over it (see shared/live/relay-url.ts).
    */
   liveRelayUrl: string | null;
+  /** Shortcuts the author has reassigned (spec §4.5), as `shared/shortcuts.ts` writes them. */
+  shortcuts: ShortcutSettings;
   ai: {
     provider: ProviderId | null;
     models: Record<ProviderId, string>;
@@ -61,7 +64,11 @@ export interface AppSettings {
  * A change to settings. Only the models named change. A local model given here is chosen for the server the patch
  * leaves saved; `local.modelsByServer` entries are added to the ones already kept.
  */
-export type SettingsPatch = Omit<Partial<AppSettings>, 'ai'> & { ai?: Partial<Omit<AppSettings['ai'], 'local' | 'models'>> & { models?: Partial<AppSettings['ai']['models']>; local?: Partial<LocalProviderSettings> } };
+export type SettingsPatch = Omit<Partial<AppSettings>, 'ai' | 'shortcuts'> & {
+  ai?: Partial<Omit<AppSettings['ai'], 'local' | 'models'>> & { models?: Partial<AppSettings['ai']['models']>; local?: Partial<LocalProviderSettings> };
+  /** A binding that cannot be used, or that another shortcut has, is refused with the reason. */
+  shortcuts?: Partial<ShortcutSettings>;
+};
 
 export interface ProviderStatus {
   id: ProviderId;
@@ -901,6 +908,8 @@ export interface BuilderApi {
     getSettings(): Promise<AppSettings>;
     setSettings(patch: SettingsPatch): Promise<AppSettings>;
     openExternal(url: string): Promise<void>;
+    /** While on, the app's menus take no keys, so Settings can record any key press as a shortcut (#750). */
+    recordShortcut(on: boolean): Promise<void>;
   };
   /** The focused text field's own history (the browser's Undo and Redo), never the project's. */
   edit: {
@@ -1144,7 +1153,7 @@ export interface BuilderApi {
   on(channel: 'lifecycle:request', cb: (req: { requestId: string }) => void): () => void;
   /** Edit → Undo or Redo, chosen from the menu or reached by its key (`fromKey`) when nothing on the page took the key. */
   on(channel: 'menu:history', cb: (e: { action: 'undo' | 'redo'; fromKey: boolean }) => void): () => void;
-  on(channel: 'input:key', cb: (k: { key: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
+  on(channel: 'input:key', cb: (k: { key: string; code?: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */

@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import type { Appearance, ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
+import { matchesShortcut } from '@shared/shortcuts';
 import { externalLink } from '@shared/links';
 import { visitorStepKey } from '@shared/preview-keys';
 import { Controller, defaultProjectsFolder, resourcesDir } from './controller';
@@ -15,7 +16,7 @@ import { menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
 import { appMenuTemplate } from './app-menu';
 import { writingMenuTemplate } from './writing-menu';
-import { loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
+import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
@@ -312,6 +313,11 @@ function registerIpc() {
       controller.send('appearance', appearance);
     }
     return s;
+  });
+  // While Settings records a shortcut, the app's menus leave every key to it (Cmd/Ctrl+W, say, is refused there by
+  // name rather than closing the window). The editor's page still sees every key press.
+  handle('app:recordShortcut', (on: unknown) => {
+    if (win && !win.isDestroyed()) win.webContents.setIgnoreMenuShortcuts(on === true);
   });
   handle('app:openExternal', async (url: string) => {
     // Web pages, email addresses and phone numbers only, each checked: the link may come from the previewed site.
@@ -712,15 +718,18 @@ async function createWindow() {
     if (input.type !== 'keyDown') return;
     const mod = input.meta || input.control;
     const k = input.key.toLowerCase();
+    const chord = { key: input.key, code: input.code, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt };
     // With Shift held, macOS reports the backslash key as "|".
     const relevant =
-      (mod && ['z', 'y', 'k', 'd', 'c', 'v', 'j', 's', 'e', 'f', '\\', '|', 'arrowup', 'arrowdown'].includes(k)) ||
+      (mod && ['z', 'y', 'k', 'd', 'c', 'v', 's', 'e', 'f', '\\', '|', 'arrowup', 'arrowdown'].includes(k)) ||
+      // Ask AI, wherever the author has put it (#750).
+      matchesShortcut(chord, currentShortcuts().askAi, process.platform === 'darwin') ||
       // Wrap in Stack and Ungroup; with Alt it is another key (AltGr on some layouts).
       (mod && !input.alt && k === 'g') ||
       (!mod && ['delete', 'backspace', 'escape'].includes(k)) ||
       // Back and Forward through a visitor's journey in Preview.
-      !!visitorStepKey({ key: input.key, meta: input.meta, ctrl: input.control, alt: input.alt, shift: input.shift }, process.platform === 'darwin');
-    if (relevant) controller.send('input:key', { key: input.key, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt });
+      !!visitorStepKey(chord, process.platform === 'darwin');
+    if (relevant) controller.send('input:key', chord);
   });
   // Closing the window first saves what is being typed. On macOS the project stays open without a window,
   // as before; elsewhere the last window closing quits, which then closes the project.
@@ -740,7 +749,10 @@ async function createWindow() {
       self.close();
     });
   });
+  // A page that is replaced or crashes mid-recording leaves no one to hand the menus' keys back.
+  self.webContents.on('did-navigate', () => self.webContents.setIgnoreMenuShortcuts(false));
   self.webContents.on('render-process-gone', () => {
+    if (!self.webContents.isDestroyed()) self.webContents.setIgnoreMenuShortcuts(false);
     desktop?.windows.gone(selfId, { closed: false });
     committed = false;
     menuCommands.unready(self);
