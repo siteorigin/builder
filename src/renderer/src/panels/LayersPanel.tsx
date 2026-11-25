@@ -262,9 +262,11 @@ export function LayersPanel() {
     const before = getState().snapshot?.revision;
     void Promise.resolve(run).then(() => getState().snapshot?.revision !== before && announce(text));
   };
-  // The panel owns the tree's single tab stop; it re-reconciles whenever the selection changes.
+  // The panel owns the tree's single tab stop; it re-reconciles whenever the selection (or a slot picked for Insert)
+  // changes.
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
+  useStore((s) => s.slotTarget);
   useRovingTabStop(treeRef, 'treeitem');
   // A selection made elsewhere (the canvas, the inspector) scrolls its row into view once its branches have
   // opened, and again when the panel is shown; keyboard focus stays where it is.
