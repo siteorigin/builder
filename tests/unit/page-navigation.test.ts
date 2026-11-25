@@ -442,6 +442,18 @@ describe('the footer’s links copied from the header menu (#575)', () => {
     expect(footerCopyPlan(elsewhere)!.matches).toBe(false);
   });
 
+  it('counts a footer link that says something else about the same site as different, and copies what the header says (#582)', () => {
+    let s = scratchSite();
+    const shop = { type: 'url', target: 'https://shop.example.com' };
+    s = apply(s, [{ type: 'instance.listInsert', owner: shell('header'), nodeId: menuOf(s, 'header').id, prop: 'links', item: { label: 'Shop', link: { ...shop, rel: ['ugc', 'sponsored'] } } }]).state;
+    const copied = apply(s, [footerCopyPlan(s)!.op]).state;
+    expect(links(copied, 'footer')[3].link).toEqual({ ...shop, rel: ['sponsored', 'ugc'] });
+    expect(footerCopyPlan(copied)!.matches).toBe(true);
+    const footer = menuOf(copied, 'footer');
+    const plain = apply(copied, [{ type: 'instance.setProp', owner: shell('footer'), nodeId: footer.id, prop: 'links', itemId: links(copied, 'footer')[3].id, field: 'link', value: shop }]).state;
+    expect(footerCopyPlan(plain)!.matches).toBe(false);
+  });
+
   it('counts a link written with options it does not use as the same link once copied', () => {
     // A header written outside the app, its link saying newTab: false and an empty section.
     const s = structuredClone(scratchSite());

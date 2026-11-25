@@ -553,6 +553,22 @@ describe('shell.header', () => {
       expect(away).toMatch(/<a href="https:\/\/maps\.example\.com\/studio" target="_blank" rel="noopener noreferrer">Map<\/a>/);
     });
 
+    it('says what its links to other sites are, after a new tab’s own tokens (#582)', () => {
+      const shop = (rel: string[], newTab = false) => ({ type: 'url', target: 'https://shop.example/', ...(newTab ? { newTab } : {}), rel });
+      const out = authoredHtml('shell.header', {
+        siteName: 'Test Studio',
+        notice: closed,
+        noticeLabel: 'Sale',
+        noticeLink: shop(['sponsored'], true),
+        links: [{ id: 'l1', label: 'Shop', link: shop(['ugc', 'nofollow']) }],
+        ctaLabel: 'Buy',
+        ctaLink: shop(['sponsored'])
+      });
+      expect(notice(out)).toContain('<a href="https://shop.example/" target="_blank" rel="noopener noreferrer sponsored">Sale</a>');
+      expect(out).toMatch(/<a href="https:\/\/shop\.example\/" rel="nofollow ugc"[^>]*>Shop<\/a>/);
+      expect(out).toMatch(/<a class="so-btn so-btn--primary so-header__cta[^"]*" href="https:\/\/shop\.example\/" rel="sponsored"[^>]*>Buy<\/a>/);
+    });
+
     it('stays readable: brand over the page colour over white, as the contrast check measures it, and a focus ring in its text colour', () => {
       const source = bundle.defs['shell.header'].source!;
       const rule = (selector: string) => source.match(new RegExp(`\\n\\t${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`))?.[1] ?? '';

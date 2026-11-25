@@ -52,12 +52,13 @@ const field = () =>
     return { open: true, value: input.value, invalid: input.getAttribute('aria-invalid'), error: error.textContent, errorShown: !error.hidden };
   })()`);
 const hrefs = () => frame.evaluate<string[]>(`[...document.querySelectorAll('[data-so-node="r"] a')].map((a) => a.getAttribute('href'))`);
+const rels = () => frame.evaluate<Array<[string | null, string | null]>>(`[...document.querySelectorAll('[data-so-node="r"] a')].map((a) => [a.getAttribute('href'), a.getAttribute('rel')])`);
 
 /** Edit the rich text with the caret in the linked words, then open the link field. */
-async function openField() {
+async function openField(rich = RICH, shown = '/about/') {
   edits++;
   await page.evaluate(`window.seen = []`);
-  await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(RICH)}`);
+  await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(rich)}`);
   await page.evaluate(`document.querySelector('iframe').focus()`);
   await toFrame('beginTextEdit', { desc: { ctx: 'page:p', node: 'r', items: '' }, editId: `e${edits}` });
   await expect.poll(async () => (await messages()).some((m) => m.type === 'textEditStarted')).toBe(true);
@@ -71,7 +72,7 @@ async function openField() {
   })()`);
   await page.keyboard.press(`${MOD}+k`);
   await expect.poll(async () => (await field()).open).toBe(true);
-  expect((await field()).value).toBe('/about/');
+  expect((await field()).value).toBe(shown);
 }
 
 describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
@@ -133,6 +134,23 @@ describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
     await toFrame('linkChecked', { check });
     await expect.poll(async () => (await field()).open).toBe(false);
     expect(await hrefs()).toEqual(['/about#team']);
+  });
+
+  it('keeps what a web address says about its site while the words go to another one, and not to a page (#582)', async () => {
+    const shop = '<p>Read <a href="https://shop.example/" target="_blank" rel="noopener noreferrer nofollow sponsored">about us</a> today</p>';
+    const pointAt = async (to: string) => {
+      await openField(shop, 'https://shop.example/');
+      await page.keyboard.type(to);
+      await page.keyboard.press('Enter');
+      const { check } = await nextCheck(0);
+      await toFrame('linkChecked', { check });
+      await expect.poll(async () => (await field()).open).toBe(false);
+      return rels();
+    };
+    // The browser makes a new link for the words; the author's relationships go on it, never the site's own tokens.
+    expect(await pointAt('https://shop.example/b')).toEqual([['https://shop.example/b', 'nofollow sponsored']]);
+    await page.keyboard.press('Escape');
+    expect(await pointAt('/about/')).toEqual([['/about/', null]]);
   });
 
   it('acts only on the answer about what the field holds now', async () => {
