@@ -218,6 +218,7 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
     for (let again = 0; e.op === 'project.summary' && differs(e, reply) && again < 10; again++) {
       await new Promise((r) => setTimeout(r, 300));
       reply = await send();
+      if (!reply.ok) return diverge(e, `it failed: ${reply.error.code} ${reply.error.message}`, reply);
     }
     const different = differs(e, reply);
     if (different) return diverge(e, different, reply);
