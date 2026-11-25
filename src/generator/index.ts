@@ -946,18 +946,26 @@ const BAND_PATHS = { angle: 'M0 24 L100 0 V24 Z', wave: 'M0 12 Q25 0 50 12 T100 
 /**
  * The decorative divider shapes' own layout, whatever the theme's CSS has: a band as wide as its container, an icon
  * between two hairlines drawn fainter than it, both in the divider's text color. Sizes and colors stay the design's
- * own (zero specificity).
+ * own (zero specificity). `global` for a component's own <style> block, where the icon a helper renders is outside its
+ * scope.
  */
-const BAND_CSS = `/* Decorative divider shapes. */
-:where(.so-band) { display: block; width: 100%; height: 3rem; }
-:where(.so-band-icon) { display: flex; align-items: center; gap: 0.75rem; width: 100%; }
-:where(.so-band-icon__rule) { flex: 1 1 0; min-width: 0; border-top: 1px solid currentColor; opacity: 0.35; }
-:where(.so-band-icon > .so-icon) { flex: none; width: 1.25em; height: 1.25em; }`;
+function bandCss(global = false): string {
+  const g = (sel: string) => (global ? `:global(${sel})` : sel);
+  return [
+    '/* Decorative divider shapes. */',
+    `${g(':where(.so-band)')} { display: block; width: 100%; height: 3rem; }`,
+    `${g(':where(.so-band-icon)')} { display: flex; align-items: center; gap: 0.75rem; width: 100%; }`,
+    `${g(':where(.so-band-icon__rule)')} { flex: 1 1 0; min-width: 0; border-top: 1px solid currentColor; opacity: 0.35; }`,
+    `${g(':where(.so-band-icon > .so-icon)')} { flex: none; width: 1.25em; height: 1.25em; }`
+  ].join('\n');
+}
+
+/** Whether a tree holds a decorative divider shape the generator draws. */
+const drawsBand = (tree: NodeTree | undefined) => Object.values(tree?.nodes ?? {}).some((n) => n?.kind === 'divider' && (n.shape === 'angle' || n.shape === 'wave' || n.shape === 'icon'));
 
 /** Whether any page, layout, shared header or footer, or design shows a decorative divider shape. */
 function usesDividerShapes(state: ProjectState): boolean {
-  const trees = [...treeOwners(state).map((t) => t.tree), ...sortedDefs(state).flatMap((d) => (d.kind === 'managed' && d.tree ? [d.tree] : []))];
-  return trees.some((t) => Object.values(t.nodes ?? {}).some((n) => n?.kind === 'divider' && (n.shape === 'angle' || n.shape === 'wave' || n.shape === 'icon')));
+  return treeOwners(state).some((t) => drawsBand(t.tree)) || sortedDefs(state).some((d) => d.kind === 'managed' && drawsBand(d.tree));
 }
 
 /** Whether a design has a dialog or drawer that works (see stateWidgets). */
@@ -997,7 +1005,7 @@ export function generateComponentsCss(state: ProjectState): string {
   // row of category buttons is left out of print.
   if (sortedDefs(state).some((def) => def.kind === 'managed' && repeatFilters(def).length)) parts.push(filterCss());
   // Asked as one answer, so a change to a page's content makes this file again only when the answer changes.
-  if (derived(state, 'dividerShapes', usesDividerShapes)) parts.push(BAND_CSS);
+  if (derived(state, 'dividerShapes', usesDividerShapes)) parts.push(bandCss());
   for (const def of sortedDefs(state)) {
     if (def.kind !== 'managed' || !def.tree) continue;
     const css = emitRules(definitionRules(state, def));
@@ -3236,8 +3244,9 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
  */
 export function generateStandaloneComponent(state: ProjectState, def: ComponentDefinition, appear?: AppearPreset | 'none'): string {
   const body = generateManagedComponent(state, def, { instrument: false }, { appear });
-  // A category filter's hiding and print rules come along, as the site's own stylesheet has them only for designs.
-  const css = [emitRules(definitionRules(state, def, true)), repeatFilters(def).length ? filterCss(true) : ''].filter(Boolean).join('\n');
+  // A category filter's hiding and print rules, and the decorative dividers' layout, come along, as the site's own
+  // stylesheet has them only for designs.
+  const css = [emitRules(definitionRules(state, def, true)), repeatFilters(def).length ? filterCss(true) : '', drawsBand(def.tree) ? bandCss(true) : ''].filter(Boolean).join('\n');
   return css ? `${body}\n<style>\n${indentBlock(css)}\n</style>\n` : body;
 }
 

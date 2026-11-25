@@ -270,6 +270,14 @@ describe('loading a theme pack release', () => {
       const def = m.components.find((c) => c.componentId === 'media.carousel')!;
       (def.tree!.nodes.caption as { carousel?: boolean }).carousel = true;
     }), /node "caption" is marked as a carousel/],
+    ['a divider shape there is no drawing for (issue #356)', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.componentId === 'media.carousel')!;
+      def.tree!.nodes.caption = { id: 'caption', kind: 'divider', shape: 'zigzag' } as never;
+    }), /node "caption" has a shape that is not one of line, angle, wave, icon/],
+    ['an icon on a divider that shows none (issue #356)', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.componentId === 'media.carousel')!;
+      def.tree!.nodes.caption = { id: 'caption', kind: 'divider', shape: 'wave', icon: 'star' } as never;
+    }), /node "caption" names an icon, which only a divider of shape "icon" shows/],
     ['a dialog mark on text (issue #378)', (d) => edit(d, (m) => {
       const def = m.components.find((c) => c.componentId === 'media.carousel')!;
       (def.tree!.nodes.caption as { overlay?: string }).overlay = 'dialog';
