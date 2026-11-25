@@ -29,6 +29,7 @@ import { codeNeeds } from './definitions';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries } from '@generator/index';
 import { componentReusabilityDiagnostics } from './reusability';
+import { layoutGuardrailDiagnostics } from './layout-guardrails';
 import { FORM_SERVICES, formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
@@ -94,8 +95,9 @@ const sortedJson = (v: unknown): string =>
 
 /**
  * Schema and reference validation: IDs, references, nesting and routes, links to sections that do not exist, each
- * page's heading outline, and how reusable each project component is. Save gates pass `sectionLinks: false`: section
- * links, headings and reusability never block a save, so they need not be worked out.
+ * page's heading outline, layout styles that quietly undo each other (engine/layout-guardrails), and how reusable each
+ * project component is. Save gates pass `sectionLinks: false`: section links, headings, layout guardrails and
+ * reusability never block a save, so they need not be worked out.
  */
 export function validateState(state: ProjectState, opts: { sectionLinks?: boolean } = {}): Diagnostic[] {
   const out: Diagnostic[] = [];
@@ -496,6 +498,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   for (const p of Object.values(state.pages)) picture(p.seo?.socialImage, `${p.title}: the page’s sharing image`, 'socialImage', { kind: 'page', id: p.id });
   if (opts.sectionLinks !== false) {
     out.push(...headingDiagnostics(state), ...formNameDiagnostics(state), ...runtimeFontDiagnostics(state));
+    for (const d of layoutGuardrailDiagnostics(state)) out.push(d);
     // Theme components are fixed theme data; only a project's own components are its author's to make reusable.
     const tokens = effectiveTokens(state);
     for (const def of Object.values(state.components)) {
