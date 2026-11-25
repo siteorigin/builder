@@ -15,7 +15,6 @@ import { LucideIcon } from './InsertPanel';
 import { openContentMatch } from './FindReplace';
 import { contentFields, findContent, placedSections, sectionMatches } from '../lib/find-content';
 import { insertChoices, insertLanding } from '../lib/command-inserts';
-import { projectInsertDefinitions } from '../lib/insert-search';
 import { LEFT_TABS } from './LeftTabs';
 
 interface Cmd {
@@ -115,6 +114,23 @@ function Marked({ text, query }: { text: string; query: string }) {
   return <>{text.split(new RegExp(`(${words.join('|')})`, 'giu')).map((part, i) => (i % 2 ? <mark key={i}>{part}</mark> : part))}</>;
 }
 
+/**
+ * Shows or hides the sidebar, as the sidebar shortcut does. Hidden from the menu, with the menu opened from inside the sidebar, focus has
+ * nowhere left to return to: it goes to the hidden view's rail button, as the shortcut leaves it (see Editor). That waits
+ * until the menu has handed focus back, so a place it could return to keeps it.
+ */
+function toggleSidebar() {
+  const was = useStore.getState().leftTab;
+  setState({ leftTab: was ? null : 'pages' });
+  if (!was) return;
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body) document.querySelector<HTMLElement>(`.rail [data-rail="${was}"]`)?.focus();
+    })
+  );
+}
+
 function TrailText({ trail, query, className }: { trail: Trail; query: string; className: string }) {
   return (
     <span className={className} title={`${trail.head}${trail.address ? ` (${trail.address})` : ''}${trail.tail}`}>
@@ -174,8 +190,12 @@ export function CommandMenu() {
         };
       }),
       { id: 'newpage', label: 'Add page…', keywords: 'new create', action: 'Add a page', group: 'Page', icon: <Plus />, run: () => (setState({ leftTab: 'pages' }), setTimeout(() => window.dispatchEvent(new Event('builder-add-page')), 0)) },
-      // Every component of the project's own that Insert lists, placed or not, opens in Component Studio (issue #367).
-      ...projectInsertDefinitions(st, dev).map((d) => ({ id: `studio:${d.id}`, label: `Open ${d.name} in Component Studio`, keywords: 'component studio design variants edit everywhere', action: 'Open in Component Studio', group: 'Your components', icon: <SquareDashed />, run: () => void openComponentStudio(d.id) })),
+      // Every component of the project's own, placed or not, opens in Component Studio (issue #367): its own copy of the
+      // header or footer too, and code only in Developer mode, as Insert lists it.
+      ...Object.values(st.components)
+        .filter((d) => d.owner === 'project' && (dev || d.kind !== 'code'))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
+        .map((d) => ({ id: `studio:${d.id}`, label: `Open ${d.name} in Component Studio`, keywords: 'component studio design variants edit everywhere', action: 'Open in Component Studio', group: 'Your components', icon: <SquareDashed />, run: () => void openComponentStudio(d.id) })),
       { id: 'newcomponent', label: 'Create component…', keywords: 'new component reusable design build ai', action: 'Start a new component, blank or built by AI', group: 'Insert', icon: <Component />, run: () => setState({ modal: { kind: 'new-component' } }) },
       { id: 'ai', kbd: '⌘J', label: 'Ask AI…', action: 'Open the AI chat', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
       { id: 'styles', label: 'Site styles', keywords: 'colors colours fonts typography spacing theme', action: 'Open site styles', group: 'View', icon: <Palette />, run: () => openSiteStyles() },
@@ -199,7 +219,8 @@ export function CommandMenu() {
       { id: 'outline', label: 'Show the page outline', keywords: 'headings', action: 'Show the outline', group: 'View', icon: <ListTree />, run: () => openOutline() },
       // The sidebar's views, as the rail opens them.
       ...LEFT_TABS.map((t) => ({ id: `panel:${t.id}`, label: `Show the ${t.label} panel`, keywords: 'left sidebar panel view', group: 'View', icon: t.icon, run: () => setState({ leftTab: t.id }) })),
-      { id: 'sidebar', kbd: '⌘\\', label: leftTab ? 'Hide the sidebar' : 'Show the sidebar', keywords: 'show hide left sidebar panels', group: 'View', icon: <PanelLeft />, run: () => setState({ leftTab: useStore.getState().leftTab ? null : 'pages' }) },
+      // Found by what it will do now, so "hide the sidebar" never offers to show it.
+      { id: 'sidebar', kbd: '⌘\\', label: leftTab ? 'Hide the sidebar' : 'Show the sidebar', keywords: leftTab ? 'hide close left sidebar panels' : 'show open left sidebar panels', group: 'View', icon: <PanelLeft />, run: toggleSidebar },
       { id: 'dock', kbd: '⇧⌘\\', label: dockOpen ? 'Hide the right panel' : 'Show the right panel', keywords: 'show hide right panel inspector', group: 'View', icon: <PanelRight />, run: () => setState({ dockOpen: !useStore.getState().dockOpen }) },
       { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void closeProject() }
     ];
@@ -540,7 +561,7 @@ export function CommandMenu() {
                     aria-selected={i === cur}
                     aria-disabled={reason ? true : undefined}
                     // The footer is hidden from assistive technology, so what it says about Enter is said here when the label does not.
-                    aria-description={c.id === 'find:all' ? (c.label.includes('Find and replace') ? undefined : 'Opens Find and replace') : c.onSite && !c.stay ? 'Show in editor' : current ? 'Current page' : c.action && c.action !== c.label.replace(/…$/, '') ? c.action : undefined}
+                    aria-description={c.id === 'find:all' ? (c.label.includes('Find and replace') ? undefined : 'Opens Find and replace') : c.onSite && !c.stay ? 'Show in editor' : current ? 'Current page' : !reason && c.action && c.action !== c.label.replace(/…$/, '') ? c.action : undefined}
                     className={`menu-item${i === cur ? ' focused' : ''}${c.place || stacked ? ' cmdk-two' : ''}${c.stay ? ' cmdk-more-row' : ''}`}
                     // Only a pointer that really moved takes the highlight, not a list scrolling under a still one. A row
                     // it lands on is brought fully into view, so Enter never runs one that is half hidden.
