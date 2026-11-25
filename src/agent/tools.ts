@@ -598,6 +598,8 @@ export function fitInspection<R>(envelope: Record<string, unknown>, report: R): 
       return { ...n, with: rest };
     });
   r.issues = issues;
+  // Advice gives way before findings do: the notes keep only what they say before any finding goes.
+  if (notes && size(r) > room) r.rhythm = notes.map((n) => ({ kind: n.kind, message: n.message }));
   let omitted = 0;
   while (size(r) > room) {
     const byKind = new Map<string, number>();
@@ -608,12 +610,12 @@ export function fitInspection<R>(envelope: Record<string, unknown>, report: R): 
     omitted++;
   }
   if (omitted) r.omittedIssues = omitted;
-  // Still too long with one finding of each kind: the notes keep only what they say, and then go, before the whole
-  // result would be cut short.
-  if (notes && size(r) > room) r.rhythm = notes.map((n) => ({ kind: n.kind, message: n.message }));
+  // Still too long with one finding of each kind: the notes go, before the whole result would be cut short, saying
+  // so when that fits.
   if (notes && size(r) > room) {
     delete r.rhythm;
     r.omittedRhythm = notes.length;
+    if (size(r) > room) delete r.omittedRhythm;
   }
   return r as R;
 }

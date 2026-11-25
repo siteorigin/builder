@@ -279,23 +279,30 @@ describe('check results', () => {
     expect(fitInspection(envelope, small)).toBe(small);
   });
 
-  it("keeps every note on the page's rhythm when a layout report is cut to fit, without the text they quote (#366)", () => {
-    const issue = (i: number) => ({ kind: 'low-contrast', ref: { owner: { kind: 'page', id: 'p' }, nodeId: `n${i}` }, text: 't'.repeat(80), message: 'm'.repeat(400) });
+  it("keeps every note on the page's rhythm when a layout report is cut to fit: whole but for what they quote, and shortened before a finding goes (#366)", () => {
     const ref = (nodeId: string) => ({ owner: { kind: 'page', id: 'p' }, nodeId });
     const rhythm = [
       { kind: 'repeated-layout', sections: { first: 2, last: 4 }, ref: ref('a'), with: { ref: ref('b') }, layout: 'three card columns', background: '#ffffff', message: 'Same layout.' },
       { kind: 'crowded-actions', sections: { first: 1, last: 4 }, ref: ref('c'), with: { ref: ref('d') }, buttons: 4, message: 'Buttons.' },
       { kind: 'heading-scale', ref: ref('e'), text: 'h'.repeat(80), with: { ref: ref('f'), text: 'g'.repeat(80) }, heading: 'h2', size: 48, h1Size: 48, message: 'Large.' }
     ];
-    const report = { issues: Array.from({ length: 70 }, (_, i) => issue(i)), rhythm };
     const envelope = { revision: 3, pageId: 'p', viewport: 'desktop', width: 1280 };
+    // Long only for the text the findings quote: dropping that is enough.
+    const quoted = { issues: Array.from({ length: 40 }, (_, i) => ({ kind: 'low-contrast', ref: ref(`n${i}`), text: 't'.repeat(700), message: 'Pale.' })), rhythm };
+    const whole = fitInspection(envelope, quoted) as typeof quoted & { omittedIssues?: number };
+    expect(whole.omittedIssues).toBeUndefined();
+    expect(whole.rhythm).toEqual([rhythm[0], rhythm[1], { kind: 'heading-scale', ref: ref('e'), with: { ref: ref('f') }, heading: 'h2', size: 48, h1Size: 48, message: 'Large.' }]);
+    // Long findings: the notes keep what they say, and the findings are cut to fit.
+    const issue = (i: number) => ({ kind: 'low-contrast', ref: ref(`n${i}`), text: 't'.repeat(80), message: 'm'.repeat(400) });
+    const report = { issues: Array.from({ length: 70 }, (_, i) => issue(i)), rhythm };
     const fitted = fitInspection(envelope, report) as typeof report & { omittedIssues: number };
     expect(JSON.parse(serializeResult({ ...envelope, report: fitted })).truncated).toBeUndefined();
     expect(fitted.omittedIssues).toBeGreaterThan(0);
-    expect(fitted.rhythm).toEqual([rhythm[0], rhythm[1], { kind: 'heading-scale', ref: ref('e'), with: { ref: ref('f') }, heading: 'h2', size: 48, h1Size: 48, message: 'Large.' }]);
+    expect(fitted.rhythm).toEqual(rhythm.map((n) => ({ kind: n.kind, message: n.message })));
     // The notes the bridge sent are left as they were.
     expect(rhythm[2].text).toHaveLength(80);
     expect(rhythm[2].with.text).toHaveLength(80);
+    expect(rhythm[0].layout).toBe('three card columns');
   });
 
   it('shortens, then drops, the rhythm notes when one finding of each kind is still too long for a tool result (#366)', () => {
@@ -313,6 +320,19 @@ describe('check results', () => {
     expect(dropped.rhythm).toBeUndefined();
     expect(dropped.omittedRhythm).toBe(3);
     for (const r of [short, dropped]) expect(JSON.parse(serializeResult({ ...envelope, report: r })).truncated).toBeUndefined();
+    // So close to the limit that even saying the notes went would not fit: they go without a word.
+    const tight = fitInspection(envelope, fill(Math.floor((room - bare - 4) / 3))) as Record<string, unknown>;
+    expect(tight.rhythm).toBeUndefined();
+    expect(JSON.parse(serializeResult({ ...envelope, report: tight })).truncated).toBeUndefined();
+    // Advice gives way before findings: shortening the notes is enough to keep every finding of a repeated kind.
+    const compact = rhythm.map((n) => ({ kind: n.kind, message: n.message }));
+    const overlaps = (n: number) => Array.from({ length: 6 }, (_, i) => ({ kind: 'overlap', ref, message: `${i}`.repeat(n) }));
+    const empty = JSON.stringify({ ...envelope, report: { issues: overlaps(0), rhythm: compact } }).length;
+    const repeated = { issues: overlaps(Math.floor((room - empty - 300) / 6)), rhythm };
+    const kept = fitInspection(envelope, repeated) as Record<string, unknown>;
+    expect(JSON.stringify({ ...envelope, report: repeated }).length).toBeGreaterThan(room);
+    expect(kept.omittedIssues).toBeUndefined();
+    expect(kept.rhythm).toEqual(rhythm.map((n) => ({ kind: n.kind, message: n.message })));
   });
 
   it('says each check once, with its latest result, naming its page', () => {

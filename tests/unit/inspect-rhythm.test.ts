@@ -284,8 +284,42 @@ describe.skipIf(!browserInstalled)('rhythm notes on a page', () => {
     // Named in full, the same load has a run of four.
     expect(note(await inspect(doc(cards('s1') + cards('s2') + cards('s3', { tone: 'dark' }) + cards('s4')), PAGE(ids(4))), 'crowded-actions')).toMatchObject({ sections: { first: 1, last: 4 } });
     // Three sections in one row of the page: beside each other, not after each other.
-    const band = doc(cards('s1', { columns: 2 }) + cards('s2', { columns: 2 }) + cards('s3', { columns: 2 })).replace('<main id="main">', '<main id="main" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr))">');
+    const band = doc(cards('s1', { columns: 2 }) + cards('s2', { columns: 2 }) + cards('s3', { columns: 2 })).replace('<main id="main">', '<main id="main" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-items:start">');
     expect((await inspect(band, PAGE(ids(3)))).rhythm).toEqual([]);
+    // Staggered a few pixels down the row: still one band.
+    let k = 0;
+    const staggered = band.replace(/<section /g, () => `<section style="margin-top:${2 * k++}px" `);
+    expect((await inspect(staggered, PAGE(ids(3)))).rhythm).toEqual([]);
+  }, 30000);
+
+  it('leaves a section of many boxes out of every run, and a page of more markup than it lists alone, in time', async () => {
+    // A code component rendering a long list straight under its wrapper.
+    const long = `<div style="display:contents" data-so-ctx="page:p" data-so-node="s2">${Array.from({ length: 3000 }, (_, i) => `<p style="margin:0">Line ${i}</p>`).join('')}</div>`;
+    const started = Date.now();
+    const r = await inspect(doc(cards('s1') + long + cards('s3') + cards('s4')), PAGE(ids(4)));
+    expect(Date.now() - started).toBeLessThan(8000);
+    expect(r.rhythm).toEqual([]);
+    // Hundreds of the page's own sections it does not list (a load far behind the editor): no order to tell.
+    const strays = Array.from({ length: 220 }, (_, i) => `<section data-so-ctx="page:p|x${i}" data-so-node="root" style="padding:4px">Old ${i}</section>`).join('');
+    const behind = await inspect(doc(cards('s1') + cards('s2') + strays), PAGE(ids(2)));
+    expect(behind).not.toHaveProperty('error');
+    expect(behind.rhythm).toBeUndefined();
+  }, 30000);
+
+  it('tells a split from two cards wrapped alike when only one card has a photo, and compares every panel of a band', async () => {
+    const photoCol = `<div class="col"><img class="pic" alt="" src="${PHOTO}"></div><div class="col"><h2>Story</h2><p>What happened.</p></div>`;
+    const twoCards = (id: string) => `<section ${at(id, 'root')}><ul class="cards two"><li class="card"><img class="pic" alt="" src="${PHOTO}"><h3>Ada</h3><p>Founder.</p></li><li class="card"><h3>Grace</h3><p>Designer.</p></li></ul></section>`;
+    const r = await inspect(doc(`<section ${at('s1', 'root')}><div class="split">${photoCol}</div></section>` + twoCards('s2') + twoCards('s3')), PAGE(ids(3)));
+    expect(r.rhythm).toEqual([]);
+    // One brand panel inside wrappers of navy, cream, navy, each over much of its white band.
+    const banner = (id: string, wrap: string) => `<section ${at(id, 'root')} style="padding:8px"><div style="background:${wrap};padding:16px"><div style="background:#1f5a4c;color:#fff;padding:48px"><h2>Ready ${id}?</h2><p>Start today.</p></div></div></section>`;
+    expect((await inspect(doc(banner('s1', '#14213d') + banner('s2', '#f6efe0') + banner('s3', '#14213d')), PAGE(ids(3)))).rhythm).toEqual([]);
+    expect(note(await inspect(doc(banner('s1', '#14213d') + banner('s2', '#14213d') + banner('s3', '#14213d')), PAGE(ids(3))), 'repeated-layout')).toBeDefined();
+  }, 30000);
+
+  it('counts a button that a box clips only on the other axis', async () => {
+    const sideways = (id: string) => `<section ${at(id, 'root')}><h2>Visit ${id}</h2><div style="width:60px;overflow-x:visible;overflow-y:clip"><a class="btn" href="/book/" style="transform:translateX(80px);white-space:nowrap">Book a table</a></div></section>`;
+    expect(note(await inspect(doc(sideways('s1') + sideways('s2') + sideways('s3')), PAGE(ids(3))), 'crowded-actions')).toMatchObject({ buttons: 3 });
   }, 30000);
 });
 

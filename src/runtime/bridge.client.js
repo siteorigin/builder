@@ -3324,7 +3324,7 @@ const MAX_LAYOUT_VISITS = 40;
  * address of its placement; a section that rendered nothing has no boxes. `others`: the page's own markup outside
  * every section listed (one the editor removed, on a load from before then), which still shows between them.
  */
-function pageSections(pageId, rootIds) {
+function pageSections(pageId, rootIds, deadline) {
   const own = `page:${pageId}`;
   const wanted = new Map(rootIds.map((id, i) => [id, i]));
   const found = rootIds.map(() => []);
@@ -3341,9 +3341,17 @@ function pageSections(pageId, rootIds) {
     // Document order puts a section's outer element before everything inside it.
     if (!list.some((o) => o.contains(el))) list.push(el);
   }
+  // At most one box more than a layout of columns has: a section of more (a long list a code component renders
+  // directly) is not measured, and the first boxes still place it on the page.
   const boxesOf = (els) => {
     const boxes = [];
-    for (const el of els) for (const b of getComputedStyle(el).display === 'contents' ? boxChildren(el) : [el]) if (drawn(b) && boxRect(b).height >= 1) boxes.push(b);
+    for (const el of els) {
+      const all = getComputedStyle(el).display === 'contents' ? (childrenOf(el).length > MAX_LEVEL_BOXES ? [...childrenOf(el)].slice(0, MAX_LEVEL_BOXES + 1) : boxChildren(el)) : [el];
+      for (const b of all) {
+        if (boxes.length > MAX_LEVEL_BOXES) return boxes;
+        if (getComputedStyle(b).display !== 'contents' && drawn(b) && boxRect(b).height >= 1) boxes.push(b);
+      }
+    }
     return boxes;
   };
   const areaOf = (boxes) => {
@@ -3358,13 +3366,20 @@ function pageSections(pageId, rootIds) {
     const boxes = boxesOf(found[i]);
     return { id, n: i + 1, boxes, desc: { ctx: own, node: id, items: '' }, area: areaOf(boxes) };
   });
-  // Content placed inside a section (a slot's) is that section's.
-  const placed = found.flat();
+  // Content placed inside a section (a slot's) is that section's; markup inside other markup counts once.
+  const held = new Set(found.flat());
   const others = [];
-  for (const el of strays) {
-    if (placed.some((o) => o.contains(el)) || others.some((o) => o.el.contains(el))) continue;
+  for (const [i, el] of strays.entries()) {
+    if (i % 200 === 0 && Date.now() > deadline) return null;
+    let inside = false;
+    for (let e = parentOf(el); e && !inside; e = parentOf(e)) inside = held.has(e);
+    held.add(el);
+    if (inside) continue;
     const boxes = boxesOf([el]);
-    if (boxes.length) others.push({ el, boxes, area: areaOf(boxes) });
+    if (!boxes.length) continue;
+    // More than the page lists: not a page whose order can be told.
+    if (others.length >= MAX_RHYTHM_SECTIONS) return null;
+    others.push({ el, boxes, area: areaOf(boxes) });
   }
   return { sections, others };
 }
@@ -3469,14 +3484,15 @@ const alike = (boxes) => boxes.every((b) => b.el.tagName === boxes[0].el.tagName
  * picture is on, and their proportions), a grid of repeated peers (cards, pictures or a strip of small items), or one
  * column (centred or not). A box nearly as big as the biggest (a second grid under the first) is walked too, and
  * columns it finds that differ make the layout unknown (null), as do rows that do not line up, a level with more
- * boxes than columns have, and running out of time. On the way, the innermost box of the walk that paints its own
- * surface over much of the section is its panel.
+ * boxes than columns have, and running out of time. On the way, each box of the walk that paints its own surface
+ * over much of the section is one of its panels, outermost first.
  */
 function layoutOf(section, layerOf, deadline) {
   const { area } = section;
   const sectionArea = area.width * area.height;
   const UNKNOWN = {};
-  let panel;
+  if (section.boxes.length > MAX_LEVEL_BOXES) return null;
+  const panels = [];
   let visits = 0;
   // Columns found ({ key, words }), null for none (a column of text), or UNKNOWN.
   const walk = (level, depth, main) => {
@@ -3489,7 +3505,7 @@ function layoutOf(section, layerOf, deadline) {
     for (const [i, box] of byArea.slice(0, 3).entries()) {
       if (i > 0 && box.r.width * box.r.height < big / 2) break;
       // A panel inside the band (a Call to action's brand box) is part of the section's look.
-      if (main && i === 0 && depth > 0 && layerOf(box.el).covers && big >= sectionArea * 0.4) panel = surfaceOf(box.el, layerOf);
+      if (main && i === 0 && depth > 0 && layerOf(box.el).covers && big >= sectionArea * 0.4) panels.push(surfaceOf(box.el, layerOf));
       const kids = holdsText(box.el) ? [] : flowBoxes(box.el);
       if (kids === null) return UNKNOWN;
       if (!kids.length) continue;
@@ -3501,10 +3517,10 @@ function layoutOf(section, layerOf, deadline) {
   };
   const got = walk(section.boxes.map((el) => ({ el, r: boxOf(boxRect(el)) })), 0, true);
   if (got === UNKNOWN) return null;
-  if (got) return { ...got, panel };
+  if (got) return { ...got, panels };
   const heading = section.boxes.map((b) => (b.matches(TEXT_BLOCKS) ? b : b.querySelector(TEXT_BLOCKS))).find(Boolean);
   const centered = !!heading && getComputedStyle(heading).textAlign === 'center';
-  return { key: `column:${centered ? 'center' : 'start'}`, words: centered ? 'one centred column' : 'one column', panel };
+  return { key: `column:${centered ? 'center' : 'start'}`, words: centered ? 'one centred column' : 'one column', panels };
 }
 
 /** What a level of boxes side by side is: its key (equal keys are the same layout) and the words for it. */
@@ -3512,10 +3528,13 @@ function describeColumns({ lanes, span, peers }) {
   const n = lanes.length;
   const shares = lanes.map((l) => Math.round((Math.max(...l.boxes.map((b) => b.r.width)) / span) * 20) * 5);
   const media = (b) => pictureShare(b.el, b.r) >= MEDIA_SHARE;
-  // Two columns, one of them a picture: a split, whatever wraps them, and which side its picture is on.
-  const side = n === 2 ? lanes.findIndex((l) => l.boxes.every(media)) : -1;
+  // Two columns, one of them a picture: a split, and which side its picture is on. Where the two are wrapped alike, the
+  // picture's column holds no text of its own (two cards, one with a photo, are still two cards).
+  const alikePeers = alike(peers);
+  const picture = (b) => media(b) && (!alikePeers || !b.el.querySelector(TEXT_BLOCKS));
+  const side = n === 2 ? lanes.findIndex((l) => l.boxes.every(picture)) : -1;
   const pictured = side >= 0 && !lanes[1 - side].boxes.every(media);
-  if (n === 2 && (pictured || !alike(peers))) {
+  if (n === 2 && (pictured || !alikePeers)) {
     const where = pictured ? ` with the picture on the ${side === 0 ? 'left' : 'right'}` : '';
     return { key: `split:${pictured ? (side === 0 ? 'start' : 'end') : 'none'}:${shares.join('/')}`, words: `two columns${where}` };
   }
@@ -3525,14 +3544,21 @@ function describeColumns({ lanes, span, peers }) {
   return { key: `grid:${kind}:${n}:${even ? 'even' : shares.join('/')}`, words };
 }
 
-/** Whether a box can be seen where it is laid out: in the viewport's width, and not scrolled or clipped out of a box. */
+/**
+ * Whether a box can be seen where it is laid out: in the viewport's width, and not scrolled or clipped out of a box
+ * around it (on each axis the box clips, inside its padding edge).
+ */
 function inView(el, r, vw, stop) {
   if (r.right <= 0 || r.left >= vw) return false;
   for (let e = parentOf(el); e && e !== parentOf(stop); e = parentOf(e)) {
     const s = getComputedStyle(e);
-    if (s.overflowX === 'visible' && s.overflowY === 'visible') continue;
-    const c = crossing(boxOf(r), boxOf(boxRect(e)));
-    if (c.w <= 1 || c.h <= 1) return false;
+    const clipsX = s.overflowX !== 'visible';
+    const clipsY = s.overflowY !== 'visible';
+    if (!clipsX && !clipsY) continue;
+    const b = boxRect(e);
+    const pad = { x: b.left + e.clientLeft, y: b.top + e.clientTop, width: e.clientWidth, height: e.clientHeight };
+    const c = crossing(boxOf(r), pad);
+    if ((clipsX && c.w <= 1) || (clipsY && c.h <= 1)) return false;
   }
   return true;
 }
@@ -3580,7 +3606,9 @@ function filledButtons(section, layerOf, read, budget, vw) {
 function rhythm(vw, page, deadline) {
   const read = colorReader();
   try {
-    const { sections, others } = pageSections(page.pageId, page.rootIds.slice(0, MAX_RHYTHM_SECTIONS));
+    const found = pageSections(page.pageId, page.rootIds.slice(0, MAX_RHYTHM_SECTIONS), deadline);
+    if (!found) return null;
+    const { sections, others } = found;
     if (sections.filter((s) => s.boxes.length).length < 2) return null;
     const layerOf = layerCache(read);
     const tone = (a, b) => !!a && !!b && Math.abs(luminance(a) - luminance(b)) <= SAME_LUMINANCE;
@@ -3589,12 +3617,12 @@ function rhythm(vw, page, deadline) {
       if (Date.now() > deadline) return null;
       if (!s.boxes.length) continue;
       // The surface behind the section: one band, or boxes that all sit on the same one.
-      const surfaces = s.boxes.map((b) => (pictureShare(b, boxOf(boxRect(b))) < 0.5 ? surfaceOf(b, layerOf) : null));
+      const surfaces = s.boxes.length > MAX_LEVEL_BOXES ? [null] : s.boxes.map((b) => (pictureShare(b, boxOf(boxRect(b))) < 0.5 ? surfaceOf(b, layerOf) : null));
       s.surface = surfaces.every((c) => tone(c, surfaces[0])) ? surfaces[0] : null;
       // At phone width most sections stack into one column by design: only columns still side by side compare.
       s.layout = layoutOf(s, layerOf, deadline);
       if (s.layout && vw < PHONE_MAX_WIDTH && s.layout.key.startsWith('column:')) s.layout = null;
-      s.buttons = filledButtons(s, layerOf, read, budget, vw);
+      s.buttons = s.boxes.length > MAX_LEVEL_BOXES ? 0 : filledButtons(s, layerOf, read, budget, vw);
     }
     if (Date.now() > deadline) return null;
     const notes = [];
@@ -3604,8 +3632,9 @@ function rhythm(vw, page, deadline) {
       .sort((a, b) => a.area.top - b.area.top || (a.n ?? Infinity) - (b.n ?? Infinity))
       .forEach((s, i) => (s.shown = i));
     // Runs of sections in a row: shown one after another and below each other (not side by side in one band), and
-    // unbroken by one that rendered nothing (a page the preview has not caught up with).
-    const next = (prev, s) => !!prev.boxes.length && !!s.boxes.length && s.shown === prev.shown + 1 && s.area.top > prev.area.top + 1;
+    // unbroken by one that rendered nothing (a page the preview has not caught up with). Below means starting past
+    // the middle of the one before: a section pulled up over its neighbour still follows it.
+    const next = (prev, s) => !!prev.boxes.length && !!s.boxes.length && s.shown === prev.shown + 1 && s.area.top > prev.area.top + prev.area.height / 2;
     const longest = (same) => {
       let best = null;
       let start = 0;
@@ -3616,7 +3645,8 @@ function rhythm(vw, page, deadline) {
       }
       return best;
     };
-    const sameLook = (first, s) => !!first.layout && !!s.layout && first.layout.key === s.layout.key && tone(first.surface, s.surface) && (first.layout.panel === undefined ? s.layout.panel === undefined : tone(first.layout.panel, s.layout.panel));
+    const samePanels = (a, b) => a.length === b.length && a.every((c, i) => tone(c, b[i]));
+    const sameLook = (first, s) => !!first.layout && !!s.layout && first.layout.key === s.layout.key && tone(first.surface, s.surface) && samePanels(first.layout.panels, s.layout.panels);
     const repeated = longest((first, s) => sameLook(first, s));
     const ends = (run) => ({ sections: { first: run[0].n, last: run[run.length - 1].n }, desc: run[0].desc, with: { desc: run[run.length - 1].desc } });
     if (repeated) {
@@ -3642,7 +3672,7 @@ function rhythm(vw, page, deadline) {
     // Headings: inner headings as large as the page's one h1. A page with more than one inspection measures is left
     // alone: an h1 or a heading past the cap could change the answer.
     const heads = [];
-    for (const s of sections) for (const b of s.boxes) for (const h of [b, ...b.querySelectorAll(HEADINGS)]) if (h.matches(HEADINGS)) heads.push(h);
+    for (const s of [...sections, ...others]) for (const b of s.boxes) for (const h of [b, ...b.querySelectorAll(HEADINGS)]) if (h.matches(HEADINGS)) heads.push(h);
     const shown = heads.length <= MAX_RHYTHM_HEADINGS ? heads.filter((h) => h.textContent.trim() && drawn(h) && !visuallyHidden(h)) : [];
     const h1s = shown.filter((h) => h.tagName === 'H1');
     if (h1s.length === 1) {
@@ -3673,7 +3703,11 @@ function rhythm(vw, page, deadline) {
     // Markup the measurement cannot read leaves the rhythm out, never the report.
     return null;
   } finally {
-    read.dispose();
+    try {
+      read.dispose();
+    } catch {
+      // A page's own element of the probe's name: the probe is left, never the report.
+    }
   }
 }
 
