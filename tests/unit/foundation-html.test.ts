@@ -479,6 +479,34 @@ describe('shell.header', () => {
     expect(rule).toMatch(/object-fit:\s*contain/);
   });
 
+  it('shows the logo at the chosen size, medium by default (#576)', () => {
+    const wordmark = { src: '/assets/mark.png', alt: 'Studio wordmark', width: 2400, height: 400, srcset: '/assets/mark-480w.png 480w, /assets/mark.png 2400w' };
+    const img = (props: Record<string, unknown>) => brand(html('shell.header', { siteName: 'Test Studio', logo: wordmark, showSiteName: false, ...props })).match(/<img\b[^>]*>/)![0];
+    const sizesOf = (tag: string) => tag.match(/\bsizes="([^"]*)"/)?.[1];
+    // The default keeps the header every site already has.
+    expect(img({})).toMatch(/class="[^"]*\bso-header__logo so-header__logo--medium\b/);
+    expect(sizesOf(img({}))).toBe('160px');
+    // A 6:1 wordmark would be 156px wide at 26px tall and 276px at 46px: each stops at its size's widest.
+    expect(img({ logoSize: 'small' })).toMatch(/\bso-header__logo--small\b/);
+    expect(sizesOf(img({ logoSize: 'small' }))).toBe('130px');
+    expect(img({ logoSize: 'large' })).toMatch(/\bso-header__logo--large\b/);
+    expect(sizesOf(img({ logoSize: 'large' }))).toBe('220px');
+    const square = { ...wordmark, width: 400, height: 400 };
+    const squareAt = (logoSize: string) => sizesOf(brand(html('shell.header', { siteName: 'Test Studio', logo: square, showSiteName: false, logoSize })).match(/<img\b[^>]*>/)![0]);
+    expect(squareAt('small')).toBe('26px');
+    expect(squareAt('medium')).toBe('34px');
+    expect(squareAt('large')).toBe('46px');
+    // A value the header doesn't know shows as medium, a name inside a list as much as an unknown name.
+    expect(img({ logoSize: 'huge' })).toMatch(/\bso-header__logo--medium\b/);
+    expect(img({ logoSize: ['large'] })).toMatch(/\bso-header__logo--medium\b/);
+    const css = bundle.defs['shell.header'].source!;
+    const rule = (size: string) => css.match(new RegExp(`\\.so-header__brand :global\\(\\.so-header__logo--${size}\\)\\s*\\{([^}]*)\\}`))![1];
+    expect(rule('small')).toMatch(/height:\s*26px/);
+    expect(rule('small')).toMatch(/max-width:\s*130px/);
+    expect(rule('large')).toMatch(/height:\s*46px/);
+    expect(rule('large')).toMatch(/max-width:\s*220px/);
+  });
+
   describe('notice', () => {
     const contactId = () => Object.values(bundle.state.pages).find((p) => p.route === '/contact/')!.id;
     /** The notice bar's markup, without Svelte's scoping classes or the whitespace between tags. */

@@ -3,6 +3,7 @@ import type { ListItem, NodeTree, OwnerRef, ProjectState, PropSchema } from '@sh
 import { groupFields, listItemImage, listRowTitle } from '@shared/fields';
 import { effectiveItem } from '@shared/page-teasers';
 import { formServiceSetup } from '@catalogue/foundation/form';
+import { headerHiddenProps } from '@shared/header-logo';
 import { displayName } from './tree';
 import { pageShowing, partName } from '@shared/page-shell';
 
@@ -57,8 +58,9 @@ export function locateField(state: ProjectState, target: FieldTarget, currentPag
   const def = has(state.components, node.definitionId);
   if (!def) return { ok: false, message: 'That component is missing from the project.' };
   const name = displayName(state, node);
-  // A contact form's Content leaves out the settings of the services it is not using.
-  const groups = fieldsOf(def.properties, formServiceSetup(def, node.props)?.hidden);
+  // A contact form's Content leaves out the settings of the services it is not using, and a header without a logo
+  // leaves out the logo's size.
+  const groups = fieldsOf(def.properties, [...(formServiceSetup(def, node.props)?.hidden ?? []), ...headerHiddenProps(state, def, node.props)]);
   const group = groups.find((g) => g.items.some((i) => i.key === prop));
   const entry = group?.items.find((i) => i.key === prop);
   const keys = (gs: typeof groups) => gs.flatMap((g) => g.items.map((i) => i.key)).join(', ');

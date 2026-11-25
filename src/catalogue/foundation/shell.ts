@@ -29,6 +29,7 @@ const HEADER_SOURCE = `<script>
 		sticky = true,
 		surface = 'background',
 		showSiteName = true,
+		logoSize = 'medium',
 		notice = '',
 		noticeLabel = '',
 		noticeLink = null,
@@ -61,8 +62,13 @@ const HEADER_SOURCE = `<script>
 	const nameShown = $derived(!!name && (showSiteName || !logo?.src));
 	// A logo shown alone names the link by its own alternative text, which matches what it visibly says.
 	const logoAlt = $derived(logo?.src && !logo.decorative && typeof logo.alt === 'string' ? logo.alt.trim() : '');
-	// The logo shows 34px tall and at most 160px wide, so a small copy of the picture is all it needs.
-	const logoSizes = $derived(logo?.width > 0 && logo?.height > 0 ? \`\${Math.min(160, Math.ceil((34 * logo.width) / logo.height))}px\` : '160px');
+	// The logo shows at one of three heights, each with its widest, so a small copy of the picture is all it needs.
+	const LOGO_BOXES = { small: [26, 130], medium: [34, 160], large: [46, 220] };
+	const logoBox = $derived(typeof logoSize === 'string' && Object.hasOwn(LOGO_BOXES, logoSize) ? logoSize : 'medium');
+	const logoSizes = $derived.by(() => {
+		const [tall, wide] = LOGO_BOXES[logoBox];
+		return logo?.width > 0 && logo?.height > 0 ? \`\${Math.min(wide, Math.ceil((tall * logo.width) / logo.height))}px\` : \`\${wide}px\`;
+	});
 	// The notice above the header, on every page that shows it. Its words show it, so clearing them removes it
 	// (link and all); its link follows them once it has both a label and somewhere to go.
 	const noticeText = $derived(typeof notice === 'string' ? notice.trim() : '');
@@ -294,7 +300,7 @@ const HEADER_SOURCE = `<script>
 		<!-- Without the visible name, the link is still named for screen readers. -->
 		<a class="so-header__brand" href={resolve('/')} aria-label={nameShown || logoAlt ? undefined : name || text().home}>
 			{#if logo?.src}
-				<SoImage image={nameShown ? { ...logo, decorative: true } : logo} class="so-header__logo" sizes={logoSizes} eager />
+				<SoImage image={nameShown ? { ...logo, decorative: true } : logo} class={\`so-header__logo so-header__logo--\${logoBox}\`} sizes={logoSizes} eager />
 			{/if}
 			{#if nameShown}
 				<span>{name}</span>
@@ -466,11 +472,25 @@ const HEADER_SOURCE = `<script>
 		letter-spacing: -0.02em;
 		text-decoration: none;
 	}
+	/* On a narrow phone a logo shrinks, letterboxed, to leave the menu and the switch their room: only once the name
+	   beside it has wrapped as far as it can (it gives up its room first), so a logo that fits keeps its size. */
+	.so-header__brand > :global(span) {
+		flex-shrink: 1000;
+	}
 	.so-header__brand :global(.so-header__logo) {
 		width: auto;
+		min-width: 0;
 		max-width: 160px;
 		height: 34px;
 		object-fit: contain;
+	}
+	.so-header__brand :global(.so-header__logo--small) {
+		max-width: 130px;
+		height: 26px;
+	}
+	.so-header__brand :global(.so-header__logo--large) {
+		max-width: 220px;
+		height: 46px;
 	}
 	/* The menu button keeps its whole 44 × 44 target beside the brand, however long the name: the brand wraps instead. */
 	.so-header__menu {
@@ -746,6 +766,11 @@ export const header: ComponentDefinition = {
     siteName: P.str('Site name', 'Studio'),
     logo: P.image('Logo'),
     showSiteName: { ...P.bool('Show site name', true), description: 'With a logo, turn this off to show the logo alone.' },
+    logoSize: { ...P.choice('Logo size', 'medium', [
+      ['small', 'Small'],
+      ['medium', 'Medium'],
+      ['large', 'Large']
+    ]), description: 'How tall the logo shows: small for a wide wordmark, large for a compact mark.' },
     // A link can show under the link above it, in that link's submenu: the menu stays one list, so moving links
     // and adding pages work as they always have.
     links: P.list('Navigation', 'Link', {
