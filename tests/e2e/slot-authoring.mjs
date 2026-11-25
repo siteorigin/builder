@@ -1,8 +1,9 @@
 // Slot authoring in Component Studio (#655), against the real app. An author gives a project component a Buttons
 // slot from the Inspector: declared and placed inside the selected container in one Undo. They rename it and choose
 // what it takes and how many, Insert offers its placeholder again once it is taken out of the design, and the
-// component placed on a page takes only what its slot allows. A tighter contract, or removing the slot, while the
-// page holds content there is refused with the engine's reason, and that content stays.
+// component placed on a page takes only what its slot allows. A tighter contract while the page holds content there is
+// refused with the engine's reason, and that content stays. Removing the slot then reviews where it holds content
+// (#663): Go to placement shows the card on the page, selected, and Remove slot and its content takes both in one Undo.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { createProject, eventually, launch, MOD, openInspector, scratch, step } from './harness.mjs';
@@ -170,7 +171,7 @@ assert.match(await refusal([{ type: 'node.insert', owner: page, parentId: instan
 await eventually(async () => assert.equal(await frame.getByText('Book your place', { exact: true }).count(), 1, 'the page shows the slot’s content, once'), 30000);
 const wordsNode = (await snapshot()).state.pages[pageId].nodes[words];
 
-step('a tighter contract, or removing the slot, is refused with the engine’s reason, and the content stays');
+step('a tighter contract is refused with the engine’s reason, and the content stays');
 await openStudio();
 await openRail('Layers');
 await selectRow('root');
@@ -185,11 +186,48 @@ assert.equal((await design()).slots.buttons.max, 1, 'the contract is unchanged')
 assert.deepEqual(await held(), [words], 'and so is the page’s content');
 assert.deepEqual((await snapshot()).state.pages[pageId].nodes[words], wordsNode, 'word for word');
 await form.getByRole('button', { name: 'Cancel' }).click();
-await inspector.locator('[data-slot="buttons"]').getByRole('button', { name: 'Remove Actions' }).click();
-await win.locator('.toast.error', { hasText: /The "Actions" slot has content in 1 place \(Home\)\. Move or remove it first\./ }).waitFor();
+
+step('removing the slot while Home fills it reviews where, and Go to placement leaves the studio with the card selected');
+const review = win.locator('.modal[role="dialog"]', { hasText: 'Remove the Actions slot?' });
+const removeActions = async () => {
+  await inspector.locator('[data-slot="buttons"]').getByRole('button', { name: 'Remove Actions' }).click();
+  await review.waitFor();
+};
+const unchanged = (await snapshot()).revision;
+await removeActions();
+assert.match(await review.innerText(), /It holds content on 1 placement\./, 'the review says how many placements fill it');
+assert.equal(await review.getByRole('button', { name: /^Go to placement/ }).count(), 1, 'one row, for the card on Home');
+await win.waitForTimeout(300);
+await win.screenshot({ path: join(SHOTS, 'slot-authoring-removal-review.png') });
+assert.equal((await snapshot()).revision, unchanged, 'opening the review changes nothing');
+await review.getByRole('button', { name: 'Go to placement: Home' }).click();
+await review.waitFor({ state: 'detached' });
+await band.waitFor({ state: 'detached' });
+await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-owner="page:${pageId}"][data-node="${instance.id}"]`).getAttribute('aria-selected'), 'true', 'the card is selected on Home'), 15000);
 assert.ok((await design()).slots?.buttons, 'the slot stays');
 assert.deepEqual(await held(), [words], 'with its content');
 assert.deepEqual((await snapshot()).state.pages[pageId].nodes[words], wordsNode, 'word for word');
+
+step('Remove slot and its content takes both in one change, and its Undo puts both back');
+await openStudio();
+await openRail('Layers');
+await selectRow('root');
+await expand('Slots');
+await removeActions();
+const removing = (await snapshot()).revision;
+await review.getByRole('button', { name: 'Remove slot and its content' }).click();
+await review.waitFor({ state: 'detached' });
+await eventually(async () => {
+  assert.equal((await design()).slots, undefined, 'the slot is gone');
+  assert.equal((await snapshot()).state.pages[pageId].nodes[words], undefined, 'with what Home held in it');
+});
+assert.equal((await snapshot()).revision, removing + 1, 'in one change');
+await win.locator('.toast', { hasText: 'Removed the Actions slot and its content' }).getByRole('button', { name: 'Undo' }).click();
+await eventually(async () => {
+  assert.ok((await design()).slots?.buttons, 'Undo brings the slot back');
+  assert.deepEqual(await held(), [words], 'with Home’s content');
+  assert.deepEqual((await snapshot()).state.pages[pageId].nodes[words], wordsNode, 'word for word');
+});
 
 step('once the page’s content is gone, the slot goes with its placeholder');
 await apply([{ type: 'node.remove', owner: page, nodeId: words }], 'Empty the slot');
