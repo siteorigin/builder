@@ -1459,11 +1459,19 @@ export interface ListReveal {
   itemId: string;
 }
 
+/**
+ * The list editor showing each fill's list now, by fill: a fill that waits for saves before it is made checks the
+ * rows shown when it is made, in whichever editor shows them by then (the author may have moved away and back).
+ */
+const fillRoots = new Map<string, HTMLElement>();
+
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
 /** A way to fill a list in one step from elsewhere in the project, offered under it (the footer's links from the header menu). */
 export interface ListFill {
+  /** Names the list it fills, the same for every editor that shows that list. */
+  id: string;
   /** What its button says. */
   label: string;
   /** Said under the button: what it does to the rows already here. */
@@ -1855,6 +1863,13 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
   const fillNoteId = useId();
   // While a fill is being applied it can't be asked for again.
   const [filling, setFilling] = useState(false);
+  const fillId = fill?.id;
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!fillId || !root) return;
+    fillRoots.set(fillId, root);
+    return () => void (fillRoots.get(fillId) === root && fillRoots.delete(fillId));
+  }, [fillId]);
   const ids = items.map((i) => i.id).join(',');
   useEffect(() => {
     const a = after.current;
@@ -2176,8 +2191,10 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
               onClick={() => {
                 if (fill.blocked || filling) return;
                 // Text a row's field refused would go with the rows it replaces: it is corrected or discarded first.
+                const id = fill.id;
                 const refused = () => {
-                  const kept = rootRef.current && refusedWithin(rootRef.current);
+                  const root = fillRoots.get(id) ?? rootRef.current;
+                  const kept = root && refusedWithin(root);
                   if (!kept) return false;
                   toast(`${kept.message} Correct it or press Escape in it, then ${fill.label.toLowerCase()} again.`, 'error');
                   kept.field.focus();

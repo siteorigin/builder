@@ -156,10 +156,11 @@ const linkCount = (n: number) => `${n} link${n === 1 ? '' : 's'}`;
  */
 function footerCopyFill(state: ProjectState): ListFill | undefined {
   const plan = footerCopyPlan(state);
-  if (!plan) return undefined;
+  if (!plan || plan.op.type !== 'instance.setProp') return undefined;
   const replaces = plan.replaces === 1 ? 'Replaces the link here.' : plan.replaces ? `Replaces the ${plan.replaces} links here.` : null;
   const fits = plan.left ? `Only the first ${plan.count} fit.` : null;
   return {
+    id: `footer-links:${plan.op.nodeId}`,
     label: 'Copy from header menu',
     note: [replaces, fits].filter(Boolean).join(' ') || null,
     blocked: plan.matches ? 'These links already match the header menu.' : null,
@@ -170,6 +171,9 @@ function footerCopyFill(state: ProjectState): ListFill | undefined {
 /** A copy on its way, by the opening of its project: asked for again there (from a list editor shown again
  *  meanwhile), it is the same copy. */
 let copying: { key: string; run: Promise<void> } | null = null;
+/** How long a copy waits for saves already on their way before it is planned without them (and refused, if they
+ *  land first): a save that never answers does not hold it. */
+const COPY_WAIT_MS = 5000;
 
 /**
  * Copy the header menu into the footer's links. A row edit saved as the author left it for the button lands first;
@@ -180,7 +184,9 @@ function copyHeaderMenuToFooter(refused: () => boolean): Promise<void> {
   const key = getState().snapshot?.workspaceKey ?? '';
   if (copying?.key === key) return copying.run;
   const run: Promise<void> = (async () => {
-    await appliesLanded();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([appliesLanded(), new Promise<void>((r) => (timer = setTimeout(r, COPY_WAIT_MS)))]);
+    clearTimeout(timer);
     const now = getState().snapshot;
     if (!now || now.workspaceKey !== key || refused()) return;
     const plan = footerCopyPlan(now.state);
