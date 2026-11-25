@@ -53,7 +53,9 @@ const FONT_FACE = z.object({
   weight: z.string().regex(FONT_WEIGHT_RE),
   style: z.enum(['normal', 'italic'])
 });
-const styleValue = z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() })]);
+/** A style's token link: `{ token }`, or a colour token at part strength, `{ token, alpha }` (checked by validateStyleValue). */
+export const STYLE_TOKEN_REF = z.object({ token: z.string(), alpha: z.number().optional() }).strict();
+const styleValue = z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF]);
 // Strict, so a value naming two sources ({ $prop, $state }) is refused rather than read as whichever comes first.
 const contentBinding = [z.object({ $prop: z.string(), field: z.string().optional() }).strict(), z.object({ $item: z.string() }).strict()] as const;
 const binding = z.union([...contentBinding, z.object({ $state: z.string() }).strict(), z.object({ $entry: z.string().max(80) }).strict()]);
@@ -352,7 +354,7 @@ export const OPERATION_SCHEMAS = {
     scope,
     state: styleState.optional(),
     property: z.string().describe('Style property ID, e.g. paddingBlock, background, textStyle, gap, columns.'),
-    value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. objectPosition also takes a focal point "X% Y%" (each 0 to 100). gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem" or "repeat(auto-fit, minmax(18rem, 1fr))"; rowSpan 1 to 6. null removes the override.')
+    value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. color and background also take a color token at part strength, {"token": "color.surface", "alpha": 0.7} for 70%, for a see-through surface (with backdropBlur, frosted glass); a plain {"token"} sets it back to full strength. objectPosition also takes a focal point "X% Y%" (each 0 to 100). gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem" or "repeat(auto-fit, minmax(18rem, 1fr))"; rowSpan 1 to 6. null removes the override.')
   }),
   'node.resetStyles': z.object({
     type: z.literal('node.resetStyles'),

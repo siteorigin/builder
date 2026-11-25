@@ -2,7 +2,7 @@ import { variantOptions } from '@shared/variants';
 import type { OwnerRef, ProjectState, PropSchema, ResponsiveStyles, TokenDef } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { getTheme } from '@catalogue/index';
-import { linkOf } from '@shared/styles';
+import { colorAtStrength, linkOf } from '@shared/styles';
 import { allTrees } from './tree';
 import { itemStyleRecords } from '@shared/item-styles';
 
@@ -21,6 +21,18 @@ const refOf = (v: unknown): string | null =>
   v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { token?: unknown }).token === 'string' ? (v as { token: string }).token : null;
 
 /**
+ * What replaces a style's link, at the strength the link painted: another token at the same strength, or the
+ * literal colour mixed to it, so a see-through surface stays see-through when its token is replaced or kept as a value.
+ */
+function atStrengthOf(link: unknown, next: unknown): unknown {
+  const alpha = (link as { alpha?: unknown }).alpha;
+  if (typeof alpha !== 'number' || !(alpha < 1)) return next;
+  const ref = refOf(next);
+  if (ref) return { token: ref, alpha };
+  return typeof next === 'string' ? colorAtStrength(next.trim(), alpha) : next;
+}
+
+/**
  * Visit every `{ token }` reference held in project-owned data: page and shell node styles, instance overrides
  * (shared and per item), project component trees and variant rules, token overrides and custom token values
  * (including text-style families). Theme-owned definitions and theme defaults are fixed data, so they are not visited.
@@ -31,7 +43,7 @@ export function forEachTokenRef(state: ProjectState, fn: (tokenId: string, site:
       if (!scope) continue;
       for (const [k, v] of Object.entries(scope)) {
         const ref = refOf(v);
-        if (ref) fn(ref, { label, kind: 'style', property: k, replace: (next) => (scope[k] = next as never) });
+        if (ref) fn(ref, { label, kind: 'style', property: k, replace: (next) => (scope[k] = atStrengthOf(v, next) as never) });
       }
     }
   };

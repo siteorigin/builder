@@ -1,5 +1,5 @@
 import { isFocusValue } from './focus';
-import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleState, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleState, StyleTokenRef, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 import { parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
 
 /**
@@ -32,6 +32,8 @@ export interface StylePropDef {
 
 /** How far a shift can move an element, by unit. */
 export const TRANSLATE_LIMITS = { px: 500, rem: 32, em: 32, '%': 100 } as const;
+/** How strong a backdrop blur can be, by unit: a wider blur costs every frame that scrolls beneath it. */
+export const BLUR_LIMITS = { px: 64, rem: 4, em: 4 } as const;
 /** Browsers only transform boxes: an inline run of text has none of its own. */
 const INLINE_NOTE = ' Plain inline text, such as a link inside a sentence, does not move.';
 const TRANSFORM_ORIGINS = ['center', 'top', 'bottom', 'left', 'right', 'top left', 'top right', 'bottom left', 'bottom right'];
@@ -136,7 +138,7 @@ export const STYLE_PROPS: StylePropDef[] = [
     { value: 'start', label: 'Left' }, { value: 'center', label: 'Center' }, { value: 'end', label: 'Right' }
   ] },
   { id: 'color', label: 'Text color', group: 'appearance', kind: 'color', tokenGroup: 'color' },
-  { id: 'background', label: 'Background', description: 'A color, or a linear-, radial- or conic-gradient().', group: 'appearance', kind: 'color', tokenGroup: 'color' },
+  { id: 'background', label: 'Background', description: 'A color, or a linear-, radial- or conic-gradient(). A Site styles color can be made see-through.', group: 'appearance', kind: 'color', tokenGroup: 'color' },
   { id: 'border', label: 'Border', group: 'appearance', kind: 'border', tokenGroup: 'border' },
   edge('borderBlockStart', 'Border top', 'appearance', 'border', 'border', '1px solid #ddd'),
   edge('borderBlockEnd', 'Border bottom', 'appearance', 'border', 'border', '1px solid #ddd'),
@@ -145,6 +147,9 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'radius', label: 'Corner radius', group: 'appearance', kind: 'length', tokenGroup: 'radius', placeholder: '8px' },
   { id: 'shadow', label: 'Shadow', group: 'appearance', kind: 'shadow', tokenGroup: 'shadow' },
   { id: 'opacity', label: 'Opacity', group: 'appearance', kind: 'number', min: 0, max: 1, step: 0.05 },
+  { id: 'backdropBlur', label: 'Backdrop blur', group: 'appearance', kind: 'length', advanced: true, placeholder: '12px', description: `Blurs what shows through a see-through background, for frosted glass: pair it with a background at less than full strength. 0 or one length in px, rem or em, at most ${BLUR_LIMITS.px}px.`, options: [
+    { value: '0', label: 'None' }, { value: '4px', label: 'Light' }, { value: '12px', label: 'Frosted' }, { value: '24px', label: 'Heavy' }
+  ] },
   { id: 'position', label: 'Position', group: 'position', kind: 'enum', description: 'Sticky keeps it in view while scrolling; absolute places it inside the nearest positioned parent.', options: [
     { value: 'static', label: 'Normal' }, { value: 'relative', label: 'Relative' }, { value: 'sticky', label: 'Sticky' }, { value: 'absolute', label: 'Absolute' }
   ] },
@@ -172,7 +177,7 @@ export const STYLE_PROP_MAP: Record<string, StylePropDef> = Object.fromEntries(S
 
 /**
  * The style properties a rule for an interactive state (hover, focus, pressed) may set: how the element looks (its
- * colors, background, borders, corners, shadow and opacity), never its layout, size, visibility or motion, which
+ * colors, background, borders, corners, shadow, opacity and backdrop blur), never its layout, size, visibility or motion, which
  * would move what is around it, or the transition that animates the change (that belongs on its resting style).
  */
 export const STATE_STYLE_PROPS: readonly string[] = STYLE_PROPS.filter((p) => p.group === 'appearance').map((p) => p.id);
@@ -194,7 +199,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
   const margins = ['marginBlockStart', 'marginBlockEnd', 'marginInlineStart', 'marginInlineEnd'];
   const spacing = [...margins, 'paddingBlock', 'paddingInline', 'paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd'];
   const borders = ['border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd'];
-  const appearance = ['color', 'background', ...borders, 'radius', 'shadow', 'opacity'];
+  const appearance = ['color', 'background', ...borders, 'radius', 'shadow', 'opacity', 'backdropBlur'];
   // How an item sits inside a grid or stack parent.
   const child = ['columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'order'];
   const placed = ['position', 'inset', 'zIndex'];
@@ -206,7 +211,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
     case 'image':
       return ['width', 'maxWidth', 'minWidth', 'height', 'maxHeight', 'aspectRatio', 'objectFit', 'objectPosition', 'radius', 'shadow', ...borders, ...margins, 'opacity', ...child, ...placed, ...end];
     case 'link':
-      return ['width', 'minWidth', ...margins, 'color', 'background', 'radius', ...child, ...placed, ...end];
+      return ['width', 'minWidth', ...margins, 'color', 'background', 'radius', 'backdropBlur', ...child, ...placed, ...end];
     case 'icon':
       return ['color', 'fontSize', 'background', 'radius', ...margins, ...child, ...placed, ...end];
     case 'element':
@@ -231,7 +236,7 @@ export function partStyleControls(def: Pick<ComponentDefinition, 'parts' | 'tree
 }
 
 /** What a code component's part offers when it names no controls of its own. */
-const CODE_PART_CONTROLS = ['paddingBlock', 'background', 'color', 'border', 'radius', 'shadow', 'opacity', 'hidden'];
+const CODE_PART_CONTROLS = ['paddingBlock', 'background', 'color', 'border', 'radius', 'shadow', 'opacity', 'backdropBlur', 'hidden'];
 
 /**
  * The style controls the inspector offers on one part of a placement: undefined offers every property, null means
@@ -307,6 +312,34 @@ export function linkOf(v: unknown, group?: TokenGroup): string | null {
 
 export function tokenVar(tokenId: string): string {
   return `--so-${tokenId.replace(/[^a-zA-Z0-9]+/g, '-')}`;
+}
+
+/** Whether a link paints its token at part strength: an alpha below 1. */
+export const partStrength = (ref: StyleTokenRef): boolean => typeof ref.alpha === 'number' && ref.alpha < 1;
+
+/**
+ * A colour at part strength, as CSS: mixed with transparent, so 0.7 paints it at 70% (a colour already see-through
+ * is made more so: half-transparent at 0.7 paints at 35%).
+ */
+export function colorAtStrength(color: string, alpha: number): string {
+  return `color-mix(in srgb, ${color} ${Math.round(Math.min(1, Math.max(0, alpha)) * 10000) / 100}%, transparent)`;
+}
+
+/** A style's token link as CSS: the token's variable, mixed to its strength when below full. */
+export function tokenRefCss(ref: StyleTokenRef): string {
+  const css = `var(${tokenVar(ref.token)})`;
+  return partStrength(ref) ? colorAtStrength(css, ref.alpha!) : css;
+}
+
+/**
+ * A token link as stored: exactly `{ token }`, or `{ token, alpha }` when below full strength, token first, so equal
+ * links compare equal. Anything else is returned as it is.
+ */
+export function canonicalStyleValue(v: StyleValue): StyleValue {
+  if (typeof v !== 'object' || v === null || typeof v.token !== 'string') return v;
+  // A malformed link (another key, a strength out of range) is left as it is, so it never compares equal to a good one.
+  if (Object.keys(v).some((k) => k !== 'token' && k !== 'alpha') || (v.alpha !== undefined && !(typeof v.alpha === 'number' && v.alpha >= 0 && v.alpha <= 1))) return v;
+  return partStrength(v) ? { token: v.token, alpha: v.alpha } : { token: v.token };
 }
 
 /** A length literal: a number with a unit, or a unitless zero (CSS drops any other unitless number). */
@@ -781,6 +814,17 @@ export function isTranslate(value: string): boolean {
   return n <= TRANSLATE_LIMITS[m[2] as keyof typeof TRANSLATE_LIMITS];
 }
 
+const BLUR_RE = /^(\d+(?:\.\d+)?|\.\d+)(px|rem|em)?$/;
+
+/** A backdrop blur: 0, or one length in px, rem or em within BLUR_LIMITS. blur() takes no percentage. */
+export function isBackdropBlur(value: string): boolean {
+  const m = BLUR_RE.exec(value.trim());
+  if (!m) return false;
+  const n = Number(m[1]);
+  if (!m[2]) return n === 0;
+  return n <= BLUR_LIMITS[m[2] as keyof typeof BLUR_LIMITS];
+}
+
 /** What each transition preset animates. Each lists properties these style controls can change. */
 const TRANSITION_PROPERTIES: Record<string, string> = {
   none: 'none',
@@ -801,6 +845,23 @@ export const TRANSLATE_DECL = `translate: var(${TRANSLATE_VARS.translateX}, 0px)
 /** Named easing curves beyond the CSS keywords. */
 const EASING_CURVES: Record<string, string> = { smooth: 'cubic-bezier(0.2, 0, 0, 1)', overshoot: 'cubic-bezier(0.34, 1.56, 0.64, 1)' };
 
+/**
+ * Why a token link cannot be written for a property as it is shaped: a key other than `token` and `alpha`, a
+ * strength on anything but a colour, or a strength outside 0 to 1. Null for a link that fits (which token it names
+ * is checked elsewhere).
+ */
+export function linkShapeError(propId: string, value: StyleTokenRef): string | null {
+  const def = Object.hasOwn(STYLE_PROP_MAP, propId) ? STYLE_PROP_MAP[propId] : undefined;
+  if (!def) return `Unknown style property "${propId}".`;
+  const extra = Object.keys(value).find((k) => k !== 'token' && k !== 'alpha');
+  if (extra !== undefined) return `A token reference holds "token"${def.kind === 'color' ? ' and "alpha"' : ''} only, not "${extra.slice(0, 40)}".`;
+  if (value.alpha === undefined) return null;
+  if (def.kind !== 'color') return `${def.label} takes its token at full strength: only a color can be see-through.`;
+  if (typeof value.alpha !== 'number' || !Number.isFinite(value.alpha) || value.alpha < 0 || value.alpha > 1)
+    return `${def.label} strength ("alpha") must be a number from 0 to 1, such as 0.7 for 70%.`;
+  return null;
+}
+
 /** Validate a literal style value. Returns an error message or null. */
 export function validateStyleValue(propId: string, value: StyleValue): string | null {
   const def = STYLE_PROP_MAP[propId];
@@ -810,7 +871,7 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
     if (!def.tokenGroup) return `${def.label} cannot use a token.`;
     const groups = Array.isArray(def.tokenGroup) ? def.tokenGroup : [def.tokenGroup];
     if (!groups.some((g) => value.token.startsWith(g + '.'))) return `${def.label} needs a ${groups.join(' or ')} token, not "${value.token}".`;
-    return null;
+    return linkShapeError(propId, value);
   }
   const s = String(value).trim();
   if (def.kind === 'css') return typeof value === 'string' ? parseCustomCss(s).error : `${def.label} must be text.`;
@@ -843,6 +904,8 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
       if (propId === 'lineHeight' && /^\d*\.?\d+$/.test(s)) return null;
       if (propId === 'translateX' || propId === 'translateY')
         return isTranslate(s) ? null : `"${s.slice(0, 40)}" is not a valid shift. Use 0 or one length such as -4px, 0.5rem or 10%, at most ${TRANSLATE_LIMITS.px}px, ${TRANSLATE_LIMITS.rem}rem or ${TRANSLATE_LIMITS['%']}% either way.`;
+      if (propId === 'backdropBlur')
+        return isBackdropBlur(s) ? null : `"${s.slice(0, 40)}" is not a valid blur. Use 0 or one length such as 12px or 0.75rem, at most ${BLUR_LIMITS.px}px or ${BLUR_LIMITS.rem}rem.`;
       if (propId === 'inset') {
         // One to four offsets; spaces inside calc() and friends do not separate values.
         const parts = splitTop(s, (ch) => /\s/.test(ch));
@@ -872,19 +935,22 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
 }
 
 function cssValue(v: StyleValue): string {
-  if (typeof v === 'object' && v !== null) return `var(${tokenVar(v.token)})`;
+  if (typeof v === 'object' && v !== null) return tokenRefCss(v);
   return String(v);
 }
 
 /** Fixed-grammar properties: a hand-edited document that breaks the grammar writes nothing. */
 const CHECKED_AT_OUTPUT = new Set([
   'gridTemplate', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
-  'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing'
+  'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing', 'backdropBlur'
 ]);
 
 /** Convert one style property into CSS declarations. */
 export function styleToCss(propId: string, raw: StyleValue): string[] {
   if (typeof raw === 'object' && raw !== null && typeof raw.token !== 'string') return [];
+  // A link holding more than its token (a strength) is read again: a hand-edited one on a property that cannot
+  // take it, or with a strength out of range, writes nothing. Which token it names is not: a theme's may have any ID.
+  if (typeof raw === 'object' && raw !== null && Object.keys(raw).length > 1 && linkShapeError(propId, raw)) return [];
   const value = typeof raw === 'string' ? raw.trim() : raw;
   if (CHECKED_AT_OUTPUT.has(propId) && validateStyleValue(propId, value)) return [];
   const v = cssValue(value);
@@ -1019,6 +1085,12 @@ export function styleToCss(propId: string, raw: StyleValue): string[] {
       return [`box-shadow: ${v}`];
     case 'opacity':
       return [`opacity: ${v}`];
+    case 'backdropBlur': {
+      // Safari before 18 reads only the prefixed property. A zero blur is none, which (unlike blur(0)) leaves the
+      // element without a stacking context of its own.
+      const filter = Number.parseFloat(String(value)) === 0 ? 'none' : `blur(${v})`;
+      return [`-webkit-backdrop-filter: ${filter}`, `backdrop-filter: ${filter}`];
+    }
     case 'position':
       return [`position: ${v}`];
     case 'inset':

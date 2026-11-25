@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { InstanceNode, ProjectState, ResponsiveStyles } from '@shared/types';
-import type { EditOperation } from '@shared/ops';
-import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
+import { SCHEMA_VERSION, type InstanceNode, type LinkNode, type ProjectState, type ResponsiveStyles } from '@shared/types';
+import { validateOperation, type EditOperation } from '@shared/ops';
+import { tokenUsageCounts } from '@engine/tokens';
+import { validateState } from '@engine/validate';
+import { MIGRATIONS } from '@shared/migrations';
+import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, isStateStyleProp, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { applyOperations } from '@engine/apply';
@@ -819,5 +822,194 @@ describe('transforms and transitions', () => {
     const out = css(s, 'components');
     expect(out).not.toContain('__grid,');
     expect(out).not.toContain('transition');
+  });
+});
+
+describe('backdrop blur (#353)', () => {
+  it('is an advanced appearance control on elements and text, which hover and focus may change', () => {
+    expect(STYLE_PROP_MAP.backdropBlur).toMatchObject({ group: 'appearance', kind: 'length', advanced: true });
+    for (const kind of ['element', 'text', 'link']) expect(styleSetFor({ kind }), kind).toContain('backdropBlur');
+    expect(styleSetFor({ kind: 'image' })).not.toContain('backdropBlur');
+    expect(isStateStyleProp('backdropBlur')).toBe(true);
+  });
+
+  it('accepts 0 or one px, rem or em length up to its limit, and nothing else', () => {
+    for (const ok of ['0', '0px', '4px', '12px', '.5rem', '0.75em', '64px', '4rem', '4em', ' 12px ', 0])
+      expect(validateStyleValue('backdropBlur', ok), String(ok)).toBeNull();
+    for (const bad of ['64.1px', '64.5px', '4.1rem', '4.1em', '-4px', '+4px', '10%', '1vw', '4', 'auto', 'none', 'blur(4px)', '4px 4px', 'calc(4px + 1px)', 'var(--x)', '1e2px', 4])
+      expect(validateStyleValue('backdropBlur', bad as string), String(bad)).toMatch(/not a valid blur/);
+    expect(validateStyleValue('backdropBlur', { token: 'space.lg' })).toMatch(/cannot use a token/);
+  });
+
+  it('writes the prefixed and standard property together, and none for no blur', () => {
+    expect(styleToCss('backdropBlur', '12px')).toEqual(['-webkit-backdrop-filter: blur(12px)', 'backdrop-filter: blur(12px)']);
+    expect(styleToCss('backdropBlur', ' 0.5rem ')).toEqual(['-webkit-backdrop-filter: blur(0.5rem)', 'backdrop-filter: blur(0.5rem)']);
+    for (const none of ['0', '0px', 0]) expect(styleToCss('backdropBlur', none), String(none)).toEqual(['-webkit-backdrop-filter: none', 'backdrop-filter: none']);
+    // A hand-edited document outside the grammar writes nothing.
+    for (const bad of ['999px', '10%', 'blur(4px)', '4', true, { token: 'space.lg' }]) expect(styleToCss('backdropBlur', bad as string), String(bad)).toEqual([]);
+  });
+
+  it('sets, clears and writes it for a placement, beside a hover that clears it', () => {
+    const s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const set = (property: string, value: string | null, state?: 'hover') => ({ type: 'node.setStyle' as const, owner, nodeId: hero.id, scope: 'base', ...(state ? { state } : {}), property, value }) as EditOperation;
+    const out = applyOperations(s, [set('backdropBlur', '12px'), set('backdropBlur', '0', 'hover')]);
+    const root = () => (out.state.pages[s.site.homePageId].nodes[hero.id] as InstanceNode).overrides?.root;
+    expect(root()?.base?.backdropBlur).toBe('12px');
+    expect(root()?.['base:hover']).toEqual({ backdropBlur: '0' });
+    expect(() => applyOperations(out.state, [set('backdropBlur', '100px')])).toThrow(/not a valid blur/);
+    const cls = `so-o-${hero.id}-root`;
+    const site = css(out.state, 'site');
+    expect(ruleOf(site, `.${cls}.${cls}`)).toContain('-webkit-backdrop-filter: blur(12px);\n\tbackdrop-filter: blur(12px);');
+    expect(site).toMatch(new RegExp(`\\.${cls}[^{}]*:hover[^{}]*\\{\\s*-webkit-backdrop-filter: none;\\s*backdrop-filter: none;`));
+    const cleared = applyOperations(out.state, [set('backdropBlur', null)]);
+    expect((cleared.state.pages[s.site.homePageId].nodes[hero.id] as InstanceNode).overrides?.root?.base?.backdropBlur).toBeUndefined();
+  });
+});
+
+describe('see-through site colors (#353)', () => {
+  const MIX = 'color-mix(in srgb, var(--so-color-surface) 70%, transparent)';
+
+  it('lets a color or background link paint its site color at part strength, from 0 to 1', () => {
+    for (const prop of ['background', 'color'])
+      for (const alpha of [0, 0.05, 0.7, 1]) expect(validateStyleValue(prop, { token: 'color.surface', alpha }), `${prop} ${alpha}`).toBeNull();
+    for (const prop of ['background', 'color'])
+      for (const alpha of [-0.1, 1.001, 1.01, Number.NaN, Infinity, '0.7', null, true])
+        expect(validateStyleValue(prop, { token: 'color.surface', alpha } as never), `${prop} ${String(alpha)}`).toMatch(/strength \("alpha"\) must be a number from 0 to 1/);
+    // Only a color can be see-through, even at full strength, and a link holds nothing else.
+    expect(validateStyleValue('gap', { token: 'space.lg', alpha: 0.5 })).toMatch(/full strength/);
+    expect(validateStyleValue('gap', { token: 'space.lg', alpha: 1 })).toMatch(/full strength/);
+    expect(validateStyleValue('shadow', { token: 'shadow.sm', alpha: 0.5 })).toMatch(/full strength/);
+    expect(validateStyleValue('background', { token: 'color.surface', opacity: 0.5 } as never)).toMatch(/holds "token" and "alpha" only, not "opacity"/);
+    expect(validateStyleValue('gap', { token: 'space.lg', x: 1 } as never)).toMatch(/holds "token" only, not "x"/);
+    expect(validateStyleValue('background', { token: 'space.lg', alpha: 0.5 })).toMatch(/needs a color token/);
+  });
+
+  it('writes a link below full strength as its variable mixed with transparent, and a full one as the variable', () => {
+    expect(styleToCss('background', { token: 'color.surface', alpha: 0.7 })).toEqual([`background: ${MIX}`]);
+    expect(styleToCss('color', { token: 'color.text', alpha: 0.555 })).toEqual(['color: color-mix(in srgb, var(--so-color-text) 55.5%, transparent)']);
+    expect(styleToCss('background', { token: 'color.surface', alpha: 0 })).toEqual(['background: color-mix(in srgb, var(--so-color-surface) 0%, transparent)']);
+    expect(styleToCss('background', { token: 'color.surface', alpha: 1 })).toEqual(['background: var(--so-color-surface)']);
+    expect(styleToCss('background', { token: 'color.surface' })).toEqual(['background: var(--so-color-surface)']);
+    // A theme's token may have any ID: one replacing another at part strength still writes.
+    expect(styleToCss('background', { token: 'brand', alpha: 0.5 })).toEqual(['background: color-mix(in srgb, var(--so-brand) 50%, transparent)']);
+    // A hand-edited link outside the grammar writes nothing, on a color or anywhere else.
+    for (const [prop, bad] of [
+      ['background', { token: 'color.surface', alpha: 2 }],
+      ['background', { token: 'color.surface', alpha: '0.5' }],
+      ['background', { token: 'color.surface', alpha: 0.5, x: 1 }],
+      ['gap', { token: 'space.lg', alpha: 0.5 }],
+      ['radius', { token: 'radius.md', alpha: 0.5 }]
+    ] as Array<[string, never]>)
+      expect(styleToCss(prop, bad), `${prop} ${JSON.stringify(bad)}`).toEqual([]);
+  });
+
+  it('keeps the strength through the edit boundary, stored token first and dropped at full strength', () => {
+    const s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const op = (value: unknown, property = 'background') => {
+      const checked = validateOperation({ type: 'node.setStyle', owner, nodeId: hero.id, scope: 'base', property, value });
+      if (!checked.ok) throw new Error(checked.message);
+      return checked.op;
+    };
+    const base = (st: ProjectState) => (home(st).nodes[hero.id] as InstanceNode).overrides?.root?.base;
+    let out = applyOperations(s, [op({ alpha: 0.7, token: 'color.surface' }), op('12px', 'backdropBlur')]).state;
+    expect(base(out)).toEqual({ background: { token: 'color.surface', alpha: 0.7 }, backdropBlur: '12px' });
+    // Stored token first whatever order it was sent in, past the schema too.
+    const direct = applyOperations(s, [{ type: 'node.setStyle', owner, nodeId: hero.id, scope: 'base', property: 'background', value: { alpha: 0.7, token: 'color.surface' } as never }]).state;
+    expect(Object.keys(base(direct)!.background as object)).toEqual(['token', 'alpha']);
+    const cls = `so-o-${hero.id}-root`;
+    const rule = ruleOf(css(out, 'site'), `.${cls}.${cls}`);
+    for (const d of [`background: ${MIX};`, '-webkit-backdrop-filter: blur(12px);', 'backdrop-filter: blur(12px);']) expect(rule).toContain(d);
+    expect(tokenUsageCounts(out)['color.surface']).toBe((tokenUsageCounts(s)['color.surface'] ?? 0) + 1);
+    // Full strength is the plain link; a plain link sets a see-through one back to full.
+    expect(base(applyOperations(out, [op({ token: 'color.surface', alpha: 1 })]).state)?.background).toEqual({ token: 'color.surface' });
+    out = applyOperations(out, [op({ token: 'color.surface' })]).state;
+    expect(base(out)?.background).toEqual({ token: 'color.surface' });
+    // A link with a key it cannot hold is refused at the boundary rather than stripped.
+    expect(validateOperation({ type: 'node.setStyle', owner, nodeId: hero.id, scope: 'base', property: 'background', value: { token: 'color.surface', opacity: 0.5 } }).ok).toBe(false);
+    expect(() => applyOperations(s, [op({ token: 'space.lg', alpha: 0.5 }, 'gap')])).toThrow(/full strength/);
+    expect(() => applyOperations(s, [op({ token: 'color.surface', alpha: 1.5 })])).toThrow(/from 0 to 1/);
+  });
+
+  it('keeps the strength when its site color is replaced, and when the color is kept as a value', () => {
+    let s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    s = applyOperations(s, [
+      { type: 'token.create', group: 'color', label: 'Glass', value: 'rgb(255 255 255 / 0.5)' },
+      { type: 'token.create', group: 'color', label: 'Sea', value: '#2e8b57' }
+    ]).state;
+    const [glass, sea] = s.tokens.custom.map((t) => t.id);
+    // As a hand-edited document may hold it, with a line break after the color.
+    s.tokens.custom[0].value = 'rgb(255 255 255 / 0.5)\n';
+    s = applyOperations(s, [
+      { type: 'node.setStyle', owner, nodeId: hero.id, scope: 'base', property: 'background', value: { token: sea, alpha: 0.4 } },
+      { type: 'node.setStyle', owner, nodeId: hero.id, scope: 'phone', state: 'hover', property: 'color', value: { token: sea } }
+    ]).state;
+    const root = (st: ProjectState) => (home(st).nodes[hero.id] as InstanceNode).overrides?.root;
+    expect(tokenUsageCounts(s)[sea]).toBe(2);
+    const replaced = applyOperations(s, [{ type: 'token.replace', tokenId: sea, withTokenId: glass }]).state;
+    expect(root(replaced)?.base?.background).toEqual({ token: glass, alpha: 0.4 });
+    expect(root(replaced)?.['phone:hover']?.color).toEqual({ token: glass });
+    // Kept as a value: the half-transparent color at 40% still paints at 20%, as the link did.
+    const detached = applyOperations(replaced, [{ type: 'token.remove', tokenId: glass, detach: true }]).state;
+    expect(root(detached)?.base?.background).toBe('color-mix(in srgb, rgb(255 255 255 / 0.5) 40%, transparent)');
+    // At full strength the value is written as the site style held it, as before.
+    expect(root(detached)?.['phone:hover']?.color).toBe('rgb(255 255 255 / 0.5)\n');
+    expect(validateStyleValue('background', root(detached)!.base!.background)).toBeNull();
+    // Removing it in favour of another style keeps the strength too.
+    const moved = applyOperations(replaced, [{ type: 'token.remove', tokenId: glass, replacementTokenId: 'color.surface' }]).state;
+    expect(root(moved)?.base?.background).toEqual({ token: 'color.surface', alpha: 0.4 });
+  });
+
+  it('paints a see-through button through its own variables, at rest and on hover', () => {
+    const s = fresh();
+    const page = home(s);
+    page.nodes.n_link = { id: 'n_link', kind: 'link', link: { type: 'url', target: 'https://example.com/' }, label: 'Talk to us', appearance: 'primary' } as LinkNode;
+    page.rootIds.push('n_link');
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const out = applyOperations(s, [
+      { type: 'node.setStyle', owner, nodeId: 'n_link', scope: 'base', property: 'background', value: { token: 'color.surface', alpha: 0.7 } },
+      { type: 'node.setStyle', owner, nodeId: 'n_link', scope: 'base', state: 'hover', property: 'background', value: { token: 'color.surface', alpha: 0.9 } },
+      { type: 'node.setStyle', owner, nodeId: 'n_link', scope: 'base', property: 'backdropBlur', value: '4px' }
+    ]).state;
+    const site = css(out, 'site');
+    const rest = site.match(/([^{}\n]*n_link[^{}\n]*)\{([^}]*--so-btn-bg: color-mix[^}]*)\}/);
+    expect(rest?.[1]).not.toMatch(/:hover|:focus|:active/);
+    expect(rest?.[2]).toContain(`--so-btn-bg: ${MIX};`);
+    expect(site).toMatch(/:hover[^{}]*\{[^}]*--so-btn-bg-hover: color-mix\(in srgb, var\(--so-color-surface\) 90%, transparent\);/);
+    expect(site).toContain('backdrop-filter: blur(4px);');
+    // A hand-edited strength the button cannot paint writes no hover variable on its own either.
+    (home(out).nodes.n_link as LinkNode).styles = { base: { background: { token: 'color.surface', alpha: 3 } } };
+    expect(css(out, 'site')).not.toContain('--so-btn-bg');
+  });
+});
+
+describe('the document format for see-through colors and backdrop blur (#353)', () => {
+  it('marks them with a version-only step, so an older editor opens such a project read-only', () => {
+    const step = MIGRATIONS.at(-1)!;
+    expect(step.id).toBe('style-strength');
+    expect(SCHEMA_VERSION).toBe(MIGRATIONS.length + 1);
+    const s = fresh();
+    const out = structuredClone(s);
+    step.migrate(out as never, () => true);
+    expect(out).toEqual(s);
+  });
+
+  it('reports a strength or a blur the stylesheet would write nothing for, by the node and property', () => {
+    const s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    hero.overrides = { root: { base: { background: { token: 'color.surface', alpha: 2 }, gap: { token: 'space.md', alpha: 0.5 }, backdropBlur: '65px', color: { token: 'color.text', alpha: 0.5 }, shadow: { token: 42 } as never } } };
+    const found = validateState(s).filter((d) => d.code === 'STYLE_VALUE_INVALID');
+    expect(found.map((d) => [d.severity, d.nodeId, d.site?.split('|').at(-1)])).toEqual([
+      ['error', hero.id, 'background'],
+      ['error', hero.id, 'gap'],
+      ['error', hero.id, 'backdropBlur'],
+      ['error', hero.id, 'shadow']
+    ]);
+    expect(found[0].message).toMatch(/from 0 to 1.*Nothing is written for it/);
   });
 });

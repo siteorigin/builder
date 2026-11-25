@@ -776,7 +776,7 @@ export const header: ComponentDefinition = {
     ]),
     sticky: P.bool('Stick to top while scrolling', true)
   },
-  parts: { root: { nodeId: 'root', label: 'Header', styleControls: ['paddingBlock', 'background', 'color', 'border', 'shadow', 'hidden'] } },
+  parts: { root: { nodeId: 'root', label: 'Header', styleControls: ['paddingBlock', 'background', 'color', 'border', 'shadow', 'backdropBlur', 'hidden'] } },
   source: HEADER_SOURCE,
   provenance: FOUNDATION.provenance('shell.header'),
   license: FOUNDATION.meta.license

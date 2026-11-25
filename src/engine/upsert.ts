@@ -528,7 +528,8 @@ function applyStyles(state: ProjectState, defId: string, nodeId: string, raw: Re
     if (!scope) fail(`${at}: "${key}" is neither a screen size (base, phone, tablet, desktop) nor one with a state ("base:hover").`);
     if (!props || typeof props !== 'object' || Array.isArray(props)) fail(`${at}: the rules for "${key}" are not a set of style properties.`);
     for (const [property, value] of Object.entries(props as Record<string, unknown>)) {
-      const token = !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 1 && typeof (value as { token?: unknown }).token === 'string';
+      // A link names its token, and for a colour may give a strength ({"token", "alpha"}): node.setStyle checks the rest.
+      const token = !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every((k) => k === 'token' || k === 'alpha') && typeof (value as { token?: unknown }).token === 'string';
       if (!token && !['string', 'number', 'boolean'].includes(typeof value)) fail(`${at}: "${property}" needs a value or {"token": "..."}.`);
       try {
         helpers.setStyle(state, { type: 'node.setStyle', owner: { kind: 'component', id: defId }, nodeId, scope: scope!.scope, ...(scope!.state ? { state: scope!.state } : {}), property, value: value as StyleValue, ...(variant ?? {}) });

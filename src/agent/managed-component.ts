@@ -18,7 +18,7 @@ import { STYLE_PROP_MAP } from '@shared/styles';
 import { newId } from '@shared/ids';
 import { projectDefinitionId } from '@shared/component-ids';
 import { normalizeRoute } from '@shared/routes';
-import { validateOperation } from '@shared/ops';
+import { STYLE_TOKEN_REF, validateOperation } from '@shared/ops';
 import { sha256Hex } from '@shared/sha256';
 import { applyOperations } from '@engine/apply';
 import type { EngineError } from '@engine/tree';
@@ -51,7 +51,7 @@ const bindable = <T extends z.ZodType>(literal: T) => z.union([literal, ...BINDI
 const CONDITION = z.union([...BINDING, z.object({ ref: z.union(BINDING), eq: SCALAR }).strict(), z.object({ ref: z.union(BINDING), ne: SCALAR }).strict()]);
 const STYLE_FIELDS = {
   property: z.string().describe('A style property such as layout, gap, columns, paddingBlock, background, color, textStyle, radius.'),
-  value: z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() }).strict()]),
+  value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF]),
   scope: z.enum(SCOPES).optional().describe('Screen size; "base" (the default) is every size.'),
   state: z.enum(STATES).optional()
 };

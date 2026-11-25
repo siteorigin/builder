@@ -1097,10 +1097,10 @@ describe('the document format and the assistant', () => {
   it('marks the format with a version-only step, so an older editor opens a project with state read-only', () => {
     // The step upgrades format 8 to 9; the style state (9 to 10) and entry address (10 to 11) steps after it only
     // change the version too, as the collection layout step (11 to 12) does for a project without collections, and so
-    // do the entry article (12 to 13) and repeat filter (13 to 14) steps.
+    // do the entry article (12 to 13), repeat filter (13 to 14) and style strength (14 to 15) steps.
     const from = MIGRATIONS.findIndex((m) => m.id === 'ui-state') + 1;
     expect(from).toBe(8);
-    expect(MIGRATIONS.slice(from).map((m) => m.id)).toEqual(['style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters']);
+    expect(MIGRATIONS.slice(from).map((m) => m.id)).toEqual(['style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters', 'style-strength']);
     expect(SCHEMA_VERSION).toBe(MIGRATIONS.length + 1);
     const s = fresh();
     const { def } = billingDef(s);

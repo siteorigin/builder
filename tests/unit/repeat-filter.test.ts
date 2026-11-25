@@ -503,10 +503,11 @@ describe('editing designs that filter', () => {
   });
 
   it('marks the format with a version-only step', () => {
-    expect(MIGRATIONS.at(-1)!.id).toBe('repeat-filters');
+    const step = MIGRATIONS.find((m) => m.id === 'repeat-filters')!;
+    expect(MIGRATIONS.indexOf(step)).toBe(MIGRATIONS.findIndex((m) => m.id === 'entry-articles') + 1);
     const s = fresh();
     const out = structuredClone(s);
-    MIGRATIONS.at(-1)!.migrate(out as never, () => true);
+    step.migrate(out as never, () => true);
     expect(out).toEqual(s);
   });
 });

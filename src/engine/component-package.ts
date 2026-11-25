@@ -81,7 +81,8 @@ function mapTokenRefs(def: ComponentDefinition, byVar: VarIndex, visit: (id: str
     }
     if (!isRecord(v)) return v;
     const keys = Object.keys(v);
-    if (keys.length === 1 && typeof v.token === 'string') {
+    // A link, or a style's colour link at part strength ({ token, alpha }), which keeps its strength.
+    if (typeof v.token === 'string' && (keys.length === 1 || (keys.length === 2 && typeof v.alpha === 'number'))) {
       const to = visit(v.token);
       if (to !== undefined) v.token = to;
       return v;

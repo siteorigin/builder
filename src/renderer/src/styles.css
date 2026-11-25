@@ -2032,6 +2032,9 @@ iframe { color-scheme: light dark; }
   .style-select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
 }
 .panel-body .style-controls :is(input, select, textarea, button) { scroll-margin-top: var(--style-scroll-top, 150px); }
+/* A linked colour's strength, on its own line under the picker: a short number field with its % after it. */
+.style-strength { display: flex; align-items: center; gap: 6px; flex: 1 0 100%; min-width: 0; font-size: 12px; color: var(--text-2); }
+.style-strength > .style-field { flex: 0 0 64px; }
 .style-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 0 100%; min-width: 0; }
 .style-custom > .input { flex: 1; }
 .style-custom .color-pick.md { width: 24px; height: 24px; margin: 1px; }

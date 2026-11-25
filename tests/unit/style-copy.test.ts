@@ -82,7 +82,7 @@ describe('copy style', () => {
     // A code component's parts: their own list with Hidden, or the fixed list when they name none.
     const code = { kind: 'code' as const, parts: { root: { nodeId: 'r', label: 'Badge' }, label: { nodeId: 'l', label: 'Label', styleControls: ['color'] } } };
     expect(placementStyleControls(code, 'label', true)).toEqual(['color', 'hidden']);
-    expect(placementStyleControls(code, 'root', true)).toEqual(['paddingBlock', 'background', 'color', 'border', 'radius', 'shadow', 'opacity', 'hidden']);
+    expect(placementStyleControls(code, 'root', true)).toEqual(['paddingBlock', 'background', 'color', 'border', 'radius', 'shadow', 'opacity', 'backdropBlur', 'hidden']);
     // A managed root with no list offers everything, as the inspector does.
     expect(placementStyleControls({ kind: 'managed', parts: { root: { nodeId: 'r', label: 'Section' } } }, 'root', false)).toBeUndefined();
   });
@@ -326,6 +326,44 @@ describe('paste style', () => {
     const longPlan = planStylePaste(s, captureStyle(s, stack)!, heading, 'every');
     expect(longPlan.operations.find((o) => o.type === 'node.setStyle' && o.property === 'fontFamily')).toMatchObject({ value: long });
     expect(() => applyOperations(s, longPlan.operations)).not.toThrow();
+  });
+
+  it('pastes a see-through site color and a backdrop blur, and finds nothing to change the second time (#353)', () => {
+    let s = blankWithSection();
+    const page = s.pages[homeId(s)];
+    const holder = page.nodes[page.rootIds[0]] as InstanceNode;
+    const ins = applyOperations(s, [
+      { type: 'node.insert', owner: owner(s), parentId: holder.id, slot: 'content', primitive: 'stack' },
+      { type: 'node.insert', owner: owner(s), parentId: holder.id, slot: 'content', primitive: 'stack' }
+    ]);
+    s = ins.state;
+    const [from, to] = ins.results.map((r) => ({ owner: owner(s), instancePath: [], nodeId: r.nodeId as string }));
+    s = style(s, from, 'base', 'background', { token: 'color.surface', alpha: 0.7 });
+    s = style(s, from, 'base', 'backdropBlur', '12px');
+    s = style(s, to, 'base', 'background', { token: 'color.surface', alpha: 0.4 });
+    const plan = planStylePaste(s, captureStyle(s, from)!, to, 'every');
+    const at = { type: 'node.setStyle', owner: owner(s), nodeId: to.nodeId, scope: 'base' };
+    expect(plan.operations).toEqual(
+      expect.arrayContaining([
+        { ...at, property: 'background', value: { token: 'color.surface', alpha: 0.7 } },
+        { ...at, property: 'backdropBlur', value: '12px' }
+      ])
+    );
+    const after = applyOperations(s, plan.operations).state;
+    expect(after.pages[homeId(s)].nodes[to.nodeId].styles?.base).toMatchObject({ background: { token: 'color.surface', alpha: 0.7 }, backdropBlur: '12px' });
+    expect(planStylePaste(after, captureStyle(s, from)!, to, 'every').operations).toEqual([]);
+    // A strength written the other way round in a hand-edited document is the same value, on either side, and so is
+    // a full strength of 1 beside a plain link.
+    (after.pages[homeId(s)].nodes[from.nodeId].styles!.base as Record<string, unknown>).background = { alpha: 0.7, token: 'color.surface' };
+    expect(planStylePaste(after, captureStyle(after, from)!, to, 'every').operations).toEqual([]);
+    (after.pages[homeId(s)].nodes[to.nodeId].styles!.base as Record<string, unknown>).background = { alpha: 0.7, token: 'color.surface' };
+    expect(planStylePaste(after, captureStyle(s, from)!, to, 'every').operations).toEqual([]);
+    (after.pages[homeId(s)].nodes[from.nodeId].styles!.base as Record<string, unknown>).background = { token: 'color.surface' };
+    (after.pages[homeId(s)].nodes[to.nodeId].styles!.base as Record<string, unknown>).background = { token: 'color.surface', alpha: 1 };
+    expect(planStylePaste(after, captureStyle(after, from)!, to, 'every').operations).toEqual([]);
+    // A strength out of range is no match for a good link: the paste repairs it.
+    (after.pages[homeId(s)].nodes[to.nodeId].styles!.base as Record<string, unknown>).background = { token: 'color.surface', alpha: 2 };
+    expect(planStylePaste(after, captureStyle(after, from)!, to, 'every').operations).toEqual([{ ...at, property: 'background', value: { token: 'color.surface' } }]);
   });
 
   it('holds back a property whose site style was removed since copying, and only that property', () => {

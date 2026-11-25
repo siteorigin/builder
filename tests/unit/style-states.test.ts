@@ -110,7 +110,7 @@ describe('state rules in the style map', () => {
   });
 
   it('change only how an element looks: layout, size, visibility and motion stay on the resting style', () => {
-    expect(STATE_STYLE_PROPS).toEqual(['color', 'background', 'border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd', 'radius', 'shadow', 'opacity']);
+    expect(STATE_STYLE_PROPS).toEqual(['color', 'background', 'border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd', 'radius', 'shadow', 'opacity', 'backdropBlur']);
     const s = withBoxes();
     for (const state of ['hover', 'focus', 'active'])
       for (const property of ['paddingBlock', 'hidden', 'layout', 'transition', 'translateY', 'customCss'])
@@ -120,6 +120,8 @@ describe('state rules in the style map', () => {
     expect(box(set(s, 'base', 'hover', 'paddingBlock', null)).styles).toEqual({ 'base:hover': { color: '#000000' } });
     // A state the builder does not know is refused by the operation's schema.
     expect(validateOperation({ type: 'node.setStyle', ...at(s), scope: 'base', state: 'visited', property: 'color', value: '#000000' }).ok).toBe(false);
+    // A backdrop blur is how it looks, so every state may change it (#353).
+    for (const state of ['hover', 'focus', 'active'] as const) expect(box(set(s, 'phone', state, 'backdropBlur', '8px')).styles?.[`phone:${state}`]).toEqual({ backdropBlur: '8px' });
     // A site style that does not exist is refused in a state as it is on the resting style.
     rejects(() => set(s, 'base', 'hover', 'background', { token: 'color.nope' }), /does not exist|unknown|no site style/i);
   });
@@ -526,7 +528,7 @@ describe('the document format', () => {
     for (const d of docs(s)) d.schemaVersion = from;
     const before = structuredClone(s);
     const out = migrateProject(s)!;
-    expect(out.applied).toEqual(['style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters']);
+    expect(out.applied).toEqual(['style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters', 'style-strength']);
     const unversioned = (p: ProjectState) => JSON.parse(JSON.stringify({ ...p, themeLock: undefined }, (k, v) => (k === 'schemaVersion' ? undefined : v)));
     expect(unversioned(out.state)).toEqual(unversioned(before));
   });

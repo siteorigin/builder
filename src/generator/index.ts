@@ -654,7 +654,7 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
       // Links and buttons paint from --so-btn-bg / --so-btn-fg, so a styled button keeps its hover state
       // whatever the specificity of the rule that styles it.
       // A gradient cannot go through the hover state's color-mix(), so it stays as it is on hover.
-      if (opts.link && k === 'background') {
+      if (opts.link && k === 'background' && out.length) {
         const v = props[k];
         out.splice(0, out.length, ...out.map((d) => d.replace(/^background:/, '--so-btn-bg:')), `--so-btn-bg-hover: ${typeof v === 'string' && isValidGradient(v) ? v.trim() : 'initial'}`);
       }

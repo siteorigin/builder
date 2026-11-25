@@ -3,7 +3,7 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import type { ChatImageRef, FieldLocation } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import { EditOperationSchema, legacyShellError, OPERATION_SCHEMAS, PROP_OR_ITEM_BINDING, type OperationType } from '@shared/ops';
-import { MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
+import { BLUR_LIMITS, MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
 import { addressSlug, normalizeRoute } from '@shared/routes';
 import { catalogueComponent, searchCatalogue } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -563,6 +563,8 @@ function valueHint(p: StylePropDef): string {
   if (p.id === 'gridTemplate')
     return ` or up to ${MAX_GRID_TRACKS} column sizes (repeats counted in full): fr shares, lengths, auto, minmax(min, max) with a min that is not fr, and repeat(count, sizes), such as "16rem 1fr 14rem" or "2fr repeat(2, 1fr)"; "repeat(auto-fit, minmax(18rem, 1fr))" (or auto-fill) for as many columns as fit, each at least that plain length (or the whole grid when narrower). Set for all sizes it applies from tablet up; set it at scope phone to use it on phones`;
   if (p.id === 'columnSpan' || p.id === 'rowSpan') return ' (a grid child; above 1 for all sizes it applies from tablet up, set it at scope phone to span there)';
+  if (p.id === 'backdropBlur') return ` or one length in px, rem or em up to ${BLUR_LIMITS.px}px or ${BLUR_LIMITS.rem}rem, 0 for none: blurs what shows through a background at less than full strength, for frosted glass`;
+  if (p.kind === 'color') return ' (a color token at part strength is {"token": "color.surface", "alpha": 0.7} for 70%, a see-through surface)';
   if (p.group !== 'motion') return '';
   if (p.id === 'translateX' || p.id === 'translateY') return ` (0 or one length such as "-4px": at most ${TRANSLATE_LIMITS.px}px, ${TRANSLATE_LIMITS.rem}rem or em, or ${TRANSLATE_LIMITS['%']}% either way)`;
   if (p.kind === 'number') return ` (${p.integer ? 'whole number ' : ''}${p.min} to ${p.max}${p.unit ? ` ${p.unit}` : ''})`;
