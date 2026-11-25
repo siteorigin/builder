@@ -21,7 +21,7 @@ const finite = (n: number) => typeof n === 'number' && Number.isFinite(n);
 const sum = (list: number[]) => list.reduce((a, b) => a + b, 0);
 
 /** A value as the stylesheet writes it: a site style by its CSS variable, anything else as it is. */
-const cssOf = (value: StyleValue) => (typeof value === 'object' && value !== null ? `var(${tokenVar(value.token)})` : String(value));
+const cssOf = (value: StyleValue) => (typeof value === 'object' && value !== null ? (typeof value.token === 'string' ? `var(${tokenVar(value.token)})` : '') : String(value));
 
 /** The box inside the selected box's border and padding, in frame pixels: where the page says its content box is
  *  (a scrollbar on either side takes room from it), or else its border box less its border and padding. */

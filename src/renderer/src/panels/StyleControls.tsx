@@ -8,6 +8,7 @@ import { parseColor } from '@shared/color';
 import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
+import { BackgroundImageControl, describeBackgroundImage } from './BackgroundImageControl';
 import { DraftInput } from '../components/ui';
 import { setState, setViewport, useStore } from '../store';
 import { allSizesReach, readStyleNumber, refinementShown, stateChangeCount, stateUnder, statesWithChanges, styleReached, styleUnder } from '../lib/style-source';
@@ -33,7 +34,7 @@ const restingRules = (s: ResponsiveStyles | undefined) => rulesIn(s);
 const listJoin = (items: string[]) => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 
 const tokenOf = (tokens: TokenDef[], id: string) => tokens.find((t) => t.id === id);
-const isToken = (v: StyleValue | undefined): v is StyleTokenRef => typeof v === 'object' && v !== null;
+const isToken = (v: StyleValue | undefined): v is StyleTokenRef => typeof v === 'object' && v !== null && typeof v.token === 'string';
 /** A link's strength as a whole percentage, for a colour painted see-through. */
 const strengthText = (ref: StyleTokenRef) => `${Math.round((ref.alpha ?? 1) * 1000) / 10}%`;
 
@@ -65,6 +66,7 @@ const unitText = (def: StylePropDef) => (def.unit === 'deg' ? '°' : def.id === 
 
 /** How a value reads in the panel: a site style by name (with its size when short), an option by its label. */
 export function describeStyleValue(def: StylePropDef, raw: StyleValue | undefined, tokens: TokenDef[]): string {
+  if (def.kind === 'media') return describeBackgroundImage(raw);
   const v = linkOf(def, raw);
   if (v === undefined) return '';
   if (isToken(v)) return partStrength(v) ? `${tokenText(def, tokens, v.token)} at ${strengthText(v)}` : tokenText(def, tokens, v.token);
@@ -450,7 +452,11 @@ export function StyleControls({
           )}
         </div>
         <div className="style-control">
-          <Control def={p} label={label} value={value} under={under} underText={underText} underFrom={underFrom} tokens={tokens} state={state} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
+          {p.kind === 'media' ? (
+            <BackgroundImageControl label={label} value={value} underText={underText} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
+          ) : (
+            <Control def={p} label={label} value={value} under={under} underText={underText} underFrom={underFrom} tokens={tokens} state={state} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
+          )}
         </div>
         {lines.length > 0 && (
           <div className={lines.every((l) => l.quiet) ? 'sr-only' : 'style-source'} id={sourceId}>

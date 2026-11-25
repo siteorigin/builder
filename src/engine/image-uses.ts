@@ -124,7 +124,7 @@ export function variantBackgrounds(state: ProjectState, assetId?: string): Varia
       for (const [option, o] of Object.entries(obj(a?.options) ? a.options : {}))
         for (const [nodeId, rules] of Object.entries(obj(o?.styles) ? o.styles : {}))
           for (const [scope, props] of Object.entries(obj(rules) ? rules : {})) {
-            const value = obj(props) ? props.backgroundImage : undefined;
+            const value: unknown = obj(props) ? props.backgroundImage : undefined;
             if (obj(value) && typeof value.assetId === 'string' && (assetId === undefined || value.assetId === assetId)) out.push({ definitionId: d.id, axis, option, nodeId, scope, value: value as BackgroundImageValue });
           }
   }

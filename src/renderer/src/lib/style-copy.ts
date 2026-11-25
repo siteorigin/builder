@@ -9,6 +9,7 @@ import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectSt
 import { STYLE_STATES, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { STYLE_PROP_MAP, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
+import { isBackgroundImageValue } from '@shared/background-image';
 import { effectiveTokens } from '@generator/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { boundaryOf, ownerLabel, pagesUsingShell, refLabel, treeFor } from './model';
@@ -182,12 +183,14 @@ function tokenRef(property: string, v: StyleValue): string | null {
 }
 
 /**
- * A value an edit can carry: a literal, or a link, `{ token }` or a colour's `{ token, alpha }` (validateStyleValue
- * checks where a strength may go). Anything else came from a hand-edited document.
+ * A value an edit can carry: a literal, a link, `{ token }` or a colour's `{ token, alpha }` (validateStyleValue
+ * checks where a strength may go), or a background image naming a library image. Anything else came from a
+ * hand-edited document.
  */
 function isStyleValue(v: unknown): v is StyleValue {
   if (typeof v === 'string' || typeof v === 'boolean') return true;
   if (typeof v === 'number') return Number.isFinite(v);
+  if (isBackgroundImageValue(v)) return true;
   if (!v || typeof v !== 'object' || Array.isArray(v) || typeof (v as { token?: unknown }).token !== 'string') return false;
   const keys = Object.keys(v);
   return keys.length === 1 || (keys.length === 2 && typeof (v as { alpha?: unknown }).alpha === 'number');
@@ -217,6 +220,11 @@ function prepare(state: ProjectState, known: Known, property: string, v: unknown
   if (inState && !isStateStyleProp(property)) return { error: stateStyleError(property)! };
   const err = validateStyleValue(property, v);
   if (err) return { error: err };
+  // A picture from another project, or one removed since it was copied, is not here to show.
+  if (isBackgroundImageValue(v)) {
+    const asset = Object.hasOwn(state.assets.assets, v.assetId) ? state.assets.assets[v.assetId] : undefined;
+    if (asset?.kind !== 'image') return { error: 'The copied background image is not in this project’s library.' };
+  }
   const token = tokenRef(property, v);
   if (token && !known.tokens.has(token)) return { error: removed(token) };
   // CSS text naming a site style's variable (or one of a text style's metrics): only a style there was when copied,
