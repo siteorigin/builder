@@ -5,6 +5,15 @@ import { pageLinkUses, type PageLinkUse } from '@engine/page-links';
 import { elementIds, pageIds, planSectionPick } from '@generator/checks';
 import { SECTION_NODE } from './sections';
 
+/**
+ * The choice to leave a new blank Home page in place of the Home page being deleted, instead of a replacement page.
+ * A value of its own, so no page ID (or a replacement that has gone) is ever read as this choice.
+ */
+export const NEW_HOME: unique symbol = Symbol('new blank Home');
+
+/** What takes a deleted page's links: a page, a new blank Home (Home only), or nothing chosen yet. */
+export type PageReplacement = string | typeof NEW_HOME | undefined;
+
 /** A section of the deleted page that links jump to and the replacement page does not have. */
 export interface MissingSection {
   fragment: string;
@@ -26,10 +35,12 @@ export interface PageRemovalReview {
  * cards that go with the page, and the sections those links jump to that the replacement has no ID for. Sections it
  * does have are kept without asking.
  */
-export function reviewPageRemoval(state: ProjectState, pageId: string, replacementId: string | undefined): PageRemovalReview {
+export function reviewPageRemoval(state: ProjectState, pageId: string, replacementId: PageReplacement): PageRemovalReview {
   const all = pageLinkUses(state, pageId);
   const uses = all.filter((u) => !u.card);
   const cards = all.filter((u) => u.card);
+  // A new blank Home has no sections: every link opens its top, with nothing to choose.
+  if (replacementId === NEW_HOME) return { uses, cards, missing: [] };
   const view = cards.length ? withoutCards(state, pageId) : state;
   const ids = replacementId && Object.hasOwn(view.pages, replacementId) ? pageIds(view, replacementId) : new Set<string>();
   const missing = new Map<string, PageLinkUse[]>();
@@ -59,13 +70,15 @@ export interface PageRemovalPlan {
 }
 
 /**
- * The edits that delete a page as the dialog was filled in: `choices` maps each missing section to `''` (the top of
+ * The edits that delete a page as the dialog was filled in, with `replacementId` a page or, for Home, NEW_HOME: `choices` maps each missing section to `''` (the top of
  * the replacement page), `#id` (a section with that ID) or `node:<id>` (a section given an ID from its heading in the
  * same batch, so the deletion and the new ID undo together). No edits while a missing section has no choice, a
  * choice no longer fits the page, or new IDs would take an ID away from the page that links may still use.
  */
-export function planPageRemoval(state: ProjectState, pageId: string, replacementId: string | undefined, choices: ReadonlyMap<string, string>): PageRemovalPlan {
+export function planPageRemoval(state: ProjectState, pageId: string, replacementId: PageReplacement, choices: ReadonlyMap<string, string>): PageRemovalPlan {
   const none: PageRemovalPlan = { operations: null, lost: [] };
+  // Only Home leaves a new blank Home behind, and it takes every link and kept address with nothing to choose.
+  if (replacementId === NEW_HOME) return pageId === state.site.homePageId && Object.hasOwn(state.pages, pageId) ? { operations: [{ type: 'page.remove', pageId, newHome: true }], lost: [] } : none;
   const review = reviewPageRemoval(state, pageId, replacementId);
   if (!review.uses.length && pageId !== state.site.homePageId) return { operations: [{ type: 'page.remove', pageId }], lost: [] };
   if (!replacementId || !Object.hasOwn(state.pages, replacementId) || replacementId === pageId) return none;

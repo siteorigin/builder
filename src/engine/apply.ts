@@ -1227,8 +1227,8 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   const isHome = page.id === state.site.homePageId;
   if (op.newHome) {
     if (!isHome) fail('Only the Home page leaves a new blank Home page behind.');
-    if (op.replacementPageId) fail('Choose a replacement page or a new blank Home page, not both.');
-    if (op.sectionReplacements?.length) fail('Links to the Home page open the top of the new blank Home page: no sections can be chosen.');
+    if (op.replacementPageId !== undefined) fail('Choose a replacement page or a new blank Home page, not both.');
+    if (op.sectionReplacements !== undefined) fail('Links to the Home page open the top of the new blank Home page: no sections can be chosen.');
   }
   // A blank Home takes the removed Home's place, so even the only page can go.
   if (state.site.pageOrder.length <= 1 && !op.newHome) fail('A site needs at least one page.');

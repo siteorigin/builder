@@ -7,7 +7,9 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { pageLinkUses } from '@engine/page-links';
 import { validateState } from '@engine/validate';
+import { pageSections } from '@generator/checks';
 import { ProjectSession } from '../../src/main/project/session';
+import { NEW_HOME, planPageRemoval, reviewPageRemoval } from '../../src/renderer/src/lib/page-removal';
 
 const business = () => createStarterState('business', 'Test Studio', false);
 const byTitle = (s: ProjectState, title: string) => Object.values(s.pages).find((p) => p.title === title)!;
@@ -26,7 +28,11 @@ function removeHome(s: ProjectState) {
 function linkedHome() {
   let s = business();
   const home = s.site.homePageId;
-  s = applyOperations(s, [{ type: 'instance.setProp', owner: header, nodeId: headerOf(s).id, prop: 'ctaLink', value: { type: 'page', target: home, anchor: 'main' } }]).state;
+  const section = pageSections(s, home).find((x) => !x.anchor && !x.nested)!;
+  s = applyOperations(s, [
+    { type: 'node.setContent', owner: { kind: 'page', id: home }, nodeId: section.nodeId, field: 'anchor', value: 'welcome' },
+    { type: 'instance.setProp', owner: header, nodeId: headerOf(s).id, prop: 'ctaLink', value: { type: 'page', target: home, anchor: 'welcome' } }
+  ]).state;
   s.site.redirects = [{ from: '/welcome/', pageId: home }];
   expect(errors(s)).toEqual([]);
   return { s, home };
@@ -89,7 +95,10 @@ describe('removing Home and leaving a new blank Home', () => {
     const about = byTitle(s, 'About').id;
     expect(() => applyOperations(s, [{ type: 'page.remove', pageId: about, newHome: true }])).toThrow(/Only the Home page/);
     expect(() => applyOperations(s, [{ type: 'page.remove', pageId: home, newHome: true, replacementPageId: about }])).toThrow(/not both/);
-    expect(() => applyOperations(s, [{ type: 'page.remove', pageId: home, newHome: true, sectionReplacements: [{ from: 'main', to: '' }] }])).toThrow(/no sections/);
+    expect(() => applyOperations(s, [{ type: 'page.remove', pageId: home, newHome: true, sectionReplacements: [{ from: 'welcome', to: '' }] }])).toThrow(/no sections/);
+    // An empty replacement is still a replacement: Home's kept addresses are never dropped by one.
+    expect(() => applyOperations(s, [{ type: 'page.remove', pageId: home, newHome: true, replacementPageId: '' }])).toThrow(/not both/);
+    expect(() => applyOperations(s, [{ type: 'page.remove', pageId: home, newHome: true, sectionReplacements: [] }])).toThrow(/no sections/);
   });
 
   it('undoes the removal and the new Home in one step, restoring the old Home, its links and its addresses', async () => {
@@ -101,8 +110,32 @@ describe('removing Home and leaving a new blank Home', () => {
     const before = keep(session.state);
     expect((await session.apply({ operations: [{ type: 'page.remove', pageId: home, newHome: true }], expectedRevision: session.revision }, { label: 'Delete page Home' })).ok).toBe(true);
     expect(session.state.site.homePageId).not.toBe(home);
+    const after = keep(session.state);
     await session.undo();
     expect(keep(session.state)).toEqual(before);
+    // Redo brings back the same new Home, under the same ID.
+    await session.redo();
+    expect(keep(session.state)).toEqual(after);
+  });
+});
+
+describe('planning a Home deletion in the dialog', () => {
+  it('leaves a new blank Home as a single removal, with no sections to choose', () => {
+    const { s, home } = linkedHome();
+    expect(reviewPageRemoval(s, home, NEW_HOME).missing).toEqual([]);
+    expect(reviewPageRemoval(s, home, NEW_HOME).uses.length).toBeGreaterThan(0);
+    expect(planPageRemoval(s, home, NEW_HOME, new Map())).toEqual({ operations: [{ type: 'page.remove', pageId: home, newHome: true }], lost: [] });
+    // Only Home can leave one behind.
+    expect(planPageRemoval(s, byTitle(s, 'About').id, NEW_HOME, new Map()).operations).toBeNull();
+  });
+
+  it('hands Home to a chosen page as before, asking where its section links land', () => {
+    const { s, home } = linkedHome();
+    const about = byTitle(s, 'About').id;
+    expect(planPageRemoval(s, home, undefined, new Map()).operations).toBeNull();
+    expect(planPageRemoval(s, home, about, new Map()).operations).toBeNull();
+    expect(reviewPageRemoval(s, home, about).missing.map((m) => m.fragment)).toEqual(['welcome']);
+    expect(planPageRemoval(s, home, about, new Map([['welcome', '']])).operations).toEqual([{ type: 'page.remove', pageId: home, replacementPageId: about, sectionReplacements: [{ from: 'welcome', to: '' }] }]);
   });
 });
 
