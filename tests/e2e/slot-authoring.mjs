@@ -88,22 +88,23 @@ await selectRow('body');
 await expand('Slots');
 await eventually(async () => assert.match(await inspector.locator('[data-slot-where]').innerText(), /goes inside Body/, 'the Inspector says where it goes'));
 const before = await design();
+assert.equal(before.slots, undefined, 'no slot is declared yet');
+assert.deepEqual(before.tree.nodes.body.children, [], 'Body is empty');
 await inspector.getByLabel('Name of the new slot').fill('Buttons');
 await inspector.getByRole('button', { name: 'Add slot' }).click();
 await eventually(async () => assert.deepEqual((await design()).slots, { buttons: { label: 'Buttons' } }, 'declared, taking anything'));
+const added = await design();
 {
-  const def = await design();
-  const [placeholder] = placeholders(def);
+  const [placeholder] = placeholders(added);
   assert.equal(placeholder?.slot, 'buttons', 'its placeholder is in the design');
-  assert.deepEqual(def.tree.nodes.body.children, [placeholder.id], 'inside Body');
+  assert.deepEqual(added.tree.nodes.body.children, [placeholder.id], 'inside Body');
 }
 const slotGroup = inspector.locator('[data-slot="buttons"]');
 await eventually(async () => assert.match(await slotGroup.innerText(), /Takes anything · No limit/, 'the section lists it'));
 await undoRedo(`${MOD}+z`);
 await eventually(async () => assert.deepEqual(await design(), before, 'one Undo takes back the slot and its placeholder'));
 await undoRedo(`${MOD}+Shift+z`);
-await eventually(async () => assert.equal(placeholders(await design()).length, 1, 'Redo brings both back'));
-assert.deepEqual((await design()).slots, { buttons: { label: 'Buttons' } });
+await eventually(async () => assert.deepEqual(await design(), added, 'Redo brings both back, where they were'));
 
 step('its name, description, what it takes and how many save together, under the same name');
 await selectRow('body');
@@ -113,14 +114,17 @@ const form = inspector.locator('[data-slot-form="buttons"]');
 await form.getByLabel('Name', { exact: true }).fill('Actions');
 await form.getByLabel('What belongs there').fill('A short call to action');
 await form.getByRole('radio', { name: 'Only what’s checked' }).click();
+await form.getByRole('checkbox', { name: 'Media', exact: true }).check();
 await form.getByRole('checkbox', { name: 'Text', exact: true }).check();
 await form.getByLabel('Holds at most').fill('1');
+const configuring = (await snapshot()).revision;
 await form.getByRole('button', { name: 'Save' }).click();
 await eventually(async () =>
-  assert.deepEqual((await design()).slots, { buttons: { label: 'Actions', description: 'A short call to action', categories: [], primitives: ['text'], max: 1 } }, 'saved in one change')
+  assert.deepEqual((await design()).slots, { buttons: { label: 'Actions', description: 'A short call to action', categories: ['media'], primitives: ['text'], max: 1 } }, 'saved')
 );
+assert.equal((await snapshot()).revision, configuring + 1, 'in one change');
 await form.waitFor({ state: 'detached' });
-await eventually(async () => assert.match(await inspector.locator('[data-slot="buttons"]').innerText(), /Takes text · At most 1/));
+await eventually(async () => assert.match(await inspector.locator('[data-slot="buttons"]').innerText(), /Takes media components and text · At most 1/));
 
 step('Insert offers the placeholder of a slot the design no longer shows, and only then');
 await openRail('Insert');
@@ -129,15 +133,18 @@ assert.equal(await panel.locator('.insert-group[data-group="slots"]').count(), 0
 await apply([{ type: 'node.remove', owner: { kind: 'component', id: defId }, nodeId: placeholders(await design())[0].id }], 'Take the placeholder out');
 await slotTile.waitFor();
 assert.match(await slotTile.innerText(), /Actions slot/, 'named for the slot');
+// With a heading picked, it goes where Add slot would put it: inside the whole design, not beside the heading.
 await openRail('Layers');
-await selectRow('body');
+await selectRow('title');
 await openRail('Insert');
+await eventually(async () => assert.match(await win.locator(`[id="${await slotTile.getAttribute('aria-describedby')}"]`).textContent(), /^Goes inside Container$/, 'the tile says where it goes'));
 await slotTile.click();
 await eventually(async () => {
   const def = await design();
   const [placeholder] = placeholders(def);
   assert.equal(placeholder?.slot, 'buttons', 'placed again');
-  assert.deepEqual(def.tree.nodes.body.children, [placeholder.id], 'inside the selected Body');
+  assert.deepEqual(def.tree.nodes.root.children, ['title', 'body', placeholder.id], 'at the end of the whole design');
+  assert.deepEqual(def.tree.nodes.body.children, [], 'not in Body');
 });
 await panel.locator('.insert-group[data-group="slots"]').waitFor({ state: 'detached' });
 await win.screenshot({ path: join(SHOTS, 'slot-authoring-studio.png') });
@@ -157,9 +164,10 @@ await eventually(async () => {
 const [{ nodeId: words }] = await apply([{ type: 'node.insert', owner: page, parentId: instance.id, slot: 'buttons', primitive: 'paragraph', text: 'Book your place' }], 'Fill the slot');
 const held = async () => (await snapshot()).state.pages[pageId].nodes[instance.id].slots?.buttons;
 assert.deepEqual(await held(), [words], 'the slot holds the paragraph');
-assert.match(await refusal([{ type: 'node.insert', owner: page, parentId: instance.id, slot: 'buttons', primitive: 'image' }]), /“Actions” slot of “Offer card” takes text, not an image/, 'an image is refused');
+assert.match(await refusal([{ type: 'node.insert', owner: page, parentId: instance.id, slot: 'buttons', primitive: 'image' }]), /“Actions” slot of “Offer card” takes media components and text, not an image/, 'an image is refused');
 assert.match(await refusal([{ type: 'node.insert', owner: page, parentId: instance.id, slot: 'buttons', primitive: 'paragraph' }]), /holds at most one item/, 'a second paragraph is refused');
-await eventually(async () => assert.ok((await frame.locator('body').innerText()).includes('Book your place'), 'the page shows the slot’s content'), 30000);
+await eventually(async () => assert.equal(await frame.getByText('Book your place', { exact: true }).count(), 1, 'the page shows the slot’s content, once'), 30000);
+const wordsNode = (await snapshot()).state.pages[pageId].nodes[words];
 
 step('a tighter contract, or removing the slot, is refused with the engine’s reason, and the content stays');
 await openStudio();
@@ -174,11 +182,13 @@ await win.locator('.toast.error', { hasText: /Home: the “Actions” slot alrea
 assert.equal(await form.getByLabel('Holds at most').inputValue(), '0', 'the form keeps what was chosen');
 assert.equal((await design()).slots.buttons.max, 1, 'the contract is unchanged');
 assert.deepEqual(await held(), [words], 'and so is the page’s content');
+assert.deepEqual((await snapshot()).state.pages[pageId].nodes[words], wordsNode, 'word for word');
 await form.getByRole('button', { name: 'Cancel' }).click();
 await inspector.locator('[data-slot="buttons"]').getByRole('button', { name: 'Remove Actions' }).click();
 await win.locator('.toast.error', { hasText: /The "Actions" slot has content in 1 place \(Home\)\. Move or remove it first\./ }).waitFor();
 assert.ok((await design()).slots?.buttons, 'the slot stays');
 assert.deepEqual(await held(), [words], 'with its content');
+assert.deepEqual((await snapshot()).state.pages[pageId].nodes[words], wordsNode, 'word for word');
 
 step('once the page’s content is gone, the slot goes with its placeholder');
 await apply([{ type: 'node.remove', owner: page, nodeId: words }], 'Empty the slot');
@@ -188,6 +198,8 @@ await eventually(async () => {
   const def = await design();
   assert.equal(def.slots, undefined, 'no slot is declared');
   assert.equal(placeholders(def).length, 0, 'and no placeholder is left');
+  assert.deepEqual(def.tree.nodes.root.children, ['title', 'body'], 'nor a trace of it in the design');
+  assert.equal((await snapshot()).state.pages[pageId].nodes[instance.id].slots?.buttons, undefined, 'or on the page');
 });
 await win.locator('.mode-band-done').click();
 await band.waitFor({ state: 'detached' });

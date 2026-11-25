@@ -2600,8 +2600,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       <PartSection def={def} node={node} level={LEVEL} />
       {isRoot && <PlacementRoleSection state={state} def={def} />}
       {isRoot && <PropertiesSection def={def} level={LEVEL} />}
-      {/* On the whole design, a container (where a new slot goes) and a slot's own placeholder. */}
-      {(isRoot || node.kind === 'element' || node.kind === 'slot') && <SlotsSection def={def} node={node} level={LEVEL} />}
+      <SlotsSection def={def} node={node} level={LEVEL} />
       {isRoot && <VariantsSection def={def} level={LEVEL} onStyle={(t) => styleLook(def, t)} />}
       {isRoot && <UiStateSection def={def} level={LEVEL} />}
       <ConditionControls def={def} node={node} level={LEVEL} />

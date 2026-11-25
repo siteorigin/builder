@@ -4,7 +4,7 @@
  * component.removeSlot) and refuses a contract that content placements already hold no longer fits, naming where.
  */
 import type { ComponentCategory, ComponentDefinition, ProjectState, SlotDef, SlotPrimitive } from '@shared/types';
-import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES, slotChildren } from '@shared/types';
+import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
 import { instancesOf } from '@engine/tree';
 import { restrictsKinds } from '@engine/slots';
@@ -16,6 +16,9 @@ import { insertOps, type InsertAt } from './insert-at';
 export const SLOT_LABEL_MAX = 60;
 export const SLOT_DESCRIPTION_MAX = 300;
 export const SLOT_MAX_LIMIT = 1000;
+
+/** Why a slot's placeholder has nowhere to go (see slotInsertAt), and what to do. */
+export const SLOT_NO_PLACE = 'Select a container in the design that holds other elements, to put the slot in.';
 
 /** Element kinds a slot can take, in words for a checkbox. */
 export const SLOT_PRIMITIVE_LABELS: Record<SlotPrimitive, string> = { element: 'Containers', text: 'Text', image: 'Images', link: 'Buttons', icon: 'Icons', divider: 'Dividers' };
@@ -63,10 +66,13 @@ export const unplacedSlots = (def: ComponentDefinition): string[] => {
   return Object.keys(def.slots ?? {}).filter((name) => !placed.has(name));
 };
 
-/** Where a slot holds content: each placement with something in it, by the page or layout it is on. */
+/**
+ * Where a slot holds content: each placement with something in it, by the page or layout it is on. Counted as the
+ * engine counts it before removing the slot, so content a hand edit left in another shape counts too.
+ */
 export const slotFilledIn = (state: ProjectState, def: ComponentDefinition, slot: string): string[] =>
   instancesOf(state, def.id)
-    .filter((u) => slotChildren(u.node, slot).length > 0)
+    .filter((u) => !!(own(u.node.slots, slot) as { length?: unknown } | undefined)?.length)
     .map((u) => u.label);
 
 /**
@@ -105,6 +111,36 @@ export function slotDraftProblem(draft: SlotDraft): string | null {
 }
 
 const sameSet = (a: readonly string[], b: readonly string[]) => new Set(a).size === new Set(b).size && a.every((x) => b.includes(x));
+
+/** The parts of a draft that change together: its name, its description, what it takes, and how many. */
+const DRAFT_PARTS: Array<{ keys: Array<keyof SlotDraft>; same: (a: SlotDraft, b: SlotDraft) => boolean }> = [
+  { keys: ['label'], same: (a, b) => a.label.trim() === b.label.trim() },
+  { keys: ['description'], same: (a, b) => a.description.trim() === b.description.trim() },
+  {
+    keys: ['restricted', 'categories', 'primitives'],
+    same: (a, b) => a.restricted === b.restricted && (!a.restricted || (sameSet(a.categories, b.categories) && sameSet(a.primitives, b.primitives)))
+  },
+  { keys: ['max'], same: (a, b) => a.max.trim() === b.max.trim() }
+];
+
+/**
+ * A draft begun on the slot as `from` was, moved onto the slot as it is `now` (changed meanwhile by an Undo, the AI,
+ * another window): what the author changed keeps their choice, and the rest takes the slot's current value, so a
+ * save never puts back what changed elsewhere. `clash` when both changed the same part differently: the author then
+ * sees the current value beside their own before saving.
+ */
+export function rebaseSlotDraft(draft: SlotDraft, from: SlotDef, now: SlotDef): { draft: SlotDraft; clash: boolean } {
+  const was = slotDraft(from);
+  const current = slotDraft(now);
+  const out = { ...draft };
+  let clash = false;
+  for (const part of DRAFT_PARTS) {
+    const mine = !part.same(draft, was);
+    if (mine && !part.same(current, was) && !part.same(draft, current)) clash = true;
+    if (!mine) for (const k of part.keys) (out as Record<string, unknown>)[k] = current[k];
+  }
+  return { draft: out, clash };
+}
 
 /**
  * The change that gives slot `slot` the contract `draft` describes: its label, and only what else the draft changes,

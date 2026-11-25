@@ -1056,12 +1056,16 @@ describe('definition editing operations (§2.5)', () => {
       const placed = applyOperations(made, [{ type: 'node.insert', owner: posts, parentId: null, index: 0, definitionId: id }]);
       const holder = placed.results[0].nodeId as string;
       const s = applyOperations(placed.state, [{ type: 'node.insert', owner: posts, parentId: holder, slot: 'content', primitive: 'paragraph', text: 'Entry intro' }]).state;
-      const held = (s.collections.posts.settings.template.nodes[holder] as InstanceNode).slots!.content;
+      const held = [...(s.collections.posts.settings.template.nodes[holder] as InstanceNode).slots!.content];
       expect(held).toHaveLength(1);
       expect(() => applyOperations(s, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', primitives: ['image'] }])).toThrow(/layout: the “Content” slot already holds text, which it would no longer take/);
       expect(() => applyOperations(s, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', max: 0 }])).toThrow(/layout: the “Content” slot already holds more than 0/);
       expect(s.components[id].slots!.content.max).toBe(2);
       expect((s.collections.posts.settings.template.nodes[holder] as InstanceNode).slots!.content).toEqual(held);
+      // A contract it still fits is taken, with the layout's content as it was.
+      const kept = applyOperations(s, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', primitives: ['text'], max: 1 }]).state;
+      expect((kept.collections.posts.settings.template.nodes[holder] as InstanceNode).slots!.content).toEqual(held);
+      expect(kept.collections.posts.settings.template.nodes[held[0]]).toEqual(s.collections.posts.settings.template.nodes[held[0]]);
     });
 
     it('reports content a slot does not take, or more than it holds, and damaged slots, when the project is opened', () => {

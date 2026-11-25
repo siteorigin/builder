@@ -7,7 +7,7 @@
 import { useId, useState, type KeyboardEvent } from 'react';
 import { ArrowDown, ArrowUp, Paintbrush, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { ProjectSnapshot } from '@shared/api';
-import type { ComponentCategory, ComponentDefinition, GraphNode, PropSchema, SlotDef, SlotPrimitive } from '@shared/types';
+import type { ComponentCategory, ComponentDefinition, GraphNode, ProjectState, PropSchema, SlotDef, SlotPrimitive } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES, isBinding } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
@@ -18,16 +18,18 @@ import { applyOps, confirmDialog, getState, setState, toast, useStore } from '..
 import { DraftInput, Field, Section, Segmented } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { designContent, type DesignContent } from '../lib/design-content';
-import { nodeLabel, slotInsertAt } from '../lib/insert-at';
+import { nodeLabel, slotInsertAt, type InsertAt } from '../lib/insert-at';
 import {
   SLOT_CATEGORY_LABELS,
   SLOT_DESCRIPTION_MAX,
   SLOT_LABEL_MAX,
+  SLOT_NO_PLACE,
   SLOT_PRIMITIVE_LABELS,
   createSlotOps,
   declaredSlot,
   editSlotOp,
   placedSlots,
+  rebaseSlotDraft,
   removeSlotOp,
   slotDraft,
   slotDraftProblem,
@@ -540,7 +542,7 @@ export function SlotsSection({ def, node, level }: { def: ComponentDefinition; n
   const names = Object.keys(def.slots ?? {});
   const placed = placedSlots(def);
   return (
-    <Section title="Slots" id="def-slots" level={level} scope={names.length ? (names.length === 1 ? '1 slot' : `${names.length} slots`) : undefined}>
+    <Section title="Slots" id="def-slots" level={level} keepMounted scope={names.length ? (names.length === 1 ? '1 slot' : `${names.length} slots`) : undefined}>
       <p className="insp-note muted">Places where each placement puts content of its own, such as a card’s body or a hero’s buttons. Choose what each takes and how many.</p>
       {names.map((name) => (
         <SlotGroup key={name} def={def} name={name} decl={def.slots![name]} placedAt={placed.get(name)} filledIn={slotFilledIn(state, def, name)} />
@@ -607,11 +609,13 @@ function SlotForm({ def, name, decl, onDone }: { def: ComponentDefinition; name:
     const now = current(def.id);
     const d = now && declaredSlot(now.def, name);
     if (!now || !d) return void toast(`The “${base.label}” slot has been removed, so there is nothing to save. Undo brings it back.`, 'error');
-    if (JSON.stringify(slotDraft(d)) !== JSON.stringify(slotDraft(base))) {
-      setBase(d);
-      return void toast(`“${d.label}” changed while you were editing it. Check the form, then save again.`, 'info');
-    }
-    const op = editSlotOp(now.def, name, draft);
+    // Changed elsewhere since the form opened: what the author left alone follows it, and a part both changed is shown
+    // to the author before anything is saved.
+    const moved = rebaseSlotDraft(draft, base, d);
+    setBase(d);
+    setDraft(moved.draft);
+    if (moved.clash) return void toast(`“${d.label}” changed while you were editing it. Check the form, then save again.`, 'info');
+    const op = editSlotOp(now.def, name, moved.draft);
     if (!op) return onDone();
     setSaving(true);
     const done = await apply([op], `Change ${d.label} slot`, now.snap);
@@ -679,12 +683,21 @@ function SlotForm({ def, name, decl, onDone }: { def: ComponentDefinition; name:
   );
 }
 
+/** Where a new slot's placeholder goes, in words: "Body", or "Section’s Content" when it is passed on to a component placed in the design. */
+function slotPlaceWords(state: ProjectState, at: InsertAt): string {
+  const holder = nodeLabel(state, at.owner, at.parentId!);
+  if (!at.slot) return holder;
+  const inst = state.components[at.owner.id]?.tree?.nodes[at.parentId!];
+  const inner = inst?.kind === 'instance' ? state.components[inst.definitionId]?.slots?.[at.slot]?.label : undefined;
+  return `${holder}’s ${inner ?? at.slot}`;
+}
+
 /** Declare a new slot, with its placeholder where slotInsertAt puts it for the node the Inspector shows. */
 function NewSlot({ def, node }: { def: ComponentDefinition; node?: GraphNode }) {
   const [label, setLabel] = useState('');
   const state = useStore((s) => s.snapshot?.state);
   const at = state ? slotInsertAt(state, def.id, designRef(def, node)) : null;
-  const where = state && at?.parentId ? nodeLabel(state, at.owner, at.parentId) : null;
+  const where = state && at?.parentId ? slotPlaceWords(state, at) : null;
   const add = async () => {
     const now = current(def.id, node?.id);
     // Planned where the project has it now: the node may have gone, and the design's root then takes the slot.
@@ -703,7 +716,7 @@ function NewSlot({ def, node }: { def: ComponentDefinition; node?: GraphNode }) 
         </button>
       </div>
       <p className="insp-note faint" data-slot-where>
-        {where ? `It goes inside ${where}, and takes anything until you choose.` : 'Select a container in the design that holds other elements, to put the slot in.'}
+        {where ? `It goes inside ${where}, and takes anything until you choose.` : SLOT_NO_PLACE}
       </p>
     </div>
   );

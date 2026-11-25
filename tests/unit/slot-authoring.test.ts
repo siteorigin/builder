@@ -4,7 +4,7 @@
  * removal that content placements already hold would break is refused by the engine, with that content kept.
  */
 import { describe, expect, it } from 'vitest';
-import type { ComponentDefinition, ElementNode, ElementRef, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, ElementNode, ElementRef, InstanceNode, OwnerRef, ProjectState, SlotPrimitive } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
@@ -16,6 +16,7 @@ import {
   editSlotOp,
   newSlotName,
   placedSlots,
+  rebaseSlotDraft,
   removeSlotOp,
   slotDraft,
   slotDraftProblem,
@@ -90,8 +91,13 @@ describe('a new slot (#655)', () => {
     expect(unplacedSlots(def)).toEqual([]);
     expect(errors(s)).toEqual([]);
     expect(validateState(s).filter((d) => d.code === 'SLOT_UNPLACED')).toEqual([]);
-    // Nothing without a name.
+    // Nothing without a name; a long one is cut to what the operation takes.
     expect(createSlotOps(c.s, c.def(c.s), '   ', at!)).toBeNull();
+    const long = createSlotOps(s, def, `Call to action ${'x'.repeat(70)}`, slotInsertAt(s, c.id, ref(c.owner, 'root'))!)!;
+    expect(long.operations[0]).toMatchObject({ slot: long.slot, label: `Call to action ${'x'.repeat(45)}` });
+    expect(long.operations[1]).toMatchObject({ parentId: 'root', bind: long.slot });
+    expect(long.slot).toMatch(/^[a-z][a-zA-Z0-9]{0,39}$/);
+    expect(run(s, long.operations).state.components[c.id].slots![long.slot].label).toHaveLength(60);
   });
 
   it('takes a name no slot, property or placement’s kept content already has', () => {
@@ -109,7 +115,7 @@ describe('a new slot (#655)', () => {
     expect(newSlotName(kept, c.def(kept), 'Aside')).toBe('aside2');
   });
 
-  it('goes inside a picked container, else inside the whole design; never beside a text, nor into a paragraph', () => {
+  it('goes inside a picked container, else inside the whole design: never beside a text, nor into a paragraph', () => {
     const c = card();
     const root = { owner: c.owner, parentId: 'root' };
     expect(slotInsertAt(c.s, c.id, null)).toEqual(root);
@@ -119,14 +125,63 @@ describe('a new slot (#655)', () => {
     expect(slotInsertAt(c.s, c.id, ref(c.page, 'body'))).toEqual(root);
     // A figure keeps its caption last.
     expect(slotInsertAt(c.s, c.id, ref(c.owner, 'fig'))).toEqual({ owner: c.owner, parentId: 'fig', index: 1 });
-    // A paragraph holds only inline content, which a slot's content is not.
-    expect(slotInsertAt(c.s, c.id, ref(c.owner, 'note'))).toBeNull();
-    // A design whose root is no container has nowhere to hold one.
+    // A paragraph holds only inline content, which a slot's content is not: the whole design takes it instead.
+    expect(slotInsertAt(c.s, c.id, ref(c.owner, 'note'))).toEqual(root);
+    // A design whose root is no container has nowhere to hold one, unless a container is picked.
     const bare = structuredClone(c.s);
     bare.components[c.id].tree!.rootIds = ['title'];
     expect(slotInsertAt(bare, c.id, null)).toBeNull();
-    // A theme's component or a code component is not edited here.
+    expect(slotInsertAt(bare, c.id, ref(c.owner, 'note'))).toBeNull();
+    const two = structuredClone(c.s);
+    two.components[c.id].tree!.rootIds = ['root', 'title'];
+    expect(slotInsertAt(two, c.id, null)).toBeNull();
+    expect(slotInsertAt(two, c.id, ref(c.owner, 'body'))).toEqual({ owner: c.owner, parentId: 'body' });
+    // A missing component, or one written as code, is not edited here.
     expect(slotInsertAt(c.s, 'missing', null)).toBeNull();
+    const code = structuredClone(c.s);
+    code.components[c.id].kind = 'code';
+    expect(slotInsertAt(code, c.id, ref(c.owner, 'body'))).toBeNull();
+  });
+
+  it('never goes where it would show once per item, or not at all: a container in a repeat gives way to the whole design', () => {
+    const c = card();
+    const s = structuredClone(c.s);
+    const tree = s.components[c.id].tree!;
+    tree.nodes.rep = { id: 'rep', kind: 'repeat', list: { $prop: 'items' }, children: ['cell'] } as never;
+    tree.nodes.cell = { id: 'cell', kind: 'element', children: [] } as never;
+    (tree.nodes.root as ElementNode).children.push('rep');
+    expect(slotInsertAt(s, c.id, ref(c.owner, 'cell'))).toEqual({ owner: c.owner, parentId: 'root' });
+    // The same container outside the repeat takes it.
+    (tree.nodes.rep as { children: string[] }).children = [];
+    (tree.nodes.root as ElementNode).children.push('cell');
+    expect(slotInsertAt(s, c.id, ref(c.owner, 'cell'))).toEqual({ owner: c.owner, parentId: 'cell' });
+  });
+
+  it('a component placed in the design takes it in the slot it shows once, passing the new slot’s content on', () => {
+    const c = card();
+    const placed = run(c.s, [{ type: 'node.insert', owner: c.owner, parentId: 'root', componentId: 'layout.section' }]);
+    const section = placed.results[0].nodeId as string;
+    const inner = run(placed.state, [{ type: 'node.insert', owner: c.owner, parentId: section, slot: 'content', primitive: 'stack' }]);
+    const stack = inner.results[0].nodeId as string;
+    let s = inner.state;
+    const into = slotInsertAt(s, c.id, ref(c.owner, section));
+    expect(into).toEqual({ owner: c.owner, parentId: section, slot: 'content' });
+    // A container of the design's own, in that slot, shows once too.
+    expect(slotInsertAt(s, c.id, ref(c.owner, stack))).toEqual({ owner: c.owner, parentId: stack });
+    const plan = createSlotOps(s, c.def(s), 'Extras', into!)!;
+    s = run(s, plan.operations).state;
+    expect((c.def(s).tree!.nodes[section] as InstanceNode).slots!.content).toContain(placedSlots(c.def(s)).get('extras'));
+    expect(errors(s)).toEqual([]);
+    // A design that is a placed Section (made from one on a page) has only that Section's slot to hold one.
+    const band = run(c.s, [{ type: 'component.createFromNode', owner: c.page, nodeId: (c.s.pages[c.page.id].rootIds[0]), name: 'Band' }]);
+    const bandId = band.results[0].definitionId as string;
+    const bandRoot = band.state.components[bandId].tree!.rootIds[0];
+    expect(band.state.components[bandId].tree!.nodes[bandRoot].kind).toBe('instance');
+    const there = slotInsertAt(band.state, bandId, null);
+    expect(there).toEqual({ owner: { kind: 'component', id: bandId }, parentId: bandRoot, slot: 'content' });
+    const banded = run(band.state, createSlotOps(band.state, band.state.components[bandId], 'Body', there!)!.operations).state;
+    expect(unplacedSlots(banded.components[bandId])).toEqual([]);
+    expect(errors(banded)).toEqual([]);
   });
 
   it('a picked placeholder puts the next one inside the whole design', () => {
@@ -171,6 +226,17 @@ describe('changing a slot’s contract (#655)', () => {
     expect(editSlotOp(c.def(s), c.slot, draft(s, c.def(s), c.slot, { max: '0' }))).toMatchObject({ max: 0 });
   });
 
+  it('Anything alone clears the lists and keeps the rest; a change to one list sends only that list', () => {
+    const c = withButtons();
+    const s = run(c.s, [{ type: 'component.setSlot', definitionId: c.id, slot: c.slot, label: 'Buttons', description: 'Calls', primitives: ['link'], max: 2 }]).state;
+    const anything = editSlotOp(c.def(s), c.slot, draft(s, c.def(s), c.slot, { restricted: false }))!;
+    expect(anything).toEqual({ type: 'component.setSlot', definitionId: c.id, slot: c.slot, label: 'Buttons', primitives: null });
+    expect(run(s, [anything]).state.components[c.id].slots!.buttons).toEqual({ label: 'Buttons', description: 'Calls', max: 2 });
+    const media = editSlotOp(c.def(s), c.slot, draft(s, c.def(s), c.slot, { categories: ['media'] }))!;
+    expect(media).toEqual({ type: 'component.setSlot', definitionId: c.id, slot: c.slot, label: 'Buttons', categories: ['media'] });
+    expect(run(s, [media]).state.components[c.id].slots!.buttons).toEqual({ label: 'Buttons', description: 'Calls', primitives: ['link'], categories: ['media'], max: 2 });
+  });
+
   it('a slot that took anything takes only what is checked, even nothing', () => {
     const c = withButtons();
     const op = editSlotOp(c.def(c.s), c.slot, draft(c.s, c.def(c.s), c.slot, { restricted: true }));
@@ -194,6 +260,33 @@ describe('changing a slot’s contract (#655)', () => {
   });
 });
 
+describe('a slot changed elsewhere while its form is open (#655)', () => {
+  const was = { label: 'Buttons', description: 'Calls', primitives: ['link'] as SlotPrimitive[], max: 2 };
+
+  it('keeps what the author changed and takes the rest as the slot has it now, so a save never puts back an Undo', () => {
+    // The author changed only the description; meanwhile an Undo took the limit away and the AI renamed it.
+    const now = { label: 'Actions', description: 'Calls', primitives: ['link'] as SlotPrimitive[] };
+    const typed = { ...slotDraft(was), description: 'A call to action' };
+    const moved = rebaseSlotDraft(typed, was, now);
+    expect(moved.clash).toBe(false);
+    expect(moved.draft).toEqual({ ...slotDraft(now), description: 'A call to action' });
+    const c = withButtons();
+    const s = run(c.s, [{ type: 'component.setSlot', definitionId: c.id, slot: c.slot, ...now }]).state;
+    expect(editSlotOp(c.def(s), c.slot, moved.draft)).toEqual({ type: 'component.setSlot', definitionId: c.id, slot: c.slot, label: 'Actions', description: 'A call to action' });
+  });
+
+  it('says when both changed the same thing differently, showing the current value only where the author left it', () => {
+    const typed = { ...slotDraft(was), label: 'Book now', max: '3' };
+    const moved = rebaseSlotDraft(typed, was, { ...was, label: 'Actions', primitives: ['text'] });
+    expect(moved.clash).toBe(true);
+    expect(moved.draft).toMatchObject({ label: 'Book now', max: '3', primitives: ['text'] });
+    // The same change on both sides is no clash.
+    expect(rebaseSlotDraft(typed, was, { ...was, label: 'Book now' }).clash).toBe(false);
+    // What it takes changes as one: lists the author left alone follow the slot, even from Anything.
+    expect(rebaseSlotDraft(slotDraft(was), was, { label: 'Buttons' }).draft).toMatchObject({ restricted: false, categories: [], primitives: [] });
+  });
+});
+
 describe('a slot placements fill (#655)', () => {
   /** The card's Buttons slot on Home, holding one paragraph. */
   function filled() {
@@ -207,15 +300,17 @@ describe('a slot placements fill (#655)', () => {
     const c = filled();
     expect(slotFilledIn(c.s, c.def(c.s), c.slot)).toEqual([c.s.pages[c.page.id].title]);
     const images = editSlotOp(c.def(c.s), c.slot, draft(c.s, c.def(c.s), c.slot, { restricted: true, primitives: ['image'] }))!;
-    expect(() => run(c.s, [images])).toThrow(/the “Buttons” slot already holds text, which it would no longer take\. Move it out first\./);
+    expect(() => run(c.s, [images])).toThrow(/^Home: the “Buttons” slot already holds text, which it would no longer take\. Move it out first\./);
     const closed = editSlotOp(c.def(c.s), c.slot, draft(c.s, c.def(c.s), c.slot, { max: '0' }))!;
-    expect(() => run(c.s, [closed])).toThrow(/the “Buttons” slot already holds more than 0/);
+    expect(() => run(c.s, [closed])).toThrow(/^Home: the “Buttons” slot already holds more than 0/);
     expect(c.def(c.s).slots!.buttons).toEqual({ label: 'Buttons' });
     expect(held(c.s, c.page, c.instance)).toEqual([c.text]);
     // A contract it still fits is taken.
     const text = editSlotOp(c.def(c.s), c.slot, draft(c.s, c.def(c.s), c.slot, { restricted: true, primitives: ['text'], max: '1' }))!;
     const s = run(c.s, [text]).state;
     expect(c.def(s).slots!.buttons).toEqual({ label: 'Buttons', categories: [], primitives: ['text'], max: 1 });
+    expect(held(s, c.page, c.instance)).toEqual([c.text]);
+    expect(s.pages[c.page.id].nodes[c.text]).toEqual(c.s.pages[c.page.id].nodes[c.text]);
     expect(() => run(s, [{ type: 'node.insert', owner: c.page, parentId: c.instance, slot: 'buttons', primitive: 'image' }])).toThrow(/takes text, not an image/);
     expect(() => run(s, [{ type: 'node.insert', owner: c.page, parentId: c.instance, slot: 'buttons', primitive: 'paragraph' }])).toThrow(/holds at most one item/);
   });
@@ -228,9 +323,18 @@ describe('a slot placements fill (#655)', () => {
     expect(slotFilledIn(emptied, c.def(emptied), c.slot)).toEqual([]);
     const s = run(emptied, [removeSlotOp(c.def(emptied), c.slot)]).state;
     expect(c.def(s).slots).toBeUndefined();
+    expect((s.pages[c.page.id].nodes[c.instance] as InstanceNode).slots ?? {}).not.toHaveProperty('buttons');
     expect((c.def(s).tree!.nodes.body as ElementNode).children).toEqual([]);
     expect(Object.values(c.def(s).tree!.nodes).some((n) => n.kind === 'slot')).toBe(false);
     expect(errors(s)).toEqual([]);
+  });
+
+  it('counts content a hand edit left in another shape as the engine does before removing the slot', () => {
+    const c = withButtons();
+    const damaged = structuredClone(c.s);
+    (damaged.pages[damaged.site.homePageId].nodes[c.instance] as InstanceNode).slots = { buttons: 'n_text' as unknown as string[] };
+    expect(slotFilledIn(damaged, c.def(damaged), c.slot)).toEqual(['Home']);
+    expect(() => run(damaged, [removeSlotOp(c.def(damaged), c.slot)])).toThrow(/has content in 1 place/);
   });
 });
 
@@ -238,10 +342,10 @@ describe('slots the design does not show yet (#655)', () => {
   it('are the declared ones with no placeholder anywhere in the design, in the order declared', () => {
     const c = withButtons();
     const s = run(c.s, [
-      { type: 'component.setSlot', definitionId: c.id, slot: 'aside', label: 'Aside' },
-      { type: 'component.setSlot', definitionId: c.id, slot: 'footer', label: 'Footer' }
+      { type: 'component.setSlot', definitionId: c.id, slot: 'footer', label: 'Footer' },
+      { type: 'component.setSlot', definitionId: c.id, slot: 'aside', label: 'Aside' }
     ]).state;
-    expect(unplacedSlots(c.def(s))).toEqual(['aside', 'footer']);
+    expect(unplacedSlots(c.def(s))).toEqual(['footer', 'aside']);
     const placed = run(s, [{ type: 'node.insert', owner: c.owner, parentId: 'root', primitive: 'slot', bind: 'footer' }]).state;
     expect(unplacedSlots(c.def(placed))).toEqual(['aside']);
     // A placeholder the engine would count (one passed on to a component inside the design) counts as placed.

@@ -12,7 +12,7 @@ import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
 import { elementWhere, nodeLabel, sectionWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } from '../lib/insert-search';
-import { unplacedSlots } from '../lib/slot-contract';
+import { SLOT_NO_PLACE, unplacedSlots } from '../lib/slot-contract';
 import { exportComponentFile, insertSaved, removeFromLibrary, saveToLibrary } from '../lib/saved-components';
 import { beginInsertDrag } from '../lib/insert-drag';
 import { placementMap } from '../lib/placement-map';
@@ -1677,6 +1677,8 @@ export function InsertPanel() {
         ? { verb: `Next: ${nextTo.lead.replace(/^in a new section /, 'new section ')}`, target: placeText(nextTo), full: `The next one goes ${nextTo.lead} ${placeText(nextTo)}` }
         : aimItem && aimTo
           ? { name: fullName(aimItem), verb: placeLead(aimTo.lead), target: placeText(aimTo), full: `${fullName(aimItem)} goes ${aimTo.lead} ${placeText(aimTo)}` }
+          : aimItem?.spec.primitive === 'slot'
+            ? { verb: SLOT_NO_PLACE }
           : where[fallback]
             ? { verb: `${KIND_SUBJECT[fallback]} ${where[fallback]!.lead}`, target: placeText(where[fallback]!) }
             : fallback === 'component' && mine.length
@@ -2003,7 +2005,7 @@ export function InsertPanel() {
         const w = whereOf(it);
         return (
           <span key={it.key} id={`${id}-to-${it.key}`} hidden>
-            {w ? `Goes ${w.lead} ${placeText(w)}` : ''}
+            {w ? `Goes ${w.lead} ${placeText(w)}` : it.spec.primitive === 'slot' ? SLOT_NO_PLACE : ''}
           </span>
         );
       })}
