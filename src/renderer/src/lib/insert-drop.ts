@@ -562,8 +562,8 @@ export function moveDestination(state: ProjectState, owner: OwnerRef, nodeId: st
   return { role, specs, lists, aim, surfaces };
 }
 
-/** The styles that reach what a node lays out as: its own, and for a placement its component's root, each of that
- *  root's variant options, and the placement's overrides of it. */
+/** The styles that reach what a node lays out as: its own, and for a placement its component's root, the variant
+ *  options it is placed with (every one, for a choice bound to content), and the placement's overrides of it. */
 function rootStyles(state: ProjectState, node: GraphNode | undefined): ResponsiveStyles[] {
   if (!node) return [];
   const out: ResponsiveStyles[] = 'styles' in node && node.styles ? [node.styles as ResponsiveStyles] : [];
@@ -572,11 +572,13 @@ function rootStyles(state: ProjectState, node: GraphNode | undefined): Responsiv
   const rootId = def?.kind === 'managed' && def.tree ? def.tree.rootIds[0] : undefined;
   const root = rootId ? own(def!.tree!.nodes, rootId) : undefined;
   if (root && 'styles' in root && root.styles) out.push(root.styles as ResponsiveStyles);
-  for (const axis of Object.values(def?.variantAxes ?? {}))
-    for (const option of Object.values(axis.options ?? {})) {
-      const styles = rootId ? own(option.styles, rootId) : undefined;
+  for (const [name, axis] of Object.entries(def?.variantAxes ?? {})) {
+    const chosen = own(node.variants ?? {}, name) ?? axis.default;
+    for (const option of typeof chosen === 'string' ? [own(axis.options ?? {}, chosen)] : Object.values(axis.options ?? {})) {
+      const styles = rootId && option ? own(option.styles, rootId) : undefined;
       if (styles) out.push(styles);
     }
+  }
   const over = own(node.overrides, 'root');
   if (over) out.push(over);
   return out;

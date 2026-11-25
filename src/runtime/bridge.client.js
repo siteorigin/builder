@@ -4632,10 +4632,10 @@ window.addEventListener('message', async (e) => {
       // the box is only the first copy's.
       send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => {
         const all = findAll(d);
-        // A slot's placeholder is measured where it first shows: a copy hidden at this width (one a component shows
-        // only on phones) is skipped. Any other element is measured where it first is.
+        // Measured where it first shows: a copy hidden at this width (one a component shows only on phones) is
+        // skipped, so content a component shows in one place at a time is found where it is.
         const boxes = all.map(rectOf);
-        const first = d && typeof d.slot === 'string' ? boxes.findIndex(Boolean) : boxes[0] ? 0 : -1;
+        const first = boxes.findIndex(Boolean);
         if (first < 0) return null;
         const el = all[first];
         const r = boxes[first];

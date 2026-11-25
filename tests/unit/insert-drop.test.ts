@@ -746,6 +746,29 @@ describe('dragging an existing element across columns and slots (#658)', () => {
     expect(dest.aim(lists, 495, 150, 1)).toMatchObject({ op: null, refused: expect.stringMatching(/Order style/) });
   });
 
+  it('counts only the variant a placement is shown with, unless the choice is bound to content', () => {
+    const p = page();
+    const made = applyOperations(p.state, [{ type: 'component.createFromNode', owner: p.owner, nodeId: p.row, name: 'Badge row' }]);
+    const def = made.state.components[made.results[0].definitionId as string];
+    const rootId = def.tree!.rootIds[0];
+    def.variantAxes = { size: { label: 'Size', default: 'plain', options: { plain: { label: 'Plain' }, narrow: { label: 'Narrow', styles: { [rootId]: { 'cq-narrow': { order: 2 } } } } } } } as unknown as typeof def.variantAxes;
+    const row = Object.values(made.state.pages[p.owner.id].nodes).find((n) => n.kind === 'instance' && n.definitionId === def.id) as InstanceNode;
+    const measured = new Map(p.measured)
+      .set(p.a, { ...box(100, 50, 390, 200), ordered: true })
+      .set(p.b, { ...box(510, 50, 390, 200), ordered: true })
+      .set(row.id, box(100, 280, 800, 80));
+    const between = () => {
+      const dest = moveDestination(made.state, p.owner, row.id)!;
+      return dest.aim(dest.lists(measured), 495, 150, 1);
+    };
+    // Shown Plain: the Narrow option's Order never reaches it, and it goes between the cards.
+    expect(between()).toMatchObject({ op: { parentId: p.grid, index: 1 }, refused: null });
+    row.variants = { size: 'narrow' };
+    expect(between()).toMatchObject({ op: null, refused: expect.stringMatching(/Order style/) });
+    row.variants = { size: { $bind: 'item.size' } } as unknown as InstanceNode['variants'];
+    expect(between()).toMatchObject({ op: null, refused: expect.stringMatching(/Order style/) });
+  });
+
   it('moves the last section to the top of the page', () => {
     const p = page();
     const dest = moveDestination(p.state, p.owner, p.second)!;
