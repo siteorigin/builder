@@ -96,7 +96,7 @@ async function copyDevCache(project: string, stage: string): Promise<void> {
  * no longer has are removed, and unchanged files are left alone so the preview reloads only what changed. A source
  * file whose dev variant alone changed (or went) is touched, because the preview does not watch the editor's cache.
  */
-export async function syncPreviewStage(project: string, stage: string): Promise<void> {
+export async function syncPreviewStage(project: string, stage: string): Promise<string[]> {
   const dev = join(project, ...DEV_CACHE);
   // A cache that went, or now leads out of the project, takes its variants out of the copy too.
   const devFrom = existsSync(dev) && realFileInside(project, dev) ? await fs.realpath(dev) : null;
@@ -105,13 +105,16 @@ export async function syncPreviewStage(project: string, stage: string): Promise<
   // The project brief stays out of the copy, as it does from the first one (copyProjectSource).
   const sources = await mirror(project, stage, (root, p) => inProjectSource(root, p) && !isProjectBrief(root, p) && !(dirname(p) === root && BUILD_CONFIG.has(relative(root, p).toLowerCase())));
   const now = new Date();
+  const touched: string[] = [];
   for (const rel of variants) {
     if (sources.has(rel)) continue;
     const file = join(stage, ...rel.split('/'));
     // Only a real source file of the copy is touched; nothing the copy links to.
     if (!inProjectSource(stage, file) || !(await fs.lstat(file).catch(() => null))?.isFile()) continue;
-    await fs.utimes(file, now, now).catch(() => undefined);
+    if (await fs.utimes(file, now, now).then(() => true, () => false)) touched.push(rel);
   }
+  // The copy's files this changed (project-relative), so its preview takes them as one update.
+  return [...sources, ...touched];
 }
 
 /**

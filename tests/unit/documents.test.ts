@@ -12,13 +12,14 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 
 const env = vi.hoisted(() => ({ userData: '' }));
 
-/** The preview's worker: ready at once, gone when asked to stop. */
+/** The preview's worker: ready at once, holding its updates for a save when asked, gone when asked to stop. */
 class FakeRuntime extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   exited = false;
-  postMessage(m: { type: string }) {
+  postMessage(m: { type: string; id?: string }) {
     if (m.type === 'start') queueMicrotask(() => this.emit('message', { type: 'ready', url: 'http://127.0.0.1:1' }));
+    if (m.type === 'hold') queueMicrotask(() => this.emit('message', { type: 'held', id: m.id }));
     if (m.type === 'stop') this.kill();
   }
   kill() {

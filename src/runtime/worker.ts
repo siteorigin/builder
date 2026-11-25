@@ -9,17 +9,28 @@ import { pathToFileURL } from 'node:url';
 import { maskSecrets, serializeBuildError } from './build-diagnostics';
 import { devPlugin } from './dev-plugin';
 import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, previewFsPolicy } from './policy';
+import { createPublicationGate, type GateServer, type PublicationGate } from './publication-gate';
 
 type Msg =
   | { type: 'start'; dir: string; port?: number; packaged?: boolean }
   | { type: 'revision'; revision: number }
+  | { type: 'hold'; id: string }
+  | { type: 'release'; id: string; files: string[] }
   | { type: 'build'; dir: string }
   | { type: 'stop' };
 
 const port = (process as unknown as { parentPort: { on: (e: string, cb: (ev: { data: Msg }) => void) => void; postMessage: (m: unknown) => void } }).parentPort;
 const post = (m: unknown) => port.postMessage(m);
 
-let server: { close: () => Promise<void>; ws: { send: (p: unknown) => void }; httpServer: unknown } | null = null;
+type Ws = { send: (p: unknown) => void; on: (event: string, fn: (data: unknown) => void) => void; clients: Set<unknown> };
+let server: { close: () => Promise<void>; ws: Ws; httpServer: unknown } | null = null;
+/** Holds the preview's hot updates while the editor publishes a batch of files (see publication-gate). */
+let gate: PublicationGate | null = null;
+/**
+ * How long a new batch waits for the pages to show the one before (fetch its modules, apply them, say so), so it
+ * replaces nothing they are still reading. Under the editor's own wait for the answer (HOLD_ACK_MS).
+ */
+const CATCH_UP_MS = 600;
 
 async function loadVite(dir: string) {
   const req = createRequire(join(dir, 'package.json'));
@@ -37,8 +48,20 @@ function useRealProjectDir(dir: string): string {
   return real;
 }
 
+/**
+ * What the dev server does not watch, anchored to the project root (src/lib/siteorigin must stay watched). Build
+ * configuration is not watched: a changed config must go through the editor's trust check, not an automatic restart.
+ */
+function unwatched(dir: string) {
+  return (p: string) =>
+    ['.siteorigin', 'siteorigin', 'build', 'node_modules', '.svelte-kit/output'].some((d) => p === join(dir, d) || p.startsWith(join(dir, d) + sep)) ||
+    ['vite.config.js', 'vite.config.ts', 'svelte.config.js', 'package.json', 'package-lock.json'].some((f) => p === join(dir, f));
+}
+
 async function start(dir: string, wantedPort = 0, packaged = true) {
   const vite = await loadVite(dir);
+  const ignored = unwatched(dir);
+  const held = createPublicationGate({ root: dir, ignored });
   const s = await vite.createServer({
     root: dir,
     configFile: join(dir, 'vite.config.js'),
@@ -52,13 +75,9 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
       strictPort: true,
       cors: false,
       open: false,
-      watch: {
-        // Anchored to the project root: src/lib/siteorigin must stay watched.
-        // Build configuration is not watched: a changed config must go through the editor's trust check, not an automatic restart.
-        ignored: (p: string) =>
-          ['.siteorigin', 'siteorigin', 'build', 'node_modules', '.svelte-kit/output'].some((d) => p === join(dir, d) || p.startsWith(join(dir, d) + sep)) ||
-          ['vite.config.js', 'vite.config.ts', 'svelte.config.js', 'package.json', 'package-lock.json'].some((f) => p === join(dir, f))
-      },
+      watch: { ignored },
+      // A batch of files the editor publishes reaches the page as one update.
+      hotUpdateEnvironments: held.hotUpdateEnvironments,
       fs: previewFsPolicy(dir)
     },
     customLogger: {
@@ -71,6 +90,11 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
       hasWarned: false
     }
   } as never);
+  held.attach(s as unknown as GateServer);
+  gate = held;
+  const ws = (s as unknown as { ws: Ws }).ws;
+  // The bridge says which batch its page shows once it has applied it.
+  ws.on('siteorigin:applied', (data) => held.applied(Number((data as { batch?: unknown } | null)?.batch)));
   await s.listen();
   server = s as never;
   const addr = (s.httpServer as { address(): { port: number } | string | null } | null)?.address();
@@ -144,11 +168,25 @@ port.on('message', async (ev) => {
   const m = ev.data;
   try {
     if (m.type === 'start') await start(useRealProjectDir(m.dir), m.port, m.packaged !== false);
-    else if (m.type === 'revision') server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision } });
+    // The editor waits for this, so it never runs ahead of the batch's own update.
+    else if (m.type === 'revision') {
+      const send = (batch = 0) => server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision, batch } });
+      if (gate) gate.revision(send);
+      else send();
+    }
+    // Answered once held, so the editor replaces no file before the watcher's events wait here; and once the pages
+    // show the batch before, so it replaces nothing they are still fetching for that one.
+    else if (m.type === 'hold') {
+      const held = gate;
+      if (held) await held.caughtUp(CATCH_UP_MS, () => server?.ws.clients.size ?? 0);
+      held?.hold(m.id);
+      post({ type: 'held', id: m.id });
+    } else if (m.type === 'release') gate?.release(m.id, Array.isArray(m.files) ? m.files : []);
     else if (m.type === 'build') {
       await build(m.dir);
       process.exit(0);
     } else if (m.type === 'stop') {
+      gate?.close();
       await server?.close();
       process.exit(0);
     }

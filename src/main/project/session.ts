@@ -524,6 +524,14 @@ export class ProjectSession extends EventEmitter {
   /** The hash of each generated file's latest content, by absolute path, so unchanged content is not hashed again. */
   private contentHashes = new Map<string, { content: string | Buffer; hash: string }>();
   /**
+   * Set by whatever runs the preview. Asked before the first file of a publication the preview watches is replaced,
+   * it resolves once the preview holds its hot updates, with the call that hands it the files the publication changed,
+   * so the page takes them as one update (spec §18.2).
+   */
+  previewHold: (() => Promise<(files: string[]) => void>) | null = null;
+  /** The files the publication under way has changed on disk, project-relative, while the preview holds for it. */
+  private landing: Set<string> | null = null;
+  /**
    * The website's PNG icons, made from the favicon or the monogram, kept while nothing they are made from changes. A
    * set a save stopped waiting for is published on its own once it is ready, while this app holds the project's lock
    * (a new project's session has none until the app takes it; the set is then published as the project opens).
@@ -1057,7 +1065,8 @@ export class ProjectSession extends EventEmitter {
    * folder first); "keep" accepts the external file, but only when the project is still valid with it.
    */
   resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }> {
-    return this.serialize(async () => {
+    // A code component's source put back reaches the preview with the files generated from it, as one update.
+    return this.serialize(() => this.publishing(async () => {
       if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
       if (this.activeRun) return { ok: false, message: 'Stop the AI before resolving conflicts.' };
       if (this.migrationFailed) return { ok: false, message: 'This project could not be updated to the current format. Close and reopen it.' };
@@ -1090,6 +1099,7 @@ export class ProjectSession extends EventEmitter {
           await unchanged();
           await this.removeCanonical(path);
         } else await atomicWrite(abs, builder, { beforeReplace: unchanged });
+        this.landing?.add(path);
         this.releaseConflict(path);
       } else {
         const overlay = new Map(this.pending);
@@ -1130,7 +1140,7 @@ export class ProjectSession extends EventEmitter {
       await this.saveLocalState();
       this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'Resolve conflict', source: 'user' } satisfies SessionEvent);
       return { ok: true };
-    });
+    }));
   }
 
   // -------------------------------------------------------------------------
@@ -1696,20 +1706,25 @@ export class ProjectSession extends EventEmitter {
     try {
       // Journal first, then replace files.
       if (journaled) await this.writeJournal({ writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1 });
-      // Each file is checked again just before it is replaced or removed: one saved outside the app since the check
-      // above (while the journal was being written) is never replaced unseen.
-      for (const w of writes) {
-        await atomicWrite(safeJoin(this.dir, w.path), w.content, { beforeReplace: () => unchangedOnDisk(w.path) });
-        installed++;
-      }
-      for (const d of deletes) {
-        await unchangedOnDisk(d.path);
-        await this.removeCanonical(d.path);
-        installed++;
-      }
-      this.state = next;
-      this.docs = nextDocs;
-      changedFiles = await this.publishGenerated(false, generated);
+      // A code component's source the preview watches is replaced with the files generated from it, in one update.
+      changedFiles = await this.publishing(async () => {
+        // Each file is checked again just before it is replaced or removed: one saved outside the app since the check
+        // above (while the journal was being written) is never replaced unseen.
+        for (const w of writes) {
+          await atomicWrite(safeJoin(this.dir, w.path), w.content, { beforeReplace: () => unchangedOnDisk(w.path) });
+          this.landing?.add(w.path);
+          installed++;
+        }
+        for (const d of deletes) {
+          await unchangedOnDisk(d.path);
+          await this.removeCanonical(d.path);
+          this.landing?.add(d.path);
+          installed++;
+        }
+        this.state = next;
+        this.docs = nextDocs;
+        return this.publishGenerated(false, generated);
+      });
       if (planned) await this.installHistory(planned.history);
       this.revision++;
       await this.saveLocalState();
@@ -1788,8 +1803,31 @@ export class ProjectSession extends EventEmitter {
     return { hash: UNREADABLE, stamp: null };
   }
 
+  /**
+   * Run `fn`, which replaces files the preview shows, with the preview's hot updates held, so it takes what `fn`
+   * changes (each noted in `landing`) as one update once `fn` is done. Inside another such run, `fn` is part of it.
+   */
+  private async publishing<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.landing || !this.previewHold) return fn();
+    const landing = new Set<string>();
+    this.landing = landing;
+    let release: ((files: string[]) => void) | null = null;
+    try {
+      release = await this.previewHold().catch(() => null);
+      return await fn();
+    } finally {
+      if (this.landing === landing) this.landing = null;
+      // Also after a publication that stopped part way: the preview then shows what is on disk, as reopening would.
+      release?.([...landing]);
+    }
+  }
+
   /** Regenerate derived files. Files edited externally since the last generation are preserved and reported. */
-  private async publishGenerated(initial: boolean, pre?: { clean: Map<string, string>; dev: Map<string, string> }): Promise<string[]> {
+  private publishGenerated(initial: boolean, pre?: { clean: Map<string, string>; dev: Map<string, string> }): Promise<string[]> {
+    return this.publishing(() => this.publishGeneratedNow(initial, pre));
+  }
+
+  private async publishGeneratedNow(initial: boolean, pre?: { clean: Map<string, string>; dev: Map<string, string> }): Promise<string[]> {
     const clean = new Map(pre?.clean ?? this.generate(this.state, false));
     const dev = new Map(pre?.dev ?? this.generate(this.state, true));
     const devRoot = this.local('cache', 'dev');
@@ -1910,7 +1948,7 @@ export class ProjectSession extends EventEmitter {
           this.seenOnDisk.delete(abs);
           // The preview may have cached the variant; touching the real file makes it load that file instead.
           const now = new Date();
-          await fs.utimes(safeJoin(this.dir, path), now, now).catch(() => undefined);
+          if (await fs.utimes(safeJoin(this.dir, path), now, now).then(() => true, () => false)) this.landing?.add(path);
         }
         continue;
       }
@@ -1956,8 +1994,10 @@ export class ProjectSession extends EventEmitter {
         if (initial || !['ENOTDIR', 'EEXIST'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e;
         theirs = true;
       }
-      if (written) changedFiles.push(path);
-      else if (theirs) {
+      if (written) {
+        changedFiles.push(path);
+        this.landing?.add(path);
+      } else if (theirs) {
         if (known(path)) nextFiles[path] = prev[path] ?? inflight[path];
         else delete nextFiles[path];
         this.conflicts.push({ path, reason: 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
@@ -1981,6 +2021,7 @@ export class ProjectSession extends EventEmitter {
           if ((await this.seenHash(abs)) !== nextFiles[path] && (await this.readHash(abs)).hash !== nextFiles[path]) continue;
           this.seenOnDisk.delete(abs);
           await fs.utimes(abs, now, now);
+          this.landing?.add(path);
         } catch {
           this.untouched.add(path);
         }
@@ -1999,6 +2040,7 @@ export class ProjectSession extends EventEmitter {
       if (ours(path, diskHash)) {
         this.seenOnDisk.delete(abs);
         await removeDurable(abs);
+        this.landing?.add(path);
         await removeEmptyDirs(dirname(abs), join(this.dir, 'src'));
         changedFiles.push(path);
       } else if (diskHash !== null && claimedWhenObsolete(path) && (await fs.lstat(abs).then((st) => st.isFile(), () => false))) {
@@ -2069,10 +2111,13 @@ export class ProjectSession extends EventEmitter {
       if (disk === 'missing' ? await absent(abs) : (await handleStamp(abs)) === disk.stamp) return true;
       throw new Error(`${path} changed while it was being restored, so it was not restored. Try again.`);
     };
-    await atomicWrite(abs, content, { beforeReplace: unchanged });
-    this.generated.files[path] = sha(content);
-    this.conflicts = this.conflicts.filter((c) => c.path !== path);
-    await this.publishGenerated(false);
+    await this.publishing(async () => {
+      await atomicWrite(abs, content, { beforeReplace: unchanged });
+      this.landing?.add(path);
+      this.generated.files[path] = sha(content);
+      this.conflicts = this.conflicts.filter((c) => c.path !== path);
+      await this.publishGenerated(false);
+    });
     this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [path], label: 'Restore generated file', source: 'user' } satisfies SessionEvent);
   }
 
@@ -2099,22 +2144,25 @@ export class ProjectSession extends EventEmitter {
     const abs = safeJoin(this.dir, path);
     const st = await fs.lstat(abs).catch(() => null);
     if (st && !st.isFile()) throw new Error(`${path} is not a file, so it was not restored. Move it ${path.startsWith('static/') ? 'out of static/' : 'away'}, then try again.`);
-    if (st) {
-      // Read first, so a list that cannot be added to stops the restore before anything moves.
-      const listed = await this.loadSavedCopies({ forWrite: true });
-      const id = randomBytes(8).toString('hex');
-      const savedAt = Date.now();
-      const file = `${LOCAL_DIR}/recovery/${savedAt}-${id}-${path.replace(/[^A-Za-z0-9._-]+/g, '_').slice(-80)}.external`;
-      const kept = safeJoin(this.dir, file);
-      await ensureDir(dirname(kept));
-      await fs.rename(abs, kept);
-      this.seenOnDisk.delete(abs);
-      const copy: SavedCopy = { id, path, kind: 'generated', side: 'external', savedAt, file };
-      await atomicWrite(safeJoin(this.dir, `${LOCAL_DIR}/recovery/${SAVED_COPIES}`), toJson({ copies: [copy, ...listed] }));
-      this.savedCopies = [copy, ...this.savedCopies];
-    }
-    // The claim stays until the publication below finds the path empty: a file put back there meanwhile is named again.
-    await this.publishGenerated(false);
+    await this.publishing(async () => {
+      if (st) {
+        // Read first, so a list that cannot be added to stops the restore before anything moves.
+        const listed = await this.loadSavedCopies({ forWrite: true });
+        const id = randomBytes(8).toString('hex');
+        const savedAt = Date.now();
+        const file = `${LOCAL_DIR}/recovery/${savedAt}-${id}-${path.replace(/[^A-Za-z0-9._-]+/g, '_').slice(-80)}.external`;
+        const kept = safeJoin(this.dir, file);
+        await ensureDir(dirname(kept));
+        await fs.rename(abs, kept);
+        this.landing?.add(path);
+        this.seenOnDisk.delete(abs);
+        const copy: SavedCopy = { id, path, kind: 'generated', side: 'external', savedAt, file };
+        await atomicWrite(safeJoin(this.dir, `${LOCAL_DIR}/recovery/${SAVED_COPIES}`), toJson({ copies: [copy, ...listed] }));
+        this.savedCopies = [copy, ...this.savedCopies];
+      }
+      // The claim stays until the publication below finds the path empty: a file put back there meanwhile is named again.
+      await this.publishGenerated(false);
+    });
     this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [path], label: 'Restore generated file', source: 'user' } satisfies SessionEvent);
   }
 
@@ -3241,23 +3289,27 @@ export class ProjectSession extends EventEmitter {
       };
       const docsBefore = this.docs;
       try {
-        for (const f of plan.files) {
-          const before = prior.get(f.path) ?? null;
-          if (before === f.hash) continue;
-          // A takeover by another app, or a change to the file since it was copied aside, stops the restore.
+        // The version's files and the documents saved with them reach the preview as one update.
+        ev = await this.publishing(async () => {
+          for (const f of plan.files) {
+            const before = prior.get(f.path) ?? null;
+            if (before === f.hash) continue;
+            // A takeover by another app, or a change to the file since it was copied aside, stops the restore.
+            if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
+            const abs = safeJoin(this.dir, f.path);
+            // Read before the file is checked, so as little time as possible passes between the check and the write.
+            const bytes = await this.versions.read(f.hash);
+            const now = await fs.readFile(abs).then(sha, (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+            if (now !== before) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
+            // Noted before writing: a write that lands but fails to report so is still undone.
+            written.push({ path: f.path, hash: f.hash, prior: before });
+            await atomicWrite(abs, bytes);
+            this.landing?.add(f.path);
+          }
+          if (written.length) await this.refreshAssetFiles().catch(() => false);
           if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
-          const abs = safeJoin(this.dir, f.path);
-          // Read before the file is checked, so as little time as possible passes between the check and the write.
-          const bytes = await this.versions.read(f.hash);
-          const now = await fs.readFile(abs).then(sha, (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
-          if (now !== before) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
-          // Noted before writing: a write that lands but fails to report so is still undone.
-          written.push({ path: f.path, hash: f.hash, prior: before });
-          await atomicWrite(abs, bytes);
-        }
-        if (written.length) await this.refreshAssetFiles().catch(() => false);
-        if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
-        if (docsChange) ev = await this.persist(plan.state, { label, source: 'user' });
+          return docsChange ? await this.persist(plan.state, { label, source: 'user' }) : null;
+        });
       } catch (e) {
         // Once the documents are saved (in place, or journaled for reopening to finish), the files stay with them; before
         // that, nothing of the restore is kept.
@@ -4000,24 +4052,27 @@ export class ProjectSession extends EventEmitter {
    * choose (spec 18.5). The project's documents in memory are the pre-run state, which is always consistent.
    */
   private async revertAroundConflicts(run: NonNullable<ProjectSession['activeRun']>, touched: string[], changedOutside: string[]) {
-    for (const p of touched) {
-      const before = run.before.get(p) ?? null;
-      const disk = await this.diskContent(p);
-      // Checked again right before replacing it: a file saved elsewhere since the first check is held too.
-      if (changedOutside.includes(p) || (disk !== before && disk !== (this.docs.get(p) ?? null))) {
-        // What the run last wrote to it is kept beside the pre-run version, for the user to see what was at stake.
-        const tried = this.docs.get(p);
-        this.holdConflict(p, before, 'Changed outside SiteOrigin Builder during an AI run.', { attempted: tried === undefined ? { ref: null } : { ref: sha(tried), content: tried } });
-        continue;
+    const changedFiles = await this.publishing(async () => {
+      for (const p of touched) {
+        const before = run.before.get(p) ?? null;
+        const disk = await this.diskContent(p);
+        // Checked again right before replacing it: a file saved elsewhere since the first check is held too.
+        if (changedOutside.includes(p) || (disk !== before && disk !== (this.docs.get(p) ?? null))) {
+          // What the run last wrote to it is kept beside the pre-run version, for the user to see what was at stake.
+          const tried = this.docs.get(p);
+          this.holdConflict(p, before, 'Changed outside SiteOrigin Builder during an AI run.', { attempted: tried === undefined ? { ref: null } : { ref: sha(tried), content: tried } });
+          continue;
+        }
+        if (disk === before) continue;
+        if (before === null) await this.removeCanonical(p);
+        else await atomicWrite(safeJoin(this.dir, p), before);
+        this.landing?.add(p);
       }
-      if (disk === before) continue;
-      if (before === null) await this.removeCanonical(p);
-      else await atomicWrite(safeJoin(this.dir, p), before);
-    }
-    this.state = run.beforeState;
-    this.docs = new Map(run.before);
-    await this.saveConflicts();
-    const changedFiles = await this.publishGenerated(false);
+      this.state = run.beforeState;
+      this.docs = new Map(run.before);
+      await this.saveConflicts();
+      return this.publishGenerated(false);
+    });
     this.revision++;
     await this.saveLocalState();
     this.emit('changed', { revision: this.revision, changedDocs: touched, changedFiles, label: 'Revert AI changes', source: 'system' } satisfies SessionEvent);

@@ -4978,12 +4978,18 @@ function reportHistory() {
 if (window.navigation) window.navigation.addEventListener('currententrychange', reportHistory);
 
 if (import.meta.hot) {
+  // Sent once the batch's own update has been applied (src/runtime/publication-gate.ts), and acknowledged as this
+  // revision even when a later one arrives before the page has painted it.
   import.meta.hot.on('siteorigin:revision', (data) => {
-    revision = data.revision;
+    const applied = data.revision;
+    const batch = data.batch;
+    revision = applied;
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         settleDrafts();
-        send('revisionApplied', { revision });
+        send('revisionApplied', { revision: applied });
+        // The preview server waits for this before the editor replaces the files of the next save.
+        import.meta.hot.send('siteorigin:applied', { revision: applied, batch });
       })
     );
   });

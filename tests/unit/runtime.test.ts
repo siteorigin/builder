@@ -36,7 +36,7 @@ vi.mock('electron', () => ({
   }
 }));
 
-const { BUILD_LIMITS, STOP_LIMITS, DevServer, buildProject, prepareDependencies } = await import('../../src/main/runtime/manager');
+const { BUILD_LIMITS, HOLD_ACK_MS, STOP_LIMITS, DevServer, buildProject, prepareDependencies } = await import('../../src/main/runtime/manager');
 
 afterEach(() => {
   FakeWorker.pipesOpen = false;
@@ -358,6 +358,45 @@ describe('preview worker', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(started).toBe(true);
     expect(w.posted.at(-1)).toEqual({ type: 'stop' });
+  });
+
+  it('holds the preview for a batch once the worker says it holds, then hands it the batch', async () => {
+    const dev = new DevServer('/project');
+    const started = dev.start();
+    const w = workers[0];
+    w.emit('message', { type: 'ready', url: 'http://127.0.0.1:1' });
+    await started;
+    let held = false;
+    const hold = dev.hold().then((release) => ((held = true), release));
+    const asked = w.posted.at(-1) as { type: string; id: string };
+    expect(asked).toMatchObject({ type: 'hold' });
+    await new Promise((r) => setTimeout(r, 0));
+    // Nothing is replaced before the worker holds its watcher's events.
+    expect(held).toBe(false);
+    w.emit('message', { type: 'held', id: asked.id });
+    const release = await hold;
+    release(['src/routes/+page.svelte']);
+    release(['src/routes/+page.svelte']);
+    expect(w.posted.slice(-1)).toEqual([{ type: 'release', id: asked.id, files: ['src/routes/+page.svelte'] }]);
+    expect(w.posted.filter((m) => (m as { type: string }).type === 'release')).toHaveLength(1);
+  });
+
+  it('goes ahead without a hold the worker does not answer in time, and holds nothing with no preview running', async () => {
+    vi.useFakeTimers();
+    const idle = new DevServer('/project');
+    (await idle.hold())(['src/routes/+page.svelte']);
+    expect(workers).toHaveLength(0);
+    const dev = new DevServer('/project');
+    const started = dev.start();
+    const w = workers[0];
+    w.emit('message', { type: 'ready', url: 'http://127.0.0.1:1' });
+    await started;
+    let held = false;
+    void dev.hold().then(() => (held = true));
+    await vi.advanceTimersByTimeAsync(HOLD_ACK_MS - 1);
+    expect(held).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(held).toBe(true);
   });
 
   it('does not start a crashed preview again where it may no longer run', async () => {
