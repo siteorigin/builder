@@ -13,6 +13,7 @@ import { ownVisitorTextFor } from '@shared/visitor-text';
 import { coordinatesText } from '@shared/site-identity';
 import { knownCrawler } from '@shared/crawler-policy';
 import { BRIEF_FIELDS, briefText } from '@shared/brief';
+import { isPageStructuredType, STRUCTURED_FACTS } from '@shared/page-structured-data';
 
 /**
  * A typed edit made while the AI is working is held, not dropped. Each operation it is made of names one
@@ -181,6 +182,12 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       // A byline, excerpt or news-list choice belongs to an article: once the page is no longer one, it has gone.
       // An edit that also dates the page makes it an article itself.
       if (!page.article && !keys.includes('articleDate') && keys.some((k) => k === 'byline' || k === 'excerpt' || k === 'newsHidden')) return gone('article');
+      // A fact belongs to a type: once the page is no type that states it, it has gone. An edit choosing the type has not.
+      if (op.structuredData && op.structuredData.type === undefined) {
+        const type = structuredTypeRead(page);
+        const facts = isPageStructuredType(type) && type !== 'WebPage' ? STRUCTURED_FACTS[type] : [];
+        if (identityKeys(op.structuredData).some((k) => !(facts as readonly string[]).includes(k))) return gone('page type');
+      }
       const read = Object.fromEntries(keys.map((k) => [k, at(page, PAGE_FIELDS[k])]));
       // A new address moves the pages inside the page too: pages added there, or moved, since change what it does.
       // And it takes over an old address kept at its destination: whose that is matters as well.

@@ -903,6 +903,8 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
     page.updatedAt = op.updatedAt;
   }
   if (op.structuredData !== undefined) {
+    // A page whose search settings were written by hand as something else starts them afresh, so what is saved here keeps.
+    if (!page.seo || typeof page.seo !== 'object' || Array.isArray(page.seo)) page.seo = {};
     const next = patchPageStructuredData(page.seo.structuredData, op.structuredData);
     if (!next.ok) fail(`“${page.title}”: ${next.message}`);
     else if (next.value) page.seo.structuredData = next.value;

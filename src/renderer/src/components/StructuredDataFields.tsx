@@ -17,6 +17,9 @@ import { DraftInput, Field, type DraftProblem } from './ui';
 
 type Upd = (patch: Record<string, unknown>, label?: string) => unknown;
 
+/** The availability choice standing for a saved value that can't be used. */
+const BAD = ':unusable';
+
 /** How each fact's field is labelled, explained and filled in by example. */
 const FACT_FIELDS: Record<Exclude<StructuredFact, 'availability'>, { label: string; hint: string; placeholder?: string; multiline?: boolean }> = {
   serviceType: { label: 'Service type', hint: 'What kind of service it is.', placeholder: 'Pottery classes' },
@@ -32,8 +35,17 @@ const FACT_FIELDS: Record<Exclude<StructuredFact, 'availability'>, { label: stri
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-/** A stored fact as its field shows it: text, the steps one per line, or anything else written by hand as JSON to correct. */
-const factText = (v: unknown) => (typeof v === 'string' ? v : Array.isArray(v) && v.every((x) => typeof x === 'string') ? v.join('\n') : v == null ? '' : JSON.stringify(v));
+/**
+ * A stored fact as its field shows it: text, or anything else written by hand as JSON to correct. The steps show one
+ * per line as the website reads them, each on its line; only their text, when the list holds something else too.
+ */
+function factText(fact: StructuredFact, v: unknown): string {
+  if (fact === 'steps' && (Array.isArray(v) || typeof v === 'string')) {
+    const lines = typeof v === 'string' ? v.split(/\r?\n/) : v.filter((x): x is string => typeof x === 'string');
+    return lines.map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
+  }
+  return typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v);
+}
 
 /** What the Structured data section's closed heading says: the page's type, and whether its facts are complete. */
 export function structuredSummary(page: PageDoc): string {
@@ -47,16 +59,17 @@ export function structuredSummary(page: PageDoc): string {
  * it is corrected or discarded (Escape). A saved value that can't be used (written by hand) is pointed out the same way.
  * It sends only its own fact, so an edit landing after the page became another type is refused, never turning it back.
  */
-function FactField({ fact, stored, set }: { fact: Exclude<StructuredFact, 'availability'>; stored: Record<string, unknown>; set: (patch: StructuredDataPatch, label: string) => unknown }) {
+function FactField({ fact, stored, saved, set }: { fact: Exclude<StructuredFact, 'availability'>; stored: Record<string, unknown>; saved?: string; set: (patch: StructuredDataPatch, label: string) => unknown }) {
   const { label, hint, placeholder, multiline } = FACT_FIELDS[fact];
-  const value = factText(stored[fact]);
+  const value = factText(fact, stored[fact]);
   const [problem, setProblem] = useState<DraftProblem | null>(null);
   const [dirty, setDirty] = useState(false);
   const check = (v: string): DraftProblem | null => {
     const c = checkFact(fact, v);
     return c.ok ? null : { message: c.message };
   };
-  const shown = problem ?? (value && !dirty ? check(value) : null);
+  // What is wrong with the saved value (its check, or how the website reads it) describes the field only while it shows that value.
+  const shown = problem ?? (!dirty ? ((value ? check(value) : null) ?? (saved ? { message: saved } : null)) : null);
   const error = shown && (
     <span role={problem ? 'alert' : undefined}>
       {shown.message}{' '}
@@ -81,7 +94,8 @@ function FactField({ fact, stored, set }: { fact: Exclude<StructuredFact, 'avail
         onCommit={(v) => {
           const c = checkFact(fact, v);
           if (!c.ok) return false;
-          if (JSON.stringify(c.value) === JSON.stringify(fact === 'steps' ? (Array.isArray(stored.steps) ? stored.steps : []) : value)) return;
+          // Nothing to send when it would store what is stored; anything else (a value saved in another shape) is written.
+          if (JSON.stringify(c.value) === JSON.stringify(stored[fact] ?? (fact === 'steps' ? [] : ''))) return;
           return set({ [fact]: c.value } as StructuredDataPatch, `Change ${label.toLowerCase()}`);
         }}
       />
@@ -105,7 +119,10 @@ export function StructuredDataFields({ page, upd }: { page: PageDoc; upd: Upd })
   const facts = type === 'WebPage' ? [] : STRUCTURED_FACTS[type];
   const hasFacts = facts.some((k) => stored[k] !== undefined);
   const missing = found.issues.filter((i) => i.blocking && i.field !== 'type');
-  const availability = typeof stored.availability === 'string' && (PRODUCT_AVAILABILITY as readonly string[]).includes(stored.availability) ? stored.availability : '';
+  // As the website reads it; one saved that can't be used is shown as such, so choosing Not said clears it.
+  const badAvailability = found.issues.find((i) => i.field === 'availability');
+  const availability = badAvailability ? BAD : (found.facts.availability ?? '');
+  const savedProblem = (fact: StructuredFact) => found.issues.find((i) => i.field === fact && !i.blocking)?.message;
   return (
     <>
       <Field
@@ -140,8 +157,13 @@ export function StructuredDataFields({ page, upd }: { page: PageDoc; upd: Upd })
       </Field>
       {facts.map((fact) =>
         fact === 'availability' ? (
-          <Field key={fact} label="Availability" hint="Optional. Whether it can be had now.">
-            <select id="page-structured-availability" className="select" value={availability} onChange={(e) => set({ availability: e.target.value }, 'Change availability')}>
+          <Field key={fact} label="Availability" hint="Optional. Whether it can be had now." error={badAvailability?.message}>
+            <select id="page-structured-availability" className="select" value={availability} onChange={(e) => e.target.value !== BAD && set({ availability: e.target.value }, 'Change availability')}>
+              {badAvailability && (
+                <option value={BAD} disabled>
+                  Can’t be used
+                </option>
+              )}
               <option value="">Not said</option>
               {PRODUCT_AVAILABILITY.map((a) => (
                 <option key={a} value={a}>
@@ -151,7 +173,7 @@ export function StructuredDataFields({ page, upd }: { page: PageDoc; upd: Upd })
             </select>
           </Field>
         ) : (
-          <FactField key={`${type}:${fact}`} fact={fact} stored={stored} set={set} />
+          <FactField key={`${type}:${fact}`} fact={fact} stored={stored} saved={savedProblem(fact)} set={set} />
         )
       )}
       {missing.length > 0 && (

@@ -211,21 +211,26 @@ const COLLECTION_SETTINGS = {
   categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.')
 };
 
-/** A change to what a page is for search engines (shared/page-structured-data.ts), as page.update takes it. */
+/**
+ * A change to what a page is for search engines (shared/page-structured-data.ts), as page.update takes it. The bounds
+ * here only keep the text sane: each fact's own check (its length counted in characters, after spaces are closed up)
+ * decides what is saved, so nothing it takes is refused first.
+ */
+const loose = (limit: number) => z.string().max(limit * 2 + 40);
 const STRUCTURED_DATA_PATCH = z
   .object({
     type: z.enum(PAGE_STRUCTURED_TYPES).optional().describe('What the page is. "WebPage" removes the type and its facts; another type drops the facts of the one before.'),
-    serviceType: z.string().max(STRUCTURED_LIMITS.text).optional().describe('Service: what kind of service, e.g. "Pottery classes".'),
-    areaServed: z.string().max(STRUCTURED_LIMITS.text).optional().describe('Service: where it is offered, e.g. "Cape Town".'),
-    price: z.string().max(STRUCTURED_LIMITS.price).optional().describe('Product: a number, e.g. "129.50".'),
-    currency: z.string().max(3).optional().describe('Product: ISO 4217 code, e.g. "ZAR".'),
+    serviceType: loose(STRUCTURED_LIMITS.text).optional().describe('Service: what kind of service, e.g. "Pottery classes".'),
+    areaServed: loose(STRUCTURED_LIMITS.text).optional().describe('Service: where it is offered, e.g. "Cape Town".'),
+    price: loose(STRUCTURED_LIMITS.price).optional().describe('Product: a number, e.g. "129.50".'),
+    currency: loose(3).optional().describe('Product: ISO 4217 code, e.g. "ZAR".'),
     availability: z.enum(['', ...PRODUCT_AVAILABILITY] as const).optional().describe('Product.'),
-    offerUrl: z.string().max(STRUCTURED_LIMITS.url).optional().describe('Product: where to buy it (https://…).'),
-    startDate: z.string().max(40).optional().describe('Event: YYYY-MM-DD, or YYYY-MM-DDThh:mm with an optional +hh:mm offset.'),
-    endDate: z.string().max(40).optional().describe('Event: as startDate.'),
-    venue: z.string().max(STRUCTURED_LIMITS.text).optional().describe('Event: the venue\'s name.'),
-    address: z.string().max(STRUCTURED_LIMITS.address).optional().describe('Event: the venue\'s address on one line.'),
-    steps: z.array(z.string().max(STRUCTURED_LIMITS.step)).max(STRUCTURED_LIMITS.steps).optional().describe('HowTo: every step in order. Replaces the list.')
+    offerUrl: loose(STRUCTURED_LIMITS.url).optional().describe('Product: where to buy it (https://…).'),
+    startDate: loose(25).optional().describe('Event: YYYY-MM-DD, or YYYY-MM-DDThh:mm with an optional +hh:mm offset.'),
+    endDate: loose(25).optional().describe('Event: as startDate.'),
+    venue: loose(STRUCTURED_LIMITS.text).optional().describe('Event: the venue\'s name.'),
+    address: loose(STRUCTURED_LIMITS.address).optional().describe('Event: the venue\'s address on one line.'),
+    steps: z.array(loose(STRUCTURED_LIMITS.step)).max(STRUCTURED_LIMITS.steps * 4).optional().describe('HowTo: every step in order. Replaces the list.')
   })
   .strict();
 

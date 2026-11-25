@@ -2974,7 +2974,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         <PageSearchSettings page={page} state={state} draft={draft} upd={upd} />
       </Section>
       {/* What the page is for search engines: a service, product, event or guide of the publisher's, with its facts. */}
-      <Section title="Structured data" id="page-structured-data" level={LEVEL} defaultOpen={false} scope={structuredSummary(page)}>
+      <Section title="Structured data" id="page-structured-data" level={LEVEL} defaultOpen={false} keepMounted scope={structuredSummary(page)}>
         <StructuredDataFields page={page} upd={upd} />
       </Section>
       {dev && (

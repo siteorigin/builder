@@ -19,7 +19,7 @@ import type { GraphNode, SeoGraph } from '@generator/seo-graph';
 import { checkCurrency, checkEventDate, checkPrice, checkSteps, endsBeforeStart, inspectPageStructuredData, patchPageStructuredData } from '@shared/page-structured-data';
 import { fieldKey, readField, shownField, typedText } from '../../src/renderer/src/lib/held';
 import { checkAuthority } from '../../src/agent/scope';
-import { toolDefinitions } from '../../src/agent/tools';
+import { FOCUSED_PAGE_OPERATIONS, PAGE_OPERATIONS, toolDefinitions } from '../../src/agent/tools';
 import { ProjectSession } from '../../src/main/project/session';
 import { copy, run, seoSite } from './fixtures/seo-site';
 
@@ -76,6 +76,7 @@ describe('the facts page.update saves for a page type', () => {
     let s = typed(state, { type: 'Event', startDate: '2027-05-14 19:30', venue: '  Riverside   Studio ' });
     expect(stored(s)).toEqual({ type: 'Event', startDate: '2027-05-14T19:30', venue: 'Riverside Studio' });
     expect(stored(typed(s, { type: 'Event' }))).toEqual(stored(s));
+    expect(stored(typed(s, { type: 'Event', endDate: '2027-05-14T22:00' }))).toEqual({ type: 'Event', startDate: '2027-05-14T19:30', endDate: '2027-05-14T22:00', venue: 'Riverside Studio' });
     // Another type drops the event's facts, so none come back unseen with a later switch.
     s = typed(s, { type: 'Product', price: '129.50' });
     expect(stored(s)).toEqual({ type: 'Product', price: '129.50' });
@@ -117,7 +118,10 @@ describe('the facts page.update saves for a page type', () => {
     expect(checkEventDate('2027-02-29').ok).toBe(false);
     expect(checkEventDate('2027-05-14t09:05:30z')).toEqual({ ok: true, value: '2027-05-14T09:05:30Z' });
     expect(checkEventDate('2027-05-14T19:30+02:00')).toEqual({ ok: true, value: '2027-05-14T19:30+02:00' });
-    for (const bad of ['2027-05-14T24:00', '2027-05-14T19:60', '2027-05-14T19:30+15:00', '14 May 2027', '2027-5-14']) expect(checkEventDate(bad).ok, bad).toBe(false);
+    for (const bad of ['2027-05-14T24:00', '2027-05-14T19:60', '2027-05-14T19:30:60', '2027-05-14T19:30+15:00', '2027-05-14T19:30+14:59', '2027-05-14T19:30-14:01', '14 May 2027', '2027-5-14']) expect(checkEventDate(bad).ok, bad).toBe(false);
+    expect(checkEventDate('2027-05-14T19:30-14:00')).toEqual({ ok: true, value: '2027-05-14T19:30-14:00' });
+    // Only the letters A to Z spell a code: "ß" upper-cased would be "SS".
+    expect(checkCurrency('ßP').ok).toBe(false);
     expect(checkSteps('Wedge the clay\n\n  Centre it on   the wheel \n')).toEqual({ ok: true, value: ['Wedge the clay', 'Centre it on the wheel'] });
     expect(checkSteps(['x'.repeat(501)]).ok).toBe(false);
     expect(checkSteps(Array.from({ length: 51 }, (_, i) => `Step ${i}`)).ok).toBe(false);
@@ -127,12 +131,44 @@ describe('the facts page.update saves for a page type', () => {
     expect(endsBeforeStart('2027-05-14T19:00Z', '2027-05-14T20:30+02:00')).toBe(true);
     expect(endsBeforeStart('2027-05-14T19:00', '2027-05-14')).toBe(false);
     expect(endsBeforeStart('2027-05-14T19:00', '2027-05-14T18:00+02:00')).toBe(false);
+    // A local time beside a UTC one: 00:30 in Cape Town is 22:30 UTC the day before, so 23:00 UTC is after it.
+    expect(endsBeforeStart('2027-05-15T00:30', '2027-05-14T23:00Z')).toBe(false);
+    expect(endsBeforeStart('2027-05-20T10:00', '2027-05-14T10:00Z')).toBe(true);
+    expect(endsBeforeStart('2027-05-14', '2027-05-12T23:00')).toBe(true);
+    // A day and a time without an offset are the venue's own clock: the 13th at 23:00 is before the 14th begins.
+    expect(endsBeforeStart('2027-05-14', '2027-05-13T23:00')).toBe(true);
+    expect(endsBeforeStart('2027-05-14', '2027-05-14T08:00')).toBe(false);
+    expect(endsBeforeStart('2027-05-14', '2027-05-13T23:00Z')).toBe(false);
   });
 
   it('patches whatever was stored by hand without trusting it, and drops it when another type is chosen', () => {
     expect(patchPageStructuredData({ type: 'Banana', price: '1' }, { price: '2' })).toEqual({ ok: false, message: expect.stringMatching(/Choose what the page is first/) });
     expect(patchPageStructuredData('Product', { type: 'Product', price: '2' })).toEqual({ ok: true, value: { type: 'Product', price: '2' } });
     expect(patchPageStructuredData({ type: 'HowTo', steps: [null] }, { type: 'Service' })).toEqual({ ok: true, value: { type: 'Service' } });
+    // A fact of another type, written in by hand, goes with the next edit rather than staying out of reach.
+    expect(patchPageStructuredData({ type: 'Product', price: '10', currency: 'ZAR', venue: 'Old Hall' }, { price: '12' })).toEqual({ ok: true, value: { type: 'Product', price: '12', currency: 'ZAR' } });
+    expect(patchPageStructuredData({ type: 'Product', price: '10', venue: 'Old Hall' }, { type: 'Product' })).toEqual({ ok: true, value: { type: 'Product', price: '10' } });
+    // An empty list where text belongs is no empty value: it can't be used.
+    expect(inspectPageStructuredData({ type: 'Product', price: '10', currency: 'ZAR', offerUrl: [] })).toMatchObject({ ready: true, issues: [{ field: 'offerUrl', blocking: false }] });
+  });
+
+  it('saves facts on a page whose search settings were written by hand as something else, and leaves their limits to their checks', () => {
+    const { state } = seoSite();
+    for (const junk of [null, [], 'legacy']) {
+      const damaged = copy(state);
+      (damaged.pages.pg_services as unknown as { seo: unknown }).seo = junk;
+      const s = typed(damaged, { type: 'AboutPage' });
+      expect((s.pages.pg_services as PageDoc).seo, JSON.stringify(junk)).toEqual({ structuredData: { type: 'AboutPage' } });
+    }
+    // Counted in characters after spaces close up, as the Inspector checks them: never refused by the schema first.
+    const parse = (structuredData: Record<string, unknown>) => OPERATION_SCHEMAS['page.update'].safeParse({ type: 'page.update', pageId: 'pg_services', structuredData }).success;
+    expect(parse({ serviceType: '🏺'.repeat(160) })).toBe(true);
+    expect(parse({ currency: ' zar ' })).toBe(true);
+    expect(parse({ steps: [...Array.from({ length: 50 }, (_, i) => `Step ${i}`), ''] })).toBe(true);
+    const service = typed(state, { type: 'Service', serviceType: '🏺'.repeat(160) });
+    expect(stored(service)).toMatchObject({ serviceType: '🏺'.repeat(160) });
+    expect(refusal(service, { type: 'page.update', pageId: 'pg_services', structuredData: { serviceType: '🏺'.repeat(161) } })).toMatch(/at most 160 characters/);
+    expect(stored(typed(typed(state, { type: 'Product' }), { currency: ' zar ' }))).toEqual({ type: 'Product', currency: 'ZAR' });
   });
 });
 
@@ -225,7 +261,11 @@ describe('the typed entity in the page’s connected graph', () => {
       expect(ids(g), JSON.stringify(patch)).toEqual(core);
       expect(node(g, `${SERVICES}#webpage`)['@type']).toBe('WebPage');
     }
-    // Saved by hand: an unknown type says nothing; an optional fact that can't be used is left out on its own.
+    // Saved by hand: an unknown type says nothing; an optional fact that can't be used is left out on its own; a page
+    // whose title was cleared by hand names no entity, whatever its browser title says.
+    const untitled = copy(typed(state, { type: 'Product', price: '10', currency: 'ZAR' }));
+    (untitled.pages.pg_services as PageDoc).title = '  ';
+    expect(ids(graph(untitled))).toEqual(core);
     const damaged = copy(state);
     (damaged.pages.pg_services as PageDoc).seo.structuredData = { type: 'Recipe' } as never;
     expect(ids(graph(damaged))).toEqual(core);
@@ -265,7 +305,9 @@ describe('hints for incomplete page facts', () => {
     // A complete record with an optional fact that can't be used is pointed out, without saying it is left out whole.
     const damaged = copy(s);
     (damaged.pages.pg_services as PageDoc).seo.structuredData = { type: 'Product', price: '129', currency: 'ZAR', offerUrl: 'nope' } as never;
-    expect(findings(damaged).map((f) => [f.code, f.message])).toEqual([['SEO_PAGE_STRUCTURED_DATA_UNUSABLE', expect.stringMatching(/^“Services” has structured data that can’t all be used: The saved offer address can’t be used/)]]);
+    expect(findings(damaged).map((f) => [f.code, f.message, f.destination])).toEqual([
+      ['SEO_PAGE_STRUCTURED_DATA_UNUSABLE', expect.stringMatching(/^“Services” has structured data that can’t all be used: The saved offer address can’t be used/), { kind: 'pageSeo', pageId: 'pg_services', field: 'structuredData' }]
+    ]);
   });
 
   it('judges only the pages whose structured data the website writes', () => {
@@ -296,7 +338,20 @@ describe('a typed edit held while the AI works', () => {
     expect(fieldKey([op({ type: 'Event' })])).not.toBe(fieldKey([op({ price: '12' })]));
     expect(typedText(op({ price: '12' }))).toBe('12');
     expect(typedText(op({ steps: ['One', 'Two'] }))).toBe('One\nTwo');
-    expect(shownField(op({ price: '12' }), readField(s, op({ price: '12' })).found && (readField(s, op({ price: '12' })) as { value: unknown }).value)).toBe('10');
+    const held = readField(s, op({ price: '12' }));
+    expect(shownField(op({ price: '12' }), held?.found ? held.value : undefined)).toBe('10');
+  });
+
+  it('notices a change of type alone, and finds a fact gone once the page is no type that states it', () => {
+    const product = typed(seoSite().state, { type: 'Product' });
+    // No price on either side: only the type tells them apart.
+    const read = readField(product, op({ currency: 'ZAR' }));
+    const otherProduct = typed(product, { type: 'WebPage' });
+    expect(readField(typed(otherProduct, { type: 'Product' }), op({ currency: 'ZAR' }))).toEqual(read);
+    expect(readField(typed(product, { type: 'Service' }), op({ currency: 'ZAR' }))).toEqual({ found: false, what: 'page type' });
+    expect(readField(otherProduct, op({ currency: 'ZAR' }))).toEqual({ found: false, what: 'page type' });
+    // Choosing a type never finds the type gone.
+    expect(readField(otherProduct, op({ type: 'Event' }))).toEqual({ found: true, value: { structuredData: null } });
   });
 });
 
@@ -305,8 +360,11 @@ describe('the AI and typed page facts', () => {
     const s = typed(seoSite().state, { type: 'Product' });
     const authority = { kind: 'page' as const, pageId: 'pg_services', label: 'the Services page' };
     expect(checkAuthority(s, [{ type: 'page.update', pageId: 'pg_services', structuredData: { price: '10' } }], authority)).toBeNull();
-    const apply = toolDefinitions({ codeEnabled: false }).find((t) => t.name === 'apply_operations')!;
-    expect(JSON.stringify(apply.parameters)).not.toContain('structuredData');
+    for (const operations of [undefined, PAGE_OPERATIONS, FOCUSED_PAGE_OPERATIONS]) {
+      const apply = toolDefinitions({ codeEnabled: false, operations }).find((t) => t.name === 'apply_operations')!;
+      expect(JSON.stringify(apply.parameters)).toContain('"page.update"');
+      expect(JSON.stringify(apply.parameters)).not.toContain('structuredData');
+    }
   });
 });
 
@@ -333,6 +391,8 @@ describe('typed page facts in a project session and the exported website', () =>
     expect(page()).not.toContain('#event');
     expect((await session.redo()).ok).toBe(true);
     expect(saved()).toEqual({ type: 'Event', startDate: '2027-05-14', venue: 'Riverside Studio' });
+    expect(page()).toContain('services/#event');
+    expect(page()).not.toContain('#product');
     await session.close();
   });
 

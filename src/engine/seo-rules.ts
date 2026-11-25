@@ -516,7 +516,9 @@ const pageStructuredData: SeoAuditRule = {
               : `${named(state, d)} is marked as ${typePhrase(found.type)}, but its structured data can’t name it until its facts are complete: ${found.issues.map((i) => i.message).join(' ')}`,
           owner: ownerOf(d),
           site: 'structuredData',
-          explanation: 'Search engines and AI answer engines compare services, products, events and guides by the facts their pages state. A page that leaves out one they need (a price, a start date) is read as a plain web page.',
+          explanation: found.ready
+            ? 'Search engines and AI answer engines compare services, products, events and guides by the facts their pages state. A fact that can’t be used is left out on its own; the rest is written as before.'
+            : 'Search engines and AI answer engines compare services, products, events and guides by the facts their pages state. Until the facts it needs (a price, a start date) are there, the page’s structured data leaves the entity out; the rest of it is written as before.',
           aiFixable: false,
           destination: { kind: 'pageSeo', pageId: d.subject.pageId, field: 'structuredData' }
         })

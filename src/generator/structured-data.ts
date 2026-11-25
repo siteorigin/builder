@@ -123,10 +123,13 @@ const typedPage: GraphContributor = ({ state, meta, ids }) => {
   const { type, facts, ready } = inspectPageStructuredData(seo?.structuredData);
   if (!ready || type === 'WebPage') return null;
   if (type === 'AboutPage' || type === 'ContactPage') return { extend: [{ id: ids.webpage, add: { '@type': type } }] };
+  // The entity is named by the page's own title: a browser title may carry the site's name. One left blank by hand names nothing.
+  const name = seoText(page.title);
+  if (!name) return null;
   const entity = (fragment: string) => ({
     '@type': type,
     '@id': ids.page(fragment),
-    name: seoText(page.title) || seoText(meta.title),
+    name,
     ...opt('description', seoText(seo?.description) || undefined),
     mainEntityOfPage: { '@id': ids.webpage }
   });

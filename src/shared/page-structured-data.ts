@@ -102,8 +102,10 @@ const CURRENCIES = new Set(
 
 /** A currency as its three-letter ISO 4217 code ("zar" is "ZAR"). */
 export function checkCurrency(input: string): Checked<string> {
-  const text = input.trim().toUpperCase();
-  if (!text) return ok('');
+  const trimmed = input.trim();
+  if (!trimmed) return ok('');
+  // Letters A to Z only, before any case is changed: "ß" upper-cased would spell another code.
+  const text = /^[a-z]{3}$/i.test(trimmed) ? trimmed.toUpperCase() : '';
   if (!CURRENCIES.has(text)) return no(`“${input.trim()}” is not a currency code: use its three letters, such as USD, EUR or ZAR.`);
   return ok(text);
 }
@@ -124,7 +126,8 @@ function dateParts(text: string): { day: string; time?: string; seconds?: number
   const [, day, h, min, s, zone, zh, zm] = m;
   if (h === undefined) return { day };
   if (+h > 23 || +min > 59 || (s !== undefined && +s > 59)) return null;
-  if (zone && zone.toUpperCase() !== 'Z' && (+zh > 14 || +zm > 59)) return null;
+  // An offset is at most 14 hours either way (+14:00), and its minutes are minutes.
+  if (zone && zone.toUpperCase() !== 'Z' && (+zm > 59 || +zh * 60 + +zm > 14 * 60)) return null;
   const offset = zone === undefined ? undefined : zone.toUpperCase() === 'Z' ? 0 : (zone[0] === '-' ? -1 : 1) * (+zh * 60 + +zm);
   return { day, time: `${h}:${min}${s === undefined ? '' : `:${s}`}`, seconds: +h * 3600 + +min * 60 + +(s ?? 0), offset };
 }
@@ -142,17 +145,32 @@ export function checkEventDate(input: string, what = 'The date'): Checked<string
   return ok(parts.time ? `${parts.day}T${parts.time}${zone}` : parts.day);
 }
 
+/** The most a local time can be from UTC, in seconds: 14 hours. */
+const MAX_OFFSET = 14 * 3600;
+
 /**
- * Whether an event's end comes before its start, when the two can be compared: two days, two times on the same clock
- * (both with an offset, or neither), or a day and a time by their days.
+ * The earliest and latest moments (seconds since the epoch) a date or time stands for: a time with its offset is one
+ * moment; a time without one is a reading of the venue's clock, taken here as if it were UTC; a day is all of that day.
+ */
+function moments(p: NonNullable<ReturnType<typeof dateParts>>): [number, number] {
+  const midnight = Date.parse(`${p.day}T00:00:00Z`) / 1000;
+  if (p.seconds === undefined) return [midnight, midnight + 86399];
+  const at = midnight + p.seconds - (p.offset ?? 0) * 60;
+  return [at, at];
+}
+
+/**
+ * Whether an event's end surely comes before its start. A day, or a time without an offset, is the venue's own: two of
+ * them are read on one clock, and two times with offsets as moments. Beside a time with an offset, the venue's reading
+ * could be up to 14 hours either way of UTC, so the end is before the start only when it is however far that goes.
  */
 export function endsBeforeStart(start: string, end: string): boolean {
   const a = dateParts(start);
   const b = dateParts(end);
   if (!a || !b) return false;
-  if (!a.time || !b.time || (a.offset === undefined) !== (b.offset === undefined)) return b.day < a.day;
-  const instant = (p: NonNullable<ReturnType<typeof dateParts>>) => Date.parse(`${p.day}T00:00:00Z`) / 1000 + p.seconds! - (p.offset ?? 0) * 60;
-  return instant(b) < instant(a);
+  const local = (p: NonNullable<ReturnType<typeof dateParts>>) => p.offset === undefined;
+  const widen = local(a) !== local(b) ? MAX_OFFSET : 0;
+  return moments(b)[1] + (local(b) ? widen : 0) < moments(a)[0] - (local(a) ? widen : 0);
 }
 
 /** A guide's steps, one per line (or as a list): blank ones left out, each on one line. */
@@ -195,9 +213,16 @@ export function checkFact(key: StructuredFact, value: unknown): Checked<string |
 }
 
 const isEmpty = (v: unknown) => v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
+/** A stored fact left unsaid: no value, empty text, or (for the steps alone) an empty list. */
+const unsaid = (key: StructuredFact, v: unknown) => v === undefined || v === '' || (key === 'steps' && Array.isArray(v) && v.length === 0);
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 /** A type's name in a sentence: "a Product", "an Event", "a How-to guide". */
 export const typePhrase = (type: PageStructuredType) => `${/^[AEIOU]/.test(PAGE_STRUCTURED_TYPE_LABELS[type]) ? 'an' : 'a'} ${type === 'HowTo' ? 'how-to guide' : PAGE_STRUCTURED_TYPE_LABELS[type]}`;
+
+/** A stored record's type and the facts that type states, leaving out anything else written into it by hand. */
+function ownFacts(stored: Record<string, unknown> & { type: PageStructuredData['type'] }): Record<string, unknown> {
+  return { type: stored.type, ...Object.fromEntries(STRUCTURED_FACTS[stored.type].filter((k) => Object.hasOwn(stored, k)).map((k) => [k, stored[k]])) };
+}
 
 /**
  * The record once `patch` is applied to `current` (whatever was stored, even something edited into another shape by
@@ -207,18 +232,18 @@ export const typePhrase = (type: PageStructuredType) => `${/^[AEIOU]/.test(PAGE_
  */
 export function patchPageStructuredData(current: unknown, patch: StructuredDataPatch): Checked<PageStructuredData | undefined> {
   const given = STRUCTURED_FACT_NAMES.filter((k) => Object.hasOwn(patch, k) && patch[k] !== undefined);
-  const stored = isRecord(current) && isPageStructuredType(current.type) && current.type !== 'WebPage' ? current : undefined;
+  const stored = isRecord(current) && isPageStructuredType(current.type) && current.type !== 'WebPage' ? (current as Record<string, unknown> & { type: PageStructuredData['type'] }) : undefined;
   let next: Record<string, unknown>;
   if (patch.type !== undefined) {
     if (!isPageStructuredType(patch.type)) return no(`“${String(patch.type)}” is not a page type: choose one of ${PAGE_STRUCTURED_TYPES.join(', ')}.`);
     if (patch.type === 'WebPage') return given.length ? no('A web page states no facts: choose the type of page they describe.') : ok(undefined);
     // The same type again keeps its facts; another starts afresh, so nothing of the type before comes back unseen.
-    next = stored?.type === patch.type ? { ...stored } : { type: patch.type };
+    next = stored?.type === patch.type ? ownFacts(stored) : { type: patch.type };
   } else if (!given.length) {
     return no('Choose a page type or give a fact to change.');
   } else if (!stored) {
     return no('Choose what the page is first: a service, a product, an event or a how-to guide.');
-  } else next = { ...stored };
+  } else next = ownFacts(stored);
   const type = next.type as PageStructuredData['type'];
   for (const key of given) {
     if (!STRUCTURED_FACTS[type].includes(key)) return no(`${STRUCTURED_FACT_LABELS[key]} is not said of ${typePhrase(type)}.`);
@@ -275,7 +300,7 @@ export function inspectPageStructuredData(raw: unknown): StructuredInspection {
   const facts: StructuredInspection['facts'] = {};
   const issues: StructuredIssue[] = [];
   for (const key of STRUCTURED_FACTS[type]) {
-    if (isEmpty(raw[key])) continue;
+    if (unsaid(key, raw[key])) continue;
     const c = checkFact(key, raw[key]);
     if (!c.ok) issues.push({ field: key, message: `The saved ${STRUCTURED_FACT_LABELS[key].toLowerCase()} can’t be used. ${c.message}`, blocking: false });
     else if (!isEmpty(c.value)) (facts as Record<string, unknown>)[key] = c.value;
