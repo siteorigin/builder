@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium, type Browser, type Frame, type Page } from 'playwright';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { groupStateSelector } from '@generator/index';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
@@ -38,7 +39,10 @@ const CSS = `body { margin: 0; font: 16px/1.4 sans-serif }
 .fancy { background: rgb(255, 255, 255) }
 .fancy:where(:hover) { background: rgb(255, 0, 0) }
 .quoted { color: rgb(0, 0, 0) }
-.quoted:hover, [title=":hover"] { color: rgb(255, 0, 0) }`;
+.quoted:hover, [title=":hover"] { color: rgb(255, 0, 0) }
+.garrow { color: rgb(0, 0, 0) }
+@media (hover: hover) { ${groupStateSelector('.garrow', 'groupHover')} { color: rgb(255, 0, 0) } }
+${groupStateSelector('.garrow', 'groupFocus')} { color: rgb(0, 0, 255) }`;
 const FRAME = `<!doctype html><html><head><style id="site">${CSS}</style></head><body>
 <main data-so-node="s" data-so-ctx="page:p">
   <div class="card" data-so-node="c" data-so-ctx="page:p">Card</div>
@@ -51,6 +55,8 @@ const FRAME = `<!doctype html><html><head><style id="site">${CSS}</style></head>
   <h3 class="title" id="loose-title">Loose title</h3>
   <p class="quoted" data-so-node="q" data-so-ctx="page:p">Quoted</p>
   <p class="adopt" data-so-node="a" data-so-ctx="page:p">Adopted</p>
+  <div class="so-group" data-so-node="g1" data-so-ctx="page:p"><span class="garrow" data-so-node="ga" data-so-ctx="page:p">Outer arrow</span>
+    <div class="so-group" data-so-node="g2" data-so-ctx="page:p"><span class="garrow" data-so-node="gb" data-so-ctx="page:p">Inner arrow</span></div></div>
 </main><script type="module" src="/bridge.js"></script></body></html>`;
 
 let browser: Browser;
@@ -154,6 +160,29 @@ describe.skipIf(!browserInstalled)('showing the selected element in a hover, foc
     await force('hover', 'k');
     await expect.poll(() => paint('.fancy')).toBe(RED);
     expect(await marked()).toEqual(['fancy=hover']);
+  });
+
+  it('shows a group state through the interaction groups around the selected element, never on it', async () => {
+    expect(await paint(at('gb'), 'color')).toBe('rgb(0, 0, 0)');
+    // The inner arrow: its card and the card around that one count as hovered, as a real pointer makes them.
+    await force('groupHover', 'gb');
+    await expect.poll(marked).toEqual(['g1=hover', 'g2=hover']);
+    expect(await paint(at('gb'), 'color')).toBe(RED);
+    expect(await paint(at('ga'), 'color')).toBe(RED);
+    // The outer arrow: its card alone, so the inner card's arrow stays as it is.
+    await force('groupHover', 'ga');
+    await expect.poll(marked).toEqual(['g1=hover']);
+    expect(await paint(at('ga'), 'color')).toBe(RED);
+    expect(await paint(at('gb'), 'color')).toBe('rgb(0, 0, 0)');
+    // Focus inside a group has a mark of its own, which an element's own focus never sets.
+    await force('groupFocus', 'gb');
+    await expect.poll(marked).toEqual(['g1=within', 'g2=within']);
+    expect(await paint(at('gb'), 'color')).toBe(BLUE);
+    await force('focus', 'gb');
+    await expect.poll(marked).toEqual(['gb=focus']);
+    expect(await paint(at('gb'), 'color')).toBe('rgb(0, 0, 0)');
+    await force(null);
+    await expect.poll(marked).toEqual([]);
   });
 
   it('leaves a quoted state in an attribute value alone, and rewrites the rule around it', async () => {

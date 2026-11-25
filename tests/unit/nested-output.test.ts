@@ -416,6 +416,108 @@ describe.runIf(BROWSER)('state rules a design sets on a placement inside it', ()
 });
 
 // ---------------------------------------------------------------------------
+// Interaction groups: group hover and group focus (#349)
+// ---------------------------------------------------------------------------
+
+const RED = 'rgb(255, 0, 0)';
+const NONE = 'rgba(0, 0, 0, 0)';
+
+/**
+ * One computed property of each element a selector finds, after the pointer moves to a point of another element (its
+ * top left corner, inset by `at`, so it lands on that element's own padding rather than on what it holds) or after
+ * keyboard focus moves to it. `css` and `body` may also be written by hand.
+ */
+async function after(page: { body: string; css: string }, action: { hover?: string; at?: number; focus?: string }, selector: string, prop: string): Promise<string[]> {
+  const tab = await browser!.newPage({ viewport: { width: 1200, height: 800 } });
+  try {
+    await tab.setContent(`<!doctype html><html><head><style>${page.css}</style></head><body>${page.body}</body></html>`);
+    if (action.hover) await tab.locator(action.hover).first().hover({ position: { x: action.at ?? 4, y: action.at ?? 4 } });
+    if (action.focus) {
+      // Keyboard focus, as Tab gives it: focus() from a script would not count as the keyboard's.
+      await tab.evaluate(`document.querySelector(${JSON.stringify(action.focus)}).setAttribute('data-target', '')`);
+      await tab.keyboard.press('Tab');
+      for (let i = 0; i < 20 && !(await tab.evaluate('document.activeElement?.hasAttribute("data-target")')); i++) await tab.keyboard.press('Tab');
+    }
+    return (await tab.evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].map((el) => getComputedStyle(el).getPropertyValue(${JSON.stringify(prop)}))`)) as string[];
+  } finally {
+    await tab.close();
+  }
+}
+
+/** A card component that is an interaction group: an arrow that turns red while its card is hovered or has focus, then its slot. */
+function groupCardDef(s: ProjectState) {
+  return addDef(s, {
+    componentId: 'project.group-card',
+    name: 'Group card',
+    properties: {},
+    parts: { root: { nodeId: 'root', label: 'Card' }, arrow: { nodeId: 'arrow', label: 'Arrow' } },
+    slots: { content: { label: 'Content' } },
+    build: (b) =>
+      b.el('root', 'div', { name: 'Card', interactionGroup: true, styles: { base: { paddingBlock: '40px', paddingInline: '40px' } } }, [
+        b.el('arrow', 'span', { name: 'Arrow', styles: { base: { customCss: 'display: block; width: 10px; height: 10px' }, 'base:groupHover': { background: '#ff0000' }, 'base:groupFocus': { background: '#ff0000' } } }, []),
+        b.slot('content-slot', 'content')
+      ])
+  });
+}
+
+describe.runIf(BROWSER)('group states', () => {
+  it('follow the nearest card on the page: the outer card never lights the inner card’s arrow', async () => {
+    const s = fresh();
+    const page = home(s);
+    const arrowStyles = { base: { customCss: 'display: block; width: 10px; height: 10px' }, 'base:groupHover': { background: '#ff0000' }, 'base:groupFocus': { background: '#ff0000' } };
+    const box = { base: { paddingBlock: '40px', paddingInline: '40px' } };
+    Object.assign(page.nodes, {
+      n_outer: { id: 'n_outer', kind: 'element', tag: 'div', interactionGroup: true, styles: box, children: ['n_outer_arrow', 'n_outer_link', 'n_inner'] },
+      n_outer_arrow: { id: 'n_outer_arrow', kind: 'element', tag: 'span', styles: arrowStyles, children: [] },
+      n_outer_link: { id: 'n_outer_link', kind: 'link', link: { type: 'url', target: 'https://example.com/a' }, label: 'Outer', appearance: 'link' },
+      n_inner: { id: 'n_inner', kind: 'element', tag: 'div', interactionGroup: true, styles: box, children: ['n_inner_arrow', 'n_inner_link'] },
+      n_inner_arrow: { id: 'n_inner_arrow', kind: 'element', tag: 'span', styles: arrowStyles, children: [] },
+      n_inner_link: { id: 'n_inner_link', kind: 'link', link: { type: 'url', target: 'https://example.com/b' }, label: 'Inner', appearance: 'link' }
+    });
+    page.rootIds.push('n_outer');
+    expect(compileErrors(s)).toEqual([]);
+    expect(errors(s)).toEqual([]);
+    const rendered = await renderPage(s);
+    const arrows = '.so-n-n_outer_arrow, .so-n-n_inner_arrow';
+    expect(await after(rendered, {}, arrows, 'background-color')).toEqual([NONE, NONE]);
+    // The pointer over the outer card's own padding: its arrow alone.
+    expect(await after(rendered, { hover: '.so-n-n_outer' }, arrows, 'background-color')).toEqual([RED, NONE]);
+    // Over the inner card, which is inside the outer one too: both.
+    expect(await after(rendered, { hover: '.so-n-n_inner' }, arrows, 'background-color')).toEqual([RED, RED]);
+    // Focus on the outer card's link, then on the inner card's.
+    expect(await after(rendered, { focus: '.so-n-n_outer_link' }, arrows, 'background-color')).toEqual([RED, NONE]);
+    expect(await after(rendered, { focus: '.so-n-n_inner_link' }, arrows, 'background-color')).toEqual([RED, RED]);
+  });
+
+  it('keep a card placed in its own slot apart from the card around it', async () => {
+    const s = fresh();
+    const def = groupCardDef(s);
+    const outer = place(s, def);
+    const inner = makeInstance(def, {});
+    home(s).nodes[inner.id] = inner;
+    outer.slots = { content: [inner.id] };
+    expect(compileErrors(s)).toEqual([]);
+    expect(errors(s)).toEqual([]);
+    const rendered = await renderPage(s);
+    const arrows = `.${nodeClass(def, 'arrow')}`;
+    const cardsSel = `.${nodeClass(def, 'root')}`;
+    expect(rendered.body.match(/so-group/g)).toHaveLength(2);
+    expect(await after(rendered, { hover: cardsSel }, arrows, 'background-color')).toEqual([RED, NONE]);
+    expect(await after(rendered, { hover: `${cardsSel} ${cardsSel}` }, arrows, 'background-color')).toEqual([RED, RED]);
+  });
+
+  it('still follow a card in a dialog over the page, with a group around the dialog the pointer is not over', async () => {
+    const { groupStateSelector } = await import('@generator/index');
+    const css = `.card { padding: 40px } .arrow { display: block; width: 10px; height: 10px }
+      dialog { margin: 0; inset: auto; top: 300px; left: 300px; padding: 0 }
+      @media (hover: hover) { ${groupStateSelector('.arrow', 'groupHover')} { background: #ff0000 } }`;
+    const body = `<div class="card so-group" id="outer"><span class="arrow"></span><dialog id="d"><div class="card so-group" id="inner"><span class="arrow"></span></div></dialog></div>
+      <script>document.getElementById('d').showModal()</script>`;
+    expect(await after({ css, body }, { hover: '#inner' }, '.arrow', 'background-color')).toEqual([NONE, RED]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Overrides of what a code component renders
 // ---------------------------------------------------------------------------
 

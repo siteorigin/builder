@@ -1132,7 +1132,7 @@ describe('selection tools', () => {
     );
     await run('Darken it on hover and press', heroRef(session.state));
     const tool = adapter.requests[0].tools.find((t) => t.name === 'style_selected_element');
-    expect((tool?.parameters as { properties: Record<string, { enum?: string[] }> }).properties.state?.enum).toEqual(['hover', 'focus', 'active']);
+    expect((tool?.parameters as { properties: Record<string, { enum?: string[] }> }).properties.state?.enum).toEqual(['groupHover', 'groupFocus', 'hover', 'focus', 'active']);
     expect(tool?.description).toContain('Add state "hover", "focus" (keyboard focus) or "active" (while pressed)');
     // Padding on hover would move what is around it: the whole call is refused before anything is applied, naming the field.
     const refused = JSON.stringify(lastResult(adapter.requests[1]));
@@ -1142,6 +1142,24 @@ describe('selection tools', () => {
     expect(root?.['base:hover']).toEqual({ background: { token: 'color.brand' } });
     expect(root?.['phone:active']).toEqual({ shadow: { token: 'shadow.sm' } });
     expect(root?.base).toBeUndefined();
+  });
+
+  it('nudges a part while its card is hovered, a shift its own hover refuses (#349)', async () => {
+    const { session, adapter, run } = await setup(
+      [
+        () => [call('g1', 'style_selected_element', { partId: 'root', scope: 'base', state: 'hover', styles: [{ property: 'translateY', value: '-4px' }] })],
+        () => [call('g2', 'style_selected_element', { partId: 'root', scope: 'base', state: 'groupHover', styles: [{ property: 'translateY', value: '-4px' }] })],
+        () => finish()
+      ],
+      focused
+    );
+    await run('Lift it while its card is hovered', heroRef(session.state));
+    const tool = adapter.requests[0].tools.find((t) => t.name === 'style_selected_element');
+    expect(tool?.description).toContain('state "groupHover" or "groupFocus" styles it while the nearest interaction group around it');
+    const refused = JSON.stringify(lastResult(adapter.requests[1]));
+    expect(refused).toContain('cannot change on hover, focus or press');
+    expect(refused).toContain('A group state (its card hovered or focused) can change it.');
+    expect(nodeAt(session.state, 0).overrides?.root).toEqual({ 'base:groupHover': { translateY: '-4px' } });
   });
 
   it('lifts and animates the selection with the typed motion properties (#351)', async () => {
