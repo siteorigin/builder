@@ -254,6 +254,12 @@ describe('upsert_managed_component: the role Insert gives it (#670)', () => {
     const repaired = await call({ name: 'Banner', repair: true, nodes: [{ kind: 'element', id: 'root' }] });
     expect(repaired.ok).toBe(true);
     expect(s.state.components[repaired.content.definitionId].insertAs).toBe('section');
+    // A rebuild or a repair that names a role changes it.
+    expect((await call({ ...card, definitionId, insertAs: 'section' })).ok).toBe(true);
+    expect(s.state.components[definitionId].insertAs).toBe('section');
+    expect((await call({ name: 'Strip', insertAs: 'section', nodes: [{ kind: 'element', id: 'root', children: ['gone'] }] })).ok).toBe(false);
+    const changed = await call({ name: 'Strip', repair: true, insertAs: 'element', nodes: [{ kind: 'element', id: 'root' }] });
+    expect(s.state.components[changed.content.definitionId].insertAs).toBe('element');
     expect(accepts(toStrictSchema(managedComponentSchema()), { ...card, insertAs: 'element' })).toBe(true);
     expect(accepts(toStrictSchema(managedComponentSchema()), { ...card, insertAs: 'row' })).toBe(false);
   });

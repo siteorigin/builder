@@ -256,12 +256,22 @@ interface SlotInfo {
   count: number;
   childIds?: string[];
   /** Only for a restricted slot: it takes any of its categories, componentIds or primitives, at most `max`. */
-  contract?: Pick<SlotDef, 'categories' | 'componentIds' | 'primitives' | 'max'>;
+  contract?: Pick<SlotDef, 'categories' | 'componentIds' | 'primitives' | 'max'> & { moreComponentIds?: number };
 }
 
+/** Most component IDs a contract lists here: a slot may name 50, and `moreComponentIds` counts the rest. */
+const SLOT_COMPONENT_IDS_SHOWN = 8;
+
 function slotContract({ categories, componentIds, primitives, max }: SlotDef): SlotInfo['contract'] {
+  const more = (componentIds?.length ?? 0) - SLOT_COMPONENT_IDS_SHOWN;
   // An empty list is a restriction too (with the others empty, the slot takes nothing).
-  const set = Object.entries({ categories, componentIds, primitives, max }).filter(([, v]) => v !== undefined);
+  const set = Object.entries({
+    categories,
+    componentIds: componentIds?.slice(0, SLOT_COMPONENT_IDS_SHOWN),
+    moreComponentIds: more > 0 ? more : undefined,
+    primitives,
+    max
+  }).filter(([, v]) => v !== undefined);
   return set.length ? Object.fromEntries(set) : undefined;
 }
 
@@ -379,9 +389,9 @@ const GLANCE_TEXT_FIRST = ['heading', 'title', 'headline', 'eyebrow', 'lead', 's
 export const pageGlanceChars = (contextWindowTokens: number) => Math.max(0, Math.min(4096, Math.floor(contextWindowTokens / 8)));
 
 /** A placement as a glance names it, as the page tool does: a theme component by its catalogue ID, a project's own by its definition. */
-function glanceInstance(state: ProjectState, n: InstanceNode): { id: string; componentId: string; name?: string } {
+function glanceInstance(state: ProjectState, id: string, n: InstanceNode): { id: string; componentId: string; name?: string } {
   const def = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
-  return def && def.owner !== 'project' && def.componentId ? { id: n.id, componentId: def.componentId } : { id: n.id, componentId: n.definitionId, ...(def ? { name: def.name } : {}) };
+  return def && def.owner !== 'project' && def.componentId ? { id, componentId: def.componentId } : { id, componentId: n.definitionId, ...(def ? { name: def.name } : {}) };
 }
 
 /** One root of a page, briefly: what it is, the words that name it and how many items its lists hold. */
@@ -393,7 +403,7 @@ function sectionGlance(state: ProjectState, tree: NodeTree, id: string, texts: b
     return { id, kind: n.kind, name: displayName(state, n), ...text };
   }
   const def = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
-  const out: Record<string, unknown> = glanceInstance(state, n);
+  const out: Record<string, unknown> = glanceInstance(state, id, n);
   if (!texts || !def) return out;
   const value = (prop: string) => (Object.hasOwn(n.props, prop) ? n.props[prop] : def.properties[prop]?.default);
   const props = Object.keys(def.properties);
@@ -430,7 +440,7 @@ function slottedPlacements(state: ProjectState, tree: NodeTree, rootIds: readonl
     seen.add(id);
     if (n.kind === 'instance') {
       const slots = placementSlots(state, tree, n);
-      if (slots.length) out.push({ section, depth, row: { ...glanceInstance(state, n), ...holder }, slots });
+      if (slots.length) out.push({ section, depth, row: { ...glanceInstance(state, id, n), ...holder }, slots });
     }
     for (const list of childLists(n)) list.ids.forEach((c) => walk(c, section, depth + 1, { parentId: id, ...(list.slot !== undefined ? { slot: list.slot } : {}) }));
   };
@@ -450,14 +460,20 @@ function glanceSlots(slots: SlottedPlacement['slots'], detail: (typeof SLOT_DETA
 /** `sections` with the slots of `placements`: a section's own on it, those inside it in its `instances`. */
 function sectionsWithSlots(sections: Array<Record<string, unknown>>, placements: SlottedPlacement[], detail: (typeof SLOT_DETAIL)[number]): Array<Record<string, unknown>> {
   const out = sections.map((s) => ({ ...s }));
+  const nested = out.map((): unknown[] => []);
   for (const p of placements) {
-    const section = out[p.section];
     const slotInfo = glanceSlots(p.slots, detail);
-    if (!p.depth) section.slotInfo = slotInfo;
-    else section.instances = [...((section.instances as unknown[] | undefined) ?? []), { ...p.row, slotInfo }];
+    if (!p.depth) out[p.section].slotInfo = slotInfo;
+    else nested[p.section].push({ ...p.row, slotInfo });
   }
+  nested.forEach((rows, i) => {
+    if (rows.length) out[i].instances = rows;
+  });
   return out;
 }
+
+/** Placements tried one by one when not all fit: far more than the largest glance can hold. */
+const SLOT_PLACEMENTS_TRIED = 100;
 
 /**
  * The page a request starts on, as a short list of its sections in order: enough to tell an empty page, a starter
@@ -495,19 +511,23 @@ export function pageGlance(state: ProjectState, pageId: string, maxChars: number
     sections: sectionsWithSlots(base.sections, some, detail),
     ...(omitted ? { slotDetailsOmitted: true } : {})
   });
-  for (const [base, detail] of [[plain, 'all'], ...SLOT_DETAIL.map((d) => [bare, d] as const)] as const) {
-    const out = enriched(base, placements, detail, detail !== 'all');
-    if (fits(out)) return out;
-  }
+  /** The fullest way these placements fit, or null: the words and everything, then less. */
+  const fullest = (some: SlottedPlacement[], partial: boolean) => {
+    for (const [base, detail] of [[plain, 'all'], ...SLOT_DETAIL.map((d) => [bare, d] as const)] as const) {
+      const out = enriched(base, some, detail, partial || detail !== 'all');
+      if (fits(out)) return out;
+    }
+    return null;
+  };
+  const whole = fullest(placements, false);
+  if (whole) return whole;
   // A placement lists all its slots or none, so a list never passes for complete when it is not.
   const kept = new Set<SlottedPlacement>();
-  for (const next of [...placements].sort((a, b) => a.depth - b.depth)) {
-    kept.add(next);
-    if (!fits(enriched(bare, placements.filter((x) => kept.has(x)), 'noIds', true))) kept.delete(next);
+  for (const next of [...placements].sort((a, b) => a.depth - b.depth).slice(0, SLOT_PLACEMENTS_TRIED)) {
+    if (fits(enriched(bare, placements.filter((x) => x === next || kept.has(x)), 'noIds', true))) kept.add(next);
   }
-  if (kept.size) return enriched(bare, placements.filter((x) => kept.has(x)), 'noIds', true);
-  const flagged = { ...plain, slotDetailsOmitted: true };
-  return fits(flagged) ? flagged : plain;
+  if (kept.size) return fullest(placements.filter((x) => kept.has(x)), true);
+  return [plain, bare].map((base) => ({ ...base, slotDetailsOmitted: true })).find(fits) ?? plain;
 }
 
 export function propSchemaSummary(schema: Record<string, PropSchema>) {
