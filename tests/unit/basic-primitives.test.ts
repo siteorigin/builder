@@ -158,6 +158,7 @@ describe('inserting a figure', () => {
     const copy = nodes(r.state)[copyId] as ElementNode;
     const original = nodes(r.state)[id] as ElementNode;
     expect(copy.tag).toBe('figure');
+    expect(copy.children.map((c) => nodes(r.state)[c].kind)).toEqual(['image', 'text']);
     const strip = (ids: string[]) => ids.map((c) => ({ ...nodes(r.state)[c], id: undefined }));
     expect(strip(copy.children)).toEqual(strip(original.children));
     expect(nodes(r.state)[copy.children[1]]).toMatchObject({ tag: 'figcaption' });
@@ -209,7 +210,7 @@ describe('decorative divider shapes', () => {
     const star = insert(start, owner, { primitive: 'divider', shape: 'icon', icon: 'star' });
     expect(nodes(star.s)[star.id]).toMatchObject({ icon: 'star' });
     const plain = insert(start, owner, { primitive: 'divider', shape: 'icon' });
-    expect(nodes(plain.s)[plain.id]).toEqual({ id: plain.id, kind: 'divider', shape: 'icon' });
+    expect(nodes(plain.s)[plain.id]).toStrictEqual({ id: plain.id, kind: 'divider', shape: 'icon' });
   });
 
   it('changes shape and icon afterwards, keeping only what the shape shows', () => {
@@ -425,7 +426,8 @@ describe('the exported site', () => {
     expect(bands[1]).toMatch(/class="[^"]*so-band--wave[^"]*"[\s\S]*<path d="M0 12 Q25 0 50 12 T100 12 V24 H0 Z" fill="currentColor"/);
     const ornament = html.match(/<div class="[^"]*so-band-icon[^"]*"[^>]*>[\s\S]*?<\/div>/)?.[0] ?? '';
     expect(ornament).toContain('aria-hidden="true"');
-    // A hairline either side of the icon.
+    // A hairline either side of the icon, and no more.
+    expect(ornament.match(/so-band-icon__rule/g)).toHaveLength(2);
     expect(ornament).toMatch(/^<div[^>]*>\s*<span class="so-band-icon__rule"><\/span>\s*<svg\b[^>]*class="[^"]*so-icon[\s\S]*?<\/svg>\s*<span class="so-band-icon__rule"><\/span>\s*<\/div>$/);
     // The leaf it names, not the stand-in icon.
     expect(ornament).toContain('d="M11 20a10 10 0 0010-10');
