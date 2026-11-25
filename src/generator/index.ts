@@ -76,6 +76,7 @@ import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
+import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
@@ -265,7 +266,12 @@ export function encodeMailto(target: string): string {
   return `${encoded}?${query}`;
 }
 
-export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveContext): { href: string; newTab?: boolean; download?: string } | null {
+/**
+ * A link as the site's components take it: where it goes, whether it opens a new tab, a document's download name,
+ * and `rel` (the whole attribute, security tokens first) only when the author declared a relationship, so a link
+ * without one is the object it always was and each component adds `noopener noreferrer` for a new tab itself.
+ */
+export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveContext): { href: string; newTab?: boolean; rel?: string; download?: string } | null {
   // A destination that is not text (a hand edit, a theme pack's layout) goes nowhere rather than failing the build.
   if (!link || link.type === 'none' || !link.target || typeof link.target !== 'string') return null;
   let href = '';
@@ -305,7 +311,10 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       break;
     }
   }
-  return link.newTab ? { href, newTab: true } : { href };
+  const rels = linkRels(link);
+  const out: { href: string; newTab?: boolean; rel?: string } = link.newTab ? { href, newTab: true } : { href };
+  if (rels.length) out.rel = relAttribute(link.newTab, rels);
+  return out;
 }
 
 /**
@@ -4132,9 +4141,11 @@ function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, 
   files.set(`${STYLES_DIR}/site.css`, file('site.css', generateSiteCss));
   for (const def of sortedDefs(state)) {
     if (def.kind === 'managed' && def.tree) files.set(defFile(def), file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
-    else if (def.kind === 'code' && def.source) files.set(defFile(def), def.source);
+    // A theme component installed before links had relationships renders them too (see withAuthoredRel).
+    else if (def.kind === 'code' && def.source) files.set(defFile(def), def.owner === 'theme' ? withAuthoredRel(def.source) : def.source);
   }
 }
+
 
 /** The library alone (see addLibrary), as generateProject makes it, without the routes that use it. */
 export function generateLibrary(state: ProjectState, opts: GenerateOptions = {}): FileMap {

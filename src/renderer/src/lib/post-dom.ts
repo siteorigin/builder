@@ -5,50 +5,14 @@
  * around: they are chosen and described in a dialog, never typed into.
  */
 import type { LinkValue, ProjectState, RichBlock, RichImageBlock, RichSpan, RichText } from '@shared/types';
-import { ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, linkFromTarget, linkToTarget } from '@shared/richtext';
-import { findEntry } from '@shared/collections';
-import { blocksFromDom, type ArticleRead, type RichDomNode } from './richtext';
+import { isImageBlock, isListBlock, isRichBlock, linkToTarget } from '@shared/richtext';
+import { linkRels, relsFromAttribute } from '@shared/link-rel';
+import { blocksFromDom, type RichDomNode } from './richtext';
+import { articleLinks, KEPT_LINK } from './article-links';
 import { assetUrl } from './model';
 
 /** The class a check list carries, as the site's own lists do. */
 const CHECK_CLASS = 'so-rich--check';
-
-/**
- * A link the writer shows carries the destination it was stored with (`data-link`) beside the address it showed for it
- * (`data-href`): a page whose address changes since is still that page, and a link to an address another page has
- * taken since never moves to it. Read back as `so-link:` and the stored link.
- */
-const KEPT_LINK = 'so-link:';
-
-function keptLink(json: string, state: ProjectState): LinkValue | null {
-  let l: unknown;
-  try {
-    l = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (!l || typeof l !== 'object') return null;
-  const { type, target } = l as LinkValue;
-  if (typeof target !== 'string') return null;
-  if (type === 'page') return Object.hasOwn(state.pages, target) ? (l as LinkValue) : null;
-  if (type === 'entry') return findEntry(state, target) ? (l as LinkValue) : null;
-  return type === 'url' || type === 'email' || type === 'tel' || type === 'anchor' ? (l as LinkValue) : null;
-}
-
-/** How the writer reads a link it shows: a page or post of this project, or an address of anywhere else. */
-export function articleLinks(state: ProjectState): ArticleRead {
-  return {
-    link: (href, newTab) => {
-      const t = href.trim();
-      if (t.startsWith(KEPT_LINK)) return keptLink(t.slice(KEPT_LINK.length), state);
-      if (t.startsWith(ENTRY_LINK_PREFIX)) {
-        const id = t.slice(ENTRY_LINK_PREFIX.length);
-        return findEntry(state, id) ? { type: 'entry', target: id, ...(newTab ? { newTab: true } : {}) } : null;
-      }
-      return linkFromTarget(t, state.pages, newTab);
-    }
-  };
-}
 
 /** Where a link the writer shows goes, as its href. */
 export const linkHref = (link: LinkValue, state: ProjectState) => linkToTarget(link, state.pages);
@@ -75,6 +39,8 @@ function appendSpans(parent: HTMLElement, spans: RichSpan[], state: ProjectState
       a.setAttribute('href', href);
       keepLink(a, s.link, href);
       if (s.link.newTab) a.setAttribute('target', '_blank');
+      const rels = linkRels(s.link);
+      if (rels.length) a.setAttribute('rel', rels.join(' '));
       host.appendChild(a);
       host = a;
     }
@@ -190,6 +156,8 @@ function toDom(n: Node): RichDomNode | null {
     // is read as typed.
     out.href = el.dataset.link && el.dataset.href === href ? KEPT_LINK + el.dataset.link : href;
     if (el.getAttribute('target') === '_blank') out.newTab = true;
+    const rel = relsFromAttribute(el.getAttribute('rel'));
+    if (rel.length) out.rel = rel;
   }
   if (tag === 'ul' && el.classList.contains(CHECK_CLASS)) out.check = true;
   return out;
@@ -204,7 +172,7 @@ export function readArticle(root: HTMLElement, state: ProjectState): RichText {
   root.querySelectorAll<HTMLElement>('a[href]').forEach((a) => {
     const href = a.getAttribute('href') ?? '';
     if (a.dataset.link && a.dataset.href === href) return;
-    const link = links.link(href, a.getAttribute('target') === '_blank');
+    const link = links.link(href, a.getAttribute('target') === '_blank', relsFromAttribute(a.getAttribute('rel')));
     if (link) keepLink(a, link, href);
   });
   return blocksFromDom(articleDom(root), state.pages, links).blocks;

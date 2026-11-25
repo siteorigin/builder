@@ -1,11 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Bold, Eye, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Send, Unlink, Undo2 } from 'lucide-react';
-import type { AssetRecord, EntryDoc, EntrySeo, ImageValue, LinkValue, ProjectState, RichText } from '@shared/types';
+import type { AssetRecord, EntryDoc, EntrySeo, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
 import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
+import { relsFromAttribute } from '@shared/link-rel';
 import { newId } from '@shared/ids';
 import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
@@ -13,6 +14,7 @@ import { assetLabels, sortAssets } from '@shared/asset-order';
 import { applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
 import { DraftInput, Field, Modal, SwitchRow } from '../components/ui';
 import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
+import { LinkRelControls } from '../components/LinkRelControls';
 import { seoSummary } from '../lib/sharing';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
@@ -97,7 +99,7 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   );
 }
 
-type Dialog = null | { kind: 'image'; fig: HTMLElement | null; value: ImageValue; caption: string; at: HTMLElement | null } | { kind: 'link'; range: Range | null; text: string; to: 'page' | 'post' | 'url'; page: string; entry: string; url: string; error?: string };
+type Dialog = null | { kind: 'image'; fig: HTMLElement | null; value: ImageValue; caption: string; at: HTMLElement | null } | { kind: 'link'; range: Range | null; text: string; to: 'page' | 'post' | 'url'; page: string; entry: string; url: string; rel: LinkRel[]; newTab: boolean; error?: string };
 
 function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const snap = useStore((s) => s.snapshot)!;
@@ -386,11 +388,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       to: entryLink ? 'post' : pageLink?.type === 'page' ? 'page' : href ? 'url' : 'page',
       page: pageLink?.type === 'page' ? pageLink.target : firstPage,
       entry: entryLink || posts[0]?.id || '',
-      url: pageLink || entryLink ? '' : kept ? linkToTarget(kept, state.pages) : href
+      url: pageLink || entryLink ? '' : kept ? linkToTarget(kept, state.pages) : href,
+      // The anchor's own rel, which is what the post keeps (see post-dom), and whether it opens a new tab, which the
+      // browser's new link for the words would otherwise lose.
+      rel: a && root.current?.contains(a) ? relsFromAttribute(a.getAttribute('rel')) : [],
+      newTab: range && root.current ? opensNewTab(root.current, range) : false
     });
   };
   const applyLink = (d: Extract<Dialog, { kind: 'link' }>) => {
     let href = '';
+    let rels: LinkRel[] = [];
     if (d.to === 'page') href = Object.hasOwn(state.pages, d.page) ? state.pages[d.page].route : '';
     else if (d.to === 'post') href = findEntry(state, d.entry) ? `entry:${d.entry}` : '';
     else {
@@ -398,17 +405,35 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       const link: LinkValue | null = linkFromTarget(/^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(t) ? `https://${t}` : t, state.pages);
       if (!link || link.type === 'page' || link.type === 'anchor') return setDialog({ ...d, error: 'Use a full web address, such as https://example.com, or mailto: or tel:.' });
       href = /^https?:/i.test(t) || t.startsWith('mailto:') || t.startsWith('tel:') ? t : `https://${t}`;
+      if (link.type === 'url') rels = d.rel;
     }
     if (!href) return setDialog({ ...d, error: 'Choose where the link goes.' });
+    // A link that opened a new tab still does, to a page, a post or a web address: an email or a call opens its app.
+    const newTab = d.newTab && !/^(mailto|tel):/i.test(href);
     const words = d.range && !d.range.collapsed ? '' : d.text.trim();
     if (d.range?.collapsed !== false && !words) return setDialog({ ...d, error: 'Type the words the link is on.' });
     afterDialog(d.range, () => {
       if (words) {
         const a = document.createElement('a');
         a.setAttribute('href', href);
+        if (rels.length) a.setAttribute('rel', rels.join(' '));
+        if (newTab) a.setAttribute('target', '_blank');
         a.textContent = words;
         document.execCommand('insertHTML', false, a.outerHTML);
-      } else document.execCommand('createLink', false, href);
+        return;
+      }
+      document.execCommand('createLink', false, href);
+      // The browser makes new links for the words, with nothing but the address: the ticked relationships and the new
+      // tab go on each of them.
+      const sel = document.getSelection();
+      const now = (rels.length || newTab) && sel?.rangeCount ? sel.getRangeAt(0) : null;
+      root.current?.querySelectorAll('a[href]').forEach((a) => {
+        if (!now || a.getAttribute('href') !== href || !now.intersectsNode(a)) return;
+        if (rels.length) a.setAttribute('rel', rels.join(' '));
+        // A new link the browser joined to a neighbour going to the same place holds that neighbour's words too: they
+        // keep the tab they opened in.
+        if (newTab && coversAll(now, a)) a.setAttribute('target', '_blank');
+      });
     });
   };
 
@@ -776,6 +801,41 @@ function allPosts(state: ProjectState) {
     .flatMap((id) => orderedEntries(state.collections[id]).map((e) => ({ id: e.id, title: e.title, collection: state.collections[id].settings.name })));
 }
 
+/** The part of a text node's words a range covers: a range that only reaches an element's edge covers none of it. */
+function coveredText(range: Range, t: Node): string {
+  if (!range.intersectsNode(t)) return '';
+  const text = t.nodeValue ?? '';
+  return text.slice(t === range.startContainer ? range.startOffset : 0, t === range.endContainer ? range.endOffset : text.length);
+}
+
+/** Whether a range covers every word inside an element (spacing at a word's ends, which a page may collapse, aside). */
+function coversAll(range: Range, el: Element): boolean {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) if (t.nodeValue?.trim() && coveredText(range, t).trim() !== t.nodeValue.trim()) return false;
+  return true;
+}
+
+/**
+ * Whether the words chosen for a link are all in links that open a new tab (the one at the caret, with none chosen):
+ * words beside such a link, or in one that does not, keep a new link to the tab it opens in.
+ */
+function opensNewTab(root: HTMLElement, range: Range): boolean {
+  if (range.collapsed) {
+    const at = range.startContainer;
+    const a = (at instanceof Element ? at : at.parentElement)?.closest('a[href]');
+    return !!a && root.contains(a) && a.getAttribute('target') === '_blank';
+  }
+  let linked = false;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (!coveredText(range, t).trim()) continue;
+    const a = t.parentElement?.closest('a[href]');
+    if (!a || !root.contains(a) || a.getAttribute('target') !== '_blank') return false;
+    linked = true;
+  }
+  return linked;
+}
+
 function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extract<Dialog, { kind: 'link' }>; state: ProjectState; self: string; onChange: (d: Dialog) => void; onApply: (d: Extract<Dialog, { kind: 'link' }>) => void }) {
   const uid = useId();
   const posts = allPosts(state).filter((p) => p.id !== self);
@@ -847,6 +907,8 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
             <input id={`${uid}-url`} className="input" placeholder="https://example.com" value={dialog.url} onChange={(e) => set({ url: e.target.value })} />
           </Field>
         )}
+        {/* An email or phone link goes to no site to say anything about. */}
+        {dialog.to === 'url' && !/^(mailto|tel):/i.test(dialog.url.trim()) && <LinkRelControls value={dialog.rel} onChange={(rel) => set({ rel })} />}
         {dialog.error && (
           <p className="field-error" role="alert">
             {dialog.error}

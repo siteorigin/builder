@@ -52,12 +52,13 @@ const field = () =>
     return { open: true, value: input.value, invalid: input.getAttribute('aria-invalid'), error: error.textContent, errorShown: !error.hidden };
   })()`);
 const hrefs = () => frame.evaluate<string[]>(`[...document.querySelectorAll('[data-so-node="r"] a')].map((a) => a.getAttribute('href'))`);
+const rels = () => frame.evaluate<Array<[string | null, string | null, string | null]>>(`[...document.querySelectorAll('[data-so-node="r"] a')].map((a) => [a.getAttribute('href'), a.getAttribute('rel'), a.getAttribute('target')])`);
 
 /** Edit the rich text with the caret in the linked words, then open the link field. */
-async function openField() {
+async function openField(rich = RICH, shown = '/about/') {
   edits++;
   await page.evaluate(`window.seen = []`);
-  await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(RICH)}`);
+  await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(rich)}`);
   await page.evaluate(`document.querySelector('iframe').focus()`);
   await toFrame('beginTextEdit', { desc: { ctx: 'page:p', node: 'r', items: '' }, editId: `e${edits}` });
   await expect.poll(async () => (await messages()).some((m) => m.type === 'textEditStarted')).toBe(true);
@@ -71,7 +72,7 @@ async function openField() {
   })()`);
   await page.keyboard.press(`${MOD}+k`);
   await expect.poll(async () => (await field()).open).toBe(true);
-  expect((await field()).value).toBe('/about/');
+  expect((await field()).value).toBe(shown);
 }
 
 describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
@@ -133,6 +134,114 @@ describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
     await toFrame('linkChecked', { check });
     await expect.poll(async () => (await field()).open).toBe(false);
     expect(await hrefs()).toEqual(['/about#team']);
+  });
+
+  it('keeps what a web address says about its site while the words go to another one, and not to a page (#582)', async () => {
+    const shop = '<p>Read <a href="https://shop.example/" target="_blank" rel="noopener noreferrer nofollow sponsored">about us</a> today</p>';
+    const pointAt = async (to: string) => {
+      await openField(shop, 'https://shop.example/');
+      await page.keyboard.type(to);
+      await page.keyboard.press('Enter');
+      const { check } = await nextCheck(0);
+      await toFrame('linkChecked', { check });
+      await expect.poll(async () => (await field()).open).toBe(false);
+      return rels();
+    };
+    // The browser makes a new link for the words; the author's relationships and new tab go on it, never the site's
+    // own tokens.
+    expect(await pointAt('https://shop.example/b')).toEqual([['https://shop.example/b', 'nofollow sponsored', '_blank']]);
+    await page.keyboard.press('Escape');
+    expect(await pointAt('/about/')).toEqual([['/about/', null, '_blank']]);
+    await page.keyboard.press('Escape');
+    expect(await pointAt('hi@example.com')).toEqual([['mailto:hi@example.com', null, null]]);
+  });
+
+  it('gives words beside a link that join it in a new one nothing of what that link said (#582)', async () => {
+    const shop = '<p>Read <a href="https://shop.example/" target="_blank" rel="noopener noreferrer sponsored">about us</a> today</p>';
+    await openField(shop, 'https://shop.example/');
+    await page.keyboard.press('Escape');
+    // The end of the link and the plain word after it.
+    await frame.evaluate(`(() => {
+      const a = document.querySelector('[data-so-node="r"] a');
+      const r = document.createRange();
+      r.setStart(a.firstChild, 6);
+      r.setEnd(a.nextSibling, 6);
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+    })()`);
+    await page.keyboard.press(`${MOD}+k`);
+    await expect.poll(async () => (await field()).open).toBe(true);
+    await page.keyboard.type('https://other.example/');
+    await page.keyboard.press('Enter');
+    const { check } = await nextCheck(0);
+    await toFrame('linkChecked', { check });
+    await expect.poll(async () => (await field()).open).toBe(false);
+    expect((await rels()).find(([href]) => href === 'https://other.example/')).toEqual(['https://other.example/', null, null]);
+  });
+
+  it('keeps a link’s options when the words chosen end where the next link starts, and never gives them to that link (#582)', async () => {
+    const pair = '<p><a href="https://a.example/" target="_blank" rel="sponsored">First</a><a href="https://b.example/">Second</a> end</p>';
+    const repoint = async (to: string, select: string) => {
+      edits++;
+      await page.evaluate(`window.seen = []`);
+      await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(pair)}`);
+      await page.evaluate(`document.querySelector('iframe').focus()`);
+      await toFrame('beginTextEdit', { desc: { ctx: 'page:p', node: 'r', items: '' }, editId: `e${edits}` });
+      await expect.poll(async () => (await messages()).some((m) => m.type === 'textEditStarted')).toBe(true);
+      await frame.evaluate(`(() => {
+        const [a1, a2] = document.querySelectorAll('[data-so-node="r"] a');
+        const r = document.createRange();
+        ${select}
+        getSelection().removeAllRanges();
+        getSelection().addRange(r);
+      })()`);
+      await page.keyboard.press(`${MOD}+k`);
+      await expect.poll(async () => (await field()).open).toBe(true);
+      await page.keyboard.type(to);
+      await page.keyboard.press('Enter');
+      const { check } = await nextCheck(0);
+      await toFrame('linkChecked', { check });
+      await expect.poll(async () => (await field()).open).toBe(false);
+      const out = await rels();
+      await page.keyboard.press('Escape');
+      return out;
+    };
+    // From the start of the first link to the start of the second: only the first link's words.
+    expect(await repoint('https://c.example/', 'r.setStart(a1, 0); r.setEnd(a2, 0);')).toEqual([
+      ['https://c.example/', 'sponsored', '_blank'],
+      ['https://b.example/', null, null]
+    ]);
+    // Pointed where its neighbour goes, the browser makes the two one link: the neighbour's words keep their own tab.
+    expect(await repoint('https://b.example/', 'r.selectNodeContents(a1);')).toEqual([['https://b.example/', null, null]]);
+  });
+
+  it('re-points only the link the caret is in when its neighbour goes to the same address but says something else (#582)', async () => {
+    const pair = '<p><a href="https://shop.example/" rel="sponsored"><strong>Paid</strong></a><a href="https://shop.example/" rel="ugc"><em>review</em></a> today</p>';
+    edits++;
+    await page.evaluate(`window.seen = []`);
+    await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(pair)}`);
+    await page.evaluate(`document.querySelector('iframe').focus()`);
+    await toFrame('beginTextEdit', { desc: { ctx: 'page:p', node: 'r', items: '' }, editId: `e${edits}` });
+    await expect.poll(async () => (await messages()).some((m) => m.type === 'textEditStarted')).toBe(true);
+    await frame.evaluate(`(() => {
+      const t = document.querySelectorAll('[data-so-node="r"] a')[1].querySelector('em').firstChild;
+      const r = document.createRange();
+      r.setStart(t, 2);
+      r.collapse(true);
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+    })()`);
+    await page.keyboard.press(`${MOD}+k`);
+    await expect.poll(async () => (await field()).open).toBe(true);
+    await page.keyboard.type('https://reviews.example/');
+    await page.keyboard.press('Enter');
+    const { check } = await nextCheck(0);
+    await toFrame('linkChecked', { check });
+    await expect.poll(async () => (await field()).open).toBe(false);
+    expect(await rels()).toEqual([
+      ['https://shop.example/', 'sponsored', null],
+      ['https://reviews.example/', 'ugc', null]
+    ]);
   });
 
   it('acts only on the answer about what the field holds now', async () => {

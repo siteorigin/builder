@@ -31,6 +31,9 @@ export function linkSvelte(instrument = false): string {
 	let { link = null, appearance = '', card = '', so_control = false, class: className = '', children, ...rest } = $props();
 	const safe = $derived(typeof link?.href === 'string' && /^(https?:|mailto:|tel:|#|\\/)/i.test(link.href) ? link.href : null);
 	const href = $derived(safe ? (safe.startsWith('/') && !safe.startsWith('//') ? resolve(safe) : safe) : null);
+	// A new tab's security tokens, then what the author said about the site, each once: a link given a new tab by
+	// code ({ ...link, newTab: true }) still gets them.
+	const rel = $derived([...new Set([...(link?.newTab ? ['noopener', 'noreferrer'] : []), ...(typeof link?.rel === 'string' ? link.rel.split(/\\s+/) : [])].filter(Boolean))].join(' ') || undefined);
 	const download = $derived(href && safe.startsWith('/') && typeof link?.download === 'string' && link.download ? link.download : undefined);
 	const BUTTONS = ['primary', 'secondary', 'text', 'light'];
 	const button = $derived(BUTTONS.includes(appearance));
@@ -44,7 +47,7 @@ export function linkSvelte(instrument = false): string {
 			{download}
 			class={['so-card-link', className]}
 			target={link?.newTab ? '_blank' : undefined}
-			rel={link?.newTab ? 'noopener noreferrer' : undefined}
+			{rel}
 			{...rest}>{@render children?.()}</a
 		>
 	{:else}
@@ -56,7 +59,7 @@ export function linkSvelte(instrument = false): string {
 		{download}
 		class={[kind, className]}
 		target={link?.newTab ? '_blank' : undefined}
-		rel={link?.newTab ? 'noopener noreferrer' : undefined}
+		{rel}
 		{...rest}>{@render children?.()}</a
 	>
 {:else if (button || so_control) && typeof rest.onclick === 'function'}
@@ -153,6 +156,9 @@ export const ACTION_SVELTE = `<script>
 	const local = (path) => (path.startsWith('/') && !path.startsWith('//') ? asset(path.slice(1)) : path);
 	const safe = $derived(typeof link?.href === 'string' && /^(https?:|mailto:|tel:|#|\\/)/i.test(link.href) ? link.href : null);
 	const href = $derived(mode === 'link' && safe ? (safe.startsWith('/') && !safe.startsWith('//') ? resolve(safe) : safe) : null);
+	// A new tab's security tokens, then what the author said about the site, each once: a link given a new tab by
+	// code ({ ...link, newTab: true }) still gets them.
+	const rel = $derived([...new Set([...(link?.newTab ? ['noopener', 'noreferrer'] : []), ...(typeof link?.rel === 'string' ? link.rel.split(/\\s+/) : [])].filter(Boolean))].join(' ') || undefined);
 	const full = $derived(mode === 'image' && typeof image?.src === 'string' && image.src ? local(image.src) : null);
 	// The words the opened image is known by, as its thumbnail says them: none for a decorative one.
 	const alt = $derived(image?.decorative ? '' : String(image?.alt ?? '').trim() || String(image?.fallbackAlt ?? '').trim());
@@ -286,7 +292,7 @@ export const ACTION_SVELTE = `<script>
 		{href}
 		class="so-card-link so-action"
 		target={link?.newTab ? '_blank' : undefined}
-		rel={link?.newTab ? 'noopener noreferrer' : undefined}>{@render children?.()}</a
+		{rel}>{@render children?.()}</a
 	>
 {:else}
 	{@render children?.()}

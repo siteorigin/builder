@@ -595,6 +595,23 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     expect([s.revision, s.historyInfo().entries.length]).toEqual([revision, entries]);
   });
 
+  it('keeps through a rebuild what a link written as its address cannot say, while it goes to the same place (#582)', async () => {
+    const { s, call } = await session();
+    const args = pricing();
+    args.nodes = args.nodes.map((n) => ((n as { id: string }).id === 'cta' ? { ...n, link: 'https://shop.example/' } : n)) as never;
+    const made = await call(args);
+    expect(made.ok).toBe(true);
+    const id = made.content.definitionId;
+    // The author opened it in a new tab and marked it paid, in the Inspector.
+    s.state.components[id].tree!.nodes.cta = { ...s.state.components[id].tree!.nodes.cta, link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['sponsored'] } } as never;
+    expect((await call(pricing({ definitionId: id, nodes: args.nodes }))).ok).toBe(true);
+    expect(s.state.components[id].tree!.nodes.cta).toMatchObject({ link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['sponsored'] } });
+    // Somewhere else, it is a new link.
+    const moved = args.nodes.map((n) => ((n as { id: string }).id === 'cta' ? { ...n, link: 'https://other.example/' } : n));
+    expect((await call(pricing({ definitionId: id, nodes: moved }))).ok).toBe(true);
+    expect((s.state.components[id].tree!.nodes.cta as { link: unknown }).link).toEqual({ type: 'url', target: 'https://other.example/' });
+  });
+
   it('keeps through a rebuild what the tool has no field for: a slot\'s categories', async () => {
     const { s, call } = await session();
     const args = pricing();

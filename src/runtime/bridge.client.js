@@ -1786,7 +1786,7 @@ function linkRun(anchor) {
     }
     return [...kinds].sort().join();
   };
-  const same = (n, beside) => n && n.nodeType === 1 && n.tagName === 'A' && n.getAttribute('href') === anchor.getAttribute('href') && n.getAttribute('target') === anchor.getAttribute('target') && marks(n) !== marks(beside);
+  const same = (n, beside) => n && n.nodeType === 1 && n.tagName === 'A' && n.getAttribute('href') === anchor.getAttribute('href') && n.getAttribute('target') === anchor.getAttribute('target') && authoredRels(n).join() === authoredRels(anchor).join() && marks(n) !== marks(beside);
   const next = (n, dir) => {
     let m = dir < 0 ? n.previousSibling : n.nextSibling;
     // The page's own markers (comments) and spaces sit between the parts of one link.
@@ -1900,8 +1900,50 @@ function linkChecked(payload) {
   ed.check = null;
   if (typeof payload.problem === 'string') return linkProblem(payload.problem.slice(0, 300));
   if (!linkRangeLive()) return linkProblem('The words to link have changed. Close this and select them again.');
+  // The browser replaces the link it re-points, attributes and all. When the words were one link (every link they
+  // touch goes to the same place and says the same), the new one still opens a new tab if that one did, to a page
+  // or a web address, and keeps what the author said about a web address while it still goes to one.
+  const { links, plain } = rangeLinks(ed.range);
+  const was = links[0];
+  const one = !!was && !plain && links.every((a) => a.getAttribute('href') === was.getAttribute('href') && a.getAttribute('target') === was.getAttribute('target') && authoredRels(a).join() === authoredRels(was).join());
+  const newTab = one && was.getAttribute('target') === '_blank' && /^(https?:|\/)/i.test(href);
+  const rels = one && /^https?:/i.test(href) && /^https?:/i.test(was.getAttribute('href')) ? authoredRels(was) : [];
   closeLinkEditor(true);
   document.execCommand('createLink', false, href);
+  const sel = getSelection();
+  const now = (newTab || rels.length) && sel.rangeCount ? sel.getRangeAt(0) : null;
+  if (now)
+    for (const a of editing.el.querySelectorAll('a[href]')) {
+      // A new link the browser joined to a neighbour going to the same place holds that neighbour's words too: it is
+      // left as it is rather than changing them.
+      if (a.getAttribute('href') !== href || !now.intersectsNode(a) || !coversAll(now, a)) continue;
+      if (newTab) a.setAttribute('target', '_blank');
+      if (rels.length) a.setAttribute('rel', rels.join(' '));
+    }
+}
+/** The part of a text node's words a range covers: a range that only reaches an element's edge covers none of it. */
+function coveredText(range, t) {
+  if (!range.intersectsNode(t)) return '';
+  return t.nodeValue.slice(t === range.startContainer ? range.startOffset : 0, t === range.endContainer ? range.endOffset : t.nodeValue.length);
+}
+/** The links whose words a range covers, and whether it covers words outside any link (which join no link's options). */
+function rangeLinks(range) {
+  const links = [];
+  let plain = false;
+  const walker = document.createTreeWalker(editing.el, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (!coveredText(range, t).trim()) continue;
+    const a = t.parentElement.closest('a[href]');
+    if (!a || !editing.el.contains(a)) plain = true;
+    else if (!links.includes(a)) links.push(a);
+  }
+  return { links, plain };
+}
+/** Whether a range covers every word inside an element (spacing at a word's ends, which a page may collapse, aside). */
+function coversAll(range, el) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) if (t.nodeValue.trim() && coveredText(range, t).trim() !== t.nodeValue.trim()) return false;
+  return true;
 }
 /** Whether the words the field links are still there to link (the text can change underneath the field). */
 function linkRangeLive() {
@@ -2354,11 +2396,19 @@ function pastedHref(raw) {
   return storable && href.length <= 2000 ? href : '';
 }
 
+/** The relationships an author can declare on a link (LINK_RELS in the editor), in their order. */
+const LINK_RELS = ['nofollow', 'sponsored', 'ugc'];
+/** The authored relationships an anchor's rel holds: the security tokens a new tab adds are the site's, not the author's. */
+function authoredRels(a) {
+  const has = new Set(String(a.getAttribute('rel') || '').toLowerCase().split(/[ \t\n\f\r]+/));
+  return LINK_RELS.filter((t) => has.has(t));
+}
+
 /**
  * Copied HTML as markup the rich text can hold, or '' when it holds no words. It is read in one pass, in reading
  * order, as lines: each block (a paragraph, heading, quote or list item) is a line of its own, a block inside a list item, quote or heading is another line of that kind, and the items
  * of a list inside a list join the outer one, as the rich text holds them. Every element written is a new one:
- * only these blocks, bold, italic, line breaks, and a link's address and new tab.
+ * only these blocks, bold, italic, line breaks, and a link's address, new tab and relationships.
  */
 function pastedRich(html) {
   if (!html || html.length > 2000000) return '';
@@ -2400,7 +2450,11 @@ function pastedRich(html) {
       if (href) {
         inner.href = href;
         inner.newTab = n.getAttribute('target') === '_blank';
-      } else delete inner.href;
+        inner.rel = authoredRels(n).join(' ');
+      } else {
+        delete inner.href;
+        delete inner.rel;
+      }
     }
     if (n.tagName === 'PRE') inner.pre = true;
     const kind = PASTE_BLOCKS[n.tagName];
@@ -2436,13 +2490,14 @@ function pastedRich(html) {
     const wraps = [m.href !== undefined && 'A', m.strong && 'STRONG', m.em && 'EM'].filter(Boolean);
     for (const tag of wraps) {
       const last = host.lastChild;
-      const same = last && last.nodeType === Node.ELEMENT_NODE && last.tagName === tag && (tag !== 'A' || (last.getAttribute('href') === m.href && last.hasAttribute('target') === !!m.newTab));
+      const same = last && last.nodeType === Node.ELEMENT_NODE && last.tagName === tag && (tag !== 'A' || (last.getAttribute('href') === m.href && last.hasAttribute('target') === !!m.newTab && (last.getAttribute('rel') || '') === (m.rel || '')));
       if (same) host = last;
       else {
         const w = document.createElement(tag);
         if (tag === 'A') {
           w.setAttribute('href', m.href);
           if (m.newTab) w.setAttribute('target', '_blank');
+          if (m.rel) w.setAttribute('rel', m.rel);
         }
         host.appendChild(w);
         host = w;
@@ -2549,6 +2604,8 @@ function richCopy(root) {
       out.href = n.getAttribute('href');
       if (out.href.length > 2100) throw new Error('too large');
       if (n.getAttribute('target') === '_blank') out.newTab = true;
+      const rel = authoredRels(n);
+      if (rel.length) out.rel = rel;
     }
     for (const c of n.childNodes) {
       const v = copy(c, depth + 1);

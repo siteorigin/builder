@@ -17,6 +17,7 @@ import { normalizeRichText } from '@engine/values';
 import { RUNTIME_DIR, generateManagedComponent, generateProject, resolveRichText } from '@generator/index';
 import { IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS } from '@generator/runtime-files';
 import { blocksFromDom, type RichDomNode } from '../../src/renderer/src/lib/richtext';
+import { relsFromAttribute } from '@shared/link-rel';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -627,6 +628,9 @@ function domFromHtml(html: string): RichDomNode[] {
     if (m[2] === 'a' && attrs.href !== undefined) {
       el.href = attrs.href;
       if (attrs.target === '_blank') el.newTab = true;
+      // The authored relationships alone, as the bridge copies them (see authoredRels).
+      const rel = relsFromAttribute(attrs.rel);
+      if (rel.length) el.rel = rel;
     }
     stack[stack.length - 1].children.push(el);
     if (!m[4] && m[2] !== 'br') stack.push(el);
@@ -716,6 +720,46 @@ describe('rich text round trip: document, HTML, inline edit, document', () => {
   it('comes back unchanged, so opening and leaving an edit changes nothing', () => {
     const value = everything();
     expect(roundTrip(value)).toEqual(value);
+  });
+
+  it('renders what a link says about another site after a new tab’s tokens, and reads it back from the page (#582)', () => {
+    const value = normalizeRichText(
+      [
+        {
+          type: 'p',
+          spans: [
+            { text: 'Paid', strong: true, link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['ugc', 'sponsored', 'ugc'] } },
+            { text: 'review', em: true, link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['ugc'] } },
+            { text: ', ' },
+            { text: 'cited', link: { type: 'url', target: 'https://cite.example/', rel: ['nofollow'] } },
+            { text: ' and ' },
+            { text: 'plain', link: { type: 'url', target: 'https://plain.example/' } }
+          ]
+        }
+      ],
+      s,
+      'Body'
+    );
+    const out = html(value).replace(/<!--[\s\S]*?-->/g, '');
+    expect(out).toMatch(/<a href="https:\/\/shop\.example\/" class="so-link" target="_blank" rel="noopener noreferrer sponsored ugc"><strong>Paid<\/strong><\/a>/);
+    expect(out).toMatch(/<a href="https:\/\/shop\.example\/" class="so-link" target="_blank" rel="noopener noreferrer ugc"><em>review<\/em><\/a>/);
+    expect(out).toContain('<a href="https://cite.example/" class="so-link" rel="nofollow">cited</a>');
+    // A link that says nothing has no rel at all, as before.
+    expect(out).toContain('<a href="https://plain.example/" class="so-link">plain</a>');
+    // Typing beside them on the canvas sends the whole text back: each keeps its own, never the site's tokens.
+    expect(roundTrip(value)).toEqual(value);
+  });
+
+  it('gives a link a new tab’s tokens however it was given the new tab, each token once (#582)', async () => {
+    const LinkView = (await import(/* @vite-ignore */ join(dir, 'Link.js'))).default as Component<Record<string, unknown>>;
+    const rel = (link: Record<string, unknown>) => render(LinkView, { props: { link } }).body.match(/<a [^>]*>/)![0].match(/ rel="([^"]*)"/)?.[1];
+    const href = 'https://shop.example/';
+    // A code component that opens a resolved link in a new tab ({ ...link, newTab: true }).
+    expect(rel({ href, newTab: true, rel: 'sponsored' })).toBe('noopener noreferrer sponsored');
+    expect(rel({ href, newTab: true, rel: 'noopener noreferrer ugc' })).toBe('noopener noreferrer ugc');
+    expect(rel({ href, rel: 'nofollow' })).toBe('nofollow');
+    expect(rel({ href, newTab: true })).toBe('noopener noreferrer');
+    expect(rel({ href })).toBeUndefined();
   });
 
   it('keeps an edit to the words, with the marks and links around it', () => {

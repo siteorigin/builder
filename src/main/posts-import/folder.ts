@@ -115,10 +115,10 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
   for (const { f, key, fm, slug, dated } of fronts) {
     const report = emptyReport();
     const notes: string[] = fm.problems.length ? [`Some of its settings could not be read (${fm.problems.slice(0, 3).join('; ')}).`] : [];
-    const link = (href: string, newTab: boolean): LinkValue | null => {
+    const link = (href: string, newTab: boolean, rel: string[] = []): LinkValue | null => {
       const t = href.trim();
       const tab = newTab ? { newTab: true } : {};
-      if (!t || /^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith('#') || t.startsWith('//')) return linkFromTarget(t.startsWith('//') ? `https:${t}` : t, pages, newTab);
+      if (!t || /^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith('#') || t.startsWith('//')) return linkFromTarget(t.startsWith('//') ? `https:${t}` : t, pages, newTab, rel);
       const path = t.split(/[?#]/)[0];
       // Another post of the folder, by its file.
       if (MARKDOWN.test(path)) {

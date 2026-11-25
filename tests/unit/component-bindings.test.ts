@@ -602,6 +602,16 @@ describe('cards that link as a whole (#90)', () => {
     expect(html).toMatch(/<a href="https:\/\/example\.com\/feature" class="so-card-link[^"]*" target="_blank" rel="noopener noreferrer">/);
   });
 
+  it('says what a card’s link to another site is, after a new tab’s own tokens (#582)', async () => {
+    const s = fresh();
+    const def = cardsDef(s);
+    place(s, def, { featureLink: { type: 'url', target: 'https://example.com/feature', newTab: true, rel: ['sponsored', 'nofollow'] } });
+    const [html] = placements(await renderHome(s), def);
+    expect(html).toMatch(/<a href="https:\/\/example\.com\/feature" class="so-card-link[^"]*" target="_blank" rel="noopener noreferrer nofollow sponsored">/);
+    // The card without one renders as it always did.
+    expect(html).not.toMatch(/<a href="https:\/\/example\.com\/design"[^>]*rel=/);
+  });
+
   it('refuses a card with a button inside it, and generates the card without its link', async () => {
     const s = fresh();
     const def = cardsDef(s, (b) => b.link('card-button', { type: 'url', target: 'https://example.com/more' }, 'More', 'primary'));

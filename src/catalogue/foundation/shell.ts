@@ -76,6 +76,8 @@ const HEADER_SOURCE = `<script>
 
 	/** Site-relative links go through resolve() so the site works under a sub-path. */
 	const href = (link) => (link?.href?.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link?.href);
+	/** A new tab's security tokens, then what the author said about the site the link goes to, each once. */
+	const relOf = (link) => [...new Set([...(link?.newTab ? ['noopener', 'noreferrer'] : []), ...(typeof link?.rel === 'string' ? link.rel.split(/\\s+/) : [])].filter(Boolean))].join(' ') || undefined;
 	/** A link to one of the site's documents downloads it under its own file name. */
 	const download = (link) => (link?.href?.startsWith('/') && typeof link.download === 'string' && link.download ? link.download : undefined);
 	const isCurrent = (link) => !!link?.href?.startsWith('/') && !link.href.includes('#') && (link.href.length > 1 && link.href.endsWith('/') ? link.href.slice(0, -1) : link.href) === current;
@@ -289,7 +291,7 @@ const HEADER_SOURCE = `<script>
 					<a
 						href={href(noticeLink)}
 						target={noticeLink.newTab ? '_blank' : undefined}
-						rel={noticeLink.newTab ? 'noopener noreferrer' : undefined}
+						rel={relOf(noticeLink)}
 						onclick={chose}>{noticeLinkText}</a
 					>
 				{/if}
@@ -355,7 +357,7 @@ const HEADER_SOURCE = `<script>
 					href={href(ctaLink)}
 					download={download(ctaLink)}
 					target={ctaLink.newTab ? '_blank' : undefined}
-					rel={ctaLink.newTab ? 'noopener noreferrer' : undefined}
+					rel={relOf(ctaLink)}
 					onclick={chose}>{ctaLabel}</a
 				>
 			{/if}
@@ -370,7 +372,7 @@ const HEADER_SOURCE = `<script>
 		href={href(item.link)}
 		download={download(item.link)}
 		target={item.link?.newTab ? '_blank' : undefined}
-		rel={item.link?.newTab ? 'noopener noreferrer' : undefined}
+		rel={relOf(item.link)}
 		aria-current={isCurrent(item.link) ? 'page' : undefined}
 		onclick={href(item.link) ? chose : undefined}>{item.label}</a
 	>

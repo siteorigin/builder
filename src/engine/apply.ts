@@ -27,6 +27,7 @@ import type {
   VariantAxis
 } from '@shared/types';
 import type { Binding, EntryDoc } from '@shared/types';
+import { withAuthoredRel } from '@shared/link-rel';
 import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, canonicalStyleValue, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
@@ -2783,7 +2784,8 @@ function copyDefinition(state: ProjectState, def: ComponentDefinition, name: str
   copy.provenance = { ...def.provenance, forkedFrom: def.id, createdBy: 'user' };
   if (copy.kind === 'code') {
     copy.sourcePath = `${CUSTOM_DIR}/${pascal(name)}-${copy.id.slice(-5).replace(/[^A-Za-z0-9]/g, '')}.svelte`;
-    copy.source ??= '';
+    // The copy starts from what the theme's code renders, which gives links their relationships (see withAuthoredRel).
+    copy.source = def.owner === 'theme' ? withAuthoredRel(copy.source ?? '') : (copy.source ?? '');
   }
   state.components[copy.id] = copy;
   return copy;

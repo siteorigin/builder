@@ -1,4 +1,5 @@
-import type { ChoiceOption, ImageValue, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
+import type { ChoiceOption, ImageValue, LinkRel, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
+import { canonicalRels } from '@shared/link-rel';
 import { cleanBlocks, ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText, spanRuns } from '@shared/richtext';
 import { collectionRoutes, findEntry } from '@shared/collections';
 import { readablePath } from '@shared/routes';
@@ -83,6 +84,11 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
     if (!/^[A-Za-z][\w-]*$/.test(out.anchor)) fail(`${label}: "${out.anchor.slice(0, 40)}" is not a valid anchor.`);
   }
   if (l.newTab) out.newTab = true;
+  // A relationship describes another site: kept on a web address only, so a change of link type lets it go. Only the
+  // three an author declares are stored, as a list; anything else (a new tab's security tokens, the site's to add, or
+  // a hand edit) is read for what it can say and never refuses the edit, which may not even be about this link.
+  const rels = type === 'url' ? canonicalRels(l.rel) : [];
+  if (rels.length) out.rel = rels;
   return out;
 }
 
@@ -131,7 +137,7 @@ export const MAX_CAPTION = 300;
  * structured blocks. Every link is validated, and a link to a page stores the page's ID.
  */
 export function normalizeRichText(v: unknown, state: ProjectState, label: string, plainAs?: RichListType, scope: LinkScope = {}): RichText {
-  const link = (target: string, newTab: boolean): LinkValue | null => {
+  const link = (target: string, newTab: boolean, rel: LinkRel[] = []): LinkValue | null => {
     const t = target.trim();
     // An entry by its ID, refused where entry links are not kept, so it never stays behind as plain text.
     if (t.startsWith(ENTRY_LINK_PREFIX)) return normalizeLink({ type: 'entry', target: t.slice(ENTRY_LINK_PREFIX.length), newTab }, state, label, scope);
@@ -141,7 +147,7 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
       const owner = collectionRoutes(state).find((o) => o.kind === 'entry' && o.route === route);
       if (owner?.kind === 'entry') return normalizeLink({ type: 'entry', target: owner.entryId, newTab }, state, label, scope);
     }
-    const out = linkFromTarget(target, state.pages, newTab);
+    const out = linkFromTarget(target, state.pages, newTab, rel);
     if (!out && target.startsWith('/')) fail(`${label}: no page${scope.entries ? ' or entry' : ''} has the route "${target.slice(0, 60)}".`);
     // A number that dials nothing (one saved before numbers needed three digits) is refused, never kept as its markup.
     if (!out && /^tel:/i.test(t)) fail(`${label}: "${t.slice(4, 44)}" is not a valid telephone number.`);

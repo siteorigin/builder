@@ -111,8 +111,9 @@ function mapAssetRefs(def: ComponentDefinition, visit: (assetId: string) => stri
 }
 
 const SITE_LINKS = new Set(['page', 'entry', 'document']);
-const LINK_KEYS = new Set(['type', 'target', 'anchor', 'newTab']);
-const isSiteLink = (v: unknown): boolean => isRecord(v) && SITE_LINKS.has(v.type as string) && typeof v.target === 'string' && Object.keys(v).every((k) => LINK_KEYS.has(k));
+const LINK_KEYS = new Set(['type', 'target', 'anchor', 'newTab', 'rel']);
+// A link's rel is a list: an object whose rel is anything else is no link (a property of the author's own).
+const isSiteLink = (v: unknown): boolean => isRecord(v) && SITE_LINKS.has(v.type as string) && typeof v.target === 'string' && (v.rel === undefined || Array.isArray(v.rel)) && Object.keys(v).every((k) => LINK_KEYS.has(k));
 
 /**
  * Links to this site's own pages, collection entries and documents, which another project does not have. `drop` takes

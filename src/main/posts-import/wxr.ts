@@ -145,7 +145,7 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
     } catch {
       // The site's root, then.
     }
-    const link = (href: string, newTab: boolean): LinkValue | null => {
+    const link = (href: string, newTab: boolean, rel: string[] = []): LinkValue | null => {
       const t = href.trim();
       if (!t || /^(mailto|tel):/i.test(t) || t.startsWith('#')) return linkFromTarget(t, pages, newTab);
       let url: URL;
@@ -155,7 +155,8 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
         return null;
       }
       const onSite = url.protocol === 'relative:' || (!!siteOrigin && url.origin === siteOrigin);
-      if (!onSite) return /^https?:$/.test(url.protocol) ? linkFromTarget(url.href, pages, newTab) : null;
+      // What the post said about another site (a sponsored link) stays with it; a link to this site says nothing.
+      if (!onSite) return /^https?:$/.test(url.protocol) ? linkFromTarget(url.href, pages, newTab, rel) : null;
       const tab = newTab ? { newTab: true } : {};
       // A post by its ID when the link names one: never the post at the path it happens to be read from.
       const p = url.searchParams.get('p') ?? url.searchParams.get('page_id');
@@ -168,7 +169,7 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
       // Somewhere else on the old site: kept going there while it is still up.
       if (url.protocol === 'relative:') return null;
       oldSite++;
-      return linkFromTarget(url.href, pages, newTab);
+      return linkFromTarget(url.href, pages, newTab, rel);
     };
     const content = childText(item, 'content:encoded');
     // Classic posts are stored without paragraphs; block-editor posts have them.

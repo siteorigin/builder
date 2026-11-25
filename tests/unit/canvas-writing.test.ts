@@ -268,6 +268,15 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
     });
   });
 
+  it('sends back what the page’s links say about their sites when the words beside them change (#582)', async () => {
+    await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify('<p>Read <a href="https://shop.example/" class="so-link" target="_blank" rel="noopener noreferrer sponsored ugc">the shop</a> and <a href="https://cite.example/" class="so-link" rel="nofollow">this</a> today.</p>')}`);
+    await editAt('r', 'today');
+    await page.keyboard.type('tonight');
+    expect(await commit()).toEqual([
+      p('Read ', { text: 'the shop', link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['sponsored', 'ugc'] } }, ' and ', { text: 'this', link: { type: 'url', target: 'https://cite.example/', rel: ['nofollow'] } }, ' tonight.')
+    ]);
+  });
+
   describe('pasting', () => {
     const COPIED = '<meta charset="utf-8"><p>See <b>our studio</b> or <a href="https://example.com/shop" target="_blank">the shop</a>.</p><ul><li>One</li><li>Two</li></ul>';
 
@@ -279,6 +288,24 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
       expect(await commit()).toEqual([
         p('See ', { text: 'our studio', strong: true }, ' or ', { text: 'the shop', link: { type: 'url', target: 'https://example.com/shop', newTab: true } }, '.'),
         { type: 'ul', items: [[{ text: 'One' }], [{ text: 'Two' }]] }
+      ]);
+    });
+
+    it('keeps what each link says about its site, two links to one address apart, and none of a new tab’s tokens (#582)', async () => {
+      const paid = '<a href="https://shop.example/" target="_blank" rel="Sponsored noopener noreferrer"><b>Paid</b></a><a href="https://shop.example/" target="_blank" rel="ugc"><i>review</i></a>';
+      await copy(`<meta charset="utf-8"><p>${paid} and <a href="https://plain.example/" target="_blank" rel="noopener">plain</a> or <a href="https://cite.example/" rel="nofollow">cited</a></p>`, 'Paid review and plain or cited');
+      await editAt('r', 'Fourth');
+      await page.keyboard.press('ControlOrMeta+A');
+      await command('paste');
+      expect(await commit()).toEqual([
+        p(
+          { text: 'Paid', strong: true, link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['sponsored'] } },
+          { text: 'review', em: true, link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['ugc'] } },
+          ' and ',
+          { text: 'plain', link: { type: 'url', target: 'https://plain.example/', newTab: true } },
+          ' or ',
+          { text: 'cited', link: { type: 'url', target: 'https://cite.example/', rel: ['nofollow'] } }
+        )
       ]);
     });
 
