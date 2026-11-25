@@ -13,6 +13,7 @@ import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOf
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
 import { findingHandoff } from '../lib/seoHandoff';
+import { conflictPanes, sameVersions, savedCopyLabel, type ConflictVersions } from '../lib/conflict-versions';
 import { AiHandoffButton } from '../components/AiHandoff';
 import { Modal, Spinner, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
@@ -1059,8 +1060,9 @@ function VersionText({ label, version }: { label: string; version: FileContent |
 }
 
 /**
- * A file in conflict: what it is and what happened, the two versions to look at, then each choice beside what it
- * does. Both choices weigh the same: whichever version is not used is kept under Saved copies.
+ * A file in conflict: what it is and what happened, the versions to look at, then each choice beside what it does.
+ * Both choices weigh the same: whichever version is not used is kept under Saved copies. A conflict an AI request's
+ * rollback left also shows what the request tried to save, for inspection only; it is kept under Saved copies too.
  */
 function ConflictRow({
   conflict: c,
@@ -1084,7 +1086,7 @@ function ConflictRow({
 }) {
   // An older snapshot without a kind: generated conflicts were the ones whose reason says so.
   const kind = c.kind ?? (c.reason.startsWith('Generated') ? 'generated' : 'canonical');
-  const [versions, setVersions] = useState<{ builder?: FileContent; disk?: FileContent } | 'loading' | null>(null);
+  const [versions, setVersions] = useState<ConflictVersions | 'loading' | null>(null);
   // Only the latest request's reply is shown; hiding the versions drops one still on its way.
   const asked = useRef(0);
   const subject = conflictSubject(state, c.path);
@@ -1096,13 +1098,13 @@ function ConflictRow({
     const ask = ++asked.current;
     setRecheck(false);
     setVersions('loading');
-    const r = await api.project.compareConflict(c.path).catch((e: Error) => ({ ok: false as const, message: e.message, builder: undefined, disk: undefined }));
+    const r = await api.project.compareConflict(c.path).catch((e: Error) => ({ ok: false as const, message: e.message, builder: undefined, disk: undefined, attempted: undefined }));
     if (ask !== asked.current) return;
     if (!r.ok) {
       setVersions(null);
-      return toast(r.message ?? 'The two versions could not be read.', 'error');
+      return toast(r.message ?? 'The versions could not be read.', 'error');
     }
-    setVersions({ builder: r.builder, disk: r.disk });
+    setVersions(shownVersions(r));
   };
   const compare = () => {
     if (!versions) return void load();
@@ -1127,8 +1129,8 @@ function ConflictRow({
         setRecheck(true);
         return false;
       }
-      if (JSON.stringify(r.builder) !== JSON.stringify(shown.builder) || JSON.stringify(r.disk) !== JSON.stringify(shown.disk)) {
-        setVersions({ builder: r.builder, disk: r.disk });
+      if (!sameVersions(shown, shownVersions(r))) {
+        setVersions(shownVersions(r));
         toast('The file changed since you compared the versions. Look again, then choose.', 'info');
         return false;
       }
@@ -1137,7 +1139,6 @@ function ConflictRow({
     };
     onResolve(choice, check);
   };
-  const ours = kind === 'generated' ? 'SiteOrigin Builder’s version, made from your pages' : 'SiteOrigin Builder’s version';
   const restoreDoes = kind === 'generated' ? (c.builderMissing ? 'Removes the file, which your pages no longer make. Your version is kept as a copy.' : 'Makes the file again from your pages. To keep a change to it, make the change in the page or in a code component.') : c.builderMissing ? 'Removes the file, which SiteOrigin Builder’s version doesn’t have.' : 'Puts back the version you were editing.';
   return (
     <HealthRow
@@ -1163,13 +1164,14 @@ function ConflictRow({
             <Spinner />
           ) : versions ? (
             <div className="versions">
-              <VersionText label={ours} version={versions.builder} />
-              <VersionText label="The file on disk, edited outside SiteOrigin Builder" version={versions.disk} />
+              {conflictPanes(kind, versions).map((p) => (
+                <VersionText key={p.key} label={p.label} version={p.version} />
+              ))}
             </div>
           ) : null}
           {recheck && (
             <p className="health-hint health-recheck" role="status">
-              The two versions couldn’t be read again to check they haven’t changed.{' '}
+              The versions couldn’t be read again to check they haven’t changed.{' '}
               <button
                 className="btn btn-sm"
                 onClick={() => {
@@ -1211,6 +1213,11 @@ function ConflictRow({
   );
 }
 
+/** The versions a compare answer holds, with the attempted one only when the answer has it. */
+function shownVersions(r: ConflictVersions): ConflictVersions {
+  return { builder: r.builder, disk: r.disk, ...(r.attempted !== undefined ? { attempted: r.attempted } : {}) };
+}
+
 /** The versions not used when conflicts were settled: still there to read, find in the folder, or take off the list. */
 function SavedCopies({ copies, state, dir, readOnly }: { copies: SavedCopy[]; state: ProjectState; dir: string; readOnly: boolean }) {
   return (
@@ -1225,7 +1232,7 @@ function SavedCopies({ copies, state, dir, readOnly }: { copies: SavedCopy[]; st
 function SavedCopyRow({ copy: c, state, dir, readOnly }: { copy: SavedCopy; state: ProjectState; dir: string; readOnly: boolean }) {
   const [content, setContent] = useState<FileContent | 'loading' | null>(null);
   const asked = useRef(0);
-  const which = c.side === 'external' ? 'The file as edited outside SiteOrigin Builder' : 'SiteOrigin Builder’s version';
+  const which = savedCopyLabel(c.side);
   const when = new Date(c.savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
   const view = async () => {
     const ask = ++asked.current;

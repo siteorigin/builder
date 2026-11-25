@@ -1007,13 +1007,15 @@ export class ProjectSession extends EventEmitter {
       if (typeof c?.path !== 'string' || !isCanonicalPath(c.path)) continue;
       const builder = c.builder === null ? null : await this.getBlob(String(c.builder)).catch(() => undefined);
       if (builder === undefined) continue;
-      // Already settled outside the app (the file was put back): nothing to choose.
-      if (settledOnDisk(c.path, await this.diskContent(c.path), builder)) {
+      const run = c.aiRun === true ? { attempted: c.attempted === null ? null : typeof c.attempted === 'string' ? await this.getBlob(c.attempted).catch(() => undefined) : undefined } : undefined;
+      this.holdConflict(c.path, builder, String(c.reason ?? 'Changed outside SiteOrigin Builder.'), run);
+      // Already settled outside the app (the file was put back): nothing to choose. What an AI request attempted is
+      // kept first, as when it is settled in Project health; held until it is.
+      if (settledOnDisk(c.path, await this.diskContent(c.path), builder) && (await this.saveAttempt(c.path).then(() => true, () => false))) {
+        this.releaseConflict(c.path);
         settled = true;
         continue;
       }
-      const run = c.aiRun === true ? { attempted: c.attempted === null ? null : typeof c.attempted === 'string' ? await this.getBlob(c.attempted).catch(() => undefined) : undefined } : undefined;
-      this.holdConflict(c.path, builder, String(c.reason ?? 'Changed outside SiteOrigin Builder.'), run);
       this.loadedHolds.add(c.path);
     }
     // Forgotten on disk too, or a later change to that file would bring the old choice back.
@@ -1046,7 +1048,7 @@ export class ProjectSession extends EventEmitter {
         const disk = await readFileAt(abs);
         if (disk === 'failed' || disk === 'changed') return { ok: false, message: `${path} could not be read, so it was not replaced. Check that it is a file you can open, then try again.` };
         if (disk !== 'missing') await this.saveCopy(path, 'canonical', 'external', disk.bytes);
-        await this.saveAttempt(conflict);
+        await this.saveAttempt(path);
         // Saved again while the copy was kept: that save is not replaced unkept either.
         const unchanged = async () => {
           // A file that was missing must still be missing, not merely one that cannot be looked at now.
@@ -1080,7 +1082,7 @@ export class ProjectSession extends EventEmitter {
         const pin = themePinProblem(next);
         if (pin) return { ok: false, message: `The external version of ${path} was not kept: ${pin}` };
         if (builder !== null) await this.saveCopy(path, 'canonical', 'builder', builder);
-        await this.saveAttempt(conflict);
+        await this.saveAttempt(path);
         const nextDocs = stateToDocs(next);
         changed = await this.diffDocs(this.docs, nextDocs);
         this.state = next;
@@ -1156,10 +1158,13 @@ export class ProjectSession extends EventEmitter {
     });
   }
 
-  /** List the version an AI request tried to save under Saved copies, as its conflict is settled either way. */
-  private async saveAttempt(conflict: Conflict) {
-    const attempted = this.attempts.get(conflict.path);
-    if (conflict.aiRun && typeof attempted === 'string') await this.saveCopy(conflict.path, 'canonical', 'attempted', attempted);
+  /**
+   * List the version an AI request tried to save under Saved copies, as its conflict is settled, however it is: it is
+   * never offered as a choice, so this copy is the only place it stays. A removal attempted has no file to keep.
+   */
+  private async saveAttempt(path: string) {
+    const attempted = this.attempts.get(path);
+    if (typeof attempted === 'string') await this.saveCopy(path, 'canonical', 'attempted', attempted);
   }
 
   /**
@@ -3915,6 +3920,8 @@ export class ProjectSession extends EventEmitter {
       let settled = false;
       for (const [p, builder] of [...this.pending]) {
         if (!settledOnDisk(p, await this.diskContent(p), builder)) continue;
+        // What an AI request attempted is kept first, as when it is settled in Project health; held until it is.
+        if (!(await this.saveAttempt(p).then(() => true, () => false))) continue;
         this.releaseConflict(p);
         settled = true;
       }
