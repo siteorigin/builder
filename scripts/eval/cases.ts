@@ -61,7 +61,8 @@ interface Piece {
 }
 interface Shown {
   pieces: Piece[];
-  links: Array<{ target: string; label: string }>;
+  /** Where each link goes, and the words that can be its label: its label field's, or in a card any of the card's. */
+  links: Array<{ target: string; labels: string[] }>;
 }
 const linkTarget = (l: Partial<LinkValue> | undefined) => (l?.target ? (l.type === 'page' ? `page:${l.target}` : l.target) : '');
 /** A link field's label field, by the catalogue's naming: primaryLink → primaryLabel, link → linkLabel. */
@@ -92,7 +93,10 @@ const shownOn = (s: ProjectState, p: PageDoc | undefined): Shown[] => {
       if (c.kind === 'link') {
         const target = linkTarget(c.value as Partial<LinkValue> | undefined);
         const field = c.source?.kind === 'prop' ? labelOf(c.source.field ?? c.source.prop) : 'label';
-        if (target) shown.links.push({ target, label: labels.get(keyOf(c, field)) ?? '' });
+        const label = labels.get(keyOf(c, field));
+        // A card's link may show another of its fields as its words (a contact row's value, say).
+        const card = item ? content.filter((o) => o.kind === 'text' && typeof o.value === 'string' && o.source?.kind === 'prop' && `${o.nodeId}|${o.source.itemId}` === item).map((o) => plain(o.value as string)) : [];
+        if (target) shown.links.push({ target, labels: label ? [label] : card });
         continue;
       }
       if (Array.isArray(c.value)) {
@@ -112,7 +116,7 @@ const shownOn = (s: ProjectState, p: PageDoc | undefined): Shown[] => {
               } else if (target) runs.push({ target, text: span.text, gap: '' });
               else if (last && last.gap !== null) last.gap = /^\s*$/.test(span.text) ? last.gap + span.text : null;
             }
-            for (const r of runs) shown.links.push({ target: r.target, label: plain(r.text) });
+            for (const r of runs) shown.links.push({ target: r.target, labels: [plain(r.text)] });
           }
         shown.pieces.push(...richTextToPlain(blocks).split(/\n+/).map((w) => ({ text: plain(w), item })).filter((x) => x.text));
       } else if (typeof c.value === 'string' && plain(c.value)) shown.pieces.push({ text: plain(c.value), item });
@@ -144,12 +148,12 @@ interface Block {
   link?: [string, string];
 }
 const blockMet = (x: Shown, b: Block) =>
-  b.texts.every((t) => x.pieces.some((p) => p.text === plain(t))) && (b.pairs ?? []).every((m) => together(x, m)) && (!b.link || x.links.some((l) => l.label === plain(b.link![0]) && l.target === b.link![1]));
+  b.texts.every((t) => x.pieces.some((p) => p.text === plain(t))) && (b.pairs ?? []).every((m) => together(x, m)) && (!b.link || x.links.some((l) => l.labels.includes(plain(b.link![0])) && l.target === b.link![1]));
 /** What a block is missing on the page, for the report. */
 const missing = (shown: Shown[], b: Block) =>
   b.texts.find((t) => !shown.some((x) => x.pieces.some((p) => p.text === plain(t)))) ??
   b.pairs?.find((m) => !shown.some((x) => together(x, m)))?.join(' + ') ??
-  (b.link && !shown.some((x) => x.links.some((l) => l.label === plain(b.link![0]) && l.target === b.link![1])) ? `${b.link[0]} → ${b.link[1]}` : 'a block split across sections');
+  (b.link && !shown.some((x) => x.links.some((l) => l.labels.includes(plain(b.link![0])) && l.target === b.link![1])) ? `${b.link[0]} → ${b.link[1]}` : 'a block split across sections');
 /**
  * Each block of the draft is shown whole, in a section of its own, in the draft's order; nothing else is shown (no
  * sample text left behind, no filler, nothing twice, no other link); and no placeholder section is left.
@@ -166,11 +170,14 @@ const pastedChecks = (before: ProjectState, s: ProjectState, route: string, body
   const all = shown.flatMap((x) => x.pieces.map((q) => q.text));
   // Each piece is shown at most as often as the draft has it, so a figure repeated as an eyebrow is extra.
   const inDraft = (t: string) => lines.filter((l) => wordsIn(l, t)).length || joined.filter((l) => wordsIn(l, t)).length;
-  const extra = [...new Set(all.filter((t) => all.filter((x) => x === t).length > inDraft(t)))];
+  // Two lines shown as one piece use those lines up: shown again on their own, they are shown twice.
+  const reused = (t: string) => !lines.some((l) => wordsIn(l, t)) && joined.some((j, i) => wordsIn(j, t) && (all.includes(lines[i]) || all.includes(lines[i + 1])));
+  const extra = [...new Set(all.filter((t) => all.filter((x) => x === t).length > inDraft(t) || reused(t)))];
   // Each link is one of the draft's, with its label: no other destination, and no second way to the same one.
   const wanted = blocks.flatMap((b) => (b.link ? [{ label: plain(b.link[0]), target: b.link[1] }] : []));
   const links = shown.flatMap((x) => x.links);
-  const strayLinks = links.filter((l, i) => !wanted.some((w) => w.target === l.target && w.label === l.label) || links.findIndex((o) => o.target === l.target && o.label === l.label) !== i).map((l) => `${l.label || '(no label)'} → ${l.target}`);
+  const meant = (l: Shown['links'][number]) => wanted.findIndex((w) => w.target === l.target && l.labels.includes(w.label));
+  const strayLinks = links.filter((l, i) => meant(l) < 0 || links.findIndex((o) => meant(o) === meant(l)) !== i).map((l) => `${l.labels[0] ?? '(no label)'} → ${l.target}`);
   // A section still exactly as it was, or one showing nothing at all, is a placeholder left behind.
   const left = (p?.rootIds ?? []).filter((id, i) => (was?.rootIds.includes(id) && same(was.nodes[id], p!.nodes[id])) || (!shown[i].pieces.length && !shown[i].links.length));
   return [

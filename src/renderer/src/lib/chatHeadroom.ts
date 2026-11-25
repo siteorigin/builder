@@ -1,4 +1,6 @@
 import { turnQuestions, type ChatMessage } from '@shared/api';
+import type { ElementRef, ProjectState } from '@shared/types';
+import { getTree } from '@engine/tree';
 import { DEFAULT_LOCAL_CONTEXT_WINDOW, localContextWindow, type LocalToolMode } from '@shared/local';
 import { estimateTokens, FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
 import { MAX_REPLAYED_ANSWER, replayedHistory } from '@shared/turn-model';
@@ -55,6 +57,26 @@ export function messageRoom(windowTokens: number, toolMode: LocalToolMode, pageT
   const half = Math.floor(windowTokens / 2);
   const overhead = !pageTools ? SMALL_OVERHEAD_TOKENS : toolMode !== 'native' ? LOCAL_OVERHEAD_TOKENS.constrained : windowTokens < FOCUSED_WINDOW_TOKENS ? LOCAL_OVERHEAD_TOKENS.focused : 0;
   return Math.max(0, Math.min(half, windowTokens - overhead - REPLY_TOKENS));
+}
+
+/**
+ * Whether the small selection tools cover a selected element, so its request carries them rather than the general
+ * tools: as the assistant decides it (selectionTools in src/agent/selection.ts, which tests keep this in step with). A
+ * placed component with properties, or a text, image, button or icon; not a layout element, whose content lives in
+ * its children, a part nested deeper than one placement, or a component's own design.
+ */
+export function smallToolsCover(state: ProjectState, ref: ElementRef): boolean {
+  if (ref.instancePath.length > 1 || ref.owner.kind === 'component') return false;
+  let node;
+  try {
+    const tree = getTree(state, ref.owner);
+    const id = ref.instancePath[0] ?? ref.nodeId;
+    node = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
+  } catch {
+    return false;
+  }
+  if (node?.kind === 'instance') return Object.keys(state.components[node.definitionId]?.properties ?? {}).length > 0;
+  return !!node && ['text', 'image', 'link', 'icon'].includes(node.kind);
 }
 
 /**

@@ -5,7 +5,10 @@ import type { CanonicalModelRequest, ModelCapabilities } from '@agent/types';
 import { runCase, ScriptedAdapter, type EvalCase } from '../../scripts/eval/harness';
 import type { ChatMessage } from '@shared/api';
 import type { ProjectState } from '@shared/types';
-import { headroomWarning, LOCAL_OVERHEAD_TOKENS, messageRoom, replayedWords, SMALL_OVERHEAD_TOKENS } from '../../src/renderer/src/lib/chatHeadroom';
+import { createStarterState } from '@catalogue/starters';
+import { selectionTarget, selectionTools } from '@agent/selection';
+import type { ElementRef, InstanceNode } from '@shared/types';
+import { headroomWarning, LOCAL_OVERHEAD_TOKENS, messageRoom, replayedWords, SMALL_OVERHEAD_TOKENS, smallToolsCover } from '../../src/renderer/src/lib/chatHeadroom';
 
 /**
  * What the first request of a page edit (or, with `selected`, an edit of Home's first section) really takes besides
@@ -84,6 +87,32 @@ describe('composer headroom for a local model', () => {
     expect(warn(a(1500), { contextWindow: 12_288, toolMode: 'native' })?.kind).toBe('draft');
     // A window too small for any request says so, whatever the request is about.
     expect(warn('Hello', { contextWindow: 1024, pageTools: false })?.kind).toBe('setup');
+  });
+
+  it('tells a selection the small tools cover from one that takes the general tools, as the assistant does', () => {
+    const state = createStarterState('business', 'Studio', false);
+    const home = state.pages[state.site.homePageId];
+    // A hand-built layout element (its content is in its children) and a text, at the top of the page.
+    home.nodes.el_box = { id: 'el_box', kind: 'element', tag: 'div', children: ['tx_hi'] } as never;
+    home.nodes.tx_hi = { id: 'tx_hi', kind: 'text', tag: 'p', text: 'Hi' } as never;
+    home.rootIds.push('el_box');
+    const page = { kind: 'page' as const, id: home.id };
+    const hero = home.rootIds[0];
+    const heroDef = state.components[(home.nodes[hero] as InstanceNode).definitionId];
+    const refs: Array<[string, ElementRef, boolean]> = [
+      ...home.rootIds.filter((r) => r !== 'el_box').map((r): [string, ElementRef, boolean] => [`section ${r}`, { owner: page, instancePath: [], nodeId: r }, true]),
+      ['a part of the hero', { owner: page, instancePath: [hero], nodeId: heroDef.parts.heading.nodeId, partId: 'heading' }, true],
+      ['the shared header', { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: state.site.shell.header.rootIds[0] }, true],
+      ['a text', { owner: page, instancePath: [], nodeId: 'tx_hi' }, true],
+      ['a layout element', { owner: page, instancePath: [], nodeId: 'el_box' }, false],
+      ['a part nested in a placement inside another', { owner: page, instancePath: [hero, 'inner'], nodeId: 'x' }, false],
+      ["a component's own design", { owner: { kind: 'component', id: heroDef.id }, instancePath: [], nodeId: 'root' }, false],
+      ['something no longer there', { owner: page, instancePath: [], nodeId: 'gone' }, false]
+    ];
+    for (const [label, ref, covered] of refs) {
+      expect(smallToolsCover(state, ref), label).toBe(covered);
+      expect(selectionTools(state, selectionTarget(ref)) !== null, label).toBe(covered);
+    }
   });
 
   it('replays what the assistant replays: the last messages, and the questions asked with their answers', () => {

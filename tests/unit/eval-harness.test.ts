@@ -190,6 +190,13 @@ describe('agent benchmark', () => {
     // A faithful layout of another shape passes: each question with its answer as one point of a text section.
     const points = (a: any) => (a.sections[3] = { componentId: 'content.text', props: { heading: 'Before you visit', body: '- Can I bring a lamp? Yes. Bring the shade separately so it travels safely.\n- What does it cost? Assessment is free. We agree the price of parts with you first.' } });
     expect((await runCase(edited(clinic, points), scripted)).result.checks.filter((x) => !x.pass)).toEqual([]);
+    // A question and its answer shown again as one paragraph, beside the questions section that already has them.
+    const again = (a: any) => a.sections.push({ componentId: 'content.text', props: { heading: '', body: 'Can I bring a lamp? Yes. Bring the shade separately so it travels safely.' } });
+    expect(await failing(edited(clinic, again))).toEqual(['only-supplied-copy']);
+    // A card's link shows another of its fields as its words: a contact row whose value is the button's label.
+    const row = (a: any) =>
+      (a.sections[0] = { componentId: 'contact.details', props: { eyebrow: '', heading: 'Give your kettle another winter', lead: 'Bring one broken household appliance to the Saturday repair clinic and fix it with a volunteer.', items: [{ icon: 'clock', label: '', value: 'Reserve a bench', link: 'https://bench.example/book' }], actionLabel: '' } });
+    expect((await runCase(edited(clinic, row), scripted)).result.checks.filter((x) => !x.pass)).toEqual([]);
     // So does the opening as a text section whose button is a link in its words, one of them in bold.
     const bench = { type: 'url', target: 'https://bench.example/book' };
     const inText = (a: any) => (a.sections[0] = { componentId: 'content.text', props: { heading: 'Give your kettle another winter', body: [
