@@ -57,8 +57,8 @@ describe('inspect_layout with refs', () => {
     // Each element by the ref it was asked by, without what explained the finding.
     expect(content.report.targets[0]).toEqual({ ref: { owner: page, nodeId: grid.id }, ...{ visible: true, elements: [measuredBox] } });
     expect(content.report.targets[1].ref).toEqual({ owner: page, nodeId: grid.id, partId: 'card', itemId: item });
-    // Hidden at this width is a result, not an error.
-    expect(content.report.targets[1].visible).toBe(false);
+    // Hidden at this width is a result, not an error, with what was measured.
+    expect(content.report.targets[1]).toMatchObject({ visible: false, elements: [{ box: null, visible: false }] });
     // What belongs to the page as a whole comes along.
     expect(content.report.issues).toEqual([{ kind: 'horizontal-overflow', message: 'The page is 420px wide in a 390px viewport.' }]);
   });
@@ -74,6 +74,9 @@ describe('inspect_layout with refs', () => {
       [{ owner: page, nodeId: grid.id, partId: 'nope' }, /refs\[1\].*part "nope"/],
       [{ owner: page, nodeId: grid.id, partId: 'cardTitle', itemId: 'gone' }, /refs\[1\].*item gone/],
       [{ owner: page, nodeId: grid.id, partId: 'heading', itemId: 'x' }, /refs\[1\].*not repeated/],
+      // An empty item ID would match every item in the preview.
+      [{ owner: page, nodeId: grid.id, partId: 'cardTitle', itemId: '' }, /refs\[1\].*empty itemId/],
+      [{ owner: page, nodeId: 'toString' }, /refs\[1\].*not on this page/],
       [{ owner: { kind: 'component', id: grid.definitionId }, nodeId: 'card' }, /refs\[1\].*not on a page/]
     ];
     for (const [bad, message] of cases) {
@@ -85,8 +88,9 @@ describe('inspect_layout with refs', () => {
       expect(asked).toEqual([]);
     }
     // An empty list would check nothing: it is refused rather than read as a clean page.
-    const { host } = hostFor(s, () => ({ issues: [] }));
-    expect((await executeTool('inspect_layout', JSON.stringify({ pageId: '/', viewport: 'phone', refs: [] }), host, 'c1')).ok).toBe(false);
+    const empty = hostFor(s, () => ({ issues: [], targets: [] }));
+    expect(await executeTool('inspect_layout', JSON.stringify({ pageId: '/', viewport: 'phone', refs: [] }), empty.host, 'c1')).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT' } });
+    expect(empty.asked).toEqual([]);
   });
 
   it('takes the shared header the page shows, and refuses it on a page that hides it', () => {
@@ -94,8 +98,11 @@ describe('inspect_layout with refs', () => {
     const header = s.site.shell.header;
     const ref = { owner: { kind: 'shell' as const, id: 'header' }, nodeId: header.rootIds[0] };
     expect(resolveLayoutTargets(s, s.site.homePageId, [ref])).toEqual({ ok: true, targets: [{ owner: ref.owner, instancePath: [], nodeId: header.rootIds[0] }] });
+    const footer = { owner: { kind: 'shell' as const, id: 'footer' }, nodeId: s.site.shell.footer.rootIds[0] };
+    expect(resolveLayoutTargets(s, s.site.homePageId, [footer])).toMatchObject({ ok: true });
     const hidden = applyOperations(s, [{ type: 'page.update', pageId: s.site.homePageId, showHeader: false }]).state;
     expect(resolveLayoutTargets(hidden, s.site.homePageId, [ref])).toMatchObject({ ok: false, message: expect.stringMatching(/header this page does not show/) });
+    expect(resolveLayoutTargets(hidden, s.site.homePageId, [footer])).toMatchObject({ ok: true });
   });
 
   it('measures the whole page as before without refs, and fails a narrowed check whose elements were not measured', async () => {
@@ -108,8 +115,13 @@ describe('inspect_layout with refs', () => {
     expect((r.content as { scope?: string }).scope).toBeUndefined();
     // A preview that answered without the elements (an older frame) is a check that did not run.
     const blind = hostFor(s, () => ({ issues: [] }));
-    const n = await executeTool('inspect_layout', JSON.stringify({ pageId: '/', viewport: 'desktop', refs: [{ owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id }] }), blind.host, 'c1');
-    expect(n).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED' } });
+    const one = JSON.stringify({ pageId: '/', viewport: 'desktop', refs: [{ owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id }] });
+    expect(await executeTool('inspect_layout', one, blind.host, 'c1')).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED' } });
+    // Nor one that answered for each element without measuring it.
+    for (const targets of [[null], [{ visible: true }], [], [{ visible: true, elements: [] }, { visible: true, elements: [] }]]) {
+      const odd = hostFor(s, () => ({ issues: [], targets }));
+      expect(await executeTool('inspect_layout', one, odd.host, 'c1'), JSON.stringify(targets)).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED' } });
+    }
   });
 
   it('turns every ref a finding names back into the element the preview measured', () => {
@@ -130,6 +142,25 @@ describe('inspect_layout with refs', () => {
       expect({ ctx, node, items }, JSON.stringify(d)).toEqual(d);
     }
   });
+
+  it('finds a part a code component marks by its marker inside the placement, and the placement by its root part', () => {
+    const page = { kind: 'page' as const, id: '' };
+    const made = applyOperations(fresh(), [{ type: 'component.createCode', name: 'Note', source: '<p data-so-part="total">x</p>\n', properties: {} }]);
+    const definitionId = made.results[0].definitionId as string;
+    page.id = made.state.site.homePageId;
+    const placed = applyOperations(made.state, [{ type: 'node.insert', owner: page, definitionId }]);
+    const s = placed.state;
+    const code = placed.results[0].nodeId as string;
+    // Declared as saving the code declares it.
+    s.components[definitionId].parts = { ...s.components[definitionId].parts, total: { nodeId: 'total', label: 'Total' } };
+    const found = resolveLayoutTargets(s, page.id, [{ owner: page, nodeId: code, partId: 'total' }, { owner: page, nodeId: code, partId: 'root' }, { owner: page, nodeId: code }]);
+    if (!found.ok) throw new Error(found.message);
+    expect(found.targets.map((t) => descOf(s, t))).toEqual([
+      { ctx: ctxOf(s), node: code, items: '', part: 'total' },
+      { ctx: ctxOf(s), node: code, items: '' },
+      { ctx: ctxOf(s), node: code, items: '' }
+    ]);
+  });
 });
 
 describe('the result card after a check of chosen elements', () => {
@@ -145,9 +176,10 @@ describe('the result card after a check of chosen elements', () => {
     log.record(home, 'phone', true, { viewport: 'phone', scope: 'elements', report: { issues: [] } }, true);
     log.record(home, 'phone', false, { error: 'INVALID_ARGUMENT', viewport: 'phone' }, true);
     expect(log.checks(state)).toEqual(before.map((c) => ({ status: 'unverified', text: `${c.text.replace(/\.$/, '')}, before later changes.` })));
-    // A page only ever checked element by element has no row.
+    // A page only ever checked element by element has no row, whether the checks passed or failed.
     const other = new InspectionLog();
     other.record(home, 'desktop', true, { viewport: 'desktop', scope: 'elements', report: { issues: [] } }, true);
+    other.record(home, 'tablet', false, { error: 'INVALID_ARGUMENT', viewport: 'tablet' }, true);
     expect(other.checks(state)).toEqual([]);
     // Measured whole again, the page's latest result stands.
     log.record(home, 'phone', true, { viewport: 'phone', report: { issues: [] } });
@@ -157,6 +189,7 @@ describe('the result card after a check of chosen elements', () => {
   it('tells a narrowed call by its arguments, whether or not it ran', () => {
     expect(narrowedInspection(JSON.stringify({ pageId: '/', viewport: 'phone', refs: [{ owner: { kind: 'page', id: 'p' }, nodeId: 'n' }] }))).toBe(true);
     expect(narrowedInspection(JSON.stringify({ pageId: '/', viewport: 'phone', refs: [] }))).toBe(true);
+    expect(narrowedInspection(JSON.stringify({ pageId: '/', viewport: 'phone', refs: null }))).toBe(true);
     expect(narrowedInspection(JSON.stringify({ pageId: '/', viewport: 'phone' }))).toBe(false);
     expect(narrowedInspection('{not json')).toBe(false);
   });

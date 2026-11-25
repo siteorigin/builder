@@ -1831,15 +1831,17 @@ describe('context budget', () => {
         ...read('n1', { pageId: 'pg_a', viewport: 'phone', refs: [hero, card] }, layout('pg_a', 'phone'), 'inspect_layout'),
         // The same elements in another order (and named twice) are the same check.
         ...read('n2', { pageId: '/', viewport: 'phone', refs: [card, hero, hero] }, layout('pg_a', 'phone'), 'inspect_layout'),
-        // Other elements are another check.
+        // Other elements are another check, another card of the same list among them.
         ...read('n3', { pageId: 'pg_a', viewport: 'phone', refs: [hero] }, layout('pg_a', 'phone'), 'inspect_layout'),
+        ...read('n4', { pageId: 'pg_a', viewport: 'phone', refs: [{ ...card, itemId: 'i2' }] }, layout('pg_a', 'phone'), 'inspect_layout'),
+        ...read('n5', { pageId: 'pg_a', viewport: 'phone', refs: [{ ...card, itemId: 'i3' }] }, layout('pg_a', 'phone'), 'inspect_layout'),
         ...filler('f1'),
         ...filler('f2')
       ];
       const kept = structuredClone(narrowed);
       applyContextBudget(narrowed, optsWith(8000));
       expect(at(narrowed, 'n1')).toBe('[Superseded inspect_layout pg_a phone, 2 elements only. Measure it again if you need it.]');
-      for (const id of ['w1', 'n2', 'n3']) expect(at(narrowed, id), id).toBe(at(kept, id));
+      for (const id of ['w1', 'n2', 'n3', 'n4']) expect(at(narrowed, id), id).toBe(at(kept, id));
       // A whole-page check replaces every earlier check of that page at that width, narrowed or not.
       const whole: CanonicalItem[] = [
         ...read('w1', { pageId: 'pg_a', viewport: 'phone' }, layout('pg_a', 'phone'), 'inspect_layout'),

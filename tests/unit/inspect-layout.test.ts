@@ -49,7 +49,7 @@ body{margin:0;font:16px/1.5 sans-serif;color:#111;background:#fff}
 </style></head><body><main ${so('main')}><h1 ${so('title')}>Readable page</h1>${body}</main><script type="module" src="/bridge.js"></script></body></html>`;
 
 /** Inspect `body` (inside a page with one h1) at `width`, twice when asked, and count what the inspection left behind. */
-async function inspect(body: string, width = 390, targets?: Array<{ ctx: string; node: string; items: string }>): Promise<Report> {
+async function inspect(body: string, width = 390, targets?: Array<{ ctx: string; node: string; items: string; part?: string }>): Promise<Report> {
   const page = await browser.newPage();
   try {
     await page.route(`${ORIGIN}/**`, (route) => {
@@ -421,6 +421,7 @@ describe('layout inspection of chosen elements (#743)', () => {
     expect(hero.elements[0].box).toMatchObject({ x: 0, width: 390 });
     expect(hero.elements[0].box!.height).toBeGreaterThan(40);
     expect(hero.elements[0].scrollWidth).toBe(390);
+    expect(hero.elements[0].scrollHeight).toBe(hero.elements[0].box!.height);
     // One card of the list, by its item: the wide one, whose box runs past the screen.
     expect(card.elements).toHaveLength(1);
     expect(card.elements[0].box!.width).toBe(600);
@@ -433,6 +434,9 @@ describe('layout inspection of chosen elements (#743)', () => {
     expect(nodes('small-tap-target')).toEqual(['heroLink']);
     expect(nodes('element-overflow')).toEqual(['card']);
     expect(of(r, 'element-overflow')[0].desc?.items).toBe('b');
+    // Each finding says which of the elements asked for it is in, by its place in the request.
+    expect(of(r, 'low-contrast')[0].targets).toEqual([0]);
+    expect(of(r, 'element-overflow')[0].targets).toEqual([1]);
     expect(of(r, 'missing-alt')).toEqual([]);
     expect(r.images?.total).toBe(0);
     // Counted over the elements asked for alone: the caption, the link and card b.
@@ -453,5 +457,25 @@ describe('layout inspection of chosen elements (#743)', () => {
     expect(whole.targets).toBeUndefined();
     expect(of(whole, 'low-contrast').map((i) => i.desc?.node).sort()).toEqual(['caption', 'faint']);
     expect(of(whole, 'missing-alt')).toHaveLength(1);
+    expect(of(whole, 'low-contrast').every((i) => i.targets === undefined)).toBe(true);
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('says an element laid out but not shown is hidden, and finds what a box around it or beside it does to it', async () => {
+    const body = `
+      <section ${so('ghost')} style="visibility:hidden;height:40px">Laid out, not shown</section>
+      <div ${so('clip')} style="height:48px;overflow:hidden"><p ${so('story')} style="margin:0">One line of the story, then another line of it, and a third and a fourth that the box cannot show at this width, however the font happens to set the words on the line.</p></div>
+      <div ${so('grid')} style="display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:10px">
+        <div data-so-ctx="page:p" data-so-node="code" data-so-code style="display:contents"><div data-so-part="wide" style="width:300px;background:#eee">Wide part</div></div>
+        <div ${so('next')} style="background:#eee">Next card</div>
+      </div>`;
+    const r = await inspect(body, 390, [at('ghost'), at('story'), { ...at('code'), part: 'wide' }]);
+    const [ghost, story, wide] = r.targets!;
+    expect(ghost.visible).toBe(false);
+    expect(ghost.elements[0].box).toMatchObject({ height: 40 });
+    expect(story.visible).toBe(true);
+    expect(wide.elements).toHaveLength(1);
+    // The paragraph asked for is cut off by the box around it, and the code component's part overlaps its neighbour.
+    expect(of(r, 'clipped-text')).toEqual([expect.objectContaining({ desc: { ctx: 'page:p', node: 'clip', items: '' }, targets: [1] })]);
+    expect(of(r, 'overlap')).toEqual([expect.objectContaining({ targets: [2], with: expect.objectContaining({ desc: { ctx: 'page:p', node: 'next', items: '' } }) })]);
   }, 30000);
 });

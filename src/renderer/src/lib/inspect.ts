@@ -22,7 +22,9 @@ export async function runInspection(req: InspectRequest) {
   // A page the dev server has not caught up with (a route created moments ago, sections just added, an image
   // just changed) is missing some of its sections or images, or shows an image it no longer uses, and a file the
   // server has not picked up yet fails to load; give it one more chance before reporting.
-  const behind = (r: unknown) => missingSections(state(), req.pageId, r).length || missingImages(state(), req.pageId, r).length || staleImages(state(), req.pageId, r).length;
+  // An element asked for that rendered nowhere may be one the server has not shown yet, rather than one this width hides.
+  const unfound = (r: unknown) => Array.isArray((r as { targets?: unknown } | null)?.targets) && ((r as { targets: Array<{ elements?: unknown[] } | null> }).targets.some((t) => !t?.elements?.length));
+  const behind = (r: unknown) => missingSections(state(), req.pageId, r).length || missingImages(state(), req.pageId, r).length || staleImages(state(), req.pageId, r).length || unfound(r);
   if (behind(report) || failedImages(report)) {
     await new Promise((r) => setTimeout(r, 1500));
     report = await measure(req);

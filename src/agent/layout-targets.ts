@@ -40,8 +40,9 @@ export function layoutScope(targets: unknown): string | undefined {
 /** Whether an inspect_layout call, by its raw arguments, asked for chosen elements: passed or failed, it never checked the page. */
 export function narrowedInspection(rawArgs: string): boolean {
   try {
-    const args = JSON.parse(rawArgs) as { refs?: unknown } | null;
-    return !!args && typeof args === 'object' && args.refs !== undefined && args.refs !== null;
+    const args = JSON.parse(rawArgs) as Record<string, unknown> | null;
+    // Any refs given, even ones the tool refuses (null, an empty list), asked for elements and not the page.
+    return !!args && typeof args === 'object' && Object.hasOwn(args, 'refs');
   } catch {
     return false;
   }
@@ -104,6 +105,8 @@ export function resolveLayoutTargets(state: ProjectState, pageId: string, target
       return fail(`names part "${t.partId}", which ${def.name ? `"${def.name}"` : 'its component'} does not declare.`);
     }
     if (t.itemId !== undefined) {
+      // An empty item ID would name no item to the preview, and so every item.
+      if (!t.itemId) return fail('has an empty itemId.');
       const list = repeatedPartList(def, t.partId);
       if (!list) return fail(`has an itemId, but part "${t.partId}" is not repeated for each item of a list.`);
       if (!placementItems(def, node, list).some((item) => item.id === t.itemId)) return fail(`names item ${t.itemId}, which the "${list}" list no longer has.`);

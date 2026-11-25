@@ -2784,7 +2784,7 @@ async function imageReport(deadline, within = null) {
           summary.failed++;
           if (summary.failedFiles.length < 10) summary.failedFiles.push(path.slice(path.lastIndexOf('/') + 1) || path);
           const d = findingDesc(img);
-          issues.push({ kind: 'broken-image', ...(d ? { desc: d } : {}), message: `Image ${path} failed to load.` });
+          issues.push({ kind: 'broken-image', ...(d ? { desc: d } : {}), ...scopeTag(img, within), message: `Image ${path} failed to load.` });
         } else {
           summary.unverified++;
           issues.push({ kind: 'image-unverified', message: `Image ${path} was still loading when the check ran out of time, so it could not be checked. This is not a problem with the site.` });
@@ -3172,25 +3172,29 @@ function findingDesc(el) {
  * The findings of one kind, one per editor element: the same element repeated in list items is one finding that
  * counts them, and the worst measurement among them is the one shown.
  */
-function findingList(kind, worse) {
+function findingList(kind, worse, within = null) {
   const byKey = new Map();
   return {
     kind,
-    add(el, measured, message, extra) {
+    /** `about`: the element the finding is about when that is not `el` (text a box around it cuts off). */
+    add(el, measured, message, extra, about = el) {
       const desc = findingDesc(el);
-      const key = desc ? `${desc.ctx}\u0000${desc.node}\u0000${desc.inside ? 1 : 0}` : `?${byKey.size}`;
+      // Narrowed, the elements asked for that it is inside are part of what it is: one per element asked for.
+      const targets = scopeTag(about, within);
+      const key = desc ? `${desc.ctx}\u0000${desc.node}\u0000${desc.inside ? 1 : 0}\u0000${targets.targets || ''}` : `?${byKey.size}`;
       const found = byKey.get(key);
       if (found) {
         found.count++;
         if (worse && worse(measured, found.measured)) Object.assign(found, { desc, measured, message, extra, text: textPreview(el) });
         return;
       }
-      byKey.set(key, { desc, count: 1, measured, message, extra, text: textPreview(el) });
+      byKey.set(key, { desc, count: 1, measured, message, extra, text: textPreview(el), targets });
     },
     list() {
       return [...byKey.values()].map((f) => ({
         kind,
         ...(f.desc ? { desc: f.desc } : {}),
+        ...f.targets,
         ...(f.text ? { text: f.text } : {}),
         ...(f.count > 1 ? { count: f.count } : {}),
         ...f.measured,
@@ -3460,11 +3464,11 @@ function readability(vw, deadline, within = null) {
   const count = () => ({ checked: 0, failed: 0, unverified: 0 });
   const checks = { contrast: count(), overlaps: count(), clippedText: count(), tapTargets: count() };
   if (vw >= PHONE_MAX_WIDTH) checks.tapTargets.skipped = `Tap targets are checked below ${PHONE_MAX_WIDTH}px (phone widths).`;
-  const lowContrast = findingList('low-contrast', (a, b) => a.ratio < b.ratio);
-  const unknownContrast = findingList('contrast-unverified');
-  const clipped = findingList('clipped-text');
-  const overlaps = findingList('overlap', (a, b) => a.overlap.width * a.overlap.height > b.overlap.width * b.overlap.height);
-  const small = findingList('small-tap-target', (a, b) => a.size.width * a.size.height < b.size.width * b.size.height);
+  const lowContrast = findingList('low-contrast', (a, b) => a.ratio < b.ratio, within);
+  const unknownContrast = findingList('contrast-unverified', null, within);
+  const clipped = findingList('clipped-text', null, within);
+  const overlaps = findingList('overlap', (a, b) => a.overlap.width * a.overlap.height > b.overlap.width * b.overlap.height, within);
+  const small = findingList('small-tap-target', (a, b) => a.size.width * a.size.height < b.size.width * b.size.height, within);
   /** Runs one candidate of `check`; false once time is up (the check is then incomplete). */
   const each = (check, fn) => {
     if (Date.now() > deadline) {
@@ -3521,8 +3525,11 @@ function readability(vw, deadline, within = null) {
     // hidden below or above it, or a line running out of its side. Text wholly to one side is off-screen on purpose
     // (the next slide of a carousel); text shortened on purpose (an ellipsis, a line clamp) and the visually hidden
     // pattern are left alone.
+    // Narrowed, a box around an element asked for can cut its text off too: only the text inside the elements counts there.
+    const around = within ? (el) => within.roots.some((r) => r !== el && Node.prototype.contains.call(el, r)) : null;
     for (const el of document.querySelectorAll('body *')) {
-      if (within && !within(el)) continue;
+      const inside = !within || within(el);
+      if (!inside && !around(el)) continue;
       const going = each(checks.clippedText, () => {
         if (el.scrollHeight <= el.clientHeight + 2 && el.scrollWidth <= el.clientWidth + 2) return;
         const s = getComputedStyle(el);
@@ -3542,7 +3549,7 @@ function readability(vw, deadline, within = null) {
             break;
           }
           const holder = parentOf(t);
-          if (!t.textContent.trim() || !holder || !drawn(holder)) continue;
+          if (!t.textContent.trim() || !holder || (!inside && !within(holder)) || !drawn(holder)) continue;
           const hs = holder === el ? s : getComputedStyle(holder);
           // An ellipsis shortens a line on purpose; a line clamp, the lines after it.
           const ellipsis = hs.textOverflow === 'ellipsis' || s.textOverflow === 'ellipsis';
@@ -3572,7 +3579,8 @@ function readability(vw, deadline, within = null) {
           el,
           { axis: cut.axis, box: { width: el.clientWidth, height: el.clientHeight }, content: { width: el.scrollWidth, height: el.scrollHeight } },
           vertical ? `Text is cut off: the box is ${el.clientHeight}px tall, hides what does not fit, and its content needs ${el.scrollHeight}px.` : `Text is cut off: the box is ${el.clientWidth}px wide, hides what does not fit, and its content needs ${el.scrollWidth}px.`,
-          { cutText: textPreview(cut.holder) }
+          { cutText: textPreview(cut.holder) },
+          cut.holder
         );
       });
       if (!going) break;
@@ -3580,7 +3588,8 @@ function readability(vw, deadline, within = null) {
     // Overlapping boxes: block-level siblings in the normal flow whose boxes cross by more than rounding. (Inline
     // siblings flow as text: their outer rectangles cross without their lines doing so.)
     const parents = new Set();
-    for (const el of document.querySelectorAll('[data-so-node]')) {
+    // Narrowed, the elements asked for are seeded too: a code component's marked part carries no editor address of its own.
+    for (const el of within ? [...within.roots, ...document.querySelectorAll('[data-so-node]')] : document.querySelectorAll('[data-so-node]')) {
       if (within && !within(el)) continue;
       const going = each(checks.overlaps, () => {
         let p = parentOf(el);
@@ -4241,8 +4250,7 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
   // finds on the page, and only findings inside those. What belongs to the page as a whole (its width, its h1s, its
   // runtime errors) is still reported.
   const found = Array.isArray(opts.targets) ? opts.targets.map((d) => (d && typeof d === 'object' ? safeFindAll(d) : [])) : null;
-  const roots = found ? found.flat() : null;
-  const within = roots ? (el) => roots.some((r) => r === el || Node.prototype.contains.call(r, el)) : null;
+  const within = found ? scopeOf(found) : null;
   // Images first: one that arrives while they are requested again can still change the layout measured below.
   const images = await imageReport(deadline, within);
   const vw = document.documentElement.clientWidth;
@@ -4258,17 +4266,17 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
       if (r.x + r.width > vw + 2 || r.x < -2) {
         const d = descOf(el);
         if (!issues.some((i) => i.desc && i.desc.ctx === d.ctx && i.desc.node === d.node))
-          issues.push({ kind: 'element-overflow', desc: d, text: textPreview(el), message: `Extends beyond the viewport (${Math.round(r.x)}–${Math.round(r.x + r.width)}px of ${vw}px).` });
+          issues.push({ kind: 'element-overflow', desc: d, ...scopeTag(el, within), text: textPreview(el), message: `Extends beyond the viewport (${Math.round(r.x)}–${Math.round(r.x + r.width)}px of ${vw}px).` });
       }
       if (el.scrollWidth > el.clientWidth + 2 && getComputedStyle(el).overflowX === 'visible' && el.clientWidth > 0 && el.children.length === 0)
-        issues.push({ kind: 'text-overflow', desc: descOf(el), text: textPreview(el), message: 'Text is wider than its box.' });
+        issues.push({ kind: 'text-overflow', desc: descOf(el), ...scopeTag(el, within), text: textPreview(el), message: 'Text is wider than its box.' });
     } catch {
       continue;
     }
   }
   const at = (el) => {
     const d = findingDesc(el);
-    return d ? { desc: d } : {};
+    return { ...(d ? { desc: d } : {}), ...scopeTag(el, within) };
   };
   for (const img of document.querySelectorAll('img')) if (!img.hasAttribute('alt') && (!within || within(img))) issues.push({ kind: 'missing-alt', ...at(img), message: `Image ${imagePath(img.getAttribute('src') || '')} has no alt attribute.` });
   // After the layout findings; the image counts in `images` are never capped.
@@ -4326,6 +4334,49 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
   return report;
 }
 
+/**
+ * Whether a node is one of the elements found or inside one, answered once per node: a page's every element is asked
+ * several times, and walking up from it stops at the first node already answered. `roots`: every element found.
+ */
+function scopeOf(found) {
+  const roots = found.flat();
+  const set = new Set(roots);
+  const memo = new Map();
+  const within = (el) => {
+    const path = [];
+    let inside = false;
+    for (let e = el; e; e = e.parentNode) {
+      if (memo.has(e)) {
+        inside = memo.get(e);
+        break;
+      }
+      path.push(e);
+      if (set.has(e)) {
+        inside = true;
+        break;
+      }
+    }
+    for (const p of path) memo.set(p, inside);
+    return inside;
+  };
+  within.roots = roots;
+  within.found = found;
+  return within;
+}
+
+/**
+ * Narrowed (`within`, see scopeOf), which of the elements asked for (by their place in the request) `el` is in:
+ * `{ targets: [i, …] }`, or nothing.
+ */
+function scopeTag(el, within) {
+  if (!within || !el) return {};
+  const targets = [];
+  within.found.forEach((els, i) => {
+    if (els.some((r) => r === el || Node.prototype.contains.call(r, el))) targets.push(i);
+  });
+  return targets.length ? { targets } : {};
+}
+
 /** The elements a descriptor finds, or none when it cannot be looked up (a malformed part or slot name). */
 function safeFindAll(desc) {
   try {
@@ -4357,7 +4408,17 @@ function targetReport(els) {
       return { box: null, scrollWidth: 0, scrollHeight: 0, visible: false };
     }
   });
-  return { visible: elements.some((e) => e.visible), elements, ...(els.length > MAX_TARGET_ELEMENTS ? { omittedElements: els.length - MAX_TARGET_ELEMENTS } : {}) };
+  // Whether it shows anywhere, the occurrences not listed included.
+  const shows = (el) => {
+    try {
+      const contents = getComputedStyle(el).display === 'contents';
+      return !!rectOf(el) && (contents ? [...el.children].some((c) => drawn(c)) : drawn(el));
+    } catch {
+      return false;
+    }
+  };
+  const visible = elements.some((e) => e.visible) || els.slice(MAX_TARGET_ELEMENTS).some(shows);
+  return { visible, elements, ...(els.length > MAX_TARGET_ELEMENTS ? { omittedElements: els.length - MAX_TARGET_ELEMENTS } : {}) };
 }
 
 /** The stacked gaps for a report, and whether they stop short. */
