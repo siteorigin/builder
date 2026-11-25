@@ -14,7 +14,7 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
-import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, pageIdFor, projectSummary } from './context';
+import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo } from './context';
 import { canEditContracts, checkAuthority, liveEntry, requestAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { developerModeRefusal } from '@engine/developer-mode';
@@ -299,7 +299,7 @@ ${themeGuidance(theme)}`;
 - Build one page per upsert_page_with_sections call; from a short request, give it several sections: an opening section, the content the page is for, and usually a closing call to action. Internal links use routes such as /contact/.
 - update_page_seo sets a page's search settings; update_site_seo the site's address, language, publisher identity, crawler policy and llms.txt.
 - ${SEO_GUIDANCE_SHORT}
-${component ? '- When the user asks for a new reusable component, build it whole with one upsert_managed_component call, following componentBlueprints in <editor_context>; placeOnPage also puts it on a page.\n' : ''}- One request can take many replies; the user does not answer between them. Keep going until every page the user asked for is finished.
+${component ? '- When the user asks for a new reusable component, build it whole with one upsert_managed_component call, following componentBlueprints in <editor_context>; placeOnPage also puts it on a page. For slots or columns: div root, insertAs "element".\n' : ''}- One request can take many replies; the user does not answer between them. Keep going until every page the user asked for is finished.
 - When the user wants advice or ideas in chat only, give them and change nothing.
 - When the user asks for checks at screen sizes, run inspect_layout on each page they name at each of those sizes, after its last change.
 ${rules} The result card lists each layout and image check with its latest result, so do not restate those; do mention anything else a tool found that the user needs to act on.
@@ -336,7 +336,7 @@ ${shared}`;
   if (mode === 'page')
     return `You build and edit one page of a small business website, made of ready-made section components.
 - This request may change only the page in <editor_context> currentPage, which lists its sections with their IDs; read_page shows their full content. upsert_page_with_sections builds or rewrites it in one call, with all its sections, by its route: from a short request, an opening section, the content the page is for, and usually a closing call to action. ${PAGE_FROM_COPY} ${REPLACE_PLACEHOLDERS} addToHeaderNav / addToFooterNav add a menu link to it.
-- apply_operations removes or moves one section by its ID (node.remove, node.move), removes one but keeps what it holds (node.removeKeepContent), and changes the page's own settings (page.update). update_page_seo sets its search settings.
+- apply_operations removes or moves one section by its ID (node.remove, node.move), removes one but keeps what it holds (node.removeKeepContent), and changes the page's own settings (page.update). update_page_seo sets its search settings. To move one into a slot (currentPage lists them as slotInfo), node.move it with that component's node ID as parentId, and slot.
 - read_project with sections ["catalogue"] lists every component with its properties.
 - Internal links use routes such as /contact/.
 - ${SEO_GUIDANCE_SHORT}
@@ -350,7 +350,7 @@ ${themeGuidance(theme)}`;
 - update_site_brand sets the site name, tagline, contact details, colors, fonts and type scale everywhere at once.
 - update_page_seo sets a page's search settings; update_site_seo the site's address, language, publisher identity, crawler policy and llms.txt.
 - ${SEO_GUIDANCE_SHORT}
-${component ? '- upsert_managed_component builds a new reusable component whole, or rebuilds one, in one call, when the user asks for a component: componentBlueprints in <editor_context> show the shape. placeOnPage also puts it on a page.\n' : ''}- read_project with sections ["catalogue"] lists every component with its properties. read_page shows a page.
+${component ? '- upsert_managed_component builds a new reusable component whole, or rebuilds one, in one call, when the user asks for a component: componentBlueprints in <editor_context> show the shape. placeOnPage also puts it on a page. A subcomponent meant for slots or columns has a div root and insertAs "element".\n' : ''}- read_project with sections ["catalogue"] lists every component with its properties. read_page shows a page.
 - Internal links use routes such as /contact/, even for pages you have not built yet.
 - request_clarification asks the user one question and waits for the answer. ${ASKING}
 - One request can take many steps. A step is one response of yours with its tool calls, not a turn of the conversation: the user does not reply between steps. Keep going until every page the user asked for is finished.
@@ -376,6 +376,7 @@ function headerNoticeGuidance(state: ProjectState): string {
 const COMPONENT_GUIDANCE = `Making a new reusable component (when the user asks for a component, or the request came from Create component):
 - Start from what is here: search_components for what it is, then read_component with structure: true on the one to three closest theme or project components. Their structure shows how a good design is built in this site: containers with layout and gap, text styles and colors as site tokens, phone/tablet/desktop rules, and which content is bound to properties.
 - Build it whole in one upsert_managed_component call, which componentBlueprints in <editor_context> show worked through: its properties, a clean inspector with each piece of content an author will change (a label and a useful default); its design as a flat list of nodes with IDs of your own, each container naming its children, under one root element; nodes bound to properties with { "$prop": name }; repeated cards or items as a list property shown by a "repeat" node, its fields bound with { "$item": field }; the parts an author would style; and variant options whose style rules restyle nodes (an option without rules changes nothing). Use site tokens, not fixed colors or sizes, so it matches the site and follows its styles, and add phone/tablet/desktop rules with scope. If it reports errors, fix exactly the paths it names with repair: true. Its result names the definitionId: change the whole design again with the same tool and that definitionId, or make a small change with the node and component operations under owner { kind: "component", id: definitionId }.
+- A subcomponent meant for slots or columns (a card, say) has a div root, not a section, and insertAs "element" in upsert_managed_component.
 - It is a managed component. Only when the user asks for code, and component.createCode is offered (Developer mode), write a code component instead.
 - Check it with inspect_component { definitionId } once it is built: every variant option at phone and desktop width, with long text, empty links and few or many items. Fix what it finds and check again.
 - Place it on a page (placeOnPage, or node.insert { definitionId }) only when the user asks for it there; otherwise it waits in Insert, under Your components. Finish by saying what you made and what an author can change on each placement.`;
@@ -452,6 +453,7 @@ How the website is modelled:
 - Pages (IDs like "pg_…") have a route and an ordered list of sections. Most sections are component instances: { kind: "instance", componentId, props, variants } (variants holds one option per axis, such as tone and layout, and they combine).
 - Props are typed. Lists (cards, FAQs, plans, links) have items with stable "id" values; edit one item with instance.setProp using itemId + field, add with instance.listInsert, remove with instance.listRemove.
 - The shared header and footer are owned by { kind: "shell", id: "header" | "footer" }. Each already has exactly one component instance (its node ID is in the project summary's "shell" section). Never insert, remove or replace them: edit that instance with instance.setProp / instance.listInsert. Navigation links live in the header's "links" list and the footer's "links" list. ${headerNoticeGuidance(state)} Each page shows or hides the header and the footer on its own: page.update showHeader / showFooter (false hides it on that page only).
+- A component may have named slots, where each placement holds content of its own. currentPage and read_page list them as slotInfo, empty ones included: by slot name, its label, how many children it holds and, when restricted, a contract (it takes any of the listed categories, componentIds or primitives, at most max; read_component lists the IDs moreComponentIds counts). Fill one with node.insert, parentId = that placement's node ID and slot = the slot name, plus a componentId, definitionId or primitive; node.move and node.copy take the same parentId and slot. A plain container (an element) takes parentId without slot. So build columns and card layouts from a component with slots, or a container, holding subcomponents.
 - Links are objects: { "type": "page", "target": "<pageId>" } for internal pages (never use a URL for an internal page), { "type": "url", "target": "https://…" }, { "type": "email", "target": "name@example.com" }, { "type": "tel", "target": "+1…" }.
 - Images are { "assetId": "<asset id>" | null, "alt": "…" }. You cannot see images: use an image the user attached by its assetId, choose by name/description, or let the user pick between images by sight with request_clarification assetIds. Two images can share a name; the assetId tells them apart.
 - Styles use node.setStyle with a responsive scope ("base" for all sizes, "phone" / "tablet" / "desktop" for one range, or "cq-narrow" / "cq-medium" / "cq-wide" for the width of the nearest box with containerType "inline-size" around it, such as a column) and prefer token values like { "token": "space.lg" } or { "token": "color.brand" }. For component instances pass partId (see the component's parts). A part repeated per list item (its parts entry has repeatsPerItemOf) styles every item; add itemId to style one item alone (only that card, plan or testimonial), leaving its siblings on the shared style, and node.resetStyles with partId + itemId returns it to the shared style. Add state ("hover", "focus" for keyboard, "active" while pressed) to style that state only (color, background, border, radius, shadow, opacity). State "groupHover" or "groupFocus" styles it while the nearest container marked as an interaction group around it (node.setContent field "interactionGroup": true, a card) is hovered or holds focus, and may also set translateX, translateY, scale and rotate.
@@ -1245,6 +1247,8 @@ export class Orchestrator {
      */
     const glanceChars = pageGlanceChars(capabilities.contextWindowTokens);
     let glance = !ask && ctx && (authority.kind === 'page' || authority.kind === 'site') ? pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, glanceChars, indent) : null;
+    /** Whether the context says what slots placements have: the first thing to go when the request does not fit. */
+    let slotDetails = true;
     /** This request's own message: what a new conversation would still have to send. */
     const requestMessage = () => `${userMsg.text}\n\n<editor_context>\n${JSON.stringify(
         {
@@ -1276,7 +1280,8 @@ export class Orchestrator {
           ...(examples.length ? { workedExamples: examples } : {}),
           ...(blueprints.length ? { componentBlueprints: blueprints } : {})
         },
-        null,
+        // Wherever a placement is summarized: the page, a selection, the shared header and footer.
+        slotDetails ? undefined : withoutSlotInfo,
         indent
       )}\n</editor_context>`;
     const requestItem: Extract<CanonicalItem, { kind: 'user' }> = { kind: 'user', text: requestMessage() };
@@ -1593,11 +1598,18 @@ export class Orchestrator {
         const caps = ad.adapter.capabilities();
         const fit = () => applyContextBudget(items, { system, tools, capabilities: caps, isMutation: (n) => MUTATING_TOOLS.has(n as never), revision: readRevision() });
         let budget = fit();
-        // Too long before the first call: the page's sections are a convenience, one read_page away, so fewer of them
-        // go (their words first, then sections from the end), then none, before any tool is given up.
+        // Too long before the first call: slot details go first, wherever they are, as a read shows them again.
+        if (budget.overflow && turns === 1 && caps.contextWindowKnown) {
+          slotDetails = false;
+          if (glance && ctx) glance = pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, glanceChars, indent, false);
+          requestItem.text = requestMessage();
+          budget = fit();
+        }
+        // Still too long: the page's sections are a convenience, one read_page away, so fewer of them go (their words
+        // first, then sections from the end), then none, before any tool is given up.
         for (const share of [2, 4, 0]) {
           if (!budget.overflow || turns !== 1 || !caps.contextWindowKnown || !glance || ask || !ctx) break;
-          glance = share ? pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, Math.floor(glanceChars / share), indent) : null;
+          glance = share ? pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, Math.floor(glanceChars / share), indent, false) : null;
           requestItem.text = requestMessage();
           budget = fit();
         }

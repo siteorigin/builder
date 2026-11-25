@@ -239,6 +239,32 @@ describe('upsert_managed_component: its schema (#359)', () => {
   });
 });
 
+describe('upsert_managed_component: the role Insert gives it (#670)', () => {
+  it('records insertAs, keeps it through a rebuild that leaves it out, and keeps it for a repair', async () => {
+    const { s, call } = await session();
+    const card = { name: 'Card', nodes: [{ kind: 'element', id: 'root', tag: 'div' }] };
+    const made = await call({ ...card, insertAs: 'element' });
+    expect(made.ok).toBe(true);
+    const { definitionId } = made.content;
+    expect(s.state.components[definitionId].insertAs).toBe('element');
+    expect((await call({ ...card, definitionId, description: 'A card.' })).ok).toBe(true);
+    expect(s.state.components[definitionId].insertAs).toBe('element');
+    // A rejected call's insertAs is held with the rest of it, so the repair need not send it again.
+    expect((await call({ name: 'Banner', insertAs: 'section', nodes: [{ kind: 'element', id: 'root', children: ['gone'] }] })).ok).toBe(false);
+    const repaired = await call({ name: 'Banner', repair: true, nodes: [{ kind: 'element', id: 'root' }] });
+    expect(repaired.ok).toBe(true);
+    expect(s.state.components[repaired.content.definitionId].insertAs).toBe('section');
+    // A rebuild or a repair that names a role changes it.
+    expect((await call({ ...card, definitionId, insertAs: 'section' })).ok).toBe(true);
+    expect(s.state.components[definitionId].insertAs).toBe('section');
+    expect((await call({ name: 'Strip', insertAs: 'section', nodes: [{ kind: 'element', id: 'root', children: ['gone'] }] })).ok).toBe(false);
+    const changed = await call({ name: 'Strip', repair: true, insertAs: 'element', nodes: [{ kind: 'element', id: 'root' }] });
+    expect(s.state.components[changed.content.definitionId].insertAs).toBe('element');
+    expect(accepts(toStrictSchema(managedComponentSchema()), { ...card, insertAs: 'element' })).toBe(true);
+    expect(accepts(toStrictSchema(managedComponentSchema()), { ...card, insertAs: 'row' })).toBe(false);
+  });
+});
+
 describe('upsert_managed_component: building in one call (#359)', () => {
   it('creates a component with a list, bindings, conditions, parts, a slot and two variant axes, places it, and undoes both in one step', async () => {
     const { s, call, home } = await session();

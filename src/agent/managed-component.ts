@@ -246,6 +246,7 @@ export const MANAGED_COMPONENT_ARGS = z
     description: z.string().max(300).optional().describe('What it is for, as the Insert panel shows it.'),
     category: z.enum(CATEGORIES).optional(),
     tags: z.array(z.string().min(1).max(40)).max(12).optional(),
+    insertAs: z.enum(['section', 'element']).optional().describe('"element" for a subcomponent that goes in slots and columns; "section" for a whole page section.'),
     properties: z.array(PROPERTY).max(60).optional().describe('What an author fills in on each placement, in order.'),
     nodes: z.array(NODE).min(1).max(300).optional().describe('Every node of the design. Exactly one is inside no other: the root element. Required unless repair.'),
     parts: z
@@ -859,6 +860,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     ...(args.description !== undefined ? { description: args.description } : {}),
     ...(args.category !== undefined ? { category: args.category } : {}),
     ...(args.tags !== undefined ? { tags: args.tags } : {}),
+    ...(args.insertAs !== undefined ? { insertAs: args.insertAs } : {}),
     properties,
     nodes: designNodes as Op<'component.upsert'>['nodes'],
     ...(args.parts !== undefined ? { parts: parts as Op<'component.upsert'>['parts'] } : {}),
