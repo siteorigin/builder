@@ -19,7 +19,7 @@
  * Pure and deterministic: the same brand, mood and theme always make the same palette.
  */
 import type { TokenDef } from './types';
-import { READABLE_TEXT_COLORS, TEXT_CONTRAST, compositeOver, contrastBetween, evaluatePairs, isFailing, pairsOf, type ContrastPair, type PairResult } from './contrast';
+import { READABLE_TEXT_COLORS, TEXT_CONTRAST, compositeOver, contrastBetween, evaluatePairs, isFailing, pairsOf, type ColorReader, type ContrastPair, type PairResult } from './contrast';
 import { oklabToLinearRgb, oklabToRgb, parseColor, rgbToOklab, toHex6 } from './color';
 import { resolvedCss } from './color-scheme';
 
@@ -27,11 +27,11 @@ export const PALETTE_MOODS = ['neutral', 'tinted', 'warm', 'high-contrast'] as c
 export type PaletteMood = (typeof PALETTE_MOODS)[number];
 
 /** How each mood is named and described, to an author and to the AI alike. */
-export const PALETTE_MOOD_INFO: Record<PaletteMood, { label: string; description: string }> = {
-  neutral: { label: 'Neutral', description: 'Near-white backgrounds with a hint of the brand hue.' },
-  tinted: { label: 'Tinted', description: 'Backgrounds, lines and text tinted with the brand hue.' },
-  warm: { label: 'Warm', description: 'Cream and warm-stone backgrounds that sit with any brand.' },
-  'high-contrast': { label: 'High contrast', description: 'White backgrounds, near-black text and stronger lines.' }
+export const PALETTE_MOOD_INFO: Record<PaletteMood, { label: string; description: string; brief: string }> = {
+  neutral: { label: 'Neutral', description: 'Near-white backgrounds with a hint of the brand hue.', brief: 'near-white' },
+  tinted: { label: 'Tinted', description: 'Backgrounds, lines and text tinted with the brand hue.', brief: 'brand-tinted' },
+  warm: { label: 'Warm', description: 'Cream and warm-stone backgrounds that sit with any brand.', brief: 'cream' },
+  'high-contrast': { label: 'High contrast', description: 'White backgrounds, near-black text and stronger lines.', brief: 'white, near-black text' }
 };
 
 /** The colour roles a palette sets, where the theme has them. */
@@ -132,15 +132,19 @@ const INVERSE_CHROMA = 0.045;
 
 /**
  * Dark sections in the brand's hue, at `L` (OKLCH lightness) and a quiet chroma, made darker where needed until
- * `onInverse`, the text on them, reads at 7:1.
+ * `onInverse`, the text on them, reads at 7:1 (translucent text as the colour it makes over the section).
  */
 export function darkSection(brand: string, onInverse: string, L = 0.2): string {
   const b = lchOf(brand);
-  const text = parseColor(onInverse) ? onInverse : WHITE;
+  const text = parseColor(onInverse) ?? rgbOf(WHITE);
   const chroma = b.C < GREY ? 0 : Math.min(b.C, INVERSE_CHROMA);
+  const reads = (hex: string) => {
+    const ground = rgbOf(hex);
+    return contrastBetween(compositeOver(text, ground), ground) >= 7;
+  };
   let l = L;
   let hex = oklchHex(l, chroma, b.h);
-  while (l > 0 && ratio(hex, text) < 7) hex = oklchHex((l = Math.max(0, l - 0.02)), chroma, b.h);
+  while (l > 0 && !reads(hex)) hex = oklchHex((l = Math.max(0, l - 0.02)), chroma, b.h);
   return hex;
 }
 
@@ -214,8 +218,11 @@ function targets(brand: string, mood: PaletteMood, page: 'light' | 'dark'): Reco
   const ramp = m[page];
   const b = lchOf(brand);
   const grey = b.C < GREY;
-  // Warm grounds lean to cream; a brand already near it pulls them half way to its own hue.
-  const groundHue = mood === 'warm' ? (!grey && Math.abs(turn(WARM_HUE, b.h)) <= 60 ? WARM_HUE + turn(WARM_HUE, b.h) / 2 : WARM_HUE) : b.h;
+  // Warm grounds lean to cream. A brand within 30° of it pulls them half way to its own hue, and the pull fades to
+  // nothing by 60°, so no brand hue makes the grounds jump; one further round (a blue) leaves them cream, never purple.
+  const warmTurn = turn(WARM_HUE, b.h);
+  const pull = grey ? 0 : Math.abs(warmTurn) <= 30 ? 0.5 : Math.max(0, (0.5 * (60 - Math.abs(warmTurn))) / 30);
+  const groundHue = mood === 'warm' ? (WARM_HUE + warmTurn * pull + 360) % 360 : b.h;
   // A quiet brand never gets louder grounds than itself; warm grounds are tinted whatever the brand.
   const cap = mood === 'warm' ? m.chroma : grey ? 0 : Math.min(b.C, m.chroma);
   const ground = (L: number, C: number) => oklchHex(L, C, groundHue);
@@ -286,6 +293,12 @@ export interface PaletteHarmony {
   adjusted: boolean;
   /** The theme's pairs on the palette. Every pair passes on the built-in themes; one a theme of its own cannot pass shows as failing. */
   results: PairResult[];
+  /**
+   * Why the palette is not to be used, if it is not: pairs that fail, and pairs a palette colour is part of that
+   * cannot be measured (a `var()` against the page), which it might have made unreadable without anyone knowing.
+   * Empty on the built-in themes.
+   */
+  unreadable: PairResult[];
 }
 
 export interface HarmonyInput {
@@ -297,6 +310,8 @@ export interface HarmonyInput {
   pairs: readonly ContrastPair[];
   /** An accent the author chose, kept as it is; otherwise the palette makes one. */
   accent?: string;
+  /** How colours are read; the editor passes one that also asks the browser. */
+  read?: ColorReader;
 }
 
 /** A palette in `mood` made from `brand` for a theme with these tokens and contrast pairs. */
@@ -306,7 +321,9 @@ export function harmonizePalette(input: HarmonyInput): PaletteHarmony {
   const has = new Set(input.tokens.filter((t) => t.group === 'color').map((t) => t.id));
   const roles = PALETTE_ROLES.filter((id) => has.has(id));
   const only = (all: Record<PaletteRole, string>) => Object.fromEntries(roles.map((id) => [id, all[id]])) as Partial<Record<PaletteRole, string>>;
-  const failing = (values: Partial<Record<PaletteRole, string>>) => new Set(evaluatePairs([...input.tokens], input.pairs, parseColor, values as Record<string, string>).filter(isFailing).map((r) => r.pair.id));
+  const read = input.read ?? parseColor;
+  const measure = (values: Partial<Record<PaletteRole, string>>) => evaluatePairs([...input.tokens], input.pairs, read, values as Record<string, string>);
+  const failing = (values: Partial<Record<PaletteRole, string>>) => new Set(measure(values).filter(isFailing).map((r) => r.pair.id));
 
   // Step 1 and 2: the brand on a page that carries it, moved only when no page can.
   const carry = (brand: string) => {
@@ -317,21 +334,26 @@ export function harmonizePalette(input: HarmonyInput): PaletteHarmony {
     return null;
   };
   let chosen = carry(requested);
-  // Moving the brand can only fix pairs it is part of: a theme pairing other colours no page fixes is not searched for.
-  const brandPairs = new Set(pairsOf(input.pairs, 'color.brand', input.tokens).map((p) => p.id));
-  const brandCanFix = (['light', 'dark'] as const).some((page) => [...failing(only(extremes(requested, page, accent)))].every((id) => brandPairs.has(id)));
-  if (!chosen && brandCanFix) {
+  // Moving the brand can only fix pairs it is part of once every other palette colour has a value of its own (a link
+  // from one to the brand is replaced): a theme pairing other colours no page fixes is not searched for.
+  const brandCanFix = () => {
+    const own = input.tokens.map((t) => ((roles as string[]).includes(t.id) && t.id !== 'color.brand' ? { ...t, value: BLACK } : t));
+    const brandPairs = new Set(pairsOf(input.pairs, 'color.brand', own).map((p) => p.id));
+    return (['light', 'dark'] as const).some((page) => [...failing(only(extremes(requested, page, accent)))].every((id) => brandPairs.has(id)));
+  };
+  if (!chosen && brandCanFix()) {
     const seed = lchOf(requested);
     const tried = new Set([requested]);
     for (let k = 1; !chosen && k * BRAND_STEP <= 1; k++) {
-      for (const dir of [-1, 1]) {
-        const L = seed.L + dir * k * BRAND_STEP;
-        if (L < 0 || L > 1) continue;
-        const hex = oklchHex(L, seed.C, seed.h);
-        if (tried.has(hex)) continue;
-        tried.add(hex);
-        if ((chosen = carry(hex))) break;
-      }
+      // Both directions at each step, and the one whose saved colour lands nearer the brand wins (darker on a tie).
+      const found = [-1, 1]
+        .map((dir) => seed.L + dir * k * BRAND_STEP)
+        .filter((L) => L >= 0 && L <= 1)
+        .map((L) => oklchHex(L, seed.C, seed.h))
+        .filter((hex) => !tried.has(hex) && tried.add(hex))
+        .map((hex) => carry(hex))
+        .filter((c) => c !== null);
+      chosen = found.sort((a, b) => Math.abs(lchOf(a.brand).L - seed.L) - Math.abs(lchOf(b.brand).L - seed.L))[0] ?? null;
     }
   }
   // A theme of its own may pair colours no palette can make readable: keep the brand, and what fails on its best page.
@@ -378,14 +400,37 @@ export function harmonizePalette(input: HarmonyInput): PaletteHarmony {
       }
     }
   }
+  const results = measure(values);
+  const touched = new Set(roles.flatMap((id) => pairsOf(input.pairs, id, input.tokens).map((p) => p.id)));
   return {
     values,
     page,
     requested,
     brand,
     adjusted: brand !== requested,
-    results: evaluatePairs([...input.tokens], input.pairs, parseColor, values as Record<string, string>)
+    results,
+    unreadable: results.filter((r) => r.status === 'fail' || (r.status === 'unknown' && touched.has(r.pair.id)))
   };
+}
+
+/**
+ * The palette's colours a site has to save: those it does not show already. A colour written another way (#1E3A5F)
+ * is left as it is, and so is a link that still lands on the palette's colour once the rest is saved, so a colour
+ * that follows another keeps following it.
+ */
+export function paletteChanges(tokens: readonly TokenDef[], values: Partial<Record<PaletteRole, string>>): Array<[PaletteRole, string]> {
+  let after = tokens.map((t) => (Object.hasOwn(values, t.id) ? { ...t, value: values[t.id as PaletteRole]! } : t));
+  const out: Array<[PaletteRole, string]> = [];
+  for (const [id, hex] of Object.entries(values) as Array<[PaletteRole, string]>) {
+    const was = tokens.find((t) => t.id === id);
+    if (!was) continue;
+    // Keeping one that already lands on its colour leaves every colour kept before it landing where it did.
+    const kept = after.map((t) => (t.id === id ? was : t));
+    const shown = parseColor(resolvedCss(kept, id) ?? '');
+    if (shown && shown.a >= 1 && toHex6(shown) === hex) after = kept;
+    else out.push([id, hex]);
+  }
+  return out;
 }
 
 /**
@@ -396,7 +441,9 @@ export function paletteSeed(tokens: readonly TokenDef[]): string | null {
   const brand = parseColor(resolvedCss(tokens, 'color.brand') ?? '');
   if (!brand) return null;
   if (brand.a >= 1) return toHex6(brand);
+  // The page as the contrast check takes it: white when the theme has none, unknown when its colour cannot be read.
   const white = { r: 255, g: 255, b: 255, a: 1 };
   const page = parseColor(resolvedCss(tokens, 'color.background') ?? '');
+  if (!page && tokens.some((t) => t.id === 'color.background')) return null;
   return toHex6(compositeOver(brand, page ? compositeOver(page, white) : white));
 }

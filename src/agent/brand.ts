@@ -6,9 +6,9 @@ import { z } from 'zod';
 import type { InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { importedFontStack, projectFontFamilies } from '@shared/fonts';
-import { contrastBetween, evaluatePairs, isFailing, relativeLuminance } from '@shared/contrast';
+import { contrastBetween, evaluatePairs, isFailing, pairsOf, relativeLuminance } from '@shared/contrast';
 import { hasDarkPalette, withDarkPalette } from '@shared/color-scheme';
-import { PALETTE_MOODS, PALETTE_MOOD_INFO, darkSection, harmonizePalette, onBrandFor, paletteSeed, strongShade } from '@shared/palette';
+import { PALETTE_MOODS, PALETTE_MOOD_INFO, darkSection, harmonizePalette, onBrandFor, paletteChanges, paletteSeed, strongShade } from '@shared/palette';
 import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
@@ -44,9 +44,9 @@ export const BRAND_ARGS = z.object({
 export type BrandArgs = z.infer<typeof BRAND_ARGS>;
 
 export const BRAND_DESCRIPTION =
-  'Update the site brand in one call: the theme (the whole design; content is kept), the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors (or, with a palette mood, every site color made from it: backgrounds, cards, text, lines, dark sections and accent, all readable together), fonts, and the type scale (the size of every heading and text style at once), and the site\'s public address, language and link preview image. Send only what changes. Fonts must be installed; an error lists the choices.';
+  'Update the site brand in one call: the theme (the whole design; content is kept), the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors (paletteMood re-colors the whole site from it), fonts, and the type scale (the size of every heading and text style at once), and the site\'s public address, language and link preview image. Send only what changes. Fonts must be installed; an error lists the choices.';
 
-export const BRAND_BRIEF = 'Switch the theme (the whole design; content stays), set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors (a palette mood re-colors the whole site from it), installed fonts, the type scale (every heading and text size at once), and the site address, language and link preview image. Send only what changes.';
+export const BRAND_BRIEF = 'Switch the theme (the whole design; content stays), set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors (paletteMood re-colors the whole site from it, or from the current brand; an accentColor sent stays), installed fonts, the type scale (every heading and text size at once), and the site address, language and link preview image. Send only what changes.';
 
 /** The themes a site can switch to: every installed pack but its own theme and development fixtures. */
 export function brandThemes(state: Pick<ProjectState, 'site'>) {
@@ -72,7 +72,7 @@ export function brandToolSchema(state: ProjectState): JsonSchema {
       paletteMood: {
         type: 'string',
         enum: [...PALETTE_MOODS],
-        description: `Re-color the whole site from the brand color in one go: backgrounds, cards, text, lines, hover, dark sections and accent, with every pairing readable. ${PALETTE_MOODS.map((m) => `${m}: ${PALETTE_MOOD_INFO[m].description}`).join(' ')} Uses brandColor, or the site's brand color when that is omitted; an accentColor sent with it is kept.`
+        description: `Re-color the whole site from the brand color, every pair readable. ${PALETTE_MOODS.map((m) => `${m}: ${PALETTE_MOOD_INFO[m].brief}`).join('; ')}. Without brandColor, uses the site's brand; an accentColor sent stays.`
       },
       typeScale: {
         type: 'string',
@@ -202,14 +202,16 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
     if (seed && (args.accentColor === undefined || accent)) {
       const pairs = getTheme(state.site.themeId).contrastPairs ?? [];
       const palette = harmonizePalette({ brand: seed, mood: args.paletteMood, tokens: list, pairs, accent: accent ? toHex(accent) : undefined });
-      const unreadable = palette.results.filter(isFailing);
-      if (unreadable.length) issues.push({ field: accent ? 'accentColor' : 'paletteMood', message: `no ${args.paletteMood} palette keeps ${unreadable.map((r) => r.pair.use.toLowerCase()).join(', ')} readable in this theme${accent ? ' with this accent color' : ''}` });
+      const unreadable = palette.unreadable;
+      const accentPairs = new Set(pairsOf(pairs, 'color.accent').map((p) => p.id));
+      const byAccent = !!accent && unreadable.some((r) => accentPairs.has(r.pair.id));
+      const named = unreadable.map((r) => `${r.pair.use.toLowerCase()}${r.status === 'unknown' ? ' (cannot be checked)' : ''}`).join(', ');
+      if (unreadable.length) issues.push({ field: byAccent ? 'accentColor' : 'paletteMood', message: `no ${args.paletteMood} palette keeps ${named} readable in this theme${byAccent ? ' with this accent color; send a lighter accentColor, or leave it out and one is made' : ''}` });
       else {
-        for (const [id, v] of Object.entries(palette.values)) setToken(id, v);
+        // Only what the site does not show already: a link that still lands on the palette's color keeps following.
+        for (const [id, v] of paletteChanges(list, palette.values)) setToken(id, v);
         if (palette.adjusted) warnings.push(`${seed} was made ${relativeLuminance(asRgb(parseHex(palette.brand)!)) > relativeLuminance(asRgb(parseHex(seed)!)) ? 'lighter' : 'darker'} (${palette.brand}) so brand-colored links stay readable on the page, cards and sections; no page color can carry it as it was.`);
-        const unknown = palette.results.filter((r) => r.status === 'unknown');
-        if (unknown.length) warnings.push(`${unknown.length === 1 ? 'One color pair' : `${unknown.length} color pairs`} could not be checked (${unknown.map((r) => r.pair.use.toLowerCase()).join(', ')}).`);
-        if (palette.page === 'dark') warnings.push(`${palette.brand} only reads as text on dark backgrounds, so the site's backgrounds are now dark.`);
+        if (palette.page === 'dark') warnings.push(`With ${palette.brand}, this theme's colors read only on dark backgrounds, so the site's backgrounds are now dark.`);
         if (hasDarkPalette(state.tokens)) {
           // The dark palette keeps its own colors; say when the new light ones leave pairs there hard to read.
           const light = list.map((t) => (Object.hasOwn(palette.values, t.id) ? { ...t, value: palette.values[t.id as keyof typeof palette.values]! } : t));

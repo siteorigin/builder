@@ -2,10 +2,11 @@ import { useId, useMemo, useState } from 'react';
 import { CircleCheck, TriangleAlert } from 'lucide-react';
 import type { TokenDef } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { isFailing, relativeLuminance, type ContrastPair } from '@shared/contrast';
+import { relativeLuminance, type ContrastPair } from '@shared/contrast';
 import { parseColor } from '@shared/color';
-import { PALETTE_MOODS, PALETTE_MOOD_INFO, harmonizePalette, paletteSeed, type PaletteMood, type PaletteRole } from '@shared/palette';
+import { PALETTE_MOODS, PALETTE_MOOD_INFO, harmonizePalette, paletteChanges, paletteSeed, type PaletteMood, type PaletteRole } from '@shared/palette';
 import { applyOps } from '../store';
+import { resolveCssColor } from '../lib/color';
 
 /** The colours the preview names, in the order an owner reads a page: grounds, text, the brand, dark sections. */
 const SHOWN: Array<[PaletteRole, string]> = [
@@ -35,7 +36,7 @@ export function PaletteHarmony({ tokens, pairs, revision, say }: { tokens: Token
   const uid = useId();
   const [mood, setMood] = useState<PaletteMood>('neutral');
   const seed = useMemo(() => paletteSeed(tokens), [tokens]);
-  const palette = useMemo(() => (seed ? harmonizePalette({ brand: seed, mood, tokens, pairs }) : null), [seed, mood, tokens, pairs]);
+  const palette = useMemo(() => (seed ? harmonizePalette({ brand: seed, mood, tokens, pairs, read: resolveCssColor }) : null), [seed, mood, tokens, pairs]);
   const label = (
     <div className="ss-group-label" id={`${uid}-label`}>
       Palette from brand
@@ -50,12 +51,12 @@ export function PaletteHarmony({ tokens, pairs, revision, say }: { tokens: Token
     );
   }
   const v = palette.values;
-  const unreadable = palette.results.filter(isFailing);
-  // A pair on a colour no one can measure here (a `var()` in a theme of its own) is said, never counted as readable.
-  const unknown = palette.results.filter((r) => r.status === 'unknown').length;
-  const ops: EditOperation[] = Object.entries(v)
-    .filter(([id, value]) => tokens.find((t) => t.id === id)?.value !== value)
-    .map(([tokenId, value]) => ({ type: 'token.set', tokenId, value }));
+  // Failing pairs, and pairs a palette colour is part of that cannot be measured: either keeps the palette from use.
+  const unreadable = palette.unreadable;
+  // Pairs on other colours that cannot be measured are said, never counted as readable.
+  const unknown = palette.results.filter((r) => r.status === 'unknown').length - unreadable.filter((r) => r.status === 'unknown').length;
+  // Only what the site does not show already, so a colour that follows another and lands on the same one keeps following it.
+  const ops: EditOperation[] = paletteChanges(tokens, v).map(([tokenId, value]) => ({ type: 'token.set', tokenId, value }));
   const name = PALETTE_MOOD_INFO[mood].label;
   const apply = () =>
     void applyOps(ops, `Use the ${name.toLowerCase()} palette from the brand`, undefined, revision).then((ok) => ok && say(`${name} palette made from your brand color. You can undo this.`));
@@ -101,14 +102,16 @@ export function PaletteHarmony({ tokens, pairs, revision, say }: { tokens: Token
       {unreadable.length ? (
         <p className="ss-harmony-verdict fail">
           <TriangleAlert aria-hidden="true" />
-          <span>This theme pairs colors no palette can make readable: {unreadable.map((r) => r.pair.use).join(', ')}.</span>
+          <span>
+            No palette from this brand keeps these readable in this theme: {unreadable.map((r) => `${r.pair.use}${r.status === 'unknown' ? ' (can’t be checked)' : ''}`).join(', ')}.
+          </span>
         </p>
       ) : (
         <p className="ss-harmony-verdict pass">
           <CircleCheck aria-hidden="true" />
           <span>
             {unknown ? `Every color pair that can be checked is readable; ${unknown === 1 ? 'one can’t' : `${unknown} can’t`} be checked.` : 'Every color pair is readable.'}
-            {palette.page === 'dark' && ' Your brand reads as text only on dark backgrounds, so this palette is dark.'}
+            {palette.page === 'dark' && ' With this brand the theme’s colors read only on dark backgrounds, so this palette is dark.'}
             {palette.adjusted && ` Brand is made ${luminance(palette.brand) > luminance(palette.requested) ? 'lighter' : 'darker'}, ${palette.brand}, so links stay readable; no background can carry ${palette.requested}.`}
           </span>
         </p>

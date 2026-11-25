@@ -7,7 +7,8 @@ import { describe, expect, it } from 'vitest';
 import type { TokenDef } from '@shared/types';
 import { parseColor, rgbToOklab } from '@shared/color';
 import { contrastBetween, evaluatePairs, type ContrastPair } from '@shared/contrast';
-import { PALETTE_MOODS, PALETTE_ROLES, harmonizePalette, oklchHex, paletteSeed, type PaletteMood } from '@shared/palette';
+import { PALETTE_MOODS, PALETTE_ROLES, darkSection, harmonizePalette, oklchHex, paletteChanges, paletteSeed, type PaletteMood } from '@shared/palette';
+import { compositeOver } from '@shared/contrast';
 import { getTheme } from '@catalogue/index';
 
 /** Yellows, cyans, deep indigos, pastels, near-blacks and near-whites, saturated mid-tones, and the greys where Signal's eyebrow pill reads on neither page. */
@@ -74,9 +75,13 @@ describe('every pair readable, for any brand and mood (#357)', () => {
     expect(h).toMatchObject({ requested: '#747474', adjusted: true });
     expect(h.values['color.brand']).toBe(h.brand);
     expect(h.brand).not.toBe('#747474');
-    // The smallest step that works: no more than a few 8-bit levels of grey either way, and still grey.
-    expect(Math.abs(lch(h.brand).L - lch('#747474').L)).toBeLessThan(0.03);
-    expect(lch(h.brand).C).toBeLessThan(0.005);
+    // Every grey from #707070 to #787878 reads on neither page; the nearest that does on each side are #6f6f6f and
+    // #797979, and the palette takes whichever is nearer the brand in lightness.
+    for (const grey of ['#707070', '#787878']) expect(make(grey, 'tinted', 'signal').adjusted, grey).toBe(true);
+    for (const grey of ['#6f6f6f', '#797979']) expect(make(grey, 'tinted', 'signal').adjusted, grey).toBe(false);
+    const L = lch('#747474').L;
+    const nearer = Math.abs(lch('#6f6f6f').L - L) < Math.abs(lch('#797979').L - L) ? '#6f6f6f' : '#797979';
+    expect(h.brand).toBe(nearer);
   });
 
   it('gives a brand that only reads on dark grounds a dark page, and a dark brand a light one', () => {
@@ -131,12 +136,25 @@ describe('the palette follows the brand (#357)', () => {
     expect(Math.abs(lch(v['color.accent']!).h - ((plum.h + 30) % 360))).toBeLessThan(10);
     expect(lch(v['color.brand-strong']!).L).toBeLessThan(plum.L);
     expect(ratio(v['color.on-brand']!, v['color.brand-strong']!)).toBeGreaterThan(ratio(v['color.on-brand']!, '#6b2d5c'));
+    // Under dark text (a yellow button) the hover shade goes lighter instead, still further from the text.
+    const y = make('#f5c518', 'tinted').values;
+    expect(y['color.on-brand']).toBe('#14181a');
+    expect(lch(y['color.brand-strong']!).L).toBeGreaterThan(lch('#f5c518').L);
+    expect(ratio(y['color.on-brand']!, y['color.brand-strong']!)).toBeGreaterThan(ratio(y['color.on-brand']!, '#f5c518'));
+  });
+
+  it('turns warm grounds smoothly as the brand hue moves away from cream, and leaves a blue brand on cream', () => {
+    const groundHue = (h: number) => lch(make(oklchHex(0.45, 0.12, h), 'warm').values['color.surface-alt']!).h;
+    // Low-chroma grounds saved as 8-bit hex carry a few degrees of hue noise; a cut-off would jump by about 30°.
+    for (let h = 20; h <= 140; h += 4) expect(Math.abs(groundHue(h + 4) - groundHue(h)), `${h}°`).toBeLessThan(10);
+    expect(Math.abs(groundHue(260) - 75)).toBeLessThan(6);
   });
 
   it('keeps an accent the author chose, and still passes every pair', () => {
     const { tokens, pairs } = themeOf('foundation');
-    const h = make('#1e3a5f', 'tinted', 'foundation', '#d98f48');
-    expect(h.values['color.accent']).toBe('#d98f48');
+    const h = make('#1e3a5f', 'tinted', 'foundation', '#E9A23B');
+    expect(h.values['color.accent']).toBe('#e9a23b');
+    expect(make('#1e3a5f', 'tinted').values['color.accent']).not.toBe('#e9a23b');
     expect(evaluatePairs(tokens, pairs, parseColor, h.values as Record<string, string>).every((r) => r.status === 'pass')).toBe(true);
   });
 
@@ -154,12 +172,46 @@ describe('the palette follows the brand (#357)', () => {
     expect(h.adjusted).toBe(false);
     expect(h.results.filter((r) => r.status !== 'pass').map((r) => r.pair.id)).toEqual(['self']);
   });
-  it('leaves a pair on a colour it cannot measure unknown, never counted as readable', () => {
-    const tokens = [...(getTheme('foundation').tokens as TokenDef[]), { id: 'color.custom-ink', label: 'Ink', group: 'color', value: 'var(--ink)' } as TokenDef];
-    const pair: ContrastPair = { id: 'ink-page', use: 'Ink on the page', fg: 'color.custom-ink', bg: 'color.background', state: 'rest', group: 'ink' };
-    const h = harmonizePalette({ brand: '#1f5a4c', mood: 'tinted', tokens, pairs: [...(getTheme('foundation').contrastPairs ?? []), pair] });
-    expect(h.results.filter((r) => r.status !== 'pass').map((r) => [r.pair.id, r.status])).toEqual([['ink-page', 'unknown']]);
-    expect(h.values['color.background']).toBe(make('#1f5a4c', 'tinted').values['color.background']);
+  it('holds back a palette whose colours sit in a pair it cannot measure, and lets one through whose colours do not', () => {
+    const custom = (id: string, value: string) => ({ id, label: id, group: 'color', value }) as TokenDef;
+    const tokens = [...(getTheme('foundation').tokens as TokenDef[]), custom('color.custom-ink', 'var(--ink, #fff)'), custom('color.custom-paper', 'var(--paper)')];
+    const onPage: ContrastPair = { id: 'ink-page', use: 'Ink on the page', fg: 'color.custom-ink', bg: 'color.background', state: 'rest', group: 'ink' };
+    const apart: ContrastPair = { id: 'ink-paper', use: 'Ink on paper', fg: 'color.custom-ink', bg: 'color.custom-paper', state: 'rest', group: 'ink' };
+    const theme = getTheme('foundation').contrastPairs ?? [];
+    const held = harmonizePalette({ brand: '#1f5a4c', mood: 'tinted', tokens, pairs: [...theme, onPage] });
+    expect(held.results.filter((r) => r.status !== 'pass').map((r) => [r.pair.id, r.status])).toEqual([['ink-page', 'unknown']]);
+    expect(held.unreadable.map((r) => r.pair.id)).toEqual(['ink-page']);
+    const through = harmonizePalette({ brand: '#1f5a4c', mood: 'tinted', tokens, pairs: [...theme, apart] });
+    expect(through.results.filter((r) => r.status !== 'pass').map((r) => r.pair.id)).toEqual(['ink-paper']);
+    expect(through.unreadable).toEqual([]);
+    // A colour reader that can resolve it (the editor's asks the browser) measures the pair, and the palette keeps it
+    // readable: white ink needs a dark page.
+    const read = (css: string) => parseColor(css.replace('var(--ink, #fff)', '#ffffff'));
+    const measured = harmonizePalette({ brand: '#1f5a4c', mood: 'tinted', tokens, pairs: [...theme, onPage], read });
+    expect(measured.unreadable).toEqual([]);
+    expect(measured.page).toBe('dark');
+    expect(measured.results.find((r) => r.pair.id === 'ink-page')?.status).toBe('pass');
+  });
+
+  it('is held back, naming the pair, when a fixed accent cannot be read on dark sections', () => {
+    const h = make('#1e3a5f', 'tinted', 'foundation', '#000000');
+    expect(h.values['color.accent']).toBe('#000000');
+    expect(h.unreadable.map((r) => r.pair.id)).toEqual(['dark-accent']);
+  });
+
+  it('saves only colours the site does not show already, keeping a link that still lands on the palette colour', () => {
+    const base = getTheme('foundation').tokens as TokenDef[];
+    const h = make('#1e3a5f', 'tinted');
+    const sea = { id: 'color.custom-sea', label: 'Sea', group: 'color', value: '#1E3A5F' } as TokenDef;
+    const tokens = [...base.map((t) => (t.id === 'color.brand' ? { ...t, value: { token: 'color.custom-sea' } } : t.id === 'color.background' ? { ...t, value: h.values['color.background']!.toUpperCase() } : t)), sea] as TokenDef[];
+    const changes = Object.fromEntries(paletteChanges(tokens, h.values));
+    expect(changes['color.brand']).toBeUndefined(); // follows Sea, which is the brand
+    expect(changes['color.background']).toBeUndefined(); // the same colour, written in capitals
+    expect(changes['color.on-brand']).toBeUndefined(); // already the theme's white
+    expect(changes['color.surface-alt']).toBe(h.values['color.surface-alt']);
+    // A link that would land elsewhere is replaced: Brand (strong) following Brand is not the hover shade.
+    const linked = tokens.map((t) => (t.id === 'color.brand-strong' ? { ...t, value: { token: 'color.brand' } } : t)) as TokenDef[];
+    expect(Object.fromEntries(paletteChanges(linked, h.values))['color.brand-strong']).toBe(h.values['color.brand-strong']);
   });
 });
 
@@ -168,6 +220,8 @@ describe('colors the palette is made from and into', () => {
     const c = lch(oklchHex(0.9, 0.4, 260));
     expect(c.L).toBeCloseTo(0.9, 2);
     expect(Math.abs(c.h - 260)).toBeLessThan(3);
+    // A colour sRGB already has keeps its chroma.
+    expect(lch(oklchHex(0.6, 0.05, 200)).C).toBeCloseTo(0.05, 2);
     expect(oklchHex(1.2, 0.1, 30)).toBe('#ffffff');
     expect(oklchHex(-0.1, 0.1, 30)).toBe('#000000');
   });
@@ -178,6 +232,17 @@ describe('colors the palette is made from and into', () => {
     expect(paletteSeed(set('color.brand', '#1E3A5F'))).toBe('#1e3a5f');
     expect(paletteSeed(set('color.brand', { token: 'color.accent' }))).toBe('#d98f48');
     expect(paletteSeed(set('color.brand', 'rgba(0, 0, 0, 0.5)'))).toBe('#7e7d7c');
+    // Over a page of another colour, it is that page that shows through.
+    const red = set('color.brand', 'rgba(0, 0, 0, 0.5)').map((t) => (t.id === 'color.background' ? { ...t, value: '#ff0000' } : t)) as TokenDef[];
+    expect(paletteSeed(red)).toBe('#800000');
+    // A page colour that cannot be read leaves the translucent brand unknown, never assumed to be over white.
+    expect(paletteSeed(red.map((t) => (t.id === 'color.background' ? { ...t, value: 'var(--page)' } : t)) as TokenDef[])).toBeNull();
     expect(paletteSeed(set('color.brand', 'var(--x)'))).toBeNull();
+  });
+
+  it('makes dark sections dark enough for translucent text on them, as it shows', () => {
+    const text = parseColor('#ffffff96')!;
+    const section = parseColor(darkSection('#000000', '#ffffff96'))!;
+    expect(contrastBetween(compositeOver(text, section), section)).toBeGreaterThanOrEqual(7);
   });
 });

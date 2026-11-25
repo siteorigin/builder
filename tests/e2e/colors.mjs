@@ -274,10 +274,18 @@ const rgbOf = (hex) => `rgb(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2),
 const beforePalette = await overrides();
 const beforeBackground = await pageBackground();
 const atRest = await settled();
+const chips = async () => Object.fromEntries(await harmony.locator('.ss-harmony-chips li').evaluateAll((els) => els.map((el) => [el.dataset.role, el.dataset.value])));
+const drawnPage = () => harmony.locator('.ss-harmony-preview').evaluate((el) => getComputedStyle(el).backgroundColor);
+assert.equal(await harmony.getByRole('button', { name: 'Neutral', exact: true }).getAttribute('aria-pressed'), 'true', 'Neutral is offered first');
+const neutral = await chips();
+const neutralPage = await drawnPage();
 const tinted = harmony.getByRole('button', { name: 'Tinted', exact: true });
 await tinted.click();
 await eventually(async () => assert.equal(await tinted.getAttribute('aria-pressed'), 'true', 'the mood is chosen'));
-const proposed = Object.fromEntries(await harmony.locator('.ss-harmony-chips li').evaluateAll((els) => els.map((el) => [el.dataset.role, el.dataset.value])));
+const proposed = await chips();
+assert.notEqual(proposed['color.background'], neutral['color.background'], 'each mood proposes its own colors');
+assert.notEqual(await drawnPage(), neutralPage, 'and the preview is drawn in them');
+assert.equal(await drawnPage(), rgbOf(proposed['color.background']), 'its page in the proposed background');
 for (const id of ['color.background', 'color.surface', 'color.surface-alt', 'color.border', 'color.muted', 'color.brand-strong', 'color.inverse', 'color.accent']) assert.match(proposed[id] ?? '', /^#[0-9a-f]{6}$/, `the preview names ${id}`);
 assert.match(await harmony.locator('.ss-harmony-verdict').textContent(), /Every color pair is readable/, 'and says the proposal is readable');
 assert.equal(await settled(), atRest, 'choosing a mood only previews it');
@@ -297,6 +305,7 @@ await eventually(async () => assert.equal(await harmony.getByRole('button', { na
 await undo();
 await eventually(async () => assert.deepEqual(await overrides(), beforePalette, 'one undo puts every color back, links included'));
 await eventually(async () => assert.equal(await pageBackground(), beforeBackground, 'and the page with them'));
+await eventually(async () => assert.equal(await harmony.getByRole('button', { name: 'Generate harmonious palette from brand' }).isDisabled(), false, 'and offers the palette again'));
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
