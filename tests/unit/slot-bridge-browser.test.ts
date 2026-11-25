@@ -87,10 +87,14 @@ describe.skipIf(!browserInstalled)('a placement’s empty slots in the preview (
     expect(measured[1]!.many).toBeUndefined();
     expect(measured[2]).toMatchObject(await boxOf('root'));
     expect(measured[3]).toBeNull();
-    // Any other element is measured where it first is, hidden or not, as before.
-    await frame.evaluate(`document.getElementById('root').insertAdjacentHTML('beforeend', '<i data-so-ctx="page:p" data-so-node="twice" style="display: none">a</i><i data-so-ctx="page:p" data-so-node="twice">b</i>')`);
+    // Any other element is measured where it first shows too (#658): a copy hidden at this width is skipped, and the one
+    // copy that shows is one place, as the selection's outline finds it.
+    await frame.evaluate(`document.getElementById('root').insertAdjacentHTML('beforeend', '<i data-so-ctx="page:p" data-so-node="twice" style="display: none">a</i><i id="shown-twice" data-so-ctx="page:p" data-so-node="twice">b</i>')`);
     await post('measure', { requestId: 'm2', descs: [{ ctx: 'page:p', node: 'twice', items: '' }] });
-    await expect.poll(async () => (await messages()).find((m) => m.type === 'measured' && m.payload.requestId === 'm2')?.payload.rects).toEqual([null]);
+    await expect.poll(async () => (await messages()).find((m) => m.type === 'measured' && m.payload.requestId === 'm2')?.payload.rects?.length).toBe(1);
+    const twice = (await messages()).find((m) => m.type === 'measured' && m.payload.requestId === 'm2')!.payload.rects![0];
+    expect(twice).toMatchObject(await boxOf('shown-twice'));
+    expect(twice!.many).toBeUndefined();
   });
 
   it('leaves placeholders out of what a drag asks is under the pointer', async () => {
