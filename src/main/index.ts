@@ -399,11 +399,11 @@ function registerIpc() {
   handle('project:saveComponentToLibrary', (id: unknown, opening: unknown) =>
     typeof id === 'string' && typeof opening === 'string' ? controller.saveComponentToLibrary(id, opening) : { ok: false, message: 'That component is no longer in this project.' }
   );
-  handle('project:removeSavedComponent', (id: unknown) => controller.removeSavedComponent(String(id ?? '')));
-  handle('project:insertSavedComponent', (id: unknown, place: unknown, opening: unknown, revision: unknown) => {
+  handle('project:removeSavedComponent', (id: unknown, digest: unknown) => controller.removeSavedComponent(String(id ?? ''), String(digest ?? '')));
+  handle('project:insertSavedComponent', (id: unknown, digest: unknown, place: unknown, opening: unknown, revision: unknown) => {
     const at = readInsertPlace(place);
-    if (typeof id !== 'string' || !at || typeof opening !== 'string' || !Number.isInteger(revision)) return { ok: false, message: 'That place can’t take a component.' };
-    return controller.insertSavedComponent(id, at, opening, revision as number);
+    if (typeof id !== 'string' || typeof digest !== 'string' || !at || typeof opening !== 'string' || !Number.isInteger(revision)) return { ok: false, message: 'That place can’t take a component.' };
+    return controller.insertSavedComponent(id, digest, at, opening, revision as number);
   });
   handle('project:reviewPostImport', (kind: unknown, opening: unknown) => controller.reviewPostImport(kind === 'markdown' ? 'markdown' : 'wordpress', String(opening ?? '')));
   handle('project:commitPostImport', (id: unknown, opening: unknown) => controller.commitPostImport(String(id ?? ''), String(opening ?? '')));

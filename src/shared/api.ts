@@ -700,6 +700,8 @@ export interface ComponentImportResult {
 /** A component in the personal library (#372), kept on this computer for every project (see savedComponents). */
 export interface SavedComponent {
   id: string;
+  /** The saved copy listed: inserting or removing names it, so a copy saved since is never the one acted on. */
+  digest: string;
   name: string;
   description?: string;
   /** How it goes into a page: as one of the page's sections, or as an element inside a layout. */
@@ -738,7 +740,7 @@ export interface SavedInsertPlace {
 export interface SavedInsertResult extends ComponentImportResult {
   /** The placement made, to select. */
   nodeId?: string;
-  /** The saved component is no longer in the library: the list is out of date. */
+  /** The saved component is no longer in the library, or was saved again: the list is out of date. */
   gone?: boolean;
 }
 
@@ -934,13 +936,13 @@ export interface BuilderApi {
     savedComponents(opening: string): Promise<SavedComponent[]>;
     /** Save a project component of the project open as `opening` to the personal library, replacing its earlier copy. */
     saveComponentToLibrary(definitionId: string, opening: string): Promise<SaveToLibraryResult>;
-    /** Take a component out of the personal library. Whether it was there. */
-    removeSavedComponent(id: string): Promise<boolean>;
+    /** Take the saved copy `digest` of a component out of the personal library: `changed` when it was saved again since. */
+    removeSavedComponent(id: string, digest: string): Promise<'removed' | 'changed' | 'gone'>;
     /**
      * Insert a saved component into the project open as `opening`, still at `revision`, at `place`, going in as its
      * role: its package is imported and placed as one change, after the author says any code it brings may come in.
      */
-    insertSavedComponent(id: string, place: SavedInsertPlace, opening: string, revision: number): Promise<SavedInsertResult>;
+    insertSavedComponent(id: string, digest: string, place: SavedInsertPlace, opening: string, revision: number): Promise<SavedInsertResult>;
     /**
      * Choose a WordPress export or a folder of Markdown posts and read it, writing nothing: what importing it into the
      * project open as `opening` would do. The review holds until it is imported, cancelled, or another takes its place.

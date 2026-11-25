@@ -5,7 +5,7 @@
  * Developer mode, and inserting one always asks first, whatever its card says.
  */
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, promises as fsp, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -55,6 +55,8 @@ const { updateSettings } = await import('../../src/main/settings');
 const store = await import('../../src/main/saved-components');
 
 type Session = InstanceType<typeof ProjectSession>;
+const openFile = fsp.open.bind(fsp);
+const readFile = fsp.readFile.bind(fsp);
 
 const dirs: string[] = [];
 const tmp = (prefix: string) => {
@@ -117,14 +119,25 @@ describe('the personal library on disk', () => {
     expect(again).toMatchObject({ replaced: true, card: { id: first.card.id, name: 'Pro card' } });
     expect((await store.listSaved(root)).map((c) => c.name)).toEqual(['Plan title', 'Pro card']);
     // The package is the file Export writes, read back through the package checks.
-    expect((await readComponentPackage(store.savedPackagePath(root, first.card.id))).definitions.find((d) => d.id === rootId)?.name).toBe('Pro card');
-    // Listing reads cards alone: a package that can't be read still lists (inserting it says why).
-    writeFileSync(store.savedPackagePath(root, title.card.id), 'not a package');
+    expect(again.card.digest).not.toBe(first.card.digest);
+    expect((await readComponentPackage(store.savedPackagePath(root, again.card))).definitions.find((d) => d.id === rootId)?.name).toBe('Pro card');
+    // Listing reads cards alone, never a package (which may hold megabytes of images).
+    const opened: string[] = [];
+    const open = vi.spyOn(fsp, 'open').mockImplementation(((...args: Parameters<typeof fsp.open>) => (opened.push(String(args[0])), openFile(...args))) as typeof fsp.open);
+    const read = vi.spyOn(fsp, 'readFile').mockImplementation(((...args: Parameters<typeof fsp.readFile>) => (opened.push(String(args[0])), readFile(...args))) as typeof fsp.readFile);
+    writeFileSync(store.savedPackagePath(root, title.card), 'not a package');
     expect((await store.listSaved(root)).map((c) => c.name)).toEqual(['Plan title', 'Pro card']);
-    expect(await store.removeSaved(root, title.card.id)).toBe(true);
-    expect(await store.removeSaved(root, title.card.id)).toBe(false);
+    open.mockRestore();
+    read.mockRestore();
+    expect(opened.filter((f) => f.endsWith('.socomponent.json'))).toEqual([]);
+    expect(opened.filter((f) => f.endsWith('.card.json'))).toHaveLength(2);
+    // A copy saved since the list was shown is never the one removed.
+    expect(await store.removeSaved(root, again.card.id, first.card.digest)).toBe('changed');
+    expect(await store.removeSaved(root, title.card.id, title.card.digest)).toBe('removed');
+    expect(await store.removeSaved(root, title.card.id)).toBe('gone');
     expect((await store.listSaved(root)).map((c) => c.name)).toEqual(['Pro card']);
-    expect(readdirSync(root).sort()).toEqual([`${first.card.id}.card.json`, `${first.card.id}.socomponent.json`]);
+    // Only the copy its card names is kept.
+    expect(readdirSync(root).sort()).toEqual([`${again.card.id}.${again.card.digest}.socomponent.json`, `${again.card.id}.card.json`].sort());
     await s.close();
   });
 
@@ -134,7 +147,7 @@ describe('the personal library on disk', () => {
     const { s, rootId, childId } = await pricingCard();
     const kept = await store.saveToLibrary(root, await saveInput(s, rootId));
     const orphan = await store.saveToLibrary(root, await saveInput(s, childId));
-    rmSync(store.savedPackagePath(root, orphan.card.id));
+    rmSync(store.savedPackagePath(root, orphan.card));
     writeFileSync(join(root, 'sc_damaged00000000.card.json'), '{ not json');
     writeFileSync(join(root, 'sc_damaged00000000.socomponent.json'), '{}');
     const card = JSON.parse(readFileSync(join(root, `${kept.card.id}.card.json`), 'utf8'));
@@ -145,7 +158,29 @@ describe('the personal library on disk', () => {
     expect((await store.listSaved(root)).map((c) => c.id)).toEqual([kept.card.id]);
     expect(await store.findSaved(root, orphan.card.id)).toBeNull();
     expect(await store.findSaved(root, '../settings')).toBeNull();
-    expect(() => store.savedPackagePath(root, '../../settings')).toThrow();
+    expect(() => store.packagePath(root, '../../settings', kept.card.digest)).toThrow();
+    expect(() => store.packagePath(root, kept.card.id, '../x')).toThrow();
+    await s.close();
+  });
+
+  it('keeps the saved copy whole when a save stops part way, or is refused', async () => {
+    const root = join(tmp('so-lib-'), 'saved-components');
+    const { s, rootId } = await pricingCard();
+    const first = (await store.saveToLibrary(root, await saveInput(s, rootId))).card;
+    // A newer package written but its card never: the card still names the copy it describes.
+    const stray = join(root, `${first.id}.${'f'.repeat(24)}.socomponent.json`);
+    writeFileSync(stray, 'a newer copy, cut short');
+    expect((await store.listSaved(root)).map((c) => [c.name, c.digest])).toEqual([['Pricing card', first.digest]]);
+    expect((await store.findSaved(root, first.id))?.digest).toBe(first.digest);
+    expect((await readComponentPackage(store.savedPackagePath(root, first))).rootId).toBe(rootId);
+    // A card this app couldn't read back is refused before anything is replaced.
+    const input = await saveInput(s, rootId);
+    const many = Array.from({ length: 61 }, (_, i) => ({ ...input.definitions[0], id: `d${i}` }));
+    await expect(store.saveToLibrary(root, { ...input, name: 'Too big', definitions: many })).rejects.toThrow(/more components/);
+    expect((await store.listSaved(root)).map((c) => [c.name, c.digest])).toEqual([['Pricing card', first.digest]]);
+    // The next save sweeps what no card names.
+    const next = (await store.saveToLibrary(root, { ...input, name: 'Pricing card 2' })).card;
+    expect(readdirSync(root).sort()).toEqual([`${next.id}.${next.digest}.socomponent.json`, `${next.id}.card.json`].sort());
     await s.close();
   });
 
@@ -153,7 +188,11 @@ describe('the personal library on disk', () => {
     const place: SavedInsertPlace = { owner: { kind: 'page', id: 'p_home' }, parentId: 'n_abc', slot: 'content', index: 2 };
     expect(store.readInsertPlace(place)).toEqual(place);
     expect(store.readInsertPlace({ owner: { kind: 'page', id: 'p_home' }, parentId: null })).toEqual({ owner: { kind: 'page', id: 'p_home' }, parentId: null });
-    for (const bad of [null, {}, { owner: { kind: 'disk', id: 'x' }, parentId: null }, { owner: { kind: 'page', id: '../x' }, parentId: null }, { ...place, index: -1 }, { ...place, index: 1.5 }, { ...place, slot: 4 }, { ...place, parentId: undefined }])
+    // Any page a project can hold, as an ordinary insert takes it.
+    expect(store.readInsertPlace({ owner: { kind: 'page', id: '-landing' }, parentId: null })).toEqual({ owner: { kind: 'page', id: '-landing' }, parentId: null });
+    expect(store.readInsertPlace({ owner: { kind: 'component', id: 'code.card-abcde' }, parentId: 'n_root' })).toMatchObject({ owner: { kind: 'component', id: 'code.card-abcde' } });
+    // Never the shared header or footer, a reserved name, or anything that isn't a place.
+    for (const bad of [null, {}, { owner: { kind: 'shell', id: 'header' }, parentId: null }, { owner: { kind: 'disk', id: 'x' }, parentId: null }, { owner: { kind: 'page', id: '__proto__' }, parentId: null }, { ...place, index: -1 }, { ...place, index: 1.5 }, { ...place, slot: 4 }, { ...place, parentId: undefined }])
       expect(store.readInsertPlace(bad)).toBeNull();
   });
 });
@@ -174,6 +213,13 @@ describe('whether a saved component brings code', () => {
     // Code of the project's own is code wherever it goes.
     const own = packagedDefinitions((await buildComponentPackage(s.dir, s.state, badge)).pkg.definitions);
     expect(codeBrought(blank('Same theme'), own).map((d) => d.name)).toEqual(['Badge']);
+    await s.close();
+  });
+
+  it('lists a component that its design places and its dependencies name only once', async () => {
+    const { s, rootId, childId } = await pricingCard();
+    const defs = (await buildComponentPackage(s.dir, s.state, rootId)).pkg.definitions.map((d) => (d.id === rootId ? { ...d, dependencies: [childId] } : d));
+    expect(packagedDefinitions(defs).find((d) => d.id === rootId)?.needs.filter((n) => n === childId)).toEqual([childId]);
     await s.close();
   });
 });
@@ -198,7 +244,7 @@ describe('importing and placing in one change', () => {
     const owner = home(dest);
     const before = documents(dest);
     const entries = dest.historyInfo().entries.length;
-    const r = ok(await insertInto(dest, store.savedPackagePath(root, card.id), { owner, parentId: null }, 'section', dest.revision));
+    const r = ok(await insertInto(dest, store.savedPackagePath(root, card), { owner, parentId: null }, 'section', dest.revision));
     const last = r.results!.at(-1)!;
     expect(last.nodeId).toBe('n_placed01');
     const placed = dest.state.pages[owner.id].nodes.n_placed01;
@@ -210,7 +256,7 @@ describe('importing and placing in one change', () => {
     expect(documents(dest)).toEqual(before);
 
     // An element dropped straight onto the page goes in a section of its own, as Insert's tiles put one.
-    const el = ok(await insertInto(dest, store.savedPackagePath(root, title.id), { owner, parentId: null }, 'element'));
+    const el = ok(await insertInto(dest, store.savedPackagePath(root, title), { owner, parentId: null }, 'element'));
     const tree = dest.state.pages[owner.id];
     const wrapper = tree.nodes[tree.rootIds.at(-1)!];
     expect(wrapper).toMatchObject({ kind: 'instance', definitionId: 'foundation.layout.section' });
@@ -229,9 +275,9 @@ describe('importing and placing in one change', () => {
     const dest = await ProjectSession.create(tmp('so-lib-dest-'), blank('Destination'));
     const before = documents(dest);
     const revision = dest.revision;
-    const gone = await insertInto(dest, store.savedPackagePath(root, card.id), { owner: home(dest), parentId: 'n_missing' }, 'element');
+    const gone = await insertInto(dest, store.savedPackagePath(root, card), { owner: home(dest), parentId: 'n_missing' }, 'element');
     expect(gone.ok).toBe(false);
-    const stale = await insertInto(dest, store.savedPackagePath(root, card.id), { owner: home(dest), parentId: null }, 'section', revision - 1);
+    const stale = await insertInto(dest, store.savedPackagePath(root, card), { owner: home(dest), parentId: null }, 'section', revision - 1);
     expect(stale.error?.code).toBe('STALE_REVISION');
     expect(documents(dest)).toEqual(before);
     expect(dest.revision).toBe(revision);
@@ -268,10 +314,16 @@ describe('the library through the app (#372)', () => {
       { type: 'component.createCode', name: 'Badge', source: '<span class="badge">New</span>\n' }
     ]);
     const [bandId, badgeId] = made.results.map((r) => r.definitionId as string);
-    const a = await opened(await projectFolder(made.state));
+    // A band holding the theme's video: code of the theme's, which a project on the same theme already has.
+    const vsec = applyOperations(made.state, [{ type: 'node.insert', owner: homeA, parentId: null, componentId: 'layout.section' }]);
+    const vid = applyOperations(vsec.state, [{ type: 'node.insert', owner: homeA, parentId: vsec.results[0].nodeId as string, slot: 'content', componentId: 'media.video' }]);
+    const withVideo = applyOperations(vid.state, [{ type: 'component.createFromNode', owner: homeA, nodeId: vsec.results[0].nodeId as string, name: 'Video band' }]);
+    const videoId = withVideo.results[0].definitionId as string;
+    const a = await opened(await projectFolder(withVideo.state));
     const saved = await a.saveComponentToLibrary(bandId, a.openingKey!);
     expect(saved).toMatchObject({ ok: true, name: 'Feature band', replaced: false });
     expect(await a.saveComponentToLibrary(badgeId, a.openingKey!)).toMatchObject({ ok: true, name: 'Badge' });
+    expect(await a.saveComponentToLibrary(videoId, a.openingKey!)).toMatchObject({ ok: true, name: 'Video band' });
     expect(await a.saveComponentToLibrary(bandId, 'another opening')).toMatchObject({ ok: false });
     await a.close();
 
@@ -279,9 +331,11 @@ describe('the library through the app (#372)', () => {
     const b = await opened(await projectFolder(blank('Studio B')));
     const s = b.session!;
     const list = await b.savedComponents(b.openingKey!);
+    // Whether each brings code is worked out for Studio B: the theme's video is no code of its own there.
     expect(list.map((c) => [c.name, c.code, c.role, c.from])).toEqual([
       ['Badge', true, 'section', 'Studio A'],
-      ['Feature band', false, 'section', 'Studio A']
+      ['Feature band', false, 'section', 'Studio A'],
+      ['Video band', false, 'section', 'Studio A']
     ]);
     const band = list.find((c) => c.name === 'Feature band')!;
     const badge = list.find((c) => c.name === 'Badge')!;
@@ -290,18 +344,23 @@ describe('the library through the app (#372)', () => {
     // A managed one goes in at once, imported and placed as one change.
     const place: SavedInsertPlace = { owner: home(s), parentId: null };
     const entries = s.historyInfo().entries.length;
-    const r = await b.insertSavedComponent(band.id, place, b.openingKey!, s.revision);
+    const r = await b.insertSavedComponent(band.id, band.digest, place, b.openingKey!, s.revision);
     expect(r).toMatchObject({ ok: true, name: 'Feature band' });
     expect(s.state.pages[place.owner.id].nodes[r.nodeId!]).toMatchObject({ kind: 'instance', definitionId: r.definitionId });
     expect(s.historyInfo().entries.length).toBe(entries + 1);
     expect(env.asked).toEqual([]);
     // Out of date: the project has moved on since the place was worked out.
-    expect(await b.insertSavedComponent(band.id, place, b.openingKey!, s.revision - 1)).toMatchObject({ ok: false, message: expect.stringMatching(/changed/) });
+    expect(await b.insertSavedComponent(band.id, band.digest, place, b.openingKey!, s.revision - 1)).toMatchObject({ ok: false, message: expect.stringMatching(/changed/) });
+    // Nor a revision the project hasn't reached, even code it would ask about: refused before anything is asked.
+    expect(await b.insertSavedComponent(badge.id, badge.digest, place, b.openingKey!, s.revision + 1)).toMatchObject({ ok: false, message: expect.stringMatching(/changed/) });
+    expect(env.asked).toEqual([]);
+    // A copy other than the one listed is never inserted: the list is out of date.
+    expect(await b.insertSavedComponent(band.id, 'f'.repeat(24), place, b.openingKey!, s.revision)).toMatchObject({ ok: false, gone: true });
 
     // Code asks first, every time; Cancel lands nothing.
     const before = s.revision;
     env.answers = [0];
-    expect(await b.insertSavedComponent(badge.id, place, b.openingKey!, s.revision)).toEqual({ ok: false });
+    expect(await b.insertSavedComponent(badge.id, badge.digest, place, b.openingKey!, s.revision)).toEqual({ ok: false });
     expect(env.asked).toEqual(['“Badge” includes code']);
     expect(s.revision).toBe(before);
     // A card edited to say it has no code changes nothing: the package is what is checked.
@@ -311,18 +370,18 @@ describe('the library through the app (#372)', () => {
     writeFileSync(cardFile, JSON.stringify({ ...card, definitions: card.definitions.map((d: { kind: string }) => ({ ...d, kind: 'managed' })) }));
     expect((await b.savedComponents(b.openingKey!)).find((c) => c.id === badge.id)?.code).toBe(false);
     env.answers = [1];
-    const code = await b.insertSavedComponent(badge.id, place, b.openingKey!, s.revision);
+    const code = await b.insertSavedComponent(badge.id, badge.digest, place, b.openingKey!, s.revision);
     expect(code).toMatchObject({ ok: true, name: 'Badge' });
     expect(env.asked).toHaveLength(2);
     expect(s.state.components[code.definitionId!]).toMatchObject({ kind: 'code', owner: 'project' });
 
     // Without Developer mode, code is refused before anything is asked.
     await updateSettings({ developerMode: false });
-    expect(await b.insertSavedComponent(badge.id, place, b.openingKey!, s.revision)).toMatchObject({ ok: false, message: expect.stringMatching(/Developer mode/) });
+    expect(await b.insertSavedComponent(badge.id, badge.digest, place, b.openingKey!, s.revision)).toMatchObject({ ok: false, message: expect.stringMatching(/Developer mode/) });
     expect(env.asked).toHaveLength(2);
 
     // Gone from the library: the list is out of date.
-    expect(await b.removeSavedComponent(band.id)).toBe(true);
-    expect(await b.insertSavedComponent(band.id, place, b.openingKey!, s.revision)).toMatchObject({ ok: false, gone: true });
+    expect(await b.removeSavedComponent(band.id, band.digest)).toBe('removed');
+    expect(await b.insertSavedComponent(band.id, band.digest, place, b.openingKey!, s.revision)).toMatchObject({ ok: false, gone: true });
   });
 });

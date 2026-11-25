@@ -880,6 +880,7 @@ export function InsertPanel() {
   const selection = useStore((s) => s.selection);
   useStore((s) => s.pageId);
   useStore((s) => s.definitionMode);
+  useStore((s) => s.templateMode);
   const dev = useStore((s) => !!s.settings?.developerMode);
   const open = useStore((s) => s.leftTab === 'insert');
   const [q, setQ] = useState('');
@@ -1036,21 +1037,39 @@ export function InsertPanel() {
   }, [selection, added]);
   // The personal library (#372), listed for the project open now (whether each would bring code depends on its theme),
   // whenever Insert opens and after each change to it. A list for another opening is never shown.
+  // Listed again when the theme or its installed components change, and shown only for the theme it was worked out for.
   const opening = snap?.workspaceKey;
-  const themeId = snap?.state.site.themeId;
+  const themeKey = snap ? JSON.stringify([snap.state.site.themeId, snap.state.themeLock]) : '';
   const libraryVersion = useStore((s) => s.libraryVersion);
-  const [library, setLibrary] = useState<{ opening: string; list: SavedComponent[] } | null>(null);
+  const [library, setLibrary] = useState<{ opening: string; theme: string; list: SavedComponent[] } | null>(null);
   useEffect(() => {
     if (!open || !opening) return;
     let live = true;
     api.project.savedComponents(opening).then(
-      (list) => live && setLibrary({ opening, list }),
+      (list) => live && setLibrary({ opening, theme: themeKey, list }),
       () => undefined
     );
     return () => {
       live = false;
     };
-  }, [open, opening, themeId, libraryVersion]);
+  }, [open, opening, themeKey, libraryVersion]);
+  // The saved row taken out of the library from its menu, until the list without it is shown: focus stays in the list
+  // (else search) rather than falling to the page, where the next Delete would remove the canvas selection.
+  const savedRefocus = useRef<number | null>(null);
+  useEffect(() => {
+    if (savedRefocus.current === null) return;
+    const index = savedRefocus.current;
+    savedRefocus.current = null;
+    const a = document.activeElement;
+    if (a && a !== document.body && a.isConnected) return;
+    const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="saved"] .insert-tile.saved') ?? [])];
+    const next = rows[Math.min(index, rows.length - 1)];
+    if (next) {
+      for (const c of next.closest('[role="grid"]')?.querySelectorAll<HTMLElement>('[role="gridcell"] > *') ?? []) c.tabIndex = c === next ? 0 : -1;
+      next.focus({ preventScroll: true });
+      next.scrollIntoView({ block: 'nearest' });
+    } else searchRef.current?.focus({ preventScroll: true });
+  }, [library]);
   if (!snap) return null;
   const st = snap.state;
 
@@ -1158,7 +1177,7 @@ export function InsertPanel() {
   });
 
   // Saved components that would bring code show only in Developer mode, as Your components' code does.
-  const savedItems: Item[] = (library?.opening === snap.workspaceKey ? library.list : [])
+  const savedItems: Item[] = (library?.opening === snap.workspaceKey && library.theme === themeKey ? library.list : [])
     .filter((c) => dev || !c.code)
     .map((c) => ({
       key: `saved:${c.id}`,
@@ -1222,8 +1241,9 @@ export function InsertPanel() {
       const prior = getState().snapshot;
       const project = prior?.workspaceKey;
       const name = fullName(it);
-      const at = it.kind === 'saved' ? planOf(it).at : null;
-      const entryId = it.saved ? (at ? await insertSaved(it.saved, at) : undefined) : await insert(it.spec, name);
+      // A saved one's place is worked out again as it is inserted, with the revision it is for.
+      const entryId = it.saved ? await insertSaved(it.saved) : await insert(it.spec, name);
+      if (it.saved && !entryId) return;
       const s = getState();
       const after = s.selection;
       // Landed: the selection moved to a node of this project that exists now and did not before the insert.
@@ -1459,11 +1479,17 @@ export function InsertPanel() {
     dragged.current = false;
     return was;
   };
+  /** Whether a click on `it` adds it: always for a saved component, which is never dragged, else unless it ends a drag. */
+  const clickAdds = (it: Item, e: React.MouseEvent<HTMLElement>) => {
+    if (!it.saved) return !endsDrag(e);
+    dragged.current = false;
+    return true;
+  };
   const tileProps = (it: Item) => ({
     'data-kind': it.kind,
     'data-key': it.key,
     'aria-describedby': describedBy(it),
-    onClick: (e: React.MouseEvent<HTMLElement>) => !endsDrag(e) && void add(it),
+    onClick: (e: React.MouseEvent<HTMLElement>) => clickAdds(it, e) && void add(it),
     // A saved component isn't in this project until it is inserted, so it is clicked in rather than dragged.
     ...(it.saved ? {} : dragFrom(it)),
     ...hover(it.key, peekable(it.kind))
@@ -1550,8 +1576,13 @@ export function InsertPanel() {
     ...(c.from ? [{ heading: `Saved from ${c.from}` }] : []),
     { label: 'Insert here', icon: <Plus />, onSelect: () => void add(byKey.get(`saved:${c.id}`)!) },
     { separator: true },
-    { label: 'Remove from library', icon: <Trash2 />, danger: true, hint: 'Projects keep their copies', onSelect: () => void removeFromLibrary(c) }
+    { label: 'Remove from library', icon: <Trash2 />, danger: true, hint: 'Projects keep their copies', onSelect: () => void removeSavedRow(c) }
   ];
+  const removeSavedRow = async (c: SavedComponent) => {
+    const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="saved"] .insert-tile.saved') ?? [])];
+    savedRefocus.current = Math.max(0, rows.findIndex((r) => r.dataset.key === `saved:${c.id}`));
+    if (!(await removeFromLibrary(c))) savedRefocus.current = null;
+  };
   const manage = (it: Item) => {
     if (it.saved) {
       menuFor.current = null;
@@ -1954,7 +1985,7 @@ export function InsertPanel() {
                   {...(it.saved ? {} : dragFrom(it))}
                   onClick={(e) => {
                     searchRef.current?.focus({ preventScroll: true });
-                    if (!endsDrag(e)) void add(it);
+                    if (clickAdds(it, e)) void add(it);
                   }}
                 >
                   {it.kind === 'section' ? (

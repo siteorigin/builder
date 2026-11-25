@@ -34,6 +34,9 @@ const yours = panel.locator('.insert-group[data-kind="component"]');
 const saved = panel.locator('.insert-group[data-kind="saved"]');
 const savedTile = (name) => saved.locator('.insert-tile.saved', { has: win.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
 const menu = win.getByRole('menu');
+const openRail = async (name) => {
+  if ((await win.locator(`.rail [aria-label="${name}"]`).getAttribute('aria-pressed')) !== 'true') await win.locator(`.rail [aria-label="${name}"]`).click();
+};
 const openInsert = async () => {
   if (!(await yours.isVisible())) await win.getByRole('button', { name: 'Insert', exact: true }).click();
   await saved.waitFor();
@@ -61,10 +64,23 @@ await panel.getByRole('button', { name: 'Manage Feature band', exact: true }).cl
 await menu.getByRole('menuitem', { name: /Save to personal library/ }).click();
 await win.locator('.toast', { hasText: 'Saved Feature band in your library' }).waitFor();
 await savedTile('Feature band').waitFor();
-// Saved again, it replaces its copy rather than adding a second.
-await panel.getByRole('button', { name: 'Manage Feature band', exact: true }).click();
+
+step('The placement’s menus in the Inspector, on the canvas and in Layers offer it too; saved again, it replaces its copy');
+await openRail('Layers');
+const row = (name) => win.locator('.list-item', { hasText: name }).first();
+await row('Feature band').click();
+await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Feature band' }).waitFor();
+await win.locator('#dock-panel-inspect').getByRole('button', { name: /^More actions for / }).click();
+await menu.getByRole('menuitem', { name: /Save to personal library/ }).waitFor();
+await menu.getByRole('menuitem', { name: /Export component/ }).waitFor();
+await win.keyboard.press('Escape');
+await win.locator('.ov-chip').getByRole('button', { name: 'More actions' }).click();
+await menu.getByRole('menuitem', { name: /Save to personal library/ }).waitFor();
+await win.keyboard.press('Escape');
+await row('Feature band').click({ button: 'right' });
 await menu.getByRole('menuitem', { name: /Save to personal library/ }).click();
 await win.locator('.toast', { hasText: 'Updated Feature band in your library' }).waitFor();
+await openInsert();
 await panel.getByRole('button', { name: 'Manage Badge', exact: true }).click();
 await menu.getByRole('menuitem', { name: /Save to personal library/ }).click();
 await savedTile('Badge').waitFor();
@@ -89,9 +105,13 @@ await openInsert();
 await savedTile('Feature band').waitFor();
 assert.equal(await savedTile('Badge').count(), 0, 'saved code is hidden without Developer mode');
 assert.match(await savedTile('Feature band').innerText(), /From Studio A/);
-await win.getByRole('combobox', { name: 'Search items to add' }).fill('badge');
-await eventually(async () => assert.equal(await panel.locator('.insert-result[data-kind="saved"]').count(), 0, 'nor found by search'));
-await win.getByRole('combobox', { name: 'Search items to add' }).fill('');
+const search = win.getByRole('combobox', { name: 'Search items to add' });
+const savedResults = () => panel.locator('.insert-result[data-kind="saved"]');
+await search.fill('feature band');
+await eventually(async () => assert.match((await savedResults().allInnerTexts()).join('|'), /Feature band/, 'a saved component is found by search'));
+await search.fill('badge');
+await eventually(async () => assert.equal(await savedResults().count(), 0, 'saved code is not found by search either'));
+await search.fill('');
 assert.deepEqual(await components(), {}, 'Studio B starts with no components of its own');
 
 step('One click imports and places it, and the strip’s Undo takes both back');
@@ -118,6 +138,9 @@ assert.deepEqual((await choosersShown(app, opened)).map((c) => [c.dialog, c.outc
 step('In Developer mode the saved code shows, and asks before its code comes in');
 await setDeveloperMode(true);
 await savedTile('Badge').waitFor();
+await search.fill('badge');
+await eventually(async () => assert.equal(await savedResults().count(), 1, 'and search finds it in Developer mode'));
+await search.fill('');
 const asked = await desktopCursor(app);
 const cancelled = await applied();
 await answerChoosers(app, [{ dialog: 'message', button: 'Cancel' }]);

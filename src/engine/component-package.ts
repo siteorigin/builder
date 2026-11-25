@@ -540,7 +540,8 @@ export interface PackagedDefinition {
 /** The identity facts of a package's components (see PackagedDefinition). */
 export function packagedDefinitions(defs: readonly ComponentDefinition[]): PackagedDefinition[] {
   const byFile = new Map(defs.map((d) => [normalizePath(defFile(d)), d.id]));
-  return defs.map((d) => ({ id: d.id, owner: d.owner, kind: d.kind, name: d.name, hash: definitionHash(d), needs: needsOf(d, byFile) }));
+  // A component its design places and its declared dependencies name too is one need, listed once.
+  return defs.map((d) => ({ id: d.id, owner: d.owner, kind: d.kind, name: d.name, hash: definitionHash(d), needs: [...new Set(needsOf(d, byFile))] }));
 }
 
 /**

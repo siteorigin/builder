@@ -46,7 +46,7 @@ import { addRecent, isTrusted, loadSettings, renameRecent, trust, untrust } from
 import { MAX_COPY_NAME, projectDisplayName, projectFolderName } from '@shared/project-name';
 import { newId } from '@shared/ids';
 import { packageFileName, type ComponentPackage } from '@shared/component-package';
-import { codeBrought, importedCode, packagedDefinitions, planComponentPackage, type ImportPlacement } from '@engine/component-package';
+import { codeBrought, importedCode, migratePackage, packagedDefinitions, planComponentPackage, type ImportPlacement } from '@engine/component-package';
 import { definitionRole } from '@engine/insert-role';
 import { findSaved, listSaved, removeSaved, saveToLibrary, savedPackagePath } from './saved-components';
 import { buildComponentPackage, preparePackageImport, readComponentPackage, type PreparedImport } from './project/component-package';
@@ -1808,6 +1808,10 @@ export class Controller {
     const { closed } = opts;
     const current = () => this.session === s && !this.closing && (opts.opening === undefined || this.workspaceKey === opts.opening);
     const name = pkg.definitions.find((d) => d.id === pkg.rootId)?.name ?? 'the component';
+    const verb = opts.place ? 'inserted' : 'imported';
+    const stale = { ok: false, message: opts.place ? STALE_INSERT : `The project changed while “${name}” was being imported. Import it again.` };
+    // The code it brings, worked out for the project as the place to put it was: the revision named must be this one.
+    if (opts.revision !== undefined && s.revision !== opts.revision) return stale;
     const code = importedCode(s.state, { id: '', pkg, images: {} });
     if (code.length && opts.ask) {
       if (!(await loadSettings()).settings.developerMode) return { ok: false, message: `“${name}” includes code components, which need Developer mode. Turn on Developer mode in Settings to import it.` };
@@ -1830,7 +1834,7 @@ export class Controller {
         if (this.aiBusy()) return { ok: false, message: 'The AI is making changes. Stop it before importing a component.' };
         if (s.readOnly) return { ok: false, message: s.readOnly.reason };
         // Waiting its turn behind another import, the project may have moved on from the place it was to go.
-        if (opts.revision !== undefined && s.revision !== opts.revision) return { ok: false, message: STALE_INSERT };
+        if (opts.revision !== undefined && s.revision !== opts.revision) return stale;
         let prepared: PreparedImport;
         try {
           prepared = await preparePackageImport(s.dir, s.state, pkg, { codeAllowed: (await loadSettings()).settings.developerMode, fence: this.writeFence(s) });
@@ -1843,13 +1847,17 @@ export class Controller {
         const nodeId = opts.place ? newId('n') : undefined;
         if (opts.place) prepared.input.place = { ...opts.place, nodeId: nodeId! };
         const codeAllowed = (await loadSettings()).settings.developerMode;
+        // The code asked about is the code that lands: the project may have changed (another theme, say) while this
+        // waited, so code the author wasn't asked about stops it, and the change lands on the project as checked here.
+        const asked = new Set(code.map((d) => d.id));
+        if (opts.ask && importedCode(s.state, prepared.input).some((d) => !asked.has(d.id))) return stale;
         const r = await s.apply(
-          { operations: [...prepared.assets, { type: 'component.import', importId: prepared.input.id }], ...(opts.revision !== undefined ? { expectedRevision: opts.revision } : {}) },
+          { operations: [...prepared.assets, { type: 'component.import', importId: prepared.input.id }], expectedRevision: s.revision },
           { label: opts.label ?? `Import ${name}`, source: 'user', codeAllowed, componentImport: prepared.input }
         );
         if (!r.ok) {
-          if (r.error?.code === 'STALE_REVISION') return { ok: false, message: STALE_INSERT };
-          return { ok: false, message: `“${name}” was not ${opts.place ? 'inserted' : 'imported'}: ${(r.error?.message ?? 'it could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
+          if (r.error?.code === 'STALE_REVISION') return stale;
+          return { ok: false, message: `“${name}” was not ${verb}: ${(r.error?.message ?? 'it could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
         }
         const last = r.results?.at(-1);
         const definitionId = last?.definitionId;
@@ -1873,6 +1881,7 @@ export class Controller {
     const state = s.state;
     return (await listSaved(this.libraryRoot())).map((c) => ({
       id: c.id,
+      digest: c.digest,
       name: c.name,
       ...(c.description ? { description: c.description } : {}),
       role: c.role,
@@ -1894,6 +1903,9 @@ export class Controller {
     if (!def || def.owner !== 'project' || def.category === 'shell') return { ok: false, message: 'That component is no longer in this project.' };
     try {
       const { text, notes, pkg } = await buildComponentPackage(s.dir, state, definitionId, `SiteOrigin Builder ${app.getVersion()}`);
+      // Only a package this app can bring up to date and import is kept (a project from a newer app, opened read-only,
+      // could make one it can't), so a saved copy never replaces a working one with one that won't insert.
+      migratePackage(pkg);
       const { card, replaced } = await saveToLibrary(this.libraryRoot(), {
         text,
         name: def.name,
@@ -1909,9 +1921,9 @@ export class Controller {
     }
   }
 
-  /** Take a component out of the personal library. */
-  async removeSavedComponent(id: string): Promise<boolean> {
-    return removeSaved(this.libraryRoot(), id);
+  /** Take generation `digest` of a component out of the personal library; a newer save of it stays (`changed`). */
+  async removeSavedComponent(id: string, digest: string): Promise<'removed' | 'changed' | 'gone'> {
+    return removeSaved(this.libraryRoot(), id, digest);
   }
 
   /**
@@ -1920,19 +1932,24 @@ export class Controller {
    * both back. A saved file may have been changed by anything on this computer since it was saved, so code it would
    * bring always needs Developer mode and the author's say-so, as a file chosen to import does.
    */
-  async insertSavedComponent(id: string, place: SavedInsertPlace, opening: string, revision: number): Promise<SavedInsertResult> {
+  async insertSavedComponent(id: string, digest: string, place: SavedInsertPlace, opening: string, revision: number): Promise<SavedInsertResult> {
     const s = this.openedAs(opening);
     const closed = { ok: false, message: 'The project was closed before the component could be inserted.' };
     if (!s) return closed;
     if (s.readOnly) return { ok: false, message: s.readOnly.reason };
     if (this.aiBusy()) return { ok: false, message: 'The AI is making changes. Stop it before inserting a component.' };
     const root = this.libraryRoot();
+    const gone = { ok: false, gone: true, message: 'That component is no longer in your library.' };
     const card = await findSaved(root, id);
-    if (!card) return { ok: false, gone: true, message: 'That component is no longer in your library.' };
+    if (!card) return gone;
+    // Saved again since the list was shown: the author picked the copy they saw, so the list is shown afresh first.
+    if (card.digest !== digest) return { ok: false, gone: true, message: `“${card.name}” was saved again since Insert listed it. Choose it again to insert the newer copy.` };
     let pkg: ComponentPackage;
     try {
-      pkg = await readComponentPackage(savedPackagePath(root, id));
+      pkg = await readComponentPackage(savedPackagePath(root, card));
     } catch (e) {
+      // Removed or saved again while it was being read.
+      if ((await findSaved(root, id))?.digest !== digest) return gone;
       return { ok: false, message: `“${card.name}” could not be read from your library. ${(e as Error).message}` };
     }
     if (!this.openedAs(opening)) return closed;

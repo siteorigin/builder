@@ -5,8 +5,8 @@
 import type { ComponentExportResult, SavedComponent, SavedInsertResult, SaveToLibraryResult } from '@shared/api';
 import type { ComponentDefinition, ElementRef, ProjectState } from '@shared/types';
 import { api, getState, setState, shownAt, toast, undoAction } from '../store';
+import { insertionPoint } from './actions';
 import { markArrival } from './arrival';
-import type { InsertAt } from './insert-at';
 import { treeFor } from './model';
 
 /** The personal library changed: Insert lists it again. */
@@ -49,24 +49,31 @@ export async function exportComponentFile(def: Pick<ComponentDefinition, 'id' | 
   else if (r.message) toast(r.message, 'error');
 }
 
-/** Take a component out of the personal library. Projects that inserted it keep their own copies. */
-export async function removeFromLibrary(entry: Pick<SavedComponent, 'id' | 'name'>): Promise<void> {
-  const removed = await api.project.removeSavedComponent(entry.id).catch(() => false);
+/**
+ * Take the listed copy of a component out of the personal library. Projects that inserted it keep their own copies; a
+ * copy saved again since the list was shown stays. Says whether it went.
+ */
+export async function removeFromLibrary(entry: Pick<SavedComponent, 'id' | 'digest' | 'name'>): Promise<boolean> {
+  const r = await api.project.removeSavedComponent(entry.id, entry.digest).catch(() => 'gone' as const);
   libraryChanged();
-  if (removed) toast(`Removed ${entry.name} from your library. Projects it was inserted into keep their copies.`, 'info');
+  if (r === 'removed') toast(`Removed ${entry.name} from your library. Projects it was inserted into keep their copies.`, 'info');
+  else if (r === 'changed') toast(`${entry.name} was saved again since Insert listed it, so it was kept. Remove it again to take out the newer copy.`, 'info');
+  return r === 'removed';
 }
 
 /**
- * Insert a saved component at `at` (worked out for its role on the project as this window has it), as one change:
- * imported into the project and placed. Selected, with the arrival cue, once the page shows it. Resolves to the
- * history entry it made, for an Undo beside it.
+ * Insert a saved component where Insert puts one of its role now, as one change: imported into the project and placed.
+ * The place, the project and its revision are read together, so a project changed since is refused rather than
+ * inserted into somewhere else. Selected, with the arrival cue, once the page shows it, unless the author has moved on
+ * meanwhile. Resolves to the history entry it made, for an Undo beside it.
  */
-export async function insertSaved(entry: SavedComponent, at: InsertAt): Promise<string | undefined> {
+export async function insertSaved(entry: SavedComponent): Promise<string | undefined> {
   const start = getState();
   const snap = start.snapshot;
-  if (!snap) return;
+  const at = snap ? insertionPoint(entry.role, start.selection, snap) : null;
+  if (!snap || !at) return;
   const place = { owner: at.owner, parentId: at.parentId, ...(at.slot !== undefined ? { slot: at.slot } : {}), ...(at.index !== undefined ? { index: at.index } : {}) };
-  const r: SavedInsertResult = await api.project.insertSavedComponent(entry.id, place, snap.workspaceKey, snap.revision).catch((e: Error) => ({ ok: false, message: `${entry.name} couldn’t be inserted: ${e.message}` }));
+  const r: SavedInsertResult = await api.project.insertSavedComponent(entry.id, entry.digest, place, snap.workspaceKey, snap.revision).catch((e: Error) => ({ ok: false, message: `${entry.name} couldn’t be inserted: ${e.message}` }));
   if (!r.ok || !r.nodeId || r.revision === undefined) {
     if (r.gone) libraryChanged();
     if (r.message) toast(r.message, 'error');
@@ -75,12 +82,14 @@ export async function insertSaved(entry: SavedComponent, at: InsertAt): Promise<
   const shown = await shownAt(r.revision, snap.workspaceKey);
   const now = getState();
   if (now.snapshot?.workspaceKey !== snap.workspaceKey) return;
-  // Selected only while the author is still where it went and has picked nothing else meanwhile (the code question
-  // can take a while); otherwise it is said where it went, with its Undo.
+  // Selected only while the author is still where it went, has picked nothing else meanwhile (the code question can
+  // take a while), and the placement is still there; otherwise it is said where it went, with its Undo.
   const owner = at.owner;
   const here = owner.kind === 'page' ? now.pageId === owner.id && !now.templateMode && !now.definitionMode : owner.kind === 'template' ? now.templateMode?.collectionId === owner.id : owner.kind === 'component' ? now.definitionMode?.definitionId === owner.id : true;
-  if (!shown || !here || now.selection !== start.selection) {
-    toast(`Added ${entry.name}.`, 'info', undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: snap.workspaceKey }));
+  const nodes = now.snapshot && treeFor(now.snapshot.state, owner)?.nodes;
+  const there = !!nodes && Object.hasOwn(nodes, r.nodeId);
+  if (!shown || !here || !there || now.selection !== start.selection) {
+    if (there) toast(`Added ${entry.name}.`, 'info', undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: snap.workspaceKey }));
     return;
   }
   const ref: ElementRef = { owner, instancePath: [], nodeId: r.nodeId };
