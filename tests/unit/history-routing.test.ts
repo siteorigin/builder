@@ -27,7 +27,7 @@ describe('undo and redo routing', () => {
 
   it('runs Ask AI from a visitor’s page or a field on it on whatever key it has, and no longer on J once moved (#750)', () => {
     for (const page of [visitor, { ...visitor, frameText: true }, ctx({ focus: 'canvas', overlay: true })]) {
-      expect(forwardedKeyRuns(page, 'L', true, true)).toBe(true);
+      for (const key of ['L', '7', 'q']) expect(forwardedKeyRuns(page, key, true, true)).toBe(true);
       expect(forwardedKeyRuns(page, 'j', true, false)).toBe(false);
     }
     // Typing on the page keeps its keys: only Save runs while site copy is edited. Off the canvas, nothing forwarded runs.

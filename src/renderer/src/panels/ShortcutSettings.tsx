@@ -1,5 +1,5 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
-import { DEFAULT_SHORTCUTS, shortcutHint } from '@shared/shortcuts';
+import { DEFAULT_SHORTCUTS, MAC_SYSTEM_HINT, shortcutHint } from '@shared/shortcuts';
 import { recordedPress } from '../lib/shortcut-keys';
 import { api } from '../store';
 import { InlineRow } from './LocalModelSettings';
@@ -34,6 +34,8 @@ export function AskAiShortcut({ binding, save }: { binding: string; save: (askAi
     }
   };
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
+    // Escape held down after it ended a recording repeats here: it must not go on to close Settings.
+    if (!recording && e.key === 'Escape' && e.repeat) return e.preventDefault();
     if (!recording || e.nativeEvent.isComposing || e.key === 'Dead' || e.key === 'Process') return;
     const press = recordedPress({ key: e.key, code: e.code, meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey }, api.platform);
     // Tab moves on as ever, ending the recording on the way out.
@@ -51,7 +53,7 @@ export function AskAiShortcut({ binding, save }: { binding: string; save: (askAi
   const current = platformKeys(shortcutHint(binding));
   const isDefault = binding === DEFAULT_SHORTCUTS.askAi;
   return (
-    <InlineRow id="settings-ask-ai-key" label="Ask AI" hint={recording ? 'Press the new shortcut, or Esc to cancel.' : 'Opens the AI chat about what’s selected, from anywhere in the editor.'} error={problem}>
+    <InlineRow id="settings-ask-ai-key" label="Ask AI" hint={recording ? `Press the new shortcut, or Esc to cancel.${api.platform === 'darwin' ? ` ${MAC_SYSTEM_HINT}` : ''}` : 'Opens the AI chat about what’s selected, from anywhere in the editor.'} error={problem}>
       <div className="settings-shortcut">
         <button
           type="button"

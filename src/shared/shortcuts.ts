@@ -50,14 +50,15 @@ export function normalShortcut(value: unknown): string | null {
 }
 
 /**
- * The letter or digit a key press is on: by what it types; a number-row key by its place, since Shift types a symbol
- * there; and on a layout whose letters are not Latin, by the key's place. A dead key or an unknown one is none.
+ * The letter or digit a key press is on: by what it types; a number-row key with Shift held by its place, since Shift
+ * types a symbol there; and on a layout whose letters are not Latin, by the key's place. A dead key or an unknown one
+ * is none, and so is punctuation a layout puts on the number row unshifted (Programmer Dvorak's `[`).
  */
-function chordKey(k: Pick<ShortcutChord, 'key' | 'code'>): string | null {
+function chordKey(k: Pick<ShortcutChord, 'key' | 'code' | 'shift'>): string | null {
   if (k.key.length !== 1) return null;
   const typed = k.key.toUpperCase();
   if (KEY.test(typed)) return typed;
-  const digit = /^Digit([0-9])$/.exec(k.code ?? '');
+  const digit = k.shift ? /^Digit([0-9])$/.exec(k.code ?? '') : null;
   if (digit) return digit[1];
   // Only a letter outside ASCII (Cyrillic, Greek...) borrows its key's Latin name: punctuation never does.
   const letter = /^Key([A-Z])$/.exec(k.code ?? '');
@@ -78,8 +79,17 @@ export function matchesShortcut(k: ShortcutChord, binding: string, mac: boolean)
   return chordKey(k) === b.key;
 }
 
-/** Editor shortcuts on keys that are not a letter or a number, named when one is pressed while recording. */
-const OTHER_KEYS: Record<string, string> = { '\\': 'showing or hiding the sidebar', '|': 'showing or hiding the right panel', ArrowUp: 'Move up', ArrowDown: 'Move down', Enter: 'Done' };
+/** Shortcuts on keys that are not a letter or a number, named when one is pressed while recording (`⇧` for Shift). */
+const OTHER_KEYS: Record<string, string> = {
+  '\\': 'It’s already the shortcut for showing or hiding the sidebar.',
+  '⇧\\': 'It’s already the shortcut for showing or hiding the right panel.',
+  '⇧ArrowUp': 'It’s already the shortcut for Move up.',
+  '⇧ArrowDown': 'It’s already the shortcut for Move down.',
+  Enter: 'It’s already the shortcut for Done.',
+  '-': 'The app menu uses it for Zoom Out.',
+  '=': 'The app menu uses it for Zoom In.',
+  '⇧+': 'The app menu uses it for Zoom In.'
+};
 
 /**
  * The binding a key press records in Settings, or why it cannot be one. `mac`: Command is Mod there, Ctrl elsewhere.
@@ -91,8 +101,9 @@ export function recordShortcut(k: ShortcutChord, mac: boolean): { binding: strin
   if (!primaryOnly(k, mac) || k.alt) return { problem: usage };
   const key = chordKey(k);
   if (key) return { binding: write({ shift: k.shift, key }) };
-  const named = OTHER_KEYS[k.key === '\\' && k.shift ? '|' : k.key];
-  return { problem: named ? `It’s already the shortcut for ${named}. ${usage}` : usage };
+  // With Shift held, macOS reports the backslash key as "|".
+  const named = OTHER_KEYS[`${k.shift ? '⇧' : ''}${k.key === '|' ? '\\' : k.key}`];
+  return { problem: named ? `${named} ${usage}` : usage };
 }
 
 /** The binding as a Mac writes it (`⇧⌘L`), for `shortcutLabel` to put in each platform's words. */
@@ -131,6 +142,7 @@ const EDITOR: Record<string, string> = {
   'Mod+B': 'Bold',
   'Mod+I': 'Italic',
   'Mod+U': 'Underline',
+  'Mod+Shift+U': 'Redo Selection in the code editor',
   'Mod+O': 'Open Project',
   'Mod+Shift+N': 'New Project',
   'Mod+Shift+W': 'Close Project'
@@ -147,6 +159,12 @@ function menuKeys(platform: string): Record<string, string> {
 /** What macOS itself takes before an app sees the keys. */
 const MAC_SYSTEM: Record<string, string> = { 'Mod+Shift+Q': 'Log Out', 'Mod+Shift+3': 'screenshots', 'Mod+Shift+4': 'screenshots', 'Mod+Shift+5': 'screenshots', 'Mod+Shift+6': 'screenshots' };
 
+/** What Chromium's text editing takes for itself off macOS: Ctrl+Shift+V pastes plain text into any field. */
+const TEXT_KEYS: Record<string, string> = { 'Mod+Shift+V': 'Paste as Plain Text' };
+
+/** The shortcuts macOS keeps that never reach the app, to show beside the recorder (they cannot be refused on press). */
+export const MAC_SYSTEM_HINT = '⇧⌘3, ⇧⌘4 and ⇧⌘5 are macOS’s screenshot shortcuts, and ⇧⌘Q logs out.';
+
 /**
  * Why a binding cannot be Ask AI's, naming what already has it, or null when it is free. `platform` as Node names it
  * (darwin, win32, linux).
@@ -154,7 +172,7 @@ const MAC_SYSTEM: Record<string, string> = { 'Mod+Shift+Q': 'Log Out', 'Mod+Shif
 export function shortcutConflict(binding: string, platform: string): string | null {
   const b = normalShortcut(binding);
   if (!b) return 'That is not a shortcut SiteOrigin Builder can use.';
-  const editor = EDITOR[b];
+  const editor = EDITOR[b] ?? (platform === 'darwin' ? undefined : TEXT_KEYS[b]);
   if (editor) return `It’s already the shortcut for ${editor}.`;
   const menu = menuKeys(platform)[b];
   if (menu) return `The app menu uses it for ${menu}.`;

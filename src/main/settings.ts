@@ -90,6 +90,9 @@ function storedShortcuts(value: unknown): ShortcutSettings {
   return { askAi: askAi && !shortcutConflict(askAi, process.platform) ? askAi : DEFAULT_SHORTCUTS.askAi };
 }
 
+/** The shortcuts last written to disk (or read from it): what a failed save goes back to. */
+let savedShortcuts: ShortcutSettings = DEFAULT_SHORTCUTS;
+
 /** The shortcuts in use now, for key presses the main process sees before the editor does. */
 export const currentShortcuts = (): ShortcutSettings => cache?.settings.shortcuts ?? DEFAULT_SHORTCUTS;
 
@@ -108,6 +111,7 @@ export async function loadSettings(): Promise<SettingsFile> {
       recents: raw.recents ?? [],
       trusted: raw.trusted ?? {}
     };
+    savedShortcuts = cache.settings.shortcuts;
     // A hand-edited file can hold any value; one that is not a usable size means automatic.
     cache.settings.ai.local.contextWindow = localContextWindow(cache.settings.ai.local.contextWindow);
     // A relay address that is not text is none. Text that is not a usable address is kept, so starting a live session
@@ -131,7 +135,9 @@ export function saveSettings(): Promise<void> {
   const run = writes.then(async () => {
     if (!cache) return;
     const upTo = renames;
+    const shortcuts = cache.settings.shortcuts;
     await atomicWrite(file(), JSON.stringify(cache, null, 2));
+    savedShortcuts = shortcuts;
     renamesSaved = Math.max(renamesSaved, upTo);
   });
   writes = run.catch(() => undefined);
@@ -177,16 +183,15 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
   // ones kept; an empty one goes back to the server's first model.
   for (const [server, id] of Object.entries(patch.ai?.local?.modelsByServer ?? {})) choose(localServerKey(server), id);
   const models = { ...prev.models, ...(patch.ai?.models ?? {}) };
-  const shortcutsWere = s.settings.shortcuts;
   s.settings = { ...s.settings, ...patch, shortcuts, ai: withLocalModel({ ...prev, ...(patch.ai ?? {}), models, local }) };
   s.settings.ai.local.contextWindow = localContextWindow(s.settings.ai.local.contextWindow);
   if (developerModeLocked()) s.settings.developerMode = false;
   try {
     await saveSettings();
   } catch (e) {
-    // A shortcut that could not be saved is not taken up: the keys go on working as Settings still shows them
-    // (unless a later change has set them since).
-    if (s.settings.shortcuts === shortcuts) s.settings.shortcuts = shortcutsWere;
+    // A shortcut that could not be saved is not taken up: the keys go back to the last ones on disk, as Settings still
+    // shows them (unless a later change has set others since, whose own save decides).
+    if (s.settings.shortcuts === shortcuts) s.settings.shortcuts = savedShortcuts;
     throw e;
   }
   return s.settings;

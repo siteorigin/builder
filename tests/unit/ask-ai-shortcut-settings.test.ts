@@ -1,6 +1,6 @@
 /** The Ask AI shortcut as Settings stores it (#750): what is saved, what is refused, and what survives a restart. */
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,8 +29,24 @@ describe('the Ask AI shortcut in Settings', () => {
 
     m = await restart();
     expect((await m.loadSettings()).settings.shortcuts.askAi).toBe('Mod+Shift+L');
-    // Reset to default is a binding like any other.
+    // Reset to default is a binding like any other, and is kept too.
     expect((await m.updateSettings({ shortcuts: { askAi: 'Mod+J' } })).shortcuts.askAi).toBe('Mod+J');
+    m = await restart();
+    expect((await m.loadSettings()).settings.shortcuts.askAi).toBe('Mod+J');
+  });
+
+  it('goes back to the binding on disk when saving a new one fails, even with two failing at once', async () => {
+    const m = await restart();
+    await m.updateSettings({ shortcuts: { askAi: 'Mod+L' } });
+    chmodSync(userData, 0o500);
+    try {
+      const results = await Promise.allSettled([m.updateSettings({ shortcuts: { askAi: 'Mod+P' } }), m.updateSettings({ shortcuts: { askAi: 'Mod+T' } })]);
+      expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+    } finally {
+      chmodSync(userData, 0o700);
+    }
+    // The main process forwards what Settings still shows.
+    expect(m.currentShortcuts().askAi).toBe('Mod+L');
   });
 
   it('refuses a binding that is taken or unusable, naming why, and changes nothing else in that request', async () => {
@@ -42,16 +58,22 @@ describe('the Ask AI shortcut in Settings', () => {
     const s = (await m.loadSettings()).settings;
     expect(s.shortcuts.askAi).toBe('Mod+L');
     expect(s.developerMode).toBe(false);
+    // Nothing refused reached the disk either.
+    const disk = JSON.parse(readFileSync(settingsFile, 'utf8')).settings;
+    expect(disk.shortcuts.askAi).toBe('Mod+L');
+    expect(disk.developerMode).toBe(false);
   });
 
   it('leaves the shortcut alone when another setting changes', async () => {
     const m = await restart();
     await m.updateSettings({ shortcuts: { askAi: 'Mod+L' } });
-    expect((await m.updateSettings({ developerMode: true })).shortcuts.askAi).toBe('Mod+L');
+    const s = await m.updateSettings({ developerMode: true });
+    expect(s.shortcuts.askAi).toBe('Mod+L');
+    expect(s.developerMode).toBe(true);
   });
 
   it('reads a hand-edited binding it cannot use, or one now taken, as the default', async () => {
-    for (const askAi of ['Ctrl+Banana', 'Mod+K', 42]) {
+    for (const askAi of ['Ctrl+Banana', 'Mod+K', 'Mod+W', 42]) {
       writeFileSync(settingsFile, JSON.stringify({ settings: { shortcuts: { askAi } } }));
       const m = await restart();
       expect((await m.loadSettings()).settings.shortcuts.askAi).toBe('Mod+J');

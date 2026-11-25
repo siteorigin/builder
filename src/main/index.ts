@@ -6,13 +6,11 @@ import { readFileSync } from 'node:fs';
 import type { Appearance, ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
-import { matchesShortcut } from '@shared/shortcuts';
 import { externalLink } from '@shared/links';
-import { visitorStepKey } from '@shared/preview-keys';
 import { Controller, defaultProjectsFolder, resourcesDir } from './controller';
 import { installedCatalogue, loadInstalledPacks, packPreview, packRoots } from './packs/installed';
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
-import { menuKeyCopy } from './history-keys';
+import { forwardsKey, menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
 import { appMenuTemplate } from './app-menu';
 import { writingMenuTemplate } from './writing-menu';
@@ -716,20 +714,8 @@ async function createWindow() {
   // so content inside the previewed site cannot fake them.
   win.webContents.on('before-input-event', (_e, input) => {
     if (input.type !== 'keyDown') return;
-    const mod = input.meta || input.control;
-    const k = input.key.toLowerCase();
     const chord = { key: input.key, code: input.code, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt };
-    // With Shift held, macOS reports the backslash key as "|".
-    const relevant =
-      (mod && ['z', 'y', 'k', 'd', 'c', 'v', 's', 'e', 'f', '\\', '|', 'arrowup', 'arrowdown'].includes(k)) ||
-      // Ask AI, wherever the author has put it (#750).
-      matchesShortcut(chord, currentShortcuts().askAi, process.platform === 'darwin') ||
-      // Wrap in Stack and Ungroup; with Alt it is another key (AltGr on some layouts).
-      (mod && !input.alt && k === 'g') ||
-      (!mod && ['delete', 'backspace', 'escape'].includes(k)) ||
-      // Back and Forward through a visitor's journey in Preview.
-      !!visitorStepKey(chord, process.platform === 'darwin');
-    if (relevant) controller.send('input:key', chord);
+    if (forwardsKey(chord, currentShortcuts().askAi, process.platform === 'darwin')) controller.send('input:key', chord);
   });
   // Closing the window first saves what is being typed. On macOS the project stays open without a window,
   // as before; elsewhere the last window closing quits, which then closes the project.
