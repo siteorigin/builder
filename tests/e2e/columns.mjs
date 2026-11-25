@@ -3,7 +3,9 @@
 // plain click on another column selects it and Insert fills that, one change per insert, each its own Undo; one more
 // Undo takes the layout away with the Section made for it. A Section placement arranges its own columns from the
 // Inspector without Parts: Column layout turns its Container into a narrow-and-wide grid with separate row and column
-// gaps, on that Section alone.
+// gaps, on that Section alone. The uneven starters (#665) work the same way: a Bento grid of a two-wide featured tile
+// and a two-tall tile, a main column beside a sidebar pinned below the site header, and a wide-and-narrow split, each
+// laid out on desktop and stacked on phones.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -28,7 +30,7 @@ const openInsert = async () => {
   if ((await panel.locator('.insert-group[data-group="basics"]').count()) === 0) await win.locator('.rail [aria-label="Insert"]').click();
   await panel.locator('.insert-group[data-group="basics"]').waitFor();
 };
-const tile = (label) => panel.locator('.insert-tile.basic', { has: win.locator('strong', { hasText: new RegExp(`^${label}$`) }) });
+const tile = (label) => panel.locator('.insert-tile.basic', { has: win.locator('strong', { hasText: new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }) });
 const at = (id) => frame.locator(`[data-so-node="${id}"]`).first();
 /** The element's box in the page, and whether the canvas frames it as an empty container. */
 const boxOf = (id) =>
@@ -58,7 +60,7 @@ try {
   const groups = await panel.locator('.insert-group').evaluateAll((els) => els.map((g) => g.dataset.group ?? g.dataset.kind));
   assert.ok(groups.indexOf('columns') >= 0 && groups.indexOf('columns') < groups.indexOf('section'), `the column layouts come before the sections: ${groups}`);
   const columnTiles = await panel.locator('.insert-group[data-group="columns"] .insert-tile strong').allInnerTexts();
-  assert.deepEqual(columnTiles, ['2 columns', '3 columns', 'Row', 'Grid']);
+  assert.deepEqual(columnTiles, ['2 columns', '3 columns', 'Bento grid', 'Sidebar + main', 'Asymmetric split', 'Row', 'Grid']);
   await panel.locator('.insert-group[data-group="columns"]').screenshot({ path: join(OUT, 'column-layouts.png') });
 
   step('2 columns: one change adds a Grid with two empty, framed columns side by side, the first selected to fill');
@@ -127,6 +129,148 @@ try {
     assert.equal(p.nodes[sectionId], undefined, 'with the Section made for it');
     assert.equal(p.rootIds.length, rootsBefore);
   }, 15000);
+
+  /** Each cell's box, by name. */
+  const boxes = async (cells) => {
+    const p = await page();
+    return Object.fromEntries(await Promise.all(cells.map(async (id) => [p.nodes[id].name, await boxOf(id)])));
+  };
+  const near = (a, b, what, slack = 3) => assert.ok(Math.abs(a - b) <= slack, `${what}: ${a} against ${b}`);
+  const showAt = async (size) => {
+    await win.getByRole('button', { name: size, exact: true }).first().click();
+    await win.waitForTimeout(600);
+  };
+  const STARTERS = [
+    {
+      tile: 'Bento grid',
+      cells: ['Featured tile', 'Tall tile', 'Tile 3', 'Tile 4'],
+      // Three columns: the featured tile two wide, the tall tile two high beside it, two tiles under the featured one.
+      desktop: (b, tracks) => {
+        assert.equal(tracks.length, 3, `three columns: ${tracks}`);
+        const { 'Featured tile': f, 'Tall tile': t, 'Tile 3': c, 'Tile 4': d } = b;
+        near(f.y, t.y, 'the featured and tall tiles share the top row');
+        near(f.width, c.width + d.width + (d.x - c.x - c.width), 'the featured tile spans the two columns under it');
+        near(f.x, c.x, 'the featured tile starts where Tile 3 does');
+        assert.ok(t.x >= f.x + f.width, 'the tall tile is beside the featured one');
+        near(c.y, d.y, 'Tiles 3 and 4 share the second row');
+        assert.ok(c.y >= f.y + f.height, 'under the featured tile');
+        near(t.y + t.height, c.y + c.height, 'the tall tile runs down both rows');
+      }
+    },
+    {
+      tile: 'Sidebar + main',
+      cells: ['Main', 'Sidebar'],
+      desktop: (b, tracks) => {
+        assert.equal(tracks.length, 2, `two columns: ${tracks}`);
+        assert.ok(Math.abs(tracks[0] / tracks[1] - 2) < 0.05, `the main column is twice the sidebar: ${tracks}`);
+        near(b.Main.y, b.Sidebar.y, 'side by side');
+        assert.ok(b.Main.x + b.Main.width <= b.Sidebar.x, 'the sidebar on the right');
+      }
+    },
+    {
+      tile: 'Asymmetric split',
+      cells: ['Wide column', 'Narrow column'],
+      desktop: (b, tracks) => {
+        assert.equal(tracks.length, 2, `two columns: ${tracks}`);
+        assert.ok(Math.abs(tracks[0] / tracks[1] - 2) < 0.05, `the wide column is twice the narrow one: ${tracks}`);
+        near(b['Wide column'].y, b['Narrow column'].y, 'side by side');
+      }
+    }
+  ];
+  for (const starter of STARTERS) {
+    step(`${starter.tile}: one change adds its empty, framed cells laid out on desktop, the first selected to fill`);
+    await win.keyboard.press('Escape');
+    await openInsert();
+    const n = await applied();
+    const roots = (await page()).rootIds.length;
+    await tile(starter.tile).click();
+    const { gridId: grid, cells, sectionId: section } = await eventually(async () => {
+      const p = await page();
+      const g = Object.values(p.nodes).find((x) => x.kind === 'element' && x.name === starter.tile);
+      assert.ok(g, `the ${starter.tile} is on the page`);
+      assert.deepEqual(g.children.map((id) => p.nodes[id].name), starter.cells);
+      const s = Object.values(p.nodes).find((x) => x.kind === 'instance' && x.slots?.content?.includes(g.id));
+      assert.ok(s, 'in a new Section');
+      return { gridId: g.id, cells: g.children, sectionId: s.id };
+    }, 30000);
+    assert.equal(await applied(), n + 1, 'one change');
+    await eventually(async () => assert.equal(await selected(), `${starter.cells[0]} actions`, 'the first cell is selected, ready to fill'), 15000);
+    await eventually(async () => {
+      const b = await boxes(cells);
+      for (const [name, box] of Object.entries(b)) {
+        assert.equal(box.framed, 'Stack', `${name} is framed`);
+        assert.ok(box.height >= 72, `${name} is tall enough to pick: ${JSON.stringify(box)}`);
+      }
+      starter.desktop(b, await at(grid).evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').map(parseFloat)));
+    }, 30000);
+    await win.screenshot({ path: join(OUT, `${starter.tile.replace(/\W+/g, '-').toLowerCase()}.png`) });
+
+    step(`${starter.tile}: Insert fills the selected cell, and a plain click picks the next to fill`);
+    await openInsert();
+    await fill(cells[0], 'Heading', 'h2', false);
+    await fill(cells[1], 'Paragraph', 'p', true);
+    await eventually(async () => {
+      const b = await boxes(cells);
+      assert.deepEqual(Object.values(b).map((x) => x.framed), starter.cells.map((_, i) => (i < 2 ? null : 'Stack')), 'filled cells lose their frames, the empty ones keep theirs');
+    }, 30000);
+
+    step(`${starter.tile}: one column on phones, the cells one above the other in order`);
+    await showAt('Phone');
+    await eventually(async () => {
+      assert.equal(await at(grid).evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').length), 1, 'one column');
+      const list = Object.values(await boxes(cells));
+      for (let i = 1; i < list.length; i++) {
+        near(list[i].x, list[0].x, 'stacked at the same edge', 2);
+        assert.ok(list[i].y >= list[i - 1].y + list[i - 1].height, `each below the last: ${JSON.stringify(list)}`);
+      }
+      if (starter.tile === 'Sidebar + main') assert.equal(await at(cells[1]).evaluate((el) => getComputedStyle(el).position), 'static', 'the sidebar scrolls with the page on phones');
+    }, 30000);
+    await win.screenshot({ path: join(OUT, `${starter.tile.replace(/\W+/g, '-').toLowerCase()}-phone.png`) });
+    await showAt('Desktop');
+
+    let changes = 2;
+    if (starter.tile === 'Sidebar + main') {
+      step('Sidebar + main: the sidebar stays pinned below the site header while a long main column scrolls past');
+      const tall = await win.evaluate(
+        async ({ host, main }) => (await window.builder.project.apply({ operations: [{ type: 'node.setStyle', owner: host, nodeId: main, scope: 'base', property: 'minHeight', value: '2400px' }] }, { label: 'Long main column' })).ok,
+        { host: await owner(), main: cells[0] }
+      );
+      assert.ok(tall);
+      changes++;
+      await eventually(async () => {
+        const pinned = await at(cells[1]).evaluate((el) => {
+          el.parentElement.scrollIntoView({ block: 'start' });
+          const main = el.previousElementSibling;
+          scrollBy(0, 900);
+          const top = parseFloat(getComputedStyle(el).top);
+          return { position: getComputedStyle(el).position, top, sidebar: el.getBoundingClientRect().top, main: main.getBoundingClientRect().top, mainHeight: main.getBoundingClientRect().height };
+        });
+        assert.equal(pinned.position, 'sticky', JSON.stringify(pinned));
+        assert.ok(pinned.mainHeight >= 2400, `the main column is long: ${JSON.stringify(pinned)}`);
+        assert.ok(pinned.main < 0, `the main column has scrolled up past the top: ${JSON.stringify(pinned)}`);
+        near(pinned.sidebar, pinned.top, `the sidebar is held at its offset below the header (${JSON.stringify(pinned)})`, 2);
+      }, 30000);
+      await win.screenshot({ path: join(OUT, 'sidebar-pinned.png') });
+    }
+
+    step(`${starter.tile}: each change has its own Undo, and one more takes the layout away with its Section`);
+    for (let i = 0; i < changes; i++) {
+      const before = await applied();
+      await undo();
+      await eventually(async () => assert.equal(await applied(), before - 1, `Undo ${i + 1} steps back one change`), 15000);
+    }
+    await eventually(async () => {
+      const p = await page();
+      assert.deepEqual(cells.map((id) => p.nodes[id].children.length), starter.cells.map(() => 0), 'the cells are empty again');
+    }, 15000);
+    await undo();
+    await eventually(async () => {
+      const p = await page();
+      assert.equal(p.nodes[grid], undefined, `one Undo takes the ${starter.tile} away`);
+      assert.equal(p.nodes[section], undefined, 'with the Section made for it');
+      assert.equal(p.rootIds.length, roots);
+    }, 15000);
+  }
 
   step('a Section placement arranges its columns from the Inspector, without Parts');
   const host = await owner();

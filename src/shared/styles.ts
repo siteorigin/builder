@@ -42,6 +42,13 @@ const TRANSFORM_ORIGINS = ['center', 'top', 'bottom', 'left', 'right', 'top left
 /** The most tracks a column-size list can make, and the most rows an item can span. */
 export const MAX_GRID_TRACKS = 12;
 export const MAX_ROW_SPAN = 6;
+
+/**
+ * Pinned in view while the content beside it scrolls past, clear of the site's sticky header: the header publishes the
+ * height it takes up as --so-header-offset (0 when it does not stick), and 1.5rem more keeps the two apart. Released
+ * at the end of its parent. Print shows it in its place (base.css).
+ */
+export const STICKY_BELOW_HEADER = { position: 'sticky', inset: 'calc(var(--so-header-offset, 4.5rem) + 1.5rem) auto auto auto', alignSelf: 'start' } as const;
 const GRID_TEMPLATE_HELP =
   'Overrides Columns. A preset, or your own list of up to 12 column widths: fr shares, lengths, auto, minmax(min, max) and repeat(count, …), ' +
   'such as "16rem 1fr 14rem" or "2fr repeat(2, 1fr)". For as many columns as fit, give the narrowest a column may get: ' +
