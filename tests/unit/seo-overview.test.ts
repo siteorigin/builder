@@ -170,11 +170,12 @@ describe('seoOverview', () => {
 
   it('leaves out a record too damaged to read, and still lists the rest', () => {
     const { state } = seoSite();
-    const damaged = copy(state) as ProjectState & { pages: Record<string, unknown>; collections: { posts: { entries: Record<string, unknown> } } };
-    damaged.pages.pg_broken = { id: 'pg_broken', title: 'Broken' };
+    const damaged = copy(state);
+    // A page with no address and an entry that is not one, as a project edited outside the app might have them.
+    (damaged.pages as Record<string, unknown>).pg_broken = { id: 'pg_broken', title: 'Broken' };
     damaged.site.pageOrder.push('pg_broken');
-    damaged.collections.posts.entries.en_broken = null;
-    expect(seoOverview(damaged as ProjectState).map((r) => r.key)).toEqual([HOME(state), SERVICES, SPRING]);
+    (damaged.collections.posts.entries as Record<string, unknown>).en_broken = null;
+    expect(seoOverview(damaged).map((r) => r.key)).toEqual([HOME(state), SERVICES, SPRING]);
   });
 
   it('works a saved state out once, and a new one again', () => {
