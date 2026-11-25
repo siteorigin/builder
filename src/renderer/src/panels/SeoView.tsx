@@ -298,7 +298,7 @@ function SeoViewDocument({ state, doc, collection, shown }: { state: ProjectStat
         {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published.</p>}
       </div>
       <div className="seo-doc-previews">
-        <SeoPreview state={state} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} place="view" />
+        <SeoPreview state={state} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} />
       </div>
       {page && shown && <SeoViewPageSettings state={state} pageId={page} on={on} preview={preview} />}
       {doc.subject.kind === 'entry' && <SeoViewPostSettings state={state} subject={doc.subject} preview={preview} on={on} />}

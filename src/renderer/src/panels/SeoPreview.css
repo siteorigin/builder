@@ -3,7 +3,8 @@
   .seo-preview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
   .seo-preview .tabs { margin: 0; padding: 0; }
   .seo-preview .tab { height: 30px; padding: 0 8px; font-size: 12px; }
-  .post-fields > .seo-preview { grid-column: 1 / -1; margin-bottom: 6px; }
+  .seo-inline-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .post-fields > .seo-inline-actions { grid-column: 1 / -1; margin-bottom: 6px; }
   .seo-preview-ai { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
   .seo-preview-ai .field-hint { margin: 0; }
   .serp-previews { display: flex; flex-direction: column; gap: 8px; }

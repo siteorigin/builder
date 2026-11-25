@@ -101,7 +101,7 @@ import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '.
 import { teaserFieldNote } from '../lib/page-teasers';
 import { searchSummary } from '../lib/sharing';
 import type { SeoSubject } from '@shared/seo';
-import { SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
+import { SeoInlineActions, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
 import { PageSearchFields } from './PageSearchFields';
 import { pageAlive, pageUpdater, type PageUpd } from '../lib/page-settings';
 import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
@@ -3028,18 +3028,17 @@ function languageName(code: string): string {
 const shellSummary = (header: boolean, footer: boolean) => (header && footer ? 'Both shown' : header ? 'Header only' : footer ? 'Footer only' : 'Both hidden');
 
 /**
- * A page's Search & sharing settings, with previews of its search result, link card and structured data that follow
- * its title, description and canonical URL as they are typed. Its own component, so typing re-renders only this.
+ * A page's Search & sharing settings, under Open in SEO view, where its previews are (#708), and Optimize with AI.
+ * The title and description meters follow what is typed before it is saved. Its own component, so typing re-renders
+ * only this.
  */
 function PageSearchSettings({ page, state, draft, upd }: { page: PageDoc; state: ProjectState; draft: boolean; upd: PageUpd }) {
-  // The structured data reads the whole website: it is worked out only while the Inspector shows.
-  const shown = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const subject = useMemo<SeoSubject>(() => ({ kind: 'page', pageId: page.id }), [page.id]);
   const { typed, on: typedOn } = useTypedSeo(subjectKey(subject));
   const { overlay, doc: seoDoc } = useDocumentPreview(state, subject, typed);
   return (
     <>
-      <SeoPreview state={state} subject={subject} overlay={overlay} typed={typed} doc={seoDoc} shown={shown} />
+      <SeoInlineActions subject={subject} overlay={overlay} typed={typed} />
       <PageSearchFields page={page} state={state} draft={draft} upd={upd} on={typedOn} doc={seoDoc} />
     </>
   );
