@@ -401,6 +401,11 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     // live in files it may leave as they are.
     case 'instance.swapComponent':
       return true;
+    // A component's removal, or a slot's, is refused while any placement holds it or holds content there: a placement
+    // added in another file it does not write would be left naming what has gone.
+    case 'component.remove':
+    case 'component.removeSlot':
+      return true;
     case 'entry.update':
       return o.slug !== undefined;
     default:

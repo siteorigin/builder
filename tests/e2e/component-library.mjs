@@ -1,7 +1,8 @@
 // The component library in Insert > Your components, against the real app (#56): Make unique asks for a name and
 // never stacks "(unique)", each tile says how often it is used, and its menu renames it, lists and shows where it
-// is placed, and deletes it once unused, with Undo bringing it back. A component is also shown on its own, in an
-// isolated preview, whether or not any page places it (#347), and that preview never reaches the site's files.
+// is placed, and deletes it once unused, with Undo bringing it back (one still in use opens a review of where, #663).
+// A component is also shown on its own, in an isolated preview, whether or not any page places it (#347), and that
+// preview never reaches the site's files.
 // Each component's tile shows a thumbnail photographed from that preview, drawn again when the component's style or
 // the site's brand changes and kept in the editor's cache, never in an export (#370).
 import assert from 'node:assert/strict';
@@ -43,7 +44,8 @@ const openRail = async (name) => {
   if ((await win.locator(`.rail [aria-label="${name}"]`).getAttribute('aria-pressed')) !== 'true') await win.locator(`.rail [aria-label="${name}"]`).click();
 };
 const componentSection = async () => {
-  const head = win.locator('#dock-panel-inspect .section-head', { hasText: 'Component' });
+  // Named first by its title: Style's head names the whole component as its scope too.
+  const head = win.locator('#dock-panel-inspect .section-head', { hasText: /^Component/ });
   if ((await head.getAttribute('aria-expanded')) === 'false') await head.click();
 };
 
@@ -149,7 +151,7 @@ assert.equal(await menu.getByRole('menuitem', { name: /Delete component/ }).getA
 await win.keyboard.press('Escape');
 await menu.waitFor({ state: 'detached' });
 
-step('usage locations show where a component is placed, and a used one cannot be deleted');
+step('usage locations show where a component is placed, and deleting a used one reviews where instead');
 // A second page with its own card below the fold, so choosing a location has to switch pages and scroll there.
 const [{ pageId: floor }] = await apply([{ type: 'page.create', title: 'Floor plan', starter: 'intro' }], 'Add page');
 const card = Object.values((await snapshot()).components).find((d) => d.name === 'Exhibitor card').id;
@@ -160,9 +162,20 @@ await menu.waitFor();
 assert.ok(await menu.getByText('Used 2 times').isVisible(), 'the menu counts the placements');
 await win.waitForTimeout(300);
 await win.screenshot({ path: join(SHOTS, 'component-library-menu.png'), clip: { x: 0, y: 180, width: 420, height: 300 } });
-assert.equal(await menu.getByRole('menuitem', { name: /Delete component/ }).getAttribute('aria-disabled'), 'true', 'a used component cannot be deleted');
-await menu.getByRole('menuitem', { name: 'Floor plan' }).click();
-await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${onFloor}"]`).getAttribute('aria-selected'), 'true', 'choosing another page opens it and selects the placement there'));
+// A used component is not deleted: Delete component reviews where it is used, with a way to each placement (#663).
+const revision = () => win.evaluate(async () => (await window.builder.project.snapshot()).revision);
+const reviewing = await revision();
+await menu.getByRole('menuitem', { name: /Delete component/ }).click();
+const removal = win.locator('.modal[role="dialog"]', { hasText: 'Delete Exhibitor card?' });
+await removal.waitFor();
+assert.equal(await revision(), reviewing, 'opening the review changes nothing');
+assert.match(await removal.innerText(), /It is still in use\./, 'the review says why it stays');
+assert.equal(await removal.getByRole('button', { name: /^Go to placement/ }).count(), 2, 'it lists both placements');
+assert.equal(await removal.getByRole('button', { name: 'Delete component' }).count(), 0, 'and offers no deletion while they stay');
+await removal.getByRole('button', { name: 'Go to placement: Floor plan' }).click();
+await removal.waitFor({ state: 'detached' });
+await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${onFloor}"]`).getAttribute('aria-selected'), 'true', 'going to a placement on another page opens it and selects the placement there'));
+assert.ok((await snapshot()).components[card], 'the component stays');
 await eventually(async () => {
   const box = await frame.locator(`[data-so-ctx$="|${onFloor}"]`).first().evaluate((el) => {
     const r = el.getBoundingClientRect();

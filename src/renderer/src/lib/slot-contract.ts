@@ -3,7 +3,7 @@
  * own, what each takes, and how many. Every helper plans operations; the engine checks them (component.setSlot,
  * component.removeSlot) and refuses a contract that content placements already hold no longer fits, naming where.
  */
-import type { ComponentCategory, ComponentDefinition, ProjectState, SlotDef, SlotPrimitive } from '@shared/types';
+import type { ComponentCategory, ComponentDefinition, InstanceNode, ProjectState, SlotDef, SlotPrimitive } from '@shared/types';
 import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
 import { instancesOf } from '@engine/tree';
@@ -72,8 +72,11 @@ export const unplacedSlots = (def: ComponentDefinition): string[] => {
  */
 export const slotFilledIn = (state: ProjectState, def: ComponentDefinition, slot: string): string[] =>
   instancesOf(state, def.id)
-    .filter((u) => !!(own(u.node.slots, slot) as { length?: unknown } | undefined)?.length)
+    .filter((u) => fillsSlot(u.node, slot))
     .map((u) => u.label);
+
+/** Whether a placement holds content in a slot, counted as the engine counts it before removing the slot. */
+export const fillsSlot = (node: InstanceNode, slot: string): boolean => !!(own(node.slots, slot) as { length?: unknown } | undefined)?.length;
 
 /**
  * A new slot, taking anything, with its placeholder at `at` in the design: declared and placed in one change (one

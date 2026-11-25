@@ -1,10 +1,10 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload, LayoutTemplate, SquareDashed, Library, BookmarkPlus } from 'lucide-react';
-import type { ComponentDefinition, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, GraphNode, OwnerRef, ProjectState } from '@shared/types';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
 import type { ComponentImportResult, SavedComponent } from '@shared/api';
-import { childLists, findParent, placesOf } from '@engine/tree';
+import { childLists, placesOf } from '@engine/tree';
 import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
@@ -16,6 +16,7 @@ import { SLOT_NO_PLACE, unplacedSlots } from '../lib/slot-contract';
 import { exportComponentFile, insertSaved, removeFromLibrary, saveToLibrary } from '../lib/saved-components';
 import { beginInsertDrag } from '../lib/insert-drag';
 import { placementMap } from '../lib/placement-map';
+import { documentOrder, whereIn } from '../lib/removal-review';
 import { ownerLabel, treeFor } from '../lib/model';
 import { gridKeys, openMenus, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 import { pageShowing, partName } from '@shared/page-shell';
@@ -890,26 +891,6 @@ function editEverywhere(definitionId: string) {
   if (sel && sel.nodeId === first.nodeIds[0]) setState({ modal: { kind: 'edit-definition', ref: sel } });
 }
 
-/** A tree's nodes in the order they appear on the page. */
-function documentOrder(tree: NodeTree): string[] {
-  const out: string[] = [];
-  const walk = (id: string) => {
-    if (out.includes(id)) return;
-    out.push(id);
-    const n = tree.nodes[id];
-    if (n) for (const l of childLists(n)) l.ids.forEach(walk);
-  };
-  tree.rootIds.forEach(walk);
-  return out;
-}
-/** Where a placement sits, for telling several on one page apart: "in Team", "after Intro", "at the top". */
-function whereIn(st: ProjectState, owner: OwnerRef, tree: NodeTree, nodeId: string): string {
-  const at = findParent(tree, nodeId);
-  if (!at) return 'on the page';
-  if (at.parentId) return `in ${nodeLabel(st, owner, at.parentId)}`;
-  return at.index ? `after ${nodeLabel(st, owner, at.list[at.index - 1])}` : 'at the top';
-}
-
 /** The place part of a usage line: the place's name gives way before its "+N" does. */
 function Where({ text }: { text: string }) {
   if (!text) return null;
@@ -1644,7 +1625,7 @@ export function InsertPanel() {
       <ItemIcon it={it} />
     );
   // The library's own menu, named for the component it manages: rename, edit the design everywhere (or its code), go
-  // to each placement (choosing one shows it), and delete once unused.
+  // to each placement (choosing one shows it), and delete: at once when unused, else through a review of what uses it.
   const manageItems = (def: ComponentDefinition): MenuItem[] => {
     const places = placesOf(st, def.id);
     const needs = dependentsOf(st, def.id);
@@ -1685,8 +1666,17 @@ export function InsertPanel() {
       ...places.flatMap(placeItems),
       ...needs.map((d): MenuItem => ({ label: `Needed by ${d.name}`, icon: <Code />, hint: 'Code', disabled: true })),
       { separator: true },
-      { label: 'Delete component', icon: <Trash2 />, danger: true, disabled: count > 0 || needs.length > 0, hint: count || needs.length ? 'In use' : undefined, onSelect: () => void removeDefinition(def) }
+      // One in use opens a review of what uses it, with a way to each placement (#663).
+      { label: count || needs.length ? 'Delete component…' : 'Delete component', icon: <Trash2 />, danger: true, hint: count || needs.length ? 'In use' : undefined, onSelect: () => deleteOrReview(def, count > 0 || needs.length > 0) }
     ];
+  };
+  // Checked again when chosen: the menu may have opened before something placed it. One the menu offered as in use
+  // is reviewed even if its last use has gone since, so the author confirms what was not said to be deleted at once.
+  const deleteOrReview = (def: ComponentDefinition, shownInUse: boolean) => {
+    const now = getState().snapshot;
+    if (!now) return;
+    if (shownInUse || placesOf(now.state, def.id).length || dependentsOf(now.state, def.id).length) setState({ modal: { kind: 'removal-review', opening: now.workspaceKey, definitionId: def.id } });
+    else void removeDefinition(def);
   };
   const removeDefinition = async (def: ComponentDefinition) => {
     const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="component"] .insert-tile.project') ?? [])];
