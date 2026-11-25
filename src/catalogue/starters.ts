@@ -107,16 +107,27 @@ export function starterProblem(starter: StarterId, themeId?: string): string | n
   // switch from Foundation to this theme would require (the properties, lists and variant options they fill in).
   const reference = findTheme('foundation') ?? defaultTheme();
   if (reference.id === theme.id) return null;
-  const made = createStarterState(starter, 'Check', false, reference.id);
-  for (const tree of [...Object.values(made.pages), made.site.shell.header, made.site.shell.footer])
-    for (const n of Object.values(tree.nodes)) {
-      if (n.kind !== 'instance') continue;
-      const def = made.components[n.definitionId];
-      const next = theme.components.find((c) => c.componentId === def.componentId);
-      if (!next) return problem(`it has no ${def.name}.`);
-      const conflicts = contractConflicts(made, def, next);
-      if (conflicts.length) return problem(conflicts[0]);
-    }
+  let made: ProjectState;
+  try {
+    made = createStarterState(starter, 'Check', false, reference.id);
+  } catch {
+    // Nothing to compare with (a fallback theme without this starter's sections): the dry run above is the check.
+    return null;
+  }
+  try {
+    for (const tree of [...Object.values(made.pages), made.site.shell.header, made.site.shell.footer])
+      for (const n of Object.values(tree.nodes)) {
+        if (n.kind !== 'instance') continue;
+        const def = made.components[n.definitionId];
+        const next = theme.components.find((c) => c.componentId === def.componentId);
+        if (!next) return problem(`it has no ${def.name}.`);
+        const conflicts = contractConflicts(made, def, next);
+        if (conflicts.length) return problem(conflicts[0]);
+      }
+  } catch (e) {
+    // A pack whose definitions cannot even be compared is refused, never allowed to stop the others being offered.
+    return problem(`its sections could not be read (${(e as Error).message}).`);
+  }
   return null;
 }
 

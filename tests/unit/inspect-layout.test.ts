@@ -203,6 +203,8 @@ describe('layout inspection readability checks', () => {
       expect(of(await inspect(html), 'small-tap-target'), html).toHaveLength(1);
     // A transformed box holds a fixed control, so its clip hides it like any other.
     expect(of(await inspect(`<div ${so('held')} style="width:1px;height:1px;overflow:hidden;transform:translateZ(0)">${small('position:fixed;top:40px;left:20px')}</div>`), 'small-tap-target')).toEqual([]);
+    // A box that clips one way only hides nothing the other way.
+    expect(of(await inspect(`<div ${so('oneway')} style="height:0;overflow-x:clip;overflow-y:visible">${small()}</div>`), 'small-tap-target')).toHaveLength(1);
   }, 30000);
 
   it.skipIf(!browserInstalled)('counts a repeated element once with its items, and keeps every kind under the cap', async () => {

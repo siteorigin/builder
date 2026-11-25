@@ -248,6 +248,16 @@ describe('the Editorial pack (#390)', () => {
     registerPacks([...listThemes(), buildPack(plain.define(fixed)).pack]);
     expect(starterProblem('blank', 'plain')).toBeNull();
     expect(starterProblem('business', 'plain')).toMatch(/^The Plain theme cannot make the Business starter: Content with image: layout variant "media-end" is missing\./);
+    // A pack whose definitions cannot be compared is refused on its own; the others are still offered.
+    const broken = createPack({ ...meta, id: 'broken', name: 'Broken', version: '1.0.0', license: 'MIT' });
+    const odd = components.map((c) => {
+      const d = broken.adopt(c);
+      if (d.componentId === 'shell.header') (d.properties.ctaStyle as { options: unknown[] }).options.unshift(null);
+      return d;
+    });
+    registerPacks([...listThemes(), buildPack(broken.define(odd)).pack]);
+    expect(starterProblem('blank', 'broken')).toMatch(/^The Broken theme cannot make the Blank site: its sections could not be read/);
+    expect(starterProblem('blank', 'editorial')).toBeNull();
   });
 });
 

@@ -2976,8 +2976,9 @@ function clippedAway(el) {
     const holdsFixed = s.transform !== 'none' || s.filter !== 'none' || s.perspective !== 'none' || /paint|layout|strict|content/.test(s.contain || '');
     const holds = placed === 'flow' || (placed === 'absolute' ? s.position !== 'static' || holdsFixed : holdsFixed);
     if (holds && (s.overflowX !== 'visible' || s.overflowY !== 'visible')) {
+      // Only an axis that clips can hide what it holds.
       const r = boxRect(e);
-      if (r.width <= 1 || r.height <= 1) return true;
+      if ((s.overflowX !== 'visible' && r.width <= 1) || (s.overflowY !== 'visible' && r.height <= 1)) return true;
     }
     if (s.position === 'fixed' || s.position === 'absolute') placed = s.position;
     else if (holds) placed = 'flow';
