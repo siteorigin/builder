@@ -4,9 +4,9 @@ import type { ElementNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { AssetRecord, InstanceNode } from '@shared/types';
-import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertDestination, insertIndex, measuredLists, measureIds, savingProblems, slotKey, slotOfKey, type Measured } from '../../src/renderer/src/lib/insert-drop';
+import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertDestination, insertIndex, INSIDE_ITSELF, measuredLists, measureIds, MOVE_TOP, moveDestination, savingProblems, slotKey, slotOfKey, type Measured } from '../../src/renderer/src/lib/insert-drop';
 import { imageInsertOps } from '../../src/renderer/src/lib/image-drop';
-import { insertOps, type InsertAt } from '../../src/renderer/src/lib/insert-at';
+import { insertOps, nodeLabel, type InsertAt } from '../../src/renderer/src/lib/insert-at';
 
 /**
  * Dragging an Insert tile onto the page (#52): the lists a drop can go into, and the list and gap under the pointer.
@@ -574,3 +574,137 @@ describe('the slots of a component that shows several (#652)', () => {
   });
 });
 
+
+/** Insert `ops` into `state`, returning the new state and the IDs the inserts made. */
+function inserted(state: ProjectState, ops: EditOperation[]) {
+  const out = applyOperations(state, ops);
+  return { state: out.state, ids: out.results.map((r) => r.nodeId as string) };
+}
+
+describe('dragging an existing element across columns and slots (#658)', () => {
+  /** The Split with a Paragraph and an Image in Main, measured where they show; Sidebar empty. */
+  function filledSplit() {
+    const p = withSplit();
+    const { state, ids } = inserted(p.state, [
+      { type: 'node.insert', owner: p.owner, parentId: p.split, slot: 'main', primitive: 'paragraph', text: 'Open daily' },
+      { type: 'node.insert', owner: p.owner, parentId: p.split, slot: 'main', primitive: 'image', props: { src: { assetId: slotPhoto.id }, alt: 'Hours' } }
+    ]);
+    const [para, img] = ids;
+    const measured = new Map(p.measured).set(slotKey(p.split, 'main'), null).set(para, box(100, 450, 390, 40)).set(img, box(100, 495, 390, 100));
+    return { ...p, state, para, img, measured };
+  }
+  const nodes = (state: ProjectState, owner: OwnerRef) => state.pages[owner.id].nodes;
+
+  it('moves a paragraph from one slot of a placement into another, as one node.move that keeps the node as it was', () => {
+    const p = filledSplit();
+    const dest = moveDestination(p.state, p.owner, p.para)!;
+    expect(dest.role).toBe('element');
+    const lists = dest.lists(p.measured);
+    const aim = dest.aim(lists, 700, 486, 1)!;
+    expect(aim).toMatchObject({ op: { type: 'node.move', owner: p.owner, nodeId: p.para, parentId: p.split, slot: 'sidebar', index: 0 }, refused: null, line: null });
+    expect(aim.where).toMatchObject({ lead: 'inside', target: 'Sidebar', within: 'Split' });
+    // Sidebar is drawn as a place it can go while the drag runs.
+    expect(dest.surfaces(lists).map((sf) => sf.label)).toEqual(['Sidebar']);
+    const before = nodes(p.state, p.owner)[p.para];
+    const after = applyOperations(p.state, [aim.op!]).state;
+    const split = nodes(after, p.owner)[p.split] as InstanceNode;
+    expect(split.slots).toMatchObject({ main: [p.img], sidebar: [p.para] });
+    expect(nodes(after, p.owner)[p.para]).toEqual(before);
+  });
+
+  it('refuses, live, a slot whose contract does not take it, and draws no surface for it', () => {
+    const p = filledSplit();
+    const dest = moveDestination(p.state, p.owner, p.img)!;
+    const lists = dest.lists(p.measured);
+    const aim = dest.aim(lists, 700, 486, 1)!;
+    expect(aim).toMatchObject({ op: null, line: null, where: null });
+    expect(aim.refused).toMatch(/takes text, not an image/);
+    expect(dest.surfaces(lists)).toEqual([]);
+  });
+
+  it('moves a card out of one column of a grid into an empty row, and into the content of another section', () => {
+    const p = withSplit();
+    const dest = moveDestination(p.state, p.owner, p.a)!;
+    const lists = dest.lists(p.measured);
+    expect(dest.aim(lists, 500, 320, 1)).toMatchObject({ op: { parentId: p.row, index: 0 }, refused: null });
+    // Below the Split in the second section: after it, in that section's content.
+    expect(dest.aim(lists, 500, 650, 1)).toMatchObject({ op: { parentId: p.second, slot: 'content', index: 1 }, refused: null, where: { lead: 'after' } });
+  });
+
+  it('among its own siblings, counts the gap with itself taken out, and moves nothing beside its own place', () => {
+    const p = page();
+    const dest = moveDestination(p.state, p.owner, p.a)!;
+    const lists = dest.lists(p.measured);
+    // Past the right half of Bo: after it, which is index 1 once Ada is taken out.
+    const aim = dest.aim(lists, 800, 150, 1)!;
+    expect(aim).toMatchObject({ op: { parentId: p.grid, index: 1 }, refused: null });
+    expect(aim.line).not.toBeNull();
+    // Named in the project as the move leaves it: after Bo, never after itself.
+    expect(aim.where).toMatchObject({ lead: 'after', within: 'Grid' });
+    expect(aim.where!.target).toBe(nodeLabel(p.state, p.owner, p.b));
+    expect(applyOperations(p.state, [aim.op!]).state.pages[p.owner.id].nodes[p.grid]).toMatchObject({ children: [p.b, p.a] });
+    // On either gap beside it: nothing to do, and nothing refused.
+    expect(dest.aim(lists, 200, 150, 1)).toMatchObject({ op: null, refused: null, line: null });
+    expect(dest.aim(lists, 495, 150, 1)).toMatchObject({ op: null, refused: null, line: null });
+  });
+
+  it('refuses a place inside itself, and the page’s top level for an element', () => {
+    const p = page();
+    const grid = moveDestination(p.state, p.owner, p.grid)!;
+    const lists = grid.lists(p.measured);
+    // On the grid's own cards: the grid's own list.
+    expect(grid.aim(lists, 300, 150, 1)).toMatchObject({ op: null, refused: INSIDE_ITSELF });
+    // Near the first section's top edge, between sections: an element takes no new Section around it there.
+    expect(grid.aim(lists, 500, 3, 1)).toMatchObject({ op: null, refused: MOVE_TOP });
+  });
+
+  it('moves a section only among the page’s sections', () => {
+    const p = page();
+    const dest = moveDestination(p.state, p.owner, p.first)!;
+    expect(dest.role).toBe('section');
+    expect(dest.specs.every((l) => l.parentId === null)).toBe(true);
+    const lists = dest.lists(p.measured);
+    expect(dest.aim(lists, 500, 650, 1)).toMatchObject({ op: { parentId: null, index: 1 }, refused: null });
+    expect(dest.aim(lists, 500, 100, 1)).toMatchObject({ op: null, refused: null });
+  });
+
+  it('refuses a move that would stop the project saving, such as a button into a card that links somewhere', () => {
+    const p = page();
+    const { state, ids } = inserted(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.second, slot: 'content', primitive: 'button' }]);
+    const [button] = ids;
+    (state.pages[p.owner.id].nodes[p.row] as ElementNode).link = { type: 'url', target: 'https://example.com/artists' };
+    const dest = moveDestination(state, p.owner, button)!;
+    const lists = dest.lists(new Map(p.measured).set(button, box(100, 450, 200, 40)));
+    const aim = dest.aim(lists, 500, 320, 1)!;
+    expect(aim.op).toBeNull();
+    expect(aim.refused).toMatch(/inside a card that links somewhere/);
+    // A plain container still takes it.
+    expect(dest.aim(lists, 300, 150, 1)).toMatchObject({ op: { parentId: p.grid }, refused: null });
+  });
+
+  it('lands in another list by its own Order, even one its block container ignores', () => {
+    const p = page();
+    const { state, ids } = inserted(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.second, slot: 'content', primitive: 'paragraph', text: 'Late' }]);
+    const [late] = ids;
+    // The grid lays its cards out by Order (both 0); the late paragraph's own Order is 2, which its section ignores.
+    const measured = new Map(p.measured)
+      .set(p.a, { ...box(100, 50, 390, 200), ordered: true })
+      .set(p.b, { ...box(510, 50, 390, 200), ordered: true })
+      .set(late, { ...box(100, 450, 800, 40), cssOrder: 2 });
+    const dest = moveDestination(state, p.owner, late)!;
+    const lists = dest.lists(measured);
+    // Between the cards the grid would show it after both: refused there, taken after them.
+    expect(dest.aim(lists, 495, 150, 1)).toMatchObject({ op: null, refused: expect.stringMatching(/Order style/) });
+    expect(dest.aim(lists, 800, 150, 1)).toMatchObject({ op: { parentId: p.grid, index: 2 }, refused: null });
+  });
+
+  it('is none for a node whose list a drop never finds, such as a component’s own design', () => {
+    const p = page();
+    const made = applyOperations(p.state, [{ type: 'component.createFromNode', owner: p.owner, nodeId: p.grid, name: 'Artist grid' }]);
+    const def = made.results[0].definitionId as string;
+    const tree = made.state.components[def].tree!;
+    const inner = tree.nodes[tree.rootIds[0]].kind === 'element' ? (tree.nodes[tree.rootIds[0]] as ElementNode).children[0] : undefined;
+    expect(inner).toBeDefined();
+    expect(moveDestination(made.state, { kind: 'component', id: def }, inner!)).toBeNull();
+  });
+});

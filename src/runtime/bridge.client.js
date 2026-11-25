@@ -181,9 +181,12 @@ function layoutItem(el) {
 }
 /** The CSS order the page lays an element out by among its siblings (see layoutItem). */
 function layoutOrder(el) {
-  const { item, ordered } = layoutItem(el);
-  if (!ordered) return 0;
-  const order = Number.parseInt(getComputedStyle(item).order, 10);
+  return layoutItem(el).ordered ? ownOrder(el) : 0;
+}
+/** The CSS order an element's own styles give it, whether or not its container lays items out by it: a flex or grid
+ *  container it is moved into would. */
+function ownOrder(el) {
+  const order = Number.parseInt(getComputedStyle(layoutItem(el).item).order, 10);
   return Number.isSafeInteger(order) ? order : 0;
 }
 function rectOf(el) {
@@ -4643,6 +4646,8 @@ window.addEventListener('message', async (e) => {
         const shown = boxes.filter(Boolean).length;
         const out = { ...r, order: layoutOrder(el) };
         if (layoutItem(el).ordered) out.ordered = true;
+        const own = ownOrder(el);
+        if (own !== out.order) out.cssOrder = own;
         if (shown > 1) out.many = true;
         return out;
       }) });

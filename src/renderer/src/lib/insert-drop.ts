@@ -8,10 +8,10 @@ import type { EditOperation } from '@shared/ops';
 import type { OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles } from '@shared/types';
 import { CONTAINER_SCOPES } from '@shared/types';
 import { applyOperations } from '@engine/apply';
-import { childLists } from '@engine/tree';
+import { childLists, findParent, subtreeIds } from '@engine/tree';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import type { InsertSpec } from './insert-search';
-import { dropAt, shownOrder, type Box } from './reorder';
+import { dropAt, dropReaches, moveIndex, shownOrder, type Box } from './reorder';
 import { whereFor, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { treeFor } from './model';
 import { shownSlots } from './slot-target';
@@ -33,8 +33,9 @@ export interface ListSpec {
 }
 
 /** A node as the canvas measured it: its box, its CSS order among its siblings (`ordered`: its container lays its items
- *  out by order, a flex or grid one), and whether more than one copy shows. */
-export type Measured = Box & { order: number; ordered?: boolean; many?: boolean };
+ *  out by order, a flex or grid one), and whether more than one copy shows. `cssOrder`: the Order its own styles give
+ *  it, which a container that ignores Order leaves out of `order` but one it is moved into would lay it out by. */
+export type Measured = Box & { order: number; ordered?: boolean; many?: boolean; cssOrder?: number };
 
 /** A list as measured: its own box (none for the page's top level), and each child's measure (null: not shown here). */
 export interface DropList extends ListSpec {
@@ -254,6 +255,17 @@ const within = (b: Box, x: number, y: number, edge: number, sideways = false, em
  * outside every container, between the page's sections. `own` is the new node's CSS order (see insertIndex).
  */
 export function dropTarget(lists: DropList[], role: InsertRole, x: number, y: number, edge: number, own: number | null): DropTarget | null {
+  const list = listAt(lists, role, x, y, edge);
+  if (!list) return null;
+  if (list.refused) return { list, index: null, line: null, refused: list.refused };
+  // An element at the page's top level goes in a new Section of its own, which has no Order style.
+  if (role === 'element' && list.parentId === null) own = 0;
+  return gapFor(list, x, y, own);
+}
+
+/** The list a drop at (x, y) goes into (see dropTarget): the innermost one under the pointer, or the page's top level;
+ *  null when there are no lists at all. */
+function listAt(lists: DropList[], role: InsertRole, x: number, y: number, edge: number): DropList | null {
   const top = lists.find((l) => l.parentId === null);
   if (!top) return null;
   // An empty slot's surface takes the pointer anywhere on it: it is a place of its own, with nothing to go beside.
@@ -274,10 +286,11 @@ export function dropTarget(lists: DropList[], role: InsertRole, x: number, y: nu
     return b.width * b.height;
   };
   // The innermost: the smallest box, and of two the same size (a grid filling its section), the deeper one.
-  const list = nested.sort((a, b) => area(a) - area(b) || b.depth - a.depth)[0] ?? top;
-  if (list.refused) return { list, index: null, line: null, refused: list.refused };
-  // An element at the page's top level goes in a new Section of its own, which has no Order style.
-  if (role === 'element' && list.parentId === null) own = 0;
+  return nested.sort((a, b) => area(a) - area(b) || b.depth - a.depth)[0] ?? top;
+}
+
+/** The gap at (x, y) in `list` for a node of CSS order `own` that is not in it yet (see insertIndex). */
+function gapFor(list: DropList, x: number, y: number, own: number | null): DropTarget {
   const visible = list.children.flatMap((c, i) => (c ? [i] : []));
   // A container that lays its items out as they come (not flex or grid) ignores Order: the new node's too.
   if (visible.length && !visible.some((i) => list.children[i]?.ordered)) own = 0;
@@ -330,14 +343,19 @@ export function incomingOrder(state: ProjectState, spec: InsertSpec): number | n
  * problems of that kind, worked out once (see savingProblems).
  */
 export function dropRefusal(state: ProjectState, ops: EditOperation[], before: () => Diagnostic[]): string | null {
+  return tryDrop(state, ops, before).refused;
+}
+
+/** dropRefusal, with the project as `ops` leave it when it takes them. */
+function tryDrop(state: ProjectState, ops: EditOperation[], before: () => Diagnostic[]): { refused: string; next?: undefined } | { refused: null; next: ProjectState } {
   let next: ProjectState;
   try {
     next = applyOperations(state, ops).state;
   } catch (e) {
-    return e instanceof Error ? e.message : String(e);
+    return { refused: e instanceof Error ? e.message : String(e) };
   }
   const introduced = introducedDiagnostics(before(), savingProblems(next));
-  return introduced.length ? introduced.map((d) => d.message).join(' ') : null;
+  return introduced.length ? { refused: introduced.map((d) => d.message).join(' ') } : { refused: null, next };
 }
 
 /** The problems that stop a project being saved, as the project counts them before a change. */
@@ -412,4 +430,127 @@ function slotLabel(state: ProjectState, owner: OwnerRef, parentId: string, slot:
   const node = own(treeFor(state, owner)?.nodes, parentId);
   const label = node?.kind === 'instance' ? own(own(state.components, node.definitionId)?.slots, slot)?.label : undefined;
   return typeof label === 'string' && label.trim() ? label.trim() : slot;
+}
+
+/** How a refusal tells the author to move something to a place a drag on the canvas can't reach. */
+const IN_LAYERS = 'use Layers';
+
+/** Why a node can't go into a list inside itself. */
+export const INSIDE_ITSELF = 'It can’t go inside itself.';
+
+/** Why an element can't be moved between the page's sections: a move takes no new Section around it. */
+export const MOVE_TOP = 'Only sections go between sections. Drop it into a section, a container or a component’s slot.';
+
+/** Where the node being moved is, for a drag of it: its list, everything inside it (and itself), and its own CSS order
+ *  (null: it changes with the width of the container it would land in, so no gap in another list is known to show it). */
+export interface MoveSource {
+  nodeId: string;
+  parentId: string | null;
+  slot?: string;
+  inside: ReadonlySet<string>;
+  own: number | null;
+}
+
+/**
+ * Where a drop at (x, y) moves an existing node (#658): into the list under the pointer as dropTarget finds it, never
+ * one inside itself, and for an element never between the page's sections. In its own list the gap is counted as
+ * node.move counts it, with the node taken out first (see moveIndex): a gap either side of where it is moves nothing
+ * (`index` null, nothing refused), and one an Order style keeps it out of is refused. In another list it lands as a new
+ * node of its own CSS order would (see insertIndex).
+ */
+export function moveTarget(lists: DropList[], role: InsertRole, src: MoveSource, x: number, y: number, edge: number): DropTarget | null {
+  const list = listAt(lists, role, x, y, edge);
+  if (!list) return null;
+  if (list.parentId !== null && src.inside.has(list.parentId)) return { list, index: null, line: null, refused: INSIDE_ITSELF };
+  if (list.refused) return { list, index: null, line: null, refused: list.refused };
+  if (role === 'element' && list.parentId === null) return { list, index: null, line: null, refused: MOVE_TOP };
+  if (list.parentId !== src.parentId || list.slot !== src.slot) return gapFor(list, x, y, src.own);
+  const from = list.childIds.indexOf(src.nodeId);
+  const order = (i: number) => list.children[i]?.order ?? 0;
+  const shown = shownOrder(
+    list.children.flatMap((c, i) => (c ? [i] : [])),
+    order
+  );
+  // Not shown where it is (the page did not answer for it): nowhere among its siblings is known to be another place.
+  if (!shown.includes(from)) return { list, index: null, line: null };
+  const drop = dropAt(
+    shown.map((i) => list.children[i]!),
+    x,
+    y
+  );
+  if (!dropReaches(shown, from, drop.to, order)) return { list, index: null, line: null, refused: ORDER };
+  const index = moveIndex(shown, from, drop.to, order);
+  return { list, index, line: index === null ? null : drop.line };
+}
+
+/** What a drop at a point does with the node being moved, as a drag shows it (see InsertAim): `op` is the one node.move
+ *  a release applies, null where it changes nothing or is refused. */
+export interface MoveAim {
+  op: Extract<EditOperation, { type: 'node.move' }> | null;
+  refused: string | null;
+  line: Box | null;
+  outline: Box | null;
+  where: Where;
+}
+
+/**
+ * The canvas destination for dragging an existing node of `owner`'s tree (#658), shaped like insertDestination: a
+ * section moves among the page's sections; an element into any container or component slot on the page that shows
+ * once, as its own list does. Each move a drop would make is tried once, on a copy, as node.move itself checks it (a
+ * slot's contract, a node inside itself) and with what it would bring that stops saving (a link inside a card that is
+ * itself a link). Null when the node is not one a drag finds the list of (the page's top level, a container or a
+ * shown slot of a placement), for the caller to keep it among its siblings.
+ */
+export function moveDestination(state: ProjectState, owner: OwnerRef, nodeId: string) {
+  const tree = treeFor(state, owner);
+  const info = tree && findParent(tree, nodeId);
+  if (!tree || !info) return null;
+  const role: InsertRole = info.parentId === null ? 'section' : 'element';
+  const all = dropListSpecs(state, owner, IN_LAYERS);
+  if (!all.some((l) => l.parentId === info.parentId && l.slot === info.slot && !l.refused)) return null;
+  const specs = role === 'section' ? all.filter((l) => l.parentId === null) : all;
+  const inside = new Set(subtreeIds(tree, nodeId));
+  const node = own(tree.nodes, nodeId);
+  const styles = node && 'styles' in node && node.styles ? (node.styles as ResponsiveStyles) : {};
+  // An Order for a width of the container around it changes with where it lands: not known.
+  const varies = CONTAINER_SCOPES.some((scope) => styles[scope] && Object.hasOwn(styles[scope]!, 'order'));
+  const lists = (measured: Map<string, Measured | null>) => measuredLists(specs, measured, IN_LAYERS);
+  const source = (lists: DropList[]): MoveSource => {
+    const at = lists.find((l) => l.parentId === info.parentId && l.slot === info.slot)?.children[info.index];
+    return { nodeId, parentId: info.parentId, ...(info.slot !== undefined ? { slot: info.slot } : {}), inside, own: varies ? null : (at?.cssOrder ?? at?.order ?? 0) };
+  };
+  const checked = new Map<string, { refused: string | null; where: Where }>();
+  let problems: Diagnostic[] | null = null;
+  const check = (op: NonNullable<MoveAim['op']>) => {
+    const key = JSON.stringify([op.parentId, op.slot ?? null, op.index]);
+    let out = checked.get(key);
+    if (!out) {
+      const tried = tryDrop(state, [op], () => (problems ??= savingProblems(state)));
+      // Named in the project as the move leaves it, so the node before the gap is never the one moved.
+      out = tried.refused !== null ? { refused: tried.refused, where: null } : { refused: null, where: whereFor(tried.next, { owner, parentId: op.parentId ?? null, ...(op.slot !== undefined ? { slot: op.slot } : {}), index: op.index }, role) };
+      checked.set(key, out);
+    }
+    return out;
+  };
+  const moveOp = (parentId: string | null, slot: string | undefined, index: number): NonNullable<MoveAim['op']> => ({ type: 'node.move', owner, nodeId, parentId, ...(slot !== undefined ? { slot } : {}), index });
+  const aim = (lists: DropList[], x: number, y: number, scale: number): MoveAim | null => {
+    const t = moveTarget(lists, role, source(lists), x, y, INSERT_EDGE / scale);
+    if (!t) return null;
+    const box = t.list.box;
+    const outline = box && box.height * scale < 4 ? { ...box, y: box.y - 2 / scale, height: 4 / scale } : box;
+    if (t.refused || t.index === null) return { op: null, refused: t.refused ?? null, line: null, outline, where: null };
+    const op = moveOp(t.list.parentId, t.list.slot, t.index);
+    const { refused, where } = check(op);
+    if (refused) return { op: null, refused, line: null, outline, where: null };
+    return { op, refused: null, line: t.line, outline, where };
+  };
+  const surfaces = (lists: DropList[]): SlotSurface[] =>
+    role !== 'element'
+      ? []
+      : lists.flatMap((l) => {
+          if (!l.byPlaceholder || !l.box || l.refused || !l.parentId || l.slot === undefined || inside.has(l.parentId)) return [];
+          if (check(moveOp(l.parentId, l.slot, l.childIds.length)).refused) return [];
+          return [{ key: slotKey(l.parentId, l.slot), box: l.box, label: slotLabel(state, owner, l.parentId, l.slot) }];
+        });
+  return { role, specs, lists, aim, surfaces };
 }

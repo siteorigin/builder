@@ -16,8 +16,8 @@ import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, pointedAt, rectList, spaceSizes, spacingOf, type FrameSpacing } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
-import { insertOps, insertRole, whereText, type InsertAt } from '../lib/insert-at';
-import { dropRefusal, incomingOrder, insertDestination, measureIds, savingProblems, slotOfKey, type DropList, type Measured, type SlotSurface } from '../lib/insert-drop';
+import { insertOps, insertRole, whereText, type InsertAt, type Where } from '../lib/insert-at';
+import { dropRefusal, incomingOrder, insertDestination, measureIds, moveDestination, savingProblems, slotOfKey, type DropList, type ListSpec, type Measured, type MoveAim, type SlotSurface } from '../lib/insert-drop';
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
 import { setAssetDropTarget, type AssetDrag } from '../lib/asset-drag';
 import { aimKey, assetAim, descKey, imageDropTargets, imageInsertOps, resolveImageDrop, type AssetAim, type ImageTarget } from '../lib/image-drop';
@@ -268,9 +268,10 @@ export function Canvas() {
   /** While dragging to reorder: the insertion line in page pixels (null where the drop would change nothing) and
    *  the name of what is moving. */
   const [reorder, setReorder] = useState<{ line: Rect | null; name: string } | null>(null);
-  /** While a tile from Insert is dragged: where the pointer is, and what dropping there does (in page pixels, the gap's
-   *  line and the outline of the container it goes into; `refused` says why it can't go there). */
-  const [insertDrop, setInsertDrop] = useState<{ name: string; x: number; y: number; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null; surfaces: SlotSurface[] } | null>(null);
+  /** While a tile from Insert, or the selection by its grip (`moving`), is dragged onto the page: where the pointer is,
+   *  and what dropping there does (in page pixels, the gap's line and the outline of the container it goes into;
+   *  `refused` says why it can't go there). */
+  const [insertDrop, setInsertDrop] = useState<{ name: string; moving?: boolean; x: number; y: number; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null; surfaces: SlotSurface[] } | null>(null);
   const insertDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void } | null>(null);
   /** What the page measured the selected and hovered boxes for, so an Add button is drawn only on the box of what it
    *  belongs to, never on one measured for the selection before. */
@@ -1566,6 +1567,68 @@ export function Canvas() {
     window.addEventListener('keydown', key, true);
   }
 
+  /** The chip's grip: the selection moves anywhere on the page a drop can take it, or else among its siblings. */
+  const onGrip = (e: React.PointerEvent) => {
+    if (!startMoveDrag(e)) void startReorder(e);
+  };
+
+  /**
+   * Drag the selected element by its chip's grip to another place on the page (#658): among its siblings, or into any
+   * container, grid column or component slot on the page that takes it (see moveDestination), measured and shown as a
+   * drag from Insert is (see startCanvasDrop). A place the project would refuse (a slot's contract, a place inside
+   * itself, a link inside a card that is a link) says why while the pointer is on it, and on release. The release
+   * moves it there as one node.move, planned on the project as the drag found it; let go where it was picked up, on its
+   * own place, or off the page, nothing changes, and Escape cancels. False when the selection is not one this drag
+   * moves (a component's own design, one of a repeated list's items, content the page's lists don't hold), for the grip
+   * to keep it among its siblings.
+   */
+  function startMoveDrag(e: React.PointerEvent): boolean {
+    const s = getState();
+    const snap = s.snapshot;
+    const t = structuralTarget(s.selection);
+    if (!snap || !t || !s.selection || snap.readOnly || snap.aiBusy || s.mode !== 'edit' || s.definitionMode || !s.pageId || !s.frameReady) return false;
+    if (dragging || insertDrag.current || assetDrag.current || resizeDrag.current || s.selection.itemPath?.length || s.selection.instancePath.length) return false;
+    const owner: OwnerRef = s.templateMode ? templateOwner(s.templateMode) : { kind: 'page', id: s.pageId };
+    if (t.owner.kind !== owner.kind || t.owner.id !== owner.id) return false;
+    const st = snap.state;
+    const dest = moveDestination(st, owner, t.nodeId);
+    if (!dest) return false;
+    e.preventDefault();
+    // Keys reach this window, not the page, while dragging: Escape cancels.
+    canvasRef.current?.focus({ preventScroll: true });
+    const name = chromeLabel(st, t);
+    const label = editLabel(st, 'Move', t);
+    const from = { x: e.clientX, y: e.clientY };
+    startCanvasDrop<{ op: NonNullable<MoveAim['op']>; where: Where }>(
+      {
+        owner,
+        name,
+        moving: true,
+        specs: dest.specs,
+        lists: dest.lists,
+        surfaces: dest.surfaces,
+        idle: () => `Moving ${name}`,
+        aim: (lists, x, y, z, point) => {
+          // Let go where it was picked up (the grip can sit over another place on the page): nothing moves.
+          if (Math.hypot(point.x - from.x, point.y - from.y) < 4) return null;
+          const a = dest.aim(lists, x, y, z);
+          return a && { at: a.op && { op: a.op, where: a.where }, refused: a.refused, line: a.line, outline: a.outline, label: a.refused ? `Can’t move ${name} here` : a.where ? `${name} ${whereText(a.where)}` : null };
+        },
+        drop: ({ op, where }) =>
+          void (async () => {
+            // Planned on the project as the drag found it: a project that has moved on since takes none of it.
+            if (getState().snapshot?.workspaceKey !== snap.workspaceKey) return;
+            const r = await applyOps([op], label, undefined, snap.revision);
+            if (r && where) setAnnouncement(`${name} moved ${whereText(where)}.`);
+          })(),
+        refuse: (why) => toast(`${name} wasn’t moved: ${why}`, 'info'),
+        unanswered: () => toast(`The page didn’t answer, so ${name} can’t be dragged now. Move it in Layers instead.`, 'info')
+      },
+      { x: e.clientX, y: e.clientY, pointerId: e.pointerId }
+    );
+    return true;
+  }
+
   /** Each site style's size as padding on the box `desc` finds (null where it has none), a percentage taken of the
    *  page, the box's width or height, or its container (`basis`); null when the page doesn't answer. */
   const measureSpace = (vars: string[], desc: BridgeDesc, basis: 'page' | 'box' | 'boxHeight' | 'parent' = 'page') =>
@@ -1686,8 +1749,53 @@ export function Canvas() {
     const owner: OwnerRef = s.templateMode ? templateOwner(s.templateMode) : { kind: 'page', id: s.pageId };
     const role = insertRole(st, drag.spec);
     const dest = insertDestination(st, owner, role, incomingOrder(st, drag.spec), (at) => insertOps(at, drag.spec, role));
-    const specs = dest.specs;
-    if (!specs.length) return false;
+    if (!dest.specs.length) return false;
+    startCanvasDrop<InsertAt>(
+      {
+        owner,
+        name: drag.name,
+        specs: dest.specs,
+        lists: dest.lists,
+        surfaces: dest.surfaces,
+        idle: (over) => (over ? `Placing ${drag.name}` : `Drag ${drag.name} onto the page`),
+        aim: (lists, x, y, z) => {
+          const t = dest.aim(lists, x, y, z);
+          return t && { at: t.at, refused: t.refused, line: t.line, outline: t.outline, label: t.refused ? `Can’t place ${drag.name} here` : t.where ? `${drag.name} ${whereText(t.where)}` : null };
+        },
+        // Planned on the project as the drag found it (see insertHere).
+        drop: (at) => void insertHere(drag.spec, drag.name, role, at, snap),
+        refuse: (why) => toast(`${drag.name} wasn’t added: ${why}`, 'info'),
+        unanswered: () => toast(`The page didn’t answer, so ${drag.name} can’t be dragged onto it now. Click its tile to add it instead.`, 'info')
+      },
+      start
+    );
+    return true;
+  }
+
+  /**
+   * A drag of something onto the page (see startInsertDrag, startMoveDrag). The lists on the page that can take it are
+   * measured (and measured again when the page shows a newer version or scrolls under the wheel); the pointer then picks
+   * a list and a gap in it, shown by a line and the outline of the container, and the release drops it there. A place
+   * that is refused says why on release. Escape, leaving the window, or releasing off the page cancels. Only the pointer
+   * that started it moves or drops it. `aim`'s label is null where the idle one says enough.
+   */
+  function startCanvasDrop<A>(
+    d: {
+      owner: OwnerRef;
+      name: string;
+      moving?: boolean;
+      specs: ListSpec[];
+      lists: (measured: Map<string, Measured | null>) => DropList[];
+      surfaces: (lists: DropList[]) => SlotSurface[];
+      idle: (over: boolean) => string;
+      aim: (lists: DropList[], x: number, y: number, scale: number, point: { x: number; y: number }) => { at: A | null; refused: string | null; line: Rect | null; outline: Rect | null; label: string | null } | null;
+      drop: (at: A) => void;
+      refuse: (why: string) => void;
+      unanswered: () => void;
+    },
+    start: { x: number; y: number; pointerId: number }
+  ) {
+    const { owner, specs } = d;
     let lists: DropList[] | null = null;
     // The empty slots it can go into, drawn while it runs at the size a drop finds them (#652).
     let surfaces: SlotSurface[] = [];
@@ -1696,7 +1804,7 @@ export function Canvas() {
     // Released while the page was still being measured: the drop waits for the measure, at the release point.
     let released = false;
     // Where a release would put it now: the place, or why it can't go there, and whether the pointer is on the page.
-    let aim: { at: InsertAt | null; refused: string | null; over: boolean } = { at: null, refused: null, over: false };
+    let aim: { at: A | null; refused: string | null; over: boolean } = { at: null, refused: null, over: false };
     const show = () => {
       const wrap = wrapRef.current?.getBoundingClientRect();
       const view = canvasRef.current?.querySelector('.canvas-scroll')?.getBoundingClientRect();
@@ -1705,22 +1813,20 @@ export function Canvas() {
       aim = { at: null, refused: null, over };
       let line: Rect | null = null;
       let outline: Rect | null = null;
-      let label = over ? `Placing ${drag.name}` : `Drag ${drag.name} onto the page`;
+      let label = d.idle(over);
       if (over && lists && wrap) {
         // The page's scale as it is drawn now (the panels beside the canvas can change it mid-drag).
         const z = wrap.width / getState().viewport;
-        const t = dest.aim(lists, (point.x - wrap.left) / z, (point.y - wrap.top) / z, z);
+        const t = d.aim(lists, (point.x - wrap.left) / z, (point.y - wrap.top) / z, z, point);
         if (t) {
           aim = { at: t.at, refused: t.refused, over };
           outline = t.outline;
           line = t.line;
-          label = t.refused ? `Can’t place ${drag.name} here` : t.where ? `${drag.name} ${whereText(t.where)}` : label;
+          label = t.label ?? label;
         }
       }
-      setInsertDrop({ name: drag.name, x: point.x, y: point.y, over, line, outline, label, refused: aim.refused, surfaces: lists ? surfaces : [] });
+      setInsertDrop({ name: d.name, ...(d.moving ? { moving: true } : {}), x: point.x, y: point.y, over, line, outline, label, refused: aim.refused, surfaces: lists ? surfaces : [] });
     };
-    // Planned on the project as the drag found it (see insertHere).
-    const drop = (at: InsertAt) => void insertHere(drag.spec, drag.name, role, at, snap);
     const requests: string[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     // One measure on its way at a time; asked for again meanwhile (a burst of wheel steps), one more follows it.
@@ -1751,8 +1857,8 @@ export function Canvas() {
       setDragging(false);
       setInsertDrop(null);
       if (!commit || !aim.over) return;
-      if (aim.refused) return void toast(`${drag.name} wasn’t added: ${aim.refused}`, 'info');
-      if (aim.at) drop(aim.at);
+      if (aim.refused) return void d.refuse(aim.refused);
+      if (aim.at) d.drop(aim.at);
     };
     /** Measure the page's lists, in batches the page answers (it reads at most 200 at a time); a node it can't show
      *  measures as nothing. What was measured before no longer counts until it lands. */
@@ -1768,7 +1874,7 @@ export function Canvas() {
       timer = setTimeout(() => {
         if (lists || done) return;
         end(false);
-        toast(`The page didn’t answer, so ${drag.name} can’t be dragged onto it now. Click its tile to add it instead.`, 'info');
+        d.unanswered();
       }, 3000);
       const ids = measureIds(specs);
       void measureDescs(listDescs(owner, ids), requests).then((rects) => {
@@ -1776,8 +1882,8 @@ export function Canvas() {
         if (done) return;
         if (again) return measure();
         clearTimeout(timer);
-        lists = dest.lists(new Map(ids.map((id, i) => [id, rects[i]])));
-        surfaces = dest.surfaces(lists);
+        lists = d.lists(new Map(ids.map((id, i) => [id, rects[i]])));
+        surfaces = d.surfaces(lists);
         show();
         if (released) end(true);
       });
@@ -1833,7 +1939,6 @@ export function Canvas() {
     setDragging(true);
     show();
     measure();
-    return true;
   }
   useEffect(() => {
     setInsertDropTarget(startInsertDrag);
@@ -2411,6 +2516,14 @@ export function Canvas() {
   // measured for it (one copy: a repeated item's place would be every item's). Below one section and above the next
   // are one place, drawn once, the selection's first. While a list is open, only its own button is drawn, where it was.
   const addOwner: OwnerRef | null = templateMode ? templateOwner(templateMode) : pageId ? { kind: 'page', id: pageId } : null;
+  // Whether the grip can drag the selection to another place on the page (see startMoveDrag): an element of the page's
+  // own tree, inside a section, as the page shows it once.
+  const canMoveSelection = (() => {
+    const t = state && mode === 'edit' && !definitionMode && addOwner && selection && !selection.itemPath?.length && !selection.instancePath.length ? structuralTarget(selection, { state }) : null;
+    if (!t || t.owner.kind !== addOwner!.kind || t.owner.id !== addOwner!.id) return false;
+    const tree = treeFor(state!, t.owner);
+    return !!tree && !!findParent(tree, t.nodeId)?.parentId;
+  })();
   const addReady = mode === 'edit' && !!state && !!addOwner && frameReady && !staleFrame && !stylesOpen && !definitionMode && !editing && !reorder && !resizing && !insertDrop && !dragging && !snapshot?.readOnly && !snapshot?.aiBusy && !menu.isOpen;
   const measuredFor = (a: BridgeDesc | null, b: BridgeDesc | null) => !!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '') && (a.part || '') === (b.part || '') && a.slot === b.slot;
   const addButtons: Array<{ p: AddPoint; box: AddBox }> = adding
@@ -2678,7 +2791,7 @@ export function Canvas() {
             )}
             {insertDrop && (
               <div className={`ov-moving ov-placing${insertDrop.refused ? ' refused' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} title={insertDrop.refused ?? undefined} data-testid="insert-drop-label">
-                <Plus />
+                {insertDrop.moving ? <GripVertical /> : <Plus />}
                 <span className="what">{insertDrop.label}</span>
                 <span className="sep">·</span>
                 <span className="hint">Esc to cancel</span>
@@ -2754,7 +2867,7 @@ export function Canvas() {
                   // The arrival cue's box is a new one, so the next insertion's cue starts from its beginning.
                   <div
                     key={i === 0 && arriving ? `s0-${arrival.n}` : `s${i}`}
-                    className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}${i === 0 && reorder ? ' moving' : ''}${i === 0 && editing ? ' editing' : ''}${i === 0 && arriving ? ' arriving' : ''}`}
+                    className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}${i === 0 && (reorder || insertDrop?.moving) ? ' moving' : ''}${i === 0 && editing ? ' editing' : ''}${i === 0 && arriving ? ' arriving' : ''}`}
                     style={b}
                   />
                 ))}
@@ -2850,7 +2963,7 @@ export function Canvas() {
                   </div>
                 </div>
               )}
-              {firstSel && selection && state && placement && !reorder && !resizing && !imageDrop && (
+              {firstSel && selection && state && placement && !reorder && !insertDrop?.moving && !resizing && !imageDrop && (
                 <SelectionChip
                   box={firstSel}
                   frameWidth={viewport * z}
@@ -2865,7 +2978,8 @@ export function Canvas() {
                   onWidth={setChipW}
                   onLostFocus={() => canvasRef.current?.focus({ preventScroll: true })}
                   onMore={(el, focusLast) => openContextMenu(0, 0, selection, el, focusLast)}
-                  onGrip={startReorder}
+                  onGrip={onGrip}
+                  canMove={canMoveSelection}
                   editing={editing}
                   onDone={() => post('commitTextEdit')}
                   onMove={(dir) => void announcedMove(() => moveLayers(dir))}
@@ -2903,7 +3017,7 @@ export function Canvas() {
       {insertDrop &&
         createPortal(
           <div className={`insert-ghost${insertDrop.refused ? ' refused' : ''}`} style={{ left: insertDrop.x + 14, top: insertDrop.y + 12 }} aria-hidden="true">
-            <Plus />
+            {insertDrop.moving ? <GripVertical /> : <Plus />}
             <span>{insertDrop.name}</span>
           </div>,
           document.body
@@ -2993,7 +3107,7 @@ function chipPlacement(box: { top: number; height: number }, topLevel: boolean, 
  * (WAI-ARIA APG toolbar); the drag handle is pointer-only, with Move up and Move down as its keyboard
  * equivalent. Delete is not here: it lives at the end of More actions, in red, and on the Delete key.
  */
-function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
+function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, canMove, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; canMove: boolean; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
   // With the inspector out of sight (dock closed, or AI / Site styles showing), the chip offers the way back.
@@ -3050,6 +3164,8 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
   // With layers selected together in Layers, the chip's commands (like their shortcuts) move and duplicate them all.
   const group = layerSet ? liveGroup() : null;
   const canReorder = structural && !!sib && sib.count > 1;
+  // A drag takes it among its siblings, or (a lone card in a column too) to another place on the page.
+  const canGrip = canReorder || (structural && canMove);
   const canUp = group ? group.indexes[0] > 0 : !!sib && sib.index > 0;
   const canDown = group ? group.indexes[group.indexes.length - 1] < group.list.length - 1 : !!sib && sib.index < sib.count - 1;
   const canPrev = !!item && !stepBlocked?.prev && !!stepItem(item.parts, item.n, -1);
@@ -3115,7 +3231,7 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
       onFocus={trackFocus}
       onBlur={trackBlur}
     >
-      {canReorder && !group && (
+      {canGrip && !group && (
         // Pointer-only, so it is hidden from assistive tech: Move up and Move down are its equivalent. A drag moves one
         // element, so it is not offered while layers are selected together (the arrows move them all).
         <span className="icon-btn grip" aria-hidden="true" title="Drag to move" aria-label="Drag to move" onPointerDown={onGrip}>
