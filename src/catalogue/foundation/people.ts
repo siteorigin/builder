@@ -70,7 +70,7 @@ export const testimonials = managed({
     items: P.list(
       'Testimonials',
       'Testimonial',
-      { quote: P.text('Quote', 'A short quote from a happy client.'), name: P.str('Name', 'Client name'), role: P.str('Role', ''), portrait: P.image('Portrait') },
+      { quote: P.required(P.text('Quote', 'A short quote from a happy client.')), name: P.str('Name', 'Client name'), role: P.str('Role', ''), portrait: P.image('Portrait') },
       [
         { quote: 'They listened properly, explained every option and delivered exactly what was promised. The house finally works for us.', name: 'Amelia Hart', role: 'Homeowner, Ashford', portrait: img },
         { quote: 'Calm, organised and genuinely good company. We would not hesitate to work with the team again.', name: 'Daniel Okafor', role: 'Owner, Copperline Café', portrait: img },
@@ -125,7 +125,7 @@ export const team = managed({
     people: P.list(
       'People',
       'Person',
-      { portrait: P.image('Portrait'), name: P.str('Name', 'Name'), role: P.str('Role', ''), bio: P.text('Bio', '') },
+      { portrait: P.image('Portrait'), name: P.required(P.str('Name', 'Name')), role: P.str('Role', ''), bio: P.text('Bio', '') },
       [
         { portrait: img, name: 'Hannah Wells', role: 'Founder & lead designer', bio: 'Fifteen years designing homes and small workplaces.' },
         { portrait: img, name: 'Marcus Lee', role: 'Project manager', bio: 'Keeps every schedule, budget and contractor on track.' },

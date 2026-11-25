@@ -21,7 +21,7 @@ import { applyOperation } from '@engine/apply';
 import { headerMenuSlot, itemLinkPairs } from '@engine/tree';
 import { followText, joinedLines } from '@shared/contact-links';
 import { normalizeProp, normalizeScalar } from '@engine/values';
-import { compactPropsSchema, IMAGE_SCHEMA, type JsonSchema } from './propschema';
+import { compactPropsSchema, IMAGE_SCHEMA, REQUIRED_IMAGE_SCHEMA, type JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
 
 const MAX_SECTIONS = 16;
@@ -1041,7 +1041,7 @@ export function upsertToolSchema(state: ProjectState, only?: string, focused = f
   };
   return {
     type: 'object',
-    $defs: { image: IMAGE_SCHEMA },
+    $defs: { image: IMAGE_SCHEMA, requiredImage: REQUIRED_IMAGE_SCHEMA },
     properties: {
       slug: { type: 'string', maxLength: SLUG_CHARS, description: only ? `This request may build only the page at ${only}: use "${only}".` : 'Page path such as "services". "home" is the home page.' },
       title: { type: 'string', maxLength: 80 },

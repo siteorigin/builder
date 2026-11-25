@@ -26,6 +26,7 @@ import { themeUpdateNote, themeUpdatesSummary } from './theme-update';
 import type { Diagnostic } from '@engine/validate';
 import { directDependencies } from '@engine/definitions';
 import { showsPart, SHELL_PARTS } from '@shared/page-shell';
+import { requiredHint } from '@shared/required';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -583,7 +584,13 @@ export function propSchemaSummary(schema: Record<string, PropSchema>) {
       out[k] = {
         type: 'list',
         label: s.label,
-        itemFields: Object.fromEntries(Object.entries(s.fields).map(([f, fs]) => [f, fs.type === 'enum' ? { type: 'enum', options: fs.options.map((o) => o.value) } : fs.type === 'richtext' && fs.codeForm ? { type: 'richtext', codeForm: fs.codeForm } : fs.type])),
+        itemFields: Object.fromEntries(
+          Object.entries(s.fields).map(([f, fs]) => {
+            const shape = fs.type === 'enum' ? { type: 'enum', options: fs.options.map((o) => o.value) } : fs.type === 'richtext' && fs.codeForm ? { type: 'richtext', codeForm: fs.codeForm } : fs.type;
+            // A field every item must fill: its type alone would read as optional.
+            return [f, fs.required ? { ...(typeof shape === 'string' ? { type: shape } : shape), required: true } : shape];
+          })
+        ),
         max: s.max,
         // A page list: these fields, left empty, show the linked page's own values and follow its later edits.
         ...(s.pageTeaser ? { fromLinkedPage: { link: s.pageTeaser.link, ...Object.fromEntries(teaserFields(s.pageTeaser).map(([f, what]) => [f, `page ${what} when empty`])) } } : {})
@@ -596,6 +603,8 @@ export function propSchemaSummary(schema: Record<string, PropSchema>) {
       out[k] = { type: 'object', label: s.label, fields: Object.fromEntries(Object.entries(s.fields).map(([f, fs]) => [f, propSignature(fs)])), note: 'Send only the fields to change; the others keep their values.' };
     else if (s.type === 'token') out[k] = { type: 'token', label: s.label, tokenGroup: s.tokenGroup, note: `The ID of a ${s.tokenGroup} token (read_project with sections ["tokens"] lists them).` };
     else out[k] = { type: s.type, label: s.label };
+    // A value the component cannot render without: never sent empty (see shared/required.ts).
+    if (s.required) out[k] = { ...(out[k] as object), required: true, requires: requiredHint(s) };
   }
   return out;
 }
@@ -756,8 +765,12 @@ function designSummary(state: ProjectState, def: ComponentDefinition, nested: (i
 /** How a table is written whole, and its limits. */
 const TABLE_SIGNATURE = `table{columns:string[], rows:string[][]} max ${TABLE_LIMITS.columns} columns, ${TABLE_LIMITS.rows} rows`;
 
-/** One property as a short type signature: "string", "link", "enum(a|b)", "list<title:string, icon:icon>". */
+/** One property as a short type signature: "string", "link", "enum(a|b)", "list<title:required string, icon:icon>". */
 function propSignature(s: PropSchema): string {
+  return s.required ? `required ${propType(s)}` : propType(s);
+}
+
+function propType(s: PropSchema): string {
   if (s.type === 'enum') return `enum(${s.options.map((o) => o.value).join('|')})`;
   if (s.type === 'table') return TABLE_SIGNATURE;
   if (s.type === 'list' && s.feed) return `computed from ${s.feed === 'articles' ? "the site's dated articles" : s.feed === 'entries' ? "a collection's published entries, chosen by collection, category, tag and count" : "the site's page"}: never send`;

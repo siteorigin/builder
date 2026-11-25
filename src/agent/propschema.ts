@@ -8,6 +8,7 @@ import { teaserFields } from '@shared/page-teasers';
 import { MAX_CHOICES } from '@engine/values';
 import { TABLE_LIMITS } from '@engine/table';
 import { TEXT_LIMITS } from '@shared/text-limits';
+import { requiredHint } from '@shared/required';
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -31,8 +32,50 @@ function choicesSchema(description?: string): JsonSchema {
   };
 }
 
+/** A required image: its assetId is a library image's ID, never null. */
+export const REQUIRED_IMAGE_SCHEMA: JsonSchema = {
+  ...IMAGE_SCHEMA,
+  properties: { ...(IMAGE_SCHEMA.properties as Record<string, JsonSchema>), assetId: { type: 'string', minLength: 1, description: 'An ID from search_assets. Required: never null.' } }
+};
+
+/**
+ * What a required property (see shared/required.ts) adds to a value's schema: no empty text, no missing picture, no
+ * empty list, and the word in its description. The keys stay optional in their object: a patch leaves out what it
+ * keeps.
+ */
+function requiring(s: PropSchema, schema: JsonSchema, compact = false): JsonSchema {
+  if (!s.required) return schema;
+  const out: JsonSchema = { ...schema };
+  switch (s.type) {
+    case 'string':
+    case 'richtext':
+    case 'link':
+    case 'icon':
+      out.minLength = 1;
+      break;
+    case 'enum':
+      out.enum = s.options.map((o) => o.value).filter((v) => v.trim());
+      break;
+    case 'image':
+      return compact ? { $ref: '#/$defs/requiredImage' } : { ...REQUIRED_IMAGE_SCHEMA, ...(schema.description ? { description: schema.description } : {}) };
+    case 'choices':
+    case 'list':
+      out.minItems = Math.max(1, (schema.minItems as number | undefined) ?? 0);
+      break;
+    case 'table':
+      out.properties = { ...(schema.properties as Record<string, JsonSchema>), rows: { ...((schema.properties as Record<string, JsonSchema>).rows ?? {}), minItems: 1 } };
+      break;
+  }
+  if (typeof out.description === 'string') out.description = `${out.description}. Required: ${requiredHint(s)}.`;
+  return out;
+}
+
 /** Types only, for a schema that lists every component: labels there would cost more than the rest together. */
 function compactScalar(s: ScalarPropSchema): JsonSchema {
+  return requiring(s, compactScalarType(s), true);
+}
+
+function compactScalarType(s: ScalarPropSchema): JsonSchema {
   switch (s.type) {
     case 'choices':
       return choicesSchema();
@@ -51,6 +94,10 @@ function compactScalar(s: ScalarPropSchema): JsonSchema {
 }
 
 function scalarSchema(s: ScalarPropSchema): JsonSchema {
+  return requiring(s, scalarType(s));
+}
+
+function scalarType(s: ScalarPropSchema): JsonSchema {
   const description = s.label;
   switch (s.type) {
     case 'string':
@@ -113,9 +160,13 @@ function tableSchema(description?: string): JsonSchema {
 }
 
 export function propJsonSchema(s: PropSchema): JsonSchema {
-  if (s.type === 'table') return tableSchema(s.label);
-  if (s.type === 'object') return objectSchema(s, false);
+  if (s.type === 'table') return requiring(s, tableSchema(s.label));
+  if (s.type === 'object') return requiring(s, objectSchema(s, false));
   if (s.type !== 'list') return scalarSchema(s);
+  return requiring(s, listSchema(s));
+}
+
+function listSchema(s: Extract<PropSchema, { type: 'list' }>): JsonSchema {
   const properties: Record<string, JsonSchema> = { id: { type: 'string', description: 'Keep the existing item ID when editing an item. Omit it for a new item.' } };
   // A page list's fields left empty show the linked page's own values, which follow that page's later edits.
   const follows = new Map(s.pageTeaser ? teaserFields(s.pageTeaser) : []);
@@ -151,17 +202,17 @@ export function propsJsonSchema(def: Pick<ComponentDefinition, 'properties'>): J
   return { type: 'object', properties, additionalProperties: false };
 }
 
-/** Closed props with types only. The caller's schema must define #/$defs/image (IMAGE_SCHEMA). */
+/** Closed props with types only. The caller's schema must define #/$defs/image (IMAGE_SCHEMA), and #/$defs/requiredImage (REQUIRED_IMAGE_SCHEMA) when a component has a required image. */
 export function compactPropsSchema(def: Pick<ComponentDefinition, 'properties'>): JsonSchema {
   const properties: Record<string, JsonSchema> = {};
   for (const [k, s] of Object.entries(def.properties)) {
     if (!writableProp(s)) continue;
     if (s.type === 'table') {
-      properties[k] = tableSchema();
+      properties[k] = requiring(s, tableSchema(), true);
       continue;
     }
     if (s.type === 'object') {
-      properties[k] = objectSchema(s, true);
+      properties[k] = requiring(s, objectSchema(s, true), true);
       continue;
     }
     if (s.type !== 'list') {
@@ -170,7 +221,7 @@ export function compactPropsSchema(def: Pick<ComponentDefinition, 'properties'>)
     }
     const fields: Record<string, JsonSchema> = { id: { type: 'string' } };
     for (const [f, x] of Object.entries(s.fields)) fields[f] = compactScalar(x);
-    properties[k] = { type: 'array', ...(s.min !== undefined ? { minItems: s.min } : {}), ...(s.max !== undefined ? { maxItems: s.max } : {}), items: { type: 'object', properties: fields, additionalProperties: false } };
+    properties[k] = requiring(s, { type: 'array', ...(s.min !== undefined ? { minItems: s.min } : {}), ...(s.max !== undefined ? { maxItems: s.max } : {}), items: { type: 'object', properties: fields, additionalProperties: false } }, true);
   }
   return { type: 'object', properties, additionalProperties: false };
 }
