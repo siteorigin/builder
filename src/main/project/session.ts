@@ -36,6 +36,7 @@ import { checkSvelteSource, codeContractNames, componentSources } from '../codec
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
+import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
@@ -61,6 +62,11 @@ const OBSOLETE_DISCOVERY_REASON = 'This file for AI agents was edited outside Si
 /** A generated file that publishes what the project says, not only where its pages are: one for AI agents, or the RSS feed. */
 const publishesWords = (path: string) => isDiscoveryPath(path) || path === RSS_PATH;
 const OBSOLETE_FEED_REASON = 'This RSS feed was edited outside SiteOrigin Builder, and the website no longer has one, so a build would still publish what it says. Restore it to remove it (your version is kept as a copy), or move it out of static/.';
+/** A generated file of redirect rules a host follows ahead of the website's pages (generator/host-redirects.ts). */
+const routesVisitors = (path: string) => path === HOST_REDIRECTS_FILE || path === VERCEL_CONFIG_FILE;
+const OBSOLETE_REDIRECTS_REASON = 'These redirect rules were edited outside SiteOrigin Builder, and the website no longer has any, so its host would still follow them, even past a page at one of those addresses. Restore it to remove it (your version is kept as a copy), or rename it.';
+/** An obsolete generated file that stays claimed while edited outside the app, since a build would still act on it. */
+const claimedWhenObsolete = (path: string) => publishesWords(path) || routesVisitors(path);
 const UNREADABLE_REASON = 'Generated file could not be read, so SiteOrigin Builder left it as it is. Check that it is a file you can open, then restore it.';
 
 /** Opened for reading without waiting: a pipe at the path must never hold a save up. */
@@ -1871,13 +1877,14 @@ export class ProjectSession extends EventEmitter {
         await removeDurable(abs);
         await removeEmptyDirs(dirname(abs), join(this.dir, 'src'));
         changedFiles.push(path);
-      } else if (diskHash !== null && publishesWords(path) && (await fs.lstat(abs).then((st) => st.isFile(), () => false))) {
+      } else if (diskHash !== null && claimedWhenObsolete(path) && (await fs.lstat(abs).then((st) => st.isFile(), () => false))) {
         // A file for AI agents or feed readers edited outside the app that the website no longer has (its page made a
         // draft or hidden from search engines, its copy turned off, its last post unpublished) would still publish its
         // words: it stays claimed, so neither export carries it unnoticed, and named, until it is restored (removed)
         // or moved away.
         nextFiles[path] = prev[path] ?? inflight[path];
-        this.conflicts.push({ path, reason: path === RSS_PATH ? OBSOLETE_FEED_REASON : OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
+        // So would redirect rules a host follows, even past a page given one of their addresses since.
+        this.conflicts.push({ path, reason: path === RSS_PATH ? OBSOLETE_FEED_REASON : routesVisitors(path) ? OBSOLETE_REDIRECTS_REASON : OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
       }
     }
     await this.writeManifest(nextFiles);
@@ -1922,7 +1929,7 @@ export class ProjectSession extends EventEmitter {
   private async restoreGeneratedLocked(path: string) {
     const content = await this.generatedContent(path);
     if (content === undefined) {
-      if (publishesWords(path) && this.generated.files[path]) return this.retireGeneratedLocked(path);
+      if (claimedWhenObsolete(path) && this.generated.files[path]) return this.retireGeneratedLocked(path);
       if (SITE_ICON_PATHS.includes(path)) throw new Error('The site’s icons could not be made just now, so it was not restored. Try again in a moment.');
       throw new Error('That file is no longer generated.');
     }

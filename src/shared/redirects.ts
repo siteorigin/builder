@@ -34,6 +34,16 @@ export type RedirectProblem =
   | { kind: 'missing'; from: string; to: string }
   | { kind: 'chain'; from: string; via: string[]; to: string };
 
+/**
+ * A loop of old addresses as it reads from `from`, back round to where it started ("/a/ → /b/ → /a/"): starting at
+ * `from` when it is one of them.
+ */
+export function loopText(cycle: string[], from: string): string {
+  const i = cycle.findIndex((f) => f.toLowerCase() === from.toLowerCase());
+  const round = i > 0 ? [...cycle.slice(i), ...cycle.slice(0, i)] : cycle;
+  return [...round, round[0]].join(' → ');
+}
+
 /** Where a redirect leads, followed to the end. */
 type Outcome =
   | { ok: true; to: string; title: string; via: string[]; page?: PageDoc; entry?: SiteEntry }

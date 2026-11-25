@@ -11,7 +11,7 @@ import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
 import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldSchema } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
-import { redirectRecord, resolveRedirects, type RedirectProblem } from '@shared/redirects';
+import { loopText, redirectRecord, resolveRedirects, type RedirectProblem } from '@shared/redirects';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { variantIdsValid, variantOptions } from '@shared/variants';
 import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds, templateTrees } from './tree';
@@ -103,7 +103,7 @@ export function redirectDiagnostic(p: RedirectProblem): Diagnostic {
     case 'self':
       return { severity: 'error', code: 'REDIRECT_SELF', message: `The old address ${p.from} sends visitors to itself, so the website leaves it out. Send it somewhere else, or remove it, in Site settings under Redirects.`, site };
     case 'loop': {
-      const round = [...p.cycle, p.cycle[0]].join(' → ');
+      const round = loopText(p.cycle, p.from);
       const inLoop = p.cycle.some((f) => f.toLowerCase() === p.from.toLowerCase());
       return {
         severity: 'error',

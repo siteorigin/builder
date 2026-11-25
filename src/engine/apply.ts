@@ -48,7 +48,7 @@ import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
 import { feedRowFields } from '@shared/entry-feed';
 import { archiveRouteOwner, collectionRouteOwner, findEntry, siteEntries } from '@shared/collections';
-import { resolveRedirects } from '@shared/redirects';
+import { loopText, resolveRedirects } from '@shared/redirects';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
@@ -848,7 +848,7 @@ function redirectTarget(state: ProjectState, op: Op<'redirect.add'> | Op<'redire
 /** Refuses a redirect that would never arrive anywhere: one leading to itself, or round a loop of old addresses. */
 function refuseRedirectLoop(state: ProjectState, from: string) {
   const problem = resolveRedirects(state).problems.find((p) => p.from.toLowerCase() === from.toLowerCase());
-  if (problem?.kind === 'loop') fail(`Sending ${from} there would make a loop of old addresses (${[...problem.cycle, problem.cycle[0]].join(' → ')}) that never arrives anywhere. Choose another address.`);
+  if (problem?.kind === 'loop') fail(`Sending ${from} there would make a loop of old addresses (${loopText(problem.cycle, from)}) that never arrives anywhere. Choose another address.`);
   if (problem?.kind === 'self') fail(`${from} would only lead back to itself. Choose another address.`);
 }
 
