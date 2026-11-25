@@ -720,7 +720,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
       // A link is written as a route, URL or address here, and stored as the link it names.
       if (field === 'link' && typeof v === 'string') {
         try {
-          out.link = keptLinkOptions(normalizeLink(v, state, `${at}.link`), prev?.kind === n.kind ? prev.link : undefined);
+          out.link = keptLinkOptions(normalizeLink(v, state, `${at}.link`), prev?.link);
         } catch (e) {
           issues.push({ field: `${at}.link`, message: (e as Error).message });
         }

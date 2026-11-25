@@ -430,7 +430,9 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       root.current?.querySelectorAll('a[href]').forEach((a) => {
         if (!now || a.getAttribute('href') !== href || !now.intersectsNode(a)) return;
         if (rels.length) a.setAttribute('rel', rels.join(' '));
-        if (newTab) a.setAttribute('target', '_blank');
+        // A new link the browser joined to a neighbour going to the same place holds that neighbour's words too: they
+        // keep the tab they opened in.
+        if (newTab && coversAll(now, a)) a.setAttribute('target', '_blank');
       });
     });
   };
@@ -799,22 +801,39 @@ function allPosts(state: ProjectState) {
     .flatMap((id) => orderedEntries(state.collections[id]).map((e) => ({ id: e.id, title: e.title, collection: state.collections[id].settings.name })));
 }
 
+/** The part of a text node's words a range covers: a range that only reaches an element's edge covers none of it. */
+function coveredText(range: Range, t: Node): string {
+  if (!range.intersectsNode(t)) return '';
+  const text = t.nodeValue ?? '';
+  return text.slice(t === range.startContainer ? range.startOffset : 0, t === range.endContainer ? range.endOffset : text.length);
+}
+
+/** Whether a range covers every word inside an element. */
+function coversAll(range: Range, el: Element): boolean {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) if (t.nodeValue?.trim() && coveredText(range, t) !== t.nodeValue) return false;
+  return true;
+}
+
 /**
  * Whether the words chosen for a link are all in links that open a new tab (the one at the caret, with none chosen):
  * words beside such a link, or in one that does not, keep a new link to the tab it opens in.
  */
 function opensNewTab(root: HTMLElement, range: Range): boolean {
-  const touched = [...root.querySelectorAll('a[href]')].filter((a) => range.intersectsNode(a));
-  if (!touched.length || touched.some((a) => a.getAttribute('target') !== '_blank')) return false;
+  if (range.collapsed) {
+    const at = range.startContainer;
+    const a = (at instanceof Element ? at : at.parentElement)?.closest('a[href]');
+    return !!a && root.contains(a) && a.getAttribute('target') === '_blank';
+  }
+  let linked = false;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   for (let t = walker.nextNode(); t; t = walker.nextNode()) {
-    if (!range.intersectsNode(t)) continue;
-    const text = t.nodeValue ?? '';
-    const from = t === range.startContainer ? range.startOffset : 0;
-    const to = t === range.endContainer ? range.endOffset : text.length;
-    if (text.slice(from, to).trim() && !t.parentElement?.closest('a[href]')) return false;
+    if (!coveredText(range, t).trim()) continue;
+    const a = t.parentElement?.closest('a[href]');
+    if (!a || !root.contains(a) || a.getAttribute('target') !== '_blank') return false;
+    linked = true;
   }
-  return true;
+  return linked;
 }
 
 function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extract<Dialog, { kind: 'link' }>; state: ProjectState; self: string; onChange: (d: Dialog) => void; onApply: (d: Extract<Dialog, { kind: 'link' }>) => void }) {

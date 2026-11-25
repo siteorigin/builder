@@ -179,6 +179,42 @@ describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
     expect((await rels()).find(([href]) => href === 'https://other.example/')).toEqual(['https://other.example/', null, null]);
   });
 
+  it('keeps a link’s options when the words chosen end where the next link starts, and never gives them to that link (#582)', async () => {
+    const pair = '<p><a href="https://a.example/" target="_blank" rel="sponsored">First</a><a href="https://b.example/">Second</a> end</p>';
+    const repoint = async (to: string, select: string) => {
+      edits++;
+      await page.evaluate(`window.seen = []`);
+      await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(pair)}`);
+      await page.evaluate(`document.querySelector('iframe').focus()`);
+      await toFrame('beginTextEdit', { desc: { ctx: 'page:p', node: 'r', items: '' }, editId: `e${edits}` });
+      await expect.poll(async () => (await messages()).some((m) => m.type === 'textEditStarted')).toBe(true);
+      await frame.evaluate(`(() => {
+        const [a1, a2] = document.querySelectorAll('[data-so-node="r"] a');
+        const r = document.createRange();
+        ${select}
+        getSelection().removeAllRanges();
+        getSelection().addRange(r);
+      })()`);
+      await page.keyboard.press(`${MOD}+k`);
+      await expect.poll(async () => (await field()).open).toBe(true);
+      await page.keyboard.type(to);
+      await page.keyboard.press('Enter');
+      const { check } = await nextCheck(0);
+      await toFrame('linkChecked', { check });
+      await expect.poll(async () => (await field()).open).toBe(false);
+      const out = await rels();
+      await page.keyboard.press('Escape');
+      return out;
+    };
+    // From the start of the first link to the start of the second: only the first link's words.
+    expect(await repoint('https://c.example/', 'r.setStart(a1, 0); r.setEnd(a2, 0);')).toEqual([
+      ['https://c.example/', 'sponsored', '_blank'],
+      ['https://b.example/', null, null]
+    ]);
+    // Pointed where its neighbour goes, the browser makes the two one link: the neighbour's words keep their own tab.
+    expect(await repoint('https://b.example/', 'r.selectNodeContents(a1);')).toEqual([['https://b.example/', null, null]]);
+  });
+
   it('re-points only the link the caret is in when its neighbour goes to the same address but says something else (#582)', async () => {
     const pair = '<p><a href="https://shop.example/" rel="sponsored"><strong>Paid</strong></a><a href="https://shop.example/" rel="ugc"><em>review</em></a> today</p>';
     edits++;

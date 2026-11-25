@@ -1903,9 +1903,9 @@ function linkChecked(payload) {
   // The browser replaces the link it re-points, attributes and all. When the words were one link (every link they
   // touch goes to the same place and says the same), the new one still opens a new tab if that one did, to a page
   // or a web address, and keeps what the author said about a web address while it still goes to one.
-  const touched = [...editing.el.querySelectorAll('a[href]')].filter((a) => ed.range.intersectsNode(a));
-  const was = touched[0];
-  const one = !!was && touched.every((a) => a.getAttribute('href') === was.getAttribute('href') && a.getAttribute('target') === was.getAttribute('target') && authoredRels(a).join() === authoredRels(was).join()) && allLinked(ed.range);
+  const { links, plain } = rangeLinks(ed.range);
+  const was = links[0];
+  const one = !!was && !plain && links.every((a) => a.getAttribute('href') === was.getAttribute('href') && a.getAttribute('target') === was.getAttribute('target') && authoredRels(a).join() === authoredRels(was).join());
   const newTab = one && was.getAttribute('target') === '_blank' && /^(https?:|\/)/i.test(href);
   const rels = one && /^https?:/i.test(href) && /^https?:/i.test(was.getAttribute('href')) ? authoredRels(was) : [];
   closeLinkEditor(true);
@@ -1914,20 +1914,35 @@ function linkChecked(payload) {
   const now = (newTab || rels.length) && sel.rangeCount ? sel.getRangeAt(0) : null;
   if (now)
     for (const a of editing.el.querySelectorAll('a[href]')) {
-      if (a.getAttribute('href') !== href || !now.intersectsNode(a)) continue;
+      // A new link the browser joined to a neighbour going to the same place holds that neighbour's words too: it is
+      // left as it is rather than changing them.
+      if (a.getAttribute('href') !== href || !now.intersectsNode(a) || !coversAll(now, a)) continue;
       if (newTab) a.setAttribute('target', '_blank');
       if (rels.length) a.setAttribute('rel', rels.join(' '));
     }
 }
-/** Whether every word the range covers is already linked: words beside a link that join it say nothing of its own. */
-function allLinked(range) {
+/** The part of a text node's words a range covers: a range that only reaches an element's edge covers none of it. */
+function coveredText(range, t) {
+  if (!range.intersectsNode(t)) return '';
+  return t.nodeValue.slice(t === range.startContainer ? range.startOffset : 0, t === range.endContainer ? range.endOffset : t.nodeValue.length);
+}
+/** The links whose words a range covers, and whether it covers words outside any link (which join no link's options). */
+function rangeLinks(range) {
+  const links = [];
+  let plain = false;
   const walker = document.createTreeWalker(editing.el, NodeFilter.SHOW_TEXT);
   for (let t = walker.nextNode(); t; t = walker.nextNode()) {
-    if (!range.intersectsNode(t)) continue;
-    const from = t === range.startContainer ? range.startOffset : 0;
-    const to = t === range.endContainer ? range.endOffset : t.nodeValue.length;
-    if (t.nodeValue.slice(from, to).trim() && !t.parentElement.closest('a[href]')) return false;
+    if (!coveredText(range, t).trim()) continue;
+    const a = t.parentElement.closest('a[href]');
+    if (!a || !editing.el.contains(a)) plain = true;
+    else if (!links.includes(a)) links.push(a);
   }
+  return { links, plain };
+}
+/** Whether a range covers every word inside an element. */
+function coversAll(range, el) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) if (t.nodeValue.trim() && coveredText(range, t) !== t.nodeValue) return false;
   return true;
 }
 /** Whether the words the field links are still there to link (the text can change underneath the field). */
