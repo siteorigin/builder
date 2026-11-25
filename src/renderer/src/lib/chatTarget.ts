@@ -146,10 +146,12 @@ export function retryView(
   // Leaving a component edited everywhere goes back to the page it was entered from.
   const leave = now.definitionMode ? { pageId: now.definitionMode.returnPageId } : {};
   // A request about a post goes back to that post, in the writer, while its collection still has it.
-  const post = ctx?.post && typeof ctx.post === 'object' && typeof ctx.post.collectionId === 'string' && typeof ctx.post.entryId === 'string' ? { collectionId: ctx.post.collectionId, entryId: ctx.post.entryId } : null;
-  if (post) {
-    const there = !!postAt(state, post);
-    return { ...leave, definitionMode: null, selection: null, scope, missing: there ? null : `The post “${postTitle(ctx!.post!.title)}”`, post: there ? post : null };
+  // One read back damaged is still a post's request: the author chooses a post, never the page under the writer.
+  if (ctx?.post !== undefined) {
+    const p = ctx.post as unknown as Record<string, unknown> | null;
+    const post = p && typeof p === 'object' && typeof p.collectionId === 'string' && typeof p.entryId === 'string' ? { collectionId: p.collectionId, entryId: p.entryId } : null;
+    const there = !!post && !!postAt(state, post);
+    return { ...leave, definitionMode: null, selection: null, scope, missing: there ? null : post ? `The post “${postTitle(p!.title)}”` : 'The post', post: there ? post : null };
   }
   const componentId = requestComponentId(ctx);
   if (ctx && componentId) {

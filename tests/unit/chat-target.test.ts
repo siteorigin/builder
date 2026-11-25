@@ -270,7 +270,7 @@ describe('the composer with a post open in the Posts workspace (#400)', () => {
         const ctx = chatContextFor(state, scope, { enabled: { page: true, scope: chosen }, viewport: 1280 });
         expect(ctx).toEqual({ pageId: home, pageTitle: state.pages[home].title, selection: null, selectionLabel: null, post: { ...post, title: 'Spring open studio' }, viewport: 1280 });
       }
-      expect(chatContextFor(state, scope, { enabled, viewport: 1280, ask: true })).toMatchObject({ post: { entryId: 'en_spring' }, mode: 'ask' });
+      expect(chatContextFor(state, scope, { enabled, viewport: 1280, ask: true })).toEqual({ pageId: home, pageTitle: state.pages[home].title, selection: null, selectionLabel: null, post: { ...post, title: 'Spring open studio' }, viewport: 1280, mode: 'ask' });
     }
     // A post that has gone, or none open, leaves the composer on the page as before.
     expect(composerScope(state, { pageId: home, selection: picked, definitionMode: null, post: { collectionId: 'posts', entryId: 'en_gone' } })).toMatchObject({ selection: picked });
@@ -291,5 +291,8 @@ describe('the composer with a post open in the Posts workspace (#400)', () => {
     expect(retryView(gone, ctx, { pageId: home, definitionMode: null })).toMatchObject({ post: null, missing: 'The post “Spring open studio”' });
     expect(continueContext(user('u', ctx), gone, 1280)).toEqual({ error: 'The post “Spring open studio” is no longer in the site. Open a post, then send "Continue".' });
     expect(continueContext(user('u', { ...ctx, post: { collectionId: 'posts', entryId: 7 } } as unknown as ChatContext), state, 1280)).toMatchObject({ error: expect.stringMatching(/^That post is no longer in the site/) });
+    expect(continueContext(user('u', { ...ctx, post: { ...post, title: 3 } } as unknown as ChatContext), state, 1280)).toMatchObject({ error: expect.stringMatching(/^That post/) });
+    // One read back damaged is still a post's request, never one about the page under the writer.
+    expect(retryView(state, { ...ctx, post: { collectionId: 'posts' } } as unknown as ChatContext, { pageId: home, definitionMode: null })).toMatchObject({ post: null, missing: 'The post' });
   });
 });

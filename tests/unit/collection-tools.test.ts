@@ -19,12 +19,13 @@ import { checkAuthority, requestAuthority, widenChoices, type Authority, type Au
 import { ENTRY_LIST_PAGE, ENTRY_PART_CHARS } from '@agent/collection-tools';
 import { applyContextBudget } from '@agent/budget';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
+import { richTextToMarkdown } from '@shared/richtext';
 import { collectionGrantRefusal } from '@shared/collection-grant';
 import { ProjectSession } from '../../src/main/project/session';
 
 const PHOTO: AssetRecord = { id: 'a_kiln', name: 'Kiln', file: 'static/assets/kiln-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 1200, height: 800, hash: 'h', kind: 'image', createdAt: '2026-01-01T00:00:00.000Z' };
 
-/** A blog with one category, one tag, a pictured post with every detail set, and a second post. */
+/** A blog with one category, one tag, a pictured post with its author, excerpt, picture, terms and search title set, and a second post. */
 function blog(): ProjectState {
   const s = structuredClone(createStarterState('business', 'Riverside Studio', false));
   s.assets.assets[PHOTO.id] = PHOTO;
@@ -52,6 +53,7 @@ function blog(): ProjectState {
 
 /** A host over a project in memory, recording the grant each batch came with. */
 function host(start: ProjectState, authority: Authority = { kind: 'site' }) {
+  const limit = authority.kind === 'entry' ? { collectionId: authority.collectionId, entryId: authority.entryId, label: authority.label } : null;
   let state = start;
   let revision = 1;
   const grants: Array<AuthorityGrants | undefined> = [];
@@ -77,7 +79,8 @@ function host(start: ProjectState, authority: Authority = { kind: 'site' }) {
     },
     compileAll: async () => [],
     inspectLayout: async () => ({}),
-    ask: async () => ''
+    ask: async () => '',
+    entryLimit: () => limit
   };
   return { h, grants, now: () => state };
 }
@@ -110,7 +113,11 @@ describe('collection tools for every model', () => {
     }
     // The pinned write names the post and cannot create one; the collection is a closed choice.
     const upsert = pinned.tools[1].parameters as { properties: Record<string, { enum?: string[] }>; required: string[] };
+    expect((pinned.tools[0].parameters as { properties: Record<string, { enum?: string[] }> }).properties.entryId.enum).toEqual(['en_spring']);
     expect(upsert.properties.entryId.enum).toEqual(['en_spring']);
+    // A question about the open post reads that post alone.
+    const askPost = toolsForRun({ state, selection: null, capabilities: constrained, codeEnabled: false, definitionOps: false, ask: true, entry: { collectionId: 'posts', entryId: 'en_spring' } });
+    expect(askPost.tools.filter((t) => t.name.includes('collection')).map((t) => [t.name, (t.parameters as { properties: Record<string, { enum?: string[] }> }).properties.entryId?.enum])).toEqual([['read_collection_entry', ['en_spring']]]);
     expect(upsert.required).toContain('entryId');
     expect(upsert.properties.collectionId.enum).toEqual(['posts']);
     // Without a collection there is nothing to list, read or write.
@@ -131,9 +138,10 @@ describe('collection tools for every model', () => {
     expect(first.entries[0]).toEqual({ entryId: 'en_spring', title: 'Spring open studio', publishedAt: '2027-03-02' });
     expect(first.entries.find((e) => e.title === 'Note 12')).toMatchObject({ draft: true });
     expect(first.next).toBe(ENTRY_LIST_PAGE);
-    const rest = (await tool(h, 'list_collection_entries', { collectionId: 'posts', offset: first.next })).content as { next: number | null; entries: unknown[] };
+    const rest = (await tool(h, 'list_collection_entries', { collectionId: 'posts', offset: first.next })).content as { next: number | null; entries: Array<{ title: string }> };
     expect(rest).toMatchObject({ next: null });
-    expect(rest.entries).toHaveLength(4);
+    // Newest first, as the collection orders them.
+    expect(rest.entries.map((e) => e.title)).toEqual(['Note 4', 'Note 3', 'Note 2', 'Note 1']);
     expect((await tool(h, 'list_collection_entries', { collectionId: 'news' })).content).toMatchObject({ error: 'VALIDATION_FAILED', message: expect.stringMatching(/no collection "news". Collections: posts/) });
   });
 
@@ -157,8 +165,7 @@ describe('collection tools for every model', () => {
       offset = r.next;
     }
     expect(parts.length).toBeGreaterThan(2);
-    expect(parts.join('')).toMatch(/^## Opening times\n\nParagraph 1 says/);
-    expect(parts.join('')).toHaveLength(((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_winter' })).content as { length: number }).length);
+    expect(parts.join('')).toBe(richTextToMarkdown(entry(s, 'en_winter').body, s.pages));
     expect((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_gone' })).content).toMatchObject({ message: expect.stringMatching(/no entry "en_gone"/) });
   });
 
@@ -210,6 +217,42 @@ describe('collection tools for every model', () => {
     expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', body: ['Hello'] })).content).toMatchObject({ message: expect.stringMatching(/title: a new entry needs a title/) });
     expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring' })).content).toMatchObject({ message: expect.stringMatching(/send at least one field/) });
     expect(now()).toEqual(still);
+  });
+
+  it('tells two placements of one picture apart by their lines, writes a paragraph of any length, and refuses a blank category', async () => {
+    const s = applyOperations(blog(), [
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: [{ type: 'image', assetId: PHOTO.id, alt: 'Kiln', caption: 'Before' }, 'Between.', { type: 'image', assetId: PHOTO.id, alt: 'Kiln', caption: 'After' }] }
+    ] as EditOperation[]).state;
+    const { h, now } = host(s);
+    // Only the second picture is kept: it keeps its own caption, not the first one's.
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_winter', body: ['Between, revised.', '![Kiln](asset:a_kiln "After")'] })).ok).toBe(true);
+    expect(entry(now(), 'en_winter').body[1]).toEqual({ type: 'image', assetId: PHOTO.id, alt: 'Kiln', caption: 'After' });
+    const long = `A long paragraph ${'that runs on '.repeat(500)}to its end.`;
+    expect(long.length).toBeGreaterThan(ENTRY_PART_CHARS);
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_winter', body: [long] })).ok).toBe(true);
+    expect(entry(now(), 'en_winter').body).toEqual([{ type: 'p', spans: [{ text: long }] }]);
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring', categories: [' '] })).content).toMatchObject({ message: expect.stringMatching(/categories\[0\]: a category needs a name/) });
+    expect(entry(now(), 'en_spring').terms.categories).toEqual(['news']);
+  });
+
+  it('gives a collection without categories its first one', async () => {
+    const s = applyOperations(blog(), [
+      { type: 'collection.create', collectionId: 'projects', route: '/projects/' },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_mill', title: 'The old mill' }
+    ] as EditOperation[]).state;
+    expect(s.collections.projects.settings.taxonomies.categories).toBeUndefined();
+    const { h, now } = host(s);
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'projects', entryId: 'en_mill', categories: ['Restoration'] })).ok).toBe(true);
+    expect(now().collections.projects.settings.taxonomies.categories.terms).toEqual({ restoration: { label: 'Restoration' } });
+    expect(now().collections.projects.entries.en_mill.terms.categories).toEqual(['restoration']);
+  });
+
+  it('reads only the open post in a run limited to it', async () => {
+    const state = blog();
+    const { h } = host(state, requestAuthority({ pageId: 'pg_any', pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, post: { collectionId: 'posts', entryId: 'en_spring', title: 'Spring' } }, state));
+    expect((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_spring' })).ok).toBe(true);
+    expect((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_winter' })).content).toMatchObject({ message: expect.stringMatching(/entryId: this request is about the post “Spring open studio” \(posts\/en_spring\) alone/) });
+    expect((await tool(h, 'list_collection_entries', { collectionId: 'posts' })).ok).toBe(false);
   });
 });
 
@@ -267,6 +310,15 @@ describe('the project lets a run reach a collection only through the post tool',
     await refused([{ type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'tags', label: 'Kilns', termId: 'kilns' }, { ...update, terms: { categories: ['kilns'] } }], { collectionId: 'posts', entryId: 'en_spring' });
     await refused([{ type: 'site.update', name: 'Other' }, update], { collectionId: 'posts', entryId: 'en_spring' });
     await refused([{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring' }], { collectionId: 'posts', entryId: 'en_spring' });
+    // Nor a new address, an old one kept working, or an ID chosen for a new post: the tool sends none of them.
+    await refused([{ ...update, slug: 'spring' }], { collectionId: 'posts', entryId: 'en_spring' });
+    await refused([{ type: 'entry.create', collectionId: 'posts', title: 'New', redirectFrom: '/2019/old/' }], { collectionId: 'posts' });
+    await refused([{ type: 'entry.create', collectionId: 'posts', title: 'New', entryId: 'en_chosen' }], { collectionId: 'posts' });
+    // Inside a run, the run alone says it is the assistant's.
+    expect(await s.beginRun('run_ai')).toBeNull();
+    const inRun = await s.apply({ operations: [update] as EditOperation[] }, { label: 'AI', runId: 'run_ai', history: false });
+    expect(inRun).toMatchObject({ ok: false, error: { code: 'SCOPE_MISMATCH' } });
+    await s.abortRun();
     expect(s.state.collections).toEqual(before.collections);
     // The tool's own batch lands.
     const ok = await s.apply(
@@ -373,6 +425,7 @@ describe('posts in an AI turn', () => {
   it('keeps a request sent from an open post to that post until the author allows more', async () => {
     const env = await setup([
       () => [call('r1', 'read_collection_entry', { collectionId: 'posts', entryId: 'en_spring' })],
+      () => [call('r2', 'read_collection_entry', { collectionId: 'posts', entryId: 'en_winter' })],
       () => [call('u1', 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_winter', title: 'Rewritten' })],
       () => [call('u2', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'Raw' }] })],
       () => [call('u3', 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring', categories: ['News', 'Events'] })],
@@ -390,12 +443,15 @@ describe('posts in an AI turn', () => {
     expect(context.currentPage).toBeUndefined();
     expect(context.allowedScope).toMatch(/only the post “Spring open studio” \(posts\/en_spring\)/);
     expect(result(env.adapter.requests[1])).toContain('Spring open studio');
-    // Another post, a raw operation (no such tool here) and a new category are each refused; the answer keeps the limit.
-    expect(result(env.adapter.requests[2])).toMatch(/SCOPE_MISMATCH[\s\S]*outside the post/);
-    expect(result(env.adapter.requests[3])).toMatch(/apply_operations/);
-    expect(result(env.adapter.requests[4])).toMatch(/Adding the category “Events”/);
-    expect(result(env.adapter.requests[5])).toMatch(/Keep changes within the post “Spring open studio”/);
-    expect(result(env.adapter.requests[6])).toMatch(/"ok\\":true/);
+    // Another post's words, a write to it, a raw operation (no such tool here) and a new category are each refused; the
+    // answer keeps the limit.
+    expect(result(env.adapter.requests[2])).toMatch(/alone, so only it can be read/);
+    expect(result(env.adapter.requests[2])).not.toContain('Read [the spring post]');
+    expect(result(env.adapter.requests[3])).toMatch(/SCOPE_MISMATCH[\s\S]*outside the post/);
+    expect(result(env.adapter.requests[4])).toMatch(/apply_operations/);
+    expect(result(env.adapter.requests[5])).toMatch(/Adding the category “Events”/);
+    expect(result(env.adapter.requests[6])).toMatch(/Keep changes within the post “Spring open studio”/);
+    expect(result(env.adapter.requests[7])).toMatch(/"ok\\":true/);
     // Only the post's text changed; every other detail, the other post and the pages are as they were.
     const after = entry(env.session.state, 'en_spring');
     expect(JSON.stringify(after.body)).toContain('Glass and enamel');
@@ -461,6 +517,8 @@ describe('long post reads in the context budget', () => {
       answer('c', 'read_collection_entry', { ...part('en_winter', 0), text: `Mentions en_spring. ${'y'.repeat(3980)}` }),
       asks('d', 'read_collection_entry', { collectionId: 'posts', entryId: 'en_spring' }),
       answer('d', 'read_collection_entry', part('en_spring', 0)),
+      asks('l', 'list_collection_entries', { collectionId: 'posts', offset: 10 }),
+      answer('l', 'list_collection_entries', { revision: 1, collectionId: 'posts', total: 12, offset: 10, next: null, entries: [{ entryId: 'en_spring', title: 'x'.repeat(3000) }] }),
       asks('e', 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring', body: ['short'] }),
       answer('e', 'upsert_collection_entry', { ok: true, revision: 2, collectionId: 'posts', entryId: 'en_spring' }),
       asks('f', 'list_collection_entries', { collectionId: 'posts' }),
@@ -470,18 +528,21 @@ describe('long post reads in the context budget', () => {
     ];
     // Just past half the window: only the part read again collapses.
     const soft = structuredClone(items);
-    const r = budget(soft, 9200);
+    const r = budget(soft, 9600);
     expect(r.tombstoned).toBe(1);
     expect((soft[2] as { content: string }).content).toBe('[Superseded read_collection_entry posts/en_spring "Spring open studio" of 20000 characters at rev 1. Read this part again before relying on its text or rewriting it.]');
     expect((soft[4] as { content: string }).content).not.toMatch(/^\[Superseded/);
+    expect((soft[10] as { content: string }).content).not.toMatch(/^\[Superseded/);
     // Tighter: the spring post's parts went out of date when it was written; the winter post, which only names it, did not.
     const hard = structuredClone(items);
     budget(hard, 4000);
     expect((hard[4] as { content: string }).content).toBe('[Superseded read_collection_entry posts/en_spring from offset 4000 of 20000 characters at rev 1. Read this part again before relying on its text or rewriting it.]');
     expect((hard[8] as { content: string }).content).toMatch(/^\[Superseded read_collection_entry posts\/en_spring "Spring open studio"/);
     expect((hard[6] as { content: string }).content).toContain('Mentions en_spring');
+    // A list of the collection went out of date with the write too.
+    expect((hard[10] as { content: string }).content).toBe('[Superseded list_collection_entries posts from offset 10, 12 entries at rev 1. List it again for the current entries.]');
     // The latest turns are still being worked from.
-    expect((hard[12] as { content: string }).content).not.toMatch(/^\[Superseded/);
     expect((hard[14] as { content: string }).content).not.toMatch(/^\[Superseded/);
+    expect((hard[16] as { content: string }).content).not.toMatch(/^\[Superseded/);
   });
 });

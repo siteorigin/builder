@@ -11,6 +11,7 @@ import type { Collection, EntryDoc, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { assignedTermIds, orderedEntries, termIdFor } from '@shared/collections';
 import { isImageBlock, richTextToMarkdown, type RichBlock, type RichText } from '@shared/richtext';
+import { MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS } from '@engine/values';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -19,9 +20,10 @@ import type { ToolHost, ToolOutcome } from './tools';
 export const ENTRY_LIST_PAGE = 10;
 /** How much of an entry's text one read shows, measured as the result carries it (escaped). */
 export const ENTRY_PART_CHARS = 4000;
-/** The most lines a call writes as an entry's text, and the longest line. */
-const MAX_BODY_LINES = 400;
-const MAX_BODY_LINE = 4000;
+/** The most lines a call writes as an entry's text, and the longest line: what an entry's text may hold, so any post
+ *  that can be read can be written back with its paragraphs whole. */
+const MAX_BODY_LINES = MAX_ENTRY_BLOCKS;
+const MAX_BODY_LINE = MAX_ENTRY_CHARS;
 
 const collectionId = z.string().min(1).max(60).describe('From read_project collections.');
 const entryId = z.string().min(1).max(40).describe('en_… from list_collection_entries.');
@@ -80,7 +82,19 @@ function categoryNames(collection: Collection, entry: EntryDoc): string[] {
   return ids.map((id) => (Object.hasOwn(terms, id) ? terms[id].label : id));
 }
 
+/**
+ * Why a run limited to one post may not read what a call names, or null. Such a run reads only its post: another
+ * post's words are not what the author asked about, and stay out of the request until the author allows more.
+ */
+function outsidePost(host: ToolHost, collectionId: string, entryId?: string): FieldIssue | null {
+  const limit = host.entryLimit?.() ?? null;
+  if (!limit || (collectionId === limit.collectionId && entryId === limit.entryId)) return null;
+  return { field: entryId === undefined ? 'collectionId' : 'entryId', message: `this request is about ${limit.label} (${limit.collectionId}/${limit.entryId}) alone, so only it can be read` };
+}
+
 export function runListEntries(args: ListEntriesArgs, host: ToolHost): ToolOutcome {
+  const outside = outsidePost(host, args.collectionId);
+  if (outside) return fieldError([outside], 'Nothing was read.');
   const state = host.state();
   const found = collectionFor(state, args.collectionId);
   if ('error' in found) return fieldError([found.error], 'Nothing was read.');
@@ -102,6 +116,8 @@ export function textPart(text: string, offset: number, room: number): { start: n
 }
 
 export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
+  const outside = outsidePost(host, args.collectionId, args.entryId);
+  if (outside) return fieldError([outside], 'Nothing was read.');
   const state = host.state();
   const found = collectionFor(state, args.collectionId);
   if ('error' in found) return fieldError([found.error], 'Nothing was read.');
@@ -138,14 +154,17 @@ const PICTURE_LINE = /^!\[[^\n]*\]\(asset:([^\s)"]+)(?:\s+"[^\n]*")?\)$/;
  * picture is placed with the library picker, never typed), in the order the lines put them. A picture line the entry
  * does not have is refused, as an empty line would otherwise hide a lost picture.
  */
-function bodyValue(lines: string[], current: RichText, issues: FieldIssue[]): Array<string | RichBlock> {
+function bodyValue(lines: string[], current: RichText, pages: ProjectState['pages'], issues: FieldIssue[]): Array<string | RichBlock> {
   const pictures = current.filter(isImageBlock);
+  // Each picture as a read wrote it: the same image placed twice, with its own caption, is told apart by its line.
+  const read = pictures.map((p) => richTextToMarkdown([p], pages));
   const used = new Set<number>();
   return lines.map((raw, i) => {
     const line = raw.trim();
     const m = PICTURE_LINE.exec(line);
     if (!m) return raw;
-    const at = pictures.findIndex((p, j) => !used.has(j) && p.assetId === m[1]);
+    const exact = read.findIndex((r, j) => !used.has(j) && r === line);
+    const at = exact >= 0 ? exact : pictures.findIndex((p, j) => !used.has(j) && p.assetId === m[1]);
     if (at < 0) {
       issues.push({ field: `body[${i}]`, message: `the entry has no picture "${m[1]}" to keep here. Pictures are added by the author; keep each picture line as read, or leave it out to remove that picture` });
       return raw;
@@ -157,21 +176,22 @@ function bodyValue(lines: string[], current: RichText, issues: FieldIssue[]): Ar
 
 /** The categories named, as term IDs: one the collection has (by name, ignoring case), else a new one's planned ID. */
 function categoryIds(collection: Collection, names: string[], issues: FieldIssue[]): { ids: string[]; create: Array<{ label: string; termId: string }> } {
+  // A collection without categories yet gets them with its first one, as collection.createTerm adds the grouping.
   const taxonomy = collection.settings.taxonomies?.categories;
-  if (!taxonomy) {
-    issues.push({ field: 'categories', message: `the ${collection.settings.name} collection has no categories` });
-    return { ids: [], create: [] };
-  }
-  const known = Object.entries(taxonomy.terms ?? {});
+  const known = Object.entries(taxonomy?.terms ?? {});
   // Each new ID is kept from the next, so two names that read the same as a slug get IDs of their own.
   const taken = assignedTermIds(collection, 'categories');
-  const planned: Record<string, unknown> = { ...taxonomy.terms };
+  const planned: Record<string, unknown> = { ...taxonomy?.terms };
   const ids: string[] = [];
   const create: Array<{ label: string; termId: string }> = [];
   const fold = (s: string) => s.trim().toLowerCase();
-  for (const raw of names) {
+  for (const [i, raw] of names.entries()) {
     const label = raw.trim();
-    if (!label) continue;
+    // A blank name is never a category: [] is how every category is taken off.
+    if (!label) {
+      issues.push({ field: `categories[${i}]`, message: 'a category needs a name' });
+      continue;
+    }
     const existing = known.find(([, t]) => fold(t.label) === fold(label)) ?? create.map((c) => [c.termId, { label: c.label }] as const).find(([, t]) => fold(t.label) === fold(label));
     const id = existing ? existing[0] : termIdFor(planned, label, undefined, taken);
     if (!existing) {
@@ -206,7 +226,7 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
   if (fields.excerpt !== undefined && !String(fields.excerpt).trim()) fields.excerpt = null;
   const terms = categories ? categoryIds(collection, categories, issues) : null;
   if (terms) fields.terms = { categories: terms.ids };
-  if (body) fields.body = bodyValue(body, Array.isArray(entry?.body) ? entry.body : [], issues);
+  if (body) fields.body = bodyValue(body, Array.isArray(entry?.body) ? entry.body : [], state.pages, issues);
   if (entry && !Object.keys(fields).length) issues.push({ field: 'arguments', message: 'send at least one field to change' });
   if (issues.length) return fieldError(issues, 'Nothing was applied.');
 

@@ -271,6 +271,10 @@ const cyclesBlocks = (s: ProjectState): Block[] => [
 
 const page = (slug: string, title: string, sections: unknown[], nav = true) => ({ slug, title, addToHeaderNav: nav, sections });
 
+/** The post with typos: proofreading changes those two words and nothing else. */
+const OPEN_BODY = ['## Who is coming', 'Twnety makers will show there work on **Saturday**.', '- Clay', '- Glass', 'Book a place on the [contact page](/contact/).'];
+const OPEN_FIXED = OPEN_BODY.map((l) => l.replace('Twnety', 'Twenty').replace('there work', 'their work'));
+
 /**
  * A blog for the post cases (#400): News and Craft categories, three published posts, and a post with typos that
  * proofreading should fix and nothing else.
@@ -284,27 +288,21 @@ const withBlog = (state: ProjectState) =>
       { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'categories', label: 'Craft', termId: 'craft' },
       { type: 'entry.create', collectionId: 'posts', entryId: 'en_hours', title: 'New winter hours', publishedAt: '2026-11-02', draft: false, excerpt: 'Shorter days, earlier closing.', terms: { categories: ['news'] }, body: ['From November the studio closes at 4pm.'] },
       { type: 'entry.create', collectionId: 'posts', entryId: 'en_glaze', title: 'Mixing a celadon glaze', publishedAt: '2026-10-12', draft: false, terms: { categories: ['craft'] }, body: ['A pale green glaze, step by step.'] },
-      {
-        type: 'entry.create',
-        collectionId: 'posts',
-        entryId: 'en_open',
-        title: 'Spring open studio',
-        publishedAt: '2026-09-20',
-        draft: false,
-        author: 'Ana Ruiz',
-        excerpt: 'Twenty makers open their doors.',
-        terms: { categories: ['news'] },
-        body: ['## Who is coming', 'Twnety makers will show there work on Saturday.', '- Clay', '- Glass', 'Book a place on the [contact page](/contact/).']
-      }
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_open', title: 'Spring open studio', publishedAt: '2026-09-20', draft: false, author: 'Ana Ruiz', excerpt: 'Twenty makers open their doors.', terms: { categories: ['news'] }, body: OPEN_BODY },
+      // A fourth published post, so a feed with no limit of its own shows more than the three newest.
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_summer', title: 'Summer raku evenings', publishedAt: '2026-07-05', draft: false, body: ['Raku firing on Thursday evenings.'] }
     ] as EditOperation[]).state
   );
 const posts = (s: ProjectState) => s.collections.posts?.entries ?? {};
 const postText = (e: EntryDoc | undefined) => (e ? richTextToPlain(e.body) : '');
 const blocks = (e: EntryDoc | undefined) => (e ? e.body.map((b) => b.type) : []);
-const linksIn = (e: EntryDoc | undefined) => JSON.stringify(e?.body ?? []).includes('"link"');
 const feedOn = (s: ProjectState, p: PageDoc | undefined) => (p ? p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => n?.kind === 'instance' && /^blog\./.test(componentId(s, n) ?? '')) : undefined);
 /** A post long enough to be read in many parts, so the budget collapses reads of it. */
-const LONG_POST = Array.from({ length: 130 }, (_, i) => (i % 13 === 0 ? `## Chapter ${i / 13 + 1}` : `Part ${i + 1} of the history of the riverside studio.${' The kiln, the wheel and the river shaped every season of work here, from the first pots to the newest glazes.'.repeat(4)}`));
+const LONG_POST = [
+  ...Array.from({ length: 130 }, (_, i) => (i % 13 === 0 ? `## Chapter ${i / 13 + 1}` : `Part ${i + 1} of the history of the riverside studio.${' The kiln, the wheel and the river shaped every season of work here, from the first pots to the newest glazes.'.repeat(4)}`)),
+  // What only a reader who reached the end knows.
+  'Today the studio is a cooperative of twelve potters.'
+];
 const lastResult = (req: CanonicalModelRequest) => {
   const it = req.items.at(-1);
   try {
@@ -632,14 +630,19 @@ export const EVAL_CASES: EvalCase[] = [
       const events = Object.entries(after.collections.posts?.settings.taxonomies.categories?.terms ?? {}).find(([, t]) => t.label.toLowerCase() === 'events')?.[0];
       const cats = post?.terms.categories ?? [];
       const feed = feedOn(after, home(after));
+      const contact = pageAt(after, '/contact/')?.id;
+      const feedId = feed ? componentId(after, feed) : undefined;
+      const text = postText(post);
       return [
         check('one-new-post', added.length === 1, String(added.length)),
+        check('still-a-draft', post?.draft === true),
         check('dated', post?.publishedAt === '2027-05-10', post?.publishedAt),
         check('categories', cats.includes('news') && !!events && cats.includes(events), JSON.stringify(cats)),
         check('excerpt', !!post?.excerpt?.trim()),
-        check('heading-list-link', blocks(post).some((b) => b === 'h2' || b === 'h3') && blocks(post).some((b) => b === 'ul' || b === 'ol') && linksIn(post), blocks(post).join(', ')),
-        check('notes-kept', /6\s?pm/i.test(postText(post)) && /tour/i.test(postText(post))),
-        check('home-feed', !!feed && (feed.props.collection === undefined || feed.props.collection === '' || feed.props.collection === 'posts'), feed ? JSON.stringify(feed.props) : 'none'),
+        check('heading-and-list', blocks(post).some((b) => b === 'h2' || b === 'h3') && blocks(post).some((b) => b === 'ul' || b === 'ol'), blocks(post).join(', ')),
+        check('links-to-contact', !!contact && JSON.stringify(post?.body ?? []).includes(`"type":"page","target":"${contact}"`)),
+        check('notes-kept', /6\s?pm/i.test(text) && /tour/i.test(text) && /glaze demo/i.test(text) && /\btea\b/i.test(text), text.slice(0, 200)),
+        check('home-feed', (feedId === 'blog.grid' || feedId === 'blog.list') && /latest news/i.test(String(feed?.props.heading ?? '')) && feed?.props.count === 3 && (feed.props.collection === undefined || feed.props.collection === '' || feed.props.collection === 'posts'), feed ? `${feedId} ${JSON.stringify(feed.props)}` : 'none'),
         check('home-sections-kept', home(before).rootIds.every((id) => home(after).rootIds.includes(id))),
         check('other-posts-untouched', Object.keys(posts(before)).every((id) => same(posts(before)[id], posts(after)[id]))),
         check('shell-and-tokens-untouched', shellUntouched(before, after))
@@ -670,10 +673,11 @@ export const EVAL_CASES: EvalCase[] = [
     grade: ({ before, after }) => {
       const was = posts(before).en_open;
       const now = posts(after).en_open;
-      const text = postText(now);
+      // The text as it should be: the two words fixed, every mark, list item and link as it was.
+      const fixed = applyOperations(before, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_open', body: OPEN_FIXED }]).state.collections.posts.entries.en_open.body;
       return [
-        check('typos-fixed', /twenty makers/i.test(text) && /their work/i.test(text) && !/twnety|there work/i.test(text), text.slice(0, 200)),
-        check('structure-kept', same(blocks(now), blocks(was)) && linksIn(now), blocks(now).join(', ')),
+        check('typos-fixed', /twenty makers/i.test(postText(now)) && /their work/i.test(postText(now)) && !/twnety|there work/i.test(postText(now)), postText(now).slice(0, 200)),
+        check('nothing-else-changed', same(now?.body, fixed), JSON.stringify(now?.body).slice(0, 300)),
         check('details-kept', !!now && same({ ...now, body: null }, { ...was, body: null })),
         check('other-posts-untouched', Object.keys(posts(before)).every((id) => id === 'en_open' || same(posts(before)[id], posts(after)[id]))),
         check('pages-untouched', same(before.pages, after.pages) && same(before.collections.posts.settings, after.collections.posts.settings))
@@ -681,7 +685,7 @@ export const EVAL_CASES: EvalCase[] = [
     },
     script: () => [
       () => [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_open' })],
-      () => [call('upsert_collection_entry', { collectionId: 'posts', entryId: 'en_open', body: ['## Who is coming', 'Twenty makers will show their work on Saturday.', '- Clay', '- Glass', 'Book a place on the [contact page](/contact/).'] })],
+      () => [call('upsert_collection_entry', { collectionId: 'posts', entryId: 'en_open', body: OPEN_FIXED })],
       finish('Fixed “Twnety” and “there work”.')
     ]
   },
@@ -699,7 +703,8 @@ export const EVAL_CASES: EvalCase[] = [
       const was = posts(before).en_history;
       const now = posts(after).en_history;
       return [
-        check('excerpt-written', !!now?.excerpt?.trim() && now.excerpt.length <= 320, now?.excerpt),
+        // One sentence about the studio, as a summary of the whole post would be.
+        check('excerpt-written', !!now?.excerpt && now.excerpt.trim().length >= 30 && now.excerpt.length <= 320 && !/[.!?]\s+\S/.test(now.excerpt.trim()) && /studio/i.test(now.excerpt), now?.excerpt),
         check('text-kept', same(now?.body, was?.body)),
         check('other-posts-untouched', Object.keys(posts(before)).every((id) => id === 'en_history' || same(posts(before)[id], posts(after)[id])))
       ];
@@ -708,10 +713,15 @@ export const EVAL_CASES: EvalCase[] = [
     // sent collapsed before it writes, so the free run proves a long post is read without filling the window.
     script: () => {
       let reread = false;
+      // Where the next part should start: a gap or an early end means the post was not read whole, so nothing is written.
+      let expected = 0;
       const step = (req: CanonicalModelRequest): ModelEvent[] => {
         const last = lastResult(req);
-        if (!reread && typeof last?.next === 'number') return [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_history', offset: last.next })];
         if (!reread) {
+          if (last?.offset !== expected || typeof last.text !== 'string') return finish('A part of the post was skipped.')(req);
+          expected += last.text.length;
+          if (typeof last.next === 'number') return [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_history', offset: last.next })];
+          if (expected !== last.length || !last.text.includes('cooperative of twelve potters')) return finish('The post was not read to its end.')(req);
           reread = true;
           return [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_history' })];
         }
@@ -719,7 +729,7 @@ export const EVAL_CASES: EvalCase[] = [
         // Without the collapsed read the script writes nothing, and the case fails.
         const collapsed = req.items.some((it) => it.kind === 'tool_result' && it.name === 'read_collection_entry' && it.content.startsWith('[Superseded read_collection_entry posts/en_history'));
         if (!collapsed) return finish('The first read was never collapsed.')(req);
-        return [call('upsert_collection_entry', { collectionId: 'posts', entryId: 'en_history', excerpt: 'How a riverside studio grew from one wheel to a new kiln.' })];
+        return [call('upsert_collection_entry', { collectionId: 'posts', entryId: 'en_history', excerpt: 'How a riverside studio grew from one wheel into a cooperative of twelve potters.' })];
       };
       return [() => [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_history' })], ...Array.from({ length: 40 }, () => step)];
     }

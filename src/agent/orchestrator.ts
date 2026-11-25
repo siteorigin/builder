@@ -1322,6 +1322,7 @@ export class Orchestrator {
       definitionTarget: () => startDefinition,
       selectionLimited: () => authority.kind === 'selection',
       pageLimit: () => (authority.kind === 'page' ? { pageId: authority.pageId, label: authority.label } : null),
+      entryLimit: () => (authority.kind === 'entry' ? { collectionId: authority.collectionId, entryId: authority.entryId, label: authority.label } : null),
       state: readState,
       revision: readRevision,
       diagnostics: () => session.diagnostics(),

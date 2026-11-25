@@ -12,13 +12,19 @@ export interface CollectionWriteGrant {
   entryId?: string;
 }
 
+/** Fields the post tool never sends: a new address and an old one kept working reach the site's addresses. */
+const NEVER_SENT = ['slug', 'redirectFrom', 'entryId'] as const;
+
 /** Why a batch is not what the grant allows, or null when it is. */
 export function collectionGrantRefusal(ops: readonly EditOperation[], grant: CollectionWriteGrant): string | null {
   const write = ops.at(-1);
   const terms = ops.slice(0, -1);
   if (!write) return 'The post tool sent nothing to change.';
+  if (write.type !== 'entry.create' && write.type !== 'entry.update') return 'The post tool may write only the one post it was asked to.';
   if (grant.entryId === undefined ? write.type !== 'entry.create' : write.type !== 'entry.update' || write.entryId !== grant.entryId) return 'The post tool may write only the one post it was asked to.';
   if (write.collectionId !== grant.collectionId) return 'The post tool may write only a post of the collection it named.';
+  // An update names its entry, which the check above holds to the grant; nothing else of these is the tool's.
+  if (NEVER_SENT.some((k) => k in write && (k !== 'entryId' || write.type === 'entry.create') && (write as Record<string, unknown>)[k] !== undefined)) return 'The post tool never changes a post’s address.';
   const filed = new Set(write.terms?.categories ?? []);
   for (const op of terms) {
     if (op.type !== 'collection.createTerm' || op.collectionId !== grant.collectionId || op.taxonomyId !== 'categories') return 'The post tool may add only categories of the post’s own collection.';

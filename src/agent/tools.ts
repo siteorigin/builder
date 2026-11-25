@@ -368,7 +368,7 @@ const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameter
 
 /** The tools of a read-only question: the same small set for every model, with or without a selection. A project with
  *  collections can also have its posts read. */
-function askTools(state: ProjectState, codeEnabled: boolean): ToolDefinition[] {
+function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null): ToolDefinition[] {
   const names: ToolName[] = [...ASK_TOOLS, ...(codeEnabled ? (['read_source'] as const) : [])];
   const tools = names.map((name): ToolDefinition => {
     // A question can never widen what may change: nothing may.
@@ -379,7 +379,9 @@ function askTools(state: ProjectState, codeEnabled: boolean): ToolDefinition[] {
     return { name, ...describe(name), ...(name === 'request_clarification' ? { brief: 'Ask the author one short question and wait for the answer, with up to four short, concrete choices; to choose between images, pass assetIds: they see the pictures.' } : {}), parameters: schema };
   });
   // A question reads component contracts alone: a design is read to build a component, which a question never does.
-  return [...tools.map(contractRead), ...entryReads(state)];
+  // A question about the post open in the Posts workspace reads that post, never another with a title like it.
+  const posts = entry ? [{ name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: collectionToolSchemas(state, entry).read }] : entryReads(state);
+  return [...tools.map(contractRead), ...posts];
 }
 
 /** The reads of a collection's entries, while the project has a collection to read. */
@@ -433,7 +435,7 @@ export function toolsForRun(opts: {
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
-  if (opts.ask) return { tools: askTools(state, codeEnabled), mode: 'ask', focused };
+  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry), mode: 'ask', focused };
   // One post, for every model: its text read a part at a time and written back, and the author to ask for more. Nothing
   // names another entry, nor creates one.
   if (opts.entry) {
@@ -615,6 +617,9 @@ export interface ToolHost {
   selectionLimited?(): boolean;
   /** The page the run is still limited to, and how it is named, or null once it may change more. */
   pageLimit?(): { pageId: string; label: string } | null;
+  /** The post the run is limited to (sent from the Posts workspace), and how it is named, or null once it may change
+   *  more: it then reads and writes that post alone. */
+  entryLimit?(): { collectionId: string; entryId: string; label: string } | null;
 }
 
 export interface ToolOutcome {

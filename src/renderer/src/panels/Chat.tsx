@@ -416,9 +416,16 @@ export function Chat() {
   if (!snap) return null;
   const st = snap.state;
   // What the next message is about: the page, or the component edited everywhere, and the element within it.
+  // While the Posts workspace is in front, the element or design behind it is never the target: the post it shows, or
+  // the page its preview went on to, is.
   const workspace = postWorkspace({ leftTab, postView, mode: editorMode, post: openPostRef });
   const shownPost = workspace ? postShown(st, workspace, openPostRef, postPreviewAt) : null;
-  const scope = composerScope(st, { pageId, selection, definitionMode, post: shownPost?.kind === 'post' ? shownPost.ref : null });
+  const scope = composerScope(st, {
+    pageId: shownPost?.kind === 'page' ? shownPost.pageId : pageId,
+    selection: workspace ? null : selection,
+    definitionMode: workspace ? null : definitionMode,
+    post: shownPost?.kind === 'post' ? shownPost.ref : null
+  });
   const { page, component } = scope;
   const selLabel = scope.selectionLabel;
   const sel = selLabel?.toLowerCase();
@@ -430,7 +437,7 @@ export function Chat() {
   const localModel = configured && provider?.id === 'local';
   const headroom =
     localModel && !asking && settings
-      ? headroomWarning({ draft, history: replayedWords(msgs), contextWindow: settings.ai.local.contextWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !(toSelection && !!selection && smallToolsCover(st, selection)) })
+      ? headroomWarning({ draft, history: replayedWords(msgs), contextWindow: settings.ai.local.contextWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !scope.post && !(toSelection && !!scope.selection && smallToolsCover(st, scope.selection)) })
       : null;
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
@@ -467,7 +474,8 @@ export function Chat() {
   // The run's scope is named as it stood when it was sent, so a rename or a removal meanwhile cannot rewrite it.
   if (activeRunId && workingUser?.context && frozenScope.current.run !== activeRunId) frozenScope.current = { run: activeRunId, text: scopeOf(workingUser.context, st) };
   const sentScope = activeRunId && frozenScope.current.run === activeRunId ? frozenScope.current.text : '';
-  const stripDetail = workingUser?.context ? (widened && workingUser.context.pageTitle ? `Whole site · from ${workingUser.context.pageTitle}` : sentScope || scopeOf(workingUser.context, st)) : '';
+  const sentPost = typeof workingUser?.context?.post?.title === 'string' ? workingUser.context.post.title : null;
+  const stripDetail = workingUser?.context ? (widened && (sentPost !== null || workingUser.context.pageTitle) ? `Whole site · from ${sentPost !== null ? `the post “${sentPost || 'Untitled'}”` : workingUser.context.pageTitle}` : sentScope || scopeOf(workingUser.context, st)) : '';
   const hasLibraryImages = Object.values(st.assets.assets).some((a) => a?.kind === 'image');
   /** Add a library image to the message, or take it out again; the draft stays as it is. */
   const toggleImage = (id: string) => {
@@ -607,12 +615,13 @@ export function Chat() {
   const send = async (text = draft, context?: ChatContext): Promise<boolean> => {
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
-    // The assistant has no tools for collections yet: an edit sent from a layout would land on the page behind it.
-    if (getState().templateMode && (context ? context.mode !== 'ask' : !askMode))
+    // The assistant has no tools for collection layouts: an edit sent from one would land on the page behind it. With the
+    // Posts workspace in front, the layout is not what the message is about.
+    if (getState().templateMode && !(context ? context.post : workspace) && (context ? context.mode !== 'ask' : !askMode))
       return (toast('The assistant can’t change a collection’s layout yet. Click Done to go back to the page, or ask it a question.', 'info'), false);
     // A code component open in Component Studio is not one the AI edits: an edit sent now would reach the page behind
     // it. A question changes nothing, so it is still asked.
-    const code = !context && !askMode ? uneditableDesign(st, definitionMode) : null;
+    const code = !context && !askMode && !workspace ? uneditableDesign(st, definitionMode) : null;
     if (code) return (toast(`From Component Studio, the AI can’t be asked to change a code component like ${code} yet. Edit its code, or click Done editing to ask for a change to a page.`, 'info'), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
@@ -625,9 +634,13 @@ export function Chat() {
     nearBottom.current = true;
     // What the writer holds is saved first, so the AI reads the post as the author sees it. Text that could not be
     // saved stays in the writer with its note, and the message stays here.
-    if (ctx.post && workspace === 'write' && !(await saveOpenPost())) {
-      setSending(false);
-      return (toast('Part of the post is not saved yet, so the AI would not see it. See the note above its text.', 'error'), false);
+    // Only the writer of the post the message is about: Continue for another post never waits on this one.
+    if (ctx.post && workspace === 'write' && openPostRef?.collectionId === ctx.post.collectionId && openPostRef.entryId === ctx.post.entryId) {
+      const saved = await saveOpenPost().catch(() => false);
+      if (!saved) {
+        setSending(false);
+        return (toast('Part of the post is not saved yet, so the AI would not see it. See the note above its text.', 'error'), false);
+      }
     }
     // Sent for the model the composer names now: if Settings or the local server would send it elsewhere by the time it
     // runs, nothing is sent and the turn says so.
@@ -1604,9 +1617,14 @@ function ResultCard({
       const s = getState();
       const st = s.snapshot?.state;
       const view = st ? retryView(st, ctx, { pageId: s.pageId, definitionMode: s.definitionMode }) : null;
-      // A request about a post goes back to that post, in the writer.
-      if (view?.post) void openPost(view.post.collectionId, view.post.entryId);
+      // A request about a post goes back to that post, in the writer, before the request goes back into the box: one the
+      // writer cannot leave yet (text it could not save) stays open, and the box keeps what it holds.
+      if (view?.post && !(await openPost(view.post.collectionId, view.post.entryId))) return;
+      // A request about a page leaves the Posts workspace, whose post would otherwise stay the composer's target.
+      const covering = postWorkspace(getState());
+      const leavePosts = ctx?.post === undefined && covering ? { ...(getState().leftTab === 'posts' ? { leftTab: 'pages' as const } : {}), ...(covering === 'preview' ? { mode: 'edit' as const } : {}) } : {};
       setState({
+        ...leavePosts,
         chatDrafts: withDraft(getState().chatDrafts, conv.id, user.text),
         chatImages: withImages(getState().chatImages, conv.id, originalImages),
         // Editing a component everywhere happens in Edit, never in Preview.
