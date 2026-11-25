@@ -1021,6 +1021,7 @@ function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: Projec
     // Copies never reuse an anchor: HTML IDs must stay unique.
     if (from === to) delete n.anchor;
     if (n.kind === 'element' || n.kind === 'repeat') n.children = n.children.map((c) => idMap.get(c) ?? c);
+    if (n.kind === 'slot' && Array.isArray(n.children)) n.children = n.children.map((c) => idMap.get(c) ?? c);
     if (n.kind === 'instance') {
       if (n.slots) for (const k of Object.keys(n.slots)) n.slots[k] = slotChildren(n, k).map((c) => idMap.get(c) ?? c);
       const def = state.components[n.definitionId];
@@ -1324,6 +1325,12 @@ function insertionList(tree: NodeTree, parentId: string | null | undefined, slot
   const parent = getNode(tree, parentId);
   if (parent.kind === 'element' || parent.kind === 'repeat') {
     if (slot) fail('Elements do not have slots.');
+    return parent.children;
+  }
+  // Inside a slot outlet of a design: its fallback, shown while a placement leaves that slot empty.
+  if (parent.kind === 'slot') {
+    if (slot) fail('A slot’s fallback content has no slots of its own.');
+    if (!Array.isArray(parent.children)) parent.children = [];
     return parent.children;
   }
   if (parent.kind === 'instance') {

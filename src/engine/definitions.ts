@@ -11,9 +11,9 @@ import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryField
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
-import { axesOf, findVariant } from '@shared/variants';
+import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { defKey } from '@generator/index';
-import { EngineError, fail, findParent, getNode, getTree, instancesOf } from './tree';
+import { EngineError, fail, findParent, getNode, getTree, instancesOf, subtreeIds } from './tree';
 import { clone, placedDefaultItems, placedItemId } from './install';
 import { normalizeProp } from './values';
 import { releaseKept } from '@shared/site-name';
@@ -592,14 +592,23 @@ export function removeSlot(state: ProjectState, op: Op<'component.removeSlot'>):
   if (!own(def.slots, op.slot)) fail(`"${def.name}" has no slot "${op.slot}".`);
   const filled = instancesOf(state, def.id).filter((u) => u.node.slots?.[op.slot]?.length);
   if (filled.length) fail(`The "${def.slots![op.slot].label}" slot has content in ${plural(filled.length, 'place')} (${[...new Set(filled.map((u) => u.label))].join(', ')}). Move or remove it first.`);
-  // The placeholder that rendered the slot goes with it.
+  // The placeholder that rendered the slot goes with it, and its fallback content, with the parts and variant styles
+  // of that content.
   if (def.tree) {
+    const removed = new Set<string>();
     for (const n of Object.values(def.tree.nodes)) {
-      if (n.kind !== 'slot' || n.slot !== op.slot) continue;
+      if (n.kind !== 'slot' || n.slot !== op.slot || removed.has(n.id)) continue;
       const info = findParent(def.tree, n.id);
       if (info) info.list.splice(info.index, 1);
-      delete def.tree.nodes[n.id];
+      for (const id of subtreeIds(def.tree, n.id)) removed.add(id);
     }
+    for (const id of removed) delete def.tree.nodes[id];
+    for (const [pid, part] of Object.entries(def.parts))
+      if (pid !== 'root' && removed.has(part.nodeId)) {
+        delete def.parts[pid];
+        dropPartOverrides(state, def.id, pid);
+      }
+    for (const { option: v } of variantOptions(def)) for (const nid of Object.keys(v.styles ?? {})) if (removed.has(nid)) delete v.styles![nid];
   }
   delete def.slots![op.slot];
   if (!Object.keys(def.slots!).length) delete def.slots;

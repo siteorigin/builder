@@ -50,7 +50,7 @@ export function renameNode(def: ComponentDefinition, from: string, to: string): 
   tree.nodes = Object.fromEntries(Object.entries(tree.nodes).map(([id, n]) => [swap(id), id === from ? { ...n, id: to } : n]));
   tree.rootIds = tree.rootIds.map(swap);
   for (const n of Object.values(tree.nodes)) {
-    if ('children' in n) n.children = n.children.map(swap);
+    if ('children' in n && Array.isArray(n.children)) n.children = n.children.map(swap);
     if (n.kind === 'instance' && n.slots) n.slots = Object.fromEntries(Object.entries(n.slots).map(([slot, ids]) => [slot, ids.map(swap)]));
   }
   for (const part of Object.values(def.parts)) part.nodeId = swap(part.nodeId);

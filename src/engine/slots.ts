@@ -3,7 +3,7 @@
  * they put content in, and load validation checks every placement's slots, with the same rules.
  */
 import type { ComponentDefinition, GraphNode, InstanceNode, NodeTree, ProjectState, SlotDef, SlotPrimitive } from '@shared/types';
-import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from '@shared/types';
+import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES, slotFallback } from '@shared/types';
 
 /** Whether a slot limits what kinds of content it takes (beyond how many). */
 export const restrictsKinds = (d: SlotDef): boolean => d.categories !== undefined || d.primitives !== undefined || d.componentIds !== undefined;
@@ -58,14 +58,15 @@ export interface SlotFill {
 const subset = <T>(a: readonly T[] | undefined, b: readonly T[] | undefined) => (a ?? []).every((x) => (b ?? []).includes(x));
 
 /**
- * Whether every component `outer` names is one `decl` takes too: named there as well, or, when the project has it,
- * of a category `decl` takes (each of its definitions, when it names a contract several share).
+ * Whether every component `outer` names is one `decl` takes too: named there as well, or, for a definition the
+ * project has named by its own ID, taken by `decl` by its category or contract. A contract stands for any theme's
+ * design of it, whatever the project has installed today, so only a slot naming that contract too takes it.
  */
 function namesTaken(state: Pick<ProjectState, 'components'>, outer: SlotDef, decl: SlotDef): boolean {
   return (outer.componentIds ?? []).every((id) => {
     if ((decl.componentIds ?? []).includes(id)) return true;
-    const defs = namedDefinitions(state, id);
-    return defs.length > 0 && defs.every((def) => takesComponent(decl, def));
+    const def = state.components && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+    return !!def && takesComponent(decl, def);
   });
 }
 
@@ -88,11 +89,20 @@ export function slotFill(state: ProjectState, tree: NodeTree, ids: readonly stri
       const def = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
       if (def && kinds && !takesComponent(decl, def)) refuse(id, `“${def.name}” (a ${def.category} component)`);
     } else if (n.kind === 'slot') {
-      // Content passed on from the slot of the same name outside: it must be content this slot takes too.
+      // Content passed on from the slot of the same name outside: it must be content this slot takes too. While the
+      // placement outside leaves that slot empty, the design's own fallback for it shows here instead: that too.
+      const fallback = slotFallback(n);
+      const shown = fallback.length ? slotFill(state, tree, fallback, { ...decl, max: undefined }, design, new Set(seen).add(id)) : undefined;
+      if (shown) refusedAll.push(...shown.refusedAll);
       const outer = design?.slots && Object.hasOwn(design.slots, n.slot) ? design.slots[n.slot] : undefined;
-      if (!outer) continue;
-      count += outer.max ?? Infinity;
-      if (kinds && (!restrictsKinds(outer) || !subset(outer.categories, decl.categories) || !subset(outer.primitives, decl.primitives) || !namesTaken(state, outer, decl)))
+      if (!outer) {
+        count += shown?.count ?? 0;
+        continue;
+      }
+      // Only one of the two shows at a time.
+      count += Math.max(outer.max ?? Infinity, shown?.count ?? 0);
+      // A slot closed to content never brings any.
+      if (kinds && outer.max !== 0 && (!restrictsKinds(outer) || !subset(outer.categories, decl.categories) || !subset(outer.primitives, decl.primitives) || !namesTaken(state, outer, decl)))
         refuse(id, `the content of “${outer.label}”, which can be ${slotAccepts(outer, state)}`);
     } else if (n.kind === 'repeat') {
       // A repeat shows its children once per item, and the items come from wherever the list is filled (a placement,

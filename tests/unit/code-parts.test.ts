@@ -275,7 +275,9 @@ describe('converting a design to code keeps its parts and slots', () => {
     expect(code.slots).toEqual(def.slots);
     expect(Object.keys(code.parts)).toEqual(Object.keys(def.parts));
     expect((converted.state.pages[owner.id].nodes[section] as InstanceNode).slots?.content).toHaveLength(1);
-    expect(code.source).toContain('{@render slot_content?.()}');
+    // The slot is still taken as `slot_content`, read under a local no snippet it hands on can hide.
+    expect(code.source).toContain('slot_content: so_in_content = undefined');
+    expect(code.source).toContain('{@render so_in_content?.()}');
     expect(code.source).not.toContain('data-so-part');
     const inner = Object.keys(def.parts).filter((p) => p !== 'root');
     expect(inner.length).toBeGreaterThan(0);

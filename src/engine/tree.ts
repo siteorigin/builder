@@ -46,6 +46,8 @@ export function getNode(tree: NodeTree, nodeId: string): GraphNode {
 
 export function childLists(node: GraphNode): Array<{ slot?: string; ids: string[] }> {
   if (node.kind === 'element' || node.kind === 'repeat') return [{ ids: node.children }];
+  // A slot outlet's fallback content (a list damaged by hand is none; validation reports it).
+  if (node.kind === 'slot') return Array.isArray(node.children) ? [{ ids: node.children }] : [];
   // A slot's list damaged by hand is no list of children (validation reports it).
   if (node.kind === 'instance') return Object.entries(node.slots ?? {}).flatMap(([slot, ids]) => (Array.isArray(ids) ? [{ slot, ids }] : []));
   return [];

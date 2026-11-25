@@ -3,7 +3,7 @@ import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef
 import { ArrowDown, ArrowUp, ArrowUpDown, BookmarkPlus, Box, Download, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, Unlink, X, LayoutTemplate } from 'lucide-react';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { refKey, sameRef, slotChildren } from '@shared/types';
+import { refKey, sameRef, slotChildren, slotFallback } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
@@ -90,7 +90,7 @@ function placeOps(tree: NodeTree, owner: OwnerRef, ids: string[], to: Place): Ed
   if (!from) return null;
   const target = to.parentId === null ? tree.rootIds : (() => {
     const n = tree.nodes[to.parentId!];
-    return n?.kind === 'instance' ? slotChildren(n, to.slot!) : n && 'children' in n ? (n.children as string[]) : [];
+    return n?.kind === 'instance' ? slotChildren(n, to.slot!) : n?.kind === 'slot' ? slotFallback(n) : n && 'children' in n ? n.children : [];
   })();
   const same = from.list === target;
   const source = [...from.list];
