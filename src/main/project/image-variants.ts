@@ -6,7 +6,9 @@ import { readFile } from 'node:fs/promises';
 import sharp from 'sharp';
 import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type IconSpec, type VariantReply, type VariantRequest } from './media-client';
 import { isAnimatedPng } from './media';
+import { cleanPhoto, creditText, type CreditText } from './photo-metadata';
 import { sanitizeSvg } from './svg';
+import { isCopyMime, type CopyMime } from '@shared/picture-formats';
 
 /**
  * Widths of the smaller copies, each made only when it is meaningfully smaller than the picture. The 160px copy
@@ -14,8 +16,13 @@ import { sanitizeSvg } from './svg';
  */
 export const VARIANT_WIDTHS = [160, 480, 960, 1440];
 
-export interface Variant {
+/** One copy to make: its width and format. */
+export interface VariantTarget {
   width: number;
+  mime: CopyMime;
+}
+
+export interface Variant extends VariantTarget {
   data: Buffer;
 }
 
@@ -23,26 +30,85 @@ export interface Variant {
 sharp.cache(false);
 
 /**
- * Deterministic smaller copies of a JPEG or PNG. `width` is the displayed width; the copies are turned the
- * way the picture's EXIF orientation says and written without metadata. An animated PNG gets none: a resized
- * copy would be a single frame, and its srcset would mix the moving original with stills. `widths` asks for
- * exactly those copies (making again the ones a library image already lists), each never wider than the picture.
+ * How each format is written: JPEG and PNG as they always were, WebP and AVIF at qualities that look like the JPEG
+ * copies. AVIF's effort is a trade of import time for size: a 24-megapixel photo takes about two seconds here.
  */
-export async function renderVariants(buf: Buffer, mime: string, width: number, widths?: number[]): Promise<Variant[]> {
-  if (mime !== 'image/jpeg' && mime !== 'image/png') return [];
+const ENCODE: Record<CopyMime, (img: sharp.Sharp) => sharp.Sharp> = {
+  'image/jpeg': (img) => img.jpeg({ quality: 82 }),
+  'image/png': (img) => img.png(),
+  'image/webp': (img) => img.webp({ quality: 80 }),
+  'image/avif': (img) => img.avif({ quality: 50, effort: 4 })
+};
+
+/** Formats in the order a record lists copies of one width: the picture's own first, then the modern ones. */
+const rank = (mime: CopyMime, own: CopyMime) => (mime === own ? 0 : mime === 'image/webp' ? 1 : 2);
+
+/** An AVIF set is kept only when it is at least this much smaller than the WebP set of the same widths. */
+const AVIF_GAIN = 0.9;
+
+/**
+ * Deterministic responsive copies of a still JPEG, PNG, WebP or AVIF. `width` is the displayed width; the copies are
+ * turned the way the picture's EXIF orientation says. A picture gets three sets of copies, one per format a page offers:
+ *
+ * - its own format at each of VARIANT_WIDTHS meaningfully smaller than it, the original serving its full width;
+ * - WebP at those widths and its full width (none for a WebP, whose own set is that);
+ * - AVIF the same way, kept only when the whole set is at least 10% smaller than the WebP one (an AVIF's own set is
+ *   always kept). AVIF is not always the smaller: flat graphics and small pictures often favour WebP.
+ *
+ * JPEG and PNG copies are written without metadata (an export gives them the original's credits); WebP and AVIF ones
+ * carry the original's credits, which an export cannot add to them, and nothing else. A modern set that cannot be
+ * made is left out whole, so a page never offers a set missing its widest copy. A moving picture (animated PNG or
+ * WebP, an AVIF sequence) gets none: a resized copy would be a single frame, and its srcset would mix the moving
+ * original with stills. `targets` asks for exactly those copies (making again the ones a library image already
+ * lists), each never wider than the picture, with no choosing between sets.
+ */
+export async function renderVariants(buf: Buffer, mime: string, width: number, targets?: VariantTarget[]): Promise<Variant[]> {
+  if (!isCopyMime(mime)) return [];
   if (mime === 'image/png' && isAnimatedPng(buf)) return [];
+  if (mime === 'image/avif' && avifBrands(buf).includes('avis')) return [];
   // The decoder's own reading of the displayed width wins over the header's: a copy is never labelled wider
   // than the picture it was made from.
   const meta = await sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS }).metadata();
+  if ((meta.pages ?? 1) > 1) return [];
   const displayed = Math.min(width, meta.autoOrient?.width ?? meta.width ?? width);
-  const out: Variant[] = [];
-  for (const w of widths ?? VARIANT_WIDTHS) {
-    if (widths ? !(w > 0 && w <= displayed) : w >= displayed * 0.9) continue;
+  let credits: CreditText | undefined;
+  const encode = async (t: VariantTarget): Promise<Variant> => {
     // Never enlarged: a picture smaller than its header claimed keeps the size it has.
-    const img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS }).autoOrient().resize({ width: w, withoutEnlargement: true });
-    out.push({ width: w, data: await (mime === 'image/png' ? img.png() : img.jpeg({ quality: 82 })).toBuffer() });
+    let img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS }).autoOrient().resize({ width: t.width, withoutEnlargement: true });
+    if (t.mime === 'image/webp' || t.mime === 'image/avif') {
+      credits ??= creditText(cleanPhoto(buf)?.credits ?? {});
+      if (credits.artist || credits.copyright) img = img.withExif({ IFD0: { ...(credits.artist ? { Artist: credits.artist } : {}), ...(credits.copyright ? { Copyright: credits.copyright } : {}) } });
+      if (credits.xmp) img = img.withXmp(credits.xmp);
+    }
+    return { ...t, data: await ENCODE[t.mime](img).toBuffer() };
+  };
+  const out: Variant[] = [];
+  if (targets) {
+    for (const t of targets) if (isCopyMime(t.mime) && Number.isInteger(t.width) && t.width > 0 && t.width <= displayed) out.push(await encode(t));
+    return out;
   }
-  return out;
+  const smaller = VARIANT_WIDTHS.filter((w) => w < displayed * 0.9);
+  for (const w of smaller) out.push(await encode({ width: w, mime }));
+  /** A modern format's whole set (its full width too), or null when any copy of it cannot be made. */
+  const set = async (format: 'image/webp' | 'image/avif'): Promise<Variant[] | null> => {
+    try {
+      const made: Variant[] = [];
+      for (const w of [...smaller, displayed]) made.push(await encode({ width: w, mime: format }));
+      return made;
+    } catch {
+      return null;
+    }
+  };
+  const bytes = (list: Variant[]) => list.reduce((n, v) => n + v.data.length, 0);
+  // A WebP's own copies, with the original at its full width, are its WebP set.
+  const webp = mime === 'image/webp' ? out : await set('image/webp');
+  const webpBytes = webp && bytes(webp) + (mime === 'image/webp' ? buf.length : 0);
+  if (webp && mime !== 'image/webp') out.push(...webp);
+  if (mime !== 'image/avif') {
+    const avif = await set('image/avif');
+    if (avif && webpBytes !== null && bytes(avif) <= webpBytes * AVIF_GAIN) out.push(...avif);
+  }
+  return out.sort((a, b) => a.width - b.width || rank(a.mime, mime) - rank(b.mime, mime));
 }
 
 export { WEB_EDGE };
@@ -169,8 +235,8 @@ export async function handleVariantRequest(m: VariantRequest): Promise<VariantRe
       return { id: m.id, ok: true, variants: [], web: { ...web, data: new Uint8Array(web.data.buffer, web.data.byteOffset, web.data.byteLength) } };
     }
     if (m.check && !(await isReadable(buf, m.mime))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
-    const variants = await renderVariants(buf, m.mime, m.width, m.widths);
-    return { id: m.id, ok: true, variants: variants.map((v) => ({ width: v.width, data: new Uint8Array(v.data.buffer, v.data.byteOffset, v.data.byteLength) })) };
+    const variants = await renderVariants(buf, m.mime, m.width, m.targets);
+    return { id: m.id, ok: true, variants: variants.map((v) => ({ width: v.width, mime: v.mime, data: new Uint8Array(v.data.buffer, v.data.byteOffset, v.data.byteLength) })) };
   } catch (e) {
     return { id: m.id, ok: false, error: (e as Error).message };
   }

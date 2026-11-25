@@ -6,7 +6,8 @@
  * them, as a very large picture already is. The worker starts on the first request and is stopped once it
  * has been idle for a while.
  */
-import type { Variant, WebCopy } from './image-variants';
+import type { Variant, VariantTarget, WebCopy } from './image-variants';
+import type { CopyMime } from '@shared/picture-formats';
 
 /**
  * Decoding allocates by pixel count, which a small file can inflate: larger pictures keep only the original.
@@ -38,8 +39,8 @@ export interface VariantRequest {
   width: number;
   /** Decode the whole picture first, and say so when it cannot be read. */
   check?: boolean;
-  /** Exactly these copies, instead of the usual ones for the picture's width. */
-  widths?: number[];
+  /** Exactly these copies (width and format), instead of the usual ones for the picture's width. */
+  targets?: VariantTarget[];
   /** For a web-sized copy: read the picture from this file (a decoded photo too large to send) instead of `data`. */
   path?: string;
   /** For a web-sized copy: its longest side. */
@@ -60,7 +61,7 @@ export interface IconSpec {
 export type IconsResult = { ok: true; icons: Buffer[] } | { ok: false; unreadable: boolean };
 
 export type VariantReply =
-  | { id: number; ok: true; variants: Array<{ width: number; data: Uint8Array }>; web?: { data: Uint8Array; mime: 'image/jpeg' | 'image/png'; width: number; height: number }; opaque?: boolean; icons?: Uint8Array[] }
+  | { id: number; ok: true; variants: Array<{ width: number; mime: CopyMime; data: Uint8Array }>; web?: { data: Uint8Array; mime: 'image/jpeg' | 'image/png'; width: number; height: number }; opaque?: boolean; icons?: Uint8Array[] }
   | { id: number; ok: false; error: string; unreadable?: boolean };
 
 /** A picture checked by the worker: unreadable only when the decoder refused it, never because the worker failed. */
@@ -84,8 +85,8 @@ export interface WorkerHandle {
 }
 
 export interface VariantClient {
-  /** The picture's responsive copies (or exactly `widths`), or none when the worker could not make them. Never rejects. */
-  variants(buf: Buffer, mime: string, width: number, widths?: number[]): Promise<Variant[]>;
+  /** The picture's responsive copies (or exactly `targets`), or none when the worker could not make them. Never rejects. */
+  variants(buf: Buffer, mime: string, width: number, targets?: VariantTarget[]): Promise<Variant[]>;
   /**
    * Decode the picture to prove it can be shown, and make its copies. A worker that fails, crashes or takes too
    * long proves nothing either way, so the picture counts as readable. Never rejects.
@@ -185,9 +186,9 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
   const bytes = (buf: Buffer) => new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   const toBuffer = (d: Uint8Array) => Buffer.from(d.buffer, d.byteOffset, d.byteLength);
   const inspected = (r: VariantReply | null): Inspected =>
-    r?.ok ? { unreadable: false, variants: (r.variants ?? []).map((v) => ({ width: v.width, data: toBuffer(v.data) })) } : { unreadable: !!r?.unreadable, variants: [] };
+    r?.ok ? { unreadable: false, variants: (r.variants ?? []).map((v) => ({ width: v.width, mime: v.mime, data: toBuffer(v.data) })) } : { unreadable: !!r?.unreadable, variants: [] };
   return {
-    variants: (buf, mime, width, widths) => request({ data: bytes(buf), mime, width, ...(widths ? { widths } : {}) }).then((r) => inspected(r).variants),
+    variants: (buf, mime, width, targets) => request({ data: bytes(buf), mime, width, ...(targets ? { targets } : {}) }).then((r) => inspected(r).variants),
     inspect: (buf, mime, width) => request({ data: bytes(buf), mime, width, check: true }).then(inspected),
     webCopy: (source, maxEdge) =>
       request({ kind: 'web', maxEdge, width: 0, ...('path' in source ? { path: source.path, data: new Uint8Array(0), mime: '' } : { data: bytes(source.data), mime: source.mime }) }).then((r): WebCopyResult =>

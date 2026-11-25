@@ -125,6 +125,8 @@ export function shown(v: unknown, state: ProjectState): boolean {
 }
 
 export interface Visit {
+  /** The tree's top-level nodes to walk, in order (all of them when absent): `[rootIds[0]]` walks its first section. */
+  roots?: readonly string[];
   /**
    * Walk what a visitor can reach by changing a component's UI state too (a tab not chosen at first, a closed
    * disclosure), not only what shows at first.
@@ -476,7 +478,7 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
     if (page) visit.leave?.(n);
   };
   const top: Frame = { tree, scope: { props: {} }, n: 0, defs: new Set() };
-  for (const r of tree.rootIds) walk(top, r, new Set());
+  for (const r of visit.roots ?? tree.rootIds) walk(top, r, new Set());
 }
 
 /** A question and its answer, as an FAQ on a page shows them. */
@@ -1250,7 +1252,7 @@ export function showsWithSoImage(source: string, prop: string): boolean {
     // Settings added to a copy of it, never its picture: no other source, and nothing spread in that could be one.
     const m = e.match(copy);
     const keys = (m?.[1] ?? '').split(',').map((part) => part.trim()).filter(Boolean);
-    return !!m && keys.every((part) => !part.startsWith('...') && !/^['"]?(?:src|srcset)['"]?\s*(?::|$)/.test(part));
+    return !!m && keys.every((part) => !part.startsWith('...') && !/^['"]?(?:src|srcset|sources)['"]?\s*(?::|$)/.test(part));
   };
   return outcomes(source.slice(at + 'image={'.length, i)).every(shows);
 }

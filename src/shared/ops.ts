@@ -208,7 +208,8 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
 const ASSET_FILE = z.string().regex(new RegExp(`^static/assets/[a-z0-9][a-z0-9-]*\\.(jpg|png|webp|gif|avif|svg|woff2?|${DOCUMENT_EXTENSIONS.join('|')})$`));
 /** A library file's new type: a picture, or one of the document formats. */
 const RELINK_MIME = z.string().regex(new RegExp(`^(image/[a-z0-9.+-]+|${Object.values(DOCUMENT_FORMATS).map((f) => f.mime.replace(/[.+]/g, '\\$&')).join('|')})$`));
-const ASSET_VARIANTS = z.array(z.object({ width: z.number(), file: z.string().regex(/^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png)$/) }));
+/** A picture's responsive copies: each a width and an importer-named file, whose extension says its format. */
+const ASSET_VARIANTS = z.array(z.object({ width: z.number().int().positive(), file: z.string().regex(/^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png|webp|avif)$/) }));
 
 /** A dated article's details, as page.create and page.update take them (see shared/articles.ts). */
 const ARTICLE_FIELDS = {

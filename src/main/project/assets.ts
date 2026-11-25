@@ -7,6 +7,7 @@ import type { AssetRecord } from '@shared/types';
 import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS, documentFormat } from '@shared/document-files';
+import { COPY_EXTENSIONS, copyMime, type CopyMime } from '@shared/picture-formats';
 import { atomicWrite, safeJoin, sha } from './fsutil';
 import { readRegularFile } from '../packs/files';
 import { sanitizeSvg } from './svg';
@@ -486,7 +487,7 @@ async function planStore(p: PreparedFile, refuse: Refusal): Promise<{ stored: St
   const files: PendingFile[] = [{ rel: file, data: p.buf }];
   const copies: Array<{ width: number; file: string }> = [];
   for (const v of variants) {
-    const copy = `${stem}-${v.width}w.${p.mime === 'image/png' ? 'png' : 'jpg'}`;
+    const copy = `${stem}-${v.width}w.${COPY_EXTENSIONS[v.mime]}`;
     files.push({ rel: copy, data: v.data });
     copies.push({ width: v.width, file: copy });
   }
@@ -593,9 +594,9 @@ const LIBRARY_FILE = new RegExp(`^static/assets/[a-z0-9][a-z0-9-]*\\.(jpg|png|we
 
 /**
  * Put back what a library image is missing in the project folder: its original, from `original` when that is
- * the same picture, and the smaller copies it lists, made again from the original at their recorded widths and
- * names. Files already there are left alone, even ones put back while the copies were being made. Returns the
- * files written and the copies that could not be made.
+ * the same picture, and the copies it lists, made again from the original at their recorded widths, formats (their
+ * names' extensions) and names. Only the missing copies are made. Files already there are left alone, even ones put
+ * back while the copies were being made. Returns the files written and the copies that could not be made.
  */
 export async function restoreAssetFiles(projectDir: string, record: AssetRecord, original?: Buffer, fence: WriteFence = unfenced): Promise<{ written: string[]; failed: string[] }> {
   const document = record.kind === 'document';
@@ -617,16 +618,18 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
   if (!buf) throw new Error(`The original file of ${name} is missing. Locate it first.`);
   if (sha(buf) !== record.hash) throw mismatch();
   if (!onDisk) files.push({ rel: record.file, data: buf });
-  const missing: Array<{ width: number; file: string }> = [];
+  const missing: Array<{ width: number; file: string; mime: CopyMime }> = [];
   for (const v of record.variants ?? []) {
-    if (!LIBRARY_FILE.test(v.file)) failed.push(v.file);
-    else if (!(await isFile(safeJoin(projectDir, v.file)))) missing.push(v);
+    const mime = copyMime(v.file);
+    if (!LIBRARY_FILE.test(v.file) || !mime) failed.push(v.file);
+    else if (!(await isFile(safeJoin(projectDir, v.file)))) missing.push({ ...v, mime });
   }
   if (missing.length) {
     const info = imageInfo(buf, record.mime);
-    const made = info && info.width * info.height <= MAX_VARIANT_PIXELS ? await mediaWorker.variants(buf, record.mime, info.width, missing.map((v) => v.width)) : [];
+    const made = info && info.width * info.height <= MAX_VARIANT_PIXELS ? await mediaWorker.variants(buf, record.mime, info.width, missing.map((v) => ({ width: v.width, mime: v.mime }))) : [];
     for (const v of missing) {
-      const copy = made.find((c) => c.width === v.width);
+      // By width and format: copies of one width in two formats are two different files.
+      const copy = made.find((c) => c.width === v.width && c.mime === v.mime);
       if (copy) files.push({ rel: v.file, data: copy.data });
       else failed.push(v.file);
     }

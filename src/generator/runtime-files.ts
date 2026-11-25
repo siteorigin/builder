@@ -81,26 +81,32 @@ export const IMAGE_SVELTE = `<script>
 	 * Images in the first section of a page load eagerly with high priority (they are usually the
 	 * largest thing on screen); everything else is lazy. \`fallbackAlt\` names what the image stands for when it
 	 * has no alternative text of its own; a decorative image keeps an empty alt and says it as hidden text.
+	 * An image with WebP or AVIF copies (\`sources\`) is a <picture>: the browser takes the first set it can show,
+	 * at the width \`sizes\` says, and falls back to the image's own format. The <picture> lays out no box of its
+	 * own, so the <img> sits in the layout, with its classes and attributes, as it does without one.
 	 */
 	import { asset } from '$app/paths';
 	let { image = null, class: className = '', eager = false, sizes = '100vw', fallbackAlt = '', ...rest } = $props();
 	const fallback = $derived(String(fallbackAlt ?? '').trim());
 	const label = $derived(image?.decorative ? '' : String(image?.alt ?? '').trim() || fallback);
 	const url = (path) => (path.startsWith('/') && !path.startsWith('//') ? asset(path.slice(1)) : path);
-	const srcset = $derived(
-		image?.srcset
-			? image.srcset
-					.split(', ')
-					.map((candidate) => {
-						const [path, width] = candidate.split(' ');
-						return \`\${url(path)} \${width}\`;
-					})
-					.join(', ')
-			: undefined
+	const local = (set) =>
+		set
+			.split(', ')
+			.map((candidate) => {
+				const [path, width] = candidate.split(' ');
+				return \`\${url(path)} \${width}\`;
+			})
+			.join(', ');
+	const srcset = $derived(typeof image?.srcset === 'string' && image.srcset ? local(image.srcset) : undefined);
+	const sources = $derived(
+		Array.isArray(image?.sources)
+			? image.sources.filter((s) => typeof s?.type === 'string' && typeof s?.srcset === 'string' && s.srcset).map((s) => ({ type: s.type, srcset: local(s.srcset) }))
+			: []
 	);
 </script>
 
-{#if image?.src}
+{#snippet picture()}
 	<img
 		src={url(image.src)}
 		{srcset}
@@ -114,6 +120,19 @@ export const IMAGE_SVELTE = `<script>
 		class={['so-img', className]}
 		{...rest}
 	/>
+{/snippet}
+
+{#if image?.src}
+	{#if sources.length}
+		<picture>
+			{#each sources as source (source.type)}
+				<source type={source.type} srcset={source.srcset} {sizes} />
+			{/each}
+			{@render picture()}
+		</picture>
+	{:else}
+		{@render picture()}
+	{/if}
 	{#if image.decorative && fallback}<span class="so-visually-hidden">{fallback}</span>{/if}
 {:else}
 	<div
@@ -131,6 +150,12 @@ export const IMAGE_SVELTE = `<script>
 	</div>
 	{#if image?.decorative && fallback}<span class="so-visually-hidden">{fallback}</span>{/if}
 {/if}
+
+<style>
+	picture {
+		display: contents;
+	}
+</style>
 `;
 
 /**
@@ -503,18 +528,29 @@ export function has(value) {
 }
 
 /**
- * An image shown as a thumbnail that opens full size: only its smaller copies, so the full-size file loads when it
- * is opened. An image without smaller copies is its own thumbnail.
+ * An image shown as a thumbnail that opens full size: only its smaller copies, in each of its formats, so the
+ * full-size file loads when it is opened. An image without smaller copies in its own format is its own thumbnail.
  */
 export function thumbnail(image) {
 	if (!image?.src || !image.srcset) return image;
-	const smaller = image.srcset
-		.split(', ')
-		.map((candidate) => candidate.split(' '))
-		.filter(([path]) => path !== image.src);
-	if (!smaller.length) return image;
-	const largest = smaller.reduce((a, b) => (parseInt(b[1], 10) > parseInt(a[1], 10) ? b : a));
-	return { ...image, src: largest[0], srcset: smaller.map((c) => c.join(' ')).join(', ') };
+	// Candidates narrower than the full-size picture; the original, and a WebP or AVIF copy at its width, are left out.
+	const smaller = (set) =>
+		set
+			.split(', ')
+			.map((candidate) => candidate.split(' '))
+			.filter(([path, width]) => path !== image.src && !(parseInt(width, 10) >= image.width));
+	const own = smaller(image.srcset);
+	if (!own.length) return image;
+	const largest = own.reduce((a, b) => (parseInt(b[1], 10) > parseInt(a[1], 10) ? b : a));
+	const thumb = { ...image, src: largest[0], srcset: own.map((c) => c.join(' ')).join(', ') };
+	if (Array.isArray(image.sources)) {
+		const sources = image.sources
+			.map((s) => ({ ...s, srcset: typeof s?.srcset === 'string' ? smaller(s.srcset).map((c) => c.join(' ')).join(', ') : '' }))
+			.filter((s) => s.srcset);
+		if (sources.length) thumb.sources = sources;
+		else delete thumb.sources;
+	}
+	return thumb;
 }
 
 /**

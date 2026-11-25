@@ -84,6 +84,7 @@ import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from 
 import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
+import { copyMime, MODERN_FORMATS } from '@shared/picture-formats';
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
 import { propBindingSchema } from '@shared/bindings';
@@ -111,7 +112,7 @@ import { generateWebManifest, siteColors, siteIconLinks, themeColorMeta } from '
 import { WEB_MANIFEST } from '@shared/site-icons';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
-import { notFoundSectionRoutes } from './checks';
+import { evaluate, notFoundSectionRoutes, walkRendered } from './checks';
 import { webMcpOn } from '@shared/webmcp';
 import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, showsSiteSearch, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
 import { graphScript, inGenerationRun } from './structured-data';
@@ -346,14 +347,61 @@ export function downloadName(doc: AssetRecord): string {
   return `${base.slice(0, 120).replace(/[. ]+$/, '') || 'document'}${ext.toLowerCase()}`;
 }
 
+/** A WebP or AVIF set of a picture's copies, as a page's <picture> offers it before the picture's own format. */
+export interface ImageSource {
+  type: string;
+  srcset: string;
+}
+
+/**
+ * A library image's copies as a page offers them (see renderVariants): `srcset`, the copies in its own format with the
+ * original at its full width, for its <img>; and `sources`, its WebP and AVIF sets, best first, for the <source>s of a
+ * <picture>. Each set lists each width once, narrowest first, the original at its own width. A modern set is offered
+ * only when it reaches the picture's full width, so a wide screen never gets a smaller picture than the <img> would
+ * give it. A picture's own format is a source only while another follows it (an AVIF's, before its WebP set); the
+ * <img> offers it otherwise. An image whose record lists only copies in its own format (as every image imported
+ * before WebP and AVIF copies were made does) gets the srcset it always had, and no sources.
+ */
+export function pictureSets(asset: AssetRecord): { srcset?: string; sources: ImageSource[] } {
+  const own = asset.mime;
+  const full = asset.width;
+  if (typeof full !== 'number' || !(full > 0) || !Array.isArray(asset.variants) || !asset.variants.length) return { sources: [] };
+  const url = (file: string) => `/${file.replace(/^static\//, '')}`;
+  const sets = new Map<string, Map<number, string>>();
+  const add = (mime: string, width: number, file: string) => {
+    const set = sets.get(mime) ?? sets.set(mime, new Map()).get(mime)!;
+    if (!set.has(width)) set.set(width, url(file));
+  };
+  add(own, full, asset.file);
+  for (const v of asset.variants) {
+    const mime = copyMime(v?.file);
+    if (mime && typeof v.width === 'number' && v.width > 0) add(mime, v.width, v.file);
+  }
+  const listed = (set: Map<number, string>) =>
+    [...set]
+      .sort(([a], [b]) => a - b)
+      .map(([w, u]) => `${u} ${w}w`)
+      .join(', ');
+  const ownSet = sets.get(own)!;
+  const sources: ImageSource[] = MODERN_FORMATS.flatMap((type) => {
+    const set = sets.get(type);
+    return set && Math.max(...set.keys()) >= full ? [{ type, srcset: listed(set) }] : [];
+  });
+  while (sources.at(-1)?.type === own) sources.pop();
+  return { ...(ownSet.size > 1 ? { srcset: listed(ownSet) } : {}), sources };
+}
+
 export function resolveImage(img: ImageValue | null | undefined, ctx: ResolveContext) {
   if (!img) return null;
   const asset = img.assetId ? ctx.state.assets.assets[img.assetId] : undefined;
   const out: Record<string, unknown> = { src: asset ? '/' + asset.file.replace(/^static\//, '') : null, alt: img.alt ?? '' };
   if (asset?.width) out.width = asset.width;
   if (asset?.height) out.height = asset.height;
-  if (asset?.variants?.length && asset.width)
-    out.srcset = [...asset.variants.map((v) => `/${v.file.replace(/^static\//, '')} ${v.width}w`), `/${asset.file.replace(/^static\//, '')} ${asset.width}w`].join(', ');
+  if (asset) {
+    const { srcset, sources } = pictureSets(asset);
+    if (srcset) out.srcset = srcset;
+    if (sources.length) out.sources = sources;
+  }
   if (img.decorative) out.decorative = true;
   return out;
 }
@@ -3731,6 +3779,71 @@ function seoHead(state: ProjectState, meta: SeoMetadata, opts: { article: boolea
   return head;
 }
 
+/** The page's name for SvelteKit's `asset`, which the hero's preload link makes its addresses with. */
+const HERO_ASSET_IMPORT = `\timport { asset as so_asset } from '$app/paths';`;
+
+/**
+ * The picture a page's first section loads first, as the body renders it: the image (resolved as the body resolves
+ * it) and the `sizes` its <img> and <source>s carry. It is the first image there, in the order the page renders, that
+ * shows a library picture: a placeholder loads nothing, so the next image is looked at. Only what the generator can
+ * read for certain counts: the walk leaves out lists (their images load lazily), code components (their markup is
+ * their own) and whatever a component's starting state hides, and an image whose picture is not decided here (one a
+ * thumbnail stands in for until it opens) ends it with none, rather than asking for a picture the page may not show.
+ */
+function heroImage(ctx: EmitCtx): { image: Record<string, unknown>; sizes: string } | null {
+  const { state, tree } = ctx;
+  const first = tree.rootIds[0];
+  if (!first) return null;
+  // Undefined while still looking; null when there is none to ask for.
+  let hero: { image: Record<string, unknown>; sizes: string } | null | undefined;
+  const sizingParents: EmitCtx['sizingParents'] = new Map();
+  walkRendered(state, tree, {
+    roots: [first],
+    n: 0,
+    defs: new Set(),
+    prune: (n) => hero !== undefined || n.kind === 'repeat' || (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed'),
+    node: (n, scope, _reportId, _inDef, def) => {
+      if (hero !== undefined || n.kind !== 'image') return;
+      const value = evaluate(n.image, scope) as ImageValue | null | undefined;
+      const id = value && typeof value === 'object' ? value.assetId : null;
+      const asset = typeof id === 'string' && Object.hasOwn(state.assets.assets, id) ? state.assets.assets[id] : undefined;
+      if (asset?.kind !== 'image') return;
+      // The image as its own design (or the page) emits it, so its sizes are the ones its markup carries.
+      const owner: EmitCtx = { state, file: '', imports: new Map(), instrument: false, def: def ?? null, tree: def?.tree ?? tree, ctxExpr: def ? `component:${def.id}` : ctx.ctxExpr, items: [], rctx: ctx.rctx, indent: 0, locals: new Map(), sizingParents };
+      if (actionOwner(owner, n.id)) return void (hero = null);
+      const image = resolveImage(value, ctx.rctx);
+      hero = image?.src ? { image, sizes: imageSizes(owner, n) ?? '100vw' } : null;
+    }
+  });
+  return hero ?? null;
+}
+
+/**
+ * The head's request for the page's hero picture (see heroImage), so it loads before the body is read: the set the
+ * browser takes from the body's <picture> (its first source, typed so a browser that cannot show the format skips the
+ * request and takes the next one from the body), with the same widths and sizes, or its <img>'s own srcset, or its
+ * file. Its addresses are made by `so_asset` (HERO_ASSET_IMPORT), as the image's own are, so they match under any
+ * base path. Null when the page has no hero to ask for.
+ */
+function heroPreload(ctx: EmitCtx): string | null {
+  const hero = heroImage(ctx);
+  if (!hero) return null;
+  const { image, sizes } = hero;
+  const url = (path: string) => (path.startsWith('/') && !path.startsWith('//') ? `so_asset(${js(path.slice(1))})` : js(path));
+  const set = (srcset: string) =>
+    `[${srcset
+      .split(', ')
+      .map((candidate) => {
+        const [path, width] = candidate.split(' ');
+        return `${url(path)} + ${js(` ${width}`)}`;
+      })
+      .join(', ')}].join(', ')`;
+  const sources = Array.isArray(image.sources) ? (image.sources as ImageSource[]) : [];
+  const chosen = sources[0] ?? (typeof image.srcset === 'string' ? { srcset: image.srcset } : null);
+  const attrs = chosen ? `${'type' in chosen ? ` type=${js(chosen.type)}` : ''} imagesrcset={${set(chosen.srcset)}} imagesizes=${js(sizes)}` : ` href={${url(String(image.src))}}`;
+  return `\t<link rel="preload" as="image" fetchpriority="high"${attrs} />`;
+}
+
 export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateOptions): string {
   const file = pageFile(page);
   const ctx: EmitCtx = {
@@ -3764,6 +3877,9 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   const base = publicUrl(site);
   const alternates = pageAlternates(state, page);
   const head = seoHead(state, meta, { article: !!article, alternates: alternates.map((a) => a.language) });
+  // The first section's main picture, asked for straight after the title so it starts loading first.
+  const hero = heroPreload(ctx);
+  if (hero) head.splice(1, 0, hero);
   // The page's Markdown copy beside it, for AI agents, while the site writes one (see generator/llms.ts).
   if (hasMarkdownMirror(state, { kind: 'page', pageId: page.id })) head.push(MARKDOWN_ALTERNATE);
   // The same page in other languages, and this one among them: each version lists the same set.
@@ -3773,7 +3889,7 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   // its FAQ and contact sections. A page search engines are asked not to list, or one with no public URL, has none.
   const graph = graphScript(state, { kind: 'page', pageId: page.id });
   if (graph) head.push(`\t{@html ${js(graph)}}`);
-  const imports = [renderImports(ctx.imports), alternates.length && !base ? `\timport { resolve } from '$app/paths';` : ''].filter(Boolean).join('\n');
+  const imports = [renderImports(ctx.imports), alternates.length && !base ? `\timport { resolve } from '$app/paths';` : '', hero ? HERO_ASSET_IMPORT : ''].filter(Boolean).join('\n');
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
   return (
     HEADER_NOTE(`siteorigin/pages/${page.id}.json`) +
@@ -4169,11 +4285,13 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
   // What the entry says about itself to search engines and link previews: its own search settings, else its title,
   // excerpt and featured image, as the SEO audit reads them.
   const head = seoHead(state, entryMetadata(state, collectionId, entryId, route)!, { article: true, alternates: [] });
+  const hero = heroPreload(ctx);
+  if (hero) head.splice(1, 0, hero);
   // The same connected graph as a page's: who publishes the site, the website, this entry and its trail from Home.
   const graph = graphScript(state, { kind: 'entry', collectionId, entryId });
   if (graph) head.push(`\t{@html ${js(graph)}}`);
   if (hasMarkdownMirror(state, { kind: 'entry', collectionId, entryId })) head.push(MARKDOWN_ALTERNATE);
-  const imports = renderImports(ctx.imports);
+  const imports = [renderImports(ctx.imports), hero ? HERO_ASSET_IMPORT : ''].filter(Boolean).join('\n');
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
   // Section headings and pictures in the entry's text get the article's rules.
   const article = toRichText(entry.body).some((b) => b.type === 'h2' || isImageBlock(b));

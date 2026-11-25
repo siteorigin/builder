@@ -1039,7 +1039,11 @@ export interface AssetRecord {
   hash: string;
   /** A document is a file visitors download (a PDF, a spreadsheet), linked to rather than shown. */
   kind: 'image' | 'font' | 'document';
-  /** Smaller generated copies for responsive srcset, narrowest first. Originals are always kept. */
+  /**
+   * Generated copies for responsive srcsets, narrowest first: smaller copies in the picture's own format, and WebP and
+   * AVIF sets that reach its full width. Each copy's format is its file's extension (see shared/picture-formats.ts).
+   * Originals are always kept.
+   */
   variants?: Array<{ width: number; file: string }>;
   description?: string;
   altSuggestion?: string;

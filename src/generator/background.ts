@@ -15,6 +15,7 @@
 import { backgroundImageError, backgroundPosition, isPictureAsset } from '@shared/background-image';
 import { isScrim } from '@shared/styles';
 import { stableHash } from '@shared/ids';
+import { copyMime } from '@shared/picture-formats';
 import type { AssetRecord, BackgroundImageValue, StyleValue } from '@shared/types';
 
 export const BG_VARS = { image: '--so-bg-image', size: '--so-bg-size', position: '--so-bg-position', repeat: '--so-bg-repeat' } as const;
@@ -51,13 +52,17 @@ interface Candidate {
   width: number;
 }
 
-/** A library image's files as candidates, narrowest first, each width once; none when the original's file or width is unknown. */
+/**
+ * A library image's files in its own format as candidates, narrowest first, each width once; none when the original's
+ * file or width is unknown. Its WebP and AVIF copies are left out: a density list cannot say which formats it holds.
+ */
 function candidates(asset: AssetRecord): Candidate[] {
   const original = fileUrl(asset.file);
   const width = asset.width;
   if (!original || typeof width !== 'number' || !Number.isInteger(width) || width <= 0) return [];
   const out = new Map<number, string>([[width, original]]);
   for (const v of Array.isArray(asset.variants) ? asset.variants : []) {
+    if (copyMime(v?.file) !== asset.mime) continue;
     const url = fileUrl(v?.file);
     // A damaged copy is left out; the original still shows.
     if (url && typeof v.width === 'number' && Number.isInteger(v.width) && v.width > 0 && v.width < width && !out.has(v.width)) out.set(v.width, url);

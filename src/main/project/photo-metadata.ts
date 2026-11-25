@@ -1300,6 +1300,46 @@ export function textCreditsAsTiff(text: Buffer[], tiff?: Buffer): Buffer | null 
   return Buffer.concat([Buffer.from([0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8]), dir, ...tail]);
 }
 
+/** A photo's credits as the words a new file is written with: its artist, its copyright and its XMP credit packet. */
+export interface CreditText {
+  artist?: string;
+  copyright?: string;
+  xmp?: string;
+}
+
+/**
+ * A photo's credits as words, for a copy in a format they cannot be copied into byte for byte (a WebP or AVIF copy of
+ * a JPEG, which the encoder writes them into). The artist and copyright come from its EXIF, else its PNG Author and
+ * Copyright text, else its IPTC by-line and copyright notice.
+ */
+export function creditText(credits: PhotoCredits): CreditText {
+  const tiff = textCreditsAsTiff(credits.text ?? [], credits.tiff);
+  const values = tiff ? tiffCreditValues(tiff) : new Map<number, Buffer>();
+  const word = (b: Buffer | undefined) => (b ? b.toString('utf8').replace(/\0/g, '').trim() : '');
+  const iptc = credits.iptc ? iptcCredits(credits.iptc) : {};
+  const artist = word(values.get(TAG.artist)) || iptc.artist;
+  const copyright = word(values.get(TAG.copyright)) || iptc.copyright;
+  const xmp = credits.xmp?.toString('utf8');
+  return { ...(artist ? { artist } : {}), ...(copyright ? { copyright } : {}), ...(xmp ? { xmp } : {}) };
+}
+
+/** The by-line (2:80) and copyright notice (2:116) of a filtered Photoshop IPTC block (see filterPhotoshop), first of each. */
+function iptcCredits(block: Buffer): { artist?: string; copyright?: string } {
+  const out: { artist?: string; copyright?: string } = {};
+  // Its one resource: "8BIM", the IPTC resource ID, an empty name and its size, then the datasets (5-byte heads).
+  if (block.length < 12 || block.toString('latin1', 0, 4) !== '8BIM' || block.readUInt16BE(4) !== 0x0404) return out;
+  const end = Math.min(block.length, 12 + block.readUInt32BE(8));
+  for (let p = 12; p + 5 <= end && block[p] === 0x1c; ) {
+    const len = block.readUInt16BE(p + 3);
+    if (len & 0x8000 || p + 5 + len > end) break;
+    const value = block.toString('utf8', p + 5, p + 5 + len).replace(/\0/g, '').trim();
+    if (block[p + 1] === 2 && block[p + 2] === 80 && value) out.artist ??= value;
+    if (block[p + 1] === 2 && block[p + 2] === 116 && value) out.copyright ??= value;
+    p += 5 + len;
+  }
+  return out;
+}
+
 /** The text of an iTXt chunk, inflated when it is compressed. */
 function pngItxtText(data: Buffer, nul: number): Buffer {
   const compressed = data[nul + 1] === 1;
@@ -1363,6 +1403,7 @@ function cleanWebp(buf: Buffer): Omit<CleanedPhoto, 'changed'> | null {
     } else if (c.type === 'EXIF') {
       const r = filterExif(startsWith(c.data, EXIF_HEADER) ? c.data.subarray(EXIF_HEADER.length) : c.data);
       merge(found, r);
+      if (r.credits) found.credits.tiff ??= r.credits;
       if (r.tiff) {
         chunks.push(riffChunk('EXIF', r.tiff));
         exif = true;
@@ -1370,6 +1411,7 @@ function cleanWebp(buf: Buffer): Omit<CleanedPhoto, 'changed'> | null {
     } else if (c.type === 'XMP ') {
       const r = filterXmp(c.data);
       merge(found, r);
+      if (r.credits) found.credits.xmp ??= r.credits;
       if (r.packet) {
         chunks.push(riffChunk('XMP ', r.packet));
         xmp = true;
