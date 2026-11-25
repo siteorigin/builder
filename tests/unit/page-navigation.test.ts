@@ -470,6 +470,9 @@ describe('the footer’s links copied from the header menu (#575)', () => {
     expect(footerCopyPlan(copied)!.matches).toBe(false);
     (links(copied, 'footer')[1].link as Record<string, unknown>).target = ['pg_about001'];
     expect(footerCopyPlan(copied)!.matches).toBe(false);
+    // Nor a link that is not an object, shaped like the header link's parts.
+    links(copied, 'footer')[1].link = ['page', 'pg_about001', '', false] as never;
+    expect(footerCopyPlan(copied)!.matches).toBe(false);
   });
 
   it('counts a header link to nowhere, written with options it cannot use, as the same once copied', () => {

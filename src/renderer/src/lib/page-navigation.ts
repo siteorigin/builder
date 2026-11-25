@@ -185,12 +185,16 @@ export interface FooterCopyPlan {
  * outside the app that goes nowhere never passes for its header link.
  */
 const linkKey = (v: unknown, saved: boolean): string => {
-  if (saved && (v === null || v === undefined || v === '')) return JSON.stringify(['none', '', '', false]);
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return JSON.stringify(v ?? null);
+  if (!saved) {
+    // Stored, each part is taken as it is, kinds and all: a link written outside the app that goes nowhere (a target
+    // that is not text, a link that is not an object) matches no header link.
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return JSON.stringify({ stored: v ?? null });
+    const l = v as Record<string, unknown>;
+    return JSON.stringify([l.type ?? 'none', l.target ?? '', l.anchor || '', l.newTab === true]);
+  }
+  if (v === null || v === undefined || v === '') return JSON.stringify(['none', '', '', false]);
+  if (typeof v !== 'object') return JSON.stringify({ shorthand: v });
   const l = v as Record<string, unknown>;
-  // Stored, each part is taken as it is: a target that is not text (written outside the app) goes nowhere.
-  const exact = (x: unknown, none: string) => (x === undefined ? none : typeof x === 'string' ? x : JSON.stringify(x));
-  if (!saved) return JSON.stringify([exact(l.type, 'none'), exact(l.target, ''), l.anchor ? exact(l.anchor, '') : '', l.newTab === true]);
   // Saved, as normalizeLink writes it: no link has nothing else; a download has no section and opens no tab of its own.
   const type = typeof l.type === 'string' ? l.type : 'none';
   if (type === 'none') return JSON.stringify(['none', '', '', false]);
