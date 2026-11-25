@@ -119,7 +119,7 @@ describe('instance.swapComponent', () => {
     const { s, find } = project();
     const id = find('hero.split');
     inst(s, id).props.image = { assetId: 'a1', alt: 'Living room' };
-    expect(() => swap(s, id, { componentId: 'hero.centered' })).toThrow(/would drop Image: the new design has no place for it\. Pick another design, or remove that content first/);
+    expect(() => swap(s, id, { componentId: 'hero.centered' })).toThrow(/would drop Image: the new design has no place for it\. Pick another design, or remove that content first if it should go\.$/);
     const r = swap(s, id, { componentId: 'hero.centered' }, true);
     expect(inst(r.state, id).definitionId).toBe('foundation.hero.centered');
     expect(r.results[0].dropped).toEqual(['Image']);
@@ -183,7 +183,7 @@ describe('instance.swapComponent', () => {
     inst(centered, id).props.secondaryLink = { type: 'url', target: 'https://example.com/tour' };
     const r = swap(centered, id, { definitionId: defId });
     expect(inst(r.state, id).definitionId).toBe(defId);
-    expect(inst(r.state, id).props).toMatchObject({ heading: 'Edited while centered', secondaryLink: { type: 'url', target: 'https://example.com/tour' } });
+    expect(inst(r.state, id).props).toMatchObject({ heading: 'Edited while centered', primaryLink: inst(s, id).props.primaryLink, secondaryLink: { type: 'url', target: 'https://example.com/tour' } });
     expect(() => swap(r.state, id, { definitionId: 'proj.missing' })).toThrow(/is not installed/);
     expect(() => swap(r.state, id, { definitionId: defId })).toThrow(/already shows “Studio hero”/);
   });
@@ -239,6 +239,14 @@ describe('instance.swapComponent', () => {
     const r = swap(copy.state, id, { componentId: 'hero.centered' });
     // Links to #studio still land, and the hero stays dark although the centered hero defaults to light.
     expect(inst(r.state, id)).toMatchObject({ anchor: 'studio', variants: { tone: 'inverse' } });
+    // A design that can't render it is refused; one that gives its root an anchor of its own would lose it.
+    expect(() => swap(copy.state, id, { componentId: 'media.video' }, true)).toThrow(/can’t take the anchor #studio/);
+    const other = applyOperations(copy.state, [{ type: 'component.duplicate', definitionId: 'foundation.hero.split', name: 'Contact hero' }]);
+    const otherId = other.results[0].definitionId as string;
+    const otherDef = other.state.components[otherId];
+    otherDef.tree!.nodes[otherDef.tree!.rootIds[0]].anchor = 'contact';
+    expect(() => swap(other.state, id, { definitionId: otherId })).toThrow(/would drop Anchor #studio \(the new design gives the section its own anchor, #contact\)/);
+    expect(inst(swap(other.state, id, { definitionId: otherId }, true).state, id).anchor).toBeUndefined();
     // A news list the site fills from its articles has no place in a services grid.
     const news = applyOperations(s, [{ type: 'node.insert', owner: owner(s), newNodeId: 'n_news', componentId: 'content.news' }]).state;
     expect(() => swap(news, 'n_news', { componentId: 'features.grid' })).toThrow(/would drop Articles \(the new design does not fill it from the site's dated articles\)/);
@@ -268,6 +276,28 @@ describe('instance.swapComponent', () => {
     const names = fields.map((f) => f.name);
     expect(names.every((n) => typeof n === 'string' && n !== '')).toBe(true);
     expect(new Set(names).size).toBe(2);
+  });
+
+  it('keeps the keys a form’s answers were sent under, read with the old form’s defaults, when it becomes another form', () => {
+    const { s } = project();
+    const copy = applyOperations(s, [
+      { type: 'node.insert', owner: owner(s), newNodeId: 'n_form', componentId: 'contact.form' },
+      { type: 'component.duplicate', definitionId: 'foundation.contact.form', name: 'Billing form' }
+    ]);
+    const defId = copy.results[1].definitionId as string;
+    const fields = copy.state.components[defId].properties.fields;
+    if (fields.type === 'list') fields.fields.label.default = 'Billing email';
+    const node = inst(copy.state, 'n_form');
+    node.definitionId = defId;
+    // The first field shows the old form's default label and is sent under the key made from it; the second is named "field".
+    node.props.fields = [
+      { id: 'i_f1', type: 'email', required: true, placeholder: '' },
+      { id: 'i_f2', label: 'Other', name: 'field', type: 'text', required: false, placeholder: '' }
+    ];
+    const r = swap(copy.state, 'n_form', { componentId: 'contact.form' }, true);
+    const after = inst(r.state, 'n_form').props.fields as ListItem[];
+    expect(after.map((f) => f.label)).toEqual(['Billing email', 'Other']);
+    expect(after.map((f) => f.name)).toEqual(['billing-email', 'field']);
   });
 
   it('plans the same change it makes, before the new design is installed', () => {

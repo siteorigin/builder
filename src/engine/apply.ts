@@ -1314,18 +1314,14 @@ function instanceSwap(state: ProjectState, op: Op<'instance.swapComponent'>): Op
   if ((op.componentId === undefined) === (op.definitionId === undefined)) fail('instance.swapComponent needs either componentId or definitionId.');
   const found = swapTarget(state, op) ?? fail(op.definitionId !== undefined ? `Component definition "${op.definitionId}" is not installed.` : `The theme has no component "${op.componentId}".`);
   if (op.owner.kind === 'component' && (found.id === op.owner.id || dependsOn(state, found.id, op.owner.id))) fail('A component cannot contain itself.');
-  // Checked before installing, so a refused change leaves the project as it was.
-  const first = planSwap(state, op.owner, tree, node, found);
-  if (first.problems.length) fail(first.problems[0]);
-  const named = `“${node.name ?? def.name}”`;
-  if (first.dropped.length && !op.allowDrops) {
-    const lost = first.dropped.map((d) => (d.reason ? `${d.label} (${d.reason})` : d.label));
-    fail(`Changing ${named} to “${found.name}” would drop ${lost.join('; ')}: the new design has no place for ${lost.length === 1 ? 'it' : 'them'}. Pick another design, or remove that content first if it should go.`);
-  }
+  // Planned against the definition as installed, with the components it places: a refusal leaves the batch's copy, never the project.
   const target = op.componentId !== undefined ? state.components[installComponent(state, op.componentId)] : found;
-  // Planned again against the definition as installed, which a catalogue component may have brought dependencies with.
-  const plan = target === found ? first : planSwap(state, op.owner, tree, node, target);
+  const plan = planSwap(state, op.owner, tree, node, target);
   if (plan.problems.length) fail(plan.problems[0]);
+  if (plan.dropped.length && !op.allowDrops) {
+    const lost = plan.dropped.map((d) => (d.reason ? `${d.label} (${d.reason})` : d.label));
+    fail(`Changing “${node.name ?? def.name}” to “${target.name}” would drop ${lost.join('; ')}: the new design has no place for ${lost.length === 1 ? 'it' : 'them'}. Pick another design, or remove that content first if it should go.`);
+  }
   // A form's fields keep the keys their answers were sent under, and fields new to the form get keys of their own.
   if (namesFormFields(target) && Array.isArray(plan.props.fields))
     plan.props.fields = settleFormKeys(namesFormFields(def) && Array.isArray(node.props.fields) ? (node.props.fields as ListItem[]) : [], plan.props.fields as ListItem[], new Set(), formDefaults(target));

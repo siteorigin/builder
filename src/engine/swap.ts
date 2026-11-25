@@ -215,10 +215,11 @@ function effectiveValue(node: InstanceNode, key: string, schema: PropSchema): un
   return schema.type === 'list' && schema.feed ? [] : clone(schema.default);
 }
 
-/** The anchor a managed design gives its own root, which every placement of it renders. */
-function rootAnchor(def: ComponentDefinition): string | undefined {
-  const root = def.kind === 'managed' && def.tree ? own(def.tree.nodes, def.tree.rootIds[0] ?? '') : undefined;
-  return root && typeof root.anchor === 'string' && root.anchor ? root.anchor : undefined;
+/** The anchor a managed design gives its own root, which every placement of it renders: its root's, or the design that root places. */
+function rootAnchor(state: ProjectState, def: ComponentDefinition | undefined, depth = 0): string | undefined {
+  const root = def?.kind === 'managed' && def.tree && depth < 10 ? own(def.tree.nodes, def.tree.rootIds[0] ?? '') : undefined;
+  if (root && typeof root.anchor === 'string' && root.anchor) return root.anchor;
+  return root?.kind === 'instance' ? rootAnchor(state, own(state.components, root.definitionId), depth + 1) : undefined;
 }
 
 /**
@@ -378,9 +379,14 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
 
   // In-page links reach the section by its anchor, which only a design built in the editor renders.
   const anchors = anchorCapable(state, target);
-  const anchor = node.anchor ?? rootAnchor(source);
+  const anchor = node.anchor ?? rootAnchor(state, source);
+  const targetAnchor = rootAnchor(state, target);
   if (anchor && !anchors) problems.push(`“${target.name}” can’t take the anchor #${anchor} that in-page links use. Clear the anchor first, or pick another design.`);
-  else if (!node.anchor && anchor && rootAnchor(target) !== anchor) plan.anchor = anchor;
+  // The old design's anchor moves onto the placement, unless the new design gives its root one its own links go to.
+  else if (!node.anchor && anchor && targetAnchor !== anchor) {
+    if (targetAnchor) dropped.push({ label: `Anchor #${anchor}`, reason: `the new design gives the section its own anchor, #${targetAnchor}` });
+    else plan.anchor = anchor;
+  }
   plan.keepAppear = anchors;
   if (node.appear && !anchors) restyled.push('Entrance');
   return plan;
