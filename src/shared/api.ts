@@ -1,4 +1,4 @@
-import type { ApplyResult, EditBatch } from './ops';
+import type { ApplyResult, EditBatch, EditOperation } from './ops';
 import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
@@ -81,6 +81,14 @@ export interface Diagnostic {
   nodeId?: string;
   /** Where in its owner the problem is (see the engine's Diagnostic): for a site setting, its field, as `favicon`. */
   site?: string;
+  /** A change that resolves it in one step, offered beside it in Project health. */
+  fix?: DiagnosticFix;
+}
+
+/** A change that resolves a diagnostic in one step: what its button says (and its history entry), and the operations. */
+export interface DiagnosticFix {
+  label: string;
+  operations: EditOperation[];
 }
 
 /** A library image whose files are not in the project folder: its original, and which listed copies. */

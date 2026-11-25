@@ -798,13 +798,27 @@ export function HealthModal() {
     const dest = asset || outlinePage ? null : (destinationForDiagnostic(st, d) ?? seoDestinations.get(diagnosticKey(d)) ?? null);
     const target = asset || outlinePage || dest ? null : diagnosticTarget(st, d);
     const lead = rest === undefined ? assetLead(st, d) : null;
+    // A change that resolves it in one step, made to the project this list was worked out from; the next list says
+    // whether it worked.
+    const fix = d.fix && !readOnly ? d.fix : null;
     return (
       <HealthRow
         key={`${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
         tone={d.severity === 'error' ? 'danger' : d.severity === 'warning' ? 'warn' : 'quiet'}
         icon={d.severity === 'error' ? <CircleAlert /> : d.severity === 'warning' ? <TriangleAlert /> : <Info />}
         actions={
-          asset ? (
+          fix ? (
+            <>
+              <button className="btn btn-sm" onClick={() => void applyOps(fix.operations, fix.label, undefined, snap.revision)}>
+                {fix.label}
+              </button>
+              {target && (
+                <button className="btn btn-sm" onClick={() => showElement(target)}>
+                  Show on page
+                </button>
+              )}
+            </>
+          ) : asset ? (
             <button className="btn btn-sm" onClick={() => openAsset(asset)}>
               Open in Assets
             </button>
