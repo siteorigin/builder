@@ -1,0 +1,296 @@
+/**
+ * Container queries (#667): style rules for the width of the nearest query container around an element
+ * (`cq-narrow`, `cq-medium`, `cq-wide`) stored beside the screen sizes, set and cleared by the operations, checked
+ * like any style, and written as plain `@container` rules after every screen size; `containerType` makes a box the
+ * container they read. Detaching, copying, dropping and image sizes read them too.
+ */
+import { describe, expect, it } from 'vitest';
+import type { EditOperation } from '@shared/ops';
+import { validateOperation } from '@shared/ops';
+import type { AssetRecord, ComponentDefinition, ElementNode, InstanceNode, ProjectState } from '@shared/types';
+import { CONTAINER_SCOPES, STYLE_SCOPES, parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { CONTAINER_QUERIES, MEDIA_QUERIES, flattenContainers, styleSetFor, styleToCss } from '@shared/styles';
+import { applyOperations } from '@engine/apply';
+import { EngineError } from '@engine/tree';
+import { validateState } from '@engine/validate';
+import { defFile, generateProject, nodeClass } from '@generator/index';
+import { incomingOrder } from '../../src/renderer/src/lib/insert-drop';
+import { captureStyle, planStylePaste } from '../../src/renderer/src/lib/style-copy';
+import { insertOps } from '../../src/renderer/src/lib/insert-at';
+import { containerSite, mediaCard } from './container-queries';
+
+const home = (s: ProjectState) => s.pages[s.site.homePageId];
+const owner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
+
+/** Applies operations the way the session does: each one parsed by its schema first, then applied as one batch. */
+function apply(s: ProjectState, ops: unknown[]): ProjectState {
+  const parsed = ops.map((o) => {
+    const v = validateOperation(o);
+    if (!v.ok) throw new Error(v.message);
+    return v.op;
+  });
+  return applyOperations(s, parsed as EditOperation[]).state;
+}
+
+const rejects = (fn: () => unknown, msg: RegExp) => {
+  try {
+    fn();
+  } catch (e) {
+    expect(e).toBeInstanceOf(EngineError);
+    expect((e as Error).message).toMatch(msg);
+    return;
+  }
+  throw new Error('expected the operation to be rejected');
+};
+
+/** The stylesheet text the generator writes a definition's rules into: its own file in a clean export. */
+function definitionCss(s: ProjectState, def: ComponentDefinition): string {
+  const files = generateProject(s);
+  const all = [...files.entries()].filter(([path]) => path.endsWith('.css') || path === defFile(def)).map(([, src]) => src);
+  return all.join('\n');
+}
+
+/** The body of the first block `head {` in css, braces balanced. */
+function blockAfter(css: string, head: string, from = 0): { body: string; at: number } | null {
+  const at = css.indexOf(head, from);
+  if (at < 0) return null;
+  let depth = 0;
+  for (let i = css.indexOf('{', at); i < css.length; i++) {
+    if (css[i] === '{') depth++;
+    else if (css[i] === '}' && --depth === 0) return { body: css.slice(css.indexOf('{', at) + 1, i), at };
+  }
+  return null;
+}
+
+describe('container width scopes', () => {
+  it('are keys of their own beside the screen sizes, with states, and nothing else', () => {
+    expect(CONTAINER_SCOPES).toEqual(['cq-narrow', 'cq-medium', 'cq-wide']);
+    expect(STYLE_SCOPES).toEqual(['base', 'phone', 'tablet', 'desktop', 'cq-narrow', 'cq-medium', 'cq-wide']);
+    expect(parseStyleScopeKey('cq-narrow')).toEqual({ scope: 'cq-narrow' });
+    expect(parseStyleScopeKey('cq-wide:hover')).toEqual({ scope: 'cq-wide', state: 'hover' });
+    expect(parseStyleScopeKey('cq-medium:groupFocus')).toEqual({ scope: 'cq-medium', state: 'groupFocus' });
+    for (const k of ['cq', 'narrow', 'cq:narrow', 'cq-small', 'cq-narrow:visited', 'cq-narrow:hover:active', 'phone:cq-narrow']) expect(parseStyleScopeKey(k), k).toBeNull();
+    expect(styleScopeKey('cq-narrow', 'active')).toBe('cq-narrow:active');
+  });
+
+  it('cover every container width once, with no gap between them', () => {
+    expect(CONTAINER_QUERIES).toEqual({ 'cq-narrow': '(width < 480px)', 'cq-medium': '(min-width: 480px) and (width < 720px)', 'cq-wide': '(min-width: 720px)' });
+  });
+
+  it('are set and cleared by node.setStyle, in a state too, and reset on their own', () => {
+    let s = containerSite().s;
+    const at = { owner: owner(s), nodeId: 'n_main' };
+    s = apply(s, [
+      { type: 'node.setStyle', ...at, scope: 'base', property: 'background', value: '#ffffff' },
+      { type: 'node.setStyle', ...at, scope: 'cq-narrow', property: 'layout', value: 'stack' },
+      { type: 'node.setStyle', ...at, scope: 'cq-narrow', state: 'hover', property: 'background', value: '#eeeeee' },
+      { type: 'node.setStyle', ...at, scope: 'cq-wide', property: 'gap', value: { token: 'space.lg' } }
+    ]);
+    expect(home(s).nodes.n_main.styles).toEqual({
+      base: { layout: 'stack', containerType: 'inline-size', background: '#ffffff' },
+      'cq-narrow': { layout: 'stack' },
+      'cq-narrow:hover': { background: '#eeeeee' },
+      'cq-wide': { gap: { token: 'space.lg' } }
+    });
+    // Resetting one container width takes its states with it, and leaves every other rule.
+    const reset = apply(s, [{ type: 'node.resetStyles', ...at, scope: 'cq-narrow' }]);
+    expect(home(reset).nodes.n_main.styles).toEqual({ base: { layout: 'stack', containerType: 'inline-size', background: '#ffffff' }, 'cq-wide': { gap: { token: 'space.lg' } } });
+    const cleared = apply(s, [{ type: 'node.setStyle', ...at, scope: 'cq-wide', property: 'gap', value: null }]);
+    expect(home(cleared).nodes.n_main.styles).not.toHaveProperty('cq-wide');
+  });
+
+  it('style a placement part and a design node the same way', () => {
+    const site = containerSite();
+    let s = apply(site.s, [{ type: 'node.setStyle', owner: owner(site.s), nodeId: site.columns.sideCard.id, partId: 'root', scope: 'cq-medium', property: 'gap', value: '12px' }]);
+    expect((home(s).nodes[site.columns.sideCard.id] as InstanceNode).overrides).toEqual({ root: { 'cq-medium': { gap: '12px' } } });
+    s = apply(s, [{ type: 'node.setStyle', owner: { kind: 'component', id: site.card.id }, nodeId: 'title', scope: 'cq-narrow', property: 'textAlign', value: 'center' }]);
+    expect(s.components[site.card.id].tree!.nodes.title.styles?.['cq-narrow']).toEqual({ textAlign: 'center' });
+  });
+
+  it('cannot hide or show: visibility stays with the screen sizes', () => {
+    const s = containerSite().s;
+    rejects(() => apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: 'n_main', scope: 'cq-narrow', property: 'hidden', value: true }]), /Hidden cannot change with the width of the container/);
+    // Clearing one a hand edit left is always allowed.
+    home(s).nodes.n_main.styles!['cq-narrow'] = { hidden: true };
+    expect(validateState(s).some((d) => d.code === 'STYLE_CONTAINER_PROPERTY' && d.nodeId === 'n_main')).toBe(true);
+    const t = apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: 'n_main', scope: 'cq-narrow', property: 'hidden', value: null }]);
+    expect(home(t).nodes.n_main.styles).not.toHaveProperty('cq-narrow');
+  });
+
+  it('are checked like any style: an unknown range is reported, a known one passes', () => {
+    const s = containerSite().s;
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+    (home(s).nodes.n_main.styles as Record<string, unknown>)['cq-small'] = { layout: 'stack' };
+    const d = validateState(s).find((x) => x.code === 'STYLE_SCOPE_INVALID' && x.nodeId === 'n_main');
+    expect(d?.message).toMatch(/"cq-small", which is neither a screen size, a container width nor/);
+  });
+
+  it('are offered to the operation schema and the assistant, with what they mean', () => {
+    const v = validateOperation({ type: 'node.setStyle', owner: { kind: 'page', id: 'p' }, nodeId: 'n', scope: 'cq-wide', property: 'layout', value: 'row' });
+    expect(v.ok).toBe(true);
+    expect(validateOperation({ type: 'node.setStyle', owner: { kind: 'page', id: 'p' }, nodeId: 'n', scope: 'cq-small', property: 'layout', value: 'row' }).ok).toBe(false);
+  });
+});
+
+describe('query containers', () => {
+  it('are a layout style of a container, written as container-type', () => {
+    expect(styleSetFor({ kind: 'element' })).toContain('containerType');
+    expect(styleSetFor({ kind: 'text' })).not.toContain('containerType');
+    expect(styleToCss('containerType', 'inline-size')).toEqual(['container-type: inline-size']);
+    expect(styleToCss('containerType', 'normal')).toEqual(['container-type: normal']);
+    // A hand-edited value outside the choices writes nothing.
+    expect(styleToCss('containerType', 'size')).toEqual([]);
+    const s = containerSite().s;
+    rejects(() => apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: 'n_main', scope: 'base', property: 'containerType', value: 'size' }]), /Query container must be one of: inline-size, normal/);
+  });
+
+  it('are reported when their parent sizes them to their content, where they shrink to nothing', () => {
+    const s = containerSite().s;
+    const warned = (st: ProjectState, id: string) => validateState(st).some((d) => d.code === 'CONTAINER_COLLAPSE' && d.nodeId === id);
+    expect(warned(s, 'n_main')).toBe(false);
+    // In a horizontal stack with no width or grow of its own.
+    home(s).nodes.n_grid.styles = { base: { layout: 'row' } };
+    expect(warned(s, 'n_main')).toBe(true);
+    home(s).nodes.n_main.styles!.base!.flexGrow = 1;
+    expect(warned(s, 'n_main')).toBe(false);
+    // Fitting its own content, wherever it is.
+    home(s).nodes.n_side.styles!.desktop = { width: 'fit' };
+    expect(warned(s, 'n_side')).toBe(true);
+    expect(validateState(s).find((d) => d.code === 'CONTAINER_COLLAPSE')?.severity).toBe('warning');
+  });
+});
+
+describe('the stylesheet', () => {
+  it('writes container rules as @container blocks after every screen size', () => {
+    const { s, card } = containerSite();
+    const css = definitionCss(s, card);
+    const cls = nodeClass(card, 'card');
+    const own = css.indexOf(`/* Media card (${card.id}) */`);
+    expect(own).toBeGreaterThanOrEqual(0);
+    const desktop = blockAfter(css, `@media ${MEDIA_QUERIES.desktop}`, own)!;
+    expect(desktop.body).toContain(`.${cls}`);
+    const narrow = blockAfter(css, `@container ${CONTAINER_QUERIES['cq-narrow']}`, own)!;
+    expect(narrow.body).toMatch(new RegExp(`\\.${cls} \\{\\s*display: flex;\\s*flex-direction: column;\\s*\\}`));
+    // After the desktop rule it beats, in the same stylesheet.
+    expect(narrow.at).toBeGreaterThan(desktop.at);
+    // No Builder runtime and no script: plain CSS only.
+    expect(css).not.toMatch(/@container[^{]*\bso-/);
+  });
+
+  it('writes the host as container-type on the column and the slot holder', () => {
+    const { s, split } = containerSite();
+    const files = generateProject(s);
+    const all = [...files.values()].join('\n');
+    expect(all).toMatch(/container-type: inline-size/);
+    expect(definitionCss(s, split)).toMatch(new RegExp(`\\.${nodeClass(split, 'side')} \\{[^}]*container-type: inline-size`));
+  });
+
+  it('puts a container range’s state rules in its container block, inside the hover query', () => {
+    let { s, card } = containerSite();
+    s = apply(s, [
+      { type: 'node.setStyle', owner: { kind: 'component', id: card.id }, nodeId: 'card', scope: 'cq-wide', state: 'hover', property: 'background', value: '#123456' },
+      { type: 'node.setStyle', owner: { kind: 'component', id: card.id }, nodeId: 'card', scope: 'phone', state: 'hover', property: 'background', value: '#654321' }
+    ]);
+    const css = definitionCss(s, card);
+    const hover = blockAfter(css, '@media (hover: hover) {\n\t@container')!;
+    expect(hover.body).toContain(`@container ${CONTAINER_QUERIES['cq-wide']}`);
+    expect(hover.body).toContain('#123456');
+    // After the phone's hover rule, so a wide container's hover wins on a phone in the same layer.
+    expect(hover.at).toBeGreaterThan(css.indexOf('#654321'));
+  });
+
+  it('never shows what a screen size hides: a container layout is followed by the hide', () => {
+    let s = containerSite().s;
+    s = apply(s, [
+      { type: 'node.setStyle', owner: owner(s), nodeId: 'n_side', scope: 'phone', property: 'hidden', value: true },
+      { type: 'node.setStyle', owner: owner(s), nodeId: 'n_side', scope: 'cq-narrow', property: 'layout', value: 'row' }
+    ]);
+    const css = [...generateProject(s).values()].join('\n');
+    const narrow = [...css.matchAll(/@container \(width < 480px\) \{/g)].map((m) => blockAfter(css, m[0], m.index!)!.body).find((b) => b.includes('flex-direction: row'))!;
+    expect(narrow).toMatch(new RegExp(`@media ${MEDIA_QUERIES.phone.replace(/[()]/g, '\\$&')} \\{\\s*[^{]+\\{\\s*display: none;`));
+    expect(narrow).not.toContain(MEDIA_QUERIES.desktop);
+  });
+
+  it('leaves image sizes to the default when a container rule changes how wide a box on the way is', () => {
+    const s0 = containerSite().s;
+    const owner0 = owner(s0);
+    const photo: AssetRecord = { id: 'a_photo', name: 'Photo', file: 'static/assets/photo-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 2400, height: 1600, hash: 'h', kind: 'image', createdAt: 'now', variants: [480, 960].map((w) => ({ width: w, file: `static/assets/photo-1a2b3c4d-${w}w.jpg` })) };
+    let r = applyOperations(s0, [{ type: 'asset.add', asset: photo }, { type: 'node.insert', owner: owner0, parentId: null, index: 0, componentId: 'layout.section' }]);
+    const section = r.results[1].nodeId as string;
+    r = applyOperations(r.state, [{ type: 'node.insert', owner: owner0, parentId: section, slot: 'content', primitive: 'grid' }]);
+    const grid = r.results[0].nodeId as string;
+    r = applyOperations(r.state, [{ type: 'node.setStyle', owner: owner0, nodeId: grid, scope: 'desktop', property: 'columns', value: 4 }, { type: 'node.insert', owner: owner0, parentId: grid, primitive: 'image' }]);
+    r = applyOperations(r.state, [{ type: 'node.setContent', owner: owner0, nodeId: r.results[1].nodeId as string, field: 'image', value: { assetId: 'a_photo', alt: 'A room' } }]);
+    const sizes = (s: ProjectState) => generateProject(s).get('src/routes/+page.svelte')!.match(/<SoImage [^\n]*photo-1a2b3c4d[^\n]*/)?.[0].match(/ sizes="([^"]*)"/)?.[1] ?? null;
+    // A quarter of the Section's 1200px container on desktop.
+    expect(sizes(r.state)).toBe('(min-width: 1024px) 300px, (min-width: 768px) 100vw, 100vw');
+    // One column in a wide container: the picture can be the whole container, which no screen size tells.
+    const t = applyOperations(r.state, [{ type: 'node.setStyle', owner: owner0, nodeId: grid, scope: 'cq-wide', property: 'columns', value: 1 }]).state;
+    expect(sizes(t)).toBeNull();
+    // A container rule that only paints changes nothing.
+    const u = applyOperations(r.state, [{ type: 'node.setStyle', owner: owner0, nodeId: grid, scope: 'cq-wide', property: 'background', value: '#eeeeee' }]).state;
+    expect(sizes(u)).toBe('(min-width: 1024px) 300px, (min-width: 768px) 100vw, 100vw');
+  });
+});
+
+describe('detaching, copying and dropping', () => {
+  const layers = (...styles: Array<[Record<string, unknown>, number]>) => styles.map(([st, strength]) => ({ styles: st as never, strength, wideColumns: strength > 1 }));
+
+  it('keeps a design’s container rules, and a placement’s over them', () => {
+    expect(flattenContainers(layers([{ base: { layout: 'row' }, 'cq-narrow': { layout: 'stack' } }, 1], [{ 'cq-narrow': { gap: '8px' } }, 3]))).toEqual({ 'cq-narrow': { layout: 'stack', gap: '8px' } });
+    // A placement's own narrow layout over the design's row, as the stylesheet shows it.
+    expect(flattenContainers(layers([{ base: { layout: 'row' } }, 1], [{ 'cq-narrow': { layout: 'stack' } }, 3]))).toEqual({ 'cq-narrow': { layout: 'stack' } });
+    // The stronger value of one property in one range.
+    expect(flattenContainers(layers([{ 'cq-wide': { gap: '8px' } }, 1], [{ 'cq-wide': { gap: '24px' } }, 3]))).toEqual({ 'cq-wide': { gap: '24px' } });
+  });
+
+  it('leaves out a container rule a stronger value for every size always beat, but not one kept off phones', () => {
+    expect(flattenContainers(layers([{ 'cq-narrow': { gap: '8px' } }, 1], [{ base: { gap: '24px' } }, 3]))).toEqual({});
+    // Three columns for all sizes from a placement apply from tablet up only: a phone in a narrow column keeps two.
+    expect(flattenContainers(layers([{ 'cq-narrow': { columns: 2 } }, 1], [{ base: { columns: 3 } }, 3]))).toBeNull();
+  });
+
+  it('refuses what one element’s rules cannot show exactly', () => {
+    // A placement's desktop value beat the design's narrow one; folded, the narrow one would win on desktop.
+    expect(flattenContainers(layers([{ 'cq-narrow': { layout: 'stack' } }, 1], [{ desktop: { layout: 'row' } }, 3]))).toBeNull();
+    // A weaker hide a container layout showed: folded, the result's own hide would follow it.
+    expect(flattenContainers(layers([{ base: { hidden: true } }, 1], [{ 'cq-narrow': { layout: 'stack' } }, 3]))).toBeNull();
+  });
+
+  it('carries container rules through a detach, and refuses one that cannot be shown exactly', () => {
+    const site = containerSite();
+    const detached = applyOperations(site.s, [{ type: 'component.detachInstance', owner: owner(site.s), nodeId: site.columns.sideCard.id } as EditOperation]).state;
+    const root = Object.values(home(detached).nodes).find((n) => n.kind === 'element' && n.detachedFrom?.node === 'card') as ElementNode;
+    expect(root.styles?.['cq-narrow']).toEqual({ layout: 'stack' });
+    const s = apply(site.s, [{ type: 'node.setStyle', owner: owner(site.s), nodeId: site.columns.sideCard.id, partId: 'root', scope: 'desktop', property: 'layout', value: 'block' }]);
+    rejects(() => applyOperations(s, [{ type: 'component.detachInstance', owner: owner(s), nodeId: site.columns.sideCard.id } as EditOperation]), /width of the container around it/);
+  });
+
+  it('copies and pastes container rules with every size', () => {
+    let s = containerSite().s;
+    s = apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: 'n_main', scope: 'cq-narrow', property: 'gap', value: '4px' }]);
+    const ref = (nodeId: string) => ({ owner: owner(s), instancePath: [], nodeId });
+    const copy = captureStyle(s, ref('n_main'))!;
+    expect(copy).toBeTruthy();
+    const plan = planStylePaste(s, copy, ref('n_side'), 'every');
+    expect(plan.operations).toContainEqual(expect.objectContaining({ nodeId: 'n_side', scope: 'cq-narrow', property: 'gap', value: '4px' }));
+  });
+
+  it('cannot tell where a component lands among ordered items when its Order follows the container', () => {
+    const card = mediaCard();
+    const s = containerSite().s;
+    expect(incomingOrder(s, { definitionId: card.id } as never)).toBe(0);
+    s.components[card.id].tree!.nodes.card.styles!['cq-narrow'] = { order: 1 };
+    expect(incomingOrder(s, { definitionId: card.id } as never)).toBeNull();
+  });
+
+  it('makes each new column of a column layout a query container', () => {
+    const s = containerSite().s;
+    const ops = insertOps({ owner: owner(s), parentId: 'n_main' }, { primitive: 'grid', columns: 3 }, 'element');
+    const columns = ops.flatMap((op) => (op.type === 'node.insert' && op.primitive === 'stack' ? [op.newNodeId] : []));
+    expect(columns).toHaveLength(3);
+    for (const id of columns) expect(ops).toContainEqual({ type: 'node.setStyle', owner: owner(s), nodeId: id, scope: 'base', property: 'containerType', value: 'inline-size' });
+    const t = apply(s, ops);
+    expect(validateState(t).filter((d) => d.severity === 'error' || d.code === 'CONTAINER_COLLAPSE')).toEqual([]);
+  });
+});

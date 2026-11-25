@@ -8,7 +8,7 @@ import { effectiveTokens } from '@generator/index';
 import { Field, Modal, type MenuItem } from '../components/ui';
 import { commitOps, getState, setState, toast, undoAction, useStore, type State } from '../store';
 import { SCOPE_LABELS, captureStyle, changeLabel, planStylePaste, styleSelection, type PasteRow, type PasteScope } from '../lib/style-copy';
-import { styleScopeKey, type StyleState } from '@shared/types';
+import { isContainerScope, styleScopeKey, type StyleState } from '@shared/types';
 import { allSizesReach } from '../lib/style-source';
 import { describeStyleValue, isStyleLink, styleLabel, styleSwatch } from './StyleControls';
 
@@ -140,6 +140,8 @@ export function PasteStyleModal({ target, opening }: { target: ElementRef; openi
   // skips phones) and no other control writing the same CSS keeps its own value there (Column sizes over Columns).
   const targetOf = (r: PasteRow) => destination?.targets.find((t) => t.part === r.part) ?? (destination?.targets.length === 1 ? destination.targets[0] : undefined);
   const fallsToAll = (r: PasteRow, size: PasteRow['changes'][number]['scope'], state?: StyleState) => {
+    // A container width's value cleared falls to whatever the screen sizes give, not to All sizes alone.
+    if (isContainerScope(size)) return false;
     const at = targetOf(r);
     // A rival's value at this size as the paste leaves it: what the review writes or clears, else what is there now.
     const rivalAfter = (rv: string) => {

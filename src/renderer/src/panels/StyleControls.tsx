@@ -3,9 +3,9 @@ import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { ChevronRight, EyeOff, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { ResponsiveScope, ResponsiveStyles, StyleState, StyleTokenRef, StyleValue, TokenDef } from '@shared/types';
-import { isGroupStyleState, parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { CONTAINER_SCOPES, isGroupStyleState, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { hasGroupStyles } from '@shared/interaction-groups';
-import { STATE_WORDS, STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, colorAtStrength, cssRivals, hasStateStyles, isStateStyleProp, partStrength, styleDeclOrder, withColumnSizes, type StyleLayer, type StylePropDef } from '@shared/styles';
+import { CONTAINER_SCOPE_LABEL, CONTAINER_SCOPE_RANGE, STATE_WORDS, STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, colorAtStrength, cssRivals, hasStateStyles, isStateStyleProp, partStrength, styleDeclOrder, withColumnSizes, type StyleLayer, type StylePropDef } from '@shared/styles';
 import { parseColor } from '@shared/color';
 import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorPick } from '../components/ColorPick';
@@ -433,6 +433,14 @@ export function StyleControls({
       for (const s of SIZES) {
         const line = exceptions.includes(s) ? undefined : insteadAt(s);
         if (line) lines.push(line);
+      }
+    // Rules for the width of the container around it beat every screen size wherever that width holds, so the
+    // previewed size's value above may not be what a placement in a narrow column shows. Set through the assistant.
+    if (!state)
+      for (const c of CONTAINER_SCOPES) {
+        const mine = styles?.[c]?.[p.id];
+        const v = mine ?? inherited?.[c]?.[p.id];
+        if (v !== undefined) lines.push({ text: `${CONTAINER_SCOPE_LABEL[c]} (${CONTAINER_SCOPE_RANGE[c]}) uses ${whole(v)}${mine === undefined ? ' from the design' : ''}` });
       }
     // A change for one size: what its reset brings back, when that is known and different.
     if (scope !== 'base' && value !== undefined && under !== undefined && JSON.stringify(under) !== JSON.stringify(value))

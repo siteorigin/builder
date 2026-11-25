@@ -62,7 +62,7 @@ export interface StyleCopy {
 
 /** One override a paste writes (`to`) over what the destination has now (`from`). No `to` removes the override. */
 export interface PasteChange {
-  scope: ResponsiveScope;
+  scope: StyleScope;
   /** The interactive state the value is for; none for the resting style. */
   state?: StyleState;
   from?: StyleValue;
