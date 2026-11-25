@@ -8,7 +8,7 @@ import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, commitOps, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type State } from '../store';
+import { api, applyOps, commitOps, confirmDialog, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
 import { activeWorkspace, canvasCovered } from './workspace';
 import { sameSubject, seoDocument } from './seo-view';
 import { postAt, postWorkspace } from './posts';
@@ -29,6 +29,8 @@ import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { sampleEntries } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 import { editLabel, placeWords } from './edit-label';
+import { heldContent, removalKey, type HeldContent } from './delete-content';
+import { dropRefusal, savingProblems } from './insert-drop';
 import { draftFor, imagesFor, withDraft } from './chatDrafts';
 import { previewHandoff, type SeoHandoff } from './seoHandoff';
 import type { SlotTarget } from './slot-target';
@@ -65,18 +67,149 @@ function holds(state: ProjectState, target: ElementRef, ref: ElementRef | null):
   return false;
 }
 
+/** "1 item", "3 items". */
+const itemCount = (n: number) => `${n} ${n === 1 ? 'item' : 'items'}`;
+
+/** Why what `t` holds can't be kept when it goes, found on a copy of the project as saving it would, or null when it can. */
+function keepRefusal(st: ProjectState, t: ElementRef): string | null {
+  const unsaid = 'The project can’t check that here.';
+  try {
+    const why = dropRefusal(st, [{ type: 'node.removeKeepContent', owner: t.owner, nodeId: t.nodeId }], () => savingProblems(st));
+    return why === null ? null : why || unsaid;
+  } catch {
+    return unsaid;
+  }
+}
+
+
+/**
+ * Ask what deleting `t` does with what it holds (#662): 'all' deletes it with everything inside it, 'keep' removes only
+ * it and leaves what it held in its place, null does neither. When what it holds can't be kept without it, the
+ * question says why and offers only deleting it all.
+ */
+async function askDelete(st: ProjectState, t: ElementRef, label: string, held: HeldContent): Promise<'all' | 'keep' | null> {
+  const n = held.items.length;
+  const why = keepRefusal(st, t);
+  const p = held.placements;
+  const placed = p ? `, including ${p === 1 ? 'a placed component with its own content' : `${p} placed components with their own content`}` : '';
+  const details: ConfirmDetail[] = [
+    { kind: 'lose', text: `Delete all removes it and everything inside it${placed}.` },
+    why ? { kind: 'note', text: `What it holds can’t be kept: ${why}` } : { kind: 'keep', text: `Remove wrapper & keep content puts ${n === 1 ? 'that item' : `those ${n} items`} in its place.` },
+    { kind: 'note', text: 'Reusable component definitions stay in the library.' },
+    { kind: 'undo', text: why ? 'One Undo puts it all back.' : 'Either way, one Undo puts it all back.' }
+  ];
+  const ask = { title: `Delete “${label}”?`, icon: 'delete' as const, details };
+  if (why) return (await confirmDialog({ ...ask, body: `It holds ${itemCount(n)}, which go with it.`, confirmLabel: 'Delete all', tone: 'caution' })) ? 'all' : null;
+  // Keeping is the main choice and Delete all the one that loses work; Cancel, the safe one, takes the first focus.
+  const ok = await confirmDialog({ ...ask, body: `It holds ${itemCount(n)}. Delete them with it, or keep them where they are?`, confirmLabel: 'Remove wrapper & keep content', cancelLabel: 'Delete all', stayLabel: 'Cancel' });
+  return ok === null ? null : ok ? 'keep' : 'all';
+}
+
+/** A deletion being asked about or saved: Delete pressed again meanwhile (a held key) asks nothing twice. */
+/** A deletion being asked about or saved, by opening and target: Delete pressed again for it meanwhile (a held key)
+ *  asks nothing twice, while another layer picked meanwhile is deleted as asked. */
+const deleting = new Set<string>();
+
+/**
+ * Delete the selection. One holding a component placement or slot content (heldContent) asks first whether to take
+ * what it holds with it or keep that in its place (#662); anything else goes at once. Either way, one change and one
+ * Undo, said with an Undo beside it.
+ */
 export async function deleteSelection() {
   const s = getState();
   const t = structuralTarget(s.selection);
-  if (!t || !s.snapshot) return;
-  const label = refLabel(s.snapshot.state, t);
+  let snap = s.snapshot;
+  if (!t || !snap) return;
   if (t.owner.kind === 'shell') return toast('The shared header and footer cannot be deleted. Hide either one on a page in its page settings instead.', 'error');
-  const r = await commitOps([{ type: 'node.remove', owner: t.owner, nodeId: t.nodeId }], editLabel(s.snapshot.state, 'Delete', t));
+  const opening = snap.workspaceKey;
+  const key = [opening, t.owner.kind, t.owner.id, t.nodeId].join('\n');
+  if (deleting.has(key)) return;
+  const remove: EditOperation = { type: 'node.remove', owner: t.owner, nodeId: t.nodeId };
+  const here = (key: string | undefined) => key === opening && getState().snapshot?.workspaceKey === opening;
   // A reply that arrives after its project closed has nothing left here to select or announce.
-  if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
-  // What went with it goes, also picked again meanwhile; what the author selected elsewhere (another page) stays.
-  if (holds(s.snapshot.state, t, getState().selection)) setState({ selection: null });
-  toast(`Deleted ${label}`, 'info', undoAction(r));
+  const landed = (r: Awaited<ReturnType<typeof commitOps>>): r is NonNullable<typeof r> => !!r?.ok && here(r.workspaceKey);
+  /** Lets go of a selection that went with the change: in `st`, `t` or inside it (`within`), or `t` alone. */
+  const letGo = (st: ProjectState, within: boolean) => {
+    const sel = getState().selection;
+    const gone = within ? holds(st, t, sel) : !!sel && sel.owner.kind === t.owner.kind && sel.owner.id === t.owner.id && (sel.instancePath[0] ?? sel.nodeId) === t.nodeId;
+    if (gone) setState({ selection: null });
+  };
+  const follow = focusInLayers();
+  const watch = followChange(opening);
+  deleting.add(key);
+  /** What the author saw of it: an unasked deletion planned again goes ahead only while that is unchanged. */
+  let seen: string | null = null;
+  // An unasked deletion is followed from its first send until it lands or is given up, its plans again included, so
+  // saving and leaving wait for all of it. A question is not: nothing is on its way while one is open.
+  const tracked: { done: ((o: ApplyOutcome) => void) | null } = { done: null };
+  const settle = (o: ApplyOutcome = { ok: true }) => {
+    tracked.done?.(o);
+    tracked.done = null;
+  };
+  /** Gives the deletion up, saying why here and to a save or leave waiting for it. */
+  const giveUp = (message: string) => {
+    settle({ ok: false, message });
+    toast(message, 'error');
+  };
+  try {
+    for (let tries = 0; ; tries++) {
+      const st = snap.state;
+      const tree = treeFor(st, t.owner);
+      // Gone already (the AI, an Undo, another window's change): nothing left to delete.
+      if (!tree || !Object.hasOwn(tree.nodes, t.nodeId)) return;
+      const label = refLabel(st, t);
+      // A project taking no edits now (open read-only, or the AI at work) says so when the deletion is sent, unasked.
+      const held = !snap.readOnly && !snap.aiBusy ? heldContent(tree, t.nodeId) : null;
+      if (!held) {
+        const now = removalKey(st, t.owner, tree, t.nodeId);
+        // Changed since the author chose it (swapped for another component, given new content): theirs to look at again.
+        if (seen !== null && now !== seen) return giveUp(`${label} changed before it could be deleted. Check it, then delete it again.`);
+        seen = now;
+        if (!tracked.done) trackApply(new Promise<ApplyOutcome>((done) => (tracked.done = done)));
+        // Sent for the project as this window has it: one that has moved on meanwhile (an Undo, a save still on its way)
+        // is planned again on the project's own copy, quietly, and may now hold something to ask about.
+        const r = await commitOps([remove], editLabel(st, 'Delete', t), undefined, snap.revision, { replanStale: true });
+        if (r && !r.ok) {
+          const again = tries < 2 ? await api.project.snapshot().catch(() => null) : null;
+          if (!here(opening)) return;
+          if (!again || !here(again.workspaceKey)) return giveUp(`${label} was not deleted: the project changed while it was. Delete it again.`);
+          snap = again;
+          continue;
+        }
+        if (!landed(r)) return;
+        // What went with it goes, also picked again meanwhile; what the author selected elsewhere (another page) stays.
+        letGo(st, true);
+        return toast(`Deleted ${label}`, 'info', undoAction(r));
+      }
+      settle();
+      const choice = await askDelete(st, t, label, held);
+      // Closed, or another project opened, while the question was open: nothing of it is here to delete.
+      if (!choice || !here(opening)) return;
+      const n = held.items.length;
+      // Only the project the question described: one changed since (the AI, a file saved elsewhere) is refused, to ask again.
+      if (choice === 'all') {
+        const r = await commitOps([remove], editLabel(st, 'Delete', t), undefined, snap.revision);
+        if (!landed(r)) return;
+        letGo(st, true);
+        return toast(`Deleted ${label} and ${n} nested ${n === 1 ? 'item' : 'items'}`, 'info', undoAction(r));
+      }
+      const r = await commitOps([{ type: 'node.removeKeepContent', owner: t.owner, nodeId: t.nodeId }], `${editLabel(st, 'Remove', t)}, keeping its content`, undefined, snap.revision);
+      if (!landed(r)) return;
+      // What took its place first is selected, unless the author has moved on meanwhile. One alone: several picked
+      // together would delete at once, without asking about any placement among them.
+      const id = r.results?.[0]?.nodeId;
+      if (typeof id === 'string' && watch.still()) {
+        setState({ selection: layerRef(t.owner, id), layerSet: null });
+        if (follow) focusSelectedRow();
+        // What it held stays: only a selection of the wrapper itself went with it.
+      } else letGo(st, false);
+      return toast(`Removed ${label} and kept ${itemCount(n)}`, 'info', undoAction(r));
+    }
+  } finally {
+    settle();
+    deleting.delete(key);
+    watch.stop();
+  }
 }
 
 export async function duplicateSelection() {
