@@ -991,6 +991,18 @@ describe('the version an AI run attempted, when it rolled back around a conflict
     expect((await again.compareConflict(SITE)).attempted).toEqual({ state: 'unreadable' });
     expect(await again.resolveConflict(SITE, 'restore')).toEqual({ ok: true });
     expect(again.savedCopies.map((c) => c.side)).toEqual(['external']);
+
+    // A folder where the blob should be is damaged too, not a version to wait for.
+    const other = await runWithExternalEdit();
+    const named = read(other.dir, '.siteorigin/sessions/active-run.json').paths[SITE].after;
+    await other.s.abortRun();
+    await other.s.close();
+    const blob = join(other.dir, '.siteorigin/history/blobs', `${named}.json`);
+    rmSync(blob);
+    mkdirSync(blob);
+    const reopened = await reopen(other.dir);
+    expect(await reopened.resolveConflict(SITE, 'keep')).toEqual({ ok: true });
+    expect(reopened.conflicts).toEqual([]);
   });
 
   it('holds a conflict put back by hand until its attempted version can be listed under Saved copies', async () => {

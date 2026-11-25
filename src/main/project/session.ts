@@ -1178,7 +1178,8 @@ export class ProjectSession extends EventEmitter {
         if (sha(text) === a.ref) a.content = text;
         a.lost = a.content === undefined;
       } catch (e) {
-        a.lost = isMissing(e);
+        // Missing, or something other than a file where it should be: damaged, not merely unreadable for now.
+        a.lost = isMissing(e) || (e as NodeJS.ErrnoException).code === 'EISDIR';
       }
     }
     return a.content;
