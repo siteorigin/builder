@@ -2967,7 +2967,10 @@ function backgroundOf(image, read, s) {
   // A gradient blended in a colour space of its own (`in hsl longer hue`) passes through colours its stops do not show.
   if (layers.length === 2 && isPictureLayer(layers[1]) && !isPictureLayer(layers[0]) && !/\bin\s+[a-z]/i.test(layers[0]) && scrimCovers(s)) {
     const top = gradientOf(layers[0], read);
-    return top.kind === 'gradient' ? { kind: 'scrim', stops: top.stops } : { kind: 'picture' };
+    // Sized to, or cut at, the padding box: the border around it is not under the scrim.
+    const first = (v, d) => topLevel(v || d)[0] || d;
+    const inner = first(s.backgroundOrigin, 'padding-box') === 'padding-box' || first(s.backgroundClip, 'border-box') === 'padding-box';
+    return top.kind === 'gradient' ? { kind: 'scrim', stops: top.stops, inner } : { kind: 'picture' };
   }
   if (isPictureLayer(image)) return { kind: 'picture' };
   if (layers.length > 1) return { kind: 'layers' };
@@ -3281,7 +3284,9 @@ function textContrast(el, read, layerOf, pictures) {
   // A scrim covers its own box: text moved or overflowing out of it sits on whatever is there instead.
   for (let i = 0; i < layers.length; i++) {
     if (!shows(i) || layers[i].image.kind !== 'scrim') continue;
-    const b = boxOf(boxRect(chain[i]));
+    const box = boxOf(boxRect(chain[i]));
+    const e = chain[i];
+    const b = layers[i].image.inner ? { x: box.x + e.clientLeft, y: box.y + e.clientTop, width: e.clientWidth, height: e.clientHeight } : box;
     if (rects.some((r) => r.x < b.x - 0.5 || r.y < b.y - 0.5 || r.x + r.width > b.x + b.width + 0.5 || r.y + r.height > b.y + b.height + 0.5)) return { unknown: 'image' };
   }
   const BLACK = { r: 0, g: 0, b: 0, a: 1 };

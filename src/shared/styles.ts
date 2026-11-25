@@ -899,25 +899,30 @@ export function isScrim(raw: string): boolean {
  * keywords. No variable, which could name nothing (or the picture itself) and make the browser drop the picture, and
  * nothing a colour function would only read at run time.
  */
-const SCRIM_NUMBER_RE = /^-?(?:\d{1,4}(?:\.\d{1,6})?|\.\d{1,6})(?:%|deg)?$/;
+/** A plain number, a percentage, or an angle in degrees, as one colour channel. */
+const SCRIM_NUMBER = '-?(?:\\d{1,4}(?:\\.\\d{1,6})?|\\.\\d{1,6})';
+const SCRIM_CHANNEL = { number: new RegExp(`^${SCRIM_NUMBER}%?$`), percent: new RegExp(`^${SCRIM_NUMBER}%$`), hue: new RegExp(`^${SCRIM_NUMBER}(?:deg)?$`) };
 function isScrimColor(raw: string): boolean {
   const c = raw.trim();
   if (/^(#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|transparent|black|white)$/i.test(c)) return true;
-  const m = /^(?:rgba?|hsla?)\(([^()]*)\)$/i.exec(c);
+  const m = /^(rgba?|hsla?)\(([^()]*)\)$/i.exec(c);
   if (!m) return false;
-  const nums = (list: string[]) => list.every((x) => SCRIM_NUMBER_RE.test(x));
+  // Each channel by its place: red, green and blue are numbers or percentages; a hue a number or degrees, then
+  // saturation and lightness percentages; the alpha a number or a percentage.
+  const kinds = m[1].toLowerCase().startsWith('hsl') ? [SCRIM_CHANNEL.hue, SCRIM_CHANNEL.percent, SCRIM_CHANNEL.percent] : [SCRIM_CHANNEL.number, SCRIM_CHANNEL.number, SCRIM_CHANNEL.number];
+  const fits = (channels: string[], alpha?: string) => channels.length === 3 && channels.every((x, i) => kinds[i].test(x)) && (alpha === undefined || SCRIM_CHANNEL.number.test(alpha));
   // Commas between every channel, or spaces with the alpha after a slash: never the two mixed.
-  if (m[1].includes(',')) {
-    const parts = m[1].split(',').map((x) => x.trim());
-    return !m[1].includes('/') && (parts.length === 3 || parts.length === 4) && nums(parts);
+  if (m[2].includes(',')) {
+    const parts = m[2].split(',').map((x) => x.trim());
+    return !m[2].includes('/') && (parts.length === 3 || parts.length === 4) && fits(parts.slice(0, 3), parts[3]);
   }
-  const [rgb, alpha, ...more] = m[1].split('/');
-  const channels = rgb.trim().split(/\s+/);
-  return !more.length && channels.length === 3 && nums(channels) && (alpha === undefined || nums([alpha.trim()]));
+  const [rgb, alpha, ...more] = m[2].split('/');
+  return !more.length && fits(rgb.trim().split(/\s+/), alpha?.trim());
 }
-const SCRIM_DIRECTION_RE = /^(to (top|bottom|left|right)( (top|bottom|left|right))?|-?(\d+(\.\d+)?|\.\d+)(deg|turn|rad|grad))$/i;
-const SCRIM_SHAPE_RE = /^((circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner)( (circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner))?)?( ?at( (center|top|bottom|left|right|\d+(\.\d+)?%)){1,2})?$/i;
-const SCRIM_STOP_RE = /^(0|(\d+(\.\d+)?|\.\d+)(%|px))$/;
+const SCRIM_DIRECTION_RE = /^(to (top|bottom)( (left|right))?|to (left|right)( (top|bottom))?|-?(\d+(\.\d+)?|\.\d+)(deg|turn|rad|grad))$/i;
+/** A radial gradient's shape and extent, each at most once and in either order, then where it is centred. */
+const SCRIM_SHAPE_RE = /^(((circle|ellipse)( (closest-side|closest-corner|farthest-side|farthest-corner))?|(closest-side|closest-corner|farthest-side|farthest-corner)( (circle|ellipse))?)( at( (center|top|bottom|left|right|-?\d+(\.\d+)?%)){1,2})?|at( (center|top|bottom|left|right|-?\d+(\.\d+)?%)){1,2})$/i;
+const SCRIM_STOP_RE = /^(0|-?(\d+(\.\d+)?|\.\d+)(%|px))$/;
 
 /**
  * The image layers a `background` value paints (a gradient, or several), without the colour a value may end with:

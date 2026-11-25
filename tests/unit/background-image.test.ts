@@ -119,7 +119,18 @@ describe('the backgroundImage value', () => {
     // A scrim is a colour or one gradient spelled out in full: it never fetches anything, stacks layers, names a
     // variable (one naming nothing, or the picture itself, would make the browser drop the picture) or leaves a colour
     // to be read at run time.
-    for (const scrim of ['rgb(0 0 0 / 0.5)', 'hsl(210deg 40% 20%)', 'black', 'linear-gradient(180deg, #000 0%, #0000 60%)', 'radial-gradient(circle at center, #0000, #000c)'])
+    for (const scrim of [
+      'rgb(0 0 0 / 0.5)',
+      'rgb(0% 0% 0% / 50%)',
+      'hsl(210deg 40% 20%)',
+      'hsla(210, 40%, 20%, 0.4)',
+      'black',
+      'linear-gradient(180deg, #000 0%, #0000 60%)',
+      'linear-gradient(to top left, #000, #fff)',
+      'linear-gradient(#000 -20%, #fff 120%)',
+      'radial-gradient(circle at center, #0000, #000c)',
+      'radial-gradient(farthest-corner circle at 30% 40%, #000, #fff)'
+    ])
       expect(validateStyleValue('backgroundImage', { assetId: 'a_hero', scrim }), scrim).toBeNull();
     for (const scrim of [
       'url(/x.jpg)',
@@ -137,6 +148,10 @@ describe('the backgroundImage value', () => {
       'linear-gradient(#000,, #fff)',
       'rgb(0, 0 0)',
       'rgb(0 0 0, 0.5)',
+      'rgb(0deg 0 0)',
+      'hsl(210 40 20)',
+      'linear-gradient(to left right, #000, #fff)',
+      'radial-gradient(circle ellipse, #000, #fff)',
       'conic-gradient(#000, #fff)',
       'red; color: blue'
     ])
