@@ -2499,7 +2499,7 @@ export class Controller {
       if (iconSource !== s.siteIconsPublished) {
         // Being drawn again by now (a save meanwhile tried once more): the icons are ready to export in a moment.
         if (s.siteIconsDrawing(iconSource)) return stop('The site’s icons are still being made. Export again in a moment.');
-        const unmade = icons && !icons.published && !icons.drawing && iconSource === icons.key;
+        const unmade = iconSource === icons?.key && s.siteIconsUnmakeable(iconSource);
         if (!unmade) return stop('The project changed on disk while it was being exported. Export again.');
       }
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.

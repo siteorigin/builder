@@ -398,6 +398,11 @@ describe('a project’s icons', () => {
     expect(read.untrusted).toBe(true);
     const gzipped = withFavicon(dir, Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00]));
     expect((await new SiteIconMaker().input(dir, gzipped)).key).toBe(await monogram(gzipped));
+    // An AVIF is known by its brand, read from the first bytes only, whatever size its file-type box claims.
+    const box = (brand: string, size: number) => Buffer.concat([Buffer.from([size >>> 24, (size >>> 16) & 255, (size >>> 8) & 255, size & 255]), Buffer.from(`ftyp${brand}\0\0\0\0mif1`, 'latin1'), Buffer.alloc(1 << 20)]);
+    expect((await new SiteIconMaker().input(dir, withFavicon(dir, box('avif', 24)))).mime).toBe('image/avif');
+    const claimsAll = withFavicon(dir, box('mif1', 0xffffffff));
+    expect((await new SiteIconMaker().input(dir, claimsAll)).key).toBe(await monogram(claimsAll));
     // A JPEG kept under a PNG's record is drawn as the JPEG it is.
     const jpeg = withFavicon(dir, await sharp({ create: { width: 8, height: 8, channels: 3, background: '#00ff00' } }).jpeg().toBuffer());
     expect((await new SiteIconMaker().input(dir, jpeg)).mime).toBe('image/jpeg');

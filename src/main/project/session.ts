@@ -1221,9 +1221,12 @@ export class ProjectSession extends EventEmitter {
     return this.iconsPublished?.key ?? null;
   }
 
-  /** Whether the icons made from `key` are being drawn, or waiting to be. */
+  /** Whether the icons made from `key` are being drawn, or waiting to be; or cannot be made now. */
   siteIconsDrawing(key: string): boolean {
     return this.siteIcons.drawing(key);
+  }
+  siteIconsUnmakeable(key: string): boolean {
+    return this.siteIcons.unmakeable(key);
   }
 
   /**

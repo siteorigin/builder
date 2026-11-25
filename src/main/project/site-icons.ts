@@ -16,7 +16,6 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import { APP_ICONS } from '@shared/site-icons';
 import { siteIconSet } from '@generator/site-icons';
 import type { IconSpec, IconsResult } from './media-client';
-import { heifBrands } from './media';
 
 /**
  * Draws square PNG icons of a picture, one for each spec, in order. `untrusted` says the picture is a file of the
@@ -56,7 +55,10 @@ function rasterType(b: Buffer): string | null {
   if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
   if (b.length >= 6 && /^GIF8[79]a$/.test(b.toString('latin1', 0, 6))) return 'image/gif';
   if (b.length >= 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
-  return heifBrands(b).some((brand) => brand === 'avif' || brand === 'avis') ? 'image/avif' : null;
+  // The brands of the file-type box, read from its first bytes only, whatever size the box claims.
+  if (b.length < 16 || b.toString('latin1', 4, 8) !== 'ftyp') return null;
+  for (let p = 8; p + 4 <= Math.min(b.readUInt32BE(0), b.length, 64); p += p === 8 ? 8 : 4) if (/^avi[fs]$/.test(b.toString('latin1', p, p + 4))) return 'image/avif';
+  return null;
 }
 
 /**
@@ -166,6 +168,11 @@ export class SiteIconMaker {
   /** The number of the drawing that made the set kept for `key`, or null when none is kept. */
   madeId(key: string): number | null {
     return this.made.get(key)?.id ?? null;
+  }
+
+  /** Whether the set named `key` cannot be made now: nothing to draw it, or a drawing of it failed lately. */
+  unmakeable(key: string): boolean {
+    return !renderer || this.failed.has(key);
   }
 
   /** Whether the set named `key` is being drawn, or waiting to be. */
