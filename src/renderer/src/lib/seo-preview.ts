@@ -95,9 +95,13 @@ export interface LinkCard {
   host: string | undefined;
   title: string;
   description: string;
+  /** The document's language, which decides where its text can break. */
+  language: string;
   /** The picture, when the library has it as one. */
   image: AssetRecord | undefined;
-  /** For screen readers: which picture it is and whose choice it is. */
+  /** What the picture shows, as the exported page's sharing tags describe it; empty when it has no description. */
+  imageAlt: string;
+  /** Which picture it is and whose choice it is, or why there is none. */
   imageSaid: string;
   /** Said under the card while the site has no public URL, so the page's tags carry no image address. */
   addressNote: string | null;
@@ -147,8 +151,14 @@ export function previewDocument(state: ProjectState, subject: SeoSubject, route?
       host,
       title: seoText(meta.socialTitle),
       description: seoText(meta.description),
+      language: meta.language,
       image: picture,
-      imageSaid: picture ? `Image: ${nameOf(state, meta.imageId) ?? picture.name}, ${whose}.` : 'No sharing image.',
+      imageAlt: picture ? meta.imageAlt : '',
+      imageSaid: picture
+        ? `Image: ${nameOf(state, meta.imageId) ?? picture.name}, ${whose}.`
+        : meta.imageId
+          ? `No sharing image: the one chosen (${whose}) isn’t a picture in Assets.`
+          : 'No sharing image.',
       addressNote: base
         ? null
         : meta.canonical

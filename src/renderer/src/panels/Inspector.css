@@ -184,20 +184,6 @@
   .insp-image-name.gone { font-weight: 400; color: var(--red); }
   .textarea.insp-alt { min-height: 52px; }
   .insp-image.drop-over { outline: 2px dashed var(--accent); outline-offset: 2px; }
-  /* How a shared link to the page looks: the image, then the host, title and description it would carry. */
-  .share-preview { display: flex; flex-direction: column; gap: 6px; }
-  .share-card { display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--panel-2); }
-  .share-card-image { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; aspect-ratio: 1.91 / 1; overflow: hidden; background: var(--canvas); color: var(--text-2); font-size: 12px; }
-  .share-card-image img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  .share-card-image svg { width: 22px; height: 22px; color: var(--text-3); }
-  .share-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 8px 10px 10px; border-top: 1px solid var(--border); }
-  .share-card-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-2); }
-  .share-card-title, .share-card-desc { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-  .share-card-title { -webkit-line-clamp: 2; font-size: 13px; font-weight: 600; line-height: 1.35; color: var(--text); }
-  .share-card-desc { -webkit-line-clamp: 2; font-size: 12px; line-height: 1.4; color: var(--text-2); }
-  .share-card-desc.none { font-style: italic; color: var(--text-3); }
-  .share-preview-note { margin: 0; line-height: 1.45; }
-
   .insp-pick { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); }
   /* In the image card the browser is part of the card: a divider, not a second frame. */
   .insp-image .insp-pick { padding: 10px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: none; }
