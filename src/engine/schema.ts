@@ -146,10 +146,13 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
       const seen = new Set<string>();
       out.options = r.options.map((o) => {
         const value = typeof o === 'string' ? o : String((o as { value?: unknown })?.value ?? '');
-        if (!value || value.length > 60) fail(`${label}: every option needs a value of up to 60 characters.`);
+        const named = typeof o === 'object' && o !== null ? text((o as { label?: unknown }).label, 80) : '';
+        // An empty value is a choice of nothing (an icon's None), so it needs a label to be offered by.
+        if (value.length > 60 || (!value && (typeof o !== 'object' || o === null || (o as { value?: unknown }).value !== '' || !named)))
+          fail(`${label}: every option needs a value of up to 60 characters; an empty one ("") needs a label, such as { "value": "", "label": "None" }.`);
         if (seen.has(value)) fail(`${label}: option "${value}" is listed twice.`);
         seen.add(value);
-        return { value, label: (typeof o === 'object' && text((o as { label?: unknown }).label, 80)) || value };
+        return { value, label: named || value };
       });
       out.default = (out.options as Array<{ value: string }>)[0].value;
       break;

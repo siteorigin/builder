@@ -78,8 +78,8 @@ describe('authoring a pack', () => {
 
   it('builds Foundation and its development fixture from their own identities', () => {
     expect(FOUNDATION_PACK.components.map((c) => c.componentId)).toEqual([
-      'shell.header', 'shell.footer', 'hero.centered', 'hero.split', 'intro.page', 'content.article', 'logos.strip', 'features.grid', 'content.media', 'content.steps-media', 'content.text', 'stats.row',
-      'testimonials.grid', 'team.grid', 'pricing.plans', 'data.table', 'faq.list', 'content.pages', 'content.news', 'blog.featured', 'blog.grid', 'blog.list', 'media.gallery', 'media.carousel', 'media.video', 'cta.banner', 'contact.details', 'contact.form', 'site.search', 'layout.section'
+      'shell.header', 'shell.footer', 'hero.centered', 'hero.split', 'intro.page', 'content.article', 'logos.strip', 'features.grid', 'content.media', 'tabs.showcase', 'content.steps-media', 'content.text', 'stats.row',
+      'testimonials.grid', 'team.grid', 'pricing.plans', 'pricing.toggle', 'data.table', 'faq.list', 'content.pages', 'content.news', 'blog.featured', 'blog.grid', 'blog.list', 'media.gallery', 'media.carousel', 'media.video', 'cta.banner', 'contact.details', 'contact.form', 'site.search', 'layout.section'
     ]);
     expect(FOUNDATION_ALT_PACK.components.map((c) => c.componentId)).toEqual(FOUNDATION_PACK.components.map((c) => c.componentId));
     for (const pack of [FOUNDATION_PACK, FOUNDATION_ALT_PACK]) {

@@ -1,4 +1,4 @@
-import { P, tok } from '../dsl';
+import { NO_LINK, P, TreeBuilder, eq, item, prop, tok, uiState } from '../dsl';
 import { FOUNDATION } from './pack';
 import { headingBlock, headingLevel, mutedStyles, sectionShell, toneAxis } from './common';
 import { SAMPLE_CONTACT } from '@shared/sample-contact';
@@ -66,6 +66,105 @@ export const pricing = managed({
             b.divider('plan-divider', { name: 'Divider' }),
             b.rich('features', { $item: 'features' }, { name: 'Features', styles: { textStyle: tok('text.small') } }),
             b.link('plan-action', { $item: 'actionLink' }, { $item: 'actionLabel' }, 'primary', { name: 'Action', when: { $item: 'actionLabel' }, styles: { marginBlockStart: 'auto', width: 'fill' } })
+          ])
+        ])
+      ])
+    ])
+});
+
+/**
+ * A plan card's price and its billing note for one period, shown while the billing switch chooses that period. A plan
+ * without a price for the period shows none (never a made-up one), and nothing at all without a note either.
+ */
+function periodPrice(b: TreeBuilder, period: 'monthly' | 'annual') {
+  return b.el(`${period}-price-row`, 'p', { name: period === 'monthly' ? 'Monthly price' : 'Annual price', when: eq(uiState('billing'), period), collapseEmpty: true, styles: { layout: 'row', align: 'baseline', gap: tok('space.xs'), wrap: true } }, [
+    b.text(`${period}-price`, 'span', item(`${period}Price`), { name: 'Price', when: item(`${period}Price`), styles: { textStyle: tok('text.stat') } }),
+    b.text(`${period}-note`, 'span', item(`${period}Note`), { name: 'Billing note', when: item(`${period}Note`), styles: { ...mutedStyles, textStyle: tok('text.small') } })
+  ]);
+}
+
+export const pricingToggle = managed({
+  componentId: 'pricing.toggle',
+  name: 'Pricing with billing switch',
+  description: 'Subscription plans with a Monthly and Annual switch that changes every plan’s price and billing note. There is no checkout.',
+  category: 'conversion',
+  tags: ['pricing', 'plans', 'subscription', 'monthly', 'annual', 'yearly', 'billing', 'toggle', 'switch', 'membership'],
+  icon: 'toggle-right',
+  // Its plans, two periods' prices and the switch cost a small model's page tool about 1.1 KB: offered there once a
+  // project has it.
+  fullListingOnly: true,
+  properties: {
+    ...P.group('Text', {
+      eyebrow: P.str('Eyebrow', 'Memberships'),
+      heading: P.str('Heading', 'Train on your schedule'),
+      headingLevel: headingLevel('h2'),
+      lead: P.text('Supporting text', 'Pay month to month, or pay for the year and get two months free.')
+    }),
+    ...P.group('Billing switch', {
+      monthlyLabel: P.str('Monthly button', 'Monthly'),
+      annualLabel: P.str('Annual button', 'Annual'),
+      switchLabel: { ...P.str('Switch name', 'Billing period'), description: 'What screen readers call the pair of buttons.' }
+    }),
+    plans: P.list(
+      'Plans',
+      'Plan',
+      {
+        name: P.str('Name', 'Plan'),
+        description: P.text('Description', ''),
+        badge: P.str('Badge', ''),
+        monthlyPrice: P.str('Monthly price', ''),
+        monthlyNote: P.str('Monthly billing note', 'per month'),
+        annualPrice: P.str('Annual price', ''),
+        annualNote: P.str('Annual billing note', 'per year'),
+        features: P.rich('Features', ['A feature'], { plainAs: 'check' }),
+        actionLabel: P.str('Action label', 'Get started'),
+        actionLink: P.link('Action link')
+      },
+      [
+        { name: 'Off-peak', description: 'Weekday daytime access for flexible schedules.', badge: '', monthlyPrice: '$29', monthlyNote: 'per month', annualPrice: '$290', annualNote: 'per year, billed once', features: ['Gym floor 9am – 4pm', 'Two classes a week', 'Locker and towel'], actionLabel: 'Join off-peak', actionLink: { type: 'none', target: '' } },
+        { name: 'Anytime', description: 'Every class and every hour we are open.', badge: 'Most popular', monthlyPrice: '$49', monthlyNote: 'per month', annualPrice: '$490', annualNote: 'per year, billed once', features: ['Open 5am – 11pm', 'Unlimited classes', 'One guest pass a month', 'Locker and towel'], actionLabel: 'Join anytime', actionLink: { type: 'none', target: '' } },
+        { name: 'Coached', description: 'Anytime access with a coach in your corner.', badge: '', monthlyPrice: '$119', monthlyNote: 'per month', annualPrice: '$1,190', annualNote: 'per year, billed once', features: ['Everything in Anytime', 'Two personal sessions a month', 'A training plan reviewed monthly'], actionLabel: 'Meet a coach', actionLink: { type: 'none', target: '' } }
+      ],
+      { titleField: 'name', max: 6 }
+    )
+  },
+  parts: {
+    root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+    heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+    switch: { nodeId: 'switch', label: 'Billing switch', styleControls: ['gap', 'background', 'radius'] },
+    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gap'] },
+    plan: { nodeId: 'plan', label: 'Plan card', styleControls: ['background', 'border', 'radius', 'shadow'] }
+  },
+  state: {
+    billing: { type: 'enum', label: 'Billing period', options: [{ value: 'monthly', label: 'Monthly' }, { value: 'annual', label: 'Annual' }], initial: 'monthly' }
+  },
+  variantAxes: { tone: toneAxis(['lead']) },
+  build: (b) =>
+    sectionShell(b, [
+      b.el('top', 'div', { name: 'Heading and switch', styles: { layout: 'stack', gap: tok('space.xl'), align: 'start' } }, [
+        headingBlock(b),
+        // Two buttons that say which period is on, grouped and named for screen readers. Printed, the switch is left
+        // out: each price says which period it is for.
+        b.el('switch', 'div', { name: 'Billing switch', ariaLabel: prop('switchLabel'), styles: { layout: 'row', wrap: true, gap: tok('space.xs') } }, [
+          b.link('monthly-button', NO_LINK, prop('monthlyLabel'), 'secondary', { name: 'Monthly button', stateAction: { state: 'billing', op: 'set', value: 'monthly' } }),
+          b.link('annual-button', NO_LINK, prop('annualLabel'), 'secondary', { name: 'Annual button', stateAction: { state: 'billing', op: 'set', value: 'annual' } })
+        ])
+      ]),
+      b.el('grid', 'ul', { name: 'Grid', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.lg'), align: 'stretch' }, desktop: { columns: 3 } } }, [
+        b.repeat('plan-items', 'plans', [
+          b.el('plan', 'li', { name: 'Plan card', styles: { layout: 'stack', gap: tok('space.lg'), paddingBlock: tok('space.xl'), paddingInline: tok('space.xl'), background: tok('color.surface'), color: tok('color.text'), border: tok('border.default'), radius: tok('radius.lg') } }, [
+            b.el('plan-head', 'div', { name: 'Plan header', styles: { layout: 'stack', gap: tok('space.xs') } }, [
+              b.el('plan-title-row', 'div', { name: 'Title row', styles: { layout: 'row', justify: 'space-between', align: 'center', gap: tok('space.sm') } }, [
+                b.text('plan-name', 'h3', item('name'), { name: 'Name', styles: { textStyle: tok('text.h3') } }),
+                b.text('badge', 'span', item('badge'), { name: 'Badge', when: item('badge'), styles: { fontSize: '0.75rem', fontWeight: '600', paddingBlock: '4px', paddingInline: '10px', radius: tok('radius.pill'), background: tok('color.brand'), color: tok('color.on-brand') } })
+              ]),
+              b.text('plan-text', 'p', item('description'), { name: 'Description', when: item('description'), styles: { ...mutedStyles, textStyle: tok('text.small') } })
+            ]),
+            periodPrice(b, 'monthly'),
+            periodPrice(b, 'annual'),
+            b.divider('plan-divider', { name: 'Divider' }),
+            b.rich('features', item('features'), { name: 'Features', styles: { textStyle: tok('text.small') } }),
+            b.link('plan-action', item('actionLink'), item('actionLabel'), 'primary', { name: 'Action', when: item('actionLabel'), styles: { marginBlockStart: 'auto', width: 'fill' } })
           ])
         ])
       ])

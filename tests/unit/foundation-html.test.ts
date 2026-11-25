@@ -37,7 +37,9 @@ const COMPONENTS = [
   'content.article',
   'data.table',
   'media.video',
-  'media.carousel'
+  'media.carousel',
+  'tabs.showcase',
+  'pricing.toggle'
 ] as const;
 type ComponentId = (typeof COMPONENTS)[number];
 
@@ -268,6 +270,8 @@ describe('optional headings', () => {
     ['testimonials.grid', 'h2'],
     ['media.gallery', 'h2'],
     ['pricing.plans', 'h2'],
+    ['pricing.toggle', 'h2'],
+    ['tabs.showcase', 'h2'],
     ['faq.list', 'h2'],
     ['contact.details', 'h2'],
     ['hero.centered', 'h1'],

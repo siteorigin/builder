@@ -14,7 +14,7 @@ import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { declaredState } from '@engine/schema';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
-import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
+import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, optionalTabGates, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
@@ -32,6 +32,11 @@ export interface Scope {
   ui?: Record<string, unknown>;
   /** Every value the UI state can take, not only the one it starts at: a condition on it lets content render. */
   everyState?: boolean;
+  /**
+   * With `everyState`, the options of the definition's choices that only an optional tab sets, with the condition the
+   * tab shows on: a placement without the tab can never reach the option (see optionalTabGates).
+   */
+  gates?: ReadonlyMap<string, ReadonlyArray<{ value: string; gate: Condition }>>;
   /** Inside a panel kept in the page while its component's state hides it (a `kept` walk): in the HTML, not on screen. */
   keptHidden?: boolean;
   /** The placement's variant choices, with axes bound to the enclosing design's UI state at the option it starts at. */
@@ -259,9 +264,18 @@ function holds(c: Condition, scope: Scope, state: ProjectState): boolean {
   return conditionHolds(c, evaluate(conditionRef(c), scope), (v) => shown(v, state));
 }
 
-/** Whether a node's `when` (or, `negate`d, its `unless`) lets it render; on UI state, with `everyState`, it always may. */
+/**
+ * Whether a node's `when` (or, `negate`d, its `unless`) lets it render; on UI state, with `everyState`, it may, unless
+ * it asks for an option only an optional tab sets and the placement leaves that tab out.
+ */
 function lets(c: Condition, negate: boolean, scope: Scope, state: ProjectState): boolean {
-  if (scope.everyState && isStateRef(conditionRef(c))) return true;
+  const ref = conditionRef(c);
+  if (scope.everyState && isStateRef(ref)) {
+    // Shown only while the state is one option: `when` it equals it, or `unless` it differs from it.
+    const only = isComparison(c) ? (!negate && 'eq' in c ? c.eq : negate && 'ne' in c ? c.ne : undefined) : undefined;
+    const gate = only === undefined ? undefined : scope.gates?.get(ref.$state)?.find((g) => g.value === only)?.gate;
+    return !gate || holds(gate, scope, state);
+  }
   return holds(c, scope, state) !== negate;
 }
 
@@ -337,6 +351,8 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
   const keptIn = new Map<string, ReadonlySet<string>>();
   const keptMemo = {};
   const keptOf = (def: ComponentDefinition) => keptIn.get(def.id) ?? keptIn.set(def.id, keptPanels(state, def, keptMemo)).get(def.id)!;
+  const gatesIn = new Map<string, ReturnType<typeof optionalTabGates>>();
+  const gatesOf = (def: ComponentDefinition) => gatesIn.get(def.id) ?? gatesIn.set(def.id, optionalTabGates(state, def, keptMemo)).get(def.id)!;
   const walk = (frame: Frame, id: string, path: Set<string>) => {
     const n = frame.tree.nodes[id];
     const key = `${frame.n}:${id}`;
@@ -441,7 +457,7 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
           const ui = def.state ? Object.fromEntries(Object.keys(def.state).map((k) => [k, startingState(def, k, props)])) : undefined;
           const chosen = startingVariants(n.variants, frame.def);
-          const child: Frame = { tree: def.tree, def, ...(visit.kept ? { kept: keptOf(def) } : {}), scope: { props, trail, instance: n, instances: [...(frame.scope.instances ?? []), n.id], ...(ui ? { ui } : {}), ...(visit.everyState ? { everyState: true } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
+          const child: Frame = { tree: def.tree, def, ...(visit.kept ? { kept: keptOf(def) } : {}), scope: { props, trail, instance: n, instances: [...(frame.scope.instances ?? []), n.id], ...(ui ? { ui } : {}), ...(visit.everyState ? { everyState: true, ...(gatesOf(def).size ? { gates: gatesOf(def) } : {}) } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
           visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);

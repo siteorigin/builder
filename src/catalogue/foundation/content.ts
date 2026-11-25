@@ -1,5 +1,5 @@
 import { tokenVar } from '@shared/styles';
-import { P, item, tok, uiState } from '../dsl';
+import { NO_LINK, P, eq, item, prop, tok, uiState } from '../dsl';
 import { FOUNDATION } from './pack';
 import { eyebrowStyles, headingBlock, headingLevel, layoutAxis, mutedStyles, sectionShell, toneAxis } from './common';
 
@@ -223,6 +223,150 @@ export const stepsMedia = managed({
         ])
       ])
     ])
+});
+
+/** Icons a showcase tab can show beside its label, or none. */
+const TAB_ICONS: Array<[string, string]> = [
+  ['', 'None'],
+  ...(
+    [
+      ['sparkles', 'Sparkles'], ['compass', 'Compass'], ['pen-tool', 'Pen'], ['ruler', 'Ruler'], ['hammer', 'Hammer'], ['paintbrush', 'Paintbrush'],
+      ['leaf', 'Leaf'], ['house', 'House'], ['layers', 'Layers'], ['lightbulb', 'Light bulb'], ['rocket', 'Rocket'], ['target', 'Target'],
+      ['chart-line', 'Chart'], ['shield-check', 'Shield'], ['users', 'People'], ['calendar', 'Calendar'], ['clock', 'Clock'], ['camera', 'Camera'],
+      ['heart', 'Heart'], ['star', 'Star']
+    ] as Array<[string, string]>
+  )
+];
+
+/** How many tabs a showcase can have: the first two always show, the rest while their labels are filled in. */
+const SHOWCASE_TABS = [1, 2, 3, 4, 5, 6] as const;
+type ShowcaseTab = (typeof SHOWCASE_TABS)[number];
+
+/** A showcase tab's content as one property, starting as `sample` (blank, and so left out unless it is tab 1 or 2). */
+function showcaseTab(n: ShowcaseTab, sample: { label: string; icon: string; heading: string; copy: string[]; actionLabel?: string; alt: string } | null) {
+  return P.object(
+    `Tab ${n}`,
+    {
+      label: P.str('Tab label', sample?.label ?? ''),
+      icon: P.choice('Tab icon', sample?.icon ?? '', TAB_ICONS),
+      heading: P.str('Heading', sample?.heading ?? ''),
+      copy: P.rich('Text', sample?.copy ?? []),
+      actionLabel: P.str('Action label', sample?.actionLabel ?? ''),
+      actionLink: P.link('Action link'),
+      image: P.image('Image', sample?.alt ?? '')
+    },
+    { description: n <= 2 ? `Always shown. ${n === 1 ? 'Open when the page loads.' : ''}`.trim() : 'Shown while its tab label is filled in; clear the label to leave the tab out.' }
+  );
+}
+
+/**
+ * The showcase's tones. On the dark one a text action reads in the tone's own ink, as the base stylesheet draws a text
+ * button in a dark section, rather than the brand colour it has on a light one.
+ */
+function showcaseTone() {
+  const axis = toneAxis(['lead', ...SHOWCASE_TABS.map((n) => `copy-${n}`)]);
+  const inverse = axis.options.inverse;
+  const actions = Object.fromEntries(SHOWCASE_TABS.map((n) => [`action-${n}`, { base: { color: tok('color.on-inverse') } }]));
+  return { ...axis, options: { ...axis.options, inverse: { ...inverse, styles: { ...inverse.styles, ...actions } } } };
+}
+
+export const tabsShowcase = managed({
+  componentId: 'tabs.showcase',
+  name: 'Tabbed showcase',
+  description: 'Two to six tabs, each opening an image beside a heading, rich text and an optional action. Tabs 3 to 6 show while their labels are filled in.',
+  category: 'content',
+  tags: ['tabs', 'tabbed', 'showcase', 'services', 'features', 'process', 'steps', 'switcher', 'product tour'],
+  icon: 'layout-panel-top',
+  // Six tabs of image, copy and action cost a small model's page tool about 1.3 KB: offered there once a project has it.
+  fullListingOnly: true,
+  properties: {
+    ...P.group('Text', {
+      eyebrow: P.str('Eyebrow', 'How we work'),
+      heading: P.str('Heading', 'From first sketch to finished room'),
+      headingLevel: headingLevel('h2'),
+      lead: P.text('Supporting text', 'Every project moves through the same three stages. Choose one to see what it involves.')
+    }),
+    tab1: showcaseTab(1, {
+      label: 'Design',
+      icon: 'pen-tool',
+      heading: 'Plans drawn around how you live',
+      copy: ['We measure, listen and sketch until the layout feels right, then turn it into **drawings builders can price**.'],
+      actionLabel: 'See recent projects',
+      alt: 'Sketches and material samples spread across a desk'
+    }),
+    tab2: showcaseTab(2, {
+      label: 'Build',
+      icon: 'hammer',
+      heading: 'One team from demolition to handover',
+      copy: ['Our own carpenters, plumbers and electricians work to one schedule, with a site lead you can always reach.'],
+      alt: 'A carpenter fitting a kitchen cabinet'
+    }),
+    tab3: showcaseTab(3, {
+      label: 'Care',
+      icon: 'shield-check',
+      heading: 'Looked after long after we leave',
+      copy: ['Every project comes with a two-year workmanship guarantee and a check-in visit after the first winter.'],
+      alt: 'A finished living room in afternoon light'
+    }),
+    tab4: showcaseTab(4, null),
+    tab5: showcaseTab(5, null),
+    tab6: showcaseTab(6, null)
+  },
+  parts: {
+    root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+    heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+    list: { nodeId: 'tab-list', label: 'Tab list', styleControls: ['gap', 'justify'] },
+    panels: { nodeId: 'panels', label: 'Panels', styleControls: ['background', 'radius', 'paddingBlock', 'paddingInline'] }
+  },
+  state: {
+    tab: { type: 'enum', label: 'Tabs', options: SHOWCASE_TABS.map((n) => ({ value: `tab${n}`, label: `Tab ${n}` })), initial: 'tab1' }
+  },
+  variantAxes: { tone: showcaseTone() },
+  build: (b) => {
+    const field = (n: ShowcaseTab, name: string) => ({ $prop: `tab${n}`, field: name });
+    // Tabs 3 to 6 are there while their labels are; each one's panel is the only child of a wrapper shown on the same
+    // condition, so a placement has both or neither.
+    const shownIf = (n: ShowcaseTab) => (n > 2 ? { when: field(n, 'label') } : {});
+    const tabs = SHOWCASE_TABS.map((n) =>
+      b.link(`tab-${n}`, NO_LINK, field(n, 'label'), 'secondary', {
+        name: `Tab ${n}`,
+        icon: field(n, 'icon'),
+        stateAction: { state: 'tab', op: 'set', value: `tab${n}` },
+        ...shownIf(n),
+        styles: { flexShrink: 0 }
+      })
+    );
+    const panels = SHOWCASE_TABS.map((n) =>
+      b.el(`panel-wrap-${n}`, 'div', { name: `Tab ${n}`, collapseEmpty: true, ...shownIf(n) }, [
+        b.el(`panel-${n}`, 'div', { name: `Tab ${n} panel`, when: eq(uiState('tab'), `tab${n}`), styles: { base: { layout: 'grid', columns: 1, gap: tok('space.2xl'), align: 'center' }, desktop: { columns: 2, gap: tok('space.3xl') } } }, [
+          b.el(`media-${n}`, 'figure', { name: 'Media' }, [b.image(`image-${n}`, field(n, 'image'), { name: 'Image', styles: { aspectRatio: '4/3', radius: tok('radius.lg'), objectFit: 'cover' } })]),
+          b.el(`content-${n}`, 'div', { name: 'Content', styles: { layout: 'stack', gap: tok('space.lg'), align: 'start' } }, [
+            b.text(`heading-${n}`, 'h3', field(n, 'heading'), { name: 'Heading', when: field(n, 'heading'), styles: { textStyle: tok('text.h3') } }),
+            b.rich(`copy-${n}`, field(n, 'copy'), { name: 'Text', styles: { ...mutedStyles, textStyle: tok('text.body') } }),
+            b.link(`action-${n}`, field(n, 'actionLink'), field(n, 'actionLabel'), 'text', { name: 'Action', when: field(n, 'actionLabel') })
+          ])
+        ])
+      ])
+    );
+    return sectionShell(b, [
+      headingBlock(b),
+      b.el('showcase', 'div', { name: 'Showcase', styles: { layout: 'stack', gap: tok('space.xl') } }, [
+        // On a phone the tabs stay on one line and scroll sideways; from a tablet up they wrap. The padding keeps the
+        // focus ring of a tab inside the scrolling row.
+        b.el(
+          'tab-list',
+          'div',
+          {
+            name: 'Tab list',
+            ariaLabel: prop('heading'),
+            styles: { base: { layout: 'row', wrap: false, gap: tok('space.xs'), align: 'center', paddingBlock: tok('space.2xs'), paddingInline: tok('space.2xs'), marginInline: `calc(-1 * var(${tokenVar('space.2xs')}))`, customCss: 'overflow-x: auto' }, tablet: { wrap: true }, desktop: { wrap: true } }
+          },
+          tabs
+        ),
+        b.el('panels', 'div', { name: 'Panels', styles: { layout: 'stack', gap: tok('space.2xl') } }, panels)
+      ])
+    ]);
+  }
 });
 
 export const textSection = managed({

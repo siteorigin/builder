@@ -2032,7 +2032,7 @@ describe('sections only a full run lists (fullListingOnly)', () => {
   it('leaves the marked sections out of a small model’s page tool and offers them to a full run', () => {
     const state = createStarterState('business', 'Test', false);
     const marked = listThemes()[0].components.filter((c) => c.fullListingOnly).map((c) => c.componentId);
-    expect(marked).toContain('content.steps-media');
+    expect(marked).toEqual(expect.arrayContaining(['content.steps-media', 'tabs.showcase', 'pricing.toggle']));
     const base = { state, codeEnabled: false, definitionOps: false, selection: null };
     for (const capabilities of [local, smallNative]) {
       for (const page of [null, { route: '/' }]) {
@@ -2042,7 +2042,8 @@ describe('sections only a full run lists (fullListingOnly)', () => {
       }
     }
     // A window too small for the request beside the general tools narrows a large model's run the same way.
-    expect(listed(pageTool(toolsForRun({ ...base, capabilities: cloud, focused: true }).tools))).not.toContain('content.steps-media');
+    const narrowed = listed(pageTool(toolsForRun({ ...base, capabilities: cloud, focused: true }).tools));
+    for (const id of marked) expect(narrowed).not.toContain(id);
     for (const page of [null, { route: '/' }]) {
       const offered = listed(pageTool(toolsForRun({ ...base, capabilities: cloud, page }).tools));
       for (const id of marked) expect(offered).toContain(id);
@@ -2050,12 +2051,12 @@ describe('sections only a full run lists (fullListingOnly)', () => {
     expect(listed(upsertToolSchema(state))).toEqual(expect.arrayContaining(marked));
   });
 
-  it('offers a marked section to a small model once the project has it', () => {
+  it.each(['content.steps-media', 'tabs.showcase', 'pricing.toggle'])('offers the marked %s to a small model once the project has it', (id) => {
     const state = createStarterState('business', 'Test', false);
-    expect(listed(upsertToolSchema(state, undefined, true))).not.toContain('content.steps-media');
-    const def = structuredClone(catalogueComponent(state.site.themeId, 'content.steps-media')!);
+    expect(listed(upsertToolSchema(state, undefined, true))).not.toContain(id);
+    const def = structuredClone(catalogueComponent(state.site.themeId, id)!);
     state.components[def.id] = def;
-    expect(listed(upsertToolSchema(state, undefined, true))).toContain('content.steps-media');
+    expect(listed(upsertToolSchema(state, undefined, true))).toContain(id);
   });
 
   it('drops a marked layout option from a small model’s choices, never its axis default', () => {
@@ -2075,11 +2076,14 @@ describe('sections only a full run lists (fullListingOnly)', () => {
     expect(Object.keys(state.components[grid.id].variantAxes!.layout.options)).toContain('four-columns');
   });
 
-  it('shows a small model no worked example of a section its page tool leaves out', () => {
+  it.each([
+    ['content.steps-media', 'Explain how it works in steps: our process'],
+    ['tabs.showcase', 'A tabbed showcase of our services'],
+    ['pricing.toggle', 'Monthly and annual subscription pricing with a billing switch']
+  ])('shows a small model no worked example of %s, which its page tool leaves out', (id, ask) => {
     const state = createStarterState('business', 'Test', false);
-    const ask = 'Explain how it works in steps: our process';
-    expect(retrieveExamples(state, ask).map((e) => e.componentId)).toContain('content.steps-media');
-    expect(retrieveExamples(state, ask, 3, true).map((e) => e.componentId)).not.toContain('content.steps-media');
+    expect(retrieveExamples(state, ask).map((e) => e.componentId)).toContain(id);
+    expect(retrieveExamples(state, ask, 3, true).map((e) => e.componentId)).not.toContain(id);
   });
 });
 
