@@ -10,7 +10,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { slotAccepts } from '@engine/slots';
 import { blocksSaving, validateState } from '@engine/validate';
-import { slotInsertAt } from '../../src/renderer/src/lib/insert-at';
+import { nodeLabel, slotInsertAt } from '../../src/renderer/src/lib/insert-at';
 import {
   createSlotOps,
   editSlotOp,
@@ -144,6 +144,8 @@ describe('changing a slot’s contract (#655)', () => {
     let s = run(c.s, [renamed!]).state;
     expect(c.def(s).slots).toEqual({ buttons: { label: 'Actions' } });
     expect(placedSlots(c.def(s)).has('buttons')).toBe(true);
+    // The placeholder is named by the new label wherever the design's own nodes are named (Inspector, Insert's line).
+    expect(nodeLabel(s, c.owner, placedSlots(c.def(s)).get('buttons')!)).toBe('Slot: Actions');
     // Text and buttons, two at most, described.
     const op = editSlotOp(c.def(s), c.slot, draft(s, c.def(s), c.slot, { description: 'Calls to action', restricted: true, primitives: ['link', 'text', 'link'], categories: [], max: ' 2 ' }));
     expect(op).toEqual({ type: 'component.setSlot', definitionId: c.id, slot: 'buttons', label: 'Actions', description: 'Calls to action', categories: [], primitives: ['text', 'link'], max: 2 });

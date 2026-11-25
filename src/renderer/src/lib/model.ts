@@ -431,7 +431,8 @@ export function refLabel(state: ProjectState, ref: ElementRef): string {
   const r = resolveRef(state, ref);
   if (r.def && ref.partId) return r.def.parts[ref.partId]?.label ?? 'Part';
   if (!r.node) return 'Element';
-  return displayName(state, r.node, r.def);
+  // A node of a component's own design names its slot by the design's label, as one inside a placement does.
+  return displayName(state, r.node, r.def ?? (ref.owner.kind === 'component' && !ref.instancePath.length ? own(state.components, ref.owner.id) : undefined));
 }
 
 /**
