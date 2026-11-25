@@ -59,7 +59,8 @@ const held = (s: ProjectState, page: OwnerRef, card: string) => (s.pages[page.id
 describe('the placements a removal review lists (#663)', () => {
   it('names each by where it is, in site order, and tells several in one place apart in the order they appear', () => {
     const c = site();
-    const second = run(c.s, [{ type: 'node.insert', owner: c.home, parentId: c.section, slot: 'content', definitionId: c.id }]);
+    // Put before the first, so the rows follow the page rather than the order they were made in.
+    const second = run(c.s, [{ type: 'node.insert', owner: c.home, parentId: c.section, slot: 'content', index: 0, definitionId: c.id }]);
     let s = second.state;
     // Another page with the same title is told apart by its address.
     const about = run(s, [{ type: 'page.create', title: 'Home', route: '/home-two/' }]);
@@ -80,7 +81,7 @@ describe('the placements a removal review lists (#663)', () => {
       ['page', 'Home (/home-two/)', undefined],
       ['component', 'Inside Offer wrap', undefined]
     ]);
-    expect(rows.map((r) => r.nodeId)).toEqual([c.card, second.results[0].nodeId, onAbout.results[0].nodeId, inWrap.results[0].nodeId]);
+    expect(rows.map((r) => r.nodeId)).toEqual([second.results[0].nodeId, c.card, onAbout.results[0].nodeId, inWrap.results[0].nodeId]);
     // Only those holding content, when a slot's removal asks.
     s = fill(s, aboutPage, onAbout.results[0].nodeId as string, 'Book').s;
     expect(planSlotRemoval(s, c.id, c.slot)!.rows.map((r) => r.nodeId)).toEqual([onAbout.results[0].nodeId]);
@@ -104,6 +105,7 @@ describe('removing a slot with what placements hold in it (#663)', () => {
     expect(() => run(s, [removeSlotOp(c.def(s), c.slot)])).toThrow(/The "Buttons" slot has content in 1 place \(Home\)\. Move or remove it first\./);
     const plan = planSlotRemoval(s, c.id, c.slot)!;
     expect(plan.problem).toBeUndefined();
+    expect(plan.rows).toEqual([{ owner: c.home, nodeId: c.card, place: 'Home' }]);
     expect(plan.items).toBe(1);
     expect(plan.operations).toEqual([
       { type: 'node.remove', owner: c.home, nodeId: words },
@@ -136,6 +138,23 @@ describe('removing a slot with what placements hold in it (#663)', () => {
     expect(errors(after)).toEqual([]);
   });
 
+  it('removes a container held in the slot once, with a placement deep inside it and what that holds', () => {
+    const c = site();
+    const box = run(c.s, [{ type: 'node.insert', owner: c.home, parentId: c.card, slot: 'buttons', primitive: 'stack' }]);
+    const boxId = box.results[0].nodeId as string;
+    const inner = run(box.state, [{ type: 'node.insert', owner: c.home, parentId: boxId, definitionId: c.id }]);
+    const innerId = inner.results[0].nodeId as string;
+    const { s, nodeId: words } = fill(inner.state, c.home, innerId, 'Deep inside');
+    const plan = planSlotRemoval(s, c.id, c.slot)!;
+    expect(plan.operations).toEqual([
+      { type: 'node.remove', owner: c.home, nodeId: boxId },
+      { type: 'component.removeSlot', definitionId: c.id, slot: c.slot }
+    ]);
+    const after = run(s, plan.operations!).state;
+    for (const id of [boxId, innerId, words]) expect(Object.hasOwn(after.pages[c.home.id].nodes, id)).toBe(false);
+    expect(errors(after)).toEqual([]);
+  });
+
   it('removes what a placement inside another design holds there, where it is', () => {
     const c = site();
     const wrap = run(c.s, [{ ...CARD, name: 'Offer wrap', nodes: [{ kind: 'element', id: 'root', tag: 'div', children: [] }] } as EditOperation]);
@@ -152,26 +171,71 @@ describe('removing a slot with what placements hold in it (#663)', () => {
     expect(errors(after)).toEqual([]);
   });
 
-  it('leaves content that shows another design’s own filled slot for the author to move first', () => {
+  /** Offer wrap, whose design holds a card that shows Offer wrap's own Extra slot inside a Stack in its Buttons slot. */
+  function wrapped() {
     const c = site();
-    // Offer wrap shows its own Extra slot through the card's Buttons slot, and Home fills Extra.
     const wrap = run(c.s, [{ ...CARD, name: 'Offer wrap', nodes: [{ kind: 'element', id: 'root', tag: 'div', children: [] }] } as EditOperation]);
     const wrapId = wrap.results[0].definitionId as string;
     const design: OwnerRef = { kind: 'component', id: wrapId };
     const inWrap = run(wrap.state, [{ type: 'node.insert', owner: design, parentId: 'root', definitionId: c.id }]);
     const cardInWrap = inWrap.results[0].nodeId as string;
-    const extra = createSlotOps(inWrap.state, inWrap.state.components[wrapId], 'Extra', slotInsertAt(inWrap.state, wrapId, ref(design, 'root'))!)!;
-    let s = run(inWrap.state, extra.operations).state;
-    const outlet = Object.values(s.components[wrapId].tree!.nodes).find((n) => n.kind === 'slot')!.id;
-    s = run(s, [{ type: 'node.move', owner: design, nodeId: outlet, parentId: cardInWrap, slot: 'buttons', index: 0 }]).state;
-    const placedWrap = run(s, [{ type: 'node.insert', owner: c.home, parentId: c.section, slot: 'content', definitionId: wrapId }]);
+    const box = run(inWrap.state, [{ type: 'node.insert', owner: design, parentId: cardInWrap, slot: 'buttons', primitive: 'stack' }]);
+    const boxId = box.results[0].nodeId as string;
+    const extra = createSlotOps(box.state, box.state.components[wrapId], 'Extra', slotInsertAt(box.state, wrapId, ref(design, boxId))!)!;
+    const s = run(box.state, extra.operations).state;
+    const outlet = Object.values(s.components[wrapId].tree!.nodes).find((n) => n.kind === 'slot')!;
+    expect((s.components[wrapId].tree!.nodes[boxId] as { children: string[] }).children).toEqual([outlet.id]);
+    return { ...c, s, wrapId, design, cardInWrap, boxId, outlet: outlet.id, extra: extra.slot };
+  }
+
+  it('leaves content that shows another design’s own filled slot for the author to move first', () => {
+    const w = wrapped();
+    const placedWrap = run(w.s, [{ type: 'node.insert', owner: w.home, parentId: w.section, slot: 'content', definitionId: w.wrapId }]);
     const wrapOnHome = placedWrap.results[0].nodeId as string;
     // Empty on every placement, Extra's place goes with the content: nothing it shows is lost.
-    expect(planSlotRemoval(placedWrap.state, c.id, c.slot)!.problem).toBeUndefined();
-    s = run(placedWrap.state, [{ type: 'node.insert', owner: c.home, parentId: wrapOnHome, slot: extra.slot, primitive: 'paragraph', text: 'Extra words' }]).state;
-    const plan = planSlotRemoval(s, c.id, c.slot)!;
+    const empty = planSlotRemoval(placedWrap.state, w.id, w.slot)!;
+    expect(empty.problem).toBeUndefined();
+    expect(empty.operations![0]).toEqual({ type: 'node.remove', owner: w.design, nodeId: w.boxId });
+    expect(run(placedWrap.state, empty.operations!).state.components[w.id].slots).toBeUndefined();
+    const s = run(placedWrap.state, [{ type: 'node.insert', owner: w.home, parentId: wrapOnHome, slot: w.extra, primitive: 'paragraph', text: 'Extra words' }]).state;
+    const plan = planSlotRemoval(s, w.id, w.slot)!;
     expect(plan.operations).toBeUndefined();
-    expect(plan.problem).toMatch(/^Inside Offer wrap, the “Buttons” slot holds the place where Offer wrap shows its own “Extra” slot, which holds content where Offer wrap is placed\. Removed, that content would no longer show\./);
+    expect(plan.problem).toMatch(/^Inside Offer wrap, the “Buttons” slot holds the place where Offer wrap shows its own “Extra” slot, which holds content on Home\. Removed, that content would no longer show\./);
+    // Another place in the design that shows Extra keeps that content showing.
+    const copy = run(s, [{ type: 'node.duplicate', owner: w.design, nodeId: w.outlet }]);
+    const second = run(copy.state, [{ type: 'node.move', owner: w.design, nodeId: copy.results[0].nodeId as string, parentId: 'root', index: 0 }]).state;
+    expect(planSlotRemoval(second, w.id, w.slot)!.problem).toBeUndefined();
+  });
+
+  it('takes a design’s filled slot when the only placement filling it goes too', () => {
+    const w = wrapped();
+    // Offer wrap's only placement sits in the Home card's Buttons slot, filling Extra: both go with that content.
+    const placedWrap = run(w.s, [{ type: 'node.insert', owner: w.home, parentId: w.card, slot: 'buttons', definitionId: w.wrapId }]);
+    const wrapOnHome = placedWrap.results[0].nodeId as string;
+    const s = run(placedWrap.state, [{ type: 'node.insert', owner: w.home, parentId: wrapOnHome, slot: w.extra, primitive: 'paragraph', text: 'Extra words' }]).state;
+    const plan = planSlotRemoval(s, w.id, w.slot)!;
+    expect(plan.problem).toBeUndefined();
+    const after = run(s, plan.operations!).state;
+    expect(Object.hasOwn(after.pages[w.home.id].nodes, wrapOnHome)).toBe(false);
+    expect(after.components[w.id].slots).toBeUndefined();
+  });
+
+  it('leaves a slot whose empty look shows another slot a placement fills, removed or not', () => {
+    const c = site();
+    // Extra's place is inside what Buttons shows while it is empty.
+    const extra = createSlotOps(c.s, c.def(c.s), 'Extra', slotInsertAt(c.s, c.id, ref({ kind: 'component', id: c.id }, 'body'))!)!;
+    let s = run(c.s, extra.operations).state;
+    const outlets = Object.values(c.def(s).tree!.nodes).filter((n) => n.kind === 'slot');
+    const buttons = outlets.find((n) => n.kind === 'slot' && n.slot === c.slot)!.id;
+    const extraOutlet = outlets.find((n) => n.kind === 'slot' && n.slot === extra.slot)!.id;
+    s = run(s, [{ type: 'node.move', owner: { kind: 'component', id: c.id }, nodeId: extraOutlet, parentId: buttons, index: 0 }]).state;
+    // Nothing fills Extra: Buttons goes with its empty look.
+    expect(planSlotRemoval(s, c.id, c.slot)!.problem).toBeUndefined();
+    s = run(s, [{ type: 'node.insert', owner: c.home, parentId: c.card, slot: extra.slot, primitive: 'paragraph', text: 'Only in Extra' }]).state;
+    const plan = planSlotRemoval(s, c.id, c.slot)!;
+    expect(plan.rows).toEqual([]);
+    expect(plan.operations).toBeUndefined();
+    expect(plan.problem).toMatch(/^The “Buttons” slot shows Offer card’s “Extra” slot while it is empty, and “Extra” holds content on Home\. Removed, that content would no longer show\./);
   });
 
   it('leaves content a hand edit damaged for the author to look at', () => {
@@ -182,11 +246,22 @@ describe('removing a slot with what placements hold in it (#663)', () => {
     expect(plan.rows.map((r) => r.nodeId)).toEqual([c.card]);
     expect(plan.operations).toBeUndefined();
     expect(plan.problem).toMatch(/What the “Buttons” slot holds on Home is damaged/);
+    // One piece listed by two placements' slots.
+    const { s: filled, nodeId: words } = fill(c.s, c.home, c.card, 'Shared');
+    const twice = run(filled, [{ type: 'node.insert', owner: c.home, parentId: c.section, slot: 'content', definitionId: c.id }]);
+    const shared = structuredClone(twice.state);
+    (shared.pages[c.home.id].nodes[twice.results[0].nodeId as string] as InstanceNode).slots = { buttons: [words] };
+    const both = planSlotRemoval(shared, c.id, c.slot)!;
+    expect(both.operations).toBeUndefined();
+    expect(both.problem).toMatch(/What the “Buttons” slot holds on Home \(in Section · 2 of 2\) is damaged/);
   });
 
   it('removes a slot no placement fills on its own, and plans nothing for a slot that is not there', () => {
     const c = site();
     expect(planSlotRemoval(c.s, c.id, c.slot)).toEqual({ rows: [], items: 0, operations: [{ type: 'component.removeSlot', definitionId: c.id, slot: c.slot }] });
+    const cleared = structuredClone(c.s);
+    (cleared.pages[c.home.id].nodes[c.card] as InstanceNode).slots = { buttons: [] };
+    expect(planSlotRemoval(cleared, c.id, c.slot)).toEqual({ rows: [], items: 0, operations: [{ type: 'component.removeSlot', definitionId: c.id, slot: c.slot }] });
     expect(planSlotRemoval(c.s, c.id, 'nope')).toBeNull();
     expect(planSlotRemoval(c.s, 'cd_missing', c.slot)).toBeNull();
   });

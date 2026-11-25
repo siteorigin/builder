@@ -163,9 +163,12 @@ assert.ok(await menu.getByText('Used 2 times').isVisible(), 'the menu counts the
 await win.waitForTimeout(300);
 await win.screenshot({ path: join(SHOTS, 'component-library-menu.png'), clip: { x: 0, y: 180, width: 420, height: 300 } });
 // A used component is not deleted: Delete component reviews where it is used, with a way to each placement (#663).
+const revision = () => win.evaluate(async () => (await window.builder.project.snapshot()).revision);
+const reviewing = await revision();
 await menu.getByRole('menuitem', { name: /Delete component/ }).click();
 const removal = win.locator('.modal[role="dialog"]', { hasText: 'Delete Exhibitor card?' });
 await removal.waitFor();
+assert.equal(await revision(), reviewing, 'opening the review changes nothing');
 assert.match(await removal.innerText(), /It is still in use\./, 'the review says why it stays');
 assert.equal(await removal.getByRole('button', { name: /^Go to placement/ }).count(), 2, 'it lists both placements');
 assert.equal(await removal.getByRole('button', { name: 'Delete component' }).count(), 0, 'and offers no deletion while they stay');

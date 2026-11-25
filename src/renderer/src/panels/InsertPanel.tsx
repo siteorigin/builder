@@ -1600,14 +1600,16 @@ export function InsertPanel() {
       ...needs.map((d): MenuItem => ({ label: `Needed by ${d.name}`, icon: <Code />, hint: 'Code', disabled: true })),
       { separator: true },
       // One in use opens a review of what uses it, with a way to each placement (#663).
-      count || needs.length
-        ? { label: 'Delete component…', icon: <Trash2 />, danger: true, hint: 'In use', onSelect: () => reviewRemoval(def) }
-        : { label: 'Delete component', icon: <Trash2 />, danger: true, onSelect: () => void removeDefinition(def) }
+      { label: count || needs.length ? 'Delete component…' : 'Delete component', icon: <Trash2 />, danger: true, hint: count || needs.length ? 'In use' : undefined, onSelect: () => deleteOrReview(def) }
     ];
   };
-  const reviewRemoval = (def: ComponentDefinition) => {
-    const opening = getState().snapshot?.workspaceKey;
-    if (opening) setState({ modal: { kind: 'removal-review', opening, definitionId: def.id } });
+  // Decided when chosen, as the project is then: the menu may have opened before something placed it, or before its
+  // last placement went.
+  const deleteOrReview = (def: ComponentDefinition) => {
+    const now = getState().snapshot;
+    if (!now) return;
+    if (placesOf(now.state, def.id).length || dependentsOf(now.state, def.id).length) setState({ modal: { kind: 'removal-review', opening: now.workspaceKey, definitionId: def.id } });
+    else void removeDefinition(def);
   };
   const removeDefinition = async (def: ComponentDefinition) => {
     const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="component"] .insert-tile.project') ?? [])];

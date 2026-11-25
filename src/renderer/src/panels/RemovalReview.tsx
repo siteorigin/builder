@@ -9,7 +9,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Code, Component, FileText, LayoutTemplate, PanelBottom, PanelTop, ShieldCheck, Trash2 } from 'lucide-react';
 import type { OwnerRef } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { commitOps, getState, setState, toast, undoAction, useStore } from '../store';
+import { commitOps, getState, setState, showLayer, toast, undoAction, useStore } from '../store';
 import { Modal } from '../components/ui';
 import { treeFor } from '../lib/model';
 import { openEditorDestination } from '../lib/open-destination';
@@ -17,6 +17,9 @@ import { componentRemovalReview, planSlotRemoval, type PlacementRow } from '../l
 import { Badge, Details, FormStatus, GONE_ID, GoneClose, GoneNotice, SafeButton, ScrollList, Subject, type Detail } from './Dialogs';
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** Names as a sentence lists them: "Ticker, Clock and Map". */
+const listAll = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : (names[0] ?? ''));
 
 function placeIcon(owner: OwnerRef) {
   if (owner.kind === 'shell') return owner.id === 'footer' ? <PanelBottom /> : <PanelTop />;
@@ -55,6 +58,14 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
   // once nothing uses it. Nothing while something is in the way that this review can't remove.
   const operations: EditOperation[] | undefined = slot !== undefined ? plan?.operations : review && !review.rows.length && !dependents.length ? [{ type: 'component.remove', definitionId }] : undefined;
   const problem = gone || busy ? undefined : readOnly ? 'This project is open read-only, so nothing can be removed.' : plan?.problem;
+  // Whether the review can remove anything now, which decides what it says it does.
+  const can = !!operations && !problem;
+  // The revision the remove button was pressed on: a press the project changed under (a held Space, a slow click)
+  // acts on content the author was not shown, so it is let go and a fresh press is needed.
+  const pressed = useRef<number | null>(null);
+  const arm = () => {
+    pressed.current = snap?.revision ?? null;
+  };
 
   /** Show one placement where it is, as the project is now: an Undo or the AI may have moved or changed it since. */
   const go = (r: PlacementRow) => {
@@ -63,11 +74,18 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
     const tree = treeFor(now.state, r.owner);
     const node = tree && Object.hasOwn(tree.nodes, r.nodeId) ? tree.nodes[r.nodeId] : undefined;
     if (node?.kind !== 'instance' || node.definitionId !== definitionId) return void toast('That placement has been removed since the list was shown.', 'info');
+    // Already selected, choosing it again would not move the canvas: it is asked to show it.
+    const was = getState().selection;
+    const again = !!was && was.owner.kind === r.owner.kind && was.owner.id === r.owner.id && was.nodeId === r.nodeId && !was.instancePath.length;
     openEditorDestination({ kind: 'element', owner: r.owner, nodeId: r.nodeId });
+    if (again && getState().modal !== own) showLayer({ owner: r.owner, instancePath: [], nodeId: r.nodeId });
   };
 
   const remove = async () => {
     const now = getState().snapshot;
+    const shown = pressed.current;
+    pressed.current = null;
+    if (shown !== null && shown !== snap?.revision) return;
     if (!operations || busy || problem || !snap || !now || now.workspaceKey !== opening) return;
     const what = slot === undefined ? `Delete component ${name}` : rows.length ? `Remove ${label} slot and its content` : `Remove ${label} slot`;
     confirmed.current = { rows, items };
@@ -86,21 +104,28 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
   };
 
   const title = slot === undefined ? `Delete ${name}?` : `Remove the ${label} slot?`;
+  const code = listAll(dependents.map((d) => d.name));
   const lead =
     slot !== undefined
       ? rows.length
-        ? `It holds content on ${plural(rows.length, 'placement')}. Go to a placement to move what you want to keep, or remove the slot with its content.`
-        : 'No placement holds content in it now, so it can go with its place in the design.'
-      : rows.length || dependents.length
-        ? `It is still in use. Delete or replace ${rows.length === 1 ? 'its placement' : rows.length ? 'each placement' : 'what uses it'} first: Go to placement shows it, selected.`
-        : 'Nothing uses it now, so it can be deleted.';
-  const details: Detail[] =
-    slot === undefined
-      ? operations
-        ? [{ kind: 'keep', icon: <ShieldCheck />, text: 'Undo brings it back.' }]
-        : []
+        ? `It holds content on ${plural(rows.length, 'placement')}. ${can ? 'Go to a placement to move what you want to keep, or remove the slot with its content.' : 'Go to a placement to see what it holds there.'}`
+        : can
+          ? 'No placement holds content in it now, so it can go with its place in the design.'
+          : 'No placement holds content in it now.'
+      : rows.length
+        ? `It is still in use. Delete or replace ${rows.length === 1 ? 'its placement' : 'each placement'} first: Go to placement shows it, selected.${dependents.length ? ` The code of ${code} needs it too.` : ''}`
+        : dependents.length
+          ? `The code of ${code} needs it. Change that code so it no longer does first.`
+          : can
+            ? 'Nothing uses it now, so it can be deleted.'
+            : 'Nothing uses it now.';
+  // What removing does, said only while it can be done.
+  const details: Detail[] = !can
+    ? []
+    : slot === undefined
+      ? [{ kind: 'keep', icon: <ShieldCheck />, text: 'Undo brings it back.' }]
       : [
-          ...(rows.length && operations ? [{ kind: 'lose' as const, icon: <Trash2 />, text: `What ${rows.length === 1 ? 'the placement holds' : `the ${rows.length} placements hold`} in it goes too: ${plural(items, 'item')}, with everything inside ${items === 1 ? 'it' : 'them'}.` }] : []),
+          ...(rows.length ? [{ kind: 'lose' as const, icon: <Trash2 />, text: `What ${rows.length === 1 ? 'the placement holds' : `the ${rows.length} placements hold`} in it goes too: ${plural(items, 'item')}, with everything inside ${items === 1 ? 'it' : 'them'}.` }] : []),
           { kind: 'change', icon: <Component />, text: `Its place in the ${name} design goes with it.` },
           { kind: 'keep', icon: <ShieldCheck />, text: rows.length ? 'Undo puts the slot and its content back.' : 'Undo puts the slot back.' }
         ];
@@ -121,7 +146,7 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
               {operations ? 'Cancel' : 'Close'}
             </SafeButton>
             {operations && (
-              <button className="btn btn-danger" disabled={busy || !!problem} onClick={() => void remove()}>
+              <button className="btn btn-danger" disabled={busy || !!problem} onPointerDown={arm} onKeyDown={(e) => !e.repeat && (e.key === ' ' || e.key === 'Enter') && arm()} onClick={() => void remove()}>
                 {busy ? 'Removing…' : action}
               </button>
             )}

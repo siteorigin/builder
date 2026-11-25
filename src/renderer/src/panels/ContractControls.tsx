@@ -18,6 +18,7 @@ import { applyOps, confirmDialog, getState, setState, toast, useStore } from '..
 import { DraftInput, Field, Section, Segmented } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { designContent, type DesignContent } from '../lib/design-content';
+import { planSlotRemoval } from '../lib/removal-review';
 import { nodeLabel, slotInsertAt, type InsertAt } from '../lib/insert-at';
 import {
   SLOT_CATEGORY_LABELS,
@@ -564,8 +565,10 @@ function SlotGroup({ def, name, decl, placedAt, filledIn }: { def: ComponentDefi
     const now = current(def.id);
     if (!now || !declaredSlot(now.def, name)) return;
     // Content placements hold in it goes only once the author has seen where (#663): the review lists each placement,
-    // with a way to it, and can remove the slot together with that content.
-    if (slotFilledIn(now.snap.state, now.def, name).length) return void setState({ modal: { kind: 'removal-review', opening: now.snap.workspaceKey, definitionId: def.id, slot: name } });
+    // with a way to it, and can remove the slot together with that content. It also says why a removal that would hide
+    // content of another slot can't be made yet.
+    const plan = planSlotRemoval(now.snap.state, def.id, name);
+    if (plan && (plan.rows.length || plan.problem)) return void setState({ modal: { kind: 'removal-review', opening: now.snap.workspaceKey, definitionId: def.id, slot: name } });
     void apply([removeSlotOp(now.def, name)], `Remove ${typeof decl.label === 'string' && decl.label.trim() ? decl.label : name} slot`, now.snap);
   };
   if (damaged)

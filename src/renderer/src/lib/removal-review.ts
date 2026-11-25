@@ -91,54 +91,77 @@ export interface SlotRemovalPlan {
   problem?: string;
 }
 
+/** A slot's name for the author: its label, or its code name when a hand edit left it without one. */
+const slotName = (label: unknown, slot: string) => (typeof label === 'string' && label.trim() ? label : slot);
+
 /**
  * Remove a slot together with what placements hold in it, as one change (so one Undo puts it all back): each piece of
- * content is removed where it is, then the slot with its placeholder. A placement inside content that goes goes with
- * it, so it is not removed twice. Content a hand edit damaged is left for the author to look at, and so is content
- * that passes on a slot of the design holding it: removed, the content that design's placements fill that slot with
- * would no longer show anywhere. Null when there is no such slot.
+ * content is removed where it is, then the slot with its placeholder and what that shows while the slot is empty. A
+ * placement inside content that goes goes with it, so it is not removed twice. Content a hand edit damaged is left for
+ * the author to look at. So is anything that would take away the last place a design shows one of its own slots while
+ * a placement that stays fills it: that content would no longer show anywhere. Null when there is no such slot.
  */
 export function planSlotRemoval(state: ProjectState, definitionId: string, slot: string): SlotRemovalPlan | null {
   const def = own(state.components, definitionId);
   const decl = def && own(def.slots, slot);
   if (!def || !decl) return null;
-  const label = typeof decl.label === 'string' && decl.label.trim() ? decl.label : slot;
+  const label = slotName(decl.label, slot);
   const rows = placementRows(state, definitionId, (n) => fillsSlot(n, slot));
-  // The content each place holds in the slot, by place, in the order the rows list them.
+  const damaged = (at: string) => ({ rows, items: 0, problem: `What the “${label}” slot holds on ${at} is damaged, so it can’t be removed from here. Go to that placement and remove what it holds, or undo the change that damaged it.` });
+  // The content each place holds in the slot, by place. A piece listed twice (in one slot or two) is a hand edit's.
   const byOwner = new Map<string, { owner: OwnerRef; tree: NodeTree; held: string[] }>();
   for (const r of rows) {
     const tree = treeFor(state, r.owner);
     const node = tree && own(tree.nodes, r.nodeId);
     const held = node?.kind === 'instance' ? own(node.slots, slot) : undefined;
     const at = `${r.place}${r.where ? ` (${r.where})` : ''}`;
-    if (!tree || !Array.isArray(held) || new Set(held).size !== held.length || held.some((id) => typeof id !== 'string' || !own(tree.nodes, id)))
-      return { rows, items: 0, problem: `What the “${label}” slot holds on ${at} is damaged, so it can’t be removed from here. Go to that placement and remove what it holds, or undo the change that damaged it.` };
     const key = `${r.owner.kind}:${r.owner.id}`;
-    const entry = byOwner.get(key) ?? { owner: r.owner, tree, held: [] };
+    const entry = byOwner.get(key) ?? (tree ? { owner: r.owner, tree, held: [] } : undefined);
+    if (!entry || !Array.isArray(held) || new Set(held).size !== held.length || held.some((id) => typeof id !== 'string' || !own(entry.tree.nodes, id) || entry.held.includes(id))) return damaged(at);
     entry.held.push(...held);
     byOwner.set(key, entry);
   }
+  // What goes, by place: each piece with everything inside it.
+  const gone = new Map<string, Set<string>>();
   const operations: EditOperation[] = [];
-  for (const { owner, tree, held } of byOwner.values()) {
+  for (const [key, { owner, tree, held }] of byOwner) {
     // A piece inside another that goes (a placement held in the slot, holding more there itself) goes with it.
     const inside = new Set<string>();
     for (const id of held) for (const sub of subtreeIds(tree, id).slice(1)) inside.add(sub);
     const roots = held.filter((id) => !inside.has(id));
     if (!roots.length) return { rows, items: 0, problem: `What the “${label}” slot holds is damaged (it holds itself), so it can’t be removed from here. Undo the change that damaged it.` };
-    if (owner.kind === 'component') {
-      const design = own(state.components, owner.id);
-      const outlet = design && roots.flatMap((id) => subtreeIds(tree, id)).map((id) => tree.nodes[id]).find((n) => n?.kind === 'slot' && instancesOf(state, design.id).some((u) => fillsSlot(u.node, n.slot)));
-      if (design && outlet?.kind === 'slot') {
-        const passed = own(design.slots, outlet.slot);
-        const name = typeof passed?.label === 'string' && passed.label.trim() ? passed.label : outlet.slot;
-        return {
-          rows,
-          items: 0,
-          problem: `Inside ${design.name}, the “${label}” slot holds the place where ${design.name} shows its own “${name}” slot, which holds content where ${design.name} is placed. Removed, that content would no longer show. Go to that placement and move the “${name}” slot out first.`
-        };
-      }
-    }
+    gone.set(key, new Set(roots.flatMap((id) => subtreeIds(tree, id))));
     for (const nodeId of roots) operations.push({ type: 'node.remove', owner, nodeId });
+  }
+  // The slot's own placeholders go from the design too, with what they show while it is empty.
+  const ownKey = `component:${def.id}`;
+  if (def.tree) {
+    const set = gone.get(ownKey) ?? new Set<string>();
+    for (const n of Object.values(def.tree.nodes)) if (n.kind === 'slot' && n.slot === slot) for (const id of subtreeIds(def.tree, n.id)) set.add(id);
+    gone.set(ownKey, set);
+  }
+  // A design whose last placeholder for one of its own slots goes, while a placement that stays fills that slot.
+  const stays = (owner: OwnerRef, nodeId: string) => !gone.get(`${owner.kind}:${owner.id}`)?.has(nodeId);
+  for (const [key, set] of gone) {
+    const design = key.startsWith('component:') ? own(state.components, key.slice('component:'.length)) : undefined;
+    const tree = design?.tree;
+    if (!design || !tree) continue;
+    for (const id of set) {
+      const n = own(tree.nodes, id);
+      if (n?.kind !== 'slot' || (key === ownKey && n.slot === slot)) continue;
+      if (Object.values(tree.nodes).some((m) => m.kind === 'slot' && m.slot === n.slot && !set.has(m.id))) continue;
+      const filled = instancesOf(state, design.id).find((u) => fillsSlot(u.node, n.slot) && stays(u.owner, u.node.id));
+      if (!filled) continue;
+      const name = slotName(own(design.slots, n.slot)?.label, n.slot);
+      return {
+        rows,
+        items: 0,
+        problem:
+          key === ownKey
+            ? `The “${label}” slot shows ${design.name}’s “${name}” slot while it is empty, and “${name}” holds content on ${filled.label}. Removed, that content would no longer show. Move the “${name}” slot out of the “${label}” slot in the design first.`
+            : `Inside ${design.name}, the “${label}” slot holds the place where ${design.name} shows its own “${name}” slot, which holds content on ${filled.label}. Removed, that content would no longer show. Go to that placement and move the “${name}” slot out first.`
+      };
+    }
   }
   operations.push({ type: 'component.removeSlot', definitionId, slot });
   return { rows, items: operations.length - 1, operations };
