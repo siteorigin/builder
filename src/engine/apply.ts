@@ -546,7 +546,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       if (op.width !== undefined) a.width = op.width;
       if (op.height !== undefined) a.height = op.height;
       if (op.variants?.length) a.variants = clone(op.variants);
-      if (a.kind === 'document' && op.originalName) a.originalName = op.originalName;
+      if (op.originalName) a.originalName = op.originalName;
       return {};
     }
   }

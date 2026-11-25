@@ -272,6 +272,22 @@ if (CONVERTS) {
   assertCopies(first, 'jpg', [160, 480, 960], 1200, 'the converted photo has its responsive copies');
 }
 
+step('Assets: the details name the file a picture came from, unless its display name is that name');
+const fileOf = CONVERTS ? 'IMG_0042.heic' : 'field-scan.png';
+assert.equal(first.originalName, fileOf, 'the record keeps the file name, though the stored file is a copy');
+const originalLine = win.locator('[data-testid="asset-original-name"]');
+assert.equal(await originalLine.innerText(), `Original file: ${fileOf}`);
+const rename = async (name) => {
+  const r = await win.evaluate((op) => window.builder.project.apply({ operations: [op] }, { label: 'Rename image' }), { type: 'asset.update', assetId: first.id, name });
+  assert.equal(r.ok, true, `the picture is renamed: ${r.error?.message}`);
+  await eventually(async () => assert.equal(await win.locator('.asset-detail h4').innerText(), name));
+};
+await rename('Harbour at dusk');
+assert.equal(await originalLine.innerText(), `Original file: ${fileOf}`, 'renaming keeps the original file name');
+await rename(fileOf);
+assert.equal(await originalLine.count(), 0, 'a display name that is the file name is not said twice');
+await rename(first.name);
+
 step('the inspector image picker: Choose image → Import reviews the photo and places it at once');
 const inserted = await win.evaluate((pageId) => window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: pageId }, componentId: 'hero.split' }] }, { label: 'Insert hero' }), home);
 assert.equal(inserted.ok, true, `a hero is inserted: ${inserted.error?.message}`);
@@ -313,6 +329,8 @@ await copyButton.click();
 await eventually(async () => assert.equal(await win.locator('.asset-detail h4').innerText(), 'camera (web-sized)'), 60000);
 now = await win.evaluate(() => window.builder.project.snapshot());
 const copy = Object.values(now.state.assets.assets).find((a) => a.name === 'camera (web-sized)');
+assert.equal(copy.originalName, undefined, 'a copy made in Assets came from no file on disk');
+assert.equal(await win.locator('[data-testid="asset-original-name"]').count(), 0, 'and its details name none');
 assert.deepEqual([copy.mime, copy.width, copy.height], ['image/jpeg', 2560, 1920], 'the copy is web-sized');
 assertCopies(copy, 'jpg', [160, 480, 960, 1440], 2560, 'the web-sized copy has its responsive copies');
 assert.ok(copy.bytes < original.bytes, 'the copy is lighter than the original');

@@ -322,6 +322,29 @@ function walkImages(state: ProjectState, fn: (v: { assetId: string | null; alt?:
   visit(state.components);
 }
 
+describe('the original file name of an image', () => {
+  it('is the name of the file as it was on disk, beside a display name tidied from it', async () => {
+    const { record } = await importFile('team_photo-final_v2.jpg', await picture('jpeg'));
+    expect(record).toMatchObject({ kind: 'image', name: 'team photo final v2', originalName: 'team_photo-final_v2.jpg' });
+    let s = createStarterState('blank', 'Names', false);
+    s = applyOperations(s, [{ type: 'asset.add', asset: record }]).state;
+    s = applyOperations(s, [{ type: 'asset.update', assetId: record.id, name: 'Team' }]).state;
+    expect(s.assets.assets[record.id]).toMatchObject({ name: 'Team', originalName: 'team_photo-final_v2.jpg' });
+  });
+
+  it('follows a different located picture, through the relink', async () => {
+    const { dir, record } = await photoProject();
+    unlinkSync(join(dir, record.file));
+    const r = await locateAssetFile(dir, record, sourceFile('New_Nook-2.PNG', await picture('png', 900, 600)));
+    expect(r.same).toBe(false);
+    if (r.same) return;
+    let s = createStarterState('blank', 'Names', false);
+    s = applyOperations(s, [{ type: 'asset.add', asset: record }]).state;
+    s = applyOperations(s, [{ type: 'asset.relink', assetId: record.id, ...r.stored }]).state;
+    expect(s.assets.assets[record.id]).toMatchObject({ name: record.name, originalName: 'New_Nook-2.PNG' });
+  });
+});
+
 describe('bringing missing files back', () => {
   it('puts the same picture back where the library expects it, with its copies, under its recorded names', async () => {
     const { dir, record, source } = await photoProject();
@@ -330,6 +353,7 @@ describe('bringing missing files back', () => {
     // Found again under another name: what matters is that it is the same picture.
     const renamed = sourceFile('IMG_2041.JPG', readFileSync(source));
     const r = await locateAssetFile(dir, record, renamed);
+    // Nothing about the record changes, so it keeps the name it was added under.
     expect(r).toEqual({ same: true, written: [record.file, ...record.variants!.map((v) => v.file)], failed: [] });
     expect(readFileSync(join(dir, record.file)).equals(original)).toBe(true);
     for (const v of record.variants!) expect((await sharp(join(dir, v.file)).metadata()).width).toBe(v.width);
@@ -427,8 +451,9 @@ describe('bringing missing files back', () => {
 });
 
 describe('giving a library image a new file', () => {
-  const record = (): AssetRecord => ({ id: 'a_pic', name: 'Pic', file: 'static/assets/pic-11111111.jpg', mime: 'image/jpeg', bytes: 10, width: 1200, height: 800, hash: 'old', kind: 'image', createdAt: 'then', description: 'Our studio', altSuggestion: 'A studio', variants: [{ width: 480, file: 'static/assets/pic-11111111-480w.jpg' }] });
+  const record = (): AssetRecord => ({ id: 'a_pic', name: 'Pic', file: 'static/assets/pic-11111111.jpg', mime: 'image/jpeg', bytes: 10, width: 1200, height: 800, hash: 'old', kind: 'image', originalName: 'pic_final.JPG', createdAt: 'then', description: 'Our studio', altSuggestion: 'A studio', variants: [{ width: 480, file: 'static/assets/pic-11111111-480w.jpg' }] });
   const relink = { type: 'asset.relink' as const, assetId: 'a_pic', file: 'static/assets/new-22222222.webp', mime: 'image/webp', bytes: 20, hash: 'new', width: 300, height: 200 };
+  const named = { ...relink, originalName: 'new_pic.webp' };
 
   it('keeps the image, its details and every use with its alt text, and replaces the file details as a whole', () => {
     let s = createStarterState('blank', 'Relink', false);
@@ -437,8 +462,10 @@ describe('giving a library image a new file', () => {
     s = applyOperations(c.state, [{ type: 'node.insert', owner: { kind: 'page', id: c.state.site.homePageId }, definitionId: c.results[0].definitionId as string, props: { photo: { assetId: 'a_pic', alt: 'The studio at dusk' } } }]).state;
     const withCopies = applyOperations(s, [{ ...relink, file: 'static/assets/new-22222222.jpg', mime: 'image/jpeg', variants: [{ width: 480, file: 'static/assets/new-22222222-480w.jpg' }] }]).state.assets.assets.a_pic;
     expect(withCopies.variants).toEqual([{ width: 480, file: 'static/assets/new-22222222-480w.jpg' }]);
-    const after = applyOperations(s, [relink]).state;
-    expect(after.assets.assets.a_pic).toEqual({ id: 'a_pic', name: 'Pic', file: relink.file, mime: 'image/webp', bytes: 20, width: 300, height: 200, hash: 'new', kind: 'image', createdAt: 'then', description: 'Our studio', altSuggestion: 'A studio' });
+    // The old file's name never stands for a file that came without one.
+    expect(withCopies.originalName).toBeUndefined();
+    const after = applyOperations(s, [named]).state;
+    expect(after.assets.assets.a_pic).toEqual({ originalName: 'new_pic.webp',  id: 'a_pic', name: 'Pic', file: relink.file, mime: 'image/webp', bytes: 20, width: 300, height: 200, hash: 'new', kind: 'image', createdAt: 'then', description: 'Our studio', altSuggestion: 'A studio' });
     expect(JSON.stringify(after.pages)).toContain('{"assetId":"a_pic","alt":"The studio at dusk"}');
     expect(assetUsages(after).a_pic).toBe(1);
     const svg = applyOperations(s, [{ ...relink, file: 'static/assets/new-22222222.svg', mime: 'image/svg+xml', width: undefined, height: undefined }]).state.assets.assets.a_pic;
@@ -542,6 +569,7 @@ describe('a project whose picture was moved out of its folder', () => {
     const r = await c.locateAsset('a_reading', replacement);
     expect(r).toEqual({ ok: true, message: 'new-nook.png now shows wherever Reading nook is used.' });
     const relinked = s.state.assets.assets.a_reading;
+    expect(relinked.originalName).toBe('new-nook.png');
     expect(relinked).toMatchObject({ id: 'a_reading', name: 'Reading nook', altSuggestion: nook.altSuggestion, mime: 'image/png', width: 900 });
     expect(JSON.stringify(s.state.pages).match(/"assetId":"a_reading","alt":"[^"]*"/g)).toEqual(alts);
     await until(() => !c.snapshot()!.missingAssets.length, 'the relinked image to be found');

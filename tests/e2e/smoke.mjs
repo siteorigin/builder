@@ -28,6 +28,9 @@ const t0 = Date.now();
 const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 console.log('created and previewed in', Date.now() - t0, 'ms');
 await win.screenshot({ path: join(OUT, '03-editor.png') });
+const samples = Object.values((await win.evaluate(() => window.builder.project.snapshot())).state.assets.assets);
+assert.ok(samples.length, 'the sample images are in the library');
+assert.deepEqual(samples.filter((a) => a.originalName).map((a) => a.id), [], 'a bundled sample is no file of the author’s, so none has an original name');
 
 step('the right panel opens on the AI, the first of its views, at its setup with no provider connected (#696)');
 const dockTabs = win.locator('#editor-dock > .dock-tabs > [role="tab"]');

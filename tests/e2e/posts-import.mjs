@@ -88,6 +88,7 @@ const stored = readFileSync(join(dir, 'siteorigin/collections/posts/entries', `$
 assert.ok(!/alert|ads\.example|<script/i.test(stored), 'nothing unsafe is stored');
 const loaf = s1.state.assets.assets[winter.body.find((b) => b.type === 'image').assetId];
 assert.equal(loaf.width, 1600, 'the original upload is imported, not its resized copy');
+assert.equal(loaf.originalName, 'loaf.jpg', 'the picture keeps the name of the file that was read');
 assert.ok(loaf.variants?.length, 'the picture has responsive copies');
 for (const f of [loaf.file, ...loaf.variants.map((v) => v.file)]) assert.ok(existsSync(join(dir, f)), `${f} is in the project`);
 assert.ok(winter.featuredImage && s1.state.assets.assets[winter.featuredImage].name === 'snow', 'the featured picture is imported');

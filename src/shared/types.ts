@@ -1098,8 +1098,10 @@ export interface AssetRecord {
   /** For a font: the family it provides and the weight (or variable range, "100 900") and style of this file. */
   font?: FontFace;
   /**
-   * For a document: the name of the file it came from ("Exhibitor guide.pdf"), which visitors' downloads keep. For a
-   * font: the name of the file it was imported from, shown to tell its files apart.
+   * The name of the file on the author's computer this was added from, extension included, even when what is stored is
+   * a converted or web-sized copy ("IMG_4821.HEIC"); renaming the asset keeps it. A document's downloads keep it, and a
+   * font's tells its files apart. Absent for files that did not come from the author's disk (starter samples, component
+   * package pictures, copies made in Assets).
    */
   originalName?: string;
   createdAt: string;
