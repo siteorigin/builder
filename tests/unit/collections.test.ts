@@ -559,19 +559,19 @@ describe('collections format', () => {
     // Released as the seventh migration, upgrading format 7 to 8; the later UI state (8 to 9), style state (9 to 10)
     // and entry address (10 to 11) steps only change the version, collection templates (11 to 12) give a
     // collection without a layout the one its entries had, and entry articles (12 to 13), repeat filters (13 to 14),
-    // style strength (14 to 15), color schemes (15 to 16) and managed overlays (16 to 17) only change the version.
+    // style strength (14 to 15), color schemes (15 to 16), managed overlays (16 to 17) and project brief (17 to 18) only change the version.
     expect(MIGRATIONS.findIndex((m) => m.id === 'collections') + 1).toBe(7);
-    expect(MIGRATIONS.slice(7).map((m) => m.id)).toEqual(['ui-state', 'style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters', 'style-strength', 'color-schemes', 'managed-overlays']);
-    expect(SCHEMA_VERSION).toBe(17);
+    expect(MIGRATIONS.slice(7).map((m) => m.id)).toEqual(['ui-state', 'style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters', 'style-strength', 'color-schemes', 'managed-overlays', 'project-brief']);
+    expect(SCHEMA_VERSION).toBe(18);
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['**Bold** [link](entry:en_winter)'], terms: {}, author: 'Ana' });
     for (const d of [s.manifest, s.site, s.tokens, s.assets, s.themeLock, ...Object.values(s.pages), ...Object.values(s.components)]) d.schemaVersion = 7;
     s.collections.posts.settings.schemaVersion = 7;
     s.collections.posts.entries.en_spring.schemaVersion = 7;
     const r = migrateProject(s)!;
-    expect(r).toMatchObject({ from: 7, to: 17, applied: ['collections', 'ui-state', 'style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters', 'style-strength', 'color-schemes', 'managed-overlays'] });
-    expect(r.state.collections.posts.settings.schemaVersion).toBe(17);
-    expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(17);
-    expect(r.state.tokens.schemaVersion).toBe(17);
+    expect(r).toMatchObject({ from: 7, to: 18, applied: ['collections', 'ui-state', 'style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters', 'style-strength', 'color-schemes', 'managed-overlays', 'project-brief'] });
+    expect(r.state.collections.posts.settings.schemaVersion).toBe(18);
+    expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(18);
+    expect(r.state.tokens.schemaVersion).toBe(18);
     // The palettes step changes nothing in the tokens document but its version.
     expect(r.state.tokens).not.toHaveProperty('colorSchemeMode');
     expect(r.state.tokens).not.toHaveProperty('darkOverrides');
