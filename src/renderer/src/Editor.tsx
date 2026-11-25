@@ -518,6 +518,9 @@ export function Editor() {
           const asked = s.post;
           void saveOpenPost().then((saved) => {
             const now = getState();
+            // The writer was left while it saved (another panel, the SEO view): the post's preview never began, so the
+            // mode it asked for goes back to Edit, and the writer shows with Edit when it is opened again.
+            if (now.mode === 'preview' && now.postView === 'write' && now.leftTab !== 'posts') return setMode('edit');
             if (now.mode !== 'preview' || now.leftTab !== 'posts' || now.postView !== 'write') return;
             // Another post opened while this one saved: the preview was this one's, and the other's text may not be saved.
             if (now.post?.collectionId !== asked.collectionId || now.post?.entryId !== asked.entryId) return setMode('edit');

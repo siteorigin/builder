@@ -821,8 +821,9 @@ export function Canvas() {
         }
         case 'select': {
           // A pick on a page the editor has not yet confirmed (one leaving) selects nothing: also one made while another
-          // page chosen in Pages a moment ago waits to open, which then opens.
-          if (!st || !s.frameReady || leavingForPage()) return;
+          // page chosen in Pages a moment ago waits to open, which then opens. Nor does one that arrives once a workspace
+          // covers the canvas (#700): the page is out of sight.
+          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
@@ -831,7 +832,7 @@ export function Canvas() {
           break;
         }
         case 'dblclick': {
-          if (!st || !s.frameReady || leavingForPage()) return;
+          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
           const chain = chainOf(p.chain);
           const ref = pick(chain, true);
           // In Component Studio the element double-clicked is the one edited, as the preview names it: a list's item
@@ -940,7 +941,7 @@ export function Canvas() {
           frameTextFocus.active = p.on === true;
           break;
         case 'contextmenu': {
-          if (!st || !s.frameReady || leavingForPage()) return;
+          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
           pagePick();
           const chain = chainOf(p.chain);
           const ref = pick(chain, false);
@@ -1472,7 +1473,8 @@ export function Canvas() {
     if (trigger) return menu.openAt(trigger, items, `${name} actions`, { focusLast });
     // A right-click on the page: once the chip for the new selection has rendered, its More actions button
     // is where focus returns, so the keyboard picks up in the toolbar rather than inside the page.
-    requestAnimationFrame(() => menu.open(x, y, items, `${name} actions`, wrapRef.current?.querySelector<HTMLElement>('.ov-chip [aria-haspopup="menu"]') ?? canvasRef.current));
+    // A workspace that covered the canvas meanwhile (#700) leaves the menu unopened: it would act on the page out of sight.
+    requestAnimationFrame(() => !canvasCovered(activeWorkspace(getState())) && menu.open(x, y, items, `${name} actions`, wrapRef.current?.querySelector<HTMLElement>('.ov-chip [aria-haspopup="menu"]') ?? canvasRef.current));
   }
 
   /** Drag a selected element to reorder it among its siblings, with a live insertion indicator. */

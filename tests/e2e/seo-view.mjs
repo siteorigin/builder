@@ -160,6 +160,23 @@ await eventually(async () => assert.equal(await holder.isVisible(), false, 'the 
 await eventually(async () => assert.equal(await placeShown.innerText(), 'About', 'About is open'));
 assert.equal(await rail('pages').getAttribute('aria-pressed'), 'true', 'with the Pages list beside it');
 
+step('Preview chosen while a post is written, then the SEO view opened before it saves: the mode goes back to Edit');
+await rail('posts').click();
+await win.locator('.post-row .post-open', { hasText: 'Spring open studio' }).click();
+await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer shows the post'));
+const modeButton = (name) => win.locator('.toolbar [aria-label="Mode"]').getByRole('button', { name, exact: true });
+// Both in one task, so the view opens while the writer's save for the preview is still on its way.
+await win.evaluate(() => {
+  document.querySelector('.toolbar [aria-label="Mode"] [aria-label="Preview"]').click();
+  document.querySelector('.rail [data-rail="seo"]').click();
+});
+await eventually(async () => assert.equal(await holder.isVisible(), true, 'the view is open'));
+await eventually(async () => assert.equal(await modeButton('Edit').getAttribute('aria-pressed'), 'true', 'the post’s preview never began, so Edit is the mode again'));
+await rail('posts').click();
+await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer is back'));
+assert.equal(await modeButton('Preview').getAttribute('aria-pressed'), 'false', 'with Preview ready to choose again');
+assert.equal(await modeButton('Preview').isDisabled(), false);
+
 step('the chosen post deleted while the view is open: the view falls back to nothing chosen');
 await rail('seo').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
