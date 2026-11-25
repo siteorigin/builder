@@ -270,7 +270,7 @@ describe('where Image focus is offered', () => {
     expect(componentDetail(hero).parts.media.styleControls).toContain('objectPosition');
     const host = { state: () => s, revision: () => 1 } as unknown as ToolHost;
     const read = await executeTool('read_project', '{}', host, 'c1');
-    const listed = (read.content as { styleProperties: string[] }).styleProperties;
+    const listed = (read.content as unknown as { styleProperties: string[] }).styleProperties;
     const focus = listed.find((p) => p.startsWith('objectPosition'));
     expect(focus).toContain('"X% Y%"');
     // Transforms and transitions say their range and unit (#351).
@@ -291,7 +291,7 @@ describe('where Image focus is offered', () => {
   it('tells the AI about custom column sizes, card widths and row spans (#352)', async () => {
     const s = fresh();
     const host = { state: () => s, revision: () => 1 } as unknown as ToolHost;
-    const listed = ((await executeTool('read_project', '{}', host, 'c1')).content as { styleProperties: string[] }).styleProperties;
+    const listed = ((await executeTool('read_project', '{}', host, 'c1')).content as unknown as { styleProperties: string[] }).styleProperties;
     const template = listed.find((p) => p.startsWith('gridTemplate '))!;
     // The presets are still listed, then the grammar beyond them.
     expect(template).toContain('[1fr 1fr|1fr 2fr|');

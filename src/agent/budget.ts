@@ -19,7 +19,8 @@ export const SOFT_LIMIT = 0.5;
 export const HARD_LIMIT = 0.8;
 /** The latest turns are what the model is working from, and are never collapsed. */
 const PROTECTED_TURNS = 2;
-const TOMBSTONE = '[Superseded ';
+/** A collapsed result says so in this field beside its `ok` and `revision`, with the one line that stands in for it. */
+const SUPERSEDED = 'superseded';
 /** The smallest reply worth asking for: a request that leaves less room than this cannot be answered usefully. */
 export const MIN_OUTPUT_TOKENS = 1024;
 
@@ -76,11 +77,11 @@ interface ReadInfo {
 const PROJECT_EXTRAS = ['tokens', 'catalogue', 'components'];
 
 function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, index: number, args: Record<string, any>): ReadInfo | null {
-  if (item.isError || item.content.startsWith(TOMBSTONE)) return null;
   const body = parse(item.content);
+  if (item.isError || body?.[SUPERSEDED] !== undefined) return null;
+  // A result cut short still has its revision, beside what it left out.
   const partial = body?.truncated === true;
-  // A result cut short still starts with its revision, when it has one.
-  const revision = partial ? Number(/^\{"revision":(\d+)[,}]/.exec(String(body!.partial ?? ''))?.[1] ?? NaN) : body?.revision;
+  const revision = body?.revision;
   const base = { index, name: item.name, ...(partial ? { partial } : {}), ...(typeof revision === 'number' && Number.isFinite(revision) ? { revision } : {}) };
   if (item.name === 'read_page') {
     const pageId = String(body?.owner?.id ?? body?.id ?? args.pageId ?? '');
@@ -168,7 +169,10 @@ function replaces(newer: ReadInfo, older: ReadInfo): boolean {
   return true;
 }
 
-/** The one-line stand-in for a read. A page keeps its section IDs, so the model can still address them. */
+/**
+ * The one line that stands in for a read once it is collapsed, as its result's `superseded` field. A page keeps its
+ * section IDs, so the model can still address them.
+ */
 export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args: Record<string, any>): string {
   const body = parse(content);
   const rev = body?.revision !== undefined ? ` at rev ${body.revision}` : '';
@@ -178,37 +182,37 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
     const list = Array.isArray(body?.sections) ? body!.sections : body?.node ? [body.node] : [];
     const sections = list.slice(0, 12).map((s: Record<string, unknown>) => `${s.id} ${s.componentId ?? s.kind ?? ''}`.trim()).join(', ');
     const more = list.length > 12 ? `, and ${list.length - 12} more` : '';
-    return `${TOMBSTONE}read_page ${id}${title}${rev}.${sections ? ` Sections: ${sections}${more}.` : ''} Read it again before relying on its content.]`;
+    return `read_page ${id}${title}${rev}.${sections ? ` Sections: ${sections}${more}.` : ''} Read it again before relying on its content.`;
   }
-  if (read.name === 'read_component') return `${TOMBSTONE}read_component ${args.definitionId ?? args.componentId ?? body?.definitionId}. Read it again if you need its contract.]`;
+  if (read.name === 'read_component') return `read_component ${args.definitionId ?? args.componentId ?? body?.definitionId}. Read it again if you need its contract.`;
   // The hash is left out: only a fresh read gives one a patch can use.
   if (read.name === 'read_source') {
     const lines = typeof body?.source === 'string' ? ` lines ${body.startLine}–${body.endLine} of ${body.totalLines}` : '';
-    return `${TOMBSTONE}read_source ${body?.definitionId ?? args.definitionId}${lines}. Read it again for the current source and hash.]`;
+    return `read_source ${body?.definitionId ?? args.definitionId}${lines}. Read it again for the current source and hash.`;
   }
   if (read.name === 'inspect_element') {
     const owner = args.owner ?? body?.owner;
-    return `${TOMBSTONE}inspect_element ${args.nodeId} on ${owner?.kind} ${owner?.id}${rev}. Inspect it again before relying on it.]`;
+    return `inspect_element ${args.nodeId} on ${owner?.kind} ${owner?.id}${rev}. Inspect it again before relying on it.`;
   }
   if (read.name === 'inspect_layout') {
     const n = Array.isArray(args.refs) ? args.refs.length : 0;
-    return `${TOMBSTONE}inspect_layout ${body?.pageId ?? args.pageId} ${body?.viewport ?? args.viewport}${n ? `, ${n} element${n === 1 ? '' : 's'} only` : ''}. Measure it again if you need it.]`;
+    return `inspect_layout ${body?.pageId ?? args.pageId} ${body?.viewport ?? args.viewport}${n ? `, ${n} element${n === 1 ? '' : 's'} only` : ''}. Measure it again if you need it.`;
   }
   if (read.name === 'inspect_component') {
     const sample = componentSample(body, args);
     const offset = Number(body?.offset ?? args.offset ?? 0);
-    return `${TOMBSTONE}inspect_component ${body?.definitionId ?? args.definitionId ?? args.componentId}${sample === 'defaults' ? '' : ` placed at ${sample}`}${offset ? ` from offset ${offset}` : ''}${rev}. Inspect it again if you need it.]`;
+    return `inspect_component ${body?.definitionId ?? args.definitionId ?? args.componentId}${sample === 'defaults' ? '' : ` placed at ${sample}`}${offset ? ` from offset ${offset}` : ''}${rev}. Inspect it again if you need it.`;
   }
   if (read.name === 'read_collection_entry') {
     const at = Number(body?.offset ?? args.offset ?? 0);
     const title = typeof body?.title === 'string' ? ` "${body.title.slice(0, 40)}"` : '';
     const of = typeof body?.length === 'number' ? ` of ${body.length} characters` : '';
-    return `${TOMBSTONE}read_collection_entry ${String(body?.collectionId ?? args.collectionId).slice(0, 60)}/${String(body?.entryId ?? args.entryId).slice(0, 40)}${title}${at ? ` from offset ${at}` : ''}${of}${rev}. Read this part again before relying on its text or rewriting it.]`;
+    return `read_collection_entry ${String(body?.collectionId ?? args.collectionId).slice(0, 60)}/${String(body?.entryId ?? args.entryId).slice(0, 40)}${title}${at ? ` from offset ${at}` : ''}${of}${rev}. Read this part again before relying on its text or rewriting it.`;
   }
   if (read.name === 'list_collection_entries') {
     const at = Number(body?.offset ?? args.offset ?? 0);
     const total = typeof body?.total === 'number' ? `, ${body.total} entries` : '';
-    return `${TOMBSTONE}list_collection_entries ${String(body?.collectionId ?? args.collectionId).slice(0, 60)}${at ? ` from offset ${at}` : ''}${total}${rev}. List it again for the current entries.]`;
+    return `list_collection_entries ${String(body?.collectionId ?? args.collectionId).slice(0, 60)}${at ? ` from offset ${at}` : ''}${total}${rev}. List it again for the current entries.`;
   }
   if (read.name === 'audit_seo') {
     // A page the model named that no result confirmed is shown as far as a line allows.
@@ -219,12 +223,12 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
     const n = (v: unknown, one: string, many = `${one}s`) => `${Number(v ?? 0)} ${Number(v ?? 0) === 1 ? one : many}`;
     const counts = body?.counts && typeof body.counts === 'object' ? ` ${n(body.total, 'finding')} (${n(body.counts.error, 'error')}, ${n(body.counts.warning, 'warning')}, ${n(body.counts.info, 'info', 'info')})` : '';
     const orphans = Number(body?.links?.orphans ?? (body?.links?.orphan ? 1 : 0));
-    return `${TOMBSTONE}audit_seo ${scope}${offset ? ` from offset ${offset}` : ''}${linkOffset ? ` from linkOffset ${linkOffset}` : ''}${rev}.${counts}${counts && orphans ? `, ${n(orphans, 'orphan page')}` : ''}${counts ? '.' : ''} Audit again for details.]`;
+    return `audit_seo ${scope}${offset ? ` from offset ${offset}` : ''}${linkOffset ? ` from linkOffset ${linkOffset}` : ''}${rev}.${counts}${counts && orphans ? `, ${n(orphans, 'orphan page')}` : ''}${counts ? '.' : ''} Audit again for details.`;
   }
   const pages = Array.isArray(body?.pages) ? body!.pages : [];
   const list = pages.slice(0, 12).map((p: Record<string, unknown>) => `${p.id} ${p.route ?? ''}`.trim()).join(', ');
   const more = pages.length > 12 ? `, and ${pages.length - 12} more` : '';
-  return `${TOMBSTONE}read_project${rev}${args.sections?.length ? ` (${args.sections.join(', ')})` : ''}.${list ? ` Pages: ${list}${more}.` : ''} Read it again if you need it.]`;
+  return `read_project${rev}${args.sections?.length ? ` (${args.sections.join(', ')})` : ''}.${list ? ` Pages: ${list}${more}.` : ''} Read it again if you need it.`;
 }
 
 export interface BudgetResult {
@@ -283,7 +287,9 @@ export function applyContextBudget(
     });
     const collapse = (r: ReadInfo) => {
       const it = items[r.index] as Extract<CanonicalItem, { kind: 'tool_result' }>;
-      const line = tombstoneFor(r, it.content, argsByCall.get(it.callId) ?? {}).replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ');
+      // Still a result like any other: it worked, at the revision it was read at.
+      const text = tombstoneFor(r, it.content, argsByCall.get(it.callId) ?? {}).replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ');
+      const line = JSON.stringify({ ok: true, revision: r.revision ?? opts.revision ?? 0, [SUPERSEDED]: text });
       if (line.length >= it.content.length) return;
       estimate -= estimateTokens(it.content) - estimateTokens(line);
       it.content = line;

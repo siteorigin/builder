@@ -23,6 +23,7 @@ import { followText, joinedLines } from '@shared/contact-links';
 import { normalizeProp, normalizeScalar } from '@engine/values';
 import { compactPropsSchema, IMAGE_SCHEMA, REQUIRED_IMAGE_SCHEMA, type JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
+import { applyFailure, replayed, stamp, toolError, type ResultOutcome, type ToolResult } from './result';
 
 const MAX_SECTIONS = 16;
 
@@ -129,7 +130,7 @@ export interface MacroMemory {
    */
   componentDrafts?: Map<string, { args: Record<string, unknown>; target: string | null }>;
   /** Finished calls by call ID: a replayed call returns its first result and changes nothing. */
-  replay: Map<string, { args: string; ok: boolean; content: unknown }>;
+  replay: Map<string, { args: string; result: ToolResult }>;
 }
 
 export const newMacroMemory = (): MacroMemory => ({ drafts: new Map(), pendingLinks: [], replay: new Map() });
@@ -139,11 +140,9 @@ export interface FieldIssue {
   message: string;
 }
 
+/** A call refused for problems in its fields, each named by its path (in details.fields) and in the message. */
 export function fieldError(issues: FieldIssue[], note: string): ToolOutcome {
-  return {
-    ok: false,
-    content: { error: 'VALIDATION_FAILED', message: `${issues.map((i) => `${i.field}: ${i.message}`).join('; ')}. ${note}`, fields: issues }
-  };
+  return toolError('VALIDATION_FAILED', `${issues.map((i) => `${i.field}: ${i.message}`).join('; ')}. ${note}`, { details: { fields: issues } });
 }
 
 /**
@@ -509,7 +508,7 @@ function pendingLinkOps(state: ProjectState, memory: MacroMemory, route: string,
  * `deferred`: routes that exist, whose links wait on pages a run limited to one page may not change; a run that may
  * change those pages connects them.
  */
-export async function connectPendingLinks(host: ToolHost, memory: MacroMemory, key: string): Promise<{ outcome?: ToolOutcome; missing: string[]; deferred: string[]; error?: string }> {
+export async function connectPendingLinks(host: ToolHost, memory: MacroMemory, key: string): Promise<{ outcome?: Extract<ToolOutcome, { ok: true }>; missing: string[]; deferred: string[]; error?: string }> {
   const state = host.state();
   memory.pendingLinks = memory.pendingLinks.filter((p) => stillWaiting(state, p));
   const ops: EditOperation[] = [];
@@ -522,11 +521,11 @@ export async function connectPendingLinks(host: ToolHost, memory: MacroMemory, k
     ops.push(...r.ops);
     filled.push(...r.filled);
   }
-  let outcome: ToolOutcome | undefined;
+  let outcome: Extract<ToolOutcome, { ok: true }> | undefined;
   if (ops.length) {
     const res = await host.apply(ops, host.revision(), 'Connect page links', key);
     if (!res.ok) return { missing: [...new Set(memory.pendingLinks.map((p) => p.route))], deferred: [], error: res.error?.message ?? 'The links could not be connected.' };
-    outcome = { ok: true, mutated: true, ops, results: res.results, content: { ok: true } };
+    outcome = { ok: true, mutated: true, ops, results: res.results, content: { revision: res.revision } };
   }
   memory.pendingLinks = memory.pendingLinks.filter((p) => !filled.includes(p));
   // Only a route no page has is missing: a link on another page that a run limited to one page leaves waiting is not.
@@ -715,15 +714,17 @@ function planSections(state: ProjectState, page: PageDoc | undefined, sections: 
   return { slots, removed, kept };
 }
 
-export async function runUpsert(rawArgs: UpsertArgs, host: ToolHost, callId: string, memory: MacroMemory): Promise<ToolOutcome> {
+export async function runUpsert(rawArgs: UpsertArgs, host: ToolHost, callId: string, memory: MacroMemory): Promise<ToolOutcome | ResultOutcome> {
   const fingerprint = JSON.stringify(rawArgs);
+  const revision = host.revision();
   const prior = memory.replay.get(callId);
   if (prior) {
-    if (prior.args === fingerprint) return { ok: prior.ok, content: prior.content };
-    return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'That tool call ID was already used for a different request.' } };
+    if (prior.args === fingerprint) return replayed(prior.result);
+    return toolError('INVALID_ARGUMENT', 'That tool call ID was already used for a different request.');
   }
-  const outcome = await compileAndApply(rawArgs, host, callId, memory);
-  memory.replay.set(callId, { args: fingerprint, ok: outcome.ok, content: outcome.content });
+  // Kept whole, with the revision it was made at, so a replay says exactly what the call said the first time.
+  const outcome = stamp(await compileAndApply(rawArgs, host, callId, memory), revision);
+  memory.replay.set(callId, { args: fingerprint, result: outcome.content });
   return outcome;
 }
 
@@ -739,7 +740,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     const message = own
       ? `This request is limited to ${limit.label} (${own}), so upsert_page_with_sections can only build that page, not ${route}. Nothing was applied. Use slug "${own}", or ask the user with request_clarification (widenScope: true) before changing other pages.`
       : `${limit.label} is no longer in the site. Nothing was applied.`;
-    return { ok: false, content: { ok: false, revision: host.revision(), error: { code: 'SCOPE_MISMATCH', message } } };
+    return toolError('SCOPE_MISMATCH', message);
   }
 
   // Repairing: the rejected page is still held, so only the named sections come back.
@@ -962,7 +963,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   const res = await host.apply(ops, host.revision(), createOp ? `Add page ${title}` : `Update ${title}`, callId, { navigation });
   if (!res.ok) {
     keepDraft();
-    return { ok: false, content: { ok: false, revision: res.revision, error: res.error } };
+    return applyFailure(res);
   }
 
   // Record where this page's sections landed, and any links waiting for pages not built yet.

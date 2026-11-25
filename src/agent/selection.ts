@@ -14,6 +14,7 @@ import { checkProps, chooseVariants, fieldError, variantsJsonSchema, type FieldI
 import { propJsonSchema, propsJsonSchema, type JsonSchema } from './propschema';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
+import { applyFailure, toolError } from './result';
 import { repeatedPartList } from '@shared/item-styles';
 import { partReach, type PartReach } from './scope';
 import { enclosingGroup, partInInteractionGroup } from '@shared/interaction-groups';
@@ -392,12 +393,12 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
   return tools;
 }
 
-const noSelection = (): ToolOutcome => ({ ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Nothing is selected, or the selected element no longer exists.' } });
+const noSelection = (): ToolOutcome => toolError('INVALID_ARGUMENT', 'Nothing is selected, or the selected element no longer exists.');
 
 export async function applySelected(ops: EditOperation[], host: ToolHost, label: string, callId: string): Promise<ToolOutcome> {
   if (!ops.length) return { ok: true, content: { ok: true, revision: host.revision(), note: 'Nothing to change.' } };
   const res = await host.apply(ops, host.revision(), label, callId);
-  if (!res.ok) return { ok: false, content: { ok: false, revision: res.revision, error: res.error } };
+  if (!res.ok) return applyFailure(res);
   return { ok: true, mutated: true, ops, results: res.results, content: { ok: true, revision: res.revision, ...(res.results?.some((x) => (x as { itemId?: string }).itemId) ? { results: res.results } : {}) } };
 }
 
@@ -517,7 +518,7 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     const res = await applySelected([op], host, `Edit ${schema.label}`, callId);
     // A new row or column's ID, for the next step that fills it in.
     const made = res.ok ? (res.results?.[0] as { rowId?: string; columnId?: string } | undefined) : undefined;
-    return made?.rowId || made?.columnId ? { ...res, content: { ...(res.content as Record<string, unknown>), ...made } } : res;
+    return res.ok && (made?.rowId || made?.columnId) ? { ...res, content: { ...res.content, ...made } } : res;
   }
 
   const a = args as z.infer<(typeof SELECTION_ARGS)['style_selected_element']>;

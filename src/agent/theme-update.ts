@@ -19,6 +19,7 @@ import { getTree, instancesOf, subtreeIds } from '@engine/tree';
 import { componentDetail } from './context';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
+import { applyFailure, toolError } from './result';
 
 /**
  * The project's theme updates, worked out once per project state: a committed state is never changed in place, and
@@ -305,20 +306,16 @@ export async function runUpdateThemeComponent(args: z.infer<typeof UPDATE_THEME_
   if (!def) {
     const themed = catalogueComponent(state.site.themeId, args.definitionId);
     const message = themed ? `"${themed.name}" is not installed yet: placing it uses the theme's current version.` : `No component "${args.definitionId}".`;
-    return { ok: false, content: { error: 'INVALID_ARGUMENT', message } };
+    return toolError('INVALID_ARGUMENT', message);
   }
   const next = newerVersion(state, def);
-  if (!next) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `"${def.name}" has no newer theme version: it is ${def.owner === 'project' ? "the project's own component" : 'already current'}.` } };
+  if (!next) return toolError('INVALID_ARGUMENT', `"${def.name}" has no newer theme version: it is ${def.owner === 'project' ? "the project's own component" : 'already current'}.`);
   const held = themeUpdatesOf(state).kept.find((k) => k.id === def.id);
   const adds = themeUpdateChanges(def, next);
-  if (held)
-    return {
-      ok: false,
-      content: { error: 'UPDATE_HELD', message: `"${def.name}" cannot be updated: ${held.reason}`, newVersionAdds: Object.keys(adds).length ? adds : null, note: heldNote(held.reason) }
-    };
+  if (held) return toolError('UPDATE_HELD', `"${def.name}" cannot be updated. ${heldNote(held.reason)}`, { details: { newVersionAdds: Object.keys(adds).length ? adds : null } });
   const ops: EditOperation[] = [{ type: 'theme.refresh', definitionIds: [def.id] }];
   const res = await host.apply(ops, host.revision(), `Update ${def.name} to the theme's newer version`, callId, { themeRefresh: def.id });
-  if (!res.ok) return { ok: false, content: { ok: false, revision: res.revision, error: res.error } };
+  if (!res.ok) return applyFailure(res);
   const now = host.state().components[def.id] ?? next;
   return {
     ok: true,

@@ -334,7 +334,7 @@ describe('agent benchmark', () => {
       expect(second.summary).toContain('Counter hours');
       // Without the benchmark's measurer the tool says it cannot measure, the script fixes nothing, and the case fails.
       const blind = await runCase({ ...byId('repair-component-on-phones'), measureComponents: false }, scripted);
-      expect(JSON.parse(blind.trace.turns[0].toolCalls[0].result!).message).toContain('not available here');
+      expect(JSON.parse(blind.trace.turns[0].toolCalls[0].result!).error.message).toContain('not available here');
       expect(blind.result.checks.filter((x) => !x.pass).map((x) => x.id)).toEqual(['fits-on-phone', 'readable-on-phone']);
       // A constrained local model building one on Create component measures it the same way, and fixes what it found.
       const built = await runCase(byId('create-and-check-on-phones'), scripted);

@@ -20,6 +20,7 @@ import type { Authority, PartAuthority } from './scope';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
 import { isEmptyPropValue, requiredHint } from '@shared/required';
+import { toolError } from './result';
 
 /** The design a run is about: a component edited everywhere, or one of its nodes selected there. */
 export interface DefinitionTarget {
@@ -172,7 +173,7 @@ export const DEFINITION_BRIEFS: Record<DefinitionToolName, string> = {
   remove_definition_node: 'Removes it and what is inside it from every placement.'
 };
 
-const noTarget = (): ToolOutcome => ({ ok: false, content: { error: 'INVALID_ARGUMENT', message: "The component's design, or the node selected in it, is no longer in the site." } });
+const noTarget = (): ToolOutcome => toolError('INVALID_ARGUMENT', "The component's design, or the node selected in it, is no longer in the site.");
 const NOTHING_APPLIED = 'Nothing was applied.';
 
 interface Scope {
@@ -618,7 +619,7 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
     const res = await applySelected([op], host, `Add ${a.primitive}`, callId);
     // The new node's ID, for the next step that binds, styles or exposes it.
     const made = res.ok ? (res.results?.[0] as { nodeId?: string } | undefined)?.nodeId : undefined;
-    return made ? { ...res, content: { ...(res.content as Record<string, unknown>), nodeId: made } } : res;
+    return res.ok && made ? { ...res, content: { ...res.content, nodeId: made } } : res;
   }
 
   if (name === 'remove_definition_node') {

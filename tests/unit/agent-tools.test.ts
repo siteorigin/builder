@@ -303,7 +303,7 @@ describe('upsert_page_with_sections', () => {
       () => [call('b1', 'upsert_page_with_sections', bad)],
       (req) => {
         const r = lastResult(req);
-        expect(r.fields.map((f: { field: string }) => f.field)).toEqual(['sections[1].props.items[0].icon', 'sections[2].variant', 'sections[2].props.headline']);
+        expect(r.error.details.fields.map((f: { field: string }) => f.field)).toEqual(['sections[1].props.items[0].icon', 'sections[2].variant', 'sections[2].props.headline']);
         expect(pageAt(session.state, '/services/')).toBeUndefined();
         return [
           call('b2', 'upsert_page_with_sections', {
@@ -696,8 +696,8 @@ describe('update_site_brand', () => {
     const { session, adapter, run } = await setup([() => [call('f1', 'update_site_brand', { siteName: 'Nope', headingFont: 'Comic Sans', brandColor: 'blue' })], () => finish()]);
     await run('Rebrand');
     const r = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
-    expect(r.fields.map((f: { field: string }) => f.field).sort()).toEqual(['brandColor', 'headingFont']);
-    expect(r.message).toContain('not installed');
+    expect(r.error.details.fields.map((f: { field: string }) => f.field).sort()).toEqual(['brandColor', 'headingFont']);
+    expect(r.error.message).toContain('not installed');
     expect(session.state.site.name).toBe('Test Studio');
     expect(session.state.tokens.overrides).toEqual({});
   });
@@ -726,9 +726,9 @@ describe('update_site_brand', () => {
     const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { headingFont: 'Lora', typeScale: 'huge' })], () => finish()]);
     await run('Make the type huge');
     const r = lastResult(adapter.requests[1]);
-    expect(r.error).toBe('INVALID_ARGUMENT');
+    expect(r.error.code).toBe('INVALID_ARGUMENT');
     // The message names the field and the scales it can take.
-    expect(r.message).toMatch(/^typeScale: .*editorial/);
+    expect(r.error.message).toMatch(/^typeScale: .*editorial/);
     expect(session.state.tokens.overrides).toEqual({});
   });
 
@@ -740,9 +740,9 @@ describe('update_site_brand', () => {
     const before = structuredClone(session.state.tokens);
     await run('Rename the site and tighten the type');
     const r = lastResult(adapter.requests[1]);
-    expect(r.error).toBe('VALIDATION_FAILED');
-    expect(r.fields).toEqual([expect.objectContaining({ field: 'typeScale' })]);
-    expect(r.fields[0].message).toContain('"Heading 3"');
+    expect(r.error.code).toBe('VALIDATION_FAILED');
+    expect(r.error.details.fields).toEqual([expect.objectContaining({ field: 'typeScale' })]);
+    expect(r.error.details.fields[0].message).toContain('"Heading 3"');
     expect(session.state.site.name).toBe('Test Studio');
     expect(session.state.tokens).toEqual(before);
   });
@@ -852,7 +852,7 @@ describe('update_site_brand', () => {
     const before = structuredClone(session.state.tokens);
     await run('Recolor it');
     expect(JSON.stringify(lastResult(adapter.requests[1]))).toContain('paletteMood');
-    expect(lastResult(adapter.requests[2]).fields).toEqual([expect.objectContaining({ field: 'brandColor', message: expect.stringContaining('cannot be read') })]);
+    expect(lastResult(adapter.requests[2]).error.details.fields).toEqual([expect.objectContaining({ field: 'brandColor', message: expect.stringContaining('cannot be read') })]);
     expect(session.state.site.name).toBe('Test Studio');
     expect(session.state.tokens).toEqual(before);
   });
@@ -861,7 +861,7 @@ describe('update_site_brand', () => {
     const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'signal', siteName: 'Kept Out', brandColor: '#1e3a5f', accentColor: '#000000', paletteMood: 'neutral' })], () => finish()]);
     const before = structuredClone(session.state);
     await run('Navy with a black accent');
-    expect(lastResult(adapter.requests[1]).fields).toEqual([
+    expect(lastResult(adapter.requests[1]).error.details.fields).toEqual([
       expect.objectContaining({ field: 'accentColor', message: expect.stringMatching(/^no neutral palette keeps accent labels in dark sections.* readable in this theme with this accent color; send a lighter accentColor, or leave it out and one is made$/) })
     ]);
     expect(session.state.site).toEqual(before.site);
@@ -911,7 +911,7 @@ describe('update_site_brand', () => {
     const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'foundation-alt', siteName: 'Kept Out' })], () => finish()]);
     await run('Use the other theme');
     const r = lastResult(adapter.requests[1]);
-    expect(r.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('Use one of: editorial, signal') })]);
+    expect(r.error.details.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('Use one of: editorial, signal') })]);
     expect(session.state.site.themeId).toBe('foundation');
     expect(session.state.site.name).toBe('Test Studio');
   });
@@ -926,7 +926,7 @@ describe('update_site_brand', () => {
     const tokens = structuredClone(session.state.tokens);
     await run('Go back to the classic look and rename the site');
     const r = lastResult(adapter.requests[1]);
-    expect(r.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('JetBrains Mono: your site uses this font') })]);
+    expect(r.error.details.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('JetBrains Mono: your site uses this font') })]);
     expect(session.state.site.themeId).toBe('signal');
     expect(session.state.site.name).toBe('Test Studio');
     expect(session.state.tokens).toEqual(tokens);
@@ -1082,7 +1082,7 @@ describe('selection tools', () => {
     const { result } = await run('Tighten this headline', heroRef(session.state));
     expect(result?.status).toBe('completed');
     const first = JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content);
-    expect(first.fields.map((f: { field: string }) => f.field).sort()).toEqual(['props.nope', 'props.primaryLink']);
+    expect(first.error.details.fields.map((f: { field: string }) => f.field).sort()).toEqual(['props.nope', 'props.primaryLink']);
     const hero = nodeAt(session.state, 0);
     expect(hero.props.heading).toBe('Sharper headline');
     expect((hero.props.primaryLink as LinkValue).type).toBe('page');
@@ -1477,11 +1477,11 @@ describe('selection tools', () => {
     expect(JSON.stringify(strictTitle)).toMatch(/"type":"string".*"type":"object"/);
     expect(findForbiddenShapes(strict)).toEqual([]);
     expect(JSON.stringify(strict)).not.toContain('$json');
-    expect(lastResult(adapter.requests[1]).fields).toEqual([{ field: 'fields.title', message: 'must be an image: an asset ID or { assetId, alt } for "stats"' }]);
+    expect(lastResult(adapter.requests[1]).error.details.fields).toEqual([{ field: 'fields.title', message: 'must be an image: an asset ID or { assetId, alt } for "stats"' }]);
     const grid = nodeAt(session.state, 2).props;
     expect((grid.stats as Array<{ title: unknown }>).map((i) => i.title)).toEqual([{ assetId: null, alt: 'Chart' }]);
     expect((grid.items as Array<{ title: string }>).at(-1)?.title).toBe('Care');
-    expect(lastResult(adapter.requests[4]).fields).toEqual([{ field: 'fields.title', message: 'must be a link: a route, a URL or { type, target } for "links"' }]);
+    expect(lastResult(adapter.requests[4]).error.details.fields).toEqual([{ field: 'fields.title', message: 'must be a link: a route, a URL or { type, target } for "links"' }]);
     expect(grid.links).toBeUndefined();
   });
 
@@ -1528,6 +1528,18 @@ describe('context budget', () => {
   ];
   const opts = (window: number) => ({ system: 'sys', tools: [], capabilities: { contextWindowTokens: window, maxOutputTokens: 500 }, isMutation: (n: string) => n === 'upsert_page_with_sections' });
   const results = (items: CanonicalItem[]) => items.filter((i) => i.kind === 'tool_result') as Array<Extract<CanonicalItem, { kind: 'tool_result' }>>;
+  /** A collapsed result as the line it shows, once it is checked to be a result like any other: ok, at a revision. */
+  const shown = (content: string) => {
+    let body: Record<string, unknown> | null = null;
+    try {
+      body = JSON.parse(content);
+    } catch {
+      return content;
+    }
+    if (typeof body?.superseded !== 'string') return content;
+    expect(body).toEqual({ ok: true, revision: expect.any(Number), superseded: body.superseded });
+    return `[Superseded ${body.superseded}]`;
+  };
 
   it('collapses a superseded read to one line, keeping IDs and valid provider replay', () => {
     const items: CanonicalItem[] = [{ kind: 'user', text: 'go' }, ...read('a', { pageId: 'pg_a' }, big(1)), ...read('b', { pageId: 'pg_b' }, big(1, 'pg_b')), ...read('c', { pageId: 'pg_a' }, big(2)), ...read('d', { pageId: 'pg_b' }, big(2, 'pg_b'))];
@@ -1535,9 +1547,10 @@ describe('context budget', () => {
     const r = applyContextBudget(items, opts(6000));
     expect(r.tombstoned).toBe(2);
     const [a, b, c, d] = results(items);
-    expect(a.content).toMatch(/^\[Superseded read_page pg_a "Home" at rev 1\. Sections: n_1 hero\.split, n_2 cta\.banner\./);
+    expect(shown(a.content)).toMatch(/^\[Superseded read_page pg_a "Home" at rev 1\. Sections: n_1 hero\.split, n_2 cta\.banner\./);
+    expect(JSON.parse(a.content)).toMatchObject({ ok: true, revision: 1 });
     expect(a.content).not.toContain('\n');
-    expect(b.content).toContain('Superseded');
+    expect(shown(b.content)).toContain('Superseded');
     expect(c.content).toBe(big(2));
     expect(d.content).toBe(big(2, 'pg_b'));
     // Every call keeps its result, and assistant turns (reasoning included) are untouched.
@@ -1599,7 +1612,7 @@ describe('context budget', () => {
     const layout = (pageId: string, viewport: string, rev?: number) => JSON.stringify({ ...(rev !== undefined ? { revision: rev } : {}), pageId, viewport, width: 390, report: { issues: [], headings: pad } });
     const project = (rev = 3) => JSON.stringify({ revision: rev, homePageId: 'pg_a', pages: [{ id: 'pg_a', route: '/' }, { id: 'pg_b', route: '/about/' }], tokens: pad });
     const filler = (id: string) => read(id, {}, '{"errors":[]}', 'validate_project');
-    const at = (items: CanonicalItem[], callId: string) => results(items).find((r) => r.callId === callId)!.content;
+    const at = (items: CanonicalItem[], callId: string) => shown(results(items).find((r) => r.callId === callId)!.content);
     const optsWith = (window: number, extra: Partial<Parameters<typeof applyContextBudget>[1]> = {}) => ({ ...opts(window), isMutation: (n: string) => n === 'apply_source_patch' || n === 'apply_operations', ...extra });
 
     it('collapses a read another read of the same thing replaced, and nothing it did not', () => {
@@ -1638,7 +1651,8 @@ describe('context budget', () => {
     });
 
     it('never lets a read cut short by the size limit replace a complete one', () => {
-      const cut = (s: string) => JSON.stringify({ truncated: true, note: 'Result was long', partial: s.slice(0, 3000) });
+      // A cut result keeps its ok and revision as fields of their own.
+      const cut = (s: string) => JSON.stringify({ ok: true, revision: (JSON.parse(s) as { revision?: number }).revision, truncated: true, note: 'Result was long', partial: s.slice(0, 3000) });
       const items: CanonicalItem[] = [
         ...read('a', { pageId: 'pg_a' }, big(1)),
         ...read('b', { pageId: 'pg_a' }, cut(big(2))),
@@ -1721,7 +1735,8 @@ describe('context budget', () => {
         { kind: 'assistant', text: '', toolCalls: [{ id: 'm', name: 'apply_operations', arguments: '{"operations":[]}' }] },
         { kind: 'tool_result', callId: 'm', name: 'apply_operations', content: '{"ok":true,"revision":3}' }
       ];
-      const cut = (s: string) => JSON.stringify({ truncated: true, note: 'Result was long', partial: s.slice(0, 3000) });
+      // A cut result keeps its ok and revision as fields of their own.
+      const cut = (s: string) => JSON.stringify({ ok: true, revision: (JSON.parse(s) as { revision?: number }).revision, truncated: true, note: 'Result was long', partial: s.slice(0, 3000) });
       const items = (): CanonicalItem[] => [
         ...read('p1', {}, cut(project(3)), 'read_project'),
         ...read('e1', { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' }, element('pg_a', 3), 'inspect_element'),
@@ -1736,7 +1751,7 @@ describe('context budget', () => {
       // Links connected when a page was created move the revision without a tool result.
       const moved = items();
       applyContextBudget(moved, optsWith(2000, { revision: 4 }));
-      expect(at(moved, 'p1')).toMatch(/^\[Superseded read_project\. /);
+      expect(at(moved, 'p1')).toMatch(/^\[Superseded read_project at rev 3\. /);
       expect(at(moved, 'e1')).toMatch(/^\[Superseded inspect_element n_1/);
       expect(at(moved, 'l1')).toBe('[Superseded inspect_layout pg_a phone. Measure it again if you need it.]');
     });
@@ -1816,7 +1831,7 @@ describe('context budget', () => {
       applyContextBudget(still, optsWith(2000, { revision: 3 }));
       for (const id of ['a3', 'a4', 'a5', 'a6', 'a7']) expect(at(still, id), id).toBe(at(kept, id));
       // A refused audit is no read.
-      const refused: CanonicalItem[] = [...read('e1', { pageId: '/nowhere/' }, JSON.stringify({ error: 'INVALID_ARGUMENT', message: pad }), 'audit_seo'), ...read('e2', { pageId: '/nowhere/' }, JSON.stringify({ error: 'INVALID_ARGUMENT', message: pad }), 'audit_seo'), ...filler('f1'), ...filler('f2')];
+      const refused: CanonicalItem[] = [...read('e1', { pageId: '/nowhere/' }, JSON.stringify({ error: { code: 'INVALID_ARGUMENT', message: pad } }), 'audit_seo'), ...read('e2', { pageId: '/nowhere/' }, JSON.stringify({ error: { code: 'INVALID_ARGUMENT', message: pad } }), 'audit_seo'), ...filler('f1'), ...filler('f2')];
       (refused[1] as Extract<CanonicalItem, { kind: 'tool_result' }>).isError = true;
       (refused[3] as Extract<CanonicalItem, { kind: 'tool_result' }>).isError = true;
       applyContextBudget(refused, optsWith(2000, { revision: 4 }));
@@ -2317,8 +2332,8 @@ describe('tone and layout in one call (#132)', () => {
     await run('Add a Care page with a muted two-column grid, then make it four columns');
     expect(gridOn(session.state, '/care/').variants).toEqual({ tone: 'muted', layout: 'four-columns' });
     const refused = lastResult(adapter.requests[3]);
-    expect(refused.error).toBe('VALIDATION_FAILED');
-    expect(refused.fields.map((f: { field: string }) => f.field)).toEqual(['sections[0].variants.tone', 'sections[0].variants.layout']);
+    expect(refused.error.code).toBe('VALIDATION_FAILED');
+    expect(refused.error.details.fields.map((f: { field: string }) => f.field)).toEqual(['sections[0].variants.tone', 'sections[0].variants.layout']);
     // The tool offers one closed choice per axis.
     const schema = upsertToolSchema(session.state) as { properties: { sections: { items: { oneOf: Array<{ properties: Record<string, { properties?: Record<string, { enum?: string[] }>; additionalProperties?: boolean }> }> } } } };
     const grid = schema.properties.sections.items.oneOf.find((o) => JSON.stringify(o.properties.componentId).includes('"features.grid"'))!;
@@ -2371,11 +2386,11 @@ describe('unchanged legacy values (#132)', () => {
     expect(lastResult(adapter.requests[1]).ok).toBe(true);
     expect(lastResult(adapter.requests[2]).ok).toBe(true);
     const third = lastResult(adapter.requests[3]);
-    expect(third.error).toBe('VALIDATION_FAILED');
-    expect(third.fields.map((f: { field: string }) => f.field)).toEqual(['sections[0].props.items[0].icon']);
+    expect(third.error.code).toBe('VALIDATION_FAILED');
+    expect(third.error.details.fields.map((f: { field: string }) => f.field)).toEqual(['sections[0].props.items[0].icon']);
     // A new item has nothing stored, so an unknown icon on it is refused.
     const fourth = lastResult(adapter.requests[4]);
-    expect(fourth.fields.map((f: { field: string }) => f.field)).toEqual([`sections[0].props.items[${sent.length}].icon`]);
+    expect(fourth.error.details.fields.map((f: { field: string }) => f.field)).toEqual([`sections[0].props.items[${sent.length}].icon`]);
     const first = (gridOn(session.state).props.items as ListItem[])[0];
     expect(first).toMatchObject({ id: sent[0].id, title: 'Renamed', icon: 'flux-capacitor', description: 'By title.' });
   });
@@ -2469,7 +2484,7 @@ describe('reading long rich text whole (#132)', () => {
     while (offset !== null) {
       const r = await read({ prop: 'body', offset });
       expect(r.ok).toBe(true);
-      const c = r.content as { text: string; next: number | null; total: number; format: string };
+      const c = r.content as unknown as { text: string; next: number | null; total: number; format: string };
       expect(c.format).toBe('markdown');
       expect(JSON.stringify(c).length).toBeLessThan(24000);
       text += c.text;
@@ -2483,7 +2498,7 @@ describe('reading long rich text whole (#132)', () => {
     expect((await read({ prop: 'nope' })).ok).toBe(false);
     expect((await read({ prop: 'heading', itemId: 'x', field: 'y' })).ok).toBe(false);
     expect((await read({ itemId: 'x' })).ok).toBe(false);
-    expect(((await read({ prop: 'heading' })).content as { text: string }).text).toBe('Our story');
+    expect(((await read({ prop: 'heading' })).content as unknown as { text: string }).text).toBe('Our story');
   });
 });
 
@@ -2670,7 +2685,7 @@ describe('values sent back as they were read (#132)', () => {
     const order = (onHome(session.state, 'features.grid').props.items as ListItem[]).map((i) => [i.id, i.icon]);
     expect(order.slice(0, 2)).toEqual([[sent[1].id, 'warp-drive'], [sent[0].id, 'flux-capacitor']]);
     // The second row reusing the first row's id is a new card: its retired icon is refused by its own field.
-    expect(lastResult(adapter.requests[2]).fields.map((f: { field: string }) => f.field)).toEqual(['sections[0].props.items[1].icon']);
+    expect(lastResult(adapter.requests[2]).error.details.fields.map((f: { field: string }) => f.field)).toEqual(['sections[0].props.items[1].icon']);
   });
 
   it('keeps a link to a removed page and a picture whose file is gone when a string-typed tool sends them back', async () => {
@@ -2699,7 +2714,7 @@ describe('values sent back as they were read (#132)', () => {
     expect(lastResult(adapter.requests[1]).ok).toBe(true);
     const hero = pageAt(session.state, '/')!.nodes[home.rootIds[0]] as InstanceNode;
     expect(hero.props).toMatchObject({ heading: 'New headline', primaryLink: { type: 'page', target: 'pg_gone' }, image: { assetId: 'a_gone', alt: 'Kitchen', decorative: true } });
-    expect(lastResult(adapter.requests[2]).fields?.map((f: { field: string }) => f.field)).toEqual(['props.image']);
+    expect(lastResult(adapter.requests[2]).error.details.fields?.map((f: { field: string }) => f.field)).toEqual(['props.image']);
   });
 
   it('checks a page-list card sent with a route against the card the write merges it with', async () => {
@@ -2766,7 +2781,7 @@ describe('values sent back as they were read (#132)', () => {
     const page = s.pages[s.site.homePageId];
     const { nodeId } = applyOperation(s, { type: 'node.insert', owner: { kind: 'page', id: page.id }, componentId: 'content.text', props: { heading: '😀a', body: '' } }) as { nodeId: string };
     const host = { state: () => s, revision: () => 1 } as unknown as Parameters<typeof executeTool>[2];
-    const read = async (args: Record<string, unknown>) => (await executeTool('inspect_element', JSON.stringify({ owner: { kind: 'page', id: page.id }, nodeId, ...args }), host, 'c')).content as { text: string; start: number };
+    const read = async (args: Record<string, unknown>) => (await executeTool('inspect_element', JSON.stringify({ owner: { kind: 'page', id: page.id }, nodeId, ...args }), host, 'c')).content as unknown as { text: string; start: number };
     expect((await read({ prop: 'body' })).text).toBe('');
     // An offset inside the emoji starts at the whole emoji.
     expect(await read({ prop: 'heading', offset: 1 })).toMatchObject({ start: 0, text: '😀a' });
@@ -2848,7 +2863,7 @@ describe('validate_project and components that are not reusable yet (#363)', () 
     const diags = validateState(s);
     expect(diags.findIndex((d) => d.code === 'COMPONENT_UNBOUND_CONTENT')).toBeGreaterThan(20);
     const host = { state: () => s, revision: () => 1, diagnostics: () => diags, compileAll: async () => [] } as unknown as Parameters<typeof executeTool>[2];
-    const content = (await executeTool('validate_project', '{}', host, 'v1')).content as { warnings: string[]; componentWarnings?: Array<{ code: string; definitionId: string; nodeId?: string }>; omittedComponentWarnings?: number };
+    const content = (await executeTool('validate_project', '{}', host, 'v1')).content as unknown as { warnings: string[]; componentWarnings?: Array<{ code: string; definitionId: string; nodeId?: string }>; omittedComponentWarnings?: number };
     expect(content.warnings).toHaveLength(20);
     expect(content.warnings.some((w) => w.includes('Spring offers'))).toBe(false);
     expect(content.componentWarnings).toHaveLength(8);
@@ -2999,7 +3014,7 @@ describe('a run limited to one page (#513)', () => {
       diagnostics: () => [],
       apply: async (ops, _rev, _label, _key, grants) => {
         const denied = checkAuthority(state, ops, authority, grants);
-        if (denied) return { ok: false, revision, error: { code: 'SCOPE_MISMATCH', message: denied } };
+        if (denied) return { ok: false, revision, error: { code: 'SCOPE_MISMATCH', message: denied, recoverable: true } };
         const r = applyOperations(state, ops);
         state = r.state;
         applied.push(ops);
@@ -3032,9 +3047,9 @@ describe('a run limited to one page (#513)', () => {
     const relisted = ((upsertToolSchema(installed) as { properties: { sections: { items: { oneOf: Array<{ properties: { componentId: { enum: string[] } } }> } } } }).properties.sections.items.oneOf).map((o) => o.properties.componentId.enum[0]);
     expect(relisted).not.toContain('features.grid');
     // The catalogue and a search say which components are blocks.
-    const catalogue = (await executeTool('read_project', JSON.stringify({ sections: ['catalogue'] }), host, 'r1')).content as { catalogue: Array<{ componentId: string; block?: boolean }> };
+    const catalogue = (await executeTool('read_project', JSON.stringify({ sections: ['catalogue'] }), host, 'r1')).content as unknown as { catalogue: Array<{ componentId: string; block?: boolean }> };
     expect(catalogue.catalogue.filter((c) => c.block).map((c) => c.componentId)).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video']);
-    const found = (await executeTool('search_components', JSON.stringify({ query: 'stat card statistics' }), host, 's1')).content as { results: Array<{ componentId?: string; block?: boolean }> };
+    const found = (await executeTool('search_components', JSON.stringify({ query: 'stat card statistics' }), host, 's1')).content as unknown as { results: Array<{ componentId?: string; block?: boolean }> };
     expect(found.results.find((r) => r.componentId === 'block.stat')).toMatchObject({ block: true });
     expect(found.results.find((r) => r.componentId === 'stats.row')).toBeDefined();
     expect(found.results.find((r) => r.componentId === 'stats.row')!.block).toBeUndefined();
@@ -3124,7 +3139,7 @@ describe('inspect_component (#362)', () => {
     expect(steps).toEqual(inspectionSteps(target, cases.slice(0, MAX_CASES)));
     expect(steps.map((st) => st.width).slice(0, 2)).toEqual([390, 1280]);
     expect(steps.every((st) => st.spec.componentId === 'features.grid' && st.spec.definitionId === undefined)).toBe(true);
-    const content = out.content as { revision: number; summary: string; cases: string[]; definitionId: string };
+    const content = out.content as unknown as { revision: number; summary: string; cases: string[]; definitionId: string };
     expect(content.revision).toBe(7);
     expect(content.definitionId).toBe(catalogueComponent(state.site.themeId, 'features.grid')!.id);
     expect(content.summary).toMatch(new RegExp(`^${catalogueComponent(state.site.themeId, 'features.grid')!.name}: no problems found in \\d+ cases at phone \\(390px\\) and desktop \\(1280px\\) width\\.`));
@@ -3133,34 +3148,34 @@ describe('inspect_component (#362)', () => {
     if (cases.length > 2) {
       const later = await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: cases.length - 1 }), h, 'c2');
       expect(sent[1]).toEqual(inspectionSteps(target, cases.slice(cases.length - 1)));
-      expect((later.content as { offset: number; cases: string[] }).cases).toEqual([cases.at(-1)!.label]);
+      expect((later.content as unknown as { offset: number; cases: string[] }).cases).toEqual([cases.at(-1)!.label]);
     }
   });
 
   it('never reports a check that could not run as a clean component', async () => {
     const state = createStarterState('blank', 'Inspect', false);
     const unavailable = await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), host(state).h, 'c1');
-    expect(unavailable).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED', message: expect.stringContaining('not available') } });
+    expect(unavailable).toMatchObject({ ok: false, content: { error: { code: 'VALIDATION_FAILED', message: expect.stringContaining('not available') } } });
     const down = host(state, async (steps) => steps.map((st) => ({ state: 'error', error: 'The preview is not running.', width: st.width })));
-    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), down.h, 'c2')).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED', message: 'The component could not be inspected: The preview is not running.' } });
+    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), down.h, 'c2')).toMatchObject({ ok: false, content: { error: { code: 'VALIDATION_FAILED', message: 'The component could not be inspected: The preview is not running.' } } });
     const thrown = host(state, async () => {
       throw new Error('The preview did not respond in time.');
     });
-    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), thrown.h, 'c3')).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED', message: expect.stringContaining('did not respond') } });
+    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), thrown.h, 'c3')).toMatchObject({ ok: false, content: { error: { code: 'VALIDATION_FAILED', message: expect.stringContaining('did not respond') } } });
     // Measured while the project changed: neither version is what it describes.
     const moving = host(state, async (steps) => (moving.bump(), steps.map((st) => ok(st))));
-    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), moving.h, 'c4')).toMatchObject({ ok: false, content: { error: 'STALE_REVISION' } });
+    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), moving.h, 'c4')).toMatchObject({ ok: false, content: { error: { code: 'STALE_REVISION' } } });
     const fine = host(state, async (steps) => steps.map((st) => ok(st)));
-    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: 99 }), fine.h, 'c5')).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT', message: expect.stringContaining('past the last') } });
-    expect(await executeTool('inspect_component', JSON.stringify({}), fine.h, 'c6')).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT' } });
+    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: 99 }), fine.h, 'c5')).toMatchObject({ ok: false, content: { error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('past the last') } } });
+    expect(await executeTool('inspect_component', JSON.stringify({}), fine.h, 'c6')).toMatchObject({ ok: false, content: { error: { code: 'INVALID_ARGUMENT' } } });
     const target = resolveInspectTarget(state, { componentId: 'features.grid' });
     if ('error' in target) throw new Error(target.error);
     const total = planComponentInspection(target).length;
-    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: total }), fine.h, 'c7')).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT' } });
+    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: total }), fine.h, 'c7')).toMatchObject({ ok: false, content: { error: { code: 'INVALID_ARGUMENT' } } });
     const nothing = host(state, async () => null as unknown as ComponentPreviewResult[]);
-    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), nothing.h, 'c8')).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED' } });
+    expect(await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid' }), nothing.h, 'c8')).toMatchObject({ ok: false, content: { error: { code: 'VALIDATION_FAILED' } } });
     // A failed later window names its window, so it never stands for the first one.
-    expect((await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: 1 }), down.h, 'c9')).content).toMatchObject({ offset: 1, definitionId: target.def.id });
+    expect((await executeTool('inspect_component', JSON.stringify({ componentId: 'features.grid', offset: 1 }), down.h, 'c9')).content).toMatchObject({ ok: false, error: { details: { offset: 1, definitionId: target.def.id } } });
   });
 
   it('gives the model each finding with where it is, the card a row for it, and stops with the run (#362)', async () => {
@@ -3283,7 +3298,7 @@ describe('search settings on the page and brand tools (#598)', () => {
     expect(page.seo.title).toBeUndefined();
     expect(lastResult(adapter.requests[1])).toMatchObject({ ok: true, created: true });
     expect(lastResult(adapter.requests[2])).toMatchObject({ ok: true, created: false });
-    expect(lastResult(adapter.requests[3])).toMatchObject({ error: 'VALIDATION_FAILED', message: expect.stringContaining('socialImage: no library image has the assetId "a_missing0"') });
+    expect(lastResult(adapter.requests[3])).toMatchObject({ error: { code: 'VALIDATION_FAILED', message: expect.stringContaining('socialImage: no library image has the assetId "a_missing0"') } });
   });
 
   it('sets the search settings of the page it creates in the call that creates it', async () => {
@@ -3318,9 +3333,9 @@ describe('search settings on the page and brand tools (#598)', () => {
     expect(published!.site).toMatchObject({ baseUrl: 'https://harbour.example', language: 'en-NZ', socialImage: photo });
     expect(lastResult(adapter.requests[4])).toMatchObject({ ok: true, note: 'The brand already matches.' });
     // An address the site cannot use is refused with the rest of the call, never dropped while the name goes in.
-    expect(lastResult(adapter.requests[5])).toMatchObject({ error: 'VALIDATION_FAILED', fields: [{ field: 'baseUrl', message: expect.stringContaining('https://') }] });
+    expect(lastResult(adapter.requests[5])).toMatchObject({ error: { code: 'VALIDATION_FAILED', details: { fields: [{ field: 'baseUrl', message: expect.stringContaining('https://') }] } } });
     // A bad field refuses the whole call: the brand color is not applied either.
-    expect(lastResult(adapter.requests[2])).toMatchObject({ error: 'VALIDATION_FAILED', fields: [{ field: 'language' }] });
+    expect(lastResult(adapter.requests[2])).toMatchObject({ error: { code: 'VALIDATION_FAILED', details: { fields: [{ field: 'language' }] } } });
     expect(session.state.tokens.overrides['color.brand']).toBeUndefined();
     const site = session.state.site;
     expect(site).toMatchObject({ baseUrl: 'https://harbour.example', language: 'en-NZ', name: 'Harbour Plumbing' });

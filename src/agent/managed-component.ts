@@ -28,6 +28,7 @@ import { normalizeLink } from '@engine/values';
 import { fieldError, type FieldIssue, type MacroMemory } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
+import { applyFailure, replayed, stamp, toolError, type ResultOutcome } from './result';
 
 /** The design node IDs the engine keeps (see DESIGN_NODE_ID in shared/ops.ts). */
 const NODE_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
@@ -425,16 +426,18 @@ const NOTHING_APPLIED =
   'Nothing was applied. Call again with repair: true, the same name (and definitionId), and only what needs fixing: the corrected nodes (by id) and properties (by name), removeNodes or removeProperties for any to leave out, and any other list to replace whole.';
 const SEND_WHOLE = 'Send the whole component, without repair.';
 
-export async function runManagedComponent(raw: unknown, host: ToolHost, callId: string, memory: MacroMemory): Promise<ToolOutcome> {
+export async function runManagedComponent(raw: unknown, host: ToolHost, callId: string, memory: MacroMemory): Promise<ToolOutcome | ResultOutcome> {
   // Named with the tool, so another tool's call ID is never taken as this one's.
   const fingerprint = JSON.stringify(['upsert_managed_component', raw]);
+  const revision = host.revision();
   const prior = memory.replay.get(callId);
   if (prior) {
-    if (prior.args === fingerprint) return { ok: prior.ok, content: prior.content };
-    return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'That tool call ID was already used for a different request.' } };
+    if (prior.args === fingerprint) return replayed(prior.result);
+    return toolError('INVALID_ARGUMENT', 'That tool call ID was already used for a different request.');
   }
-  const outcome = await compileAndApply(raw, host, callId, memory);
-  memory.replay.set(callId, { args: fingerprint, ok: outcome.ok, content: outcome.content });
+  // Kept whole, with the revision it was made at, so a replay says exactly what the call said the first time.
+  const outcome = stamp(await compileAndApply(raw, host, callId, memory), revision);
+  memory.replay.set(callId, { args: fingerprint, result: outcome.content });
   return outcome;
 }
 
@@ -524,7 +527,7 @@ async function compileAndApply(raw: unknown, host: ToolHost, callId: string, mem
 
   const label = `${op.definitionId ? 'Rebuild' : 'Build'} ${op.name}`;
   const res = await host.apply(ops, host.revision(), label, callId);
-  if (!res.ok) return { ok: false, content: { ok: false, revision: res.revision, error: res.error, note: NOTHING_APPLIED } };
+  if (!res.ok) return applyFailure(res, NOTHING_APPLIED);
   drafts.delete(draftKey(held));
   const made = (res.results?.[0] ?? {}) as { definitionId?: string; rootNodeId?: string };
   const placed = place ? ((res.results?.[1] ?? {}) as { nodeId?: string }) : null;

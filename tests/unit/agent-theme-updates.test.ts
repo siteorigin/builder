@@ -57,9 +57,9 @@ function host(start: ProjectState, authority: Authority = { kind: 'site' }) {
     revision: () => revision,
     diagnostics: () => [],
     apply: async (ops, expected, _label, _key, grants) => {
-      if (expected !== revision) return { ok: false, revision, error: { code: 'STALE_REVISION', message: 'stale' } };
+      if (expected !== revision) return { ok: false, revision, error: { code: 'STALE_REVISION', message: 'stale', recoverable: true } };
       const denied = checkAuthority(state, ops, authority, grants);
-      if (denied) return { ok: false, revision, error: { code: 'SCOPE_MISMATCH', message: denied } };
+      if (denied) return { ok: false, revision, error: { code: 'SCOPE_MISMATCH', message: denied, recoverable: true } };
       try {
         const r = applyOperations(state, ops);
         state = r.state;
@@ -67,7 +67,7 @@ function host(start: ProjectState, authority: Authority = { kind: 'site' }) {
         applied.push(ops);
         return { ok: true, revision, results: r.results };
       } catch (e) {
-        return { ok: false, revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message } };
+        return { ok: false, revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };
       }
     },
     compileAll: async () => [],
@@ -138,7 +138,7 @@ describe('where the assistant reads it', () => {
     expect(entry?.adds.join(' ')).toContain('Outlined button');
     const { h } = host(s);
     const read = await tool(h, 'read_component', { componentId: 'shell.header' });
-    const content = read.content as { properties: Record<string, unknown>; themeUpdate?: { status: string; newVersionAdds: { properties: Record<string, unknown> } } };
+    const content = read.content as unknown as { properties: Record<string, unknown>; themeUpdate?: { status: string; newVersionAdds: { properties: Record<string, unknown> } } };
     // The installed contract stays the installed one: its Action style comes only with the update.
     expect(content.properties.ctaStyle).toBeUndefined();
     expect(content.themeUpdate?.status).toBe('available');
@@ -223,7 +223,7 @@ describe('update_theme_component', () => {
     expect(out.ok).toBe(true);
     expect(out.mutated).toBe(true);
     expect(applied).toEqual([[{ type: 'theme.refresh', definitionIds: [HEADER] }]]);
-    expect((out.content as { component: { properties: Record<string, unknown> } }).component.properties.ctaStyle).toBeTruthy();
+    expect((out.content as unknown as { component: { properties: Record<string, unknown> } }).component.properties.ctaStyle).toBeTruthy();
     expect(definitionHash(now().components[HEADER])).toBe(definitionHash(current(HEADER)));
     // Only the header: the hero the request did not need stays as it was.
     expect(themeUpdates(now()).available.map((u) => u.id)).toContain(HERO);
@@ -235,18 +235,18 @@ describe('update_theme_component', () => {
     const { h, applied } = host(s);
     const out = await tool(h, 'update_theme_component', { definitionId: HEADER });
     expect(out.ok).toBe(false);
-    expect(out.content).toMatchObject({ error: 'UPDATE_HELD', message: expect.stringMatching(/changed outside the theme/), newVersionAdds: { properties: { ctaStyle: expect.anything() } }, note: expect.stringMatching(/tell the user/) });
+    expect(out.content).toMatchObject({ ok: false, error: { code: 'UPDATE_HELD', recoverable: false, message: expect.stringMatching(/changed outside the theme.*tell the user/s), details: { newVersionAdds: { properties: { ctaStyle: expect.anything() } } } } });
     expect(applied).toEqual([]);
   });
 
   it('refuses a component with no newer version, and a raw or bulk theme.refresh', async () => {
     const s = createStarterState('business', 'Test', false);
     const { h, applied } = host(s);
-    expect((await tool(h, 'update_theme_component', { definitionId: HEADER })).content).toMatchObject({ message: expect.stringMatching(/no newer theme version/) });
+    expect((await tool(h, 'update_theme_component', { definitionId: HEADER })).content).toMatchObject({ error: { message: expect.stringMatching(/no newer theme version/) } });
     const edit = { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: headerNode(s).id, prop: 'ctaLabel', value: 'Call us' };
     for (const ops of [[{ type: 'theme.refresh' }], [{ type: 'theme.refresh', definitionIds: [HEADER] }], [{ type: 'theme.refresh', definitionIds: [HEADER, HERO] }], [edit, { type: 'theme.refresh', definitionIds: [HEADER] }]]) {
       const raw = await tool(h, 'apply_operations', { expectedRevision: 1, operations: ops });
-      expect(raw.content).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringMatching(/update_theme_component/) });
+      expect(raw.content).toMatchObject({ error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/update_theme_component/) } });
     }
     expect(applied).toEqual([]);
   });
@@ -507,7 +507,7 @@ describe('asking for an outlined header button on a header that predates it', ()
     // A small whole-site run's page tool cannot set the header's Action style, so it is not offered the header.
     expect(offered).toEqual([HERO]);
     expect(answer!.isError).toBe(true);
-    expect(answer!.parsed).toMatchObject({ error: 'SCOPE_MISMATCH', message: expect.stringMatching(/cannot update/) });
+    expect(answer!.parsed).toMatchObject({ error: { code: 'SCOPE_MISMATCH', message: expect.stringMatching(/cannot update/) } });
     expect(result?.status).not.toBe('failed');
     expect(JSON.stringify(s.session.state.components[HEADER])).toBe(before);
     expect(result?.changes ?? []).toEqual([]);

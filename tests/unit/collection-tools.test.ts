@@ -63,18 +63,18 @@ function host(start: ProjectState, authority: Authority = { kind: 'site' }) {
     diagnostics: () => [],
     apply: async (ops, expected, _label, _key, grant) => {
       grants.push(grant);
-      if (expected !== revision) return { ok: false, revision, error: { code: 'STALE_REVISION', message: 'stale' } };
+      if (expected !== revision) return { ok: false, revision, error: { code: 'STALE_REVISION', message: 'stale', recoverable: true } };
       const denied = checkAuthority(state, ops, authority, grant);
-      if (denied) return { ok: false, revision, error: { code: 'SCOPE_MISMATCH', message: denied } };
+      if (denied) return { ok: false, revision, error: { code: 'SCOPE_MISMATCH', message: denied, recoverable: true } };
       const refused = grant?.collectionWrite ? collectionGrantRefusal(ops, grant.collectionWrite) : 'no grant';
-      if (refused) return { ok: false, revision, error: { code: 'SCOPE_MISMATCH', message: refused } };
+      if (refused) return { ok: false, revision, error: { code: 'SCOPE_MISMATCH', message: refused, recoverable: true } };
       try {
         const r = applyOperations(state, ops);
         state = r.state;
         revision++;
         return { ok: true, revision, results: r.results };
       } catch (e) {
-        return { ok: false, revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message } };
+        return { ok: false, revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };
       }
     },
     compileAll: async () => [],
@@ -132,17 +132,17 @@ describe('collection tools for every model', () => {
     let s = blog();
     s = applyOperations(s, Array.from({ length: 12 }, (_, i) => ({ type: 'entry.create', collectionId: 'posts', title: `Note ${i + 1}`, publishedAt: `2025-01-${String(i + 1).padStart(2, '0')}` }) as EditOperation)).state;
     const { h } = host(s);
-    const first = (await tool(h, 'list_collection_entries', { collectionId: 'posts' })).content as { total: number; next: number | null; entries: Array<{ entryId: string; title: string; draft?: boolean }> };
+    const first = (await tool(h, 'list_collection_entries', { collectionId: 'posts' })).content as unknown as { total: number; next: number | null; entries: Array<{ entryId: string; title: string; draft?: boolean }> };
     expect(first.total).toBe(14);
     expect(first.entries).toHaveLength(ENTRY_LIST_PAGE);
     expect(first.entries[0]).toEqual({ entryId: 'en_spring', title: 'Spring open studio', publishedAt: '2027-03-02' });
     expect(first.entries.find((e) => e.title === 'Note 12')).toMatchObject({ draft: true });
     expect(first.next).toBe(ENTRY_LIST_PAGE);
-    const rest = (await tool(h, 'list_collection_entries', { collectionId: 'posts', offset: first.next })).content as { next: number | null; entries: Array<{ title: string }> };
+    const rest = (await tool(h, 'list_collection_entries', { collectionId: 'posts', offset: first.next })).content as unknown as { next: number | null; entries: Array<{ title: string }> };
     expect(rest).toMatchObject({ next: null });
     // Newest first, as the collection orders them.
     expect(rest.entries.map((e) => e.title)).toEqual(['Note 4', 'Note 3', 'Note 2', 'Note 1']);
-    expect((await tool(h, 'list_collection_entries', { collectionId: 'news' })).content).toMatchObject({ error: 'VALIDATION_FAILED', message: expect.stringMatching(/no collection "news". Collections: posts/) });
+    expect((await tool(h, 'list_collection_entries', { collectionId: 'news' })).content).toMatchObject({ error: { code: 'VALIDATION_FAILED', message: expect.stringMatching(/no collection "news". Collections: posts/) } });
   });
 
   it('reads an entry with its details, and a long text as Markdown parts that join up exactly', async () => {
@@ -157,7 +157,7 @@ describe('collection tools for every model', () => {
     let offset: number | null = 0;
     let reads = 0;
     while (offset !== null && reads++ < 50) {
-      const r = (await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_winter', offset })).content as { text: string; next: number | null; offset: number; title?: string; length: number };
+      const r = (await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_winter', offset })).content as unknown as { text: string; next: number | null; offset: number; title?: string; length: number };
       // Only the first part repeats the details.
       expect(r.title !== undefined).toBe(r.offset === 0);
       expect(JSON.stringify(r.text).length - 2).toBeLessThanOrEqual(ENTRY_PART_CHARS);
@@ -166,7 +166,7 @@ describe('collection tools for every model', () => {
     }
     expect(parts.length).toBeGreaterThan(2);
     expect(parts.join('')).toBe(richTextToMarkdown(entry(s, 'en_winter').body, s.pages));
-    expect((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_gone' })).content).toMatchObject({ message: expect.stringMatching(/no entry "en_gone"/) });
+    expect((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_gone' })).content).toMatchObject({ error: { message: expect.stringMatching(/no entry "en_gone"/) } });
   });
 
   it('drafts a post with its date, categories, excerpt and structured text in one batch the grant names', async () => {
@@ -180,7 +180,7 @@ describe('collection tools for every model', () => {
       body: ['## What to expect', 'Doors open at **6pm**, with *tea*.', '- Tours of the studio', '- Glaze demos', '1. Book a place', 'Book on the [contact page](/contact/), or read [the spring post](entry:en_spring).']
     });
     expect(r).toMatchObject({ ok: true, mutated: true, content: { ok: true, collectionId: 'posts', draft: true, addedCategories: ['Workshop Events'] } });
-    const id = (r.content as { entryId: string }).entryId;
+    const id = (r.content as unknown as { entryId: string }).entryId;
     const post = entry(now(), id);
     expect(post).toMatchObject({ title: 'Kiln opening night', publishedAt: '2027-04-01', draft: true, excerpt: 'Come and see the new kiln fired for the first time.', terms: { categories: ['news', 'workshop-events'] } });
     expect(now().collections.posts.settings.taxonomies.categories.terms['workshop-events']).toEqual({ label: 'Workshop Events' });
@@ -212,10 +212,10 @@ describe('collection tools for every model', () => {
     expect(entry(now(), 'en_spring').author).toBe('Ana Ruiz');
     // A picture the post does not have, a bad date, a missing title and an empty edit are refused, applying nothing.
     const still = structuredClone(now());
-    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring', body: ['![Other](asset:a_other)'] })).content).toMatchObject({ message: expect.stringMatching(/body\[0\]: the entry has no picture "a_other"/) });
-    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring', publishedAt: 'April 1st' })).content).toMatchObject({ message: expect.stringMatching(/publishedAt/) });
-    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', body: ['Hello'] })).content).toMatchObject({ message: expect.stringMatching(/title: a new entry needs a title/) });
-    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring' })).content).toMatchObject({ message: expect.stringMatching(/send at least one field/) });
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring', body: ['![Other](asset:a_other)'] })).content).toMatchObject({ error: { message: expect.stringMatching(/body\[0\]: the entry has no picture "a_other"/) } });
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring', publishedAt: 'April 1st' })).content).toMatchObject({ error: { message: expect.stringMatching(/publishedAt/) } });
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', body: ['Hello'] })).content).toMatchObject({ error: { message: expect.stringMatching(/title: a new entry needs a title/) } });
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring' })).content).toMatchObject({ error: { message: expect.stringMatching(/send at least one field/) } });
     expect(now()).toEqual(still);
   });
 
@@ -231,7 +231,7 @@ describe('collection tools for every model', () => {
     expect(long.length).toBeGreaterThan(ENTRY_PART_CHARS);
     expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_winter', body: [long] })).ok).toBe(true);
     expect(entry(now(), 'en_winter').body).toEqual([{ type: 'p', spans: [{ text: long }] }]);
-    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring', categories: [' '] })).content).toMatchObject({ message: expect.stringMatching(/categories\[0\]: a category needs a name/) });
+    expect((await tool(h, 'upsert_collection_entry', { collectionId: 'posts', entryId: 'en_spring', categories: [' '] })).content).toMatchObject({ error: { message: expect.stringMatching(/categories\[0\]: a category needs a name/) } });
     expect(entry(now(), 'en_spring').terms.categories).toEqual(['news']);
   });
 
@@ -251,7 +251,7 @@ describe('collection tools for every model', () => {
     const state = blog();
     const { h } = host(state, requestAuthority({ pageId: 'pg_any', pageTitle: 'Home', selection: null, selectionLabel: null, post: { collectionId: 'posts', entryId: 'en_spring', title: 'Spring' } }, state));
     expect((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_spring' })).ok).toBe(true);
-    expect((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_winter' })).content).toMatchObject({ message: expect.stringMatching(/entryId: this request is about the post “Spring open studio” \(posts\/en_spring\) alone/) });
+    expect((await tool(h, 'read_collection_entry', { collectionId: 'posts', entryId: 'en_winter' })).content).toMatchObject({ error: { message: expect.stringMatching(/entryId: this request is about the post “Spring open studio” \(posts\/en_spring\) alone/) } });
     expect((await tool(h, 'list_collection_entries', { collectionId: 'posts' })).ok).toBe(false);
   });
 });
@@ -526,23 +526,31 @@ describe('long post reads in the context budget', () => {
       asks('g', 'read_collection_entry', { collectionId: 'posts', entryId: 'en_winter', offset: 4000 }),
       answer('g', 'read_collection_entry', part('en_winter', 4000))
     ];
+    /** A collapsed result as the line it shows, once it is checked to be a result like any other: ok, at a revision. */
+    const shown = (item: unknown) => {
+      const content = (item as { content: string }).content;
+      const body = JSON.parse(content) as Record<string, unknown>;
+      if (typeof body.superseded !== 'string') return content;
+      expect(body).toEqual({ ok: true, revision: expect.any(Number), superseded: body.superseded });
+      return `[Superseded ${body.superseded}]`;
+    };
     // Just past half the window: only the part read again collapses.
     const soft = structuredClone(items);
     const r = budget(soft, 9600);
     expect(r.tombstoned).toBe(1);
-    expect((soft[2] as { content: string }).content).toBe('[Superseded read_collection_entry posts/en_spring "Spring open studio" of 20000 characters at rev 1. Read this part again before relying on its text or rewriting it.]');
-    expect((soft[4] as { content: string }).content).not.toMatch(/^\[Superseded/);
-    expect((soft[10] as { content: string }).content).not.toMatch(/^\[Superseded/);
+    expect(shown(soft[2])).toBe('[Superseded read_collection_entry posts/en_spring "Spring open studio" of 20000 characters at rev 1. Read this part again before relying on its text or rewriting it.]');
+    expect(shown(soft[4])).not.toMatch(/^\[Superseded/);
+    expect(shown(soft[10])).not.toMatch(/^\[Superseded/);
     // Tighter: the spring post's parts went out of date when it was written; the winter post, which only names it, did not.
     const hard = structuredClone(items);
     budget(hard, 4000);
-    expect((hard[4] as { content: string }).content).toBe('[Superseded read_collection_entry posts/en_spring from offset 4000 of 20000 characters at rev 1. Read this part again before relying on its text or rewriting it.]');
-    expect((hard[8] as { content: string }).content).toMatch(/^\[Superseded read_collection_entry posts\/en_spring "Spring open studio"/);
-    expect((hard[6] as { content: string }).content).toContain('Mentions en_spring');
+    expect(shown(hard[4])).toBe('[Superseded read_collection_entry posts/en_spring from offset 4000 of 20000 characters at rev 1. Read this part again before relying on its text or rewriting it.]');
+    expect(shown(hard[8])).toMatch(/^\[Superseded read_collection_entry posts\/en_spring "Spring open studio"/);
+    expect(shown(hard[6])).toContain('Mentions en_spring');
     // A list of the collection went out of date with the write too.
-    expect((hard[10] as { content: string }).content).toBe('[Superseded list_collection_entries posts from offset 10, 12 entries at rev 1. List it again for the current entries.]');
+    expect(shown(hard[10])).toBe('[Superseded list_collection_entries posts from offset 10, 12 entries at rev 1. List it again for the current entries.]');
     // The latest turns are still being worked from.
-    expect((hard[14] as { content: string }).content).not.toMatch(/^\[Superseded/);
-    expect((hard[16] as { content: string }).content).not.toMatch(/^\[Superseded/);
+    expect(shown(hard[14])).not.toMatch(/^\[Superseded/);
+    expect(shown(hard[16])).not.toMatch(/^\[Superseded/);
   });
 });

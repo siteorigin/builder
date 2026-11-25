@@ -12,6 +12,7 @@ import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { componentStructure, STRUCTURE_CHARS } from '@agent/context';
 import { executeTool, searchProjectComponents, serializeResult } from '@agent/tools';
+import type { ToolSuccessResult } from '@agent/result';
 import { ProjectSession } from '../../src/main/project/session';
 import { componentRequest, componentRequestContext, newComponentPlace, startBlankOps } from '../../src/renderer/src/lib/new-component';
 
@@ -138,7 +139,7 @@ describe('component.create (#172)', () => {
 
 describe('read_component with structure (#172)', () => {
   const host = (s: ProjectState) => ({ state: () => s, revision: () => 1 }) as unknown as Parameters<typeof executeTool>[2];
-  const read = async (s: ProjectState, args: Record<string, unknown>) => (await executeTool('read_component', JSON.stringify(args), host(s), 'c1')).content as Record<string, any>;
+  const read = async (s: ProjectState, args: Record<string, unknown>) => (await executeTool('read_component', JSON.stringify(args), host(s), 'c1')).content as ToolSuccessResult;
 
   it('shows a theme design as stored: its nodes, bindings to properties and list items, parts, screen-size rules and every token it uses', async () => {
     const s = createStarterState('blank', 'Expo', false);
@@ -311,7 +312,7 @@ describe('search_components finds project components (#172)', () => {
   it('returns one list within the limit, theme and project components ranked together', async () => {
     let s = createStarterState('blank', 'Expo', false);
     s = applyOperations(s, [{ type: 'component.create', name: 'Pricing', description: 'Our own plans.' }]).state;
-    const search = async (args: Record<string, unknown>) => ((await executeTool('search_components', JSON.stringify(args), { state: () => s, revision: () => 1 } as never, 'c1')).content as { results: Array<{ name: string; projectComponent?: boolean }> }).results;
+    const search = async (args: Record<string, unknown>) => ((await executeTool('search_components', JSON.stringify(args), { state: () => s, revision: () => 1 } as never, 'c1')).content as unknown as { results: Array<{ name: string; projectComponent?: boolean }> }).results;
     expect(await search({ query: 'pricing', limit: 1 })).toHaveLength(1);
     const both = await search({ query: 'pricing', limit: 8 });
     expect(both.length).toBeLessThanOrEqual(8);

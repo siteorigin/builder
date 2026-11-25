@@ -1430,7 +1430,7 @@ describe('the document format and the assistant', () => {
           s = applyOperations(s, ops).state;
           return { ok: true, revision: ++revision, results: [] };
         } catch (e) {
-          return { ok: false, revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message } };
+          return { ok: false, revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };
         }
       }
     } as unknown as Parameters<typeof executeTool>[2];

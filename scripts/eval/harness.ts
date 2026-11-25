@@ -230,11 +230,11 @@ class RecordingAdapter implements AgentModelAdapter {
   }
 }
 
-/** The error code of a tool result, in any of the shapes tools report it. */
+/** The error code of a failed tool result. */
 function errorCode(content: string): string | null {
   try {
-    const v = JSON.parse(content) as { error?: string | { code?: string } };
-    return typeof v.error === 'string' ? v.error : (v.error?.code ?? null);
+    const v = JSON.parse(content) as { ok?: boolean; error?: { code?: string } };
+    return v.ok === false ? (v.error?.code ?? null) : null;
   } catch {
     return null;
   }

@@ -307,13 +307,17 @@ const LONG_POST = [
   // What only a reader who reached the end knows.
   'Today the studio is a cooperative of twelve potters.'
 ];
-const lastResult = (req: CanonicalModelRequest) => {
-  const it = req.items.at(-1);
+/** A tool result's fields, or null for one that is not JSON. */
+const lastResultOf = (content: string) => {
   try {
-    return it?.kind === 'tool_result' ? (JSON.parse(it.content) as Record<string, unknown>) : null;
+    return JSON.parse(content) as Record<string, unknown>;
   } catch {
     return null;
   }
+};
+const lastResult = (req: CanonicalModelRequest) => {
+  const it = req.items.at(-1);
+  return it?.kind === 'tool_result' ? lastResultOf(it.content) : null;
 };
 // ---------------------------------------------------------------------------
 // Components (#365): graded by what a placement of the design shows and how it is styled, never by the tools used
@@ -922,9 +926,10 @@ export const EVAL_CASES: EvalCase[] = [
           reread = true;
           return [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_history' })];
         }
-        if (last?.ok === true) return finish('Wrote the excerpt.')(req);
+        // Every result has ok: only the write's says the excerpt was written.
+        if (req.items.at(-1)?.kind === 'tool_result' && (req.items.at(-1) as { name: string }).name === 'upsert_collection_entry' && last?.ok === true) return finish('Wrote the excerpt.')(req);
         // Without the collapsed read the script writes nothing, and the case fails.
-        const collapsed = req.items.some((it) => it.kind === 'tool_result' && it.name === 'read_collection_entry' && it.content.startsWith('[Superseded read_collection_entry posts/en_history'));
+        const collapsed = req.items.some((it) => it.kind === 'tool_result' && it.name === 'read_collection_entry' && String(lastResultOf(it.content)?.superseded ?? '').startsWith('read_collection_entry posts/en_history'));
         if (!collapsed) return finish('The first read was never collapsed.')(req);
         return [call('upsert_collection_entry', { collectionId: 'posts', entryId: 'en_history', excerpt: 'How a riverside studio grew from one wheel into a cooperative of twelve potters.' })];
       };

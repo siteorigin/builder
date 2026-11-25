@@ -22,6 +22,7 @@ import { BRAND_PROP, COPYRIGHT_PROP, brandLabel, brandPlacements, followsSiteNam
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
+import { applyFailure } from './result';
 
 export const BRAND_ARGS = z.object({
   theme: z.string().max(40).optional(),
@@ -341,6 +342,6 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
 
   if (!ops.length) return { ok: true, content: { ok: true, revision: host.revision(), note: 'The brand already matches.', ...(warnings.length ? { warnings } : {}) } };
   const res = await host.apply(ops, host.revision(), 'Update site brand', callId);
-  if (!res.ok) return { ok: false, content: { ok: false, revision: res.revision, error: res.error } };
+  if (!res.ok) return applyFailure(res);
   return { ok: true, mutated: true, ops, results: res.results, content: { ok: true, revision: res.revision, changed: ops.length, ...(warnings.length ? { warnings } : {}) } };
 }
