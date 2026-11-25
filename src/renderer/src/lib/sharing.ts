@@ -36,7 +36,7 @@ export interface SharingView {
 }
 
 /** The name of a library image as the pickers show it. */
-function nameOf(state: ProjectState, id: string | null | undefined): string | undefined {
+export function nameOf(state: ProjectState, id: string | null | undefined): string | undefined {
   if (!id || !Object.hasOwn(state.assets.assets, id)) return undefined;
   const images = Object.values(state.assets.assets).filter((a) => a.kind === 'image');
   return assetLabels(images).get(id)?.label ?? state.assets.assets[id].name;

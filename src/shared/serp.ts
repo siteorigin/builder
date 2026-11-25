@@ -14,9 +14,12 @@ export const SERP_LAYOUT = {
   titleFont: 20,
   descriptionFont: 14,
   /** One line of title; two lines of description. */
-  desktop: { title: 600, description: 920 },
-  /** A phone wraps the title over two lines and gives the description a little under three of its narrower lines. */
-  mobile: { title: 660, description: 680 }
+  desktop: { titleLine: 600, titleLines: 1, description: 920 },
+  /**
+   * A phone wraps the title over two narrow lines, a word at a time, so a long word that doesn't fit at the end of the
+   * first line wastes what is left of it; the description gets a little under three of its lines.
+   */
+  mobile: { titleLine: 320, titleLines: 2, description: 680 }
 } as const;
 
 export type SerpDevice = 'desktop' | 'mobile';
@@ -126,6 +129,46 @@ export function fitToWidth(value: string, fontPx: number, maxWidth: number): Ser
   return { text: kept ? kept + ELLIPSIS : ELLIPSIS, cut: true, width, max: maxWidth };
 }
 
+/**
+ * Text wrapped over `lines` lines of `lineWidth`, a whole word at a time, as a browser wraps it, with the last line
+ * cut to fit as `fitToWidth` cuts. A word wider than a whole line is broken where the line ends.
+ */
+export function fitLines(value: string, fontPx: number, lineWidth: number, lines: number): SerpText {
+  const text = seoText(value);
+  const width = textWidth(text, fontPx);
+  const max = lineWidth * lines;
+  let rest = text;
+  let shown = '';
+  for (let line = 1; line < lines && rest; line++) {
+    const words = rest.split(' ');
+    let used = '';
+    let taken = 0;
+    while (taken < words.length) {
+      const next = used ? `${used} ${words[taken]}` : words[taken];
+      if (textWidth(next, fontPx) > lineWidth) break;
+      used = next;
+      taken++;
+    }
+    if (taken) {
+      shown += (shown ? ' ' : '') + used;
+      rest = words.slice(taken).join(' ');
+      continue;
+    }
+    // Not even the first word fits on the line: it is broken where the line ends, and goes on on the next.
+    // The broken word's two halves are one word, so no space goes between them.
+    const chars = [...words[0]];
+    const px = (ch: string) => (advance(ch) * fontPx) / 1000;
+    let n = 0;
+    for (let w = 0; n < chars.length - 1 && w + px(chars[n]) <= lineWidth; n++) w += px(chars[n]);
+    n = Math.max(1, n);
+    const next = fitLines([chars.slice(n).join(''), ...words.slice(1)].join(' '), fontPx, lineWidth, lines - line);
+    return { text: `${shown ? `${shown} ` : ''}${chars.slice(0, n).join('')}${next.text}`, cut: next.cut, width, max };
+  }
+  if (!rest) return { text: shown, cut: false, width, max };
+  const last = fitToWidth(rest, fontPx, lineWidth);
+  return { text: (shown ? `${shown} ` : '') + last.text, cut: last.cut, width, max };
+}
+
 /** One result as a results page lays it out on one kind of screen. */
 export interface SerpResult {
   title: SerpText;
@@ -139,7 +182,7 @@ export interface SerpResult {
 export function serpSnippet({ title, description, datePrefix }: { title: string; description: string; datePrefix?: string }): Record<SerpDevice, SerpResult> {
   const prefix = datePrefix ? textWidth(datePrefix, SERP_LAYOUT.descriptionFont) : 0;
   const lay = (device: SerpDevice): SerpResult => ({
-    title: fitToWidth(title, SERP_LAYOUT.titleFont, SERP_LAYOUT[device].title),
+    title: fitLines(title, SERP_LAYOUT.titleFont, SERP_LAYOUT[device].titleLine, SERP_LAYOUT[device].titleLines),
     description: fitToWidth(description, SERP_LAYOUT.descriptionFont, Math.max(0, SERP_LAYOUT[device].description - prefix))
   });
   return { desktop: lay('desktop'), mobile: lay('mobile') };

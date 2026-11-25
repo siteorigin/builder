@@ -3,7 +3,7 @@
  * a computer and on a phone; the address line names the host and each folder of the path.
  */
 import { describe, expect, it } from 'vitest';
-import { fitToWidth, SERP_LAYOUT, serpAddress, serpSnippet, textWidth } from '@shared/serp';
+import { fitLines, fitToWidth, SERP_LAYOUT, serpAddress, serpSnippet, textWidth } from '@shared/serp';
 
 describe('textWidth', () => {
   it('measures with Arial’s letter widths at the given size', () => {
@@ -49,13 +49,41 @@ describe('fitToWidth', () => {
   });
 });
 
+describe('fitLines', () => {
+  const W = 'W'.repeat(16);
+
+  it('wraps a whole word at a time, so a word that doesn’t fit wastes the end of a line and can tip the last one over', () => {
+    // Two 302px words and a short one: 628px in all, inside two 320px lines, but the second word starts the second line.
+    const text = `${W} ${W} iii`;
+    expect(textWidth(text, 20)).toBeLessThan(640);
+    const r = fitLines(text, 20, 320, 2);
+    expect(r).toMatchObject({ cut: true, max: 640 });
+    expect(r.text.startsWith(`${W} `)).toBe(true);
+    expect(r.text.endsWith('…')).toBe(true);
+    expect(fitLines(`${W} ${W}`, 20, 320, 2)).toMatchObject({ text: `${W} ${W}`, cut: false });
+  });
+
+  it('is fitToWidth on one line', () => {
+    const long = 'Weekly wheel classes, private lessons and commissioned tableware made to order';
+    expect(fitLines(long, 20, 300, 1)).toEqual(fitToWidth(long, 20, 300));
+  });
+
+  it('breaks a word wider than a whole line where the line ends, with no space between its halves', () => {
+    const word = 'W'.repeat(40);
+    const r = fitLines(word, 20, 320, 2);
+    expect(r.cut).toBe(true);
+    expect(r.text).toMatch(/^W+…$/);
+    expect(fitLines('W'.repeat(30), 20, 320, 2)).toMatchObject({ text: 'W'.repeat(30), cut: false });
+  });
+});
+
 describe('serpSnippet', () => {
   const title = 'Spring pottery classes for beginners, families and groups · Riverside Studio';
   const description = 'Spring wheel classes open for bookings: six weeks of throwing, trimming and glazing, and every student leaves with a set of bowls and cups.';
 
   it('cuts a title wider than a computer’s line, and a description past a phone’s three lines but not a computer’s two', () => {
     const s = serpSnippet({ title, description });
-    expect(textWidth(title, SERP_LAYOUT.titleFont)).toBeGreaterThan(SERP_LAYOUT.desktop.title);
+    expect(textWidth(title, SERP_LAYOUT.titleFont)).toBeGreaterThan(SERP_LAYOUT.desktop.titleLine);
     expect(s.desktop.title.cut).toBe(true);
     expect(s.desktop.description.cut).toBe(false);
     expect(s.mobile.description.cut).toBe(true);

@@ -51,7 +51,7 @@ const urlOf = (base: string | null, route: string) => (base ? base + routeUrl(ro
  * of ordinary characters are decoded and one trailing slash is let go ("/%73ervices" is "/services/"), since the site
  * answers both at one page. An escaped "/" or "?" ("%2F") stays escaped: it is part of a segment, not a separator.
  */
-function sameAddress(a: string | null, b: string | null): boolean {
+export function sameAddress(a: string | null, b: string | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   try {
