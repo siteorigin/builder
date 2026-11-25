@@ -1012,6 +1012,7 @@ export class ProjectSession extends EventEmitter {
       if (builder === undefined) continue;
       const run = c.aiRun === true ? { attempted: attemptAt(c.attempted) } : undefined;
       this.holdConflict(c.path, builder, String(c.reason ?? 'Changed outside SiteOrigin Builder.'), run);
+      await this.attemptContent(c.path);
       // Already settled outside the app (the file was put back): nothing to choose. What an AI request attempted is
       // kept first, as when it is settled in Project health; held until it is.
       if (settledOnDisk(c.path, await this.diskContent(c.path), builder) && (await this.saveAttempt(c.path).then(() => true, () => false))) {
@@ -1050,8 +1051,9 @@ export class ProjectSession extends EventEmitter {
         // never replaced unkept.
         const disk = await readFileAt(abs);
         if (disk === 'failed' || disk === 'changed') return { ok: false, message: `${path} could not be read, so it was not replaced. Check that it is a file you can open, then try again.` };
-        if (disk !== 'missing') await this.saveCopy(path, 'canonical', 'external', disk.bytes);
+        // The attempted version first: one that cannot be read just now refuses the choice before anything is kept.
         await this.saveAttempt(path);
+        if (disk !== 'missing') await this.saveCopy(path, 'canonical', 'external', disk.bytes);
         // Saved again while the copy was kept: that save is not replaced unkept either.
         const unchanged = async () => {
           // A file that was missing must still be missing, not merely one that cannot be looked at now.
@@ -1084,8 +1086,8 @@ export class ProjectSession extends EventEmitter {
         }
         const pin = themePinProblem(next);
         if (pin) return { ok: false, message: `The external version of ${path} was not kept: ${pin}` };
-        if (builder !== null) await this.saveCopy(path, 'canonical', 'builder', builder);
         await this.saveAttempt(path);
+        if (builder !== null) await this.saveCopy(path, 'canonical', 'builder', builder);
         const nextDocs = stateToDocs(next);
         changed = await this.diffDocs(this.docs, nextDocs);
         this.state = next;
@@ -1162,24 +1164,36 @@ export class ProjectSession extends EventEmitter {
     });
   }
 
-  /** The text of the version an AI request tried to save (null: it removed the file; undefined: it cannot be read). */
+  /**
+   * The text of the version an AI request tried to save (null: it removed the file; undefined: it cannot be read). A
+   * blob that could not be read is read again each time, until it can be; one gone or damaged is marked `lost`.
+   */
   private async attemptContent(path: string): Promise<string | null | undefined> {
     const a = this.attempts.get(path);
     if (!a) return undefined;
     if (a.ref === null) return null;
-    // Read again each time until it can be: a blob that could not be read once may be readable now.
-    if (a.content === undefined) a.content = await this.getBlob(a.ref).catch(() => undefined);
+    if (a.content === undefined) {
+      try {
+        const text = await fs.readFile(this.local('history', 'blobs', `${a.ref}.json`), 'utf8');
+        if (sha(text) === a.ref) a.content = text;
+        a.lost = a.content === undefined;
+      } catch (e) {
+        a.lost = isMissing(e);
+      }
+    }
     return a.content;
   }
 
   /**
    * List the version an AI request tried to save under Saved copies, as its conflict is settled, however it is: it is
    * never offered as a choice, so this copy is the only place it stays. A removal attempted is listed with no file.
-   * One that cannot be read is not copied, so it never keeps the conflict from being settled.
+   * One that cannot be read just now refuses (the conflict stays, to try again); one whose blob is gone or damaged has
+   * nothing left to keep, and never keeps the conflict from being settled.
    */
   private async saveAttempt(path: string) {
     const attempted = await this.attemptContent(path);
-    if (attempted !== undefined) await this.saveCopy(path, 'canonical', 'attempted', attempted);
+    if (attempted !== undefined) return this.saveCopy(path, 'canonical', 'attempted', attempted);
+    if (this.attempts.get(path)?.lost === false) throw new Error(`The version the AI request tried to save for ${path} could not be read, so nothing was changed. Try again.`);
   }
 
   /**
@@ -1535,7 +1549,10 @@ export class ProjectSession extends EventEmitter {
         conflicts.push(path);
         // The pre-run version is what the project is restored to, so it is the version held for the user.
         // The latest version the run recorded for it (stored before the marker named it) is shown beside it.
-        if (before !== undefined) this.holdConflict(path, before, 'Changed outside SiteOrigin Builder during an interrupted AI run.', { attempted: attemptAt(d.after) });
+        if (before !== undefined) {
+          this.holdConflict(path, before, 'Changed outside SiteOrigin Builder during an interrupted AI run.', { attempted: attemptAt(d.after) });
+          await this.attemptContent(path);
+        }
         continue;
       }
       if (before === null) await this.removeCanonical(path);
@@ -2696,8 +2713,11 @@ export class ProjectSession extends EventEmitter {
     const byEntry = h.entries.map(() => new Set<string>());
     let current = new Set<string>();
     if (tokens.length) {
-      const attempted = [...this.attempts.values()].map((a) => a.content);
+      for (const p of this.attempts.keys()) await this.attemptContent(p);
+      const attempted = [...this.attempts.values()].filter((a) => a.ref !== null).map((a) => a.content);
       for (const text of [...(this.activeRun?.before.values() ?? []), ...this.pending.values(), ...attempted]) if (text) for (const t of tokens) if (text.includes(t)) pinned.add(t);
+      // A held attempted version that cannot be read now may name any of them: none is taken while it is so.
+      if (attempted.includes(undefined)) for (const t of tokens) pinned.add(t);
       // A conflict list or run marker on disk may name versions too.
       for (const b of await this.blobsNamedOnDisk([this.local('sessions', 'active-run.json'), this.local('conflicts.json')])) for (const t of await this.namedIn(b, tokens)) pinned.add(t);
       for (const [i, e] of h.entries.entries()) for (const b of entryBlobs(e)) for (const t of await this.namedIn(b, tokens)) byEntry[i].add(t);
@@ -4226,6 +4246,8 @@ async function removeClaims(lockPath: string, generation: string) {
 interface Attempt {
   ref: string | null;
   content?: string;
+  /** Its blob is gone or damaged, so there is nothing left to show or keep. */
+  lost?: boolean;
 }
 
 /** An attempted version named by a run marker or a conflict list: null for a removal, undefined when unusable. */
