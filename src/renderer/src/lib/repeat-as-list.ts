@@ -1,0 +1,221 @@
+/**
+ * Repeat as list… (#369): one static container of a managed component's design (a card, a step, a team member)
+ * becomes the item of a new list property, in one change and so one Undo. Its text, rich text, images, icons and links
+ * become the list's item fields, its current content the first of the starter items, and the container itself the
+ * one child of a new repeat over the list, where it was. Every helper plans operations; the engine checks them.
+ */
+import type { ComponentDefinition, ElementRef, GraphNode, ListItem, ProjectState } from '@shared/types';
+import { isBinding } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
+import { newId } from '@shared/ids';
+import { ICONS } from '@catalogue/foundation/icons';
+import { childLists, enclosingRepeatProp, findParent, settledRoot } from '@engine/tree';
+import { slotDecl } from '@engine/slots';
+import { isCardLink } from '@generator/card-links';
+import { designContent, type ContentField } from './design-content';
+import { MAX_PROPERTIES, freeName, newPropSchema, nodeWord, takenPropNames, validPropName } from './component-contract';
+import { toCodeName } from './prop-schema';
+
+/** How many items a new list starts with: the container as it is, and copies of it to show it repeats. */
+export const STARTER_ITEMS = 3;
+/** The most fields a list item can have (see fieldSchemas). */
+const MAX_FIELDS = 20;
+
+const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
+
+/** One content value of the container that becomes an item field. */
+export interface RepeatField {
+  nodeId: string;
+  field: ContentField;
+  /** The item field's name: title, description, image, icon, link or label, numbered from the second of a kind. */
+  name: string;
+  label: string;
+  schema: Record<string, unknown>;
+}
+
+export interface RepeatPlan {
+  prop: string;
+  label: string;
+  itemLabel: string;
+  fields: RepeatField[];
+  /** Content that stays the same in every item: bound to one of the component's properties, or kept in the design. */
+  shared: number;
+  items: ListItem[];
+  repeatId: string;
+  operations: EditOperation[];
+}
+
+const LABELS: Record<string, string> = { title: 'Title', description: 'Description', image: 'Image', icon: 'Icon', link: 'Link', label: 'Label' };
+
+const isHeading = (tag: unknown) => typeof tag === 'string' && /^h[1-6]$/.test(tag);
+
+/** A plain text whose tag is a heading, or a choice of headings only, gives an item its title. */
+function headingText(def: ComponentDefinition, node: GraphNode): boolean {
+  if (node.kind !== 'text' || node.rich) return false;
+  if (!isBinding(node.tag)) return isHeading(node.tag);
+  const schema = '$prop' in node.tag ? own(def.properties, node.tag.$prop) : undefined;
+  const options = schema?.type === 'enum' ? schema.options : [];
+  return options.length > 0 && options.every((o) => isHeading(o.value));
+}
+
+function baseName(def: ComponentDefinition, node: GraphNode, field: ContentField): string {
+  if (field === 'text') return headingText(def, node) ? 'title' : 'description';
+  return field;
+}
+
+/**
+ * Why a node of a design can't be repeated as a list, or null when it can: a container below the design's root, in a
+ * project component built in the editor, not in or around another list, holding nothing every item would have to
+ * share (a slot's content, an anchor, a dialog), and with at least one text, image, icon or link of its own.
+ */
+export function repeatAsListProblem(state: ProjectState, def: ComponentDefinition, nodeId: string): string | null {
+  if (def.owner !== 'project' || def.kind !== 'managed' || !def.tree) return `“${def.name}” isn’t built in the editor, so it can’t repeat elements as a list.`;
+  const tree = def.tree;
+  if (!settledRoot(tree)) return `“${def.name}” has no single top element yet.`;
+  const node = own(tree.nodes, nodeId);
+  if (!node || node.kind !== 'element') return 'Pick a container (a Stack, Row, Grid or Container) to repeat.';
+  if (tree.rootIds[0] === nodeId) return 'This is the whole component. Pick a container inside it to repeat.';
+  const at = findParent(tree, nodeId);
+  if (!at?.parentId) return 'This container isn’t inside the component.';
+  const name = `“${node.name?.trim() || nodeWord(node)}”`;
+  if (enclosingRepeatProp(def, nodeId) !== undefined) return `${name} is already repeated by a list.`;
+  const sub = subtree(def, nodeId);
+  for (const n of sub) {
+    if (n.kind === 'repeat') return `${name} holds a list of its own.`;
+    if (n.kind === 'slot') return `${name} shows a slot’s content, which every item would repeat.`;
+    if (n.anchor !== undefined) return `${name} holds an anchor, which every item would share. Remove the anchor first.`;
+    if (Object.hasOwn(n, 'overlay') && (n as { overlay?: unknown }).overlay !== undefined) return `${name} holds a dialog or drawer, which every item would share.`;
+  }
+  const parent = own(tree.nodes, at.parentId);
+  // A group that hides when empty would test whether the list has items instead of the container's own conditions.
+  if (parent?.kind === 'element' && parent.collapseEmpty && (node.when || node.unless || node.collapseEmpty)) return `${name} hides by its own conditions inside a group that hides when empty, so it can’t be repeated there.`;
+  if (parent?.kind === 'instance' && at.slot !== undefined) {
+    const decl = slotDecl(state, parent, at.slot);
+    if (decl?.max !== undefined) return `${name} is in the “${decl.label}” slot, which holds at most ${decl.max === 1 ? 'one item' : `${decl.max} items`}.`;
+  }
+  if (Object.keys(def.properties).length >= MAX_PROPERTIES) return `“${def.name}” already has ${MAX_PROPERTIES} properties, the most a component can have.`;
+  const { fields } = itemFields(def, nodeId);
+  if (!fields.length) return `${name} has no text, images, icons or links of its own to repeat.`;
+  if (fields.length > MAX_FIELDS) return `${name} holds ${fields.length} texts, images, icons and links; a list item can have at most ${MAX_FIELDS}.`;
+  return null;
+}
+
+/** The node and everything below it in the design, the content placed in nested components' slots included. */
+function subtree(def: ComponentDefinition, nodeId: string): GraphNode[] {
+  const out: GraphNode[] = [];
+  const seen = new Set<string>();
+  const walk = (id: string) => {
+    const n = own(def.tree!.nodes, id);
+    if (!n || seen.has(id)) return;
+    seen.add(id);
+    out.push(n);
+    for (const cl of childLists(n)) cl.ids.forEach(walk);
+  };
+  walk(nodeId);
+  return out;
+}
+
+/**
+ * The content fixed in the container that becomes item fields, in the order the design shows it, and how many values
+ * stay the same in every item (a property fills them in, or items can't hold them). A nested component keeps what it is given: only this design's own
+ * elements are read, not the content placed in its slots.
+ */
+function itemFields(def: ComponentDefinition, nodeId: string): { fields: RepeatField[]; shared: number } {
+  const fields: RepeatField[] = [];
+  const counts = new Map<string, number>();
+  let shared = 0;
+  const seen = new Set<string>();
+  // Rich text bound to an item can hold links, which can't sit inside a card that links somewhere: inside one, it
+  // stays in the design.
+  let card = false;
+  for (let at = findParent(def.tree!, nodeId); at?.parentId && !card; at = findParent(def.tree!, at.parentId)) card = isCardLink(def.tree!.nodes[at.parentId]);
+  const walk = (id: string, inCard: boolean) => {
+    const node = own(def.tree!.nodes, id);
+    if (!node || seen.has(id)) return;
+    seen.add(id);
+    const linked = inCard || isCardLink(node);
+    for (const c of designContent(def, node)) {
+      if (c.source === 'default') shared++;
+      if (c.source !== 'design') continue;
+      // What items can't hold stays in the design, the same in every item: an icon from before the icon set (or none
+      // on a button), rich text in a linking card, and a container's link that goes nowhere (bound, it would make the
+      // container a card, and what is inside it would be a link in a link).
+      const fixed =
+        (c.field === 'icon' && !(typeof c.value === 'string' && Object.hasOwn(ICONS, c.value))) ||
+        (c.field === 'text' && node.kind === 'text' && !!node.rich && linked) ||
+        (c.field === 'link' && node.kind === 'element' && !isCardLink(node));
+      if (fixed) {
+        shared++;
+        continue;
+      }
+      const base = baseName(def, node, c.field);
+      const n = (counts.get(base) ?? 0) + 1;
+      counts.set(base, n);
+      const name = n === 1 ? base : `${base}${n}`;
+      const label = node.kind === 'link' && (c.field === 'label' || c.field === 'link') ? `${nodeWord(node)} ${c.field}` : LABELS[base];
+      const numbered = n === 1 ? label : `${label} ${n}`;
+      fields.push({ nodeId: node.id, field: c.field, name, label: numbered, schema: newPropSchema(node, c.field, c.value, numbered) });
+    }
+    if (node.kind === 'element') for (const c of node.children) walk(c, linked);
+  };
+  walk(nodeId, card);
+  return { fields, shared };
+}
+
+/** "Cards" for a container named Card, else "Items". */
+function defaultLabel(node: GraphNode): string {
+  const name = node.name?.trim();
+  if (!name) return 'Items';
+  return /s$/i.test(name) ? name : `${name}s`;
+}
+
+/**
+ * The change that repeats a container as a list, or why it can't: the list property with its fields and starter items
+ * (the container's own content, then copies of it), a repeat over it where the container was, the container moved
+ * into it, and each of its content values bound to its item field. `label` names the list; `repeatId` and `itemIds`
+ * fix the new IDs, for a change planned twice to come out the same.
+ */
+export function planRepeatAsList(state: ProjectState, def: ComponentDefinition, nodeId: string, opts: { label?: string; repeatId?: string; itemIds?: string[] } = {}): RepeatPlan | { problem: string } {
+  const problem = repeatAsListProblem(state, def, nodeId);
+  if (problem) return { problem };
+  const tree = def.tree!;
+  const node = tree.nodes[nodeId];
+  const at = findParent(tree, nodeId)!;
+  const { fields, shared } = itemFields(def, nodeId);
+  const label = (opts.label?.trim() || defaultLabel(node)).slice(0, 80);
+  const prop = freeName(toCodeName(label) ?? 'items', takenPropNames(state, def), validPropName);
+  const itemLabel = (node.name?.trim() || 'Item').slice(0, 40);
+  const first = Object.fromEntries(fields.map((f) => [f.name, structuredClone(f.schema.default)]));
+  const ids = Array.from({ length: STARTER_ITEMS }, (_, i) => opts.itemIds?.[i] ?? newId('i'));
+  const items: ListItem[] = ids.map((id) => ({ id, ...structuredClone(first) }));
+  const titleField = (fields.find((f) => f.name === 'title') ?? fields.find((f) => f.name === 'label') ?? fields.find((f) => f.schema.type === 'string'))?.name;
+  const schema = {
+    type: 'list',
+    label,
+    itemLabel,
+    ...(titleField ? { titleField } : {}),
+    fields: Object.fromEntries(fields.map((f) => [f.name, f.schema])),
+    default: items
+  };
+  const repeatId = opts.repeatId ?? newId('n');
+  const owner = { kind: 'component' as const, id: def.id };
+  const operations: EditOperation[] = [
+    { type: 'component.setPropSchema', definitionId: def.id, prop, schema },
+    { type: 'node.insert', owner, newNodeId: repeatId, parentId: at.parentId, ...(at.slot !== undefined ? { slot: at.slot } : {}), index: at.index, primitive: 'repeat', bind: prop },
+    { type: 'node.move', owner, nodeId, parentId: repeatId, index: 0 },
+    ...fields.map((f): EditOperation => ({ type: 'node.setBinding', owner, nodeId: f.nodeId, field: f.field, binding: { $item: f.name } }))
+  ];
+  return { prop, label, itemLabel, fields, shared, items, repeatId, operations };
+}
+
+/**
+ * What Repeat as list… acts on, if anything: a container of a project component's design, reached as the design's own
+ * node (Edit everywhere and Component Studio name it so), while the project can be edited. Canvas, Layers and the
+ * inspector all ask this, so the command is offered on the same things everywhere.
+ */
+export function repeatAsListTarget(snap: { state: ProjectState; readOnly?: unknown } | null | undefined, ref: ElementRef | null): ElementRef | null {
+  if (!snap || !ref || snap.readOnly || ref.owner.kind !== 'component' || ref.instancePath.length) return null;
+  const def = own(snap.state.components, ref.owner.id);
+  if (!def || repeatAsListProblem(snap.state, def, ref.nodeId)) return null;
+  return { owner: ref.owner, instancePath: [], nodeId: ref.nodeId };
+}
