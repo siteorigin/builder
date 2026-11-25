@@ -72,7 +72,7 @@ import { briefFilled, briefText } from '@shared/brief';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, storedAlt } from './values';
 import { editTable } from './table';
-import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties, usesState } from './schema';
+import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, itemStateProblems, normalizeProperties, usesState } from './schema';
 import { declaredTokens, findTokenCycle, findTokenCycleIn, forEachTokenRef, tokenPropUsageCounts, tokenUsageCounts } from './tokens';
 import { deriveDarkPalette, hasDarkPalette } from '@shared/color-scheme';
 import { slotDecl, slotFill, slotLandingProblem } from './slots';
@@ -3751,6 +3751,16 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     const by = problem ? retagged.findLast((r) => (r.nodeId === undefined ? !editedAfter(r.i) : r.nodeId === problem.nodeId) && sameOwner(r.owner)) : undefined;
     // The node is named in details too, so a caller that built the design can point at the node it described.
     if (problem) throw new EngineError('INVALID_ARGUMENT', ops.length > 1 && by ? `Operation ${by.i + 1} (${by.type}): ${problem.message}` : problem.message, { owner: problem.owner, nodeId: problem.nodeId });
+  }
+  // An item state's buttons and what they show must stay inside repeats of its list, and the list must stay one: an
+  // edit that moves them out, repeats another list there, or removes or retypes the list is refused, whichever
+  // operation did it. Problems a design already had (a hand edit) are left for validation to report.
+  for (const d of Object.values(draft.components)) {
+    const after = itemStateProblems(d);
+    if (!after.size) continue;
+    const was = Object.hasOwn(state.components, d.id) ? itemStateProblems(state.components[d.id]) : new Map<string, string>();
+    const added = [...after].find(([key]) => !was.has(key));
+    if (added) throw new EngineError('INVALID_ARGUMENT', `${d.name}: ${added[1]}`, { owner: { kind: 'component', id: d.id } });
   }
   // A theme update changes no project component, not even this derived field.
   if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };

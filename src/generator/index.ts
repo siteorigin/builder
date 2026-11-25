@@ -190,7 +190,7 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey', 'filterKey', 'filterCategories', 'so_text', 'so_fill', 'so_visitorText', 'overlayOpen', 'overlayDismissal', 'overlayClosed', 'beforeNavigate', 'so_previewing']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey', 'activeItem', 'stepItem', 'filterKey', 'filterCategories', 'so_text', 'so_fill', 'so_visitorText', 'overlayOpen', 'overlayDismissal', 'overlayClosed', 'beforeNavigate', 'so_previewing']);
 /**
  * Svelte's runes, by the name a local would hide them under: a property local named `state` would make `$state(...)`
  * read it as a store, so properties never take these names as locals either.
@@ -1369,6 +1369,11 @@ interface UiStateLocal {
   schema: UiStateSchema;
   /** An enum's values in order, which `next` and `prev` step through; empty for a yes/no state. */
   values: string[];
+  /**
+   * An item state's active item: the ID of the item its list shows as active, worked out from the item a visitor chose
+   * (held in `local`, null until one does) and the list as it is now (see the generated util's activeItem).
+   */
+  item?: string;
 }
 
 /**
@@ -1381,7 +1386,7 @@ function stateLocals(def: ComponentDefinition): Map<string, UiStateLocal> {
   if (def.kind !== 'managed' || !def.state || typeof def.state !== 'object' || Array.isArray(def.state)) return out;
   for (const name of Object.keys(def.state).sort()) {
     const schema = declaredState(def, name);
-    if (schema) out.set(name, { local: `so_state_${name}`, schema, values: schema.type === 'enum' ? schema.options.map((o) => o.value) : [] });
+    if (schema) out.set(name, { local: `so_state_${name}`, schema, values: schema.type === 'enum' ? schema.options.map((o) => o.value) : [], ...(schema.type === 'item' ? { item: `so_state_${name}_item` } : {}) });
   }
   return out;
 }
@@ -1391,8 +1396,8 @@ function stateLocals(def: ComponentDefinition): Map<string, UiStateLocal> {
  * cannot hold or a change that state cannot make (validation reports both). A button that opens a dialog or drawer
  * also notes itself as the one to give the focus back to when it closes.
  */
-function stateActionHandler(ctx: EmitCtx, action: StateAction | undefined, opens?: OverlayGen): string | null {
-  const s = ctx.def ? actionState(ctx.def, ctx.states, action) : null;
+function stateActionHandler(ctx: EmitCtx, nodeId: string, action: StateAction | undefined, opens?: OverlayGen): string | null {
+  const s = ctx.def ? actionState(ctx.def, ctx.states, action, nodeId) : null;
   if (!action || !s) return null;
   let change: string;
   switch (action.op) {
@@ -1402,7 +1407,19 @@ function stateActionHandler(ctx: EmitCtx, action: StateAction | undefined, opens
     case 'set':
       change = `${s.local} = ${js(action.value)}`;
       break;
+    case 'select': {
+      // Validation keeps a select inside a repeat of the state's list, where the nearest item is the button's own.
+      const item = ctx.items.at(-1);
+      if (!item) return null;
+      change = `${s.local} = ${item}.id`;
+      break;
+    }
     default:
+      if (s.item) {
+        useImport(ctx, '{ stepItem }', `${RUNTIME_DIR}/util.js`);
+        change = `${s.local} = stepItem(${itemListExpr(ctx, s)}, ${s.item}, ${action.op === 'next' ? 1 : -1}, ${action.wrap === true})`;
+        break;
+      }
       useImport(ctx, '{ stepState }', `${RUNTIME_DIR}/util.js`);
       change = `${s.local} = stepState(${js(s.values)}, ${s.local}, ${action.op === 'next' ? 1 : -1}, ${action.wrap === true})`;
   }
@@ -1413,19 +1430,24 @@ function stateActionHandler(ctx: EmitCtx, action: StateAction | undefined, opens
  * The state a button's action changes, when the design holds that state and validation accepts the action (an action
  * a hand edit damaged does nothing, as validation reports it).
  */
-function actionState(def: ComponentDefinition, states: Map<string, UiStateLocal> | undefined, action: unknown): UiStateLocal | null {
+function actionState(def: ComponentDefinition, states: Map<string, UiStateLocal> | undefined, action: unknown, nodeId: string | undefined): UiStateLocal | null {
   if (!action || typeof action !== 'object' || Array.isArray(action)) return null;
   const name = (action as { state?: unknown }).state;
   const s = typeof name === 'string' ? states?.get(name) : undefined;
-  return s && !stateActionProblem(def, action) ? s : null;
+  return s && !stateActionProblem(def, action, nodeId) ? s : null;
+}
+
+/** The items of an item state's list, as an expression in the component's script or markup. */
+function itemListExpr(ctx: EmitCtx, s: UiStateLocal): string {
+  return `(${bindExpr(ctx, { $prop: (s.schema as { list: string }).list })} ?? [])`;
 }
 
 /**
  * Whether a button's state action works in the generated site: the design holds the state and the action is one it can
  * make. Such a button renders even with nowhere to go, as a real button (the checks use this to tell).
  */
-export function stateActionWorks(def: ComponentDefinition | null | undefined, action: unknown): boolean {
-  return !!def && action !== undefined && !!actionState(def, stateLocals(def), action);
+export function stateActionWorks(def: ComponentDefinition | null | undefined, action: unknown, nodeId?: string): boolean {
+  return !!def && action !== undefined && !!actionState(def, stateLocals(def), action, nodeId);
 }
 
 /** A panel kept in the page while its state hides it: the state and the value it shows for, and its tab in a tab list. */
@@ -1433,13 +1455,16 @@ interface StatePanel {
   state: string;
   shows: boolean | string;
   tab?: string;
+  /** Shown once per item of a list, while its item is an item state's active one: named by its item too. */
+  perItem?: boolean;
 }
 /** What a button that changes state, and goes nowhere, tells assistive technology about what it does. */
 type StateButton =
   | { role: 'tab'; state: string; value: string; panel: string }
   | { role: 'disclosure'; state: string; open: boolean; panels: string[] }
   | { role: 'pressed'; state: string; value: boolean | string }
-  | { role: 'dialog'; state: string; overlay: string };
+  | { role: 'dialog'; state: string; overlay: string }
+  | { role: 'item'; state: string; panels: string[] };
 /**
  * A container shown over the page as a dialog or drawer (ElementNode.overlay): the yes/no state that opens it and the
  * value it is open at, how it shows, and the locals holding its <dialog>, the button that last opened it and (in the
@@ -1549,7 +1574,7 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
   };
   /** A button that changes state and goes nowhere: always a real button. */
   const stateButton = (n: GraphNode): n is GraphNode & { kind: 'link'; stateAction: StateAction } =>
-    n.kind === 'link' && !!actionState(def, ctx.states, n.stateAction) && !isBinding(n.link) && !resolveLink(n.link as LinkValue, ctx.rctx);
+    n.kind === 'link' && !!actionState(def, ctx.states, n.stateAction, n.id) && !isBinding(n.link) && !resolveLink(n.link as LinkValue, ctx.rctx);
   const nodes = Object.values(tree.nodes).filter((n): n is GraphNode => !!n && typeof n === 'object');
   const guarded = nodes.map((n) => ({ n, g: guard(n) })).filter((x): x is { n: GraphNode; g: { state: string; shows: boolean | string } } => !!x.g);
   const insidePanel = (id: string, panels: Set<string>) => {
@@ -1568,6 +1593,38 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
   };
   for (const [name, s] of [...ctx.states].sort(([a], [b]) => a.localeCompare(b))) {
     const buttons = nodes.filter((n) => stateButton(n) && n.stateAction.state === name) as Array<GraphNode & { kind: 'link'; stateAction: StateAction }>;
+    if (s.schema.type === 'item') {
+      const list = s.schema.list;
+      // Rendered once in every item of a repeat of the list that shows them all and is itself in the page whenever the
+      // placement is (rendered once, unconditionally): reached from it through elements alone, none of them shown only
+      // on a condition. Every item of the list has such content in each of those repeats, so a button can name it.
+      const perItem = new Set<string>();
+      const reachItem = (id: string) => {
+        const n = tree.nodes[id];
+        if (!n || perItem.has(id)) return;
+        perItem.add(id);
+        if (n.kind !== 'element' || n.when || n.unless || rendersAsCard(ctx, n) || isCarouselTrack(n)) return;
+        for (const c of n.children) reachItem(c);
+      };
+      for (const r of nodes) if (r.kind === 'repeat' && r.list?.$prop === list && once.has(r.id) && !r.when && !r.unless && r.filter === undefined) r.children.forEach(reachItem);
+      // The content shown only while its item is the active one (its one condition), which stays in the page, hidden on
+      // screen while another item is active, so printing shows every item's.
+      const panels = nodes
+        .filter((n) => {
+          if (!perItem.has(n.id) || n.unless !== undefined || !isStateRef(n.when) || n.when.$state !== name || n.anchor || (n as { overlay?: unknown }).overlay !== undefined) return false;
+          if (n.kind === 'text') return !n.rich;
+          return n.kind === 'element' && !n.collapseEmpty && !rendersAsCard(ctx, n) && !isCarouselTrack(n);
+        })
+        .map((n) => n.id);
+      for (const p of panels) out.panels.set(p, { state: name, shows: true, perItem: true });
+      // A button that selects its own item says whether that item's content is expanded, and names it in every repeat;
+      // one that could be missing from its item, or with nothing to show, says whether its item is the active one.
+      for (const b of buttons) {
+        if (b.stateAction.op !== 'select') continue;
+        out.buttons.set(b.id, panels.length && perItem.has(b.id) && !b.when && !b.unless ? { role: 'item', state: name, panels } : { role: 'pressed', state: name, value: true });
+      }
+      continue;
+    }
     const overlay = [...out.overlays].find(([, o]) => o.state === name);
     if (overlay) {
       const [host, o] = overlay;
@@ -1638,15 +1695,28 @@ function isBareTag(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, tag: str
  * The ID a tab or panel is named by, unique to the placement from \`$props.id()\`. The dots keep it apart from the
  * IDs a placement's headings take (\`uid-node\`).
  */
-function widgetId(ctx: EmitCtx, nodeId: string, role: 'tab' | 'panel' | 'dialog'): string {
+function widgetId(ctx: EmitCtx, nodeId: string, role: 'tab' | 'panel' | 'dialog', perItem = false): string {
   ctx.usesUid = true;
-  return `\`\${uid}.${role}.${nodeId.replace(/[^A-Za-z0-9_-]/g, '_')}\``;
+  // Content shown once per item of a list is named by its item too, encoded so no ID holds a space.
+  const item = perItem ? ctx.items.at(-1) : undefined;
+  return `\`\${uid}.${role}.${nodeId.replace(/[^A-Za-z0-9_-]/g, '_')}${item ? `.\${encodeURIComponent(${item}.id)}` : ''}\``;
 }
 
-/** A state's local compared with a value, as an expression. */
+/** A state's local compared with a value, as an expression. An item state is on for the item being emitted while it is the active one. */
 function stateIs(ctx: EmitCtx, state: string, value: boolean | string): string {
-  const local = ctx.states!.get(state)!.local;
+  const s = ctx.states!.get(state)!;
+  if (s.item) return value === false ? `!(${itemActiveExpr(ctx, s)})` : itemActiveExpr(ctx, s);
+  const local = s.local;
   return value === true ? local : value === false ? `!${local}` : `${local} === ${js(value)}`;
+}
+
+/**
+ * Whether the item being emitted is an item state's active one. Validation keeps what reads it inside a repeat of its
+ * list, where the nearest item is one of that list's; anywhere else it is never active.
+ */
+function itemActiveExpr(ctx: EmitCtx, s: UiStateLocal): string {
+  const item = ctx.items.at(-1);
+  return item ? `${s.item} === ${item}.id` : 'false';
 }
 
 /** The ARIA a button that changes state takes, from its part in the design (see stateWidgets). */
@@ -1667,6 +1737,12 @@ function stateButtonAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'link' }): str
     }
     case 'pressed':
       return ` aria-pressed={${stateIs(ctx, role.state, role.value)}}`;
+    case 'item': {
+      // Its item's content in every repeat of the list, each named by the item.
+      const ids = role.panels.map((p) => widgetId(ctx, p, 'panel', true));
+      const controls = !ids.length ? '' : ` aria-controls={${ids.length === 1 ? ids[0] : `[${ids.join(', ')}].join(' ')`}}`;
+      return ` aria-expanded={${stateIs(ctx, role.state, true)}}${controls}`;
+    }
     case 'dialog': {
       const o = ctx.widgets!.overlays.get(role.overlay)!;
       return ` aria-haspopup="dialog" aria-expanded={${stateIs(ctx, role.state, o.shows)}} aria-controls={${widgetId(ctx, role.overlay, 'dialog')}}`;
@@ -1694,7 +1770,7 @@ function stateElementAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' | '
   const panel = ctx.widgets?.panels.get(node.id);
   if (!panel) return '';
   // Content with an anchor keeps it as its id (anchorAttr), and no button names it.
-  const id = node.anchor ? '' : ` id={${widgetId(ctx, node.id, 'panel')}}`;
+  const id = node.anchor ? '' : ` id={${widgetId(ctx, node.id, 'panel', panel.perItem)}}`;
   if (!panel.tab) return id;
   const by = widgetId(ctx, panel.tab, 'tab');
   let labelledBy = ` aria-labelledby={${by}}`;
@@ -1843,7 +1919,12 @@ function useImport(ctx: EmitCtx, name: string, path: string) {
 function bindExpr(ctx: EmitCtx, v: unknown, schema?: PropSchema): string {
   // UI state reads the placement's own `$state` local, so what reads it follows the design's buttons. State the design
   // cannot hold (a damaged declaration) shows the value it starts at.
-  if (isStateRef(v)) return ctx.states?.get(v.$state)?.local ?? js(stateInitial(ctx.def ?? undefined, v.$state) ?? null);
+  if (isStateRef(v)) {
+    const s = ctx.states?.get(v.$state);
+    // An item state reads, in a repeat of its list, as whether this item is the active one.
+    if (s?.item) return itemActiveExpr(ctx, s);
+    return s?.local ?? js(stateInitial(ctx.def ?? undefined, v.$state) ?? null);
+  }
   if (isBinding(v)) {
     if ('$prop' in v) {
       const local = ctx.locals.get(v.$prop);
@@ -2019,6 +2100,9 @@ function emitNode(ctx: EmitCtx, id: string): string {
  * comparison with the literal, so a property set to `"video"` or an item whose `featured` is `true` decides it.
  */
 function conditionExpr(ctx: EmitCtx, c: Condition, negate: boolean): string {
+  // Whether this item is an item state's active one is already true or false.
+  const item = isStateRef(c) ? ctx.states?.get(c.$state) : undefined;
+  if (item?.item) return `${negate ? '!' : ''}(${itemActiveExpr(ctx, item)})`;
   if (isComparison(c)) {
     const equal = 'eq' in c;
     const value = equal ? c.eq : c.ne;
@@ -2626,7 +2710,7 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const name = nameAttr(ctx, 'aria-label', node.ariaLabel);
       // A button that changes UI state is a real button wherever it has nowhere to go (see the Link helper).
       const role = ctx.widgets?.buttons.get(node.id);
-      const handler = ctx.def ? stateActionHandler(ctx, node.stateAction, role?.role === 'dialog' ? ctx.widgets!.overlays.get(role.overlay) : undefined) : null;
+      const handler = ctx.def ? stateActionHandler(ctx, node.id, node.stateAction, role?.role === 'dialog' ? ctx.widgets!.overlays.get(role.overlay) : undefined) : null;
       const click = handler ? ` so_control onclick={${handler}}${stateButtonAttrs(ctx, node)}` : '';
       return `${p}<SoLink link={${link}} appearance={${appearance}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${name}${click}${ids}>${linkContent(ctx, node, label)}</SoLink>`;
     }
@@ -3342,12 +3426,20 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   if (opts.instrument) propDecls.push(`\t\t__so = '',`, `\t\t__so_at = '',`);
   propDecls.push(`\t\tclass: className = ''`);
   const overlays = overlayScript(ctx);
-  const imports = renderImports(ctx.imports);
   const uid = ctx.usesUid ? `\tconst uid = $props.id();\n` : '';
   // Each placement holds its own UI state, starting where the design says.
-  const states = [...ctx.states!.values()].map((s) => `\tlet ${s.local} = $state(${js(s.schema.initial)});\n`).join('');
+  // An item state holds the item a visitor chose (none at first), and works out the active item from it and the list:
+  // the chosen one while the list has it, else the one at the position the design starts at.
+  const states = [...ctx.states!.values()]
+    .map((s) => {
+      if (!s.item) return `\tlet ${s.local} = $state(${js(s.schema.initial)});\n`;
+      useImport(ctx, '{ activeItem }', `${RUNTIME_DIR}/util.js`);
+      return `\tlet ${s.local} = $state(null);\n\tconst ${s.item} = $derived(activeItem(${itemListExpr(ctx, s)}, ${s.local}, ${js(s.schema.initial)}));\n`;
+    })
+    .join('');
   // A design's own pictures: a converted copy's <style> block holds every rule already.
   const pictures = standalone ? '' : designFileCss(state, def);
+  const imports = renderImports(ctx.imports);
   return (
     HEADER_NOTE(`siteorigin/components/${def.id}/component.json`) +
     `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}${states}${filters}${editingState(ctx)}${overlays}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n` +

@@ -1,7 +1,7 @@
 import type { BindingRef, ComponentDefinition, ConditionValue, GraphNode, OwnerRef, PropSchema } from '@shared/types';
 import { conditionRef, isComparison } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { declaredState, enclosingList, stateAsProp } from '@engine/schema';
+import { declaredState, enclosingList, itemScopeProblem, stateAsProp } from '@engine/schema';
 import { propBindingName } from '@shared/bindings';
 
 /**
@@ -22,6 +22,8 @@ export interface ConditionSource {
   binding: BindingRef;
   schema: PropSchema;
   label: string;
+  /** An item state, read as whether the node's own list item is the active one: it is only ever tested for that. */
+  activeItem?: boolean;
 }
 
 /** How a source's value is compared with a literal, or null when it can only be tested for having a value. */
@@ -53,9 +55,12 @@ export function conditionSources(def: ComponentDefinition, nodeId: string): { pr
   // The nearest repeat above the node (not the node itself: a repeat's own condition reads the item around it).
   const list = def.tree?.nodes[nodeId] ? enclosingList(def, nodeId) : null;
   const item = Object.entries(list?.fields ?? {}).map(([name, schema]) => ({ key: `item:${name}`, binding: { $item: name }, schema: schema as PropSchema, label: schema.label || name }));
-  const state = Object.keys(def.state ?? {}).flatMap((name) => {
+  const state = Object.keys(def.state ?? {}).flatMap((name): ConditionSource[] => {
     const declared = declaredState(def, name);
-    return declared ? [{ key: `state:${name}`, binding: { $state: name }, schema: stateAsProp(declared), label: declared.label || name }] : [];
+    if (!declared) return [];
+    // An item state is read only inside a repeat of its list, as whether this item is the active one.
+    if (declared.type === 'item') return def.tree?.nodes[nodeId] && !itemScopeProblem(def, nodeId, name, declared, 'reads') ? [{ key: `state:${name}`, binding: { $state: name }, schema: stateAsProp(declared), label: declared.label || name, activeItem: true }] : [];
+    return [{ key: `state:${name}`, binding: { $state: name }, schema: stateAsProp(declared), label: declared.label || name }];
   });
   return { props, item, state, itemLabel: list?.itemLabel };
 }
@@ -130,6 +135,7 @@ export function shownLiteral(value: ConditionValue | undefined, source: Conditio
 /** A rule in words: "Show when Featured is on", "Hide when Badge has a value". */
 export function describeRule(field: ConditionField, rule: ConditionRule, itemLabel?: string): string {
   const name = rule.source ? (rule.source.key.startsWith('item:') && itemLabel ? `${itemLabel} ${lower(rule.source.label)}` : rule.source.label) : bindingName(rule.binding);
+  if (rule.source?.activeItem && rule.test === 'set') return `${field === 'when' ? 'Show' : 'Hide'} when its item is the ${lower(name)}`;
   const test = rule.test === 'set' ? 'has a value' : `${rule.test === 'eq' ? 'is' : 'is not'} ${shownLiteral(rule.value, rule.source)}`;
   return `${field === 'when' ? 'Show' : 'Hide'} when ${name} ${test}`;
 }

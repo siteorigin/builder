@@ -19,7 +19,7 @@ export interface ComponentPreviewSpec {
    * The value each named UI state variable starts at, in place of the one the design declares (a hidden tab chosen, a
    * drawer open), by state name: a dialog or drawer open in it shows in place while editing.
    */
-  states?: Record<string, boolean | string>;
+  states?: Record<string, boolean | string | number>;
 }
 
 /** Where the preview server shows a prepared preview: this, then its key, then "/". A page's address never starts with "_". */

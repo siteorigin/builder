@@ -26,6 +26,8 @@ import {
   clickChoices,
   clickKey,
   initialStateOp,
+  itemStateLists,
+  itemStatePositions,
   newStateProblem,
   optionLabels,
   overlayOp,
@@ -60,7 +62,7 @@ function run(defId: string, plan: (def: ComponentDefinition) => EditOperation | 
   return getState().snapshot?.workspaceKey === now.snap.workspaceKey ? applyOps([op], words, undefined, now.snap.revision) : Promise.resolve(null);
 }
 
-const KIND_WORDS: Record<UiStateSchema['type'], string> = { boolean: 'Yes/no', enum: 'Choice' };
+const KIND_WORDS: Record<UiStateSchema['type'], string> = { boolean: 'Yes/no', enum: 'Choice', item: 'Active item' };
 
 /**
  * The component's UI state variables: add a yes/no state or a choice, rename it, its options and where every placement
@@ -123,7 +125,22 @@ function StateGroup({ def, name }: { def: ComponentDefinition; name: string }) {
           <Trash2 />
         </button>
       </div>
-      {s.type === 'boolean' ? (
+      {s.type === 'item' ? (
+        <Field label="Each placement starts" hint={`At this ${(def.properties[s.list] as { itemLabel?: string } | undefined)?.itemLabel?.toLowerCase() || 'item'} of ${def.properties[s.list]?.label || s.list} (the last one when a placement has fewer). Buttons in a repeat of the list make their item the active one; content there shows for it under Conditions.`}>
+          <select
+            className="select sm"
+            aria-label={`Where ${s.label || name} starts`}
+            value={String(s.initial)}
+            onChange={(e) => void run(def.id, (d) => initialStateOp(d, name, Number(e.target.value)), `Start ${s.label || name} at item ${Number(e.target.value) + 1}`)}
+          >
+            {itemStatePositions(def, s).map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      ) : s.type === 'boolean' ? (
         <Field label="Each placement starts">
           <select
             className="select sm"
@@ -209,12 +226,15 @@ function NewState({ def }: { def: ComponentDefinition }) {
   const [label, setLabel] = useState('');
   const [type, setType] = useState<UiStateSchema['type']>('enum');
   const [options, setOptions] = useState('');
+  const lists = itemStateLists(def);
+  const [chosenList, setList] = useState('');
+  const list = lists.some((l) => l.name === chosenList) ? chosenList : lists[0]?.name;
   const listed = optionLabels(options);
-  const problem = newStateProblem(def, label, type, listed);
+  const problem = newStateProblem(def, label, type, listed, list);
   const add = async () => {
     if (problem) return;
     const [sentLabel, sentOptions] = [label, options];
-    const done = await run(def.id, (d) => (newStateProblem(d, label, type, listed) ? null : addStateOp(d, label, type, listed)), `Add ${label.trim()} state`);
+    const done = await run(def.id, (d) => (newStateProblem(d, label, type, listed, list) ? null : addStateOp(d, label, type, listed, list)), `Add ${label.trim()} state`);
     // Only what was sent is cleared: text typed while it was being saved stays.
     if (done !== null) {
       setLabel((t) => (t === sentLabel ? '' : t));
@@ -230,8 +250,20 @@ function NewState({ def }: { def: ComponentDefinition }) {
         <select className="select sm" aria-label="Kind of state" value={type} onChange={(e) => setType(e.target.value as UiStateSchema['type'])}>
           <option value="enum">Choice</option>
           <option value="boolean">Yes/no</option>
+          {(lists.length > 0 || type === 'item') && <option value="item">Active item of a list</option>}
         </select>
       </div>
+      {type === 'item' && (
+        <div className="contract-add">
+          <select className="select sm" aria-label="The list whose active item it holds" value={list ?? ''} onChange={(e) => setList(e.target.value)}>
+            {lists.map((l) => (
+              <option key={l.name} value={l.name}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       {type === 'enum' && (
         <div className="contract-add">
           <input className="input sm" value={options} placeholder="Options, e.g. Monthly, Annual" aria-label="Its options, separated by commas" onChange={(e) => setOptions(e.target.value)} onKeyDown={onEnter(() => void add())} />
@@ -242,7 +274,9 @@ function NewState({ def }: { def: ComponentDefinition }) {
           <Plus aria-hidden="true" /> Add state
         </button>
       </div>
-      <p className="insp-note faint">{type === 'enum' ? 'Each placement starts at the first option, such as the first tab.' : 'Each placement starts off, such as a closed panel.'}</p>
+      <p className="insp-note faint">
+        {type === 'enum' ? 'Each placement starts at the first option, such as the first tab.' : type === 'item' ? 'Each placement starts at the first item, such as the first step: its buttons choose another, and what shows for it follows.' : 'Each placement starts off, such as a closed panel.'}
+      </p>
     </div>
   );
 }
@@ -250,7 +284,7 @@ function NewState({ def }: { def: ComponentDefinition }) {
 /** What clicking a button of the design does to the component's UI state: nothing else, or one change to one state. */
 export function ClickActionSection({ def, node, level }: { def: ComponentDefinition; node: GraphNode & { kind: 'link' }; level: number }) {
   const id = useId();
-  const choices = clickChoices(def);
+  const choices = clickChoices(def, node.id);
   const action = node.stateAction;
   const key = clickKey(action);
   const known = choices.some((c) => c.key === key);

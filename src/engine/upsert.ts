@@ -41,6 +41,7 @@ import {
   stateActionProblem,
   stateRefProblem,
   stateUsers,
+  itemStateProblems,
   type BindingSite
 } from './schema';
 import { dropPartOverrides, removeSlot, removeVariant, replaceProperties, setSlot } from './definitions';
@@ -84,11 +85,14 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   const uiState = op.state !== undefined ? designState(op, candidate) : was && keptState(was, candidate);
   if (uiState !== undefined) candidate.state = uiState;
   else delete candidate.state;
+  // An item state holds an item of one of the design's own lists, read and selected inside repeats of that list.
+  const itemProblem = itemStateProblems(candidate).values().next().value;
+  if (itemProblem) fail(itemProblem);
   checkBindings(state, candidate, bindingSites(candidate));
   // A filter, a button's state action or a dialog that would not work is refused here, where load validation would
   // only report it.
   for (const n of Object.values(tree.nodes)) {
-    const problem = repeatFilterProblem(candidate, n) ?? (n.kind === 'link' && n.stateAction !== undefined ? actionProblem(candidate, n.stateAction) : null) ?? overlayProblem(candidate, n);
+    const problem = repeatFilterProblem(candidate, n) ?? (n.kind === 'link' && n.stateAction !== undefined ? actionProblem(candidate, n.stateAction, n.id) : null) ?? overlayProblem(candidate, n);
     if (problem) fail(`${describeNode(n)} ${problem}`);
   }
 
@@ -212,10 +216,10 @@ function designState(op: UpsertOp, candidate: ComponentDefinition): Record<strin
  * What is wrong with a described button's state action: state the component keeps in a form a hand edit damaged (which
  * validation would only report, while the button did nothing) is refused here, as node.setStateAction refuses it.
  */
-function actionProblem(def: ComponentDefinition, action: unknown): string | null {
+function actionProblem(def: ComponentDefinition, action: unknown, nodeId: string): string | null {
   const name = (action as { state?: unknown }).state;
   if (typeof name === 'string' && damagedState(def, name)) return `changes the UI state "${name}", which is damaged. Describe it again with state.`;
-  return stateActionProblem(def, action);
+  return stateActionProblem(def, action, nodeId);
 }
 
 /** A rebuilt component's own UI state, when the description leaves it out: kept while its design does not use it. */

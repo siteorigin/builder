@@ -9,6 +9,7 @@ import { axesOf } from '@shared/variants';
 import { getState, setState, useStore } from '../store';
 import { setStudioView } from '../lib/actions';
 import { studioStates, studioVariants } from '../lib/studio';
+import { itemStatePositions } from '../lib/ui-state';
 import { declaredState } from '@engine/schema';
 import { isStudioSample, STUDIO_SAMPLES } from '../lib/studio-samples';
 
@@ -48,7 +49,12 @@ export function StudioControls({ def }: { def: ComponentDefinition }) {
       ))}
       {Object.entries(states).map(([name, value]) => {
         const declared = declaredState(def, name)!;
-        const options = declared.type === 'boolean' ? [{ value: 'true', label: 'On', initial: declared.initial }, { value: 'false', label: 'Off', initial: !declared.initial }] : declared.options.map((o) => ({ ...o, initial: o.value === declared.initial }));
+        const options =
+          declared.type === 'boolean'
+            ? [{ value: 'true', label: 'On', initial: declared.initial }, { value: 'false', label: 'Off', initial: !declared.initial }]
+            : declared.type === 'item'
+              ? itemStatePositions(def, declared).map((o) => ({ value: String(o.value), label: o.label, initial: o.value === declared.initial }))
+              : declared.options.map((o) => ({ ...o, initial: o.value === declared.initial }));
         return (
           <label key={`state:${name}`} className="studio-control" title="Previews the component with this UI state, as a visitor’s click would leave it. Visitors still start where the design says.">
             <span>{declared.label || name}</span>
@@ -56,7 +62,7 @@ export function StudioControls({ def }: { def: ComponentDefinition }) {
               className="select sm"
               data-studio-state={name}
               value={String(value)}
-              onChange={(e) => setStudioView({ states: { ...view.states, [name]: declared.type === 'boolean' ? e.target.value === 'true' : e.target.value } })}
+              onChange={(e) => setStudioView({ states: { ...view.states, [name]: declared.type === 'boolean' ? e.target.value === 'true' : declared.type === 'item' ? Number(e.target.value) : e.target.value } })}
             >
               {options.map((o) => (
                 <option key={o.value} value={o.value}>

@@ -228,7 +228,7 @@ function checkTree(def: ComponentDefinition) {
       if (declared?.type !== 'enum') refuse(`${where}: node "${id}" takes a variant from UI state that is not a choice the component declares.`);
     }
     if (Object.hasOwn(n, 'stateAction')) {
-      const problem = n.kind === 'link' ? stateActionProblem(def, n.stateAction) : 'changes UI state, which only a button can.';
+      const problem = n.kind === 'link' ? stateActionProblem(def, n.stateAction, n.id) : 'changes UI state, which only a button can.';
       if (problem) refuse(`${where}: node "${id}" ${problem}`);
     }
     if (Object.hasOwn(n, 'filter')) {

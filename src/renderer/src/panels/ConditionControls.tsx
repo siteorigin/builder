@@ -54,7 +54,8 @@ function ConditionRow({
   const id = useId();
   const all = [...sources.props, ...sources.item, ...sources.state];
   const source = rule?.source;
-  const input = source ? comparisonInput(source.schema) : null;
+  // Whether the item is the active one is only ever tested, never compared.
+  const input = source && !source.activeItem ? comparisonInput(source.schema) : null;
   // A value just typed is committed as its field loses focus, which choosing "is" or "is not" makes it do, before the
   // project has answered: that choice keeps the value typed, not the one shown a moment before. Once every save of
   // this row has been answered, the saved rule is current again: at once for one refused or held for later, and with
@@ -125,7 +126,7 @@ function ConditionRow({
       {rule && source && (
         <div className="insp-condition-test">
           <select className="select" aria-label={`${ROW_LABEL[field].replace('…', '')} test`} value={rule.test} onChange={(e) => pickTest(e.target.value as ConditionTest)}>
-            <option value="set">has a value</option>
+            <option value="set">{source.activeItem ? 'is this item' : 'has a value'}</option>
             {input && <option value="eq">is</option>}
             {input && <option value="ne">is not</option>}
           </select>
