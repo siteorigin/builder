@@ -3,7 +3,7 @@
  * saying where it goes, and a drop on the canvas all read it from here, so they agree on the place.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import type { ElementNode, ElementRef, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
 import { childLists, findParent } from '@engine/tree';
 import { ownerLabel, refLabel, treeFor } from './model';
@@ -128,6 +128,24 @@ function slotCounts(state: ProjectState, definitionId: string, done: Map<string,
 }
 
 /**
+ * Inside a figure whose caption ends it, new content goes before the caption, which must stay its first or last child.
+ * Anywhere else, at the end (no index).
+ */
+function beforeCaption(tree: NodeTree, node: ElementNode): { index?: number } {
+  const index = captionSafe(tree, node.id, node.children.length);
+  return index === node.children.length ? {} : { index };
+}
+
+/** A place among `parentId`'s children, moved before a figure's trailing caption when it would follow it. */
+function captionSafe(tree: NodeTree, parentId: string | null | undefined, index: number): number {
+  const parent = parentId ? own(tree.nodes, parentId) : undefined;
+  if (parent?.kind !== 'element' || parent.tag !== 'figure' || !parent.children.length) return index;
+  const end = parent.children.length;
+  const last = own(tree.nodes, parent.children[end - 1]);
+  return last?.kind === 'text' && last.tag === 'figcaption' && index >= end ? end - 1 : index;
+}
+
+/**
  * Where something placed as `role` goes in `owner`, relative to `sel` (a node of the owner's own tree, see
  * structuralTarget). An element goes inside a selected container or a placed component's slot, else just after the
  * selection, in its own list; with nothing selected on a page it goes into the last section that holds content. A
@@ -142,7 +160,7 @@ export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole,
     const node = own(tree.nodes, sel.nodeId);
     const same = node?.kind === 'instance' && !!definitionId && node.definitionId === definitionId;
     if (role === 'element' && node && !same) {
-      if (node.kind === 'element') return { owner, parentId: node.id };
+      if (node.kind === 'element') return { owner, parentId: node.id, ...beforeCaption(tree, node) };
       const slot = node.kind === 'instance' ? (held ?? slotFor(state, node.definitionId)) : undefined;
       if (slot) return { owner, parentId: node.id, slot };
     }
@@ -158,7 +176,8 @@ export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole,
         }
         return { owner, parentId: null, index: tree.rootIds.indexOf(top) + 1 };
       }
-      return { owner, parentId: info.parentId, slot: info.slot, index: info.index + 1 };
+      // Just after the selection; after a figure's caption, before it instead.
+      return { owner, parentId: info.parentId, slot: info.slot, index: captionSafe(tree, info.parentId, info.index + 1) };
     }
   }
   if (role === 'element' && owner.kind === 'page') {
@@ -179,7 +198,7 @@ export function insideComponent(state: ProjectState, at: InsertAt | null): Inser
   const tree = treeFor(state, at.owner);
   if (tree?.rootIds.length !== 1) return at;
   const node = own(tree.nodes, tree.rootIds[0]);
-  if (node?.kind === 'element') return { owner: at.owner, parentId: node.id };
+  if (node?.kind === 'element') return { owner: at.owner, parentId: node.id, ...beforeCaption(tree, node) };
   const slot = node?.kind === 'instance' ? slotFor(state, node.definitionId) : undefined;
   if (slot) return { owner: at.owner, parentId: node!.id, slot };
   return node?.kind === 'repeat' || node?.kind === 'slot' ? at : null;

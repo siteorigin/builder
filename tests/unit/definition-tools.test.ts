@@ -251,6 +251,33 @@ describe('running the definition tools', () => {
     expect(errorOf(await run(host, 'remove_definition_node', { nodeId: 'actions' })).message).toMatch(/holds a slot's outlet/);
   });
 
+  it('adds a badge, a figure and a decorative divider, and changes the divider’s shape and icon (#356)', async () => {
+    const { session, id } = await hero();
+    const host = hostFor(session, authorityOf(session.state, id, null));
+    const insert = prop(tool(definitionTools(session.state, { definitionId: id })!, 'insert_definition_node'));
+    expect(insert.properties!.primitive.enum).toEqual(expect.arrayContaining(['badge', 'figure', 'divider']));
+    expect(insert.properties!.shape.enum).toEqual(['line', 'angle', 'wave', 'icon']);
+    const nodes = () => session.state.components[id].tree!.nodes;
+    const added = async (args: Record<string, unknown>) => ((await run(host, 'insert_definition_node', { parentId: 'content', ...args })).content as { nodeId: string }).nodeId;
+    const badge = await added({ primitive: 'badge', text: 'New season', icon: 'leaf' });
+    expect(nodes()[badge]).toMatchObject({ kind: 'element', tag: 'span', name: 'Badge' });
+    expect((nodes()[badge] as { children: string[] }).children.map((c) => nodes()[c])).toMatchObject([
+      { kind: 'icon', icon: 'leaf' },
+      { kind: 'text', tag: 'span', text: 'New season' }
+    ]);
+    const figure = await added({ primitive: 'figure', text: 'Our studio.' });
+    expect((nodes()[figure] as { children: string[] }).children.map((c) => nodes()[c])).toMatchObject([{ kind: 'image' }, { kind: 'text', tag: 'figcaption', text: 'Our studio.' }]);
+    const divider = await added({ primitive: 'divider', shape: 'wave' });
+    expect(nodes()[divider]).toMatchObject({ kind: 'divider', shape: 'wave' });
+    // Its shape first, then the icon an icon divider shows: offered only once the shape shows one.
+    expect(errorOf(await run(host, 'edit_definition_node', { nodeId: divider, content: { icon: 'star' } })).message).toMatch(/has shape/);
+    expect((await run(host, 'edit_definition_node', { nodeId: divider, content: { shape: 'icon' } })).ok).toBe(true);
+    expect((await run(host, 'edit_definition_node', { nodeId: divider, content: { icon: 'star' } })).ok).toBe(true);
+    expect(nodes()[divider]).toMatchObject({ shape: 'icon', icon: 'star' });
+    const refused = errorOf(await run(host, 'insert_definition_node', { parentId: 'content', primitive: 'heading', shape: 'wave' }));
+    expect(typeof refused.error === 'object' ? refused.error.message : refused.message).toMatch(/Only a divider has a shape/);
+  });
+
   it("keeps an image's picture when only its alt text is sent", async () => {
     const assetId = 'a1';
     const { session, id } = await hero((s) => void (s.assets.assets[assetId] = { id: assetId, name: 'Room', file: 'static/assets/room.jpg', mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' }));

@@ -80,6 +80,20 @@ function replaceListed(dir: string, file: string, bytes: Buffer) {
 const firstFont = (dir: string) => manifestOf(dir).fonts[0].faces[0].file;
 
 describe('loading a theme pack release', () => {
+  it('loads a pack whose design and article layout draw decorative dividers (issue #356)', async () => {
+    const root = tmp();
+    const dir = await release(root);
+    edit(dir, (m) => {
+      const def = m.components.find((c) => c.componentId === 'media.carousel')!;
+      def.tree!.nodes.caption = { id: 'caption', kind: 'divider', shape: 'icon', icon: 'leaf' } as never;
+      const at = m.articleTemplate!.rootIds[0];
+      m.articleTemplate!.nodes[at] = { ...m.articleTemplate!.nodes[at], kind: 'divider', shape: 'wave' } as never;
+    });
+    const { pack } = await loadPackDir(dir, user(root));
+    expect(pack.components.find((c) => c.componentId === 'media.carousel')!.tree!.nodes.caption).toMatchObject({ shape: 'icon', icon: 'leaf' });
+    expect(Object.values(pack.articleTemplate!.nodes)).toContainEqual(expect.objectContaining({ kind: 'divider', shape: 'wave' }));
+  });
+
   it('loads a valid pack exactly as it was built, with its digest and files', async () => {
     const root = tmp();
     const dir = await release(root);
@@ -270,6 +284,26 @@ describe('loading a theme pack release', () => {
       const def = m.components.find((c) => c.componentId === 'media.carousel')!;
       (def.tree!.nodes.caption as { carousel?: boolean }).carousel = true;
     }), /node "caption" is marked as a carousel/],
+    ['a divider shape there is no drawing for (issue #356)', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.componentId === 'media.carousel')!;
+      def.tree!.nodes.caption = { id: 'caption', kind: 'divider', shape: 'zigzag' } as never;
+    }), /node "caption" has a shape that is not one of line, angle, wave, icon/],
+    ['an icon on a divider that shows none (issue #356)', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.componentId === 'media.carousel')!;
+      def.tree!.nodes.caption = { id: 'caption', kind: 'divider', shape: 'wave', icon: 'star' } as never;
+    }), /node "caption" names an icon, which only a divider of shape "icon" shows/],
+    ['a divider shape written as a binding (issue #356)', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.componentId === 'media.carousel')!;
+      def.tree!.nodes.caption = { id: 'caption', kind: 'divider', shape: { $prop: 'edge' } } as never;
+    }), /node "caption" has a shape that is not one of/],
+    ['an icon divider naming an icon there is none of (issue #356)', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.componentId === 'media.carousel')!;
+      def.tree!.nodes.caption = { id: 'caption', kind: 'divider', shape: 'icon', icon: 'not-an-icon' } as never;
+    }), /node "caption" names an icon that is not available/],
+    ['a divider shape in the article layout (issue #356)', (d) => edit(d, (m) => {
+      const root = m.articleTemplate!.rootIds[0];
+      m.articleTemplate!.nodes[root] = { ...m.articleTemplate!.nodes[root], kind: 'divider', shape: 'zigzag' } as never;
+    }), /Article template: node "[^"]+" has a shape that is not one of/],
     ['a dialog mark on text (issue #378)', (d) => edit(d, (m) => {
       const def = m.components.find((c) => c.componentId === 'media.carousel')!;
       (def.tree!.nodes.caption as { overlay?: string }).overlay = 'dialog';

@@ -5,7 +5,7 @@
  */
 import { variantOptions } from '@shared/variants';
 import { z } from 'zod';
-import { STYLE_STATES, TEXT_TAGS, isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
+import { DIVIDER_ICON, DIVIDER_SHAPES, STYLE_STATES, TEXT_TAGS, isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import { STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
 import { STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { getTree } from '@engine/tree';
@@ -106,7 +106,8 @@ const NODE_FIELDS: Partial<Record<GraphNode['kind'], Record<string, PropSchema>>
     link: { type: 'link', label: 'Destination', default: { type: 'none', target: '' } },
     appearance: choice('Button style', APPEARANCES)
   },
-  icon: { icon: { type: 'icon', label: 'Icon', default: 'sparkles' } }
+  icon: { icon: { type: 'icon', label: 'Icon', default: 'sparkles' } },
+  divider: { shape: choice('Shape: a plain line, or a decorative angle, wave or icon band in the divider\'s text color', DIVIDER_SHAPES) }
 };
 
 /**
@@ -117,6 +118,8 @@ export function nodeFields(node: GraphNode): Record<string, PropSchema> {
   const fields = { ...NODE_FIELDS[node.kind] };
   if (node.kind === 'text' && (node.rich || isBinding(node.tag))) delete fields.tag;
   if (node.kind === 'link' && isBinding(node.appearance)) delete fields.appearance;
+  // Only an icon divider shows an icon: its shape is set first, then its icon.
+  if (node.kind === 'divider' && node.shape === 'icon') fields.icon = { type: 'icon', label: 'Icon', default: DIVIDER_ICON };
   return fields;
 }
 

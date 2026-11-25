@@ -1,16 +1,17 @@
 /**
  * The Insert panel's basic elements, and how its search finds and orders what it offers.
  */
-import type { ComponentDefinition, ProjectState } from '@shared/types';
+import type { ComponentDefinition, DividerShape, ProjectState } from '@shared/types';
 
 /** A basic element Insert adds. */
-export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'richtext' | 'image' | 'button' | 'icon' | 'divider';
+export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'richtext' | 'image' | 'button' | 'icon' | 'divider' | 'badge' | 'figure';
 
 /**
  * What Insert adds. An element can start with its own text: a list's first items, in the rich text form. A Grid can
- * start with `columns` empty columns (Stacks), each ready to take content on the canvas.
+ * start with `columns` empty columns (Stacks), each ready to take content on the canvas. A divider can start as one
+ * of the decorative shapes.
  */
-export type InsertSpec = { componentId?: string; definitionId?: string; primitive?: Primitive; text?: string; columns?: number; variants?: Record<string, string> };
+export type InsertSpec = { componentId?: string; definitionId?: string; primitive?: Primitive; text?: string; columns?: number; shape?: DividerShape; variants?: Record<string, string> };
 
 export interface Basic {
   id: string;
@@ -19,6 +20,8 @@ export interface Basic {
   text?: string;
   /** A Grid's empty columns, made with it. */
   columns?: number;
+  /** A divider's shape, when it is one of the decorative bands. */
+  shape?: DividerShape;
   /** Offered with the column layouts, near the top of Insert, rather than with the other basic elements. */
   layout?: boolean;
   name: string;
@@ -44,11 +47,16 @@ export const BASICS: Basic[] = [
   { id: 'stack', primitive: 'stack', name: 'Stack', icon: 'rows-3', tags: 'vertical container group' },
   { id: 'container', primitive: 'container', name: 'Container', icon: 'square-dashed', tags: 'box group' },
   { id: 'icon', primitive: 'icon', name: 'Icon', icon: 'star', tags: 'symbol' },
-  { id: 'divider', primitive: 'divider', name: 'Divider', icon: 'separator-horizontal', tags: 'line rule separator' }
+  { id: 'divider', primitive: 'divider', name: 'Divider', icon: 'separator-horizontal', tags: 'line rule separator' },
+  { id: 'badge', primitive: 'badge', name: 'Badge', icon: 'tag', tags: 'pill label eyebrow tag chip kicker' },
+  { id: 'figure', primitive: 'figure', name: 'Figure', icon: 'book-image', tags: 'image photo picture caption figcaption captioned' },
+  { id: 'divider-angle', primitive: 'divider', shape: 'angle', name: 'Angled divider', icon: 'triangle-right', tags: 'divider shape band slant diagonal section edge separator decorative' },
+  { id: 'divider-wave', primitive: 'divider', shape: 'wave', name: 'Wave divider', icon: 'waves-horizontal', tags: 'divider shape band curve curved section edge separator decorative' },
+  { id: 'divider-icon', primitive: 'divider', shape: 'icon', name: 'Divider with icon', icon: 'diamond', tags: 'divider line rule separator ornament hairline decorative' }
 ];
 
 /** What Insert adds for a basic element. */
-export const basicSpec = (b: Basic): InsertSpec => ({ primitive: b.primitive, ...(b.text ? { text: b.text } : {}), ...(b.columns ? { columns: b.columns } : {}) });
+export const basicSpec = (b: Basic): InsertSpec => ({ primitive: b.primitive, ...(b.text ? { text: b.text } : {}), ...(b.columns ? { columns: b.columns } : {}), ...(b.shape ? { shape: b.shape } : {}) });
 
 /** How search reads a basic element: its name, its tags, and what it is. */
 export const basicHay = (b: Basic) => `${b.name} ${b.tags} element`.toLowerCase();

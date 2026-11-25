@@ -6,7 +6,7 @@
  * code the single-step edits use, and refuses (leaving everything as it was) where a placement holds what the new
  * contract can no longer take.
  */
-import type { Binding, ComponentDefinition, ElementNode, GraphNode, InstanceNode, LinkNode, LinkValue, ListProp, NodeTree, ObjectProp, OverlayMode, PartDef, ProjectState, PropSchema, SlotDef, StateAction, StyleValue, TextNode, UiStateSchema, VariantAxis } from '@shared/types';
+import type { Binding, ComponentDefinition, DividerNode, ElementNode, GraphNode, InstanceNode, LinkNode, LinkValue, ListProp, NodeTree, ObjectProp, OverlayMode, PartDef, ProjectState, PropSchema, SlotDef, StateAction, StyleValue, TextNode, UiStateSchema, VariantAxis } from '@shared/types';
 import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isAppearPreset, isBinding, isStateRef, parseStyleScopeKey } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
@@ -430,8 +430,16 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
       if (s.ariaLabel !== undefined && text(s.ariaLabel)) (n as { ariaLabel?: unknown }).ariaLabel = text(s.ariaLabel);
       return n;
     }
-    case 'divider':
-      return { ...base, kind: 'divider' } as GraphNode;
+    case 'divider': {
+      const n = { ...base, kind: 'divider' } as DividerNode;
+      // The schema has checked the shape; a plain rule is stored without one, and only an icon divider has an icon.
+      if (s.shape !== undefined && s.shape !== 'line') n.shape = s.shape;
+      if (s.icon !== undefined && s.icon.trim()) {
+        if (n.shape !== 'icon') refuse('Only a divider of shape "icon" shows an icon.');
+        n.icon = icon(s.icon.trim());
+      }
+      return n;
+    }
     case 'repeat':
       return {
         ...base,

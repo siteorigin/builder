@@ -104,7 +104,8 @@ describe('the brief on disk', () => {
   });
 
   it('is a document of the project’s format: an older editor is kept from editing a project that has one', () => {
-    expect(MIGRATIONS.at(-1)?.id).toBe('project-brief');
+    // The brief's step follows the managed overlays' one; later formats add steps after it.
+    expect(MIGRATIONS.findIndex((m) => m.id === 'project-brief')).toBe(MIGRATIONS.findIndex((m) => m.id === 'managed-overlays') + 1);
     const s = apply(fresh(), [{ type: 'brief.update', notes: NOTES }]);
     expect(migrateProject(s)).toBeNull();
     // A brief written by a newer editor makes the project one this editor cannot edit, like any other document.
@@ -113,9 +114,12 @@ describe('the brief on disk', () => {
     expect(migrateProject(s)).toBeNull();
     // A project from before the brief existed migrates as it did, and gains none.
     const old = fresh();
-    for (const doc of [old.manifest, old.site, old.tokens, old.assets, old.themeLock, ...Object.values(old.pages), ...Object.values(old.components)]) doc.schemaVersion = SCHEMA_VERSION - 1;
+    // The format the brief's step upgrades from (its place in the list plus one).
+    const before = MIGRATIONS.findIndex((m) => m.id === 'project-brief') + 1;
+    expect(before).toBe(17);
+    for (const doc of [old.manifest, old.site, old.tokens, old.assets, old.themeLock, ...Object.values(old.pages), ...Object.values(old.components)]) doc.schemaVersion = before;
     const migrated = migrateProject(old);
-    expect(migrated?.applied).toEqual(['project-brief']);
+    expect(migrated?.applied).toEqual(['project-brief', 'divider-shapes']);
     expect(migrated?.state.brief).toBeUndefined();
   });
 });

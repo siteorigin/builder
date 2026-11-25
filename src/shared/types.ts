@@ -488,8 +488,21 @@ export interface IconNode extends NodeBase {
   /** Accessible name; an icon without one is decorative. */
   ariaLabel?: Bindable<string>;
 }
+/**
+ * How a divider is drawn: `line` (the default, also when absent) is a plain rule, a real separator. The others are
+ * decorative bands drawn as inline SVG in the divider's text color, hidden from assistive technology: `angle` and
+ * `wave` are section transitions, `icon` is a hairline either side of an icon.
+ */
+export const DIVIDER_SHAPES = ['line', 'angle', 'wave', 'icon'] as const;
+export type DividerShape = (typeof DIVIDER_SHAPES)[number];
+/** The icon a divider of shape `icon` shows when it names none (or one that is not available). */
+export const DIVIDER_ICON = 'sparkles';
 export interface DividerNode extends NodeBase {
   kind: 'divider';
+  /** Absent for a plain rule. A literal, never bound: the shape is part of the design. */
+  shape?: Exclude<DividerShape, 'line'>;
+  /** Shape `icon` only: the icon between the hairlines, by name. Absent: `DIVIDER_ICON`. */
+  icon?: string;
 }
 export interface RepeatNode extends NodeBase {
   kind: 'repeat';

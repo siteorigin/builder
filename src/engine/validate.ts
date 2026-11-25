@@ -16,7 +16,7 @@ import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
 import { nestingChecker } from './semantic-tags';
-import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, overlayProblem, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
+import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, dividerProblem, overlayProblem, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
 import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { darkValue } from '@shared/color-scheme';
@@ -298,6 +298,9 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     };
     visit(tree.rootIds);
     for (const n of Object.values(tree.nodes)) {
+      // Every tree, a theme's copy too: the site shows a plain line, or the default icon, for what cannot be drawn.
+      const divider = dividerProblem(n);
+      if (divider) out.push({ severity: 'error', code: 'DIVIDER_INVALID', message: `${label}: ${nodeLabel(n)} ${divider}`, owner, nodeId: n.id, site: `${n.id}|shape` });
       if (n.kind === 'instance') {
         const def = state.components[n.definitionId];
         if (!def) out.push({ severity: 'error', code: 'DEF_MISSING', message: `${label}: ${n.definitionId} is not installed.`, owner, nodeId: n.id });

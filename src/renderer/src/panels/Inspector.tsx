@@ -38,8 +38,8 @@ import {
   BookmarkPlus,
   Download
 } from 'lucide-react';
-import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveScope, ResponsiveStyles, ScalarPropSchema, StyleState, StyleValue, TextNode } from '@shared/types';
-import { isBinding, parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import type { ComponentDefinition, DividerNode, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveScope, ResponsiveStyles, ScalarPropSchema, StyleState, StyleValue, TextNode } from '@shared/types';
+import { DIVIDER_ICON, DIVIDER_SHAPES, isBinding, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { followNote } from '@shared/site-name';
 import { headerHiddenProps } from '@shared/header-logo';
 import { showsPart } from '@shared/page-shell';
@@ -1955,6 +1955,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
             <IconPicker id={iconId} value={isBinding(node.icon) ? 'sparkles' : String(node.icon)} onChange={(v) => content('icon', v)} />
           </Field>
         )}
+        {node.kind === 'divider' && <DividerShapeFields node={node} onChange={(field, v) => content(field, v)} />}
         {node.kind === 'element' && (
           <>
             {!isBinding(node.tag) && <TagField state={state} owner={owner} node={node} onChange={(v) => content('tag', v)} />}
@@ -1983,6 +1984,32 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
         </Field>
         {node.kind === 'element' && <EntranceField owner={owner} node={node} />}
       </Section>
+    </>
+  );
+}
+
+/** A divider's shape, and the icon of one drawn around an icon: part of the design, never bound to a property. */
+function DividerShapeFields({ node, onChange }: { node: DividerNode; onChange: (field: 'shape' | 'icon', value: string) => void }) {
+  const shapeId = useId();
+  const iconId = useId();
+  // As the site shows it: a shape or icon a hand-edited document names that cannot be drawn shows as a line, or the
+  // default icon (validation reports it).
+  const shape = (DIVIDER_SHAPES as readonly unknown[]).includes(node.shape) ? (node.shape ?? 'line') : 'line';
+  return (
+    <>
+      <Field label="Shape" controlId={shapeId} hint={shape !== 'line' ? 'Decorative: drawn in this divider’s text color, and hidden from screen readers.' : 'A plain line, which screen readers announce as a separator.'}>
+        <select id={shapeId} className="select" value={shape} onChange={(e) => onChange('shape', e.target.value)}>
+          <option value="line">Line</option>
+          <option value="angle">Angle</option>
+          <option value="wave">Wave</option>
+          <option value="icon">Line with icon</option>
+        </select>
+      </Field>
+      {shape === 'icon' && (
+        <Field label="Icon" controlId={iconId}>
+          <IconPicker id={iconId} value={typeof node.icon === 'string' ? node.icon : DIVIDER_ICON} onChange={(v) => onChange('icon', v)} />
+        </Field>
+      )}
     </>
   );
 }
@@ -2113,7 +2140,7 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
   const tag = designTag(def, node);
   // A tag each placement chooses, through whatever property: it can be made the design's own again.
   const tagBinding = (node.kind === 'element' || (node.kind === 'text' && !node.rich)) && isBinding(node.tag) && '$prop' in node.tag ? node.tag : null;
-  if (!fields.length && !tag && !tagBinding) return null;
+  if (!fields.length && !tag && !tagBinding && node.kind !== 'divider') return null;
   const kind = elementKind(node).name;
   const set = (f: DesignContent, label: string) => (v: unknown, edit?: PendingEdit) => void applyWith(edit, [designContentOp(def, node.id, f.field, v)], label, `${def.id}:${node.id}:${f.field}`);
   // The node in its design, for History: "Heading in the Pricing card design".
@@ -2123,12 +2150,19 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
   const items = fields.filter((f): f is Extract<DesignContent, { source: 'item' }> => f.source === 'item');
   const list = items[0]?.list ? (def.properties[items[0].list] as ListProp | undefined) : undefined;
   const sources = new Set([...fields.map((f) => f.source), ...(tag ? [tag.source] : [])]);
-  const scope = sources.size > 1 ? undefined : sources.has('design') ? 'Same in every placement' : sources.has('default') ? 'Filled in on each placement' : `Each ${list?.itemLabel.toLowerCase() ?? 'item'}`;
+  // A divider's shape is the design's own: the same in every placement.
+  const scope = sources.size > 1 ? undefined : sources.has('design') || (!sources.size && node.kind === 'divider') ? 'Same in every placement' : sources.has('default') ? 'Filled in on each placement' : `Each ${list?.itemLabel.toLowerCase() ?? 'item'}`;
   return (
     <Section title="Content" id="def-content" level={LEVEL} scope={scope}>
       {tag?.source === 'design' && <TagField state={state} owner={{ kind: 'component', id: def.id }} node={tag.node} onChange={(v) => setTag(v)} hint={sources.size > 1 ? 'Same in every placement.' : undefined} />}
       {tag?.source === 'default' && <DefaultField state={state} def={def} prop={tag.prop} schema={tag.schema} label="Default tag" onChange={setTag} />}
       {tagBinding && <TagBindingControl key={`${tagBinding.$prop}:${tagBinding.field ?? ''}`} def={def} node={node} binding={tagBinding} />}
+      {node.kind === 'divider' && (
+        <DividerShapeFields
+          node={node}
+          onChange={(field, v) => void applyOps([{ type: 'node.setContent', owner: { kind: 'component', id: def.id }, nodeId: node.id, field, value: v }], fieldLabel(state, field, here, true), `${def.id}:${node.id}:${field}`)}
+        />
+      )}
       {fields.map((f) => {
         if (f.source === 'item') return null;
         return (
