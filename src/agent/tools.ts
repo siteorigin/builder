@@ -38,9 +38,9 @@ const owner = z.object({ kind: z.enum(['page', 'shell', 'component', 'template']
 /** What a mutating call asks to change (spec 13.3), checked against what the request may change. */
 const REQUESTED_SCOPE = z.object({
   kind: z.enum(['selection', 'page', 'component', 'site']),
-  targetIds: z.array(z.string()).optional().describe('One ID for page (pageId), component (definitionId) or selection (node ID); none for site.')
+  targetIds: z.array(z.string()).optional().describe('One pageId, definitionId or node ID; none for site.')
 });
-const SCOPE_NOTE = 'What this call is meant to change. A scope wider than this request may change is refused (SCOPE_MISMATCH), never narrowed; a narrower one limits the call.';
+const SCOPE_NOTE = 'What this call changes. Wider than the request may change is refused; narrower limits the call.';
 
 export const TOOL_ARGS = {
   read_project: z.object({ sections: z.array(z.enum(['pages', 'tokens', 'catalogue', 'components', 'shell'])).optional() }),
@@ -63,15 +63,15 @@ export const TOOL_ARGS = {
   search_assets: z.object({ query: z.string().optional(), limit: z.number().int().min(1).max(50).optional() }),
   apply_operations: z.object({
     expectedRevision: z.number().int().describe('The revision you last read. Mismatches are rejected; read again and retry.'),
-    scope: REQUESTED_SCOPE.optional().describe(`${SCOPE_NOTE} Without it, the batch may change what this request may.`),
+    scope: REQUESTED_SCOPE.optional().describe(SCOPE_NOTE),
     operations: z.array(EditOperationSchema).min(1).max(30)
   }),
   read_source: z.object({ definitionId: z.string(), startLine: z.number().int().min(1).optional(), endLine: z.number().int().optional() }),
   apply_source_patch: z.object({
     definitionId: z.string(),
-    expectedRevision: z.number().int().describe('The revision read_source returned with this source. Mismatches are rejected; read the source again and retry.'),
+    expectedRevision: z.number().int().describe('The revision read_source returned. On a mismatch, read it again.'),
     expectedHash: z.string().describe('Hash returned by read_source.'),
-    scope: REQUESTED_SCOPE.describe(`${SCOPE_NOTE} A component's source shows wherever it is placed: from a selection, only code placed nowhere outside it can be patched (component.convertToCode the selected placement first, then patch that copy).`),
+    scope: REQUESTED_SCOPE.describe(`${SCOPE_NOTE} From a selection, only code placed nowhere else: component.convertToCode the selected placement, then patch the copy.`),
     edits: z.array(z.object({ find: z.string(), replace: z.string() })).optional().describe('Exact text replacements applied in order. Each find must match exactly once.'),
     source: z.string().optional().describe('Full replacement source, instead of edits.')
   }),
