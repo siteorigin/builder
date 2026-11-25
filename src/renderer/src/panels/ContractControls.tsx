@@ -13,7 +13,7 @@ import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES, isBinding } from '@shared/types'
 import { propBindingSchema } from '@shared/bindings';
 import { axesOf, selectedVariants } from '@shared/variants';
 import { instancesOf } from '@engine/tree';
-import { slotAccepts } from '@engine/slots';
+import { slotAccepts, slotDeclProblem } from '@engine/slots';
 import { applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
 import { DraftInput, Field, Section, Segmented } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
@@ -554,14 +554,27 @@ export function SlotsSection({ def, node, level }: { def: ComponentDefinition; n
 
 function SlotGroup({ def, name, decl, placedAt, filledIn }: { def: ComponentDefinition; name: string; decl: SlotDef; placedAt?: string; filledIn: string[] }) {
   const [editing, setEditing] = useState(false);
+  // A declaration damaged by a hand edit says so, and can still be removed; validation reports it too.
+  const damaged = slotDeclProblem(decl);
   const places = [...new Set(filledIn)];
   const shown = placedAt ? 'In the design' : 'Not in the design yet: add it from Insert';
   const filled = places.length ? `Holds content on ${places.join(', ')}` : 'Empty on every placement';
   const remove = () => {
     const now = current(def.id);
     // Sent even while it holds content: the engine then says which placements hold it.
-    if (now && declaredSlot(now.def, name)) void apply([removeSlotOp(now.def, name)], `Remove ${decl.label} slot`, now.snap);
+    if (now && declaredSlot(now.def, name)) void apply([removeSlotOp(now.def, name)], `Remove ${typeof decl.label === 'string' && decl.label.trim() ? decl.label : name} slot`, now.snap);
   };
+  if (damaged)
+    return (
+      <div className="contract-group" role="group" aria-label={name} data-slot={name}>
+        <div className="field-error">
+          The slot “{name}” {damaged}. Remove it, or undo the change that damaged it.
+        </div>
+        <button className="btn btn-sm" onClick={remove}>
+          <Trash2 aria-hidden="true" /> Remove
+        </button>
+      </div>
+    );
   return (
     <div className="contract-group" role="group" aria-label={decl.label} data-slot={name}>
       <div className="contract-row">

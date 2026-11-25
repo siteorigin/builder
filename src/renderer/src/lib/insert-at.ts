@@ -222,24 +222,36 @@ export function slotInsertAt(state: ProjectState, definitionId: string, sel: Ele
     if (!node || !shownOnceIn(state, tree, node.id)) return null;
     if (node.kind === 'element') return insertsInline(state, owner, node.id) ? null : { owner, parentId: node.id, ...beforeCaption(tree, node) };
     if (node.kind !== 'instance') return null;
-    const slot = shownOnceSlots(state, node.definitionId)[0];
-    return slot && !insertsInline(state, owner, node.id, slot) ? { owner, parentId: node.id, slot } : null;
+    // A new slot takes anything, any number: only a slot of the placed component that does too can pass it on.
+    const inner = own(state.components, node.definitionId)?.slots ?? {};
+    const slot = shownOnceSlots(state, node.definitionId).find((name) => {
+      const d = own(inner, name);
+      return !!d && d.categories === undefined && d.primitives === undefined && d.max === undefined && !insertsInline(state, owner, node.id, name);
+    });
+    return slot ? { owner, parentId: node.id, slot } : null;
   };
   const picked = sel && sel.owner.kind === 'component' && sel.owner.id === def.id && !sel.instancePath.length ? own(tree.nodes, sel.nodeId) : undefined;
   return holder(picked) ?? (tree.rootIds.length === 1 ? holder(own(tree.nodes, tree.rootIds[0])) : null);
 }
 
-/** Whether a node of a design shows once wherever the design does: no repeat holds it, and every component it sits in shows the slot it sits in once. */
+/**
+ * Whether a node of a design shows once wherever the design does: it hangs from the design's root, no repeat holds it,
+ * and every component it sits in shows the slot it sits in once.
+ */
 function shownOnceIn(state: ProjectState, tree: NodeTree, nodeId: string): boolean {
   const seen = new Set<string>();
-  for (let at = findParent(tree, nodeId); at?.parentId; at = findParent(tree, at.parentId)) {
+  for (let id = nodeId; ; ) {
+    const at = findParent(tree, id);
+    // Nothing holds it: left over in the design, never shown.
+    if (!at) return false;
+    if (at.parentId === null) return true;
     if (seen.has(at.parentId)) return false;
     seen.add(at.parentId);
     const parent = own(tree.nodes, at.parentId);
     if (!parent || parent.kind === 'repeat') return false;
     if (parent.kind === 'instance' && !(at.slot && shownOnceSlots(state, parent.definitionId).includes(at.slot))) return false;
+    id = at.parentId;
   }
-  return true;
 }
 
 /**

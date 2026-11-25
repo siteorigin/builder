@@ -3,7 +3,13 @@
  * selected container or the whole design; its contract changes only where the form changed it; and a contract or a
  * removal that content placements already hold would break is refused by the engine, with that content kept.
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { compile } from 'svelte/compiler';
+import { render } from 'svelte/server';
+import type { Component } from 'svelte';
+import { generateProject } from '@generator/index';
 import type { ComponentDefinition, ElementNode, ElementRef, InstanceNode, OwnerRef, ProjectState, SlotPrimitive } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
@@ -157,6 +163,28 @@ describe('a new slot (#655)', () => {
     expect(slotInsertAt(s, c.id, ref(c.owner, 'cell'))).toEqual({ owner: c.owner, parentId: 'cell' });
   });
 
+  it('never goes into a placed component’s slot that limits what it takes, nor somewhere the design does not hold', () => {
+    const c = withButtons();
+    // The card's Buttons slot takes only text, at most two: a new slot, which takes anything, cannot be passed on there.
+    let s = run(c.s, [{ type: 'component.setSlot', definitionId: c.id, slot: c.slot, label: 'Buttons', primitives: ['text'], max: 2 }]).state;
+    const shelf = run(s, [{ type: 'component.upsert', name: 'Shelf', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'section', children: [] }] }]);
+    const shelfId = shelf.results[0].definitionId as string;
+    const shelfOwner: OwnerRef = { kind: 'component', id: shelfId };
+    const inner = run(shelf.state, [{ type: 'node.insert', owner: shelfOwner, parentId: 'root', definitionId: c.id }]);
+    const cardInShelf = inner.results[0].nodeId as string;
+    s = inner.state;
+    expect(slotInsertAt(s, shelfId, ref(shelfOwner, cardInShelf))).toEqual({ owner: shelfOwner, parentId: 'root' });
+    // Opened up, it can.
+    s = run(s, [{ type: 'component.setSlot', definitionId: c.id, slot: c.slot, label: 'Buttons', primitives: null, max: null }]).state;
+    const at = slotInsertAt(s, shelfId, ref(shelfOwner, cardInShelf));
+    expect(at).toEqual({ owner: shelfOwner, parentId: cardInShelf, slot: c.slot });
+    expect(errors(run(s, createSlotOps(s, s.components[shelfId], 'Extras', at!)!.operations).state)).toEqual([]);
+    // A container left over in the design, which nothing holds, is never shown: the whole design takes it instead.
+    const loose = structuredClone(s);
+    loose.components[shelfId].tree!.nodes.loose = { id: 'loose', kind: 'element', children: [] } as never;
+    expect(slotInsertAt(loose, shelfId, ref(shelfOwner, 'loose'))).toEqual({ owner: shelfOwner, parentId: 'root' });
+  });
+
   it('a component placed in the design takes it in the slot it shows once, passing the new slot’s content on', () => {
     const c = card();
     const placed = run(c.s, [{ type: 'node.insert', owner: c.owner, parentId: 'root', componentId: 'layout.section' }]);
@@ -284,6 +312,18 @@ describe('a slot changed elsewhere while its form is open (#655)', () => {
     expect(rebaseSlotDraft(typed, was, { ...was, label: 'Book now' }).clash).toBe(false);
     // What it takes changes as one: lists the author left alone follow the slot, even from Anything.
     expect(rebaseSlotDraft(slotDraft(was), was, { label: 'Buttons' }).draft).toMatchObject({ restricted: false, categories: [], primitives: [] });
+    // A limit typed differently but the same number is no change of the author's: the newer limit stands.
+    const padded = rebaseSlotDraft({ ...slotDraft(was), max: '02' }, was, { ...was, max: 3 });
+    expect(padded).toEqual({ draft: { ...slotDraft(was), max: '3' }, clash: false });
+  });
+
+  it('leaves a description written elsewhere as it is unless the author changes it', () => {
+    const c = withButtons();
+    // Written by hand: padded, and longer than the form takes.
+    const s = structuredClone(c.s);
+    s.components[c.id].slots!.buttons.description = `  ${'Calls to action. '.repeat(20)}  `;
+    expect(editSlotOp(c.def(s), c.slot, slotDraft(c.def(s).slots!.buttons))).toBeNull();
+    expect(editSlotOp(c.def(s), c.slot, { ...slotDraft(c.def(s).slots!.buttons), max: '1' })).toEqual({ type: 'component.setSlot', definitionId: c.id, slot: c.slot, label: 'Buttons', max: 1 });
   });
 });
 
@@ -353,5 +393,53 @@ describe('slots the design does not show yet (#655)', () => {
     passed.components[c.id].tree!.nodes.handed = { id: 'handed', kind: 'slot', slot: 'aside' };
     expect(unplacedSlots(c.def(passed))).toEqual([]);
     expect(() => run(placed, [{ type: 'node.insert', owner: c.owner, parentId: 'root', primitive: 'slot', bind: 'footer' }])).toThrow(/already placed/);
+  });
+});
+
+const roots: string[] = [];
+afterAll(() => roots.forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+/** Server-render the exported Home page. */
+async function renderHome(s: ProjectState): Promise<string> {
+  mkdirSync(resolve('.tmp'), { recursive: true });
+  const dir = mkdtempSync(join(resolve('.tmp'), 'slots-'));
+  roots.push(dir);
+  const paths = join(dir, 'app-paths.js');
+  writeFileSync(paths, 'export const resolve = (p) => p; export const asset = (p) => "/" + p; export const base = "";\n');
+  const navigation = join(dir, 'app-navigation.js');
+  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {};\n');
+  for (const [path, source] of generateProject(s)) {
+    if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
+    const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
+    mkdirSync(dirname(out), { recursive: true });
+    const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true }).js.code : source;
+    writeFileSync(
+      out,
+      code
+        .replace(/(["'])([^"'\n]+?\.svelte)\1/g, '$1$2.js$1')
+        .replace(/(["'])\$app\/paths\1/g, JSON.stringify(paths))
+        .replace(/(["'])\$app\/navigation\1/g, JSON.stringify(navigation))
+    );
+  }
+  const Page = (await import(/* @vite-ignore */ join(dir, 'src/routes/+page.svelte.js'))).default as Component<Record<string, unknown>>;
+  return render(Page, { props: {} }).body.replace(/<!--[\s\S]*?-->/g, '');
+}
+
+describe('a slot passed on to a component placed in the design (#655)', () => {
+  it('renders what a page puts in it, even under the same name as the slot it is passed to', async () => {
+    const c = card();
+    const section = c.s.pages[c.page.id].rootIds[0];
+    const band = run(c.s, [{ type: 'component.createFromNode', owner: c.page, nodeId: section, name: 'Band' }]);
+    const bandId = band.results[0].definitionId as string;
+    const plan = createSlotOps(band.state, band.state.components[bandId], 'Content', slotInsertAt(band.state, bandId, null)!)!;
+    // The Section in the design takes it in its own Content slot: the same name, passed on.
+    expect(plan.slot).toBe('content');
+    expect(plan.operations[1]).toMatchObject({ slot: 'content', bind: 'content' });
+    let s = run(band.state, plan.operations).state;
+    const placed = s.pages[c.page.id].rootIds.map((id) => s.pages[c.page.id].nodes[id]).find((n) => n.kind === 'instance' && n.definitionId === bandId)!;
+    s = run(s, [{ type: 'node.insert', owner: c.page, parentId: placed.id, slot: 'content', primitive: 'paragraph', text: 'Book a class' }]).state;
+    expect(errors(s)).toEqual([]);
+    const html = await renderHome(s);
+    expect(html.split('Book a class')).toHaveLength(2);
   });
 });

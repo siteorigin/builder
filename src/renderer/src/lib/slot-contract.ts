@@ -110,6 +110,12 @@ export function slotDraftProblem(draft: SlotDraft): string | null {
   return null;
 }
 
+/** A typed limit as the number it saves as ("02" is 2), blank for none; anything else as typed. */
+const limitOf = (max: string) => {
+  const m = max.trim();
+  return /^\d+$/.test(m) ? String(Number(m)) : m;
+};
+
 const sameSet = (a: readonly string[], b: readonly string[]) => new Set(a).size === new Set(b).size && a.every((x) => b.includes(x));
 
 /** The parts of a draft that change together: its name, its description, what it takes, and how many. */
@@ -120,7 +126,7 @@ const DRAFT_PARTS: Array<{ keys: Array<keyof SlotDraft>; same: (a: SlotDraft, b:
     keys: ['restricted', 'categories', 'primitives'],
     same: (a, b) => a.restricted === b.restricted && (!a.restricted || (sameSet(a.categories, b.categories) && sameSet(a.primitives, b.primitives)))
   },
-  { keys: ['max'], same: (a, b) => a.max.trim() === b.max.trim() }
+  { keys: ['max'], same: (a, b) => limitOf(a.max) === limitOf(b.max) }
 ];
 
 /**
@@ -153,7 +159,9 @@ export function editSlotOp(def: ComponentDefinition, slot: string, draft: SlotDr
   const op: Op<'component.setSlot'> = { type: 'component.setSlot', definitionId: def.id, slot, label: draft.label.trim().slice(0, SLOT_LABEL_MAX).trim() };
   let changed = op.label !== d.label;
   const description = draft.description.trim().slice(0, SLOT_DESCRIPTION_MAX);
-  if (description !== (d.description ?? '')) {
+  // Compared as the form would save it, so a description written elsewhere (padded, or longer than the form takes)
+  // is only rewritten when the author changes it.
+  if (description !== (d.description ?? '').trim().slice(0, SLOT_DESCRIPTION_MAX)) {
     op.description = description || null;
     changed = true;
   }

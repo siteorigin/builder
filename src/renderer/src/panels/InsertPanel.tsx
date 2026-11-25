@@ -1159,7 +1159,9 @@ export function InsertPanel() {
     editedDef?.owner === 'project' && editedDef.kind === 'managed' && editedDef.tree
       ? unplacedSlots(editedDef).map((slot) => {
           const d = editedDef.slots![slot];
-          return { key: `slot:${editedDef.id}:${slot}`, kind: 'element', name: `${d.label} slot`, description: '', hay: `${d.label} ${d.description ?? ''} slot placeholder ${slot}`.toLowerCase(), group: SLOTS, spec: { primitive: 'slot', bind: slot }, icon: 'square-dashed' };
+          // A label a hand edit damaged falls back to the slot's name, as the Slots section shows it.
+          const label = typeof d?.label === 'string' && d.label.trim() ? d.label : slot;
+          return { key: `slot:${editedDef.id}:${slot}`, kind: 'element', name: `${label} slot`, description: '', hay: `${label} slot placeholder ${slot}`.toLowerCase(), group: SLOTS, spec: { primitive: 'slot', bind: slot }, icon: 'square-dashed' };
         })
       : [];
   // Code components show only in Developer mode, as its setting promises. The library reads by name, and a separate
