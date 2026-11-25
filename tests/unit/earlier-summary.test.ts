@@ -1,7 +1,7 @@
 /** The summary of a conversation's older messages that requests carry before the replayed window (issue 745). */
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage } from '@shared/api';
-import { REPLAYED_MESSAGES } from '@shared/turn-model';
+import { MAX_REPLAYED_ANSWER, REPLAYED_MESSAGES } from '@shared/turn-model';
 import { planReplay, sentMessages, SUMMARY_TURNS, summarizeEarlier, summaryText } from '@shared/earlier-summary';
 import type { TurnHistory } from '@shared/turns';
 
@@ -47,7 +47,8 @@ describe('the summary of the earlier conversation', () => {
     const changed = exchange('Rename the site', { result: result({ status: 'completed', summary: 'Renamed.', canUndo: true }) });
     const runId = changed[1].runId!;
     const summary = summarizeEarlier(changed, 2)!;
-    const at = (applied: boolean): TurnHistory => ({ entries: [{ runId, applied }] });
+    // Another run's step beside it says nothing about this one.
+    const at = (applied: boolean): TurnHistory => ({ entries: [{ runId: 'run_other', applied: !applied }, { runId, applied }] });
     expect(summaryText(summary, at(true))).toContain('Its changes are still in the site.');
     expect(summaryText(summary, at(false))).toContain('Its changes were undone afterwards.');
     expect(summaryText(summary, null)).toContain('Whether its changes are still in the site is not known.');
@@ -63,12 +64,31 @@ describe('the summary of the earlier conversation', () => {
     // A turn that changed nothing says how it ended.
     expect(summaryText(summarizeEarlier(exchange('Try', { result: result({ status: 'failed', summary: 'It failed.' }) }), 2)!)).toContain('It failed, and changed nothing.');
     expect(summaryText(summarizeEarlier(exchange('Look', { result: result({ status: 'no-changes', summary: 'Looked.' }) }), 2)!)).toContain('Reply: Looked. It changed nothing.');
+    // One that met a file changed outside the app kept its changes for review: never said to have changed nothing.
+    const conflicted = summaryText(summarizeEarlier(exchange('Edit', { result: result({ status: 'conflicted', summary: 'Kept for review.' }) }), 2)!);
+    expect(conflicted).toContain('its changes were kept for the author to review.');
+    expect(conflicted).not.toContain('changed nothing');
+  });
+
+  it('keeps no more of an answer than a replay in full sends, and an image chosen by its ID', () => {
+    const answer = `${'a'.repeat(MAX_REPLAYED_ANSWER)}PRIVATE TAIL`;
+    const long = summarizeEarlier(exchange('Paste it', { questions: [{ id: 'q', text: 'The copy?', choices: [], answered: answer }] }), 2)!;
+    expect(long.turns[0].answers![0].a).not.toContain('PRIVATE TAIL');
+    const images = [{ assetId: 'as_1', name: 'hero' }, { assetId: 'as_2', name: 'hero' }];
+    const picked = summarizeEarlier(exchange('Pick one', { questions: [{ id: 'q', text: 'Which image?', choices: [], images, answered: 'hero', answeredAssetId: 'as_2' }] }), 2)!;
+    expect(summaryText(picked)).toContain('the author answered "image "hero" (assetId: as_2)"');
+  });
+
+  it('lists at most eight changes, and says how many more', () => {
+    const changes = Array.from({ length: 11 }, (_, i) => ({ label: `Change ${i}` }) as never);
+    const turn = summarizeEarlier(exchange('Many', { result: result({ status: 'completed', changes, canUndo: true }) }), 2)!.turns[0];
+    expect(turn.changes).toEqual([...Array.from({ length: 8 }, (_, i) => `Change ${i}`), '3 more']);
   });
 
   it('keeps the start and the end of a long message', () => {
     const paste = `Here is the brief. ${'Lorem ipsum dolor. '.repeat(200)}Above all: warm colours, no blue.`;
     const asked = summarizeEarlier(exchange(paste), 2)!.turns[0].asked!;
-    expect(asked.length).toBeLessThan(420);
+    expect(Array.from(asked).length).toBeLessThanOrEqual(400);
     expect(asked.startsWith('Here is the brief.')).toBe(true);
     expect(asked.endsWith('Above all: warm colours, no blue.')).toBe(true);
     expect(asked).toContain(' … ');
@@ -92,7 +112,11 @@ describe('the summary of the earlier conversation', () => {
     const stored = { covered: 4, throughId: msgs[3].id, turns: [{ from: 0, asked: 'stored words' }], omitted: 0 };
     expect(planReplay(msgs, stored).summary).toEqual(stored);
     // Stored for another transcript, or not readable: built from the messages.
-    for (const other of [{ ...stored, throughId: 'elsewhere' }, { ...stored, covered: 99 }, { ...stored, turns: 'x' }, 'junk', null]) {
+    // A turn that cannot be written out (an answer that is not one, a count that is not) is not reused either, nor
+    // one covering more than the window leaves.
+    const broken = [{ ...stored, turns: [{ from: 0, answers: [null] }] }, { ...stored, turns: [{ from: 0, changes: [7] }] }, { ...stored, turns: [{ from: 0, ended: 'maybe' }] }, { ...stored, turns: [{ from: 9 }] }];
+    const ahead = { ...stored, covered: 6, throughId: msgs[5].id };
+    for (const other of [{ ...stored, throughId: 'elsewhere' }, { ...stored, covered: 99 }, { ...stored, turns: 'x' }, 'junk', null, ...broken, ahead]) {
       const plan = planReplay(msgs, other);
       expect(plan.summary?.turns.map((x) => x.asked)).toEqual(['note 0', 'note 1']);
     }
@@ -111,6 +135,15 @@ describe('the summary of the earlier conversation', () => {
     // A reply with no request before it is an exchange of its own.
     const lone: ChatMessage[] = [{ id: 'a', role: 'assistant', text: 'Hello there.', time: t }, ...msgs];
     expect(summarizeEarlier(lone, 1)!.turns).toEqual([{ from: 0, said: 'Hello there.' }]);
+    // The reply joins its request: one exchange, with both.
+    expect(summarizeEarlier(msgs, 2)!.turns).toEqual([{ from: 0, asked: 'note 0', said: 'Done.', runId: msgs[1].runId }]);
+  });
+
+  it('reads a malformed transcript without failing', () => {
+    const msgs = [{ id: 'u', role: 'user', text: 'Hello', time: t }, null, ...notes(REPLAYED_MESSAGES / 2)] as unknown as ChatMessage[];
+    const plan = planReplay(msgs);
+    expect(plan.summary).toMatchObject({ covered: 2, throughId: '', turns: [{ from: 0, asked: 'Hello' }] });
+    expect(plan.recent).toHaveLength(REPLAYED_MESSAGES);
   });
 
   it('names the messages a request carries: the ones the summary holds and the recent ones', () => {
@@ -119,5 +152,8 @@ describe('the summary of the earlier conversation', () => {
     expect(sentMessages(msgs)).toEqual(msgs.slice(6));
     const short = notes(3);
     expect(sentMessages(short)).toEqual(short);
+    // The replay it is given decides: one that has let more go names fewer.
+    const plan = planReplay(msgs);
+    expect(sentMessages(msgs, { ...plan, summary: { ...plan.summary!, turns: plan.summary!.turns.slice(2) } })).toEqual(msgs.slice(10));
   });
 });

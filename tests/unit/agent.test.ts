@@ -4939,8 +4939,26 @@ describe('the earlier conversation as a summary (#745)', () => {
     const first = texts(env.adapter, 0);
     expect(first[0]).toMatch(SUMMARY);
     expect(first[0]).toContain('Asked "Which accent colour?"; the author answered "Amber, never blue".');
-    const saved = JSON.parse(readFileSync(join(dir, 'c_older1.json'), 'utf8')) as Conversation;
-    expect(saved.earlierSummary).toMatchObject({ covered: 2, throughId: 'm_a0', omitted: 0 });
+    // Saved once the run's transcript write lands, which may be after the run is idle.
+    const saved = () => (JSON.parse(readFileSync(join(dir, 'c_older1.json'), 'utf8')) as Conversation).earlierSummary;
+    await expect.poll(saved, { timeout: 5000, interval: 10 }).toMatchObject({ covered: 2, throughId: 'm_a0', omitted: 0, turns: [{ asked: 'Start a services page', answers: [{ q: 'Which accent colour?', a: 'Amber, never blue' }] }] });
+  });
+
+  it('builds the summary again when the stored one is malformed, and the run goes ahead', async () => {
+    const env = await setup([]);
+    const dir = env.session.local('sessions', 'chat');
+    mkdirSync(dir, { recursive: true });
+    const t = '2026-01-01T00:00:00.000Z';
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 7; i++) messages.push({ id: `m_u${i}`, role: 'user', text: `Message ${i}`, time: t }, { id: `m_a${i}`, role: 'assistant', text: 'Done.', time: t });
+    // The cursor matches, but a turn inside it cannot be written out.
+    const earlierSummary = { covered: 2, throughId: 'm_a0', turns: [{ from: 0, answers: [null] }], omitted: 0 };
+    writeFileSync(join(dir, 'c_broken2.json'), JSON.stringify({ id: 'c_broken2', title: 'Broken', createdAt: t, messages, earlierSummary }));
+    await env.orch.openConversation('c_broken2');
+    expect((await env.run('Next', { mode: 'edit' })).result?.status).toBe('no-changes');
+    expect(texts(env.adapter, 0)[0]).toContain('The author asked: "Message 0"');
+    // The project was let go of: another request runs.
+    expect((await env.run('And next', { mode: 'edit' })).result?.status).toBe('no-changes');
   });
 
   it('reuses the stored summary rather than building it again, and extends it as messages leave the window', async () => {
@@ -4963,8 +4981,8 @@ describe('the earlier conversation as a summary (#745)', () => {
     expect(summary).toContain('Stored: headings stay in serif');
     expect(summary).toContain('The author asked: "Message 1"');
     expect(summary).not.toContain('Message 0');
-    const saved = JSON.parse(readFileSync(join(dir, 'c_stored1.json'), 'utf8')) as Conversation;
-    expect(saved.earlierSummary).toMatchObject({ covered: 4, throughId: 'm_a1', turns: [{ asked: 'Stored: headings stay in serif' }, { asked: 'Message 1' }] });
+    const saved = () => (JSON.parse(readFileSync(join(dir, 'c_stored1.json'), 'utf8')) as Conversation).earlierSummary;
+    await expect.poll(saved, { timeout: 5000, interval: 10 }).toMatchObject({ covered: 4, throughId: 'm_a1', turns: [{ asked: 'Stored: headings stay in serif' }, { asked: 'Message 1' }] });
   });
 
   it('says where each summarised change stands now: still in the site, or undone after it was summarised', async () => {
@@ -4980,6 +4998,7 @@ describe('the earlier conversation as a summary (#745)', () => {
     await run('Request number 9.');
     const undone = adapter.requests.at(-1)!.items[0];
     expect(undone.kind === 'user' && undone.text).toContain('Its changes were undone afterwards.');
+    expect(undone.kind === 'user' && undone.text).not.toContain('still in the site');
   });
 
   it('summarises the earlier messages to fit a small window, and the run goes ahead', async () => {

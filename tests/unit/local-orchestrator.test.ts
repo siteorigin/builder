@@ -524,7 +524,7 @@ describe('the loaded context window', () => {
     expect(sent.at(-1)).toContain('Hi again');
   });
 
-  it('summarises the earlier messages when the server count says they do not fit, and asks again once', async () => {
+  it('summarises the earlier messages when the server count says they do not fit, and asks again', async () => {
     const { run } = await setup({ toolMode: 'native' });
     server.script(textReply('x'.repeat(80_000)));
     await run('Hi');
@@ -536,7 +536,22 @@ describe('the loaded context window', () => {
     expect(refused).toContain('x'.repeat(1000));
     expect(retried).toContain('Summary of the earlier conversation');
     expect(retried).not.toContain('x'.repeat(1000));
-  });
+  }, 15_000);
+
+  it('summarises the earlier messages when a server refuses them as too long without a count', async () => {
+    // No size is known, before or after: only the refusal itself says the earlier messages must shrink.
+    const { run } = await setup({ toolMode: 'native' });
+    server.script(textReply('x'.repeat(20_000)));
+    await run('Hi');
+    server.script({ status: 400, body: JSON.stringify({ error: { message: 'prompt is too long' } }) }, textReply('Done.'));
+    const { result } = await run('Hi again');
+    expect(result?.status).toBe('no-changes');
+    const [refused, retried] = chatPosts().slice(1).map((p) => JSON.stringify(p.body.messages));
+    expect(chatPosts()).toHaveLength(3);
+    expect(refused).toContain('x'.repeat(1000));
+    expect(retried).toContain('Summary of the earlier conversation');
+    expect(retried).not.toContain('x'.repeat(1000));
+  }, 15_000);
 
   it('keeps the valid work when the context fills up after a change', async () => {
     const { session, run, header } = await setup();
@@ -573,15 +588,20 @@ describe('the loaded context window', () => {
     expect(sent).toHaveLength(2);
     expect(toolNames(sent[1].body)).toContain('apply_operations');
     expect(JSON.stringify(sent[1].body.messages)).toContain('Summary of the earlier conversation');
-    // A request whose own message leaves room only for the small tools is offered those.
+    // A request whose own message leaves room only for the small tools is offered those, and an earlier exchange
+    // that fits beside them is not summarised away.
     before = chatPosts().length;
     const { run } = await setup({ contextWindow: FOCUSED_WINDOW_TOKENS, toolMode: 'native' });
-    server.script(textReply('Done.'));
+    server.script(textReply('Noted.'), textReply('Done.'));
+    await run('Keep it warm, no blue.');
     const { result } = await run('x'.repeat(history * 4));
     expect(result?.status).toBe('no-changes');
     sent = chatPosts().slice(before);
-    expect(sent).toHaveLength(1);
-    expect(toolNames(sent[0].body)).not.toContain('apply_operations');
+    expect(sent).toHaveLength(2);
+    expect(toolNames(sent[1].body)).not.toContain('apply_operations');
+    const kept = (sent[1].body.messages as Array<{ content: string }>).map((m) => m.content);
+    expect(kept).toContain('Keep it warm, no blue.');
+    expect(kept.join('\n')).not.toContain('Summary of the earlier conversation');
     // Five full runs, a long replayed history and a long request: slower than most under a loaded machine.
   }, 40_000);
 

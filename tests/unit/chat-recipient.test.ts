@@ -185,6 +185,8 @@ describe('the notice before a message goes to another model', () => {
     // A turn before the window still goes out, in the summary, so it is named.
     const unknownNewer = Array.from({ length: REPLAYED_MESSAGES / 2 }, () => exchange()).flat();
     expect(switchNotice([...old, ...unknownNewer], toLocal('studio-b'))?.earlier).toEqual([A]);
+    // From one local model to another, nothing leaves the computer.
+    expect(switchNotice([...old, ...unknownNewer], toLocal('studio-b'))?.leavesComputer).toBe(false);
     expect(switchNotice([...old, ...unknownNewer.slice(2)], toLocal('studio-b'))?.earlier).toEqual([A]);
     // One so old the summary only counts it is not.
     const many = Array.from({ length: SUMMARY_TURNS + REPLAYED_MESSAGES / 2 }, () => exchange()).flat();

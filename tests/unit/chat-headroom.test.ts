@@ -170,7 +170,7 @@ describe('composer headroom for a local model', () => {
     expect(warn(a(384), { history })).toBeNull();
     const tipped = warn(a(385), { history })!;
     expect(tipped).toMatchObject({ kind: 'history', draftTokens: 385, historyTokens: 16_000 });
-    expect(tipped.text).toBe("With this conversation's earlier messages, this message may not fit the local model's assumed 32,768-token context. Start a new conversation and send it there, or send the copy a few sections at a time.");
+    expect(tipped.text).toBe("With this conversation's earlier messages, this message may not fit the local model's assumed 32,768-token context, so the assistant will shorten more of them to a summary. To keep them in full, send the copy a few sections at a time or start a new conversation.");
     // A message too long on its own is said to be, whatever came before it.
     expect(warn(a(16_385), { history })?.kind).toBe('draft');
   });

@@ -6,7 +6,7 @@
  * composer works out the same one from the messages it shows.
  */
 import { turnQuestions, type ChatMessage } from './api';
-import { REPLAYED_MESSAGES } from './turn-model';
+import { MAX_REPLAYED_ANSWER, REPLAYED_MESSAGES } from './turn-model';
 import { resultAsSaid, runStanding, withoutKeptClaims, type TurnHistory } from './turns';
 
 /** One earlier exchange as the summary keeps it: the author's words and answers, and what the turn did. */
@@ -75,13 +75,25 @@ function askedOf(m: ChatMessage): string {
   return names.length ? `${said}${said ? ' ' : ''}(attached ${names.join(', ')})` : said;
 }
 
+/**
+ * An answer as the summary keeps it: never more of it than a replay in full sends (its start), so summarising an
+ * exchange sends no words its recipient has not had; and a chosen image by its ID too, since two can share a name.
+ */
+function answerOf(q: NonNullable<ChatMessage['questions']>[number]): string | undefined {
+  if (typeof q.answered !== 'string') return undefined;
+  const picked = typeof q.answeredAssetId === 'string' && Array.isArray(q.images) ? q.images.find((i) => i?.assetId === q.answeredAssetId) : undefined;
+  if (picked && typeof picked.name === 'string') return `image "${brief(picked.name, 60)}" (assetId: ${picked.assetId})`;
+  return brief(q.answered.slice(0, MAX_REPLAYED_ANSWER), ANSWER_CHARS);
+}
+
 /** Take the assistant's part of an exchange into `turn`. */
 function takeReply(turn: SummaryTurn, m: ChatMessage) {
   const answers: NonNullable<SummaryTurn['answers']> = [];
   for (const q of turnQuestions(m)) {
     // A transcript is read back from disk: anything malformed is left out.
     if (typeof q?.text !== 'string' || !q.text.trim()) continue;
-    answers.push({ q: brief(q.text, QUESTION_CHARS), ...(typeof q.answered === 'string' ? { a: brief(q.answered, ANSWER_CHARS) } : {}) });
+    const a = answerOf(q);
+    answers.push({ q: brief(q.text, QUESTION_CHARS), ...(a !== undefined ? { a } : {}) });
   }
   if (answers.length) turn.answers = answers;
   const raw = m.result && typeof m.result === 'object' ? m.result : null;
@@ -102,14 +114,38 @@ function takeReply(turn: SummaryTurn, m: ChatMessage) {
   }
 }
 
+const optional = (v: unknown, ok: (v: unknown) => boolean) => v === undefined || ok(v);
+const isText = (v: unknown) => typeof v === 'string';
+
+/** A stored exchange the summary can be written from without a check of its own: anything else is not reused. */
+function isTurn(t: unknown, covered: number): t is SummaryTurn {
+  if (!t || typeof t !== 'object' || Array.isArray(t)) return false;
+  const x = t as Record<keyof SummaryTurn, unknown>;
+  return (
+    typeof x.from === 'number' &&
+    Number.isInteger(x.from) &&
+    x.from >= 0 &&
+    x.from < covered &&
+    optional(x.asked, isText) &&
+    optional(x.said, isText) &&
+    optional(x.runId, isText) &&
+    optional(x.answers, (v) => Array.isArray(v) && v.every((a) => !!a && typeof a === 'object' && isText(a.q) && optional(a.a, isText))) &&
+    optional(x.changes, (v) => Array.isArray(v) && v.every(isText)) &&
+    optional(x.changed, (v) => v === true) &&
+    optional(x.unfinished, (v) => v === true) &&
+    optional(x.undoneOnce, (v) => v === true) &&
+    optional(x.ended, (v) => v === 'failed' || v === 'cancelled' || v === 'conflicted')
+  );
+}
+
 /** A stored summary that still stands for this conversation's opening messages, or null. */
 function readSummary(raw: unknown, messages: readonly ChatMessage[]): EarlierSummary | null {
   if (!raw || typeof raw !== 'object') return null;
   const s = raw as Partial<EarlierSummary>;
   if (typeof s.covered !== 'number' || !Number.isInteger(s.covered) || s.covered < 1 || s.covered > messages.length) return null;
-  if (typeof s.throughId !== 'string' || messages[s.covered - 1]?.id !== s.throughId) return null;
-  if (!Array.isArray(s.turns) || typeof s.omitted !== 'number' || !Number.isInteger(s.omitted) || s.omitted < 0) return null;
-  if (!s.turns.every((t) => !!t && typeof t === 'object' && typeof t.from === 'number' && t.from < s.covered!)) return null;
+  if (typeof s.throughId !== 'string' || !s.throughId || messages[s.covered - 1]?.id !== s.throughId) return null;
+  if (!Array.isArray(s.turns) || s.turns.length > SUMMARY_TURNS || typeof s.omitted !== 'number' || !Number.isInteger(s.omitted) || s.omitted < 0) return null;
+  if (!s.turns.every((t) => isTurn(t, s.covered!))) return null;
   return { covered: s.covered, throughId: s.throughId, turns: s.turns, omitted: s.omitted };
 }
 
@@ -144,7 +180,9 @@ export function summarizeEarlier(messages: readonly ChatMessage[], end: number, 
   }
   if (turns.length > SUMMARY_TURNS) omitted += turns.splice(0, turns.length - SUMMARY_TURNS).length;
   if (!turns.length && !omitted) return null;
-  return { covered: end, throughId: messages[end - 1].id, turns, omitted };
+  // A message read back without an ID leaves nothing to match the next time: the summary is then built again.
+  const through = messages[end - 1]?.id;
+  return { covered: end, throughId: typeof through === 'string' ? through : '', turns, omitted };
 }
 
 /** Where the replayed window starts: everything before it reaches the model through the summary. */
@@ -158,10 +196,17 @@ export interface Replay {
   recent: ChatMessage[];
 }
 
+/** Replays worked out from the messages alone, for the composer, which asks again at every key typed. */
+const planned = new WeakMap<readonly ChatMessage[], Replay>();
+
 /** The replay of a conversation as it stands, extending a stored summary when there is one. */
 export function planReplay(messages: readonly ChatMessage[], stored?: unknown): Replay {
+  const cached = stored === undefined ? planned.get(messages) : undefined;
+  if (cached) return cached;
   const start = replayStart(messages);
-  return { summary: summarizeEarlier(messages, start, stored), recent: messages.slice(start) };
+  const plan = { summary: summarizeEarlier(messages, start, stored), recent: messages.slice(start) };
+  if (stored === undefined) planned.set(messages, plan);
+  return plan;
 }
 
 /**
@@ -176,7 +221,9 @@ export function sentMessages(messages: readonly ChatMessage[], replay: Replay = 
 
 /** Where an earlier turn's change stands, in words, read from History now. */
 function standingText(t: SummaryTurn, history: TurnHistory | null | undefined): string {
-  const how = t.ended === 'failed' ? 'It failed' : t.ended === 'cancelled' ? 'It was stopped' : t.ended === 'conflicted' ? 'It ran into a conflicting change' : t.unfinished ? 'It stopped before it was finished' : '';
+  // A file changed outside the app while it ran: what it changed was kept for the author to review, not undone.
+  if (t.ended === 'conflicted') return 'A file was changed outside the app while it ran, so its changes were kept for the author to review.';
+  const how = t.ended === 'failed' ? 'It failed' : t.ended === 'cancelled' ? 'It was stopped' : t.unfinished ? 'It stopped before it was finished' : '';
   if (!t.changed) return how ? `${how}, and changed nothing.` : t.said || t.changes ? 'It changed nothing.' : '';
   const standing = runStanding(t.runId, history);
   const where =

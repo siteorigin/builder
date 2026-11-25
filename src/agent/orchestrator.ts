@@ -22,7 +22,7 @@ import { connectPendingLinks, newMacroMemory } from './macros';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { selectionTarget } from './selection';
 import { definitionTarget } from './definition';
-import { applyContextBudget, contextVerdict, estimateRequestTokens } from './budget';
+import { applyContextBudget, contextVerdict, estimateRequestTokens, MIN_OUTPUT_TOKENS } from './budget';
 import { completenessNudge, describePage, findStubPages, missingPages, pageCreatesIn, rememberPage, savedPage, type MissingPage, type WantedPage } from './completeness';
 import { blueprintSection, exampleSection, retrieveBlueprints, retrieveExamples } from './examples';
 import { changedComponents, introducedReusability, reusabilityNudge } from './reusability';
@@ -1699,8 +1699,26 @@ export class Orchestrator {
       items.splice(0, items.indexOf(requestItem), ...historyItems());
       return true;
     };
-    /** The server refused a request as too long once already, and the earlier conversation was summarised for it. */
-    let foldedForServer = false;
+    /** Put the earlier conversation back as it was before `foldHistory` summarised more of it. */
+    const restoreHistory = (to: { replayFrom: number; summary: EarlierSummary | null }) => {
+      replayFrom = to.replayFrom;
+      summary = to.summary;
+      items.splice(0, items.indexOf(requestItem), ...historyItems());
+    };
+    /**
+     * After the server refused a request as too long: summarise the earlier conversation until the request is smaller
+     * by what the server counted over its window (scaled to the app's own estimate), or by half of the earlier
+     * conversation when it gave no count. True only when the request did get smaller, so the same request is never sent again.
+     */
+    const foldForRefusal = (system: string, tools: ToolDefinition[], reported?: ContextOverflow): boolean => {
+      const size = () => estimateRequestTokens(system, tools, items, constrainedJson);
+      const start = size();
+      const counted = reported?.promptTokens && reported.windowTokens && reported.promptTokens > reported.windowTokens ? reported : null;
+      const earlierTokens = estimateRequestTokens('', [], items.slice(0, items.indexOf(requestItem)), constrainedJson);
+      const excess = counted ? Math.ceil(((counted.promptTokens! - counted.windowTokens! + MIN_OUTPUT_TOKENS) * start) / counted.promptTokens!) : Math.ceil(earlierTokens / 2);
+      while (start - size() < excess && foldHistory());
+      return size() < start;
+    };
 
     /**
      * Whether a run may be sent back to make a component reusable: only one that may change that component's whole
@@ -1763,7 +1781,16 @@ export class Orchestrator {
         }
         // The earlier conversation is next: its oldest exchanges are summarised, one at a time, keeping what was
         // decided, before any tool is given up or the run is refused. It is only text, so on any step.
-        if (budget.overflow && (turns > 1 || caps.contextWindowKnown)) while (budget.overflow && foldHistory()) budget = fit();
+        if (budget.overflow && (turns > 1 || caps.contextWindowKnown)) {
+          const unfolded = { replayFrom, summary };
+          while (budget.overflow && foldHistory()) budget = fit();
+          // Not even with all of it summarised: the small tools are tried next, with the earlier conversation as it
+          // was, so it is summarised only as far as they need.
+          if (budget.overflow && turns === 1 && caps.contextWindowKnown && !current.focused) {
+            restoreHistory(unfolded);
+            budget = fit();
+          }
+        }
         // A known window that cannot hold the general tools may still hold the small set. Only before this run's
         // first call, so no call in the history names a tool that is no longer offered.
         if (budget.overflow && turns === 1 && caps.contextWindowKnown && !current.focused && narrowTools()) {
@@ -1773,6 +1800,7 @@ export class Orchestrator {
           requestItem.text = requestMessage();
           system = systemPrompt(readState(), current, constrainedJson, briefShown);
           budget = fit();
+          while (budget.overflow && foldHistory()) budget = fit();
         }
         // With only a guessed window the first request goes out regardless: only the server knows its exact count.
         if (budget.overflow && (turns > 1 || caps.contextWindowKnown)) {
@@ -1866,18 +1894,17 @@ export class Orchestrator {
             this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
             continue outer;
           }
-          // Then the earlier conversation, summarised further and the same step asked again: once, after which the
-          // window the server reported decides how much more is summarised before the request goes out.
-          if (tooLong && failed.context && !foldedForServer && foldHistory()) {
-            foldedForServer = true;
+          if (tooLong && session.runChanged()) {
+            await stopAtLimit("the model's context limit", 'context limit');
+            return;
+          }
+          // Then the earlier conversation, summarised further and the same step asked again, as long as each refusal
+          // leaves it smaller. Nothing has changed yet, so a refusal after that still loses no work.
+          if (tooLong && foldForRefusal(system, tools, failed.context)) {
             turns--;
             msg.text = finalText;
             this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
             continue outer;
-          }
-          if (tooLong && session.runChanged()) {
-            await stopAtLimit("the model's context limit", 'context limit');
-            return;
           }
           // The first request of a run, refused by the server's own count: the small tools may still fit. The same
           // turn is asked again, so it does not count against the step limit, and nothing it showed is kept.

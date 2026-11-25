@@ -123,6 +123,7 @@ export function headroomWarning(input: HeadroomInput): HeadroomWarning | null {
       : kind === 'draft'
         ? // No count of the message itself: the note is announced, and would be again at every key typed.
           `This message is longer than ${context} leaves room for (about ${n(roomTokens)} tokens). Send the copy a few sections at a time, or ${larger}.`
-        : `With this conversation's earlier messages, this message may not fit ${context}. Start a new conversation and send it there, or send the copy a few sections at a time.`;
+        : // The assistant makes room by summarising more of the earlier messages; the author may want them kept in full.
+          `With this conversation's earlier messages, this message may not fit ${context}, so the assistant will shorten more of them to a summary. To keep them in full, send the copy a few sections at a time or start a new conversation.`;
   return { kind, draftTokens, historyTokens, roomTokens, windowTokens, assumed, text };
 }
