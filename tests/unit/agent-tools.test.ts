@@ -372,6 +372,10 @@ describe('upsert_page_with_sections', () => {
         layoutId = 'n_layout';
         home.nodes[layoutId] = { id: layoutId, kind: 'text', tag: 'p', text: 'Hand-made note' };
         home.rootIds.push(layoutId);
+        // A theme block put at the root by hand (#664): the macro cannot place one there, so it never removes one.
+        const block = makeInstance(s.components[installComponent(s, 'block.feature')], { title: 'Kept by hand' });
+        home.nodes[block.id] = block;
+        home.rootIds.push(block.id);
       }
     );
     const home = () => pageAt(session.state, '/')!;
@@ -388,7 +392,7 @@ describe('upsert_page_with_sections', () => {
     expect(defs.filter((d) => d.owner === 'project').map((d) => d.kind).sort()).toEqual(['code', 'managed', 'managed']);
 
     await run('Rebuild the home page with just a hero');
-    expect(home().rootIds.map((id) => (home().nodes[id].kind === 'instance' ? session.state.components[(home().nodes[id] as InstanceNode).definitionId].componentId : id))).toEqual(['hero.split', layoutId]);
+    expect(home().rootIds.map((id) => (home().nodes[id].kind === 'instance' ? session.state.components[(home().nodes[id] as InstanceNode).definitionId].componentId : id))).toEqual(['hero.split', layoutId, 'block.feature']);
     expect(((home().nodes[home().rootIds[0]] as InstanceNode).props.heading as string)).toBe('Only this');
   });
 
@@ -2982,9 +2986,13 @@ describe('a run limited to one page (#513)', () => {
     // The catalogue and a search say which components are blocks.
     const catalogue = (await executeTool('read_project', JSON.stringify({ sections: ['catalogue'] }), host, 'r1')).content as { catalogue: Array<{ componentId: string; block?: boolean }> };
     expect(catalogue.catalogue.filter((c) => c.block).map((c) => c.componentId)).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video']);
-    const found = (await executeTool('search_components', JSON.stringify({ query: 'stat card' }), host, 's1')).content as { results: Array<{ componentId?: string; block?: boolean }> };
+    const found = (await executeTool('search_components', JSON.stringify({ query: 'stat card statistics' }), host, 's1')).content as { results: Array<{ componentId?: string; block?: boolean }> };
     expect(found.results.find((r) => r.componentId === 'block.stat')).toMatchObject({ block: true });
-    expect(found.results.find((r) => r.componentId === 'stats.row')?.block).toBeUndefined();
+    expect(found.results.find((r) => r.componentId === 'stats.row')).toBeDefined();
+    expect(found.results.find((r) => r.componentId === 'stats.row')!.block).toBeUndefined();
+    const detail = async (componentId: string) => ((await executeTool('read_component', JSON.stringify({ componentId }), host, `d-${componentId}`)).content as { component?: { block?: boolean }; block?: boolean });
+    expect(JSON.stringify(await detail('block.stat'))).toContain('"block":true');
+    expect(JSON.stringify(await detail('stats.row'))).not.toContain('"block":true');
   });
 
   it('leaves a link waiting on another page for a run that may change that page', async () => {

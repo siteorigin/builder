@@ -12,6 +12,10 @@ export const FORM_CONTRACTS: readonly string[] = ['contact.form', 'block.signup'
 /** Whether a contract (a component ID, or the one a copy's provenance names) is one of the theme's forms. */
 export const isFormContract = (componentId: unknown): boolean => typeof componentId === 'string' && FORM_CONTRACTS.includes(componentId);
 
+/** What a form is called in a finding: the signup form, else the contact form. A copy goes by the form it came from. */
+export const formNoun = (def: Pick<ComponentDefinition, 'componentId' | 'provenance'> | undefined): string =>
+  def?.componentId === 'block.signup' || def?.provenance?.componentId === 'block.signup' ? 'signup form' : 'contact form';
+
 /** Hidden "honeypot" field names each service recognises as spam traps. */
 export const FORM_PROVIDERS: Array<[string, string]> = [
   ['endpoint', 'Form endpoint (Formspree, Basin, Getform…)'],

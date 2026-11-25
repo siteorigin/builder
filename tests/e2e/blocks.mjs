@@ -168,6 +168,7 @@ await frame.locator('h3', { hasText: 'Thoughtful planning' }).first().waitFor();
 await win.screenshot({ path: join(SHOTS, 'blocks-column-click.png') });
 await undo();
 await eventually(async () => assert.deepEqual((await home()).nodes[col1].children, [], 'one Undo takes it away'));
+await eventually(async () => assert.equal((await newest())?.id, before?.id, 'and History is as it was'));
 
 step('the + inside an empty column offers every block, in its own group');
 await win.keyboard.press('Escape');
@@ -201,6 +202,7 @@ await eventually(async () => {
 await oneChange(before, 'Insert Stat card on Home');
 await undo();
 await eventually(async () => assert.deepEqual((await home()).nodes[col2].children, [], 'one Undo takes it away'));
+await eventually(async () => assert.equal((await newest())?.id, before?.id, 'and History is as it was'));
 
 step('the + inside the Proof section offers only the blocks its slot takes');
 await win.keyboard.press('Escape');
@@ -213,8 +215,20 @@ await list.waitFor();
 const proofBlocks = (await offered()).filter((t) => t.endsWith('Blocks')).map((t) => t.replace(/\s*Blocks$/, ''));
 assert.deepEqual(proofBlocks, ['Stat card', 'Testimonial card'], 'social proof only');
 await win.screenshot({ path: join(SHOTS, 'blocks-slot-plus.png') });
-await win.keyboard.press('Escape');
+before = await newest();
+await list.getByRole('option', { name: /^Stat card/ }).click();
 await list.waitFor({ state: 'detached' });
+await eventually(async () => {
+  const page = await home();
+  const held = page.nodes[proof].slots?.content ?? [];
+  assert.equal(held.length, 1, 'the slot holds the chosen card');
+  assert.equal(page.nodes[held[0]].definitionId, 'foundation.block.stat', 'a Stat card');
+  assert.deepEqual(page.rootIds, roots, 'no new section on the page');
+});
+await oneChange(before, 'Insert Stat card on Home');
+await undo();
+await eventually(async () => assert.deepEqual((await home()).nodes[proof].slots?.content ?? [], [], 'one Undo takes it away'));
+await eventually(async () => assert.equal((await newest())?.id, before?.id, 'and History is as it was'));
 
 step('the Testimonial card’s tile drags into the Proof section’s slot, in one change');
 await openInsert();
@@ -240,13 +254,14 @@ await eventually(async () => assert.equal(JSON.parse((await win.locator('.canvas
 await openInsert();
 await eventually(async () => assert.equal(await blockTile('Stat card').getAttribute('data-refused'), '', 'the Stat card’s tile is marked refused'));
 assert.match(await blockTile('Stat card').getAttribute('title'), /holds at most one item/);
-before = await newest();
+const testimonialAdded = await newest();
 await blockTile('Stat card').click();
 await win.waitForTimeout(500);
 assert.deepEqual((await home()).nodes[proof].slots.content, [held], 'nothing more in the slot');
-assert.equal((await newest()).id, before?.id, 'and no change');
+assert.equal((await newest()).id, testimonialAdded?.id, 'and no change');
 await undo();
 await eventually(async () => assert.deepEqual((await home()).nodes[proof].slots?.content ?? [], [], 'one Undo takes the testimonial away'));
+await eventually(async () => assert.equal((await newest())?.id, before?.id, 'and History is as it was'));
 
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();

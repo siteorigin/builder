@@ -19,7 +19,7 @@ import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRe
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
-import { parseVideoUrl } from '@shared/video';
+import { isVideoContract, parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { selectedVariantStyles, startingVariants } from '@shared/variants';
@@ -1037,9 +1037,6 @@ export interface RenderedContent {
   /** Words a computed list shows (a News card, an article header): changed in the page settings they come from. */
   computed?: boolean;
 }
-
-/** The theme's videos: the Video section and the Compact video block, which show the same player. */
-export const isVideoContract = (componentId: string | undefined): boolean => componentId === 'media.video' || componentId === 'block.video';
 
 /**
  * The shipped code component a definition is, or a header copied from it (Make unique keeps its code and

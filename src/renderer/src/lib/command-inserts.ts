@@ -6,7 +6,7 @@
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { catalogueEntries } from '@catalogue/index';
 import { dependsOn } from '@engine/apply';
-import { insertAt, insertRole, slotWhere, whereFor, whereText } from './insert-at';
+import { catalogueRole, insertAt, insertRole, slotRefuses, slotWhere, whereFor, whereText } from './insert-at';
 import type { SlotTarget } from './slot-target';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, type InsertSpec } from './insert-search';
 
@@ -33,7 +33,7 @@ export function insertChoices(state: ProjectState, developerMode: boolean): Inse
       (d): InsertChoice => ({ id: `ins:c:${d.id}`, name: d.name, kind: d.kind === 'code' ? 'Code component' : 'Component', keywords: `${d.description ?? ''} ${d.kind === 'code' ? 'code ' : ''}component`.trim(), spec: { definitionId: d.id } })
     ),
     ...BASICS.map((b): InsertChoice => ({ id: `ins:e:${b.id}`, name: b.name, kind: b.layout ? 'Layout' : 'Element', icon: b.icon, keywords: basicHay(b), spec: basicSpec(b) })),
-    ...catalogueEntries(state.site.themeId).map((e): InsertChoice => ({ id: `ins:${e.componentId}`, name: e.name, kind: e.block ? 'Block' : 'Section', icon: e.icon, keywords: '', spec: { componentId: e.componentId } }))
+    ...catalogueEntries(state.site.themeId).map((e): InsertChoice => ({ id: `ins:${e.componentId}`, name: e.name, kind: catalogueRole(state, e.componentId) === 'element' ? 'Block' : 'Section', icon: e.icon, keywords: '', spec: { componentId: e.componentId } }))
   ];
 }
 
@@ -47,6 +47,8 @@ export function insertLanding(state: ProjectState, owner: OwnerRef | null, selec
   if (spec.definitionId && owner?.kind === 'component' && (spec.definitionId === owner.id || dependsOn(state, spec.definitionId, owner.id))) return { refused: 'Would contain itself' };
   const role = insertRole(state, spec);
   const at = owner ? insertAt(state, owner, role, selection, spec.definitionId, target) : null;
+  // A slot that does not take it, or is full, is said before it is chosen, as its Insert tile says (see slotRefusal).
+  if (at && slotRefuses(state, at, spec)) return { refused: 'Not taken by that slot' };
   // Into a picked slot (`target`, see insertAt), named with its component.
   const where = at ? (target ? slotWhere(state, target) : whereFor(state, at, role)) : null;
   return where ? { where: whereText(where) } : { refused: 'Nowhere to insert' };

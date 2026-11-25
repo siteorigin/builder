@@ -250,6 +250,23 @@ describe('a new node among siblings with an Order style (#52)', () => {
     expect(dropTarget(lists, 'element', 500, 396, 10, null)).toMatchObject({ index: 1, list: { parentId: null } });
   });
 
+  it('reads the incoming order of a theme component from the project’s installed copy, else the theme’s (#664)', () => {
+    let s = createStarterState('blank', 'Order', false);
+    const owner: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    expect(incomingOrder(s, { componentId: 'block.stat' })).toBe(0);
+    s = applyOperations(s, [
+      { type: 'node.insert', newNodeId: 'n_sec', owner, parentId: null, componentId: 'layout.section' },
+      { type: 'node.insert', owner, parentId: 'n_sec', slot: 'content', componentId: 'block.stat' }
+    ]).state;
+    const def = s.components['foundation.block.stat'];
+    (def.tree!.nodes[def.tree!.rootIds[0]] as { styles?: Record<string, Record<string, unknown>> }).styles = { base: { order: 3 } };
+    expect(incomingOrder(s, { componentId: 'block.stat' })).toBe(3);
+    // A tone it is inserted with can order its root too.
+    def.variantAxes!.tone.options.muted.styles = { ...def.variantAxes!.tone.options.muted.styles, [def.tree!.rootIds[0]]: { base: { order: 5 } } };
+    expect(incomingOrder(s, { componentId: 'block.stat', variants: { tone: 'muted' } })).toBe(5);
+    expect(incomingOrder(s, { componentId: 'no.such' })).toBe(0);
+  });
+
   it('reads the incoming order from a component’s root', () => {
     const p = page();
     const out = applyOperations(p.state, [{ type: 'component.createFromNode', owner: p.owner, nodeId: p.a, name: 'Artist card' }]);

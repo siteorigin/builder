@@ -338,7 +338,7 @@ describe('what each Add button offers', () => {
     expect(quickItems(p.state, 'section').some((it) => it.kind === 'block' || it.spec.componentId?.startsWith('block.'))).toBe(false);
   });
 
-  it('inside an empty column, every block fits and inserts there in one change (#664)', () => {
+  it('inside an empty Stack in a Section, every block fits and inserts there in one change (#664)', () => {
     const p = page();
     const [inside] = addPoints(p.state, p.owner, ref(p.owner, p.empty));
     const at = resolvePoint(p.state, inside)!;

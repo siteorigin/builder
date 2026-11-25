@@ -49,7 +49,7 @@ import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
 import { routeUrl, validateRoute } from '@shared/routes';
 import { publicUrl } from '@shared/public-url';
-import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
+import { isVideoContract, videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
 import { postAt, postShown } from '../lib/posts';
@@ -1143,8 +1143,9 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   };
   // Buttons whose link this placement cannot set (it comes from the design or a component inside it).
   const fixedUnlinked = unlinked.filter((b) => !b.link);
-  // A video section says whether its address is a video visitors can play, where it loads from, and when it needs a title.
-  const video = def.componentId === 'media.video' ? videoFieldNotes(node.props) : undefined;
+  // A video (the section or the compact block) says whether its address is a video visitors can play, where it loads
+  // from, and when it needs a title.
+  const video = isVideoContract(def.componentId) ? videoFieldNotes(node.props) : undefined;
   // The shared footer's menu takes the header menu's links in one step (#575).
   const footerMenuId = owner.kind === 'shell' && owner.id === 'footer' ? shellMenu(state, 'footer')?.node.id : undefined;
   const videoNote = (key: string) => (key === 'url' || key === 'title' ? video?.[key as keyof VideoFieldNotes] : undefined);

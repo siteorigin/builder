@@ -64,11 +64,8 @@ export function slotRefusal(state: ProjectState, at: InsertAt | null, spec: Inse
   if (spec.primitive === 'slot') return null;
   if (spec.primitive) return (decl.primitives ?? []).includes(PRIMITIVE_KINDS[spec.primitive]) ? null : takes;
   // A theme component goes in as the site's theme has it (installing it, or using the copy installed from it).
-  const def: ComponentDefinition | undefined = spec.definitionId
-    ? own(state.components, spec.definitionId)
-    : spec.componentId
-      ? getTheme(state.site.themeId).components.find((d) => d.componentId === spec.componentId)
-      : undefined;
+  const themed = !spec.definitionId && spec.componentId ? getTheme(state.site.themeId).components.find((d) => d.componentId === spec.componentId) : undefined;
+  const def: ComponentDefinition | undefined = spec.definitionId ? own(state.components, spec.definitionId) : themed ? (own(state.components, themed.id) ?? themed) : undefined;
   return def && !takesComponent(decl, def) ? takes : null;
 }
 

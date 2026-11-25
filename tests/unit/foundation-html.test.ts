@@ -242,6 +242,8 @@ describe('the blocks (#664)', () => {
     expect(tags(out, 'h3')).toEqual(['Thoughtful planning']);
     expect(out).toMatch(classed(nodeClass('block.feature', 'icon-badge')));
     expect(out).not.toMatch(classed(nodeClass('block.feature', 'link')));
+    // Somewhere to go is not enough: the link shows only with its label.
+    expect(html('block.feature', { linkLabel: '', link: { href: '/services/' } })).not.toMatch(classed(nodeClass('block.feature', 'link')));
     const linked = html('block.feature', { headingLevel: 'h2', linkLabel: 'Read more', link: { href: '/services/' } });
     expect(tags(linked, 'h2')).toEqual(['Thoughtful planning']);
     expect(linked).toContain('Read more');
@@ -252,6 +254,19 @@ describe('the blocks (#664)', () => {
     expect(tags(out, 'dl')[0].replace(/\s+/g, '')).toMatch(/^<dt[^>]*>Clientswhoreturn<\/dt><dd[^>]*>98%<\/dd>$/);
     expect(out).not.toMatch(classed(nodeClass('block.stat', 'note')));
     expect(html('block.stat', { note: 'Since 2015' })).toContain('Since 2015');
+  });
+
+  it('callout box: its heading, text and button, with the bar down its leading edge on every tone', () => {
+    const out = html('block.callout', { actionLink: { href: '/contact/' } });
+    expect(tags(out, 'h3')).toEqual(['Free first consultation']);
+    expect(out).toContain('Tell us what you have in mind');
+    expect(out).toContain('Book a call');
+    const css = componentsCss();
+    expect(css).toMatch(new RegExp(`\\.${nodeClass('block.callout', 'root')}\\s*\\{[^}]*border-inline-start:\\s*4px solid var\\(--so-color-brand\\)`));
+    // The filled tones change its background, never its border.
+    const tones = [...css.matchAll(/\.so-foundation-block-callout--tone-(muted|inverse)[^{]*\{([^}]*)\}/g)].map((m) => m[2]);
+    expect(tones.length).toBeGreaterThan(0);
+    for (const rule of tones) expect(rule).not.toMatch(/border/);
   });
 
   it('testimonial card: a figure whose quote comes first and whose caption, last, names the client', () => {
@@ -277,6 +292,10 @@ describe('the blocks (#664)', () => {
     expect(out).toContain('Studio tour');
     expect(out).not.toContain('<figcaption');
     expect(tags(authoredHtml('block.video', { caption: 'Our studio, filmed in spring' }), 'figcaption')).toEqual(['Our studio, filmed in spring']);
+    // Plain has no background of its own, so its caption takes the colour of the text around it (a dark section's too).
+    const source = bundle.files.get(defFile(bundle.defs['block.video']))!;
+    expect(source).toMatch(/\.so-video-block__caption \{[^}]*color: inherit;/);
+    expect(source.match(/\.so-video-block \{([^}]*)\}/)?.[1]).not.toMatch(/color:/);
   });
 });
 

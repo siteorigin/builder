@@ -10,7 +10,7 @@ import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from 
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
-import { elementWhere, nodeLabel, sectionWhere, slotRefusal, slotWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
+import { catalogueRole, elementWhere, nodeLabel, sectionWhere, slotRefusal, slotWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } from '../lib/insert-search';
 import { SLOT_NO_PLACE, unplacedSlots } from '../lib/slot-contract';
 import { exportComponentFile, insertSaved, removeFromLibrary, saveToLibrary } from '../lib/saved-components';
@@ -1178,13 +1178,15 @@ export function InsertPanel() {
   // Each section (or block), then (when asked for) each variant option on its own, pictured as it inserts.
   const sections: Item[] = entries.flatMap((e) => {
     const shots = theme.previews?.[e.componentId];
+    // As it would go in: the project's installed copy decides, once there is one (see catalogueRole).
+    const block = catalogueRole(st, e.componentId) === 'element';
     const base: Item = {
       key: `s:${e.componentId}`,
-      kind: e.block ? 'block' : 'section',
+      kind: block ? 'block' : 'section',
       name: e.name,
       description: e.description,
-      hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} ${e.block ? 'block' : 'section'}`.toLowerCase(),
-      group: e.block ? BLOCKS : (CATEGORY_LABELS[e.category] ?? e.category),
+      hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} ${block ? 'block' : 'section'}`.toLowerCase(),
+      group: block ? BLOCKS : (CATEGORY_LABELS[e.category] ?? e.category),
       spec: { componentId: e.componentId },
       ...(shots ? { preview: { pack: theme.id, file: shots.default } } : {})
     };
@@ -1337,6 +1339,9 @@ export function InsertPanel() {
     return p;
   };
   const whereOf = (it: Item): Where => planOf(it).where;
+  /** Whether an element would go in a new Section of its own (a page with nowhere to put it): the peek's map, which
+   *  shows the page's own list, leaves it out rather than show it among the sections. */
+  const wrapped = (p: { role: InsertRole; at: InsertAt | null }) => p.role === 'element' && p.at?.owner.kind === 'page' && !p.at.parentId;
   // Why a click would not put an item where it goes: a slot that does not take it, or has no room (see slotRefusal).
   // The tile stays, since it can still be dragged somewhere else.
   const refusals = new Map<string, string | null>();
@@ -2223,7 +2228,7 @@ export function InsertPanel() {
           anchor={peek.rect}
           panel={panelRect}
           option={showVariants || peekItem.variant ? `${optionLabel(peekItem)}${peekItem.defaults ? ` · ${peekItem.defaults}` : ''}` : null}
-          map={neighboursAt(st, planOf(peekItem).at)}
+          map={wrapped(planOf(peekItem)) ? null : neighboursAt(st, planOf(peekItem).at)}
           onEnter={keepPeek}
           onLeave={searching && document.activeElement === searchRef.current ? keepPeek : () => hidePeek(peek.key)}
         />

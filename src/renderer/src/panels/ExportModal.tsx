@@ -298,7 +298,7 @@ function SampleContactReview({ groups, kept, disabled, readOnly, folded, onSettl
 }
 
 /**
- * The contact forms the website would publish that visitors cannot send, each in Project health's words (which name
+ * The forms (contact or signup) the website would publish that visitors cannot send, each in Project health's words (which name
  * its page) with the way to its settings. They are reviewed before the website goes out, but never stop it: a work in
  * progress can still be exported on purpose.
  */
@@ -317,7 +317,7 @@ function FormReview({ notes, disabled, folded }: { notes: ExportNote[]; disabled
       <div className="export-review-head">
         <TriangleAlert aria-hidden />
         <div className="grow">
-          <strong id={headId}>{notes.length === 1 ? 'A contact form on the website can’t send messages yet.' : `${notes.length} contact forms on the website can’t send messages yet.`}</strong>
+          <strong id={headId}>{notes.length === 1 ? 'A form on the website can’t send messages yet.' : `${notes.length} forms on the website can’t send messages yet.`}</strong>
           <span>Visitors who fill {notes.length === 1 ? 'it' : 'them'} in won’t reach you. You can still export the website.</span>
         </div>
         {folded && !disabled && (

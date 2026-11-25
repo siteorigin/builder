@@ -531,13 +531,14 @@ function findPage(state: ProjectState, slug: string): { route: string; page?: Pa
 
 /**
  * Whether a root is a section the macro could place: a theme section, or a project section (a fork, a unique
- * copy, a custom or code component) the tool lists. Anything else, such as hand-built layout, is never removed by it.
+ * copy, a custom or code component) the tool lists. Anything else, such as hand-built layout or a theme's block
+ * placed there by hand, is never removed by it.
  */
 function expressible(state: ProjectState, page: PageDoc, id: string): boolean {
   const n = page.nodes[id];
   if (n?.kind !== 'instance') return false;
   const def = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
-  return def?.owner === 'theme' || (def?.owner === 'project' && def.category !== 'shell');
+  return (def?.owner === 'theme' && !isThemeBlock(def)) || (def?.owner === 'project' && def.category !== 'shell');
 }
 
 /**
@@ -779,7 +780,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     const r = resolved[i];
     if (!r) {
       if (isThemeBlock(catalogueComponent(state.site.themeId, s.componentId))) {
-        issues.push({ field: `${at}.componentId`, message: `"${s.componentId}" is a block, not a section: it goes inside a section, a column or a component's slot. Leave it out here, and place it with apply_operations node.insert (into a Section's "content" slot, or a column).` });
+        issues.push({ field: `${at}.componentId`, message: `"${s.componentId}" is a block, not a section: it goes inside a section, a column or a component's slot. Send the page's sections again without it (not as a repair), then place it with apply_operations node.insert (into a Section's "content" slot, or a column).` });
         return null;
       }
       const names = catalogueEntries(state.site.themeId).filter((e) => !e.block).map((e) => e.componentId).join(', ');

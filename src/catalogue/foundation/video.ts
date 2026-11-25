@@ -157,6 +157,8 @@ const VIDEO_BLOCK_SOURCE = `<script>
 </figure>
 
 <style>
+	/* Plain has no background of its own: its caption takes the colour of the text around it, so it reads on a dark
+	   section as on a light one, and the root's Color sets it. Card and Dark paint their own and set their text. */
 	.so-video-block {
 		display: flex;
 		flex-direction: column;
@@ -165,12 +167,12 @@ const VIDEO_BLOCK_SOURCE = `<script>
 		min-width: 0;
 		max-width: 100%;
 		margin: 0;
-		color: var(--so-color-text);
 	}
 	.so-video-block--card {
 		padding-block: var(--so-space-md);
 		padding-inline: var(--so-space-md);
 		background: var(--so-color-surface);
+		color: var(--so-color-text);
 		border: var(--so-border-default);
 		border-radius: var(--so-radius-lg);
 	}
@@ -184,10 +186,7 @@ const VIDEO_BLOCK_SOURCE = `<script>
 	.so-video-block__caption {
 		font-size: var(--so-text-small-size);
 		line-height: var(--so-text-small-line-height);
-		color: var(--so-color-muted);
-	}
-	.so-video-block--inverse .so-video-block__caption {
-		color: var(--so-color-on-inverse);
+		color: inherit;
 		opacity: 0.78;
 	}
 </style>
