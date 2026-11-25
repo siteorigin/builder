@@ -493,14 +493,14 @@ const entityReadiness: SeoAuditRule = {
  * Pages the author says are a service, a product, an event or a guide (shared/page-structured-data.ts) whose structured
  * data can't say so yet: a fact it needs is missing (a product's price, an event's start), two contradict each other,
  * or one saved by hand can't be used. Only the author knows the facts, so the AI is not offered to fill them in.
- * Judged on the pages whose structured data the website writes.
+ * Judged on the pages whose structured data the website writes, or will once it has a public URL.
  */
 const pageStructuredData: SeoAuditRule = {
   id: 'page-structured-data',
   check({ state, documents }) {
     const out: SeoFinding[] = [];
     for (const d of documents) {
-      if (d.subject.kind !== 'page' || !d.visibility.jsonLd) continue;
+      if (d.subject.kind !== 'page' || !d.visibility.indexable) continue;
       const page = state.pages[d.subject.pageId];
       const seo = page.seo && typeof page.seo === 'object' ? page.seo : undefined;
       const found = inspectPageStructuredData(seo?.structuredData);
