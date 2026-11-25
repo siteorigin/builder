@@ -1,13 +1,14 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Copy, FileDown, Newspaper, Plus, Search, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Copy, FileDown, Newspaper, Plus, Search, Tags, Trash2, X } from 'lucide-react';
 import { formatArticleDate } from '@shared/articles';
 import { entryLinkUses } from '@engine/page-links';
 import { api, commitOps, confirmDialog, getState, markDraft, setState, toast, undoAction, useStore } from '../store';
-import { Field, Modal, useMenu, type MenuItem } from '../components/ui';
+import { Field, Modal, Segmented, useMenu, type MenuItem } from '../components/ui';
 import { reviewPostImport } from './PostImportReview';
 import type { PostImportKind } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
-import { POST_SORTS, duplicatePostOps, newPostOps, postAt, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostSort } from '../lib/posts';
+import { POST_SORTS, POST_STATUSES, duplicatePostOps, newPostOps, postAt, postCounts, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostSort, type PostStatus } from '../lib/posts';
+import { TermsManager, termsOf } from './PostTerms';
 import { findEntry, orderedEntries } from '@shared/collections';
 import type { ProjectState } from '@shared/types';
 import { flushOpenPost } from '../lib/post-draft';
@@ -154,6 +155,9 @@ export function PostsPanel() {
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState<PostRef | null>(null);
   const [reading, setReading] = useState(false);
+  const [status, setStatus] = useState<PostStatus>('all');
+  const [category, setCategory] = useState('');
+  const [managing, setManaging] = useState(false);
   const importMenu = useMenu();
   const findInput = useRef<HTMLInputElement>(null);
   const addInput = useRef<HTMLInputElement>(null);
@@ -164,9 +168,22 @@ export function PostsPanel() {
   useEffect(() => () => markDraft(newKey, false), [newKey]);
   const state = snap?.state;
   const collection = state ? postsCollection(state, collectionId ?? post?.collectionId) : undefined;
-  const rows = useMemo(() => (collection ? postRows(collection, query, sort) : []), [collection, query, sort]);
+  const categories = termsOf(collection, 'categories');
+  // A category renamed, deleted or undone away, or one of another collection, filters nothing.
+  const categoryId = categories.some((c) => c.id === category) ? category : '';
+  // Forgotten once gone (deleted, undone away), so a later category given the same address is never chosen on its own;
+  // one renamed to is kept while the project's copy with it is on its way.
+  const known = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const ids = new Set(categories.map((c) => c.id));
+    if (category && !ids.has(category) && known.current.has(category)) setCategory('');
+    known.current = ids;
+  });
+  const rows = useMemo(() => (collection ? postRows(collection, query, sort, { status, category: categoryId }) : []), [collection, query, sort, status, categoryId]);
   if (!snap || !state) return null;
   const all = collection ? Object.keys(collection.entries).length : 0;
+  const counts = collection ? postCounts(collection) : { all: 0, published: 0, drafts: 0 };
+  const filtered = !!query.trim() || status !== 'all' || !!categoryId;
   const collections = Object.values(state.collections ?? {});
   const language = state.site.language;
   const setSort = (s: PostSort) => {
@@ -280,6 +297,7 @@ export function PostsPanel() {
         </button>
         {importMenu.node}
       </div>
+      {managing && collection && <TermsManager collectionId={collection.settings.id} onClose={() => setManaging(false)} onRenamed={(tax, from, to) => tax === 'categories' && category === from && setCategory(to)} />}
       {previewing && post && (
         <div className="posts-previewing" role="status">
           <span>Showing the post as visitors see it.</span>
@@ -291,7 +309,7 @@ export function PostsPanel() {
       {deleting && <DeletePostDialog target={deleting} onClose={() => setDeleting(null)} />}
       {collections.length > 1 && collection && (
         <div className="posts-collection">
-          <select className="select sm" aria-label="Collection" value={collection.settings.id} onChange={(e) => setCollectionId(e.target.value)}>
+          <select className="select sm" aria-label="Collection" value={collection.settings.id} onChange={(e) => (setCollectionId(e.target.value), setCategory(''))}>
             {collections
               .map((c) => c.settings)
               .sort((a, b) => a.name.localeCompare(b.name))
@@ -362,8 +380,26 @@ export function PostsPanel() {
           </select>
         </div>
       )}
+      {all > 0 && (
+        <div className="posts-filters">
+          <Segmented radio label="Show posts" value={status} onChange={setStatus} options={POST_STATUSES.map((s) => ({ value: s.id, label: `${s.label} ${counts[s.id]}` }))} />
+          {categories.length > 0 && (
+            <select className="select sm posts-category" aria-label="Filter by category" value={categoryId} onChange={(e) => setCategory(e.target.value)}>
+              <option value="">All categories</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          )}
+          <button className="btn btn-sm btn-ghost posts-terms" aria-haspopup="dialog" title="Add, rename or delete categories and tags" onClick={() => setManaging(true)}>
+            <Tags aria-hidden="true" /> Categories and tags
+          </button>
+        </div>
+      )}
       <span className="sr-only" aria-live="polite">
-        {query.trim() ? (rows.length ? `${rows.length} of ${all} posts` : 'No post matches') : ''}
+        {filtered ? (rows.length ? `${rows.length} of ${all} posts` : 'No post matches') : ''}
       </span>
       <div className="panel-body">
         {!all && !adding && (
@@ -376,9 +412,23 @@ export function PostsPanel() {
             <button className="btn btn-sm" aria-haspopup="menu" aria-expanded="false" disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
               <FileDown aria-hidden="true" /> Import posts…
             </button>
+            {collection && (
+              <button className="btn btn-sm btn-ghost" aria-haspopup="dialog" title="Add, rename or delete categories and tags" onClick={() => setManaging(true)}>
+                <Tags aria-hidden="true" /> Categories and tags
+              </button>
+            )}
           </div>
         )}
-        {query.trim() && !rows.length && <p className="posts-note">No post has “{query.trim()}” in its title, address, author or excerpt.</p>}
+        {all > 0 && filtered && !rows.length && (
+          <p className="posts-note">
+            {query.trim() && status === 'all' && !categoryId ? `No post has “${query.trim()}” in its title, address, author or excerpt.` : 'No post matches these filters.'}{' '}
+            {(status !== 'all' || categoryId) && (
+              <button className="link-btn" onClick={() => (setStatus('all'), setCategory(''), setQuery(''))}>
+                Show all posts
+              </button>
+            )}
+          </p>
+        )}
         <ul className="posts-list" aria-label="Posts">
           {rows.map((r) => {
             const current = post?.entryId === r.id;

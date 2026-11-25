@@ -22,6 +22,21 @@ export const POST_SORTS: Array<{ id: PostSort; label: string }> = [
   { id: 'order', label: 'Collection order' }
 ];
 
+/** Which posts the list shows by whether they are on the website. */
+export type PostStatus = 'all' | 'published' | 'drafts';
+export const POST_STATUSES: Array<{ id: PostStatus; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'published', label: 'Published' },
+  { id: 'drafts', label: 'Drafts' }
+];
+
+/** What the list narrows to besides its words: posts on the website or drafts, and posts filed under one category. */
+export interface PostFilter {
+  status?: PostStatus;
+  /** A term ID of the collection's categories; empty or absent for every post. */
+  category?: string;
+}
+
 /** One post as the list shows it. */
 export interface PostRow {
   id: string;
@@ -86,13 +101,29 @@ export function postShown(state: ProjectState, workspace: 'write' | 'preview', p
 
 const words = (s: unknown) => (typeof s === 'string' ? s.toLowerCase() : '');
 
+/** Whether a post is one the filter keeps: of the chosen status, and filed under the chosen category. */
+function kept(e: EntryDoc, filter: PostFilter): boolean {
+  const draft = e.draft !== false;
+  if ((filter.status === 'published' && draft) || (filter.status === 'drafts' && !draft)) return false;
+  if (!filter.category) return true;
+  const ids: unknown = e.terms && typeof e.terms === 'object' && Object.hasOwn(e.terms, 'categories') ? e.terms.categories : undefined;
+  return Array.isArray(ids) && ids.includes(filter.category);
+}
+
+/** How many of a collection's posts are published and how many are drafts, for the status filter. */
+export function postCounts(collection: Collection): Record<PostStatus, number> {
+  const all = Object.values(collection.entries).filter((e) => !!e && typeof e === 'object');
+  const drafts = all.filter((e) => e.draft !== false).length;
+  return { all: all.length, published: all.length - drafts, drafts };
+}
+
 /**
- * The collection's posts that match `query` (in the title, slug, author or excerpt, ignoring case), in `sort`'s
- * order. Ties keep the collection's own order, so rows never trade places on their own.
+ * The collection's posts that match `query` (in the title, slug, author or excerpt, ignoring case) and `filter`, in
+ * `sort`'s order. Ties keep the collection's own order, so rows never trade places on their own.
  */
-export function postRows(collection: Collection, query: string, sort: PostSort): PostRow[] {
+export function postRows(collection: Collection, query: string, sort: PostSort, filter: PostFilter = {}): PostRow[] {
   const q = query.trim().toLowerCase();
-  const ordered = orderedEntries(collection).filter((e) => !!e && typeof e === 'object');
+  const ordered = orderedEntries(collection).filter((e) => !!e && typeof e === 'object' && kept(e, filter));
   const rank = new Map(ordered.map((e, i) => [e.id, i]));
   const found = q ? ordered.filter((e) => [e.title, e.slug, e.author, e.excerpt].some((f) => words(f).includes(q))) : ordered;
   const byRank = (a: EntryDoc, b: EntryDoc) => rank.get(a.id)! - rank.get(b.id)!;

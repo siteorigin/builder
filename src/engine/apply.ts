@@ -44,6 +44,7 @@ import { checkCanonicalUrl } from '@shared/seo';
 import { feedRowFields } from '@shared/entry-feed';
 import { archiveRouteOwner, collectionRouteOwner } from '@shared/collections';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
+import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { teaserFields } from '@shared/page-teasers';
@@ -407,6 +408,12 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return collectionUpdate(state, op, ctx.entryAddressesAtStart);
     case 'collection.remove':
       return collectionRemove(state, op, ctx.entryAddressesAtStart);
+    case 'collection.createTerm':
+      return termCreate(state, op);
+    case 'collection.renameTerm':
+      return termRename(state, op);
+    case 'collection.removeTerm':
+      return termRemove(state, op);
     case 'entry.create':
       return entryCreate(state, op);
     case 'entry.update':

@@ -18,7 +18,7 @@ import { todayArticleDate } from '@shared/articles';
 import { RICHTEXT_SVELTE } from '@generator/runtime-files';
 import { blocksFromDom } from '../../src/renderer/src/lib/richtext';
 import { readField, fieldKey, placeOf } from '../../src/renderer/src/lib/held';
-import { duplicatePostOps, newPostOps, postRows, postsCollection } from '../../src/renderer/src/lib/posts';
+import { duplicatePostOps, newPostOps, postCounts, postRows, postsCollection, type PostFilter } from '../../src/renderer/src/lib/posts';
 import { imageUseRows } from '../../src/renderer/src/lib/asset-uses';
 
 const image = (id: string, altSuggestion?: string): AssetRecord => ({ id, name: `Photo ${id}`, file: `static/assets/${id}-1a2b3c4d.png`, mime: 'image/png', bytes: 10, hash: `hash-${id}`, kind: 'image', createdAt: '2026-01-01T00:00:00.000Z', width: 1200, height: 800, ...(altSuggestion ? { altSuggestion } : {}) });
@@ -359,6 +359,28 @@ describe('the Posts list', () => {
     expect(postRows(c, 'ana', 'newest').map((r) => r.id)).toEqual(['en_winter']);
     expect(postRows(c, '', 'newest').find((r) => r.id === 'en_spring')).toMatchObject({ draft: false, date: '2027-03-02', route: '/blog/spring-open-studio/' });
     expect(postRows(c, '', 'newest').find((r) => r.id === 'en_winter')?.draft).toBe(true);
+  });
+
+  it('narrows to published posts or drafts and to one category, together with its words (#396)', () => {
+    let s = run(
+      blog(),
+      { type: 'collection.update', collectionId: 'posts', taxonomies: { categories: { label: 'Categories', terms: { news: { label: 'News' }, craft: { label: 'Craft' } } }, tags: { label: 'Tags', terms: {} } } },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_autumn', title: 'Autumn kiln firing', publishedAt: '2027-04-02', terms: { categories: ['craft'] } }
+    );
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', terms: { categories: ['news', 'craft'] } });
+    const c = s.collections.posts;
+    const ids = (filter: PostFilter, q = '') => postRows(c, q, 'newest', filter).map((r) => r.id);
+    expect(ids({})).toEqual(['en_autumn', 'en_spring', 'en_winter']);
+    expect(ids({ status: 'all' })).toEqual(['en_autumn', 'en_spring', 'en_winter']);
+    expect(ids({ status: 'published' })).toEqual(['en_spring']);
+    expect(ids({ status: 'drafts' })).toEqual(['en_autumn', 'en_winter']);
+    expect(ids({ category: 'craft' })).toEqual(['en_autumn', 'en_spring']);
+    expect(ids({ category: 'news' })).toEqual(['en_spring']);
+    expect(ids({ category: 'craft', status: 'drafts' })).toEqual(['en_autumn']);
+    expect(ids({ category: 'craft' }, 'spring')).toEqual(['en_spring']);
+    expect(ids({ category: 'news' }, 'autumn')).toEqual([]);
+    expect(ids({ category: 'gone' })).toEqual([]);
+    expect(postCounts(c)).toEqual({ all: 3, published: 1, drafts: 2 });
   });
 
   it('creates the blog with the first post, and puts later ones in the collection shown', () => {

@@ -116,6 +116,13 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
   const assetName = (id: string | null | undefined) => (id ? (after.assets.assets[id]?.name ?? before.assets.assets[id]?.name ?? 'an image') : 'an image');
   const collectionName = (id: string) => after.collections[id]?.settings.name ?? before.collections[id]?.settings.name ?? id;
   const entryTitle = (cid: string, id: string) => after.collections[cid]?.entries[id]?.title ?? before.collections[cid]?.entries[id]?.title ?? id;
+  /** "Posts categories": a collection's grouping, by the names they had before the change. */
+  const termGrouping = (cid: string, tax: string) => {
+    const c = before.collections[cid] ?? after.collections[cid];
+    const t = c?.settings.taxonomies?.[tax] ?? after.collections[cid]?.settings.taxonomies?.[tax];
+    return `${collectionName(cid)} ${(t?.label ?? tax).toLowerCase()}`;
+  };
+  const termLabel = (cid: string, tax: string, id: string) => before.collections[cid]?.settings.taxonomies?.[tax]?.terms?.[id]?.label ?? id;
   const plain = (op: EditOperation, label: string, link: Draft['link'] = {}) => add(op, `plain:${label}:${JSON.stringify(link)}`, () => label, link);
   const items = (n: number) => (n === 1 ? 'an item' : `${n} items`);
 
@@ -416,6 +423,12 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Changed the settings of the ${quoted(collectionName(op.collectionId))} collection`);
       case 'collection.remove':
         return plain(op, `Deleted the ${quoted(before.collections[op.collectionId]?.settings.name ?? op.collectionId)} collection and its entries`);
+      case 'collection.createTerm':
+        return plain(op, `Added ${quoted(op.label.trim())} to the ${termGrouping(op.collectionId, op.taxonomyId)}`);
+      case 'collection.renameTerm':
+        return plain(op, `Renamed ${quoted(termLabel(op.collectionId, op.taxonomyId, op.termId))} to ${quoted(op.label.trim())} in the ${termGrouping(op.collectionId, op.taxonomyId)}`);
+      case 'collection.removeTerm':
+        return plain(op, `Deleted ${quoted(termLabel(op.collectionId, op.taxonomyId, op.termId))} from the ${termGrouping(op.collectionId, op.taxonomyId)}`);
       case 'entry.create':
         return plain(op, `Added the entry ${quoted(op.title)} to ${quoted(collectionName(op.collectionId))}`);
       case 'entry.update':

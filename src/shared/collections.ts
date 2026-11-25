@@ -5,7 +5,7 @@
  * working, so nothing here lets two of them claim the same address.
  */
 import type { Collection, EntryDoc, ProjectState } from './types';
-import { validateRoute, validateSegment } from './routes';
+import { numberedSlug, slugify, validateRoute, validateSegment } from './routes';
 
 /** A collection's ID and folder name: a lowercase slug ("posts", "case-studies"). */
 export const COLLECTION_ID_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -46,6 +46,40 @@ export function isEntryId(id: unknown): boolean {
 
 export function isTermId(id: unknown): boolean {
   return typeof id === 'string' && TERM_ID_RE.test(id) && !PROTO_NAMES.has(id) && !(id in Object.prototype);
+}
+
+/**
+ * The ID a term called `label` takes among `terms`: its name in plain letters ("Arts & Crafts" is "arts-and-crafts"),
+ * or "term" for a name with none (a name in another script), numbered while another term has it. `except` is the
+ * term being renamed, whose own ID stays free to it, and `taken` IDs posts are still filed under though no term has
+ * them (written by hand), which a new term would gather up. The ID is the term's address in its archive (`category/<ID>/`).
+ */
+export function termIdFor(terms: Record<string, unknown>, label: string, except?: string, taken: ReadonlySet<string> = new Set()): string {
+  const stem = slugify(label) || 'term';
+  const free = (id: string) => isTermId(id) && (id === except || (!Object.hasOwn(terms, id) && !taken.has(id)));
+  if (free(stem)) return stem;
+  for (let n = 2; ; n++) {
+    const id = numberedSlug(stem, n);
+    if (free(id)) return id;
+  }
+}
+
+/** Every ID the collection's entries are filed under in a grouping, whether or not a term still has it. */
+export function assignedTermIds(collection: Collection, taxonomyId: string): Set<string> {
+  const out = new Set<string>();
+  for (const e of Object.values(collection.entries)) {
+    const ids: unknown = e?.terms && typeof e.terms === 'object' && Object.hasOwn(e.terms, taxonomyId) ? e.terms[taxonomyId] : undefined;
+    if (Array.isArray(ids)) for (const id of ids) if (typeof id === 'string') out.add(id);
+  }
+  return out;
+}
+
+/** The entries of a collection filed under a term, drafts included. */
+export function entriesWithTerm(collection: Collection, taxonomyId: string, termId: string): EntryDoc[] {
+  return Object.values(collection.entries).filter((e) => {
+    const ids: unknown = e?.terms && typeof e.terms === 'object' && Object.hasOwn(e.terms, taxonomyId) ? e.terms[taxonomyId] : undefined;
+    return Array.isArray(ids) && ids.includes(termId);
+  });
 }
 
 /** An entry's address: its collection's prefix and its slug. */

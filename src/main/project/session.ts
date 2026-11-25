@@ -369,6 +369,11 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     case 'entry.create':
     case 'entry.remove':
       return true;
+    // A term's change rewrites, or is refused by, the lists of entries anywhere that choose it.
+    case 'collection.createTerm':
+    case 'collection.renameTerm':
+    case 'collection.removeTerm':
+      return true;
     case 'collection.update':
       return o.route !== undefined;
     // A rebuild is checked against every placement of the component, in files it may leave as they are.

@@ -99,6 +99,28 @@ describe('collections on disk', () => {
     expect(Object.keys(s.state.collections.projects.entries)).toEqual(['en_hall']);
   });
 
+  it('renames a category across its settings, its posts and a list of posts on a page as one step, undone and redone together (#396)', async () => {
+    const { dir, s } = await make();
+    await ok(s.apply({ operations: [...blog, { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'categories', label: 'News' }] }, { label: 'Start the blog' }));
+    await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', terms: { categories: ['news'] } }] }, { label: 'File' }));
+    const home = s.state.site.homePageId;
+    const placed = await ok(s.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'blog.grid', props: { category: 'News' } }] }, { label: 'Latest news' }));
+    const nodeId = (placed as { results?: Array<Record<string, unknown>> }).results![0].nodeId as string;
+    const files = (rel: string) => readFileSync(join(dir, rel), 'utf8');
+    const pageFile = readdirSync(join(dir, 'siteorigin/pages')).find((f) => read(dir, `siteorigin/pages/${f}`).id === home)!;
+    const shown = () => [files(`${POSTS}/collection.json`), files(`${POSTS}/entries/en_spring.json`), files(`siteorigin/pages/${pageFile}`)];
+    const before = shown();
+    await ok(s.apply({ operations: [{ type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio news' }] }, { label: 'Rename category' }));
+    expect(read(dir, `${POSTS}/collection.json`).taxonomies.categories.terms).toEqual({ 'studio-news': { label: 'Studio news' } });
+    expect(read(dir, `${POSTS}/entries/en_spring.json`).terms).toEqual({ categories: ['studio-news'] });
+    expect(read(dir, `siteorigin/pages/${pageFile}`).nodes[nodeId].props.category).toBe('studio-news');
+    const after = shown();
+    await ok(s.undo());
+    expect(shown()).toEqual(before);
+    await ok(s.redo());
+    expect(shown()).toEqual(after);
+  });
+
   it('saves a layout edit in the collection’s settings alone, undoes it as one step, and keeps it from the assistant', async () => {
     const { dir, s } = await make();
     await ok(s.apply({ operations: blog }, { label: 'Start the blog' }));

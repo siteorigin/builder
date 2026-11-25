@@ -25,13 +25,13 @@ const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.h
 
 /** The most a project holds, so one collection can never make the project too big to open and save. */
 const MAX_COLLECTIONS = 20;
-const MAX_TAXONOMIES = 10;
-const MAX_TERMS = 200;
+export const MAX_TAXONOMIES = 10;
+export const MAX_TERMS = 200;
 const MAX_FIELDS = 30;
 /** A collection's prefix leaves one level for its entries under the four levels an address may have. */
 const MAX_PREFIX_DEPTH = 3;
 
-function getCollection(state: ProjectState, id: string): Collection {
+export function getCollection(state: ProjectState, id: string): Collection {
   return own(state.collections, id) ?? fail(`Collection "${id.slice(0, 60)}" does not exist.`);
 }
 

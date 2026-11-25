@@ -81,7 +81,7 @@ import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/ite
 import { effectiveItem } from '@shared/page-teasers';
 import { propBindingSchema } from '@shared/bindings';
 import { feedLimit, isArticleDate, pageArticle } from '@shared/articles';
-import { NO_QUERY, entryQuery, entryQueryKey, feedRowFields, feedRows, type EntryQuery } from '@shared/entry-feed';
+import { NO_QUERY, codeEntryQueries, entryQuery, entryQueryKey, feedRowFields, feedRows, type EntryQuery } from '@shared/entry-feed';
 import { entryRoute, findEntry, isDraftEntry, isEntryPath, orderedEntries, siteEntries, type SiteEntry } from '@shared/collections';
 import { entryNeighbours, materializeTemplate } from './entry-template';
 import { archiveFile, generateArchive, siteArchives } from './archive';
@@ -3022,22 +3022,7 @@ function pageRowNeeds(state: ProjectState, def: ComponentDefinition, memo: Map<s
  * reads its design's feeds were written with (`so_pages?.entries?.["…"]`), each naming what its placement chose.
  */
 function codeEntryNeeds(source: string): RowNeeds['entries'] {
-  const out: RowNeeds['entries'] = new Map();
-  for (const m of source.matchAll(/so_pages\?\.entries\?\.\[("(?:[^"\\]|\\.)*")\]/g)) {
-    try {
-      const key: unknown = JSON.parse(m[1]);
-      const parts: unknown = typeof key === 'string' ? JSON.parse(key) : null;
-      if (!Array.isArray(parts) || parts.length !== 5) continue;
-      const [collection, category, tag, count, max] = parts;
-      if (![collection, category, tag].every((v) => typeof v === 'string') || ![count, max].every((v) => v === null || (typeof v === 'number' && Number.isInteger(v) && v >= 0))) continue;
-      const query: EntryQuery = { collection, category, tag, ...(typeof count === 'number' ? { count } : {}) };
-      // Read back under the key it was written with, so the rows land where the code looks.
-      if (entryQueryKey(query, max ?? undefined) === key) out.set(key, { query, ...(typeof max === 'number' ? { max } : {}) });
-    } catch {
-      // Not a key this version wrote: nothing to hand down for it.
-    }
-  }
-  return out;
+  return new Map(codeEntryQueries(source).map(({ key, query, max }) => [key, { query, ...(max !== undefined ? { max } : {}) }]));
 }
 
 /** What a definition's tree needs of its page's rows, whatever kind the definition is (a copy being converted to code is written from its tree). */

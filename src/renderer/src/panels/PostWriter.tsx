@@ -24,6 +24,9 @@ import { appliesLanded, registerFlush, trackApply } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
 import { articleProblem, blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
 import { MAX_POST_TITLE, postAt } from '../lib/posts';
+import { PostTermFields } from './PostTerms';
+import { entryTermLabels } from '@shared/entry-fields';
+import type { EditOperation } from '@shared/ops';
 import { setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
 import { LengthMeter, SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
@@ -280,21 +283,35 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     return () => document.removeEventListener('selectionchange', onSel);
   }, []);
 
+  /** Follow a change to the post on its way, so Publish and Save draft wait for it. */
+  const track = <T,>(p: Promise<T>): Promise<T> => {
+    fieldCommits.current.add(p);
+    void p.finally(() => fieldCommits.current.delete(p));
+    return p;
+  };
   /**
    * Change fields of the post, followed so Publish and Save draft know whether it was saved. `held`: the change asks
    * for what the post had when it began (only an image imported again, which is checked and never written), so
    * having nothing to write is no refusal. The check writes nothing either way: when it fails (the field edited
    * meanwhile, the post or project gone, the AI busy) the post keeps what it has, and the import says itself why.
    */
-  const update = (fields: Record<string, unknown>, label: string, held = false) => {
-    const p = applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label).then((r) => {
-      if (!r && !held) fieldRefusedAt.current = performance.now();
+  const update = (fields: Record<string, unknown>, label: string, held = false) =>
+    track(
+      applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label).then((r) => {
+        if (!r && !held) fieldRefusedAt.current = performance.now();
+        return r;
+      })
+    );
+  /**
+   * Change what the post is filed under, worked out from the project at `revision`: an answer that the project has
+   * moved on since comes back (not ok) to be worked out again, so no other change to the post is written over.
+   */
+  const sendAt = (ops: EditOperation[], label: string, revision: number) =>
+    commitOps(ops, label, undefined, revision, { replanStale: true }).then((r) => {
+      if (!r) fieldRefusedAt.current = performance.now();
       return r;
     });
-    fieldCommits.current.add(p);
-    void p.finally(() => fieldCommits.current.delete(p));
-    return p;
-  };
+  const refused = () => void (fieldRefusedAt.current = performance.now());
   /** A field's text the writer refuses itself (an empty title, a date that is not one): said, and counted. */
   const refuse = () => {
     fieldRefusedAt.current = performance.now();
@@ -509,6 +526,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const discard = () => draft.reset();
 
   const route = entryRoute(collection, entry);
+  const filedUnder = collection ? entryTermLabels(collection, entry, 'categories') : [];
   const published = entry.draft === false;
   const images = useMemo(() => sortAssets(Object.values(state.assets.assets).filter((a) => a.kind === 'image'), 'name'), [state.assets]);
   const labels = useMemo(() => assetLabels(images), [images]);
@@ -564,6 +582,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
             <summary>
               {formatArticleDate(entry.publishedAt, state.site.language)}
               {entry.author ? ` · ${entry.author}` : ''} · {route}
+              {filedUnder.length ? ` · ${filedUnder.join(', ')}` : ''}
             </summary>
             <div className="post-fields">
               <Field label="Publication date" hint="A date in the past backdates the post.">
@@ -595,6 +614,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               </div>
               {/* The image editor's picker: a thumbnail of the one chosen, the library to browse, import or drop, and Remove. */}
               <SiteImageField title="Featured image" plain="featured" state={state} value={entry.featuredImage} onChange={(id) => void update({ featuredImage: id }, 'Change featured image', id === (entry.featuredImage ?? null))} />
+              <PostTermFields post={post} collection={collection} entry={entry} sendAt={sendAt} track={track} refused={refused} />
             </div>
           </details>
           <PostSearchSettings state={state} post={post} entry={entry} route={route} published={published} hidden={hidden} images={images} labels={labels} update={update} />
