@@ -154,11 +154,9 @@ export function componentFrame(): ComponentFrame {
   const onMsg = (e: MessageEvent) => {
     const m = acceptMessage(e, frame, origin, sessionId, view);
     if (!m) return;
-    if (m.type === 'ready') {
-      // Only the load of the preview asked for counts (an earlier one in the same frame says nothing of it).
-      if (!address || (m.payload as { path?: unknown }).path !== address) return;
-      view = { navigationId: m.navigationId, revision: m.revision };
-    }
+    // Only the load of the preview asked for counts (an earlier one in the same frame says nothing of it).
+    if (m.type === 'ready' && (!address || (m.payload as { path?: unknown }).path !== address)) return;
+    view = viewAfter(m, view);
     if (waiting?.accept(m)) waiting.done(m);
   };
   window.addEventListener('message', onMsg);

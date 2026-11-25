@@ -9,22 +9,27 @@ import { acceptMessage, postToFrame, staleFor, viewAfter, type BridgeMessage, ty
 const ORIGIN = 'http://127.0.0.1:5173';
 const SESSION = 'so-1-2-3';
 const frameWindow = { postMessage: vi.fn() };
-const frame = { contentWindow: frameWindow } as unknown as HTMLIFrameElement;
+const frame = { contentWindow: frameWindow };
 const view: FrameView = { navigationId: 'dabc.1', revision: 7 };
 
 function message(over: Partial<BridgeMessage> = {}): BridgeMessage {
   return { protocolVersion: 1, sessionId: SESSION, navigationId: 'dabc.1', revision: 7, type: 'rects', payload: { selected: [], hovered: [] }, ...over };
 }
-function event(data: unknown, from: { source?: unknown; origin?: string } = {}): MessageEvent {
-  return { data, source: 'source' in from ? from.source : frameWindow, origin: from.origin ?? ORIGIN } as unknown as MessageEvent;
+function event(data: unknown, from: { source?: unknown; origin?: string } = {}) {
+  return { data, source: 'source' in from ? from.source : frameWindow, origin: from.origin ?? ORIGIN };
 }
+const VIEW_TYPES = ['select', 'dblclick', 'contextmenu', 'hover', 'key', 'rects', 'inspectResult'];
+const EDIT_TYPES = ['textCommit', 'textCancel', 'linkDropped', 'checkLink'];
 const accept = (data: unknown, from: { source?: unknown; origin?: string } = {}, v: FrameView | null | undefined = view) => acceptMessage(event(data, from), frame, ORIGIN, SESSION, v);
 
 describe('acceptMessage', () => {
   it('accepts a report from the page the frame shows', () => {
     expect(accept(message())).toEqual(message());
-    // A page that has taken an update it has not yet said it shows reports from that revision.
-    expect(accept(message({ revision: 8 }))).not.toBeNull();
+    for (const type of VIEW_TYPES) {
+      expect(accept(message({ type }))).not.toBeNull();
+      // A page that has taken an update it has not yet said it shows reports from that revision.
+      expect(accept(message({ type, revision: 8 }))).not.toBeNull();
+    }
   });
 
   it('rejects a message from another origin', () => {
@@ -45,23 +50,28 @@ describe('acceptMessage', () => {
   });
 
   it('rejects an envelope without a navigation or revision', () => {
-    expect(accept({ ...message(), navigationId: undefined })).toBeNull();
-    expect(accept(message({ navigationId: '' }))).toBeNull();
-    expect(accept(message({ navigationId: 'd'.repeat(101) }))).toBeNull();
-    expect(accept({ ...message(), revision: undefined })).toBeNull();
-    expect(accept(message({ revision: -1 }))).toBeNull();
-    expect(accept(message({ revision: 1.5 }))).toBeNull();
+    // A commit is held to no view, so only the envelope check can refuse these.
+    const commit = (over: Record<string, unknown>) => ({ ...message({ type: 'textCommit', payload: { editId: 'e1' } }), ...over });
+    expect(accept(commit({}))).not.toBeNull();
+    expect(accept(commit({ navigationId: undefined }))).toBeNull();
+    expect(accept(commit({ navigationId: '' }))).toBeNull();
+    expect(accept(commit({ navigationId: 'd'.repeat(101) }))).toBeNull();
+    expect(accept(commit({ revision: undefined }))).toBeNull();
+    expect(accept(commit({ revision: '7' }))).toBeNull();
+    expect(accept(commit({ revision: -1 }))).toBeNull();
+    expect(accept(commit({ revision: 7.5 }))).toBeNull();
   });
 
   it('rejects a report about the page from a navigation the editor has moved past', () => {
-    // Another load of the same page (its own document), and an earlier page of this document.
-    for (const navigationId of ['dxyz.1', 'dabc.0']) {
-      for (const type of ['select', 'dblclick', 'contextmenu', 'hover', 'rects', 'inspectResult']) expect(accept(message({ navigationId, type }))).toBeNull();
+    // Another load of the same page (its own document), an earlier page of this document, and one the frame has not
+    // yet said it moved to.
+    for (const navigationId of ['dxyz.1', 'dabc.0', 'dabc.2']) {
+      for (const type of VIEW_TYPES) expect(accept(message({ navigationId, type }))).toBeNull();
     }
   });
 
   it('rejects a report about the page from a revision older than the page says it shows', () => {
-    for (const type of ['select', 'dblclick', 'contextmenu', 'hover', 'rects', 'inspectResult']) expect(accept(message({ revision: 6, type }))).toBeNull();
+    for (const type of VIEW_TYPES) expect(accept(message({ revision: 6, type }))).toBeNull();
   });
 
   it('rejects a report about the page before the frame reported any', () => {
@@ -69,8 +79,10 @@ describe('acceptMessage', () => {
   });
 
   it('keeps an inline edit’s commit from an older page or revision for its own checks and recovery', () => {
-    for (const type of ['textCommit', 'textCancel', 'linkDropped', 'checkLink']) {
-      expect(accept(message({ type, navigationId: 'dxyz.0', revision: 2, payload: { editId: 'e1' } }))).not.toBeNull();
+    for (const type of EDIT_TYPES) {
+      expect(accept(message({ type, navigationId: 'dxyz.0', payload: { editId: 'e1' } }))).not.toBeNull();
+      expect(accept(message({ type, navigationId: 'dabc.0', payload: { editId: 'e1' } }))).not.toBeNull();
+      expect(accept(message({ type, revision: 2, payload: { editId: 'e1' } }))).not.toBeNull();
       expect(accept(message({ type, payload: { editId: 'e1' } }), {}, null)).not.toBeNull();
     }
   });
@@ -78,7 +90,12 @@ describe('acceptMessage', () => {
   it('takes every load’s ready, and moves on only within the document the frame shows', () => {
     expect(accept(message({ type: 'ready', navigationId: 'dxyz.0', revision: 0, payload: { path: '/' } }))).not.toBeNull();
     expect(accept(message({ type: 'navigated', navigationId: 'dabc.2', payload: { path: '/about/' } }))).not.toBeNull();
+    // The answer to the editor's request repeats the arrival the site reported.
+    expect(accept(message({ type: 'navigated', navigationId: 'dabc.1', payload: { path: '/about/', navId: 3 } }))).not.toBeNull();
+    // An earlier arrival of this document, or any of another's, never takes the view back.
+    expect(accept(message({ type: 'navigated', navigationId: 'dabc.0', payload: { path: '/' } }))).toBeNull();
     expect(accept(message({ type: 'navigated', navigationId: 'dxyz.2', payload: { path: '/about/' } }))).toBeNull();
+    expect(accept(message({ type: 'revisionApplied', revision: 9, payload: { revision: 9 } }))).not.toBeNull();
     expect(accept(message({ type: 'revisionApplied', navigationId: 'dxyz.1', revision: 9, payload: { revision: 9 } }))).toBeNull();
     expect(accept(message({ type: 'revisionApplied', navigationId: 'dxyz.1', revision: 9, payload: { revision: 9 } }), {}, null)).toBeNull();
   });
@@ -94,10 +111,13 @@ describe('the view the frame reports', () => {
     expect(v).toEqual({ navigationId: 'dabc.0', revision: 0 });
     v = viewAfter(message({ type: 'revisionApplied', navigationId: 'dabc.0', revision: 4 }), v);
     expect(v).toEqual({ navigationId: 'dabc.0', revision: 4 });
-    v = viewAfter(message({ type: 'navigated', navigationId: 'dabc.1', revision: 4 }), v);
-    expect(v).toEqual({ navigationId: 'dabc.1', revision: 4 });
-    // An older acknowledgement never moves it back; another document's never moves it at all.
+    v = viewAfter(message({ type: 'navigated', navigationId: 'dabc.1', revision: 6 }), v);
+    expect(v).toEqual({ navigationId: 'dabc.1', revision: 6 });
+    expect(viewAfter(message({ type: 'navigated', navigationId: 'dabc.2', revision: 3 }), v)).toEqual({ navigationId: 'dabc.2', revision: 6 });
+    // An older acknowledgement never moves it back; another document's, or an earlier navigation's, never moves it.
     expect(viewAfter(message({ type: 'revisionApplied', navigationId: 'dabc.1', revision: 2 }), v)).toEqual(v);
+    expect(viewAfter(message({ type: 'revisionApplied', navigationId: 'dabc.0', revision: 9 }), v)).toEqual(v);
+    expect(viewAfter(message({ type: 'navigated', navigationId: 'dabc.0', revision: 9 }), v)).toEqual(v);
     expect(viewAfter(message({ type: 'navigated', navigationId: 'dxyz.3', revision: 9 }), v)).toEqual(v);
     // Ordinary reports leave it as it is.
     expect(viewAfter(message({ type: 'rects', navigationId: 'dabc.1', revision: 9 }), v)).toEqual(v);

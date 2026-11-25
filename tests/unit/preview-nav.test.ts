@@ -39,6 +39,8 @@ interface Report {
 const reports = () => page.evaluate<Report[]>(`window.reports`);
 const command = (type: string, payload: unknown, navigationId = '') =>
   page.evaluate(`document.querySelector('iframe').contentWindow.postMessage(${JSON.stringify({ protocolVersion: 1, sessionId: 'so-test', navigationId, revision: 0, type, payload })}, '*')`);
+/** The document part of a navigation ID. */
+const doc2 = (navigationId: string) => navigationId.slice(0, navigationId.lastIndexOf('.'));
 /** The navigation each `ready` and `navigated` came from, in order. */
 const navigations = () => page.evaluate<Array<{ type: string; navigationId: string }>>(`window.navigations`);
 const gotoCalls = () => frame.evaluate<number>(`window.gotoCalls`);
@@ -136,6 +138,31 @@ describe.skipIf(!browserInstalled)('the preview frame answering the editor’s p
       { type: 'navigated', navigationId: moved }
     ]);
     expect(doc).not.toBe(reloaded.slice(0, -2));
+    expect(await frame.evaluate(`document.documentElement.getAttribute('data-so-navigation')`)).toBe(moved);
+    // Each later arrival is the next one, a visitor's Back included.
+    await command('navigate', { path: '/contact/', navId: 2 });
+    await expect.poll(gotoCalls).toBe(2);
+    await release(2);
+    await expect.poll(async () => (await reports()).length).toBe(4);
+    await frame.evaluate(`history.back()`);
+    await expect.poll(async () => (await reports()).length).toBe(5);
+    expect((await navigations()).slice(4).map((n) => n.navigationId)).toEqual([`${doc2(reloaded)}.2`, `${doc2(reloaded)}.2`, `${doc2(reloaded)}.3`]);
+    expect(await frame.evaluate(`document.documentElement.getAttribute('data-so-navigation')`)).toBe(`${doc2(reloaded)}.3`);
+  });
+
+  it('answers a measurement asked of a page it has since left as unmeasured', async () => {
+    const [loaded] = await navigations();
+    await command('navigate', { path: '/about/', navId: 1 });
+    await expect.poll(gotoCalls).toBe(1);
+    await release(1);
+    await expect.poll(async () => (await reports()).length).toBe(2);
+    const descs = [{ ctx: 'page:p', node: 's', items: '' }];
+    await command('measure', { requestId: 'old', descs }, loaded.navigationId);
+    await expect.poll(() => page.evaluate(`window.measured && window.measured.requestId`)).toBe('old');
+    expect(await page.evaluate(`window.measured`)).toEqual({ requestId: 'old', unmeasured: true });
+    await command('measure', { requestId: 'now', descs }, (await navigations()).at(-1)!.navigationId);
+    await expect.poll(() => page.evaluate(`window.measured && window.measured.requestId`)).toBe('now');
+    expect(await page.evaluate(`window.measured.rects.length`)).toBe(1);
   });
 
   it('ignores a scroll asked of a page it has since left', async () => {
@@ -147,7 +174,11 @@ describe.skipIf(!browserInstalled)('the preview frame answering the editor’s p
     await expect.poll(async () => (await reports()).length).toBe(2);
     const desc = { ctx: 'page:p', node: 'far', items: '' };
     await command('scrollTo', { desc }, loaded.navigationId);
-    await flushed();
+    await command('scrollBy', { y: 500 }, loaded.navigationId);
+    // Commands are taken in order: once a later one is answered, the scroll has been handled (and given time to move).
+    await command('measure', { requestId: 'after', descs: [] });
+    await expect.poll(() => page.evaluate(`window.measured && window.measured.requestId`)).toBe('after');
+    await new Promise((r) => setTimeout(r, 400));
     expect(await frame.evaluate(`window.scrollY`)).toBe(0);
     await command('scrollTo', { desc }, (await navigations()).at(-1)!.navigationId);
     await expect.poll(() => frame.evaluate(`window.scrollY`)).toBeGreaterThan(0);

@@ -652,13 +652,14 @@ export function Canvas() {
   // Bridge messages
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
-      const view = viewNow();
-      const m = acceptMessage(e, frameRef.current, origin, session, view);
+      const known = viewNow();
+      const m = acceptMessage(e, frameRef.current, origin, session, known);
       if (!m) return;
       // A page loaded, moved on in place or caught up with a change: what it reports from here on is about that.
-      frameView.current = { session, view: viewAfter(m, view) };
-      // A measurement the editor waits on, taken from a page or revision since left, answers as nothing measured.
-      const stale = staleFor(m, frameView.current.view);
+      frameView.current = { session, view: viewAfter(m, known) };
+      // A measurement the editor waits on, taken from a page or revision since left (or asked of one the frame had
+      // left when it got the request), answers as nothing measured.
+      const unmeasured = staleFor(m, frameView.current.view) || m.payload.unmeasured === true;
       const s = getState();
       const st = s.snapshot?.state;
       const p = m.payload as Record<string, unknown>;
@@ -1048,7 +1049,7 @@ export function Canvas() {
           const w = measureWaiters.current.get(String(p.requestId));
           if (w) {
             measureWaiters.current.delete(String(p.requestId));
-            w(stale ? null : p.rects);
+            w(unmeasured ? null : p.rects);
           }
           break;
         }
@@ -1056,7 +1057,7 @@ export function Canvas() {
           const w = measureWaiters.current.get(String(p.requestId));
           if (w) {
             measureWaiters.current.delete(String(p.requestId));
-            w(stale ? null : p.px);
+            w(unmeasured ? null : p.px);
           }
           break;
         }
@@ -1064,7 +1065,7 @@ export function Canvas() {
           const w = measureWaiters.current.get(String(p.requestId));
           if (w) {
             measureWaiters.current.delete(String(p.requestId));
-            w(stale ? null : p);
+            w(unmeasured ? null : p);
           }
           break;
         }

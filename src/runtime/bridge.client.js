@@ -58,6 +58,8 @@ function nextNavigation() {
   document.documentElement.setAttribute('data-so-navigation', navigationId);
 }
 document.documentElement.setAttribute('data-so-navigation', navigationId);
+/** A command the editor stamped with a navigation this frame has since moved on from. */
+const leftBehind = (m) => !!m.navigationId && m.navigationId !== navigationId;
 
 function send(type, payload = {}) {
   if (!sessionId || parentWin === window) return;
@@ -4681,7 +4683,7 @@ window.addEventListener('message', async (e) => {
       break;
     case 'scrollTo': {
       // Asked about a page this frame has since left: the editor asks again once it knows the page that is here.
-      if (m.navigationId && m.navigationId !== navigationId) break;
+      if (leftBehind(m)) break;
       // A newer request replaces one still waiting. One for an element the page does not show yet (just inserted, its
       // hot update still on the way) waits for it while editing.
       const desc = m.payload.desc;
@@ -4782,7 +4784,8 @@ window.addEventListener('message', async (e) => {
       // A drag from the editor's Insert panel turns the wheel over the page into a scroll of the page, which counts as
       // the author's own scrolling (see the wheel listener): nothing waiting scrolls the page back afterwards.
       const y = Number(m.payload.y);
-      if (!Number.isFinite(y) || !y) break;
+      // A wheel turned over a page this frame has since left scrolls nothing here.
+      if (!Number.isFinite(y) || !y || leftBehind(m)) break;
       stopKeeping();
       pendingScroll = null;
       if (revealScroll) revealScroll = false;
@@ -4791,6 +4794,12 @@ window.addEventListener('message', async (e) => {
       break;
     }
     case 'measure': {
+      // Asked of a page this frame has since left: answered as unmeasured, so the editor never takes this page's
+      // boxes for that one's, and nothing waits on an answer.
+      if (leftBehind(m)) {
+        send('measured', { requestId: m.payload.requestId, unmeasured: true });
+        break;
+      }
       const descs = Array.isArray(m.payload.descs) ? m.payload.descs.slice(0, 200) : [];
       // Each box with its CSS order, which can lay siblings out in another order than the document's (and whether its
       // container orders its items at all), and whether more than one copy of it shows (content a component repeats):
@@ -4820,6 +4829,10 @@ window.addEventListener('message', async (e) => {
     // box, the file it shows, and whether it is the only picture (SoImage's) the code component around it draws
     // itself. The page's scroll says whether boxes measured earlier still hold.
     case 'pointAt': {
+      if (leftBehind(m)) {
+        send('pointed', { requestId: m.payload.requestId, unmeasured: true });
+        break;
+      }
       const x = Number(m.payload.x);
       const y = Number(m.payload.y);
       const hit = Number.isFinite(x) && Number.isFinite(y) ? document.elementFromPoint(x, y) : null;
@@ -4836,6 +4849,10 @@ window.addEventListener('message', async (e) => {
       break;
     }
     case 'measureSpace': {
+      if (leftBehind(m)) {
+        send('spaceMeasured', { requestId: m.payload.requestId, unmeasured: true });
+        break;
+      }
       const vars = Array.isArray(m.payload.vars) ? m.payload.vars.slice(0, 500) : [];
       send('spaceMeasured', { requestId: m.payload.requestId, px: measureSpace(vars, m.payload.desc, m.payload.basis) });
       break;

@@ -19,6 +19,16 @@ export interface FrameView {
   revision: number;
 }
 
+/** The parts of an iframe and a message event the bridge reads (an HTMLIFrameElement and a MessageEvent are these). */
+export interface BridgeFrame {
+  contentWindow: { postMessage(message: unknown, targetOrigin: string): void } | null;
+}
+export interface BridgeEvent {
+  source: unknown;
+  origin: string;
+  data: unknown;
+}
+
 const MAX_MESSAGE_CHARS = 200_000;
 const MAX_NAVIGATION_CHARS = 100;
 
@@ -30,7 +40,7 @@ const MAX_NAVIGATION_CHARS = 100;
  * Everything else keeps its own checks: an inline edit's commit or cancel is matched to the edit it ends and checked
  * against the project before it is applied, so it is kept for recovery whatever page or revision it comes from.
  */
-const VIEW_MESSAGES = new Set(['select', 'dblclick', 'contextmenu', 'hover', 'rects', 'inspectResult']);
+const VIEW_MESSAGES = new Set(['select', 'dblclick', 'contextmenu', 'hover', 'key', 'rects', 'inspectResult']);
 /** Reports that move the view on within the document the frame shows: only that document's count. */
 const VIEW_UPDATES = new Set(['navigated', 'revisionApplied']);
 
@@ -44,6 +54,17 @@ export function documentOf(navigationId: string): string {
   return at > 0 ? navigationId.slice(0, at) : navigationId;
 }
 
+/** How many times the document had moved to another page in place when it sent the ID (-1 for an unnumbered one). */
+function stepOf(navigationId: string): number {
+  const n = Number(navigationId.slice(navigationId.lastIndexOf('.') + 1));
+  return Number.isSafeInteger(n) && n >= 0 ? n : -1;
+}
+
+/** Whether `navigationId` is the navigation `view` shows or a later one of the same document. */
+function sameOrLater(navigationId: string, view: FrameView): boolean {
+  return documentOf(navigationId) === documentOf(view.navigationId) && stepOf(navigationId) >= stepOf(view.navigationId);
+}
+
 /** Whether `m`, a report about the page, comes from a navigation or revision other than the one `view` shows. */
 export function staleFor(m: BridgeMessage, view: FrameView | null): boolean {
   return !view || m.navigationId !== view.navigationId || m.revision < view.revision;
@@ -52,7 +73,7 @@ export function staleFor(m: BridgeMessage, view: FrameView | null): boolean {
 /** The view a report establishes or moves on to: `ready` starts one, `navigated` and `revisionApplied` advance it. */
 export function viewAfter(m: BridgeMessage, view: FrameView | null): FrameView | null {
   if (m.type === 'ready') return { navigationId: m.navigationId, revision: m.revision };
-  if (!view || !VIEW_UPDATES.has(m.type) || documentOf(m.navigationId) !== documentOf(view.navigationId)) return view;
+  if (!view || !VIEW_UPDATES.has(m.type) || !sameOrLater(m.navigationId, view)) return view;
   if (m.type === 'navigated') return { navigationId: m.navigationId, revision: Math.max(view.revision, m.revision) };
   return { navigationId: view.navigationId, revision: Math.max(view.revision, m.revision) };
 }
@@ -61,10 +82,10 @@ export function viewAfter(m: BridgeMessage, view: FrameView | null): FrameView |
  * Validate sender window, origin, session, envelope and size. Returns the message or null.
  *
  * Given the `view` the caller holds (null before the frame reported any), also drops a report about the page from a
- * navigation or revision that view has moved past, and a `navigated` or `revisionApplied` from a document other than
- * the one it shows. A caller that passes no view does its own matching.
+ * navigation or revision that view has moved past, and a `navigated` or `revisionApplied` from another document or an
+ * earlier navigation of this one. A caller that passes no view does its own matching.
  */
-export function acceptMessage(e: MessageEvent, frame: HTMLIFrameElement | null, origin: string | null, sessionId: string, view?: FrameView | null): BridgeMessage | null {
+export function acceptMessage(e: BridgeEvent, frame: BridgeFrame | null, origin: string | null, sessionId: string, view?: FrameView | null): BridgeMessage | null {
   if (!frame || e.source !== frame.contentWindow) return null;
   if (!origin || e.origin !== origin) return null;
   const m = e.data as BridgeMessage;
@@ -80,7 +101,7 @@ export function acceptMessage(e: MessageEvent, frame: HTMLIFrameElement | null, 
   }
   if (view !== undefined) {
     if (VIEW_MESSAGES.has(m.type) && staleFor(m, view)) return null;
-    if (VIEW_UPDATES.has(m.type) && (!view || documentOf(m.navigationId) !== documentOf(view.navigationId))) return null;
+    if (VIEW_UPDATES.has(m.type) && (!view || !sameOrLater(m.navigationId, view))) return null;
   }
   return m;
 }
@@ -89,7 +110,7 @@ export function acceptMessage(e: MessageEvent, frame: HTMLIFrameElement | null, 
  * Send a command to the frame, stamped with the navigation and revision the editor last knew it to show (`view`), so
  * the frame can tell a command meant for a page it has since left.
  */
-export function postToFrame(frame: HTMLIFrameElement | null, origin: string | null, sessionId: string, type: string, payload: unknown = {}, view?: FrameView | null) {
+export function postToFrame(frame: BridgeFrame | null, origin: string | null, sessionId: string, type: string, payload: unknown = {}, view?: FrameView | null) {
   if (!frame?.contentWindow || !origin) return;
   frame.contentWindow.postMessage({ protocolVersion: PROTOCOL, sessionId, navigationId: view?.navigationId ?? '', revision: view?.revision ?? 0, type, payload }, origin);
 }

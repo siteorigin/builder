@@ -8,7 +8,7 @@ import { childLists, placesOf } from '@engine/tree';
 import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
-import { acceptMessage, newSessionId, postToFrame, type FrameView } from '../lib/bridge';
+import { acceptMessage, newSessionId, postToFrame, viewAfter, type FrameView } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
 import { catalogueRole, elementWhere, nodeLabel, sectionWhere, slotRefusal, slotWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } from '../lib/insert-search';
@@ -517,10 +517,10 @@ export function LivePreview({ spec, fallback, label, maxH = LIVE_MAX_H }: { spec
     const onMsg = (e: MessageEvent) => {
       const m = acceptMessage(e, frame.current, origin, session, view);
       if (!m || gone || over) return;
+      // Only the load of the preview prepared here counts (an earlier one in the same frame says nothing of it).
+      if (m.type === 'ready' && (!path || (m.payload as { path?: unknown }).path !== path)) return;
+      view = viewAfter(m, view);
       if (m.type === 'ready') {
-        // Only the load of the preview prepared here counts (an earlier one in the same frame says nothing of it).
-        if (!path || (m.payload as { path?: unknown }).path !== path) return;
-        view = { navigationId: m.navigationId, revision: m.revision };
         if (!(m.payload as { preview?: { mounted?: boolean } }).preview?.mounted) return setLive({ phase: 'failed' });
         postToFrame(frame.current, origin, session, 'mode', { mode: 'preview' }, view);
         // Measured at once, and again as late images and fonts settle its height.
