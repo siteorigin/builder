@@ -80,9 +80,11 @@ interface Question {
 }
 const load = (path: string) => import(/* @vite-ignore */ path);
 const { deleteSelection } = (await load('../../src/renderer/src/lib/actions')) as { deleteSelection: () => Promise<void> };
-const { heldContent } = (await load('../../src/renderer/src/lib/delete-content')) as {
+const { heldContent, removalKey } = (await load('../../src/renderer/src/lib/delete-content')) as {
   heldContent: (tree: NodeTree, nodeId: string) => { items: string[]; placements: number } | null;
+  removalKey: (state: ProjectState, owner: OwnerRef, tree: NodeTree, nodeId: string) => string;
 };
+const { appliesLanded } = (await load('../../src/renderer/src/lib/pending')) as { appliesLanded: () => Promise<unknown> };
 const { getState, setState, getConfirm, pendingConfirms } = (await load('../../src/renderer/src/store')) as {
   getState: () => EditorState;
   setState: (p: Partial<EditorState> & Record<string, unknown>) => void;
@@ -223,6 +225,26 @@ describe('which deletions ask first', () => {
     const s = applyOperations(session.state, ['n_heading', 'n_card', 'n_stack'].map((nodeId): EditOperation => ({ type: 'node.move', owner: page(), nodeId, parentId: 'n_section', slot: 'content', index: 0 }))).state;
     expect(slot('n_split', 'left', s)).toEqual([]);
     expect(heldContent(home(s), 'n_split')).toBeNull();
+  });
+});
+
+describe('what a deletion planned again compares', () => {
+  it('in a design, also the parts on what it removes, their variant styles, and what placements set for those parts', () => {
+    const card = cardId();
+    const owner: OwnerRef = { kind: 'component', id: card };
+    const key = (s: ProjectState) => removalKey(s, owner, s.components[card].tree!, 'd_stack');
+    const s0 = applyOperations(session.state, [{ type: 'component.setVariant', definitionId: card, variant: 'bold', label: 'Bold' }]).state;
+    expect(key(structuredClone(s0))).toBe(key(s0));
+    // What it holds goes with it; a style elsewhere in the design does not.
+    expect(key(applyOperations(s0, [{ type: 'node.setContent', owner, nodeId: 'd_text', field: 'text', value: 'Other' }]).state)).not.toBe(key(s0));
+    const elsewhere = applyOperations(s0, [{ type: 'node.setStyle', owner, nodeId: (s0.components[card].tree!.rootIds[0]), variant: 'bold', scope: 'base', property: 'gap', value: { token: 'space.lg' } }]).state;
+    expect(key(elsewhere)).toBe(key(s0));
+    const styled = applyOperations(s0, [{ type: 'node.setStyle', owner, nodeId: 'd_stack', variant: 'bold', scope: 'base', property: 'gap', value: { token: 'space.lg' } }]).state;
+    expect(key(styled)).not.toBe(key(s0));
+    const part = applyOperations(s0, [{ type: 'component.setPart', definitionId: card, partId: 'box', nodeId: 'd_stack', label: 'Box' }]).state;
+    expect(key(part)).not.toBe(key(s0));
+    const overridden = applyOperations(part, [{ type: 'node.setStyle', owner: page(), nodeId: 'n_card', partId: 'box', scope: 'base', property: 'gap', value: { token: 'space.lg' } }]).state;
+    expect(key(overridden)).not.toBe(key(part));
   });
 });
 
@@ -537,6 +559,30 @@ describe('a project that changes while asking or deleting', () => {
     expect(sentSince(0)).toEqual(['node.remove n_para']);
     expect(JSON.stringify(session.state)).toBe(after);
     expect(getState().toasts.map((x) => [x.kind, x.text])).toEqual([['error', 'Text changed before it could be deleted. Check it, then delete it again.']]);
+  });
+
+  it('keeps a save waiting while an unasked deletion is planned again, until it lands', async () => {
+    await session.apply({ operations: [{ type: 'node.setContent', owner: page(), nodeId: 'n_heading', field: 'text', value: 'Typed' }] }, { label: 'Typed', source: 'user' });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const snapshot = bridge.project.snapshot;
+    // The project's own copy is slow to come: the deletion is between its two sends.
+    bridge.project.snapshot = async () => (await gate, snapshotNow());
+    try {
+      const { done } = startDelete('n_after');
+      await vi.waitFor(() => expect(sent).toHaveLength(1));
+      await pending;
+      let settled = false;
+      const saving = appliesLanded().then(() => (settled = true));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(settled).toBe(false);
+      release();
+      await done;
+      await saving;
+      expect(home().nodes).not.toHaveProperty('n_after');
+    } finally {
+      bridge.project.snapshot = snapshot;
+    }
   });
 
   it('deletes another layer picked and deleted while the first deletion is still saving', async () => {

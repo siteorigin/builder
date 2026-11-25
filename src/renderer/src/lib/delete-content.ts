@@ -1,5 +1,6 @@
-import type { NodeTree } from '@shared/types';
-import { childLists, subtreeIds } from '@engine/tree';
+import type { NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import { variantOptions } from '@shared/variants';
+import { childLists, instancesOf, subtreeIds } from '@engine/tree';
 
 /** What a node deleted from the editor takes with it that the author is asked about first (#662). */
 export interface HeldContent {
@@ -22,4 +23,20 @@ export function heldContent(tree: NodeTree, nodeId: string): HeldContent | null 
   if (!items.length) return null;
   const placements = subtreeIds(tree, nodeId).filter((id) => id !== nodeId && tree.nodes[id]?.kind === 'instance').length;
   return node.kind === 'instance' || placements ? { items, placements } : null;
+}
+
+/**
+ * Everything deleting `nodeId` of `owner` takes with it, as it stands now: its nodes and, in a component's design, the
+ * parts naming them, their variant styles, and what each placement of the component sets for those parts. Two reads
+ * compare equal only while none of it has changed, so a deletion planned again goes ahead only on what was chosen.
+ */
+export function removalKey(state: ProjectState, owner: OwnerRef, tree: NodeTree, nodeId: string): string {
+  const ids = subtreeIds(tree, nodeId);
+  const def = owner.kind === 'component' && Object.hasOwn(state.components, owner.id) ? state.components[owner.id] : undefined;
+  if (!def) return JSON.stringify(ids.map((id) => tree.nodes[id]));
+  const removed = new Set(ids);
+  const parts = Object.entries(def.parts).filter(([pid, p]) => pid !== 'root' && removed.has(p.nodeId));
+  const variants = variantOptions(def).map(({ axis, id, option }) => [axis, id, ids.map((n) => option.styles?.[n] ?? null)]);
+  const set = instancesOf(state, def.id).map(({ node }) => parts.map(([pid]) => [node.overrides?.[pid] ?? null, node.itemOverrides?.[pid] ?? null]));
+  return JSON.stringify([ids.map((id) => tree.nodes[id]), parts, variants, set]);
 }

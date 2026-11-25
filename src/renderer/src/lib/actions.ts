@@ -1,9 +1,9 @@
 import type { EditOperation } from '@shared/ops';
-import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, RichText } from '@shared/types';
+import type { ElementRef, GraphNode, OwnerRef, ProjectState, RichText } from '@shared/types';
 import { newId } from '@shared/ids';
 import { sameRichText, toRichText } from '@shared/richtext';
 import { isBinding } from '@shared/types';
-import { childLists, findParent, subtreeIds } from '@engine/tree';
+import { childLists, findParent } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
@@ -27,7 +27,7 @@ import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { sampleEntries } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 import { editLabel, placeWords } from './edit-label';
-import { heldContent, type HeldContent } from './delete-content';
+import { heldContent, removalKey, type HeldContent } from './delete-content';
 import { dropRefusal, savingProblems } from './insert-drop';
 import { draftFor, imagesFor, withDraft } from './chatDrafts';
 import type { SeoHandoff } from './seoHandoff';
@@ -79,8 +79,6 @@ function keepRefusal(st: ProjectState, t: ElementRef): string | null {
   }
 }
 
-/** Everything deleting `nodeId` of `tree` takes with it, as it stands: two reads compare equal only if nothing in it changed. */
-const subtreeKey = (tree: NodeTree, nodeId: string) => JSON.stringify(subtreeIds(tree, nodeId).map((id) => tree.nodes[id]));
 
 /**
  * Ask what deleting `t` does with what it holds (#662): 'all' deletes it with everything inside it, 'keep' removes only
@@ -139,6 +137,18 @@ export async function deleteSelection() {
   deleting.add(key);
   /** What the author saw of it: an unasked deletion planned again goes ahead only while that is unchanged. */
   let seen: string | null = null;
+  // An unasked deletion is followed from its first send until it lands or is given up, its plans again included, so
+  // saving and leaving wait for all of it. A question is not: nothing is on its way while one is open.
+  const tracked: { done: ((o: ApplyOutcome) => void) | null } = { done: null };
+  const settle = (o: ApplyOutcome = { ok: true }) => {
+    tracked.done?.(o);
+    tracked.done = null;
+  };
+  /** Gives the deletion up, saying why here and to a save or leave waiting for it. */
+  const giveUp = (message: string) => {
+    settle({ ok: false, message });
+    toast(message, 'error');
+  };
   try {
     for (let tries = 0; ; tries++) {
       const st = snap.state;
@@ -149,17 +159,18 @@ export async function deleteSelection() {
       // A project taking no edits now (open read-only, or the AI at work) says so when the deletion is sent, unasked.
       const held = !snap.readOnly && !snap.aiBusy ? heldContent(tree, t.nodeId) : null;
       if (!held) {
-        const now = subtreeKey(tree, t.nodeId);
+        const now = removalKey(st, t.owner, tree, t.nodeId);
         // Changed since the author chose it (swapped for another component, given new content): theirs to look at again.
-        if (seen !== null && now !== seen) return toast(`${label} changed before it could be deleted. Check it, then delete it again.`, 'error');
+        if (seen !== null && now !== seen) return giveUp(`${label} changed before it could be deleted. Check it, then delete it again.`);
         seen = now;
+        if (!tracked.done) trackApply(new Promise<ApplyOutcome>((done) => (tracked.done = done)));
         // Sent for the project as this window has it: one that has moved on meanwhile (an Undo, a save still on its way)
         // is planned again on the project's own copy, quietly, and may now hold something to ask about.
         const r = await commitOps([remove], editLabel(st, 'Delete', t), undefined, snap.revision, { replanStale: true });
         if (r && !r.ok) {
           const again = tries < 2 ? await api.project.snapshot().catch(() => null) : null;
           if (!here(opening)) return;
-          if (!again || !here(again.workspaceKey)) return toast(`${label} was not deleted: the project changed while it was. Delete it again.`, 'error');
+          if (!again || !here(again.workspaceKey)) return giveUp(`${label} was not deleted: the project changed while it was. Delete it again.`);
           snap = again;
           continue;
         }
@@ -168,6 +179,7 @@ export async function deleteSelection() {
         letGo(st, true);
         return toast(`Deleted ${label}`, 'info', undoAction(r));
       }
+      settle();
       const choice = await askDelete(st, t, label, held);
       // Closed, or another project opened, while the question was open: nothing of it is here to delete.
       if (!choice || !here(opening)) return;
@@ -192,6 +204,7 @@ export async function deleteSelection() {
       return toast(`Removed ${label} and kept ${itemCount(n)}`, 'info', undoAction(r));
     }
   } finally {
+    settle();
     deleting.delete(key);
     watch.stop();
   }
