@@ -80,8 +80,9 @@ await win.getByRole('button', { name: 'Edit everywhere…' }).click();
 await win.getByRole('dialog').getByRole('button', { name: /^Edit (everywhere|design)$/ }).click();
 await win.locator('.mode-band').waitFor();
 const row = (nodeId) => win.locator(`[role="tree"] [data-owner="component:${defId}"][data-node="${nodeId}"]`);
-await row(card).waitFor();
-await row(card).click();
+// The canvas picks what a click lands on, so the click is sent to the card itself; Layers then shows its row.
+const cardOnPage = frame.locator(`[data-so-ctx$="|${first}"] [data-so-node="${card}"]`).first();
+await cardOnPage.dispatchEvent('click');
 await eventually(async () => assert.equal(await row(card).getAttribute('aria-selected'), 'true', 'the card of the design is selected'));
 
 step('the inspector’s menu offers Repeat as list…, and Cancel changes nothing');
