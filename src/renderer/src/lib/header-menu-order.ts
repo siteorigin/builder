@@ -24,6 +24,10 @@ export const FOLLOWING_MOVE_NOTE = 'Links to pages follow the order in Pages, an
 export async function setHeaderMenuOrder(mode: HeaderMenuOrder): Promise<boolean> {
   const now = getState().snapshot;
   if (!now || followsPageOrder(now.state) === (mode === 'follow')) return false;
+  if (now.aiBusy) {
+    toast('The AI is making changes. Choose the header menu’s order when it stops.', 'info');
+    return false;
+  }
   const preview = mode === 'follow' ? headerOrderPreview(now.state) : null;
   if (preview?.changed) {
     const ok = await confirmDialog({
@@ -38,11 +42,13 @@ export async function setHeaderMenuOrder(mode: HeaderMenuOrder): Promise<boolean
         { kind: 'undo', text: 'You can undo this.' }
       ]
     });
-    if (!ok) return false;
+    // Answered for this project: one opened meanwhile was never shown.
+    if (!ok || getState().snapshot?.workspaceKey !== now.workspaceKey) return false;
   }
   const label = mode === 'follow' ? 'Header menu follows page order' : 'Header menu keeps its own order';
-  // Against the project the lists were shown for: one that has changed since is chosen again.
-  const r = await commitOps([{ type: 'site.update', headerMenuOrder: mode }], label, undefined, preview?.changed ? now.revision : undefined);
+  // Following is decided on the menu as it was read (shown, or already in order): a project that has changed since is
+  // chosen again, so a reorder still saving never moves the menu unseen.
+  const r = await commitOps([{ type: 'site.update', headerMenuOrder: mode }], label, undefined, mode === 'follow' ? now.revision : undefined);
   if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return false;
   toast(
     mode === 'follow'

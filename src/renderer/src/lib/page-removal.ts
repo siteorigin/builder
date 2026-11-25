@@ -98,8 +98,9 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
   const review = reviewPageRemoval(state, pageId, replacementId);
   if (!review.uses.length && pageId !== state.site.homePageId) return { operations: [{ type: 'page.remove', pageId }], lost: [] };
   if (!replacementId || !Object.hasOwn(state.pages, replacementId) || replacementId === pageId) return none;
-  // Sections are the ones the replacement page still has once the cards are gone, as the engine finds them.
-  const view = review.cards.length ? withoutCards(state, pageId) : state;
+  // Sections are the ones the replacement page still has once the menu's links and the cards are gone, as the engine finds them.
+  const base = withoutMenuLinks(state, pageId).view;
+  const view = review.cards.length ? withoutCards(base, pageId) : base;
   const ids = pageIds(view, replacementId);
   const operations: EditOperation[] = [];
   const sectionReplacements: Array<{ from: string; to: string }> = [];

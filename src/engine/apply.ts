@@ -66,7 +66,7 @@ import { isPictureAsset } from '@shared/background-image';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
-import { dropHeaderLinks, followingSlot, followsPageOrder, keepHeaderOrder, sortedRowIds } from './header-order';
+import { dropHeaderLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
 import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
@@ -179,7 +179,7 @@ function own<T>(rec: Record<string, T>, key: string): T | undefined {
  * is put back in Pages order after it, so the edit and the menu's new order are one change.
  */
 export function applyOperation(state: ProjectState, op: EditOperation, ctx: ApplyContext = {}): OpResult {
-  const before = sortedRowIds(state);
+  const before = menuBefore(state);
   const result = applyOne(state, op, ctx);
   keepHeaderOrder(state, before);
   return result;
@@ -776,7 +776,13 @@ function batchAssetUsages(state: ProjectState, ctx: ApplyContext): Record<string
 
 /** How many links from the rest of the site go to a page: the links deleting it would move to a replacement (page lists' cards for it go with it). */
 export function pageLinkReferences(state: ProjectState, pageId: string): number {
-  return pageLinkUses(state, pageId).filter((u) => !u.card).length;
+  // A header menu that follows the pages lets go of its links to the page instead, as pageRemove does.
+  let view = state;
+  if (followsPageOrder(state)) {
+    view = clone(state);
+    dropHeaderLinks(view, pageId);
+  }
+  return pageLinkUses(view, pageId).filter((u) => !u.card).length;
 }
 
 function routeTaken(state: ProjectState, route: string, exceptPageId?: string): boolean {

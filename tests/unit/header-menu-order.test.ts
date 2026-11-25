@@ -7,7 +7,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { shellMenu } from '@engine/tree';
-import { dropHeaderLinks, headerOrder } from '@engine/header-order';
+import { dropHeaderLinks, headerOrder, keepHeaderOrder, menuBefore } from '@engine/header-order';
 import { pagesTouched } from '../../src/agent/report';
 import { ProjectSession } from '../../src/main/project/session';
 import { headerOrderPlan, headerOrderPreview } from '../../src/renderer/src/lib/page-navigation';
@@ -68,6 +68,9 @@ describe('the header menu order setting (#749)', () => {
     const after = apply(s, [follow]);
     expect(rows(after)).toEqual(['Home', 'Lookbook', '  Baths', '  Kitchens', 'Shop', 'Contact', 'About', 'Services']);
     // The same rows, moved: IDs and links kept.
+    // The same rows, moved: each keeps its own ID.
+    const idOf = new Map(links(s).map((l) => [l.label, l.id]));
+    expect(links(after).map((l) => l.id)).toEqual(links(after).map((l) => idOf.get(l.label)));
     expect(links(after).map((l) => l.id).sort()).toEqual([...ids].sort());
     expect(links(after).find((l) => l.label === 'Shop')!.link).toEqual({ type: 'url', target: 'https://shop.example.com' });
   });
@@ -155,6 +158,64 @@ describe('the header menu order setting (#749)', () => {
       expect(rows(s)).toEqual(['Home', 'About', 'Shop', 'Get in touch', 'Services', 'Lookbook', '  Kitchens', '  Baths']);
     });
 
+    it('never takes another link’s submenu along with a link added above it', () => {
+      let s = following();
+      // Lookbook and its submenu lead the menu, its first row marked to go under nothing.
+      const top = links(s).find((l) => l.label === 'Lookbook')!;
+      s = apply(s, [{ type: 'instance.setProp', owner: HEADER, nodeId: menuOf(s).id, prop: 'links', itemId: top.id, field: 'sub', value: true }]);
+      s = apply(s, [own, moveRow(s, 'Lookbook', 0), moveRow(s, 'Kitchens', 1), moveRow(s, 'Baths', 2), follow]);
+      expect(rows(s).slice(0, 4)).toEqual(['  Lookbook', '  Kitchens', '  Baths', 'Home']);
+      s = apply(s, [{ type: 'page.create', pageId: 'pg_zzz00001', title: 'Zebra' }]);
+      s = apply(s, [insert(s, { label: 'Zebra', link: { type: 'page', target: 'pg_zzz00001' } }, 0)]);
+      // Zebra goes to its place at the end; Lookbook keeps Kitchens and Baths.
+      expect(rows(s)).toEqual(['  Lookbook', '  Kitchens', '  Baths', 'Home', 'About', 'Shop', 'Contact', 'Services', 'Zebra']);
+    });
+
+    it('leaves a link pointed at a page where it is when that is already its place', () => {
+      let s = following();
+      const shop = links(s).find((l) => l.label === 'Shop')!;
+      // Shop sits between About and Contact; Team, a page between them in Pages, takes its link there.
+      s = apply(s, [{ type: 'page.create', pageId: 'pg_team0001', title: 'Team', afterPageId: pageId(s, 'About') }]);
+      s = apply(s, [insert(s, { label: 'Blog', link: { type: 'url', target: 'https://blog.example.com' } }, 3)]);
+      s = apply(s, [{ type: 'instance.setProp', owner: HEADER, nodeId: menuOf(s).id, prop: 'links', itemId: shop.id, field: 'link', value: { type: 'page', target: 'pg_team0001' } }]);
+      // It never crosses Blog to sit right before Contact.
+      expect(rows(s).slice(0, 5)).toEqual(['Home', 'About', 'Shop', 'Blog', 'Contact']);
+    });
+
+    it('counts a page linked twice across the whole menu while it places a link', () => {
+      let s = site();
+      const row = (label: string, link: Record<string, unknown>, sub?: boolean) => ({ label, link, ...(sub ? { sub: true } : {}) });
+      // Services is linked twice, once under Resources (another site), so neither of its links sorts.
+      s = apply(s, [
+        { type: 'instance.setProp', owner: HEADER, nodeId: menuOf(s).id, prop: 'links', value: [row('Services', { type: 'page', target: 'pg_services' }), row('Shop', { type: 'url', target: 'https://shop.example.com' }), row('Resources', { type: 'url', target: 'https://example.com' }), row('Our services', { type: 'page', target: 'pg_services' }, true), row('Home', { type: 'page', target: pageId(s, 'Home') })] },
+        follow
+      ]);
+      expect(rows(s)).toEqual(['Services', 'Shop', 'Resources', '  Our services', 'Home']);
+      const resources = links(s).find((l) => l.label === 'Resources')!;
+      // Pointed at About, Resources goes after Home with its submenu; the top-level Services link stays first.
+      s = apply(s, [{ type: 'instance.setProp', owner: HEADER, nodeId: menuOf(s).id, prop: 'links', itemId: resources.id, field: 'link', value: { type: 'page', target: pageId(s, 'About') } }]);
+      expect(rows(s)).toEqual(['Services', 'Shop', 'Home', 'Resources', '  Our services']);
+    });
+
+    it('keeps a menu shown from its design’s list when an edit leaves it in order', () => {
+      const s = following();
+      const shared = structuredClone(s);
+      const node = menuOf(shared);
+      const schema = shared.components[node.definitionId].properties.links as unknown as { default: Row[] };
+      schema.default = (structuredClone(node.props.links) as Row[]).slice(0, 1);
+      delete node.props.links;
+      const before = menuBefore(shared);
+      // The design's list gains About after Home, which is its place in Pages.
+      schema.default = [...schema.default, { id: 'li_about0001', label: 'About', link: { type: 'page', target: pageId(s, 'About') } }];
+      keepHeaderOrder(shared, before);
+      expect('links' in menuOf(shared).props).toBe(false);
+      // Out of order, the menu takes a list of its own, and the design's stays as it was.
+      schema.default = [schema.default[1], schema.default[0]];
+      keepHeaderOrder(shared, menuBefore(shared));
+      expect((menuOf(shared).props.links as Row[]).map((l) => l.label)).toEqual(['Home', 'About']);
+      expect(schema.default.map((l) => l.label)).toEqual(['About', 'Home']);
+    });
+
     it('takes a deleted page’s links out of the menu rather than pointing them at another page', () => {
       let s = following();
       s = apply(s, [insert(s, { label: 'Services FAQ', link: { type: 'page', target: 'pg_services', anchor: 'faq' } })]);
@@ -186,6 +247,8 @@ describe('the header menu order setting (#749)', () => {
       s = apply(s, [{ type: 'page.update', pageId: 'pg_kitchens', route: '/kitchens/' }, { type: 'page.update', pageId: 'pg_baths001', route: '/baths/' }]);
       s = apply(s, [{ type: 'page.remove', pageId: 'pg_lookbook' }]);
       expect(rows(s)).toEqual(['Home', 'About', 'Shop', 'Contact', 'Services', 'Kitchens', '  Baths']);
+      // Said outright, so a list whose rows go under the one above by default still shows it at the top level.
+      expect(links(s).find((l) => l.label === 'Kitchens')!.sub).toBe(false);
     });
 
     it('refuses a link moved by hand, which the next reorder would put back', () => {
@@ -214,7 +277,7 @@ describe('the header menu order setting (#749)', () => {
       const moved = apply(shared, [reorder(shared, ['Contact', 'Home', 'About', 'Services', 'Lookbook', 'Kitchens', 'Baths'])]);
       expect(rows(moved).slice(0, 4)).toEqual(['Contact', 'Home', 'Shop', 'About']);
       // The design's own list is left as it was.
-      expect((moved.components[node.definitionId].properties.links as { default: Row[] }).default.map((l) => l.label).slice(0, 2)).toEqual(['Home', 'About']);
+      expect((moved.components[node.definitionId].properties.links as unknown as { default: Row[] }).default.map((l) => l.label).slice(0, 2)).toEqual(['Home', 'About']);
     });
 
     it('leaves a list set from elsewhere, and a menu that must keep its links, alone', () => {

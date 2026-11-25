@@ -88,53 +88,99 @@ export function headerOrder(state: ProjectState): HeaderOrder | null {
   return { node: menu.node, items, groups, wanted, desired, changed: desired.some((it, i) => it !== items[i]) };
 }
 
-/** The IDs of the header menu's rows that sort, while it follows the pages: what an edit is compared with after it. */
-export function sortedRowIds(state: ProjectState): Set<string> | null {
+/** The header menu before an edit, while it follows the pages: the rows that sort, and the link each row shows under. */
+export interface MenuBefore {
+  sorted: ReadonlySet<string>;
+  /** By row ID: the ID of the top-level row it shows under, or null for a top-level row. */
+  head: ReadonlyMap<string, string | null>;
+}
+
+const shownIn = (groups: boolean, list: ReadonlyArray<MenuItem>) => (groups ? shownUnder(list) : list.map(() => false));
+
+/** The header menu as an edit finds it, for `keepHeaderOrder` to compare with after it; null while it keeps its own order. */
+export function menuBefore(state: ProjectState): MenuBefore | null {
   if (!followsPageOrder(state)) return null;
   const menu = headerMenu(state);
   const items = menu && menuItems(menu);
-  if (!items) return null;
+  if (!menu || !items) return null;
   const movable = sortable(items, new Map(state.site.pageOrder.map((id, i) => [id, i])));
-  return new Set(items.filter((it) => movable(it) && typeof it?.id === 'string').map((it) => it.id as string));
+  const under = shownIn(menuGroups(menu.schema), items);
+  const head = new Map<string, string | null>();
+  let top: string | null = null;
+  items.forEach((it, i) => {
+    const id = typeof it?.id === 'string' ? it.id : null;
+    if (!under[i]) top = id;
+    if (id) head.set(id, under[i] ? top : null);
+  });
+  return { sorted: new Set(items.filter((it) => movable(it) && typeof it?.id === 'string').map((it) => it.id as string)), head };
+}
+
+/**
+ * The rows at row `at`'s level, by index, without it: the top-level rows, or the other rows of its submenu.
+ */
+function peers(under: boolean[], at: number): number[] {
+  if (!under[at]) return under.flatMap((u, i) => (!u && i !== at ? [i] : []));
+  let start = at;
+  while (start > 0 && under[start]) start--;
+  let end = at + 1;
+  while (end < under.length && under[end]) end++;
+  const out: number[] = [];
+  for (let i = start + 1; i < end; i++) if (i !== at) out.push(i);
+  return out;
 }
 
 /**
  * While the menu follows the pages, put its page links in Pages order. Run after every edit, so the edit and the
  * menu's new order are one change. A row that sorts only since the edit (a link added, or pointed at a page, or no
- * longer one of two to its page), named by its absence from `before` (`sortedRowIds` before the edit), first goes in
- * at its page's place among the rows at its level, as a page added to the menu does; the rest then sort among the
- * places they hold. A menu shown from its definition's list gets a list of its own only when it moves.
+ * longer one of two to its page: one `before` did not count) and is out of order among the rows that sort at its
+ * level goes in at its page's place there, as a page added to the menu does, with only the links that showed under it
+ * before the edit; the rest then sort among the places they hold. A menu shown from its definition's list gets a list
+ * of its own only when it moves.
  */
-export function keepHeaderOrder(state: ProjectState, before?: ReadonlySet<string> | null): void {
+export function keepHeaderOrder(state: ProjectState, before?: MenuBefore | null): void {
   if (!followsPageOrder(state)) return;
   const menu = headerMenu(state);
-  let items = menu && menuItems(menu);
+  let items: MenuItem[] | null = menu && menuItems(menu);
   if (!menu || !items) return;
   const inherited = menu.node.props.links === undefined;
   const start = items;
   if (before) {
     const rank = new Map(state.site.pageOrder.map((id, i) => [id, i]));
+    // Which rows sort is counted across the whole menu, whatever is lifted out of it for a moment.
     const movable = sortable(items, rank);
     const groups = menuGroups(menu.schema);
-    const shown = (list: MenuItem[]) => (groups ? shownUnder(list) : list.map(() => false));
-    for (const row of items.filter((it) => movable(it) && typeof it?.id === 'string' && !before.has(it.id as string))) {
+    const rankOf = (it: MenuItem) => rank.get(targetOf(it, rank)!)!;
+    for (const row of items.filter((it) => movable(it) && typeof it?.id === 'string' && !before.sorted.has(it.id as string))) {
       const at = items.indexOf(row);
-      const under = shown(items);
+      const under = shownIn(groups, items);
       // A first row marked for a submenu shows at the top level only where it is.
       if (!under[at] && isSubItem(row)) continue;
+      const mine = rankOf(row);
+      const level = peers(under, at).filter((i) => movable(items![i]) && (under[at] || !isSubItem(items![i])));
+      const prev = level.filter((i) => i < at).at(-1);
+      const next = level.find((i) => i > at);
+      // Already in its page's place: it stays, and so does everything around it.
+      if ((prev === undefined || rankOf(items[prev]) < mine) && (next === undefined || rankOf(items[next]) > mine)) continue;
+      // It takes along only the links that showed under it before the edit, never another link's submenu.
       let end = at + 1;
-      if (!under[at]) while (end < items.length && under[end]) end++;
-      const rest = [...items.slice(0, at), ...items.slice(end)];
-      let level = rest.length;
+      const id = row.id as string;
+      if (!under[at])
+        while (end < items.length && under[end]) {
+          const child = items[end]?.id;
+          if (typeof child === 'string' && before.head.has(child) && before.head.get(child) !== id) break;
+          end++;
+        }
+      const rest: MenuItem[] = [...items.slice(0, at), ...items.slice(end)];
+      let place = rest.length;
       if (under[at]) {
-        const left = shown(rest);
-        level = at;
-        while (level < rest.length && left[level]) level++;
+        const left = shownIn(groups, rest);
+        place = at;
+        while (place < rest.length && left[place]) place++;
       }
-      const index = followingSlot(state, rest, targetOf(row, rank)!, { index: level, sub: under[at] });
+      const index = followingSlot(state, rest, targetOf(row, rank)!, { index: place, sub: under[at] }, movable);
       items = [...rest.slice(0, index), ...items.slice(at, end), ...rest.slice(index)];
     }
-    if (items !== start) menu.node.props.links = inherited ? structuredClone(items) : items;
+    if (items.some((it, i) => it !== start[i])) menu.node.props.links = inherited ? structuredClone(items) : items;
   }
   const order = headerOrder(state);
   if (!order?.changed) return;
@@ -144,15 +190,16 @@ export function keepHeaderOrder(state: ProjectState, before?: ReadonlySet<string
 /**
  * Where a new link to `pageId` goes in a menu that follows the pages, given the place `slot` the menu would give it
  * (`headerMenuSlot`: the end of the top level, or of its parent's submenu): among the links at that level that sort,
- * before the first one whose page comes later in Pages, else after the last one. The level never changes.
+ * before the first one whose page comes later in Pages, else after the last one. The level never changes. `movable`
+ * says which rows sort when that was counted on the whole menu, before a row was lifted out of it.
  */
-export function followingSlot(state: ProjectState, items: ReadonlyArray<MenuItem>, pageId: string, slot: { index: number; sub: boolean }): number {
+export function followingSlot(state: ProjectState, items: ReadonlyArray<MenuItem>, pageId: string, slot: { index: number; sub: boolean }, movable?: (it: MenuItem) => boolean): number {
   const menu = headerMenu(state);
   const rank = new Map(state.site.pageOrder.map((id, i) => [id, i]));
   const mine = rank.get(pageId);
   if (!menu || mine === undefined || items.some((it) => targetOf(it, rank) === pageId)) return slot.index;
-  const movable = sortable(items, rank);
-  const under = menuGroups(menu.schema) ? shownUnder([...items]) : items.map(() => false);
+  const sorts = movable ?? sortable(items, rank);
+  const under = shownIn(menuGroups(menu.schema), items);
   // The rows at its level, as [start, end) spans: a top-level link with its submenu, or one link of the parent's submenu.
   const spans: Array<[number, number]> = [];
   if (slot.sub) {
@@ -166,7 +213,7 @@ export function followingSlot(state: ProjectState, items: ReadonlyArray<MenuItem
       while (end < items.length && under[end]) end++;
       spans.push([i, end]);
     });
-  const sorted = spans.filter(([s]) => movable(items[s]) && (slot.sub || !isSubItem(items[s])));
+  const sorted = spans.filter(([s]) => sorts(items[s]) && (slot.sub || !isSubItem(items[s])));
   const later = sorted.find(([s]) => rank.get(targetOf(items[s], rank)!)! > mine);
   if (later) return later[0];
   return sorted.length ? sorted[sorted.length - 1][1] : slot.index;
@@ -198,7 +245,8 @@ export function dropHeaderLinks(state: ProjectState, pageId: string): string[] {
     if (goes(it)) return;
     const row = out[k++];
     if (under[i] && headGone) {
-      delete row.sub;
+      // Said outright: a list whose rows sit under the one above by default would keep it there.
+      row.sub = false;
       headGone = false;
     }
   });
