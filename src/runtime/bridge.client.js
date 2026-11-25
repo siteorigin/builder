@@ -3316,6 +3316,8 @@ const CONTROLS = 'a[href], button, input[type="submit"], input[type="button"], [
 /** A level with more boxes than this is a list, not a layout of columns; the walk visits at most this many levels. */
 const MAX_LEVEL_BOXES = 60;
 const MAX_LAYOUT_VISITS = 40;
+/** offsetWidth, offsetHeight, clientLeft, clientTop, clientWidth and clientHeight, read as the element's own. */
+const METRICS = ['offsetWidth', 'offsetHeight', 'clientLeft', 'clientTop', 'clientWidth', 'clientHeight'].map((k) => Object.getOwnPropertyDescriptor(k.startsWith('offset') ? HTMLElement.prototype : Element.prototype, k).get);
 /** The longest report that keeps its rhythm notes, well inside the longest message the editor accepts (200,000). */
 const MAX_REPORT_CHARS = 190_000;
 
@@ -3355,8 +3357,9 @@ function pageSections(pageId, rootIds, deadline) {
   const boxesOf = (els) => {
     const boxes = [];
     let seen = 0;
+    let late = false;
     const visit = (el) => {
-      if (boxes.length > MAX_LEVEL_BOXES || (++seen % 200 === 0 && Date.now() > deadline)) return;
+      if (late || boxes.length > MAX_LEVEL_BOXES || (++seen % 200 === 0 && (late = Date.now() > deadline))) return;
       if (getComputedStyle(el).display !== 'contents') {
         if (drawn(el) && boxRect(el).height >= 1) boxes.push(el);
         return;
@@ -3447,6 +3450,13 @@ function flowBoxes(el) {
     if (r.width > 1 && r.height > 1) out.push({ el: c, r: boxOf(r) });
   }
   return out;
+}
+
+/** Whether `el` shows text a reader sees (text for screen readers only does not count), from its first text nodes. */
+function showsText(el) {
+  const tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let t = tw.nextNode(), n = 0; t && n < 100; t = tw.nextNode(), n++) if (t.textContent.trim() && parentOf(t) && drawn(parentOf(t)) && !visuallyHidden(boxed(parentOf(t)))) return true;
+  return false;
 }
 
 /** Whether text sits directly in `el` (a paragraph, a heading): the walk into a section stops there. */
@@ -3543,7 +3553,7 @@ function describeColumns({ lanes, span, peers }) {
   // Two columns, one of them a picture: a split, and which side its picture is on. Where the two are wrapped alike, the
   // picture's column holds no text at all (two cards, one with a photo, are still two cards).
   const alikePeers = alike(peers);
-  const picture = (b) => media(b) && (!alikePeers || !b.el.textContent.trim());
+  const picture = (b) => media(b) && (!alikePeers || !showsText(b.el));
   const side = n === 2 ? lanes.findIndex((l) => l.boxes.every(picture)) : -1;
   const pictured = side >= 0 && !lanes[1 - side].boxes.every(media);
   if (n === 2 && (pictured || !alikePeers)) {
@@ -3568,10 +3578,12 @@ function inView(el, r, vw, stop) {
     const clipsY = s.overflowY !== 'visible';
     if (!clipsX && !clipsY) continue;
     // Its padding box where it is drawn: a scaled box draws its own sizes scaled.
+    // Read through the prototypes: a form's control named "offsetWidth" would hide the form's own.
     const b = boxRect(e);
-    const sx = e.offsetWidth ? b.width / e.offsetWidth : 1;
-    const sy = e.offsetHeight ? b.height / e.offsetHeight : 1;
-    const pad = { x: b.left + e.clientLeft * sx, y: b.top + e.clientTop * sy, width: e.clientWidth * sx, height: e.clientHeight * sy };
+    const [ow, oh, cl, ct, cw, ch] = METRICS.map((get) => Number(get.call(e)));
+    const sx = ow > 0 ? b.width / ow : 1;
+    const sy = oh > 0 ? b.height / oh : 1;
+    const pad = { x: b.left + cl * sx, y: b.top + ct * sy, width: cw * sx, height: ch * sy };
     const c = crossing(boxOf(r), pad);
     if ((clipsX && c.w <= 1) || (clipsY && c.h <= 1)) return false;
   }
@@ -3808,7 +3820,12 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
     ...(opts.gaps ? stackReport(readableBy + 500) : {})
   };
   // Advice never costs the report: the editor drops a message longer than it accepts (see the editor's bridge).
-  if (report.rhythm && JSON.stringify(report).length > MAX_REPORT_CHARS) delete report.rhythm;
+  // A page's own scripts can change how objects become text (a throwing toJSON): its length unknown, the notes go.
+  try {
+    if (report.rhythm && JSON.stringify(report).length > MAX_REPORT_CHARS) delete report.rhythm;
+  } catch {
+    delete report.rhythm;
+  }
   return report;
 }
 

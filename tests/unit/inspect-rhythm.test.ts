@@ -342,6 +342,24 @@ describe.skipIf(!browserInstalled)('rhythm notes on a page', () => {
     expect(note(short, 'repeated-layout')).toBeDefined();
   }, 30000);
 
+  it('reads past text hidden for screen readers, through a form hiding its own sizes, and past a page breaking JSON', async () => {
+    // A picture column labelled for screen readers is still a picture column: left, right, left is varied.
+    const split = (id: string, side: 'left' | 'right') => {
+      const pic = `<div class="col"><img class="pic" alt="" src="${PHOTO}"><span class="sr" style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">Photo</span></div>`;
+      const text = `<div class="col"><h2>Story ${id}</h2><p>What happened.</p></div>`;
+      return `<section ${at(id, 'root')}><div class="split">${side === 'left' ? pic + text : text + pic}</div></section>`;
+    };
+    expect((await inspect(doc(split('s1', 'left') + split('s2', 'right') + split('s3', 'left')), PAGE(ids(3)))).rhythm).toEqual([]);
+    // A form with a control named offsetWidth, clipping its button out of view.
+    const form = (id: string) => `<section ${at(id, 'root')}><h2>Write ${id}</h2><form style="width:100px;overflow:hidden;white-space:nowrap"><input type="hidden" name="offsetWidth"><span style="display:inline-block;width:100px"></span><button class="btn" style="border:0">Send</button></form></section>`;
+    expect(note(await inspect(doc(form('s1') + form('s2') + form('s3')), PAGE(ids(3))), 'crowded-actions')).toBeUndefined();
+    // A page whose scripts make every object refuse to become JSON: the report still comes, without its notes.
+    const hostile = doc(hero() + cards('s2') + cards('s3') + cards('s4')).replace('<main', `<script>Object.defineProperty(Object.prototype, 'toJSON', { value() { throw new Error('No JSON here'); }, configurable: true });</script><main`);
+    const r = await inspect(hostile, PAGE(ids(4)));
+    expect(r).not.toHaveProperty('error');
+    expect(r.rhythm).toBeUndefined();
+  }, 30000);
+
   it('counts a button that a box clips only on the other axis', async () => {
     const sideways = (id: string) => `<section ${at(id, 'root')}><h2>Visit ${id}</h2><div style="width:60px;overflow-x:visible;overflow-y:clip"><a class="btn" href="/book/" style="transform:translateX(80px);white-space:nowrap">Book a table</a></div></section>`;
     expect(note(await inspect(doc(sideways('s1') + sideways('s2') + sideways('s3')), PAGE(ids(3))), 'crowded-actions')).toMatchObject({ buttons: 3 });
