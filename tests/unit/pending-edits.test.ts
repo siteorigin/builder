@@ -13,9 +13,9 @@ afterEach(() => resetPendingForTests());
 
 describe('refused text inside a list about to be replaced (#575)', () => {
   /** A field placed in one of two lists, as `revealable` reports it. */
-  const field = (list: object) => ({ focus: () => undefined, isConnected: true, inside: (root: Node) => root === list });
-  const footer = {} as Node;
-  const header = {} as Node;
+  const field = (list: object) => ({ focus: () => undefined, isConnected: true, inside: (root: object) => root === list });
+  const footer = {};
+  const header = {};
 
   it('names the field in the list that keeps text it refused, until it is corrected or discarded', () => {
     const url = field(footer);

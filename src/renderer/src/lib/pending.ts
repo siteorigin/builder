@@ -36,8 +36,8 @@ const LEFT_OPEN: Record<string, string> = {
 export interface Refocusable {
   focus: () => void;
   readonly isConnected: boolean;
-  /** Whether the field is inside `root` (a list about to be replaced). */
-  inside?: (root: Node) => boolean;
+  /** Whether the field is inside `root` (the element of a list about to be replaced). */
+  inside?: (root: object) => boolean;
 }
 
 interface Active {
@@ -105,7 +105,7 @@ export const savesInFlight = () => inflight.size;
  * The first field inside `root` that keeps text it refused (see retainRefused), and why: a change that would take
  * that field away (replacing the list it is in) waits for the author to correct or discard it. Null when none does.
  */
-export function refusedWithin(root: Node): { message: string; field: Refocusable } | null {
+export function refusedWithin(root: object): { message: string; field: Refocusable } | null {
   for (const [key, kept] of retained) if (drafts.has(key) && kept.field?.isConnected && kept.field.inside?.(root)) return { message: kept.message, field: kept.field };
   return null;
 }

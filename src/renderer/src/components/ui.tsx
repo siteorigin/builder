@@ -577,7 +577,7 @@ function revealable(el: HTMLElement, reveal?: () => void): Refocusable {
     get isConnected() {
       return el.isConnected;
     },
-    inside: (root) => root.contains(el),
+    inside: (root) => root instanceof Node && root.contains(el),
     focus: () => {
       reveal?.();
       const body = el.closest<HTMLElement>('.section-body[hidden]');
