@@ -144,8 +144,9 @@ function pinnedByProject(state: ProjectState): Map<string, ComponentDefinition> 
  * is empty for that placement (its own value, or the new default it would inherit), which renders nothing inside it,
  * or through the fallback of a slot the placement fills. `tree` is the tree the placement sits in: in a design, a slot
  * given only that design's own slot, handed on as it is, is empty wherever the design's placement leaves it empty.
+ * `takes` says which slots of a component placed in the design show what it is handed there; without it, all do.
  */
-export function shownSlots(next: ComponentDefinition, node: InstanceNode, tree?: NodeTree): Set<string> {
+export function shownSlots(next: ComponentDefinition, node: InstanceNode, tree?: NodeTree, takes?: (placed: InstanceNode) => (slot: string) => boolean): Set<string> {
   const mayBeEmpty = (slot: string) => {
     const ids = slotChildren(node, slot);
     if (!ids.length) return true;
@@ -174,7 +175,8 @@ export function shownSlots(next: ComponentDefinition, node: InstanceNode, tree?:
       const v = Array.isArray(mine) || isBinding(mine) ? mine : schema?.default;
       if (!computed && !isBinding(v) && !(Array.isArray(v) && v.length)) return;
     }
-    for (const cl of childLists(n)) cl.ids.forEach(walk);
+    const shows = n.kind === 'instance' ? takes?.(n) : undefined;
+    for (const cl of childLists(n)) if (!shows || shows(cl.slot!)) cl.ids.forEach(walk);
   };
   next.tree!.rootIds.forEach(walk);
   return out;

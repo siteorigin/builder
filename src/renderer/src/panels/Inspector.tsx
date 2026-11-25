@@ -107,6 +107,7 @@ import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-pick
 import { footerCopyPlan } from '../lib/page-navigation';
 import { appliesLanded } from '../lib/pending';
 import { BindingControl, PartSection, PropertiesSection, SlotsSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
+import { PlacedSlotsSection } from './PlacedSlotsSection';
 import { LivePreview } from './InsertPanel';
 import { EntryBoundNote, EntryFieldsSection } from './EntryFields';
 import { sampleEntries } from '../lib/template-view';
@@ -1251,6 +1252,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           />
         </FieldHome>
       </Section>
+      <PlacedSlotsSection state={state} owner={owner} node={node} selection={selection} onSelect={selectAndFocus} level={LEVEL} />
       <ColumnLayout owner={owner} def={def} node={node} variants={node.variants} tokens={tokens} onSet={onStyle} />
       {axes.length > 0 && (
         <Section title="Design" id="design" level={LEVEL}>

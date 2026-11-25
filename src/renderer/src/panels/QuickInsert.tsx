@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Search } from 'lucide-react';
-import { pointLabel, type AddPoint, type QuickItem } from '../lib/inline-insert';
+import type { QuickItem } from '../lib/inline-insert';
 import { searchItems } from '../lib/insert-search';
 import { openMenus } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
@@ -10,14 +10,15 @@ import { LucideIcon } from './InsertPanel';
 type Box = { left: number; top: number; width: number; height: number };
 
 /**
- * The short list a canvas Add button opens (#387): what fits at its place, searched as it is typed, beside the button.
+ * The short list an Add button opens, on the canvas (#387) or on a slot in the Inspector (#654): what fits at its
+ * place, searched as it is typed, beside the button. `title` heads it and names it; `search` names its search box.
  * The cursor starts in search; the arrows move through what is listed, Enter adds the highlighted one, a click adds
  * the one clicked. Escape (or Tab) puts it away and hands focus back to its button; a press anywhere else only puts it
  * away, and a press on its own words leaves the cursor in search. While it is open the editor's own shortcuts stay out
  * of the way, as for a menu. `anchor`: its button's box on screen as it opened, followed while `trigger` stays on the
  * page. `refused`: why the last choice can't go there, said in the list.
  */
-export function QuickInsert({ point, items, anchor, trigger, refused, onChoose, onClose }: { point: AddPoint; items: QuickItem[]; anchor: Box; trigger?: HTMLElement | null; refused: string | null; onChoose: (it: QuickItem) => void; onClose: (back: boolean) => void }) {
+export function QuickInsert({ title, search, items, anchor, trigger, refused, onChoose, onClose }: { title: string; search: string; items: QuickItem[]; anchor: Box; trigger?: HTMLElement | null; refused: string | null; onChoose: (it: QuickItem) => void; onClose: (back: boolean) => void }) {
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
   const id = useId();
@@ -25,7 +26,6 @@ export function QuickInsert({ point, items, anchor, trigger, refused, onChoose, 
   const inputRef = useRef<HTMLInputElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
   const shown = q.trim() ? searchItems(items, q) : items;
-  const title = pointLabel(point);
   // A new query starts at its first result, so Enter adds what is highlighted.
   useEffect(() => setActive(0), [q]);
   useEffect(() => {
@@ -104,12 +104,12 @@ export function QuickInsert({ point, items, anchor, trigger, refused, onChoose, 
             ref={inputRef}
             type="text"
             role="combobox"
-            aria-label={point.role === 'section' ? 'Search sections' : 'Search elements'}
+            aria-label={search}
             aria-expanded="true"
             aria-controls={`${id}-list`}
             aria-autocomplete="list"
             aria-activedescendant={shown[active] ? `${id}-o${active}` : undefined}
-            placeholder={point.role === 'section' ? 'Search sections' : 'Search elements'}
+            placeholder={search}
             spellCheck={false}
             autoComplete="off"
             value={q}
