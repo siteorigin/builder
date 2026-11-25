@@ -42,6 +42,10 @@ import { collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
+/** Sources AI runs wrote or tried to write, a folder per run, in the recovery folder (see keepSourceDraft). */
+export const SOURCE_DRAFTS = 'ai-runs';
+/** A run's ID as the orchestrator makes it (newId): safe to name a folder with. */
+const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
 export const CLEAN_HASHES = '.clean-hashes.json';
 
@@ -3840,6 +3844,33 @@ export class ProjectSession extends EventEmitter {
       }
       this.emit('history');
       return changedOutside.length ? { restored: false, conflict: changedOutside[0] } : { restored: true };
+    });
+  }
+
+  /**
+   * Keep a source an AI run wrote or tried to write in the project's recovery folder (spec 14.3): a patch the checks
+   * refused (`rejected`), or one that landed (`applied`), kept in case the run is reverted. Returns the file's
+   * project-relative path, or null when nothing is written: a project open read-only, or a run that no longer holds it.
+   */
+  keepSourceDraft(runId: string, definitionId: string, source: string, kind: 'rejected' | 'applied'): Promise<string | null> {
+    return this.serialize(async () => {
+      if (this.readOnly || this.activeRun?.id !== runId || !RUN_ID.test(runId)) return null;
+      // Named for the component and what was written, so the same source kept twice is one file.
+      const name = definitionId.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'component';
+      const rel = `${LOCAL_DIR}/recovery/${SOURCE_DRAFTS}/${runId}/${kind}/${name}-${sha(`${definitionId}\0${source}`).slice(0, 12)}.svelte`;
+      await atomicWrite(safeJoin(this.dir, rel), source);
+      return rel;
+    });
+  }
+
+  /** Let go of the drafts a finished run kept of patches that landed: the project has them now. Refused ones stay. */
+  discardAppliedDrafts(runId: string): Promise<void> {
+    return this.serialize(async () => {
+      if (this.readOnly || !RUN_ID.test(runId)) return;
+      const run = safeJoin(this.dir, `${LOCAL_DIR}/recovery/${SOURCE_DRAFTS}/${runId}`);
+      await fs.rm(join(run, 'applied'), { recursive: true, force: true });
+      // Nothing else was kept for the run (or nothing ever was): its folder goes too.
+      await fs.rmdir(run).catch(() => undefined);
     });
   }
 

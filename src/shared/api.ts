@@ -596,6 +596,12 @@ export interface ChatMessage {
      * API key (`key`). Either way the same request can be sent again once it is.
      */
     repair?: 'settings' | 'key';
+    /**
+     * Code the run wrote that the project does not keep, each version kept in the project's recovery folder (spec
+     * 14.3): a source patch the checks refused (`rejected`), or one that landed in a run that was then undone because it
+     * failed or was stopped (`reverted`). `path` is relative to the project folder.
+     */
+    sourceDrafts?: SourceDraft[];
   };
   /** Every question the assistant asked during this turn, in the order asked. */
   questions?: ChatQuestion[];
@@ -603,6 +609,15 @@ export interface ChatMessage {
   question?: ChatQuestion;
   /** A request's attached library images, as they were when it was sent (its context holds their IDs). */
   images?: ChatImageRef[];
+}
+
+/** A version of a code component's source that an AI run wrote, kept after the project let it go. */
+export interface SourceDraft {
+  definitionId: string;
+  /** The component's name when the source was written: a run that is undone may take the component with it. */
+  name: string;
+  path: string;
+  reason: 'rejected' | 'reverted';
 }
 
 /** One question the assistant asked, and the user's answer once given. */

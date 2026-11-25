@@ -1,7 +1,7 @@
 import { installedFonts } from '@catalogue/fonts';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type ProviderId, type RunStatus } from '@shared/api';
+import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type ProviderId, type RunStatus, type SourceDraft } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import type { CollectionWriteGrant } from '@shared/collection-grant';
 import type { ProjectState } from '@shared/types';
@@ -17,7 +17,7 @@ import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnsw
 import { PreviewCheck } from './preview-check';
 import { compactProjectSummary, describeSelection, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
 import { outsideOffer, themeUpdateNote } from './theme-update';
-import { canEditContracts, checkAuthority, liveEntry, requestAuthority, widenChoices, type Authority } from './scope';
+import { authorityLabel, canEditContracts, checkAuthority, liveEntry, requestAuthority, requestedAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { selectionTarget } from './selection';
@@ -82,6 +82,10 @@ export interface RunSession {
   beginRun(runId: string): Promise<string | null>;
   completeRun(label: string): Promise<boolean>;
   abortRun(): Promise<{ restored: boolean; conflict?: string }>;
+  /** Keep a source the run wrote or tried to write in the recovery folder; its project-relative path, or null. */
+  keepSourceDraft(runId: string, definitionId: string, source: string, kind: 'rejected' | 'applied'): Promise<string | null>;
+  /** Let go of the kept sources of patches that landed, once the run that made them is kept. */
+  discardAppliedDrafts(runId: string): Promise<void>;
   runChanged(): boolean;
   /** `collectionWrite`: the post tool's grant for this one batch, never the model's (see shared/collection-grant). */
   apply(batch: { operations: EditOperation[]; expectedRevision?: number }, opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant }): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
@@ -1055,8 +1059,21 @@ export class Orchestrator {
     const ask = run.mode === 'ask';
     /** Fields located for the answer, one per field, the latest finding kept. */
     const locations = new Map<string, FieldLocation>();
+    /**
+     * Code the run wrote that the project may not keep (spec 14.3): source patches the checks refused, and copies of the
+     * ones that landed, kept until the run is either kept (and they let go) or undone (and they are named with the rest).
+     * `lost`: a source that could not be kept, said on the result.
+     */
+    const drafts = { rejected: [] as SourceDraft[], applied: [] as SourceDraft[], reverted: false, lost: [] as string[] };
     const finish = async (status: RunStatus, summary: string, extra: Partial<NonNullable<ChatMessage['result']>> = {}) => {
-      const checks = extra.checks ?? [];
+      if (!drafts.reverted && drafts.applied.length) {
+        // The run's changes are kept: the project holds what those copies hold. A copy that cannot be removed is
+        // left in the recovery folder, which costs nothing but space.
+        await session.discardAppliedDrafts(runId).catch(() => undefined);
+        drafts.applied = [];
+      }
+      const sourceDrafts = [...drafts.rejected, ...drafts.applied];
+      const checks = [...(extra.checks ?? []), ...drafts.lost.map((text): ChatCheck => ({ status: 'issue', text }))];
       // A turn its model never answered (stopped before a reply, refused, never delivered) still says which model it
       // was for, and that it went unanswered: that model may not have its messages, so the next one still warns.
       if (!run.reached && msg.model) msg.model.unanswered = true;
@@ -1074,7 +1091,8 @@ export class Orchestrator {
         ...(extra.pendingLinks?.length ? { pendingLinks: extra.pendingLinks.map((l) => ({ ...l })) } : {}),
         ...(ask ? { ask: true } : {}),
         ...(extra.locations?.length ? { locations: extra.locations } : {}),
-        ...(extra.repair ? { repair: extra.repair } : {})
+        ...(extra.repair ? { repair: extra.repair } : {}),
+        ...(sourceDrafts.length ? { sourceDrafts } : {})
       };
       for (const a of activities) if (a.status === 'running') a.status = status === 'completed' || status === 'no-changes' ? 'done' : 'error';
       this.setStatus(status);
@@ -1422,6 +1440,23 @@ export class Orchestrator {
       }
     };
 
+    /** A source patch the checks refused is kept now; one that landed is kept until the run is kept or undone. */
+    const keepDrafts = async (operations: EditOperation[], res: { ok: boolean; error?: { code: string } }) => {
+      const kind = res.ok ? 'applied' : res.error?.code === 'VALIDATION_FAILED' ? 'rejected' : null;
+      if (!kind) return;
+      for (const op of operations) {
+        if (op.type !== 'component.updateSource') continue;
+        const def = Object.hasOwn(session.state.components, op.definitionId) ? session.state.components[op.definitionId] : undefined;
+        const name = def?.name ?? op.definitionId;
+        const list = kind === 'applied' ? drafts.applied : drafts.rejected;
+        try {
+          const path = await session.keepSourceDraft(runId, op.definitionId, op.source, kind);
+          if (path && !list.some((d) => d.path === path)) list.push({ definitionId: op.definitionId, name, path, reason: kind === 'applied' ? 'reverted' : 'rejected' });
+        } catch (e) {
+          drafts.lost.push(`The ${kind === 'rejected' ? 'refused ' : ''}code for "${name}" could not be kept in the recovery folder (${(e as Error).message}).`);
+        }
+      }
+    };
     const host: ToolHost = {
       macros,
       // Stays valid for the rest of a turn in which the user widens the scope.
@@ -1433,7 +1468,7 @@ export class Orchestrator {
       state: readState,
       revision: readRevision,
       diagnostics: () => session.diagnostics(),
-      apply: async (operations, expectedRevision, label, key, grants) => {
+      apply: async (operations, expectedRevision, label, key, grants, requested) => {
         // A question is offered no tool that changes the site; anything that tries anyway is refused here.
         if (ask) return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: READ_ONLY_REFUSAL } };
         if (signal.aborted) return { ok: false, revision: session.revision, error: { code: 'CANCELLED', message: 'Cancelled' } };
@@ -1459,8 +1494,7 @@ export class Orchestrator {
         const shellRoot = operations.find((o) => (o.type === 'node.remove' || o.type === 'node.removeKeepContent') && o.owner.kind === 'shell' && session.state.site.shell[o.owner.id as 'header' | 'footer']?.rootIds?.includes(o.nodeId));
         if (shellRoot)
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'The shared header and footer cannot be removed. Edit their properties with instance.setProp and instance.listInsert instead.' } };
-        const denied = checkAuthority(session.state, operations, authority, grants);
-        if (denied) {
+        const beyond = (denied: string) => {
           // Named as the run is offered it: the small selection tools ask with their own tool.
           const widen = current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification (widenScope: true)';
           const limit = authority.kind === 'selection' ? (authority.part ? `one part of ${authority.label}` : authority.label) : 'a selection';
@@ -1473,7 +1507,23 @@ export class Orchestrator {
                   ? `This request was sent with ${authority.label} open, so changes are limited to its words and details, filed under categories it already has.`
                   : `This request was sent with ${limit} selected, so changes are limited to it.`;
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: `${denied} ${why} Nothing in this batch was applied. Ask the user with ${widen} before changing more.` } };
+        };
+        // The scope the call asks for is checked against the run's, never taken as more (spec 13.3): one that reaches
+        // further is refused, and a narrower one limits the call on top of the run's own limits.
+        const asked = requested ? requestedAuthority(session.state, requested, authority) : null;
+        if (asked && 'code' in asked) {
+          if (asked.code === 'INVALID_ARGUMENT') return { ok: false, revision: session.revision, error: { code: 'INVALID_ARGUMENT', message: `${asked.message} Nothing in this batch was applied.` } };
+          return beyond(asked.message);
         }
+        const denied = checkAuthority(session.state, operations, authority, grants);
+        if (denied) return beyond(denied);
+        const own = asked && asked.authority !== authority ? checkAuthority(session.state, operations, asked.authority, grants) : null;
+        if (own)
+          return {
+            ok: false,
+            revision: session.revision,
+            error: { code: 'SCOPE_MISMATCH', message: `${own} This call asked to change only ${authorityLabel(asked!.authority)}. Nothing in this batch was applied: send it with a scope that covers what it changes.` }
+          };
         // The pages the batch will change are measured as they are, before this run reached them, for the preview check.
         await preview.beforeApply(operations, session.state, measureLive, (pageId, viewport) => inspections.fresh(pageId, viewport));
         // Stopped while the preview measured: the batch never lands.
@@ -1487,6 +1537,7 @@ export class Orchestrator {
           // stops vouching for any page whose content it sampled.
           inspections.invalidate(reach.shared || reach.lists ? 'all' : reach.pages, pagesTouched(operations, session.state));
         }
+        await keepDrafts(operations, res);
         return res;
       },
       compileAll: () => this.deps.compileAll(),
@@ -1563,6 +1614,8 @@ export class Orchestrator {
         return;
       }
       let r: Awaited<ReturnType<typeof session.abortRun>>;
+      // Whatever the rollback does, the code the run wrote is not what the project keeps: its copies are named.
+      drafts.reverted = true;
       try {
         r = await session.abortRun();
       } catch (e) {

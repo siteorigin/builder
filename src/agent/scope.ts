@@ -10,7 +10,9 @@ import type { ChatContext } from '@shared/api';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { EditOperation, OperationType } from '@shared/ops';
-import { enclosingRepeatProp, findParent, getTree, instancesOf, itemLinkPairs, settledRoot, subtreeIds } from '@engine/tree';
+import { allTrees, displayName, enclosingRepeatProp, findParent, getTree, instancesOf, itemLinkPairs, settledRoot, subtreeIds } from '@engine/tree';
+import { dependentsOf } from '@engine/definitions';
+import { normalizeRoute } from '@shared/routes';
 import { repeatedPartList } from '@shared/item-styles';
 import { bindingSites } from '@engine/schema';
 import { walkOperations } from '@engine/apply';
@@ -614,6 +616,7 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
   if (op.type === 'theme.refresh') return authority.part ? `theme.refresh changes the design of the component the selected part is in, which is more than the part.` : themeRefreshWithin(state, op, grants, authority.label, (o, id) => sameOwner(o) && allowed.has(id));
   // Inside a component's design, a placement made unique or turned into code adds a new component to the site.
   if (authority.owner.kind === 'component' && (op.type === 'component.makeUnique' || op.type === 'component.convertToCode')) return `${op.type} adds a new component to the site, which changes more than ${authority.label}.`;
+  if (op.type === 'component.updateSource') return sourceWithin(state, op.definitionId, authority, allowed, sameOwner);
   // Siblings wrapped or ungrouped where they are: every one inside the selection, never the selected element itself (a
   // new container around it, or what it held put beside it, would be outside it), and inside the selected part.
   if (op.type === 'node.wrap' || op.type === 'node.unwrap') {
@@ -664,6 +667,90 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
     default:
       return `${op.type} changes more than ${authority.label}.`;
   }
+}
+
+/**
+ * Whether a source change stays inside a selection (spec 13.4). A component's code shows wherever it is placed, so it is
+ * the selection's only when every placement is inside the selected element and no other code renders it: the copy
+ * component.convertToCode makes of the selected placement, say. A selected part never reaches its component's code,
+ * and neither does a selection inside a component's design, where the code would show wherever that design is placed.
+ */
+function sourceWithin(state: ProjectState, definitionId: string, authority: Extract<Authority, { kind: 'selection' }>, allowed: Set<string>, sameOwner: (o: OwnerRef) => boolean): string | null {
+  if (authority.part) return `component.updateSource changes the code of the component the selected part is in, which is more than the part.`;
+  if (authority.owner.kind === 'component') return `component.updateSource changes code that shows wherever this design is placed: more than ${authority.label}.`;
+  const def = Object.hasOwn(state.components, definitionId) ? state.components[definitionId] : undefined;
+  if (!def || def.kind !== 'code' || def.owner !== 'project') return `component.updateSource changes more than ${authority.label}.`;
+  const placed = instancesOf(state, def.id);
+  if (placed.length && placed.every((p) => sameOwner(p.owner) && allowed.has(p.node.id)) && !dependentsOf(state, def.id).length) return null;
+  return `Changing the source of "${def.name}" changes every placement of it, and it is used outside ${authority.label}. Convert the selected placement to its own code with component.convertToCode, then patch that copy.`;
+}
+
+/** What a mutating call asks to change (spec 13.3): the whole site, or one page, component design or element by its ID. */
+export interface RequestedScope {
+  kind: 'site' | 'page' | 'component' | 'selection';
+  targetIds?: string[];
+}
+
+/** How an authority is named where a call asks for more than it, or is limited to it. */
+export function authorityLabel(authority: Authority): string {
+  if (authority.kind === 'site') return 'the whole site';
+  if (authority.kind === 'component') return `the ${authority.label} component`;
+  return authority.label;
+}
+
+/**
+ * The authority a call's requested scope names, which must lie within the run's: a scope that reaches further is
+ * refused, never narrowed, and the model cannot widen a run by asking. The call is then checked against both, so a
+ * narrower scope limits it and never grants what the run's own authority refuses (a page run naming an element of the
+ * page still may not convert it to code). A selected part is named by its placement's ID and stays that part.
+ */
+export function requestedAuthority(state: ProjectState, requested: RequestedScope, run: Authority): { authority: Authority } | { code: 'INVALID_ARGUMENT' | 'SCOPE_MISMATCH'; message: string } {
+  const wider = (what: string) => ({ code: 'SCOPE_MISMATCH' as const, message: `This call asks to change ${what}, which is more than ${authorityLabel(run)}.` });
+  if (requested.kind === 'site') return run.kind === 'site' ? { authority: run } : wider('the whole site');
+  const ids = requested.targetIds ?? [];
+  if (ids.length !== 1 || typeof ids[0] !== 'string' || !ids[0]) return { code: 'INVALID_ARGUMENT', message: `scope.targetIds: a ${requested.kind} scope names exactly one ${requested.kind === 'page' ? 'page ID' : requested.kind === 'component' ? 'definitionId' : 'node ID'}.` };
+  const id = ids[0];
+  if (requested.kind === 'page') {
+    const route = normalizeRoute(id.trim());
+    const pageId = Object.hasOwn(state.pages, id) ? id : Object.values(state.pages).find((p) => p?.route === route)?.id;
+    if (!pageId) return { code: 'SCOPE_MISMATCH', message: `scope names the page "${id}", which is not in the site.` };
+    const label = pageLabel(state.pages[pageId].title);
+    if (run.kind === 'site') return { authority: { kind: 'page', pageId, label } };
+    return run.kind === 'page' && run.pageId === pageId ? { authority: run } : wider(label);
+  }
+  if (requested.kind === 'component') {
+    if (!Object.hasOwn(state.components, id)) return { code: 'SCOPE_MISMATCH', message: `scope names the component "${id}", which is not in the site.` };
+    const label = state.components[id].name;
+    if (run.kind === 'site') return { authority: { kind: 'component', definitionId: id, label } };
+    return run.kind === 'component' && run.definitionId === id ? { authority: run } : wider(`the ${label} component`);
+  }
+  // An element: found in the tree the run is limited to, or anywhere in the site for a run that may change it all.
+  if (run.kind === 'selection' && run.nodeId === id) return { authority: run };
+  const owners: OwnerRef[] =
+    run.kind === 'site'
+      ? allTrees(state).flatMap((t) => (Object.hasOwn(t.tree.nodes, id) ? [t.owner] : []))
+      : run.kind === 'selection'
+        ? [run.owner]
+        : run.kind === 'page'
+          ? [{ kind: 'page', id: run.pageId }]
+          : run.kind === 'component'
+            ? [{ kind: 'component', id: run.definitionId }]
+            : [];
+  const found = owners.filter((o) => {
+    try {
+      return Object.hasOwn(getTree(state, o).nodes, id);
+    } catch {
+      return false;
+    }
+  });
+  if (found.length > 1) return { code: 'SCOPE_MISMATCH', message: `scope names the element "${id}", which is in more than one place in the site. Name the page or component instead.` };
+  if (!found.length) return run.kind === 'site' ? { code: 'SCOPE_MISMATCH', message: `scope names the element "${id}", which is not in the site.` } : wider(`the element "${id}"`);
+  const owner = found[0];
+  const node = getTree(state, owner).nodes[id];
+  const label = `the ${displayName(state, node)} element`;
+  // Inside a selection: a part is named by its placement alone, so any other element is outside it.
+  if (run.kind === 'selection' && (run.part || !subtreeIds(getTree(state, run.owner), run.nodeId).includes(id))) return wider(label);
+  return { authority: { kind: 'selection', owner, nodeId: id, label } };
 }
 
 /**
