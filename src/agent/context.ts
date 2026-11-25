@@ -23,6 +23,9 @@ import { ownVisitorTextFor } from '@shared/visitor-text';
 import { normalizeRoute } from '@shared/routes';
 import { seoText } from '@shared/seo';
 import { themeUpdateNote, themeUpdatesSummary } from './theme-update';
+import type { Diagnostic } from '@engine/validate';
+import { directDependencies } from '@engine/definitions';
+import { showsPart, SHELL_PARTS } from '@shared/page-shell';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -1018,4 +1021,132 @@ export function ownerLabel(state: ProjectState, owner: OwnerRef): string {
   if (owner.kind === 'page') return state.pages[owner.id]?.title ?? 'Page';
   if (owner.kind === 'shell') return owner.id === 'header' ? 'Header' : 'Footer';
   return state.components[owner.id]?.name ?? 'Component';
+}
+
+/**
+ * What a request is about, for putting the project's diagnostics in order: its target (a selected element, a component
+ * edited everywhere or a post), and the page it was sent from.
+ */
+export interface DiagnosticFocus {
+  pageId?: string;
+  /** The selected element: its owner, the node, and the placements entered to reach it. */
+  selection?: { owner: OwnerRef; nodeId: string; instancePath?: string[] } | null;
+  definitionId?: string;
+  post?: { collectionId: string; entryId: string } | null;
+}
+
+/**
+ * How near a diagnostic sits to what the request is about: 0 on its target (the selected element, the component edited
+ * everywhere, the post), 1 on the page it was sent from or what that page shows (its header and footer while it shows
+ * them, and every component placed there, however deep), 2 anywhere else.
+ */
+export function diagnosticRank(state: ProjectState, focus: DiagnosticFocus): (d: Diagnostic) => 0 | 1 | 2 {
+  const key = (o: { kind: string; id: string }) => `${o.kind}:${o.id}`;
+  const target = new Set<string>();
+  /** Nodes of the target's owner that the selection is: the element and the placements around it. */
+  const targetNodes = new Set<string>();
+  const near = new Set<string>();
+  const trees: NodeTree[] = [];
+  const page = focus.pageId && Object.hasOwn(state.pages, focus.pageId) ? state.pages[focus.pageId] : undefined;
+  if (page) {
+    near.add(key({ kind: 'page', id: page.id }));
+    trees.push(page);
+    for (const part of SHELL_PARTS)
+      if (showsPart(page, part)) {
+        near.add(key({ kind: 'shell', id: part }));
+        trees.push(state.site.shell[part]);
+      }
+  }
+  if (focus.selection) {
+    target.add(key(focus.selection.owner));
+    targetNodes.add(focus.selection.nodeId);
+    for (const id of focus.selection.instancePath ?? []) targetNodes.add(id);
+  }
+  const defs: string[] = [];
+  if (focus.definitionId) {
+    target.add(key({ kind: 'component', id: focus.definitionId }));
+    defs.push(focus.definitionId);
+  }
+  if (focus.post) {
+    target.add(key({ kind: 'entry', id: focus.post.entryId }));
+    near.add(key({ kind: 'template', id: focus.post.collectionId }));
+    const c = Object.hasOwn(state.collections ?? {}, focus.post.collectionId) ? state.collections[focus.post.collectionId] : undefined;
+    if (c?.template) trees.push(c.template);
+  }
+  for (const t of trees) for (const n of Object.values(t?.nodes ?? {})) if (n.kind === 'instance') defs.push(n.definitionId);
+  // Every component shown there, through the components they place in turn (a cycle is walked once).
+  const seen = new Set<string>();
+  while (defs.length) {
+    const id = defs.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    near.add(key({ kind: 'component', id }));
+    const def = Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+    if (def) defs.push(...directDependencies(def));
+  }
+  return (d) => {
+    const owner = d.owner ? key(d.owner) : '';
+    if (target.has(owner) && (!focus.selection || owner !== key(focus.selection.owner) || (d.nodeId !== undefined && targetNodes.has(d.nodeId)))) return 0;
+    return near.has(owner) ? 1 : 2;
+  };
+}
+
+/** The room the project's diagnostics take in a request, in characters, from the model's window. */
+export const diagnosticsChars = (contextWindowTokens: number) => Math.max(0, Math.min(2048, Math.floor(contextWindowTokens / 16)));
+
+/** The longest message one listed diagnostic keeps, so a single long one cannot fill the list. */
+const DIAGNOSTIC_MESSAGE_MAX = 280;
+
+interface DiagnosticEntry {
+  code: string;
+  message: string;
+  owner: string | null;
+  nodeId?: string;
+}
+
+/**
+ * The project's errors and warnings as a request starts, for <editor_context>: errors first, then warnings, those on
+ * what the request is about (`rank`) before the rest, within `maxChars` as `indent` writes them. A cut list says how
+ * many of each it leaves out and where they are all listed (`more`). A project with none has no section (undefined).
+ */
+export function diagnosticsContext(diags: readonly Diagnostic[], rank: (d: Diagnostic) => number, maxChars: number, more: string, indent?: number) {
+  const severity = (d: Diagnostic) => (d.severity === 'error' ? 0 : 1);
+  const listed = diags
+    .map((d, i) => ({ d, i }))
+    .filter(({ d }) => d.severity === 'error' || d.severity === 'warning')
+    .map((x) => ({ ...x, r: rank(x.d) }))
+    .sort((a, b) => severity(a.d) - severity(b.d) || a.r - b.r || a.i - b.i)
+    .map(({ d }) => d);
+  if (!listed.length) return undefined;
+  const totals = { errors: listed.filter((d) => d.severity === 'error').length, warnings: listed.filter((d) => d.severity === 'warning').length };
+  const entry = (d: Diagnostic): DiagnosticEntry => ({
+    code: d.code,
+    message: d.message.length > DIAGNOSTIC_MESSAGE_MAX ? `${d.message.slice(0, DIAGNOSTIC_MESSAGE_MAX - 1)}…` : d.message,
+    owner: d.owner ? `${d.owner.kind}:${d.owner.id}` : null,
+    ...(d.nodeId !== undefined ? { nodeId: d.nodeId } : {})
+  });
+  const section = (n: number) => {
+    const shown = listed.slice(0, n);
+    const errors = shown.filter((d) => d.severity === 'error').map(entry);
+    const warnings = shown.filter((d) => d.severity === 'warning').map(entry);
+    const left = { errors: totals.errors - errors.length, warnings: totals.warnings - warnings.length };
+    return {
+      note: 'Problems already in the project as this request started, not caused by it.',
+      errors,
+      warnings,
+      ...(left.errors || left.warnings ? { notListed: { ...left, note: `${left.errors} error${left.errors === 1 ? '' : 's'} and ${left.warnings} warning${left.warnings === 1 ? '' : 's'} are not listed here: ${more}.` } } : {})
+    };
+  };
+  const size = (n: number) => JSON.stringify(section(n), null, indent).length;
+  // The most that fit, by halving: the list only grows longer with each entry.
+  let lo = 0;
+  let hi = listed.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (size(mid) <= maxChars) lo = mid;
+    else hi = mid - 1;
+  }
+  // Not even the counts fit: no section.
+  if (lo === 0 && size(0) > maxChars) return undefined;
+  return section(lo);
 }
