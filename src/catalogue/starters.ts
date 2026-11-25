@@ -110,8 +110,8 @@ export function starterProblem(starter: StarterId, themeId?: string): string | n
       const def = made.components[n.definitionId];
       const props = Object.keys(n.props).filter((k) => !Object.hasOwn(def.properties, k));
       if (props.length) return problem(`its ${def.name} has no ${props.map((p) => `"${p}"`).join(', ')}.`);
-      const options = Object.entries(n.variants ?? {}).filter(([axis, option]) => !Object.hasOwn(def.variantAxes?.[axis]?.options ?? {}, option));
-      if (options.length) return problem(`its ${def.name} has no ${options.map(([axis, option]) => `${axis} "${option}"`).join(', ')}.`);
+      const options = Object.entries(n.variants ?? {}).filter(([axis, option]) => typeof option === 'string' && !Object.hasOwn(def.variantAxes?.[axis]?.options ?? {}, option));
+      if (options.length) return problem(`its ${def.name} has no ${options.map(([axis, option]) => `${axis} "${String(option)}"`).join(', ')}.`);
     }
   return null;
 }
