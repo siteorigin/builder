@@ -61,7 +61,11 @@ async function inspect(html: string, page: { pageId: string; rootIds: string[] }
       Object.assign(frame.style, { position: 'fixed', left: '-10000px', top: '0', width: '${width}px', height: '900px', border: '0', visibility: 'hidden', pointerEvents: 'none' });
       window.addEventListener('message', (e) => {
         if (e.data?.sessionId !== 'so-test') return;
-        if (e.data.type === 'ready') frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'inspect', payload: { requestId: 'r', ...${JSON.stringify(page ?? {})} } }, '*');
+        if (e.data.type === 'ready') {
+          // As the editor measures a page: shown as visitors see it, then measured.
+          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'mode', payload: { mode: 'preview' } }, '*');
+          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'inspect', payload: { requestId: 'r', ...${JSON.stringify(page ?? {})} } }, '*');
+        }
         if (e.data.type === 'inspectResult') done(e.data.payload.report);
       });
       setTimeout(() => fail(new Error('No inspection result.')), 15000);
@@ -92,23 +96,23 @@ h1{font-size:48px;margin:0 0 16px}h2{font-size:32px;margin:0 0 16px}h3{font-size
 .pic{display:block;width:100%;aspect-ratio:4/3;background:#ccc}
 .btn{display:inline-block;padding:12px 20px;border-radius:6px;text-decoration:none;background:#1f5a4c;color:#fff}
 .btn.outline{background:transparent;color:#1f5a4c;border:1px solid currentColor}
-.btn.gradient{background:linear-gradient(#1f5a4c,#2a7a66)}.btn.washed{background:linear-gradient(#fff,#fff);color:#1f5a4c}
+.btn.gradient{background:linear-gradient(#1f5a4c,#2a7a66)}.btn.washed{background:linear-gradient(#fff,#fff);color:#1f5a4c}.btn.half{background:linear-gradient(#1f5a4c,#fff)}
 @media (max-width:767px){.cards.stack{grid-template-columns:1fr}.cards.pair{grid-template-columns:repeat(2,minmax(0,1fr))}}
 `;
 const doc = (body: string) => `<!doctype html><html><head><meta charset="utf-8"><style>${CSS}</style></head><body><main id="main">${body}</main><script type="module" src="/bridge.js"></script></body></html>`;
 const at = (id: string, node: string) => `data-so-ctx="page:p|${id}" data-so-node="${node}"`;
 const PHOTO = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"><rect width="8" height="6" fill="#789"/></svg>');
 
-/** An opening section: the page's h1 beside a picture, with a filled button. */
+/** An opening section: the page's h1 beside a picture, with two filled buttons. */
 const hero = (id = 's1') =>
-  `<section ${at(id, 'root')}><div class="split"><div><h1 ${at(id, 'heading')}>Calm spaces for everyday life</h1><p>Homes and small workplaces that feel good to live in.</p><a class="btn" href="/contact/" ${at(id, 'primary')}>Start a project</a></div><img class="pic" alt="A room" src="${PHOTO}"></div></section>`;
+  `<section ${at(id, 'root')}><div class="split"><div><h1 ${at(id, 'heading')}>Calm spaces for everyday life</h1><p>Homes and small workplaces that feel good to live in.</p><a class="btn" href="/contact/" ${at(id, 'primary')}>Start a project</a> <a class="btn" href="/work/" ${at(id, 'secondary')}>See our work</a></div><img class="pic" alt="A room" src="${PHOTO}"></div></section>`;
 
 interface CardsOptions {
   tone?: 'muted' | 'dark' | 'fade';
   columns?: 2 | 3;
   /** How the cards lay out at phone width: as wide (the default), stacked in one column, or in two columns. */
   phone?: 'stack' | 'pair';
-  button?: 'filled' | 'outline' | 'gradient' | 'washed' | 'none';
+  button?: 'filled' | 'outline' | 'gradient' | 'washed' | 'half' | 'none';
   headingStyle?: string;
 }
 /** A section of a heading over a grid of cards, with a button under it. */
@@ -139,12 +143,12 @@ describe.skipIf(!browserInstalled)('rhythm notes on a page', () => {
       with: { desc: { ctx: 'page:p', node: 's4', items: '' } }
     });
     expect(note(r, 'repeated-layout')!.message).toMatch(/^Sections 2–4 use the same layout \(three card columns\) on the same background \(#ffffff\), three in a row\./);
-    // The hero's button and the three card sections' buttons: four sections in a row.
-    expect(note(r, 'crowded-actions')).toMatchObject({ sections: { first: 1, last: 4 }, buttons: 4, desc: { node: 's1' }, with: { desc: { node: 's4' } } });
+    // The hero's two buttons and the three card sections' buttons: four sections in a row.
+    expect(note(r, 'crowded-actions')).toMatchObject({ sections: { first: 1, last: 4 }, buttons: 5, desc: { node: 's1' }, with: { desc: { node: 's4' } } });
     expect(note(r, 'heading-scale')).toMatchObject({ heading: 'h2', size: 48, h1Size: 48, desc: { ctx: 'page:p|s3', node: 'heading', items: '' }, with: { desc: { ctx: 'page:p|s1', node: 'heading', items: '' } }, text: 'What we do s3' });
     expect(note(r, 'heading-scale')!.message).toMatch(/as large as the page's h1 \(48px\)/);
     // Advice only: nothing joins the findings.
-    expect(r.issues.map((i) => i.kind)).not.toEqual(expect.arrayContaining(['repeated-layout', 'crowded-actions', 'heading-scale']));
+    expect(r.issues.filter((i) => ['repeated-layout', 'crowded-actions', 'heading-scale'].includes(i.kind))).toEqual([]);
   }, 30000);
 
   it('goes quiet on each rule once one section in the run changes', async () => {
@@ -153,8 +157,9 @@ describe.skipIf(!browserInstalled)('rhythm notes on a page', () => {
       const r = await inspect(monotonous(change), PAGE(ids(5)));
       expect(note(r, 'repeated-layout'), JSON.stringify(change)).toBeUndefined();
     }
-    // An outlined button in the middle leaves two runs of two, as does one whose gradient is the colour around it.
-    for (const button of ['outline', 'washed'] as const) {
+    // An outlined button in the middle leaves two runs of two, as does one whose gradient is, somewhere or all over,
+    // the colour around it.
+    for (const button of ['outline', 'washed', 'half'] as const) {
       const r = await inspect(monotonous({ button }), PAGE(ids(5)));
       expect(note(r, 'crowded-actions'), button).toBeUndefined();
       expect(note(r, 'repeated-layout'), button).toBeDefined();
@@ -168,11 +173,18 @@ describe.skipIf(!browserInstalled)('rhythm notes on a page', () => {
     expect(varied.rhythm).toEqual([]);
   }, 60000);
 
-  it('reports a larger inner heading as larger, and counts the others that match', async () => {
-    const r = await inspect(doc(hero() + cards('s2', { headingStyle: 'font-size:52px', button: 'none' }) + cards('s3', { tone: 'muted', headingStyle: 'font-size:48px', button: 'none' })), PAGE(ids(3)));
+  it('reports the largest inner heading, counts the others that match, and needs one h1 to compare with', async () => {
+    const r = await inspect(doc(hero() + cards('s2', { headingStyle: 'font-size:48px', button: 'none' }) + cards('s3', { tone: 'muted', headingStyle: 'font-size:52px', button: 'none' })), PAGE(ids(3)));
     expect(kinds(r)).toEqual(['heading-scale']);
-    expect(note(r, 'heading-scale')).toMatchObject({ heading: 'h2', size: 52, h1Size: 48, others: 1, desc: { ctx: 'page:p|s2' } });
+    expect(note(r, 'heading-scale')).toMatchObject({ heading: 'h2', size: 52, h1Size: 48, others: 1, desc: { ctx: 'page:p|s3' } });
     expect(note(r, 'heading-scale')!.message).toMatch(/larger than the page's h1 \(48px\), as is one other inner heading/);
+    // Two h1s (which the heading structure check reports): no one top level to compare with.
+    const twoH1 = await inspect(doc(hero() + cards('s2', { headingStyle: 'font-size:52px', button: 'none' }).replace('<ul', `<h1 ${at('s2', 'second')}>Another title</h1><ul`)), PAGE(ids(2)));
+    expect(twoH1.rhythm).toEqual([]);
+    // More headings than one inspection measures: the answer could lie past the cap.
+    const many = Array.from({ length: 301 }, (_, i) => `<h3>Point ${i}</h3>`).join('');
+    const crowdedHeads = await inspect(doc(hero() + cards('s2', { headingStyle: 'font-size:52px', button: 'none' }).replace('</section>', `${many}</section>`)), PAGE(ids(2)));
+    expect(crowdedHeads.rhythm).toEqual([]);
   }, 30000);
 
   it('at phone width, compares only sections that still set columns side by side', async () => {
@@ -209,9 +221,71 @@ describe.skipIf(!browserInstalled)('rhythm notes on a page', () => {
 
   it('says nothing about a page of one section, or when the caller names no sections', async () => {
     const one = await inspect(doc(cards('s1', { headingStyle: 'font-size:60px' }).replace('<h2', '<h1 style="font-size:40px">Title</h1><h2')), PAGE(['s1']));
+    expect(one).not.toHaveProperty('error');
     expect(one.rhythm).toBeUndefined();
     const unnamed = await inspect(monotonous(), null);
+    expect(unnamed).not.toHaveProperty('error');
     expect(unnamed.rhythm).toBeUndefined();
+  }, 30000);
+
+  it('calls a layout unknown when its column groups disagree, its rows do not line up, or it is a long list', async () => {
+    const items = (n: number) => Array.from({ length: n }, (_, i) => `<li class="card"><p>Card ${i + 1}</p></li>`).join('');
+    // Two grids of nearly one size in each section: three columns over two, four, five.
+    const twoGrids = (id: string, lower: number) => `<section ${at(id, 'root')}><ul class="cards">${items(3)}</ul><ul class="cards" style="grid-template-columns:repeat(${lower},minmax(0,1fr))">${items(lower)}</ul></section>`;
+    expect((await inspect(doc(twoGrids('s1', 2) + twoGrids('s2', 4) + twoGrids('s3', 5)), PAGE(ids(3)))).rhythm).toEqual([]);
+    // Rows of two cards over three, flush: no one column count.
+    const rows = (id: string) => `<section ${at(id, 'root')}><div style="display:flex;flex-wrap:wrap">${[50, 50, 33.333, 33.333, 33.333].map((w) => `<div class="card" style="box-sizing:border-box;flex:0 0 ${w}%;height:80px">Card</div>`).join('')}</div></section>`;
+    expect((await inspect(doc(rows('s1') + rows('s2') + rows('s3')), PAGE(ids(3)))).rhythm).toEqual([]);
+    // A long stacked list in each section is not a layout of columns.
+    const list = (id: string) => `<section ${at(id, 'root')}><ul style="margin:0">${Array.from({ length: 80 }, (_, i) => `<li>Entry ${i}</li>`).join('')}</ul></section>`;
+    expect((await inspect(doc(list('s1') + list('s2') + list('s3')), PAGE(ids(3)))).rhythm).toEqual([]);
+  }, 45000);
+
+  it('tells splits apart by the side their picture is on, and bands apart by the panel inside them', async () => {
+    // Columns wrapped alike, the picture on the left, the right, then the left: alternating, so varied.
+    const split = (id: string, side: 'left' | 'right') => {
+      const pic = `<div class="col"><img class="pic" alt="" src="${PHOTO}"></div>`;
+      const text = `<div class="col"><h2>Story ${id}</h2><p>What happened, in a sentence or two.</p></div>`;
+      return `<section ${at(id, 'root')}><div class="split">${side === 'left' ? pic + text : text + pic}</div></section>`;
+    };
+    expect((await inspect(doc(split('s1', 'left') + split('s2', 'right') + split('s3', 'left')), PAGE(ids(3)))).rhythm).toEqual([]);
+    expect(note(await inspect(doc(split('s1', 'left') + split('s2', 'left') + split('s3', 'left')), PAGE(ids(3))), 'repeated-layout')).toMatchObject({ layout: 'two columns with the picture on the left' });
+    // White bands, each with a white wrapper around a panel of its own colour: navy, cream, navy.
+    const banner = (id: string, panel: string, ink: string) => `<section ${at(id, 'root')}><div style="background:#fff;padding:8px"><div style="background:${panel};color:${ink};padding:48px"><h2>Ready ${id}?</h2><p>Start today.</p></div></div></section>`;
+    expect((await inspect(doc(banner('s1', '#14213d', '#fff') + banner('s2', '#f6efe0', '#111') + banner('s3', '#14213d', '#fff')), PAGE(ids(3)))).rhythm).toEqual([]);
+    expect(note(await inspect(doc(banner('s1', '#14213d', '#fff') + banner('s2', '#14213d', '#fff') + banner('s3', '#14213d', '#fff')), PAGE(ids(3))), 'repeated-layout')).toBeDefined();
+  }, 45000);
+
+  it('reads a placement that renders several boxes, or is itself the heading or the button', async () => {
+    // A code component's placements: a wrapper with no box around a heading and a grid, side by side in the markup.
+    const placement = (id: string, inner: string) => `<div style="display:contents" data-so-ctx="page:p" data-so-node="${id}">${inner}</div>`;
+    const grid = (id: string) => placement(id, `<h2>Grid ${id}</h2><ul class="cards">${Array.from({ length: 3 }, () => '<li class="card"><p>Card</p></li>').join('')}</ul>`);
+    const r = await inspect(doc(placement('s1', '<h1 style="font-size:40px">The title</h1>') + grid('s2') + grid('s3') + grid('s4')), PAGE(ids(4)));
+    expect(note(r, 'repeated-layout')).toMatchObject({ sections: { first: 2, last: 4 }, layout: 'three card columns' });
+    // The title is the placement's own box, and so is each button.
+    const button = (id: string) => placement(id, `<a class="btn" href="/book/" style="display:block;width:max-content">Book ${id}</a>`);
+    const b = await inspect(doc(placement('s1', '<h1 style="font-size:30px">The title</h1>') + `<section ${at('s2', 'root')}><h2 ${at('s2', 'heading')}>Bigger than the title</h2></section>` + button('s3') + button('s4') + button('s5')), PAGE(ids(5)));
+    expect(note(b, 'heading-scale')).toMatchObject({ heading: 'h2', h1Size: 30 });
+    expect(note(b, 'crowded-actions')).toMatchObject({ sections: { first: 3, last: 5 }, buttons: 3 });
+  }, 30000);
+
+  it('counts a button that opens a dialog, and not one on a slide waiting off screen', async () => {
+    const dialog = (id: string) => `<section ${at(id, 'root')}><h2>Visit ${id}</h2><button class="btn" aria-haspopup="dialog" style="border:0">Book now</button></section>`;
+    expect(note(await inspect(doc(dialog('s1') + dialog('s2') + dialog('s3')), PAGE(ids(3))), 'crowded-actions')).toMatchObject({ buttons: 3 });
+    const slides = (id: string) => `<section ${at(id, 'root')}><div style="display:flex;overflow-x:auto"><div style="flex:0 0 100%"><h2>Slide one ${id}</h2></div><div style="flex:0 0 100%"><a class="btn" href="/buy/">Buy</a></div></div></section>`;
+    expect(note(await inspect(doc(slides('s1') + slides('s2') + slides('s3')), PAGE(ids(3))), 'crowded-actions')).toBeUndefined();
+  }, 30000);
+
+  it('breaks a run at markup of the page outside the sections named, and between sections side by side in one band', async () => {
+    // A load from before a section was removed: it still shows between two alike ones.
+    const stale = await inspect(doc(cards('s1') + cards('s2') + cards('removed', { tone: 'dark' }) + cards('s3')), PAGE(ids(3)));
+    expect(note(stale, 'repeated-layout')).toBeUndefined();
+    expect(note(stale, 'crowded-actions')).toBeUndefined();
+    // Named in full, the same load has a run of four.
+    expect(note(await inspect(doc(cards('s1') + cards('s2') + cards('s3', { tone: 'dark' }) + cards('s4')), PAGE(ids(4))), 'crowded-actions')).toMatchObject({ sections: { first: 1, last: 4 } });
+    // Three sections in one row of the page: beside each other, not after each other.
+    const band = doc(cards('s1', { columns: 2 }) + cards('s2', { columns: 2 }) + cards('s3', { columns: 2 })).replace('<main id="main">', '<main id="main" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr))">');
+    expect((await inspect(band, PAGE(ids(3)))).rhythm).toEqual([]);
   }, 30000);
 });
 
