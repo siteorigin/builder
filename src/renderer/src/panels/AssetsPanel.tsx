@@ -1289,6 +1289,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         <div className="asset-ident">
           <h4>{nameOf(sel)}</h4>
           <p className="asset-meta">{[sel.width && sel.height ? `${sel.width} × ${sel.height}` : '', formatBytes(sel.bytes), formatType(sel.mime)].filter(Boolean).join(' · ')}</p>
+          {typeof sel.originalName === 'string' && sel.originalName.trim() && sel.originalName !== nameOf(sel) && (
+            <p className="asset-meta asset-original" data-testid="asset-original-name">
+              Original file: <span>{sel.originalName}</span>
+            </p>
+          )}
           {sameName && (
             <p className="asset-meta" data-testid="asset-id">
               Another image has this name. This one is <code>{sel.id}</code>.

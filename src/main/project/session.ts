@@ -237,6 +237,15 @@ function libraryFiles(text: string | null | undefined): string[] {
   }
 }
 
+/** The asset document without its original names: those name files on the author's computer, never project files. */
+function withoutOriginalNames(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), (key, value) => (key === 'originalName' ? undefined : value));
+  } catch {
+    return text;
+  }
+}
+
 /** Which of `tokens` the file at `abs` holds, read a piece at a time with an overlap, so nothing split is missed. */
 async function searchFile(abs: string, tokens: string[]): Promise<Set<string>> {
   const found = new Set<string>();
@@ -2838,7 +2847,7 @@ export class ProjectSession extends EventEmitter {
       return [...out].sort();
     }
     // The brief is the author's own notes: a file it names is not one the site uses.
-    const texts = [...docs].filter(([p]) => p !== BRIEF_FILE).map(([, t]) => t);
+    const texts = [...docs].filter(([p]) => p !== BRIEF_FILE).map(([p, t]) => (p === ASSETS_DOC ? withoutOriginalNames(t) : t));
     const byAddress = (rel: string) => {
       const address = rel.slice('static'.length);
       const encoded = encodeURI(address);

@@ -199,10 +199,10 @@ describe('reviewing an import before anything is written', () => {
 describe('importing a HEIC photo', () => {
   it.runIf(canConvert)('stores an upright JPEG copy with its responsive copies, and leaves the photo alone', async () => {
     const project = temp('project');
-    const path = sourceFile('portrait-rotated.heic', HEIC);
+    const path = sourceFile('portrait-rotated.HEIC', HEIC);
     const { record, existing } = await importAsset(project, path, [], undefined, { decoder: heicDecoder() });
     expect(existing).toBe(false);
-    expect(record).toMatchObject({ name: 'portrait rotated', mime: 'image/jpeg', width: 1200, height: 1600, kind: 'image' });
+    expect(record).toMatchObject({ name: 'portrait rotated', originalName: 'portrait-rotated.HEIC', mime: 'image/jpeg', width: 1200, height: 1600, kind: 'image' });
     expect(record.file).toMatch(/^static\/assets\/portrait-rotated-[0-9a-f]{8}\.jpg$/);
     expectCopies(record, 'jpg', [160, 480, 960], 1200);
     const stored = readFileSync(join(project, record.file));
@@ -214,7 +214,8 @@ describe('importing a HEIC photo', () => {
     expect(readFileSync(path).equals(HEIC)).toBe(true);
     // The same photo again is the same copy, so it is the same asset.
     const again = await importAsset(project, sourceFile('again.heic', HEIC), [record], undefined, { decoder: heicDecoder() });
-    expect(again).toMatchObject({ existing: true, record: { id: record.id } });
+    // And keeps the name it first arrived under.
+    expect(again).toMatchObject({ existing: true, record: { id: record.id, originalName: 'portrait-rotated.HEIC' } });
   });
 
   it('refuses a HEIC photo with a way forward where there is no converter, writing nothing', async () => {
@@ -246,7 +247,7 @@ describe('a web-sized copy of a large photo', () => {
     const original = await sharp(await noisy(4000, 3000, 'jpeg')).withExif({ IFD0: { Artist: 'Ana Field', Copyright: 'Field Studio 2026' } }).jpeg({ quality: 95 }).toBuffer();
     const path = sourceFile('field-visit.jpg', original);
     const { record } = await importAsset(project, path, [], undefined, { webCopy: true });
-    expect(record).toMatchObject({ name: 'field visit', mime: 'image/jpeg', width: 2560, height: 1920 });
+    expect(record).toMatchObject({ name: 'field visit', originalName: 'field-visit.jpg', mime: 'image/jpeg', width: 2560, height: 1920 });
     expect(record.bytes).toBeLessThan(original.length);
     expectCopies(record, 'jpg', [160, 480, 960, 1440], 2560);
     const stored = readFileSync(join(project, record.file));
@@ -273,7 +274,8 @@ describe('a web-sized copy of a large photo', () => {
     const credited = Buffer.concat([png.subarray(0, end), text('Author', 'Ana Field'), text('Copyright', 'Field Studio 2026'), png.subarray(end)]);
     const project = temp('project');
     const { record } = await importAsset(project, sourceFile('scan.png', credited), [], undefined, { webCopy: true });
-    expect(record.mime).toBe('image/jpeg');
+    // Named after the PNG that was read, not the JPEG copy that is stored.
+    expect(record).toMatchObject({ mime: 'image/jpeg', originalName: 'scan.png' });
     const credits = cleanPhoto(readFileSync(join(project, record.file)))?.credits.tiff?.toString('latin1');
     expect(credits).toContain('Ana Field');
     expect(credits).toContain('Field Studio 2026');

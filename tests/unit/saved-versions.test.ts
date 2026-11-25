@@ -391,6 +391,17 @@ describe('saved versions, guarded', () => {
     expect(read(dir, 'static/brand/logo.svg').toString()).toBe('<svg>blue</svg>');
   });
 
+  it('does not hold a file in the project only because an image came from a file of that name', async () => {
+    const { dir, s } = await make();
+    const photo = picture(dir, 'mark', 1);
+    writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>unrelated</svg>');
+    await ok(s.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_mark', ...photo.asset, originalName: 'logo.svg' } }] }, { label: 'Add mark' }));
+    await ok(s.saveVersion('With a mark'));
+    const media = Object.keys(JSON.parse(readFileSync(join(dir, '.siteorigin/versions/versions.json'), 'utf8')).versions[0].media);
+    expect(media).toContain(photo.files[0]);
+    expect(media).not.toContain(`${ASSETS}/logo.svg`);
+  });
+
   it('refuses a restore when a file changed outside the app after the review', async () => {
     const { dir, s } = await make();
     mkdirSync(join(dir, ASSETS), { recursive: true });

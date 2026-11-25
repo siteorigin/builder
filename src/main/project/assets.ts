@@ -494,6 +494,9 @@ async function planStore(p: PreparedFile, refuse: Refusal): Promise<{ stored: St
   return { stored: { file, mime: p.mime, bytes: p.buf.length, hash: p.hash, ...(info ? { width: info.width, height: info.height } : {}), ...(copies.length ? { variants: copies } : {}) }, files };
 }
 
+/** The name a file had where it was read from, extension included, as its asset record keeps it. */
+export const originalNameOf = (sourcePath: string) => basename(sourcePath).slice(0, 255);
+
 /**
  * `fence` holds the writes while the project may be written to; the starter's own pictures need none. A HEIC
  * photo, or a JPEG or PNG with `opts.webCopy`, is stored as its web-sized copy; `note` says when the original was
@@ -524,8 +527,7 @@ export async function importAsset(
     bytes: stored.bytes,
     hash: stored.hash,
     kind,
-    // A document's downloads keep the name; a font's tells apart files whose stored names lose it ("简体.woff2").
-    ...(kind === 'document' || kind === 'font' ? { originalName: basename(sourcePath).slice(0, 255) } : {}),
+    originalName: originalNameOf(sourcePath),
     createdAt: opts.createdAt ?? new Date().toISOString(),
     ...(stored.width !== undefined ? { width: stored.width, height: stored.height } : {}),
     ...(stored.variants ? { variants: stored.variants } : {}),
@@ -657,7 +659,7 @@ export async function locateAssetFile(projectDir: string, record: AssetRecord, s
   if (p.hash === record.hash && p.mime === record.mime) return { same: true, ...(await restoreAssetFiles(projectDir, record, p.buf, fence)) };
   const { stored, files } = await planStore(p, refuse);
   if (!(await fence(() => writePlanned(projectDir, stored, files, library)))) throw refuse(`${NOT_WRITTEN}.`);
-  return { same: false, stored: document ? { ...stored, originalName: basename(sourcePath).slice(0, 255) } : stored };
+  return { same: false, stored: { ...stored, originalName: originalNameOf(sourcePath) } };
 }
 
 /** What a web-sized copy of a library image (its original's bytes) would be, or null when none can be made from it. */
