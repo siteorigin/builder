@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Box, CircleAlert, CircleMinus, Component, CornerDownRight, FileText, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
+import { ArrowRightLeft, Box, CircleAlert, CircleMinus, Component, CornerDownRight, FileText, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import type { AiTurnReview, ProjectSnapshot } from '@shared/api';
 import type { ApplyResult } from '@shared/ops';
@@ -7,6 +7,7 @@ import { newId } from '@shared/ids';
 import { displayName, placesOf } from '@engine/tree';
 import { planHomeChange } from '@engine/apply';
 import { uniqueCopyName } from '@engine/definitions';
+import { planSwap, type SwapCarry, type SwapPlan } from '@engine/swap';
 import type { LinkHolder, PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
@@ -21,6 +22,7 @@ import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { HistoryTabs, SavedVersionsModal } from './SavedVersions';
 import { appliedCount, historyStep } from '../lib/history-steps';
 import { reviewPlan, stepChangeText, turnName } from '../lib/turn-review';
+import { swapChoices, type SwapChoice } from '../lib/swap-choices';
 
 /** The longest name a component can have. */
 const NAME_MAX = 60;
@@ -590,6 +592,128 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
           ) : (
             'This placement was removed, so there is nothing to make unique.'
           )}
+        </GoneNotice>
+      )}
+    </Modal>
+  );
+}
+
+/** One piece of carried content as the preview says it: "Supporting text → Text", "Cards → Plans (6 items)". */
+const carryText = (k: SwapCarry) => `${k.from === k.to ? k.from : `${k.from} → ${k.to}`}${k.items ? ` (${plural(k.items, 'item')})` : ''}`;
+
+/**
+ * Show one placement as another design where it is (#374). The author picks the design and sees, before confirming,
+ * which of its content carries over and which would be dropped: the same plan the change itself follows. One change,
+ * so one Undo brings the old design back.
+ */
+export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: OwnerRef; nodeId: string; definitionId: string }) {
+  const st = useStore((s) => s.snapshot?.state);
+  const revision = useStore((s) => s.snapshot?.revision);
+  const dev = useStore((s) => !!s.settings?.developerMode);
+  const tree = st ? treeFor(st, owner) : undefined;
+  const node = tree && Object.hasOwn(tree.nodes, nodeId) ? tree.nodes[nodeId] : undefined;
+  // The placement chosen, still showing the design it showed then: an Undo or the AI may have changed it.
+  const current = node?.kind === 'instance' && node.definitionId === definitionId ? node : undefined;
+  const def = st && current ? st.components[definitionId] : undefined;
+  const [opened] = useState(() => (def && current ? { name: current.name ?? def.name, top: !!tree?.rootIds.includes(nodeId) } : null));
+  const choices = useMemo(() => (st && current ? swapChoices(st, current, dev) : []), [st, current, dev]);
+  const [key, setKey] = useState(() => choices[0]?.key ?? '');
+  const choice = choices.find((c) => c.key === key) ?? choices[0];
+  const plan = useMemo(() => (st && tree && current && choice ? planSwap(st, owner, tree, current, choice.def) : null), [st, tree, current, choice, owner]);
+  // What the dialog showed when the change was sent: the placement shows the new design as it lands.
+  const [sent, setSent] = useState<{ plan: SwapPlan; choice: SwapChoice } | null>(null);
+  const shown = sent ?? (plan && choice ? { plan, choice } : null);
+  const busy = !!sent;
+  const close = useCloseOwn();
+  const id = useId();
+  const title = opened?.top === false ? 'Change design' : 'Change section design';
+  const ready = !!shown && !shown.plan.problems.length && !busy;
+  const change = async () => {
+    if (!ready || !plan || !choice) return;
+    setSent({ plan, choice });
+    // Checked against the revision previewed, so a change on its way (an Undo, the AI) can't alter what was shown.
+    let r: Awaited<ReturnType<typeof applyOps>> = null;
+    try {
+      r = await applyOps([{ type: 'instance.swapComponent', owner, nodeId, ...choice.spec, ...(plan.dropped.length ? { allowDrops: true } : {}) }], `Change ${opened?.name ?? 'section'} to ${choice.def.name}`, undefined, revision);
+    } finally {
+      if (!r) setSent(null);
+    }
+    if (r) close();
+  };
+  const dropped = shown?.plan.dropped ?? [];
+  const details: Detail[] = shown
+    ? [
+        {
+          kind: 'keep',
+          icon: <ShieldCheck />,
+          text: shown.plan.kept.length ? `Carries over ${listAll(shown.plan.kept.map(carryText))}.` : `None of its content has a place in ${shown.choice.def.name}.`
+        },
+        ...dropped.map((d): Detail => ({ kind: 'lose', icon: <CircleMinus />, text: `Drops ${d.label}${d.reason ? `: ${d.reason}` : ''}.` })),
+        ...(shown.plan.restyled.length ? [{ kind: 'note' as const, icon: <Info />, text: `Not in the new design: ${listAll(shown.plan.restyled)}.` }] : []),
+        { kind: 'keep', icon: <ShieldCheck />, text: 'It stays where it is. One Undo brings the old design back.' }
+      ]
+    : [];
+  return (
+    <Modal
+      title={title}
+      icon={<Badge icon={<ArrowRightLeft />} tone={def ? 'neutral' : 'caution'} />}
+      onClose={close}
+      busy={busy}
+      describedBy={def || busy ? `${id}-lead ${id}-details` : GONE_ID}
+      footer={
+        (def || busy) && choices.length ? (
+          <>
+            <button className="btn" onClick={close} disabled={busy}>
+              Cancel
+            </button>
+            <button className={dropped.length ? 'btn btn-danger-fill' : 'btn btn-primary'} disabled={!ready} onClick={() => void change()}>
+              {busy ? 'Changing…' : dropped.length ? `Change and drop ${plural(dropped.length, 'field')}` : 'Change design'}
+            </button>
+          </>
+        ) : (
+          <GoneClose onClose={close} />
+        )
+      }
+    >
+      {(def || busy) && shown ? (
+        <div className="authoring-form" data-testid="swap-component-dialog">
+          <FormStatus text={busy ? `Changing to ${shown.choice.def.name}` : undefined} />
+          <p id={`${id}-lead`} className="confirm-lead">
+            Show {opened?.name ?? 'it'} as another design, in the same place. Its content moves to the fields of the same name or meaning.
+          </p>
+          {st && def && <Subject icon={<Component />} name={def.name} note={placeOf(st, owner)} />}
+          <Field label="New design">
+            <select className="select" value={shown.choice.key} disabled={busy} onChange={(e) => setKey(e.target.value)}>
+              {['Similar sections', 'Your components', 'Other sections'].map((group) => {
+                const list = choices.filter((c) => c.group === group);
+                return list.length ? (
+                  <optgroup key={group} label={group}>
+                    {list.map((c) => (
+                      <option key={c.key} value={c.key}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null;
+              })}
+            </select>
+          </Field>
+          {shown.plan.problems.length ? (
+            <div className="scope-note danger" role="alert">
+              <CircleAlert />
+              <span>{shown.plan.problems[0]}</span>
+            </div>
+          ) : (
+            <Details id={`${id}-details`} items={details} />
+          )}
+        </div>
+      ) : (
+        <GoneNotice>
+          {def && !choices.length
+            ? `No other design can stand here in place of ${def.name}.`
+            : node?.kind === 'instance'
+              ? 'This placement now shows a different design. Select it again to change it.'
+              : 'This placement was removed, so there is nothing to change.'}
         </GoneNotice>
       )}
     </Modal>

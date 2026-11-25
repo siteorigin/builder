@@ -15,6 +15,7 @@ import { applyOperations } from '@engine/apply';
 import { planSwap, swapTarget } from '@engine/swap';
 import { validateState } from '@engine/validate';
 import { ProjectSession } from '../../src/main/project/session';
+import { swapChoices } from '../../src/renderer/src/lib/swap-choices';
 
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
 const owner = (s: ProjectState): OwnerRef => ({ kind: 'page', id: s.site.homePageId });
@@ -192,6 +193,25 @@ describe('instance.swapComponent', () => {
     expect(plan.dropped).toEqual([{ label: 'Image' }]);
     expect(plan.kept.map((k) => k.to)).toEqual(swap(s, id, { componentId: 'hero.centered' }, true).results[0].kept);
     expect(plan.props.heading).toBe(inst(s, id).props.heading);
+  });
+
+  it('offers the designs Insert offers there, similar ones first, without the one it shows or the shared header', () => {
+    const { s, find } = project();
+    const hero = inst(s, find('hero.split'));
+    const choices = swapChoices(s, hero);
+    const ids = choices.map((c) => c.def.componentId);
+    expect(ids).not.toContain('hero.split');
+    expect(ids).not.toContain('shell.header');
+    expect(ids).not.toContain('shell.footer');
+    // Other heroes first, then everything else in Insert's order.
+    expect(choices.filter((c) => c.group === 'Similar sections').map((c) => c.def.componentId)).toEqual(expect.arrayContaining(['hero.centered', 'intro.page']));
+    expect(choices.findIndex((c) => c.group !== 'Similar sections')).toBeGreaterThan(choices.findLastIndex((c) => c.group === 'Similar sections'));
+    expect(choices.find((c) => c.def.componentId === 'hero.centered')?.spec).toEqual({ componentId: 'hero.centered' });
+    // A project component is offered by its definition ID; code components only in Developer mode.
+    const copy = applyOperations(s, [{ type: 'component.duplicate', definitionId: 'foundation.hero.split', name: 'Studio hero' }]);
+    const defId = copy.results[0].definitionId as string;
+    expect(swapChoices(copy.state, hero).find((c) => c.def.id === defId)).toMatchObject({ group: 'Your components', spec: { definitionId: defId } });
+    expect(swapChoices(s, inst(s, find('hero.split')), false).some((c) => c.def.kind === 'code' && c.def.owner === 'project')).toBe(false);
   });
 
   it('undoes in one step, the component it installed included, and redoes the same change', async () => {

@@ -23,7 +23,7 @@ import { ExportModal } from './panels/ExportModal';
 import { CommandMenu } from './panels/CommandMenu';
 import { FindReplaceModal } from './panels/FindReplace';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
-import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal } from './panels/Dialogs';
+import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal, SwapComponentModal } from './panels/Dialogs';
 import { ImportReviewModal } from './panels/ImportReview';
 import { PostImportReviewModal } from './panels/PostImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
@@ -719,6 +719,7 @@ export function Editor() {
       {modal?.kind === 'new-component' && <NewComponentModal />}
       {modal?.kind === 'create-component' && <CreateComponentModal target={modal.ref} />}
       {modal?.kind === 'make-unique' && <MakeUniqueModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
+      {modal?.kind === 'swap-component' && <SwapComponentModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
       {modal?.kind === 'rename-component' && <RenameComponentModal definitionId={modal.definitionId} />}
       {modal?.kind === 'delete-page' && <DeletePageModal pageId={modal.pageId} />}
       {modal?.kind === 'set-home' && <SetHomeModal pageId={modal.pageId} />}

@@ -4,6 +4,7 @@ import { Children, Fragment, useEffect, useId, useMemo, useRef, useState, type R
 import {
   ArrowDown,
   ArrowLeft,
+  ArrowRightLeft,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -919,6 +920,11 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const selectPart = (p: string) => selectAndFocus({ owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p });
   const editEverywhere = () => setState({ modal: { kind: 'edit-definition', ref: selection } });
   const makeUnique = () => setState({ modal: { kind: 'make-unique', owner, nodeId: node.id, definitionId: def.id } });
+  // A section (or a card inside one) can show another design where it is, keeping its content (#374). The shared
+  // header and footer keep theirs, and a placement inside a design is changed in that design.
+  const swappable = !shell && !readOnly && !selection.instancePath.length && !selection.partId && (owner.kind === 'page' || owner.kind === 'template');
+  const top = swappable && !!treeFor(state, owner)?.rootIds.includes(node.id);
+  const swapDesign = () => setState({ modal: { kind: 'swap-component', owner, nodeId: node.id, definitionId: def.id } });
   // A section holding content of its own (not a copy of its design, which Make unique makes) becomes a component
   // with that content. Not while other layers are selected with it: the menu's other commands act on them all.
   const create = plan?.several ? null : createComponentTarget({ state, readOnly }, selection);
@@ -935,6 +941,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
     title,
     [
       ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
+      ...(swappable ? [{ label: top ? 'Change section design…' : 'Change design…', icon: <ArrowRightLeft />, hint: 'Keeps its content', onSelect: swapDesign }] : []),
       ...(canMakeUnique ? [{ label: 'Make unique…', icon: <Split />, onSelect: makeUnique }] : []),
       ...(create ? [{ label: 'Create component…', icon: <Component />, hint: 'With its content', onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
       ...(detachable(state, selection) ? [{ label: 'Detach component', icon: <Unlink />, hint: 'Into elements', onSelect: () => void detachPlacement(selection) }] : []),
