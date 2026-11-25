@@ -166,13 +166,16 @@ function serial<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-/** Remove the package generations of saved component `id` other than `keep` (none kept when it is null). */
+/**
+ * Remove the package generations of saved component `id` other than `keep` (none kept when it is null), as far as it
+ * can: tidying never fails what it follows, and whatever is left is swept next time.
+ */
 async function sweep(root: string, id: string, keep: string | null): Promise<void> {
   const names = await fs.readdir(root).catch(() => [] as string[]);
   for (const name of names) {
     if (!name.startsWith(`${id}.`) || !name.endsWith(COMPONENT_PACKAGE_SUFFIX)) continue;
     const digest = name.slice(id.length + 1, -COMPONENT_PACKAGE_SUFFIX.length);
-    if (isDigest(digest) && digest !== keep) await fs.rm(join(root, name), { force: true });
+    if (isDigest(digest) && digest !== keep) await fs.rm(join(root, name), { force: true }).catch(() => undefined);
   }
 }
 
@@ -215,6 +218,8 @@ export function removeSaved(root: string, id: string, digest?: string): Promise<
     if (!isSavedId(id)) return 'gone';
     const card = await cardOf(root, id);
     if (!card) {
+      // A card that is there but can't be read now can't say which copy it names: nothing is taken.
+      if (await fs.lstat(cardPath(root, id)).then(() => true, () => false)) return 'changed';
       await sweep(root, id, null);
       return 'gone';
     }

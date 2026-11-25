@@ -151,8 +151,9 @@ describe('the personal library on disk', () => {
     writeFileSync(join(root, 'sc_damaged00000000.card.json'), '{ not json');
     writeFileSync(join(root, 'sc_damaged00000000.socomponent.json'), '{}');
     const card = JSON.parse(readFileSync(join(root, `${kept.card.id}.card.json`), 'utf8'));
+    // A card copied under another ID, with a package of that ID beside it: it still names the component it was saved for.
     writeFileSync(join(root, 'sc_otherid000000000.card.json'), JSON.stringify(card));
-    writeFileSync(join(root, 'sc_otherid000000000.socomponent.json'), '{}');
+    writeFileSync(join(root, `sc_otherid000000000.${card.digest}.socomponent.json`), '{}');
     writeFileSync(join(root, 'notes.card.json'), JSON.stringify({ ...card, id: 'notes' }));
     mkdirSync(join(root, 'sc_folder000000000.card.json'));
     expect((await store.listSaved(root)).map((c) => c.id)).toEqual([kept.card.id]);
@@ -178,9 +179,22 @@ describe('the personal library on disk', () => {
     const many = Array.from({ length: 61 }, (_, i) => ({ ...input.definitions[0], id: `d${i}` }));
     await expect(store.saveToLibrary(root, { ...input, name: 'Too big', definitions: many })).rejects.toThrow(/more components/);
     expect((await store.listSaved(root)).map((c) => [c.name, c.digest])).toEqual([['Pricing card', first.digest]]);
-    // The next save sweeps what no card names.
+    // The next save sweeps what no card names, and a copy it can't tidy away doesn't fail the save.
+    const stuck = join(root, `${first.id}.${'e'.repeat(24)}.socomponent.json`);
+    mkdirSync(join(stuck, 'inside'), { recursive: true });
+    const rmFile = fsp.rm.bind(fsp);
+    const rm = vi.spyOn(fsp, 'rm').mockImplementation(((path: Parameters<typeof fsp.rm>[0], o?: Parameters<typeof fsp.rm>[1]) => (String(path) === stuck ? Promise.reject(new Error('EBUSY')) : rmFile(path, o))) as typeof fsp.rm);
     const next = (await store.saveToLibrary(root, { ...input, name: 'Pricing card 2' })).card;
-    expect(readdirSync(root).sort()).toEqual([`${next.id}.${next.digest}.socomponent.json`, `${next.id}.card.json`].sort());
+    rm.mockRestore();
+    expect((await store.listSaved(root)).map((c) => [c.name, c.digest])).toEqual([['Pricing card 2', next.digest]]);
+    rmSync(stuck, { recursive: true });
+    expect((await store.removeSaved(root, next.id, next.digest))).toBe('removed');
+    expect(readdirSync(root)).toEqual([]);
+    // A card that is there but can't be read keeps every copy, whatever a stale menu asks.
+    const again = (await store.saveToLibrary(root, input)).card;
+    writeFileSync(join(root, `${again.id}.card.json`), '{ cut short');
+    expect(await store.removeSaved(root, again.id, first.digest)).toBe('changed');
+    expect(readdirSync(root)).toContain(`${again.id}.${again.digest}.socomponent.json`);
     await s.close();
   });
 

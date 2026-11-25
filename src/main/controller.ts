@@ -1852,7 +1852,8 @@ export class Controller {
         const asked = new Set(code.map((d) => d.id));
         if (opts.ask && importedCode(s.state, prepared.input).some((d) => !asked.has(d.id))) return stale;
         const r = await s.apply(
-          { operations: [...prepared.assets, { type: 'component.import', importId: prepared.input.id }], expectedRevision: s.revision },
+          // A placement lands only on the revision its place was worked out on; a file, on the project as just checked.
+          { operations: [...prepared.assets, { type: 'component.import', importId: prepared.input.id }], expectedRevision: opts.revision ?? s.revision },
           { label: opts.label ?? `Import ${name}`, source: 'user', codeAllowed, componentImport: prepared.input }
         );
         if (!r.ok) {

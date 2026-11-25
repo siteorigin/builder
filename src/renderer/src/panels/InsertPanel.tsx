@@ -1055,10 +1055,11 @@ export function InsertPanel() {
   }, [open, opening, themeKey, libraryVersion]);
   // The saved row taken out of the library from its menu, until the list without it is shown: focus stays in the list
   // (else search) rather than falling to the page, where the next Delete would remove the canvas selection.
-  const savedRefocus = useRef<number | null>(null);
+  const savedRefocus = useRef<{ id: string; index: number } | null>(null);
   useEffect(() => {
-    if (savedRefocus.current === null) return;
-    const index = savedRefocus.current;
+    // A list asked for before the removal still has the row: wait for the one without it.
+    if (!savedRefocus.current || library?.list.some((c) => c.id === savedRefocus.current!.id)) return;
+    const { index } = savedRefocus.current;
     savedRefocus.current = null;
     const a = document.activeElement;
     if (a && a !== document.body && a.isConnected) return;
@@ -1580,7 +1581,7 @@ export function InsertPanel() {
   ];
   const removeSavedRow = async (c: SavedComponent) => {
     const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="saved"] .insert-tile.saved') ?? [])];
-    savedRefocus.current = Math.max(0, rows.findIndex((r) => r.dataset.key === `saved:${c.id}`));
+    savedRefocus.current = { id: c.id, index: Math.max(0, rows.findIndex((r) => r.dataset.key === `saved:${c.id}`)) };
     if (!(await removeFromLibrary(c))) savedRefocus.current = null;
   };
   const manage = (it: Item) => {
