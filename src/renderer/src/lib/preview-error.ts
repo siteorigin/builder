@@ -4,29 +4,57 @@ import { defFile } from '@generator/index';
 
 type Entry = HistoryInfo['entries'][number];
 
+/** Where the editor's preview keeps the project as it serves it, and a component preview's own copy inside that. */
+const SERVED_COPY = /^\.siteorigin\/cache\/dev\/(?:isolated\/[^/]+\/)?/;
+
 /**
- * The component a preview error came from (#738): the first definition whose file the error's stack, source file or
- * message names, in the order they name files, so the frame nearest the throw wins. A file is named by its
- * project-relative path anywhere in a URL or path (`/src/lib/siteorigin/generated/hero.svelte?t=1:12:3`), whole up
- * to a query, a line number or the end of the frame; never as part of a longer name. Null when none is named.
+ * A file named in a preview error, as a path from the project folder `dir`: a preview address
+ * (`http://127.0.0.1:5173/src/x.svelte`, `/@fs/{dir}/src/x.svelte`), an absolute path (a build error's file), or the
+ * editor's served copy of the project (`.siteorigin/cache/dev/...`). Null for a file outside the project.
  */
-export function errorComponent(texts: readonly (string | undefined)[], components: Readonly<Record<string, ComponentDefinition>>): string | null {
+export function projectPath(raw: string, dir: string): string | null {
+  let p = raw.replace(/\\/g, '/');
+  // A frame written `name@url` (Firefox, Safari), then the address's origin: what is left is from the server's root.
+  const url = /[a-z][a-z0-9+.-]*:\/\/[^/]*/i.exec(p);
+  if (url) p = p.slice(url.index + url[0].length);
+  // Vite's address for a file by its absolute path.
+  const viaFs = p.startsWith('/@fs/');
+  if (viaFs) p = p.slice(4);
+  // An absolute path counts inside the project folder, or inside the editor's served copy wherever the project
+  // folder was reached from (a linked path); anywhere else is not the project's. An address's path is from the root.
+  if (viaFs || /^\/?[a-z]:\//i.test(p) || (!url && p.startsWith('/'))) {
+    const root = dir.replace(/\\/g, '/').replace(/\/+$/, '');
+    const at = root && p.startsWith(`${root}/`) ? root.length + 1 : root && p.startsWith(`/${root}/`) ? root.length + 2 : -1;
+    const copy = p.indexOf('/.siteorigin/cache/dev/');
+    if (at >= 0) p = p.slice(at);
+    else if (copy >= 0) p = p.slice(copy + 1);
+    else return null;
+  }
+  p = p.replace(/^\/+/, '').replace(SERVED_COPY, '');
+  return p && !p.split('/').includes('node_modules') ? p : null;
+}
+
+/**
+ * The component a preview error came from (#738): the first definition whose file the error's file, stack or
+ * message names, in the order they name files, so the frame nearest the throw wins. A file counts only as the whole
+ * of its path from the project folder (see projectPath), never as the end of a longer one. Null when none is named.
+ */
+export function errorComponent(texts: readonly (string | undefined)[], components: Readonly<Record<string, ComponentDefinition>>, dir: string): string | null {
   const byFile = new Map<string, string>();
   for (const def of Object.values(components)) {
-    // A theme's code component carried in the project has no file of its own until it is generated, as any other.
     const file = defFile(def).replace(/^\.?\/+/, '');
     if (file && !byFile.has(file)) byFile.set(file, def.id);
   }
   if (!byFile.size) return null;
-  // Every path-like run in the text, in order: a URL's or a path's slashes, up to what ends a frame's file.
-  const PATH = /[^\s()'"`<>@?#]*\/[^\s()'"`<>?#:]+/g;
+  // Every path-like run in the text, in order: a URL's or a path's slashes, up to what ends a frame's file (a query,
+  // a fragment, a line number).
+  const PATH = /[^\s()'"`<>?#]*\/[^\s()'"`<>?#:]+/g;
   for (const text of texts) {
     if (!text) continue;
     for (const m of text.replace(/\\/g, '/').matchAll(PATH)) {
-      const path = m[0];
-      // A package's file of the same name is the package's, never the project's.
-      if (path.includes('/node_modules/')) continue;
-      for (const [file, id] of byFile) if (path === file || path.endsWith(`/${file}`)) return id;
+      const file = projectPath(m[0], dir);
+      const id = file === null ? undefined : byFile.get(file);
+      if (id) return id;
     }
   }
   return null;

@@ -14,37 +14,52 @@ const components = {
   'theme.hero-alt': def('theme.hero-alt')
 };
 
+const DIR = '/Users/me/Sites/harbour';
+
 describe('errorComponent', () => {
   it('names a project code component from a stack frame URL with a query and line', () => {
     const stack = `TypeError: Cannot read properties of undefined (reading 'price')
     at PricingCard (http://localhost:5173/src/lib/components/PricingCard.svelte?t=1712:41:17)
     at Page (http://localhost:5173/src/routes/+page.svelte:12:3)`;
-    expect(errorComponent([stack], components)).toBe('project.pricing-card');
+    expect(errorComponent([stack], components, DIR)).toBe('project.pricing-card');
   });
 
-  it('names a generated component from a /@fs path and Firefox-style frames', () => {
-    const stack = `Hero@http://localhost:5173/@fs/Users/me/site/.siteorigin/cache/dev/src/lib/siteorigin/generated/theme-hero.svelte:8:5`;
-    expect(errorComponent([stack], components)).toBe('theme.hero');
+  it('names a generated component from a /@fs address of the served copy, in a Firefox-style frame', () => {
+    const stack = `Hero@http://localhost:5173/@fs/Users/me/Sites/harbour/.siteorigin/cache/dev/src/lib/siteorigin/generated/theme-hero.svelte:8:5`;
+    expect(errorComponent([stack], components, DIR)).toBe('theme.hero');
+    // Reached through a linked folder: the served copy is still the editor's own.
+    expect(errorComponent([`Hero@http://h/@fs/private/var/x/harbour/.siteorigin/cache/dev/src/lib/siteorigin/generated/theme-hero.svelte:8:5`], components, '/var/x/harbour')).toBe('theme.hero');
+  });
+
+  it('names a component shown on its own in Component Studio', () => {
+    expect(errorComponent(['at http://h/.siteorigin/cache/dev/isolated/k1/src/lib/components/PricingCard.svelte:2:1'], components, DIR)).toBe('project.pricing-card');
   });
 
   it('takes the frame nearest the throw', () => {
     const stack = `Error: boom
     at http://h/src/lib/siteorigin/generated/theme-hero-alt.svelte:3:1
     at http://h/src/lib/siteorigin/generated/theme-hero.svelte:9:1`;
-    expect(errorComponent([stack], components)).toBe('theme.hero-alt');
+    expect(errorComponent([stack], components, DIR)).toBe('theme.hero-alt');
   });
 
-  it('reads a Vite build error id and a Windows path', () => {
-    expect(errorComponent([undefined, 'C:\\site\\.siteorigin\\cache\\dev\\src\\lib\\components\\PricingCard.svelte'], components)).toBe('project.pricing-card');
-    expect(errorComponent(['/abs/site/src/lib/siteorigin/generated/theme-hero.svelte'], components)).toBe('theme.hero');
+  it('reads a build error by its absolute path, on macOS and Windows, and a path from the project folder', () => {
+    expect(errorComponent([`${DIR}/src/lib/siteorigin/generated/theme-hero.svelte`], components, DIR)).toBe('theme.hero');
+    expect(errorComponent([undefined, 'C:\\Sites\\harbour\\src\\lib\\components\\PricingCard.svelte'], components, 'C:\\Sites\\harbour')).toBe('project.pricing-card');
+    expect(errorComponent(['Unexpected token in src/lib/components/PricingCard.svelte:3:4'], components, DIR)).toBe('project.pricing-card');
   });
 
-  it('never matches part of a longer file name, and names nothing for the runtime or a page', () => {
-    expect(errorComponent(['at http://h/src/lib/siteorigin/generated/x-theme-hero.svelte:1:1'], components)).toBeNull();
-    expect(errorComponent(['at http://h/src/lib/siteorigin/runtime/Link.svelte:1:1\n at http://h/src/routes/+page.svelte:2:2'], components)).toBeNull();
-    expect(errorComponent(['Cannot read properties of undefined'], components)).toBeNull();
-    expect(errorComponent(['at http://h/node_modules/ui/src/lib/components/PricingCard.svelte:1:1'], components)).toBeNull();
-    expect(errorComponent([], {})).toBeNull();
+  it('never takes a file whose path only ends like a component’s', () => {
+    expect(errorComponent(['at http://h/src/lib/siteorigin/generated/x-theme-hero.svelte:1:1'], components, DIR)).toBeNull();
+    expect(errorComponent(['at http://h/src/lib/vendor/src/lib/components/PricingCard.svelte:1:1'], components, DIR)).toBeNull();
+    expect(errorComponent(['at http://h/node_modules/ui/src/lib/components/PricingCard.svelte:1:1'], components, DIR)).toBeNull();
+    expect(errorComponent(['/Users/me/Sites/other/src/lib/components/PricingCard.svelte'], components, DIR)).toBeNull();
+    expect(errorComponent(['at http://h/@fs/Users/me/lib/src/lib/components/PricingCard.svelte:1:1'], components, DIR)).toBeNull();
+  });
+
+  it('names nothing for the runtime, a page, or a message without a file', () => {
+    expect(errorComponent(['at http://h/src/lib/siteorigin/runtime/Link.svelte:1:1\n at http://h/src/routes/+page.svelte:2:2'], components, DIR)).toBeNull();
+    expect(errorComponent(['Cannot read properties of undefined'], components, DIR)).toBeNull();
+    expect(errorComponent([], {}, DIR)).toBeNull();
   });
 });
 

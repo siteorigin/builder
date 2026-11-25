@@ -1073,7 +1073,7 @@ export function Canvas() {
             snap
               ? {
                   message,
-                  definitionId: errorComponent([text(p.file), text(p.stack), message], snap.state.components),
+                  definitionId: errorComponent([text(p.file), text(p.stack), message], snap.state.components, snap.dir),
                   revert: revertStep(snap.history, seen)
                 }
               : null
