@@ -1222,7 +1222,11 @@ export class ProjectSession extends EventEmitter {
     const resolve = componentSources(next.components);
     /** A file the project has there: one the app writes, a component's code, or the project's own (never a folder). */
     const exists = (p: string) => {
-      const file = p.replace(/[?#].*$/, '');
+      // The check tries each extension after the whole reference, a query too (`./data?raw.js`): the file is the path
+      // before the query, with that extension.
+      const q = p.search(/[?#]/);
+      const tail = q < 0 ? '' : p.slice(q);
+      const file = q < 0 ? p : p.slice(0, q) + (['/index.js', '.svelte', '.js', '.ts'].find((ext) => tail.endsWith(ext)) ?? '');
       if (files.has(file) || resolve(file) !== undefined) return true;
       try {
         return statSync(safeJoin(this.dir, file)).isFile();
@@ -1250,8 +1254,8 @@ export class ProjectSession extends EventEmitter {
       await this.persist(next, { label: `Convert “${design.name}” to code`, source: 'user', wholeProject: true });
     } catch (e) {
       const why = (e as Error).message;
-      // Saved as far as the project's own files: reopening finishes the rest.
-      if (this.state !== before) return refuse(`The code component was saved, but the save could not be finished: ${why} Close and reopen the project to finish it.`);
+      // Stopped part way (or unsure how far it got): reopening finishes it, or finds the file still in conflict.
+      if (this.state !== before || this.unsettled) return refuse(`The conversion could not be finished: ${why} Close and reopen the project: it then finishes the conversion, or shows the file in conflict as it was.`);
       // Nothing of it installed: the edited file is someone else's again, still in conflict, to choose for again.
       if (claimed === undefined) delete this.generated.files[path];
       else this.generated.files[path] = claimed;

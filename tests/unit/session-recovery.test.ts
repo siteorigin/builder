@@ -1326,6 +1326,14 @@ describe('converting a design’s edited file to a code component (#737)', () =>
     expect((await s.resolveConflict(HERO_FILE, 'convert')).message).toMatch(/Custom code needs Developer mode/);
   });
 
+  it('says to reopen when the save stops after the project’s files are written', async () => {
+    const { s } = await editedHero();
+    vi.spyOn(s as unknown as { installHistory: () => Promise<unknown> }, 'installHistory').mockRejectedValueOnce(new Error('disk went away'));
+    const r = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });
+    expect(r).toEqual({ ok: false, message: expect.stringMatching(/could not be finished: disk went away Close and reopen the project/) });
+    expect(Object.values(s.state.components).some((d) => d.generatedFrom === HERO)).toBe(true);
+  });
+
   it('leaves the edited file in place, still in conflict, when the conversion cannot be saved', async () => {
     const { dir, s, edited } = await editedHero();
     const persist = vi.spyOn(s as unknown as { persist: () => Promise<unknown> }, 'persist').mockRejectedValueOnce(Object.assign(new Error('no space left on device'), { code: 'ENOSPC' }));

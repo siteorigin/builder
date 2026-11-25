@@ -36,11 +36,16 @@ export async function relocateSource(source: string, from: string, to: string, r
   const toDir = posix.dirname(to);
   /** The reference as it reads from the new folder, or null when it reads the same there (or is not module-relative). */
   const moved = (spec: string): string | null => {
-    if (!spec.startsWith('./') && !spec.startsWith('../')) return null;
     // A query or fragment (`?url`, `#icon`) stays as it was written after the path.
     const cut = spec.search(/[?#]/);
     const path = cut < 0 ? spec : spec.slice(0, cut);
     const suffix = cut < 0 ? '' : spec.slice(cut);
+    // Named from the library: it reads the same from anywhere, but a file written only now and then is still the one it copies.
+    if (spec.startsWith('$lib/')) {
+      const to = redirect?.(posix.normalize(`src/lib/${path.slice(5)}`));
+      return to?.startsWith('src/lib/') ? `$lib/${to.slice(8)}${suffix}` : null;
+    }
+    if (!spec.startsWith('./') && !spec.startsWith('../')) return null;
     const was = posix.join(fromDir, path);
     // A file the generator writes only now and then (a contact form's copy for AI agents) is read as the file it copies.
     const target = redirect?.(was) ?? was;
@@ -78,7 +83,14 @@ export async function relocateSource(source: string, from: string, to: string, r
     if (next === null) return;
     if (source.slice(start, end) === value) return void edits.push({ start, end, text: next });
     const quote = source[n.start];
-    const escaped = next.replace(/\\/g, '\\\\').replaceAll(quote, `\\${quote}`).replace(/\$\{/g, '\\${');
+    const escaped = next
+      .replace(/\\/g, '\\\\')
+      .replaceAll(quote, `\\${quote}`)
+      .replace(/\$\{/g, '\\${')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029');
     edits.push({ start: n.start, end: n.end, text: `${quote}${escaped}${quote}` });
   };
   let ast: Node;
@@ -106,17 +118,11 @@ export async function relocateSource(source: string, from: string, to: string, r
   walk(ast.module);
   walk(ast.fragment);
   // Styles: a relative stylesheet or picture is found from the file's folder too. Only real declarations and imports
-  // are read (never a comment, nor the words a `content` shows), each URL quoted or not.
+  // are read, each URL quoted or not, and never one that is only words in a string or a comment.
   const urls = (from: number, to: number, imports: boolean) => {
-    const text = source.slice(from, to);
-    const found = [...text.matchAll(/url\(\s*(?:(["'])((?:(?!\1)[^\\\n])*)\1|([^"'()\s\\]+))\s*\)/gi)].map((m) => ({ m, url: m[2] ?? m[3] }));
-    if (imports) for (const m of text.matchAll(/@import\s+(["'])((?:(?!\1)[^\\\n])*)\1/gi)) found.push({ m, url: m[2] });
-    for (const { m, url } of found) {
+    for (const { at, url } of cssUrls(source.slice(from, to), imports)) {
       const next = movedUrl(url);
-      if (next === null) continue;
-      // The URL is the match's last part: only a quote or the bracket follows it.
-      const start = from + m.index! + m[0].lastIndexOf(url);
-      edits.push({ start, end: start + url.length, text: next });
+      if (next !== null) edits.push({ start: from + at, end: from + at + url.length, text: next });
     }
   };
   const styles = (v: unknown) => {
@@ -124,7 +130,7 @@ export async function relocateSource(source: string, from: string, to: string, r
     if (Array.isArray(v)) return v.forEach(styles);
     const n = v as Node;
     if (typeof n.start === 'number' && typeof n.end === 'number') {
-      if (n.type === 'Declaration' && String(n.property).toLowerCase() !== 'content') return urls(n.start, n.end, false);
+      if (n.type === 'Declaration') return urls(n.start, n.end, false);
       if (n.type === 'Atrule' && String(n.name).toLowerCase() === 'import') return urls(n.start, n.end, true);
     }
     if (n.type === 'StyleSheet' || n.type === 'Rule' || n.type === 'Atrule' || n.type === 'Block') {
@@ -142,6 +148,47 @@ export async function relocateSource(source: string, from: string, to: string, r
     if (e.end > last) continue;
     out = out.slice(0, e.start) + e.text + out.slice(e.end);
     last = e.start;
+  }
+  return out;
+}
+
+/**
+ * The URLs a piece of CSS loads, with where each starts: every `url(…)` outside strings and comments, and with
+ * `imports`, the string an `@import` names. Escapes are not unpicked: a URL written with one is left as it is.
+ */
+function cssUrls(css: string, imports: boolean): Array<{ at: number; url: string }> {
+  const out: Array<{ at: number; url: string }> = [];
+  let i = 0;
+  const string = (from: number) => {
+    const quote = css[from];
+    let j = from + 1;
+    while (j < css.length && css[j] !== quote && css[j] !== '\n') j += css[j] === '\\' ? 2 : 1;
+    return j;
+  };
+  while (i < css.length) {
+    const ch = css[i];
+    if (ch === '/' && css[i + 1] === '*') {
+      const close = css.indexOf('*/', i + 2);
+      i = close < 0 ? css.length : close + 2;
+    } else if (ch === '"' || ch === "'") {
+      const end = string(i);
+      const raw = css.slice(i + 1, end);
+      if (imports && /@import\s*$/i.test(css.slice(0, i)) && !raw.includes('\\')) out.push({ at: i + 1, url: raw });
+      i = end + 1;
+    } else if ((ch === 'u' || ch === 'U') && /^url\(/i.test(css.slice(i, i + 4)) && !/[\w-]$/.test(css.slice(0, i))) {
+      let j = i + 4;
+      while (/\s/.test(css[j] ?? '')) j++;
+      if (css[j] === '"' || css[j] === "'") {
+        const end = string(j);
+        const raw = css.slice(j + 1, end);
+        if (!raw.includes('\\')) out.push({ at: j + 1, url: raw });
+        i = end + 1;
+      } else {
+        const m = /^[^"'()\s\\]+/.exec(css.slice(j));
+        if (m && /^\s*\)/.test(css.slice(j + m[0].length))) out.push({ at: j, url: m[0] });
+        i = j + (m?.[0].length ?? 0);
+      }
+    } else i++;
   }
   return out;
 }

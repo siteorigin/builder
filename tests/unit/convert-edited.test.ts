@@ -59,8 +59,9 @@ describe('a design’s file moved to the custom folder (#737)', () => {
     const source = [
       '<script>',
       '\timport A from ".\\x2fa.js";',
-      "\timport icon from './icon.svg?url';",
+      "\timport icon from './icon.svg?url#frag';",
       "\timport Form from './contact-form.webmcp.svelte';",
+      "\timport Lib from '$lib/siteorigin/generated/contact-form.webmcp.svelte';",
       "\tconst pic = new URL('pic.png', import.meta.url);",
       '</script>',
       '',
@@ -70,6 +71,7 @@ describe('a design’s file moved to the custom folder (#737)', () => {
       '\t.b { background: URL("./has space.png"); }',
       '\t.c { background: url(bare.png); }',
       '\t.d { background: url(/root.png), url(data:image/png;base64,AA==); }',
+      '\t.e::before { content: url(./badge.svg); --caption: "url(cap.svg)"; }',
       '</style>',
       ''
     ].join('\n');
@@ -77,11 +79,13 @@ describe('a design’s file moved to the custom folder (#737)', () => {
     expect(await relocateSource(source, FROM, TO, redirect)).toBe(
       source
         .replace('".\\x2fa.js"', '"../generated/a.js"')
-        .replace("'./icon.svg?url'", "'../generated/icon.svg?url'")
+        .replace("'./icon.svg?url#frag'", "'../generated/icon.svg?url#frag'")
         .replace("'./contact-form.webmcp.svelte'", "'../generated/contact-form.svelte'")
+        .replace("'$lib/siteorigin/generated/contact-form.webmcp.svelte'", "'$lib/siteorigin/generated/contact-form.svelte'")
         .replace("'pic.png'", "'../generated/pic.png'")
         .replace('URL("./has space.png")', 'URL("../generated/has space.png")')
         .replace('url(bare.png)', 'url(../generated/bare.png)')
+        .replace('url(./badge.svg)', 'url(../generated/badge.svg)')
     );
   });
 
@@ -166,6 +170,18 @@ describe('placements of a converted design file (#737)', () => {
     expect(home).toContain('"welcome"');
     expect(home).toMatch(/so_appear=\{?"lift"\}?/);
     expect(home).not.toMatch(/\bvariant=/);
+  });
+
+  it('generates a design edited to place its own copy without going round forever', () => {
+    const { after, ids, hero } = converted();
+    const design = after.components[hero];
+    const root = design.tree!.rootIds[0];
+    const loop: InstanceNode = { id: 'n_loop1', kind: 'instance', definitionId: ids[hero], props: {} };
+    // First, so every walk of the design meets it before anything that would end the walk early (its image).
+    design.tree!.nodes = { [loop.id]: loop, ...design.tree!.nodes };
+    const parent = design.tree!.nodes[root] as { children?: string[] };
+    parent.children = [...(parent.children ?? []), loop.id];
+    expect(() => generateProject(after, { instrument: false })).not.toThrow();
   });
 
   it('is called as code once it no longer names the design it was made from', () => {
