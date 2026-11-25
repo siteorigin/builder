@@ -214,6 +214,11 @@ describe('Wrap and Ungroup in a component’s design', () => {
     return { s: r.state, id, own: { kind: 'component' as const, id } };
   }
   const tree = (s: ProjectState, id: string) => s.components[id].tree!;
+  /** The fork without its pinned-heading layout, whose styles on the heading group and the container keep them grouped. */
+  function unpinned() {
+    const { s, id, own } = features();
+    return { s: apply(s, [{ type: 'component.removeVariant', definitionId: id, axis: 'layout', variant: 'sticky-split' }]).state, id, own };
+  }
 
   it('wraps what a repeated card shows, item fields and all, and ungroups it back exactly', () => {
     const { s, id, own } = features();
@@ -228,7 +233,7 @@ describe('Wrap and Ungroup in a component’s design', () => {
   });
 
   it('ungroups a group that hides when empty: what it held hides by itself', () => {
-    const { s, id, own } = features();
+    const { s, id, own } = unpinned();
     expect(tree(s, id).nodes.intro).toMatchObject({ collapseEmpty: true });
     const u = apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['intro'] }]);
     expect((tree(u.state, id).nodes.inner as ElementNode).children).toEqual(['eyebrow', 'heading', 'lead', 'grid']);
@@ -237,7 +242,7 @@ describe('Wrap and Ungroup in a component’s design', () => {
   });
 
   it('ungroups a plain container right inside the root, and keeps the parts inside it', () => {
-    const { s, id, own } = features();
+    const { s, id, own } = unpinned();
     const u = apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['inner'] }]);
     expect(tree(u.state, id).rootIds).toEqual(['root']);
     expect((tree(u.state, id).nodes.root as ElementNode).children).toEqual(['intro', 'grid']);
@@ -263,6 +268,8 @@ describe('Wrap and Ungroup in a component’s design', () => {
     const styled = structuredClone(s);
     styled.components[id].variantAxes!.tone.options.muted.styles!.inner = { base: { gap: { token: 'space.lg' } } };
     expect(() => apply(styled, [{ type: 'node.unwrap', owner: own, nodeIds: ['inner'] }])).toThrow(/variant styles/);
+    // The pinned-heading layout styles the heading group and the container it pins them in.
+    expect(() => apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['intro'] }])).toThrow(/“Heading pinned beside cards” variant styles/);
     expect(JSON.stringify(s.components[id])).toBe(before);
   });
 
