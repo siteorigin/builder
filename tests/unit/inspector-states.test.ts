@@ -49,6 +49,19 @@ describe('what a state shows through', () => {
     expect(under({ styles: { base: { background: 'pink' } }, layers: look })).toEqual({ value: 'pink', from: 'default' });
   });
 
+  it('weighs a look being edited where it stands among the design’s layers', () => {
+    const look: ResponsiveStyles = { base: { background: 'blue' } };
+    const layers: StyleLayer[] = [
+      { styles: { base: { background: 'white' }, 'base:hover': { background: 'red' } }, strength: 1 },
+      { styles: look, strength: 2 },
+      { styles: { 'base:hover': { background: 'green' } }, strength: 2 }
+    ];
+    // Another axis's hover is as heavy as the look's resting rule, and a state comes after every resting rule.
+    expect(under({ styles: look, layers })).toEqual({ value: 'green', from: 'design' });
+    // Without it, the look's own resting value beats the design's hover.
+    expect(under({ styles: look, layers: layers.slice(0, 2) })).toEqual({ value: 'blue', from: 'default' });
+  });
+
   it('finds a look’s hover through the design layers of a real placement', () => {
     const s = createStarterState('business', 'Test Studio', false);
     const page = s.pages[s.site.homePageId];
@@ -122,42 +135,65 @@ describe('the state being edited', () => {
   });
 });
 
-/** A code component with a Title part, which places the classes it is given. */
+/** A code component with Title and Badge parts, which places the classes it is given. */
 const CODE = `<script>
 	let { title = 'Title', so_o = undefined, class: className = '' } = $props();
 </script>
 
 <div class={['fancy', className]}>
 	<h3 class={['title', so_o?.title]}>{title}</h3>
+	<span class={['badge', so_o?.badge]}>New</span>
 </div>
 `;
+/** A code component that takes no part classes. */
+const PLAIN = `<script>
+	let { title = 'Title' } = $props();
+</script>
 
-function codePlacement(): { s: ProjectState; def: ComponentDefinition; node: InstanceNode } {
+<p>{title}</p>
+`;
+
+function codePlacement(source = CODE): { s: ProjectState; def: ComponentDefinition; node: InstanceNode } {
   const s = createStarterState('business', 'Test Studio', false);
-  const r = applyOperations(s, [{ type: 'component.createCode', name: 'Fancy', source: CODE, properties: { title: { type: 'string', label: 'Title', default: 'Title' } } }]);
+  const r = applyOperations(s, [{ type: 'component.createCode', name: 'Fancy', source, properties: { title: { type: 'string', label: 'Title', default: 'Title' } } }]);
   const def = r.state.components[r.results[0].definitionId as string];
   def.parts.title = { nodeId: 'title', label: 'Title', styleControls: ['color', 'textStyle'] };
+  def.parts.badge = { nodeId: 'badge', label: 'Badge', styleControls: ['color', 'background'] };
   const node = makeInstance(def, {});
   const page = r.state.pages[r.state.site.homePageId];
   page.nodes[node.id] = node;
   page.rootIds.push(node.id);
   return { s: r.state, def, node };
 }
+const pageOf = (s: ProjectState, instrument: boolean) => generateProject(s, { instrument }).get(pageFile(s.pages[s.site.homePageId]))!;
+/** The part classes a page hands a placement, as written in its markup. */
+const partMap = (source: string) => {
+  const m = source.match(/so_o=\{(\{[^}]*\})\}/);
+  return m ? (JSON.parse(m[1]) as Record<string, string>) : null;
+};
 
 describe('a code component’s parts in the editor’s preview', () => {
   it('carry their class before any change of their own, so the canvas can show one in a state; the site does not', () => {
     const { s, node } = codePlacement();
-    const file = pageFile(s.pages[s.site.homePageId]);
-    const dev = generateProject(s, { instrument: true }).get(file)!;
-    const clean = generateProject(s, { instrument: false }).get(file)!;
-    expect(dev).toContain(overrideClass(node.id, 'title'));
-    expect(clean).not.toContain(overrideClass(node.id, 'title'));
+    expect(partMap(pageOf(s, true))).toEqual({ badge: overrideClass(node.id, 'badge'), title: overrideClass(node.id, 'title') });
+    // Its root has no class of its own to find: the canvas shows the code's own root.
+    expect(pageOf(s, true)).not.toContain(overrideClass(node.id, 'root'));
+    expect(partMap(pageOf(s, false))).toBeNull();
+    expect(pageOf(s, false)).not.toContain(overrideClass(node.id, 'title'));
   });
 
-  it('keep the class with a change of their own, in the editor and the site alike', () => {
+  it('keep the class a part with changes has, beside the class of one without, in the editor; the site keeps only the changed one', () => {
     const { s, node } = codePlacement();
     node.overrides = { title: { 'base:hover': { color: '#00aa00' } } };
-    const file = pageFile(s.pages[s.site.homePageId]);
-    for (const instrument of [true, false]) expect(generateProject(s, { instrument }).get(file)!.match(new RegExp(overrideClass(node.id, 'title'), 'g'))).toHaveLength(1);
+    expect(partMap(pageOf(s, true))).toEqual({ title: overrideClass(node.id, 'title'), badge: overrideClass(node.id, 'badge') });
+    expect(partMap(pageOf(s, false))).toEqual({ title: overrideClass(node.id, 'title') });
+    // The change is in the site's stylesheet for that class, in the state.
+    const css = [...generateProject(s, { instrument: false }).values()].join('\n');
+    expect(css).toMatch(new RegExp(`\\.${overrideClass(node.id, 'title')}:where\\(:hover\\)`));
+  });
+
+  it('are not handed to code that takes no part classes', () => {
+    const { s } = codePlacement(PLAIN);
+    expect(pageOf(s, true)).not.toContain('so_o=');
   });
 });

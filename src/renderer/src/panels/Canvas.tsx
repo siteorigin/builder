@@ -1186,7 +1186,8 @@ export function Canvas() {
   }
   useEffect(() => {
     if (ready) syncForcedState();
-  }, [ready, mode, styleState, styleStatePart, inspectorShown, selection && refKey(selection), snapshot?.revision, view?.key, definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
+    // The selection itself, not its key: in Edit everywhere a click on the same node in another placement shows it there.
+  }, [ready, mode, styleState, styleStatePart, inspectorShown, selection, snapshot?.revision, view?.key, definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Each visit to Preview starts practising successful sends, with nothing said about earlier ones.
   useEffect(() => {

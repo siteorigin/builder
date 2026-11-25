@@ -58,8 +58,14 @@ await card.click({ modifiers: ['Alt'], position: { x: 6, y: 6 } });
 await background.waitFor({ timeout: 15000 });
 await pointerToDock();
 await eventually(async () => assert.equal(await stateRadio('Default').getAttribute('aria-checked'), 'true', 'the card is edited at rest'));
-const resting = await bg(card);
-assert.notEqual(resting, RED);
+
+step('a resting background of its own, which no state reset may touch');
+await setBackground('#eeeeee');
+const resting = 'rgb(238, 238, 238)';
+await eventually(async () => assert.equal(await bg(card), resting, 'the cards show their resting background'), 30000);
+const RESTING = { background: '#eeeeee' };
+
+assert.equal(await win.locator('.style-row[data-prop="paddingBlock"]').count(), 1, 'padding is offered at rest');
 
 step('choose Hover and give the card a red hover background, the pointer staying in the dock');
 await stateRadio('Hover').click();
@@ -70,7 +76,7 @@ await setBackground('#ff0000');
 await eventually(async () => assert.equal(await bg(card), RED, 'the canvas shows the selected card hovered'), 30000);
 assert.equal(await bg(other), resting, 'the other cards stay at rest');
 await eventually(async () => assert.equal(await dot('Hover').count(), 1, 'Hover is marked as holding changes'));
-assert.deepEqual((await cardStyles())['base:hover'], { background: '#ff0000' });
+assert.deepEqual(await cardStyles(), { base: RESTING, 'base:hover': { background: '#ff0000' } });
 await win.screenshot({ path: join(OUT, 'style-states-01-hover.png') });
 
 step('the site gets a plain hover rule; nothing of the forced state');
@@ -101,7 +107,7 @@ step('reset the hover change: the card and the mark go back to rest');
 await win.getByRole('button', { name: /^Reset the hover change for All sizes/ }).click();
 await eventually(async () => assert.equal(await bg(card), resting, 'nothing shows on hover any more'), 30000);
 await eventually(async () => assert.equal(await dot('Hover').count(), 0, 'Hover holds no changes'));
-assert.equal((await cardStyles())['base:hover'], undefined);
+assert.deepEqual(await cardStyles(), { base: RESTING }, 'only the hover change is gone');
 await eventually(() => assert.doesNotMatch(siteCss(), /#ff0000/, 'the hover rule is gone'), 15000);
 
 step('a hover and a focus background, both reset at once');
@@ -116,12 +122,14 @@ await eventually(async () => assert.equal(await bg(card), 'rgb(0, 0, 255)', 'the
 await eventually(async () => assert.equal(await dot('Focus').count(), 1));
 await win.screenshot({ path: join(OUT, 'style-states-02-focus.png') });
 await win.getByRole('button', { name: 'Reset all states', exact: true }).click();
-await eventually(async () => assert.deepEqual(await cardStyles(), {}, 'every state change is gone'), 15000);
+await eventually(async () => assert.deepEqual(await cardStyles(), { base: RESTING }, 'every state change is gone, the resting one stays'), 15000);
 await eventually(async () => assert.equal(await bg(card), resting));
 assert.equal(await dot('Hover').count(), 0);
 assert.equal(await dot('Focus').count(), 0);
 
 step('selecting another card edits it at rest');
+await stateRadio('Focus').click();
+await eventually(async () => assert.equal(await card.getAttribute('data-so-force-state'), 'focus', 'the card is held focused before the selection moves'));
 await other.scrollIntoViewIfNeeded();
 await other.click({ modifiers: ['Alt'], position: { x: 6, y: 6 } });
 await eventually(async () => assert.equal(await stateRadio('Default').getAttribute('aria-checked'), 'true', 'back to Default'));

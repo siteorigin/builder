@@ -3920,10 +3920,18 @@ const FORCE_OF = { hover: 'hover', 'focus-visible': 'focus', focus: 'focus', act
 function forcedSelector(sel) {
   if (!sel || sel.includes(FORCE_ATTR)) return null;
   let found = false;
-  const out = sel.replace(FORCE_PSEUDO, (m, p) => {
-    found = true;
-    return `:is(${m}, [${FORCE_ATTR}="${FORCE_OF[p]}"])`;
-  });
+  // Quoted attribute values (`[title=":hover"]`) are text, never a state, and stay as they are.
+  const out = sel
+    .split(/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/)
+    .map((part, i) =>
+      i % 2
+        ? part
+        : part.replace(FORCE_PSEUDO, (m, p) => {
+            found = true;
+            return `:is(${m}, [${FORCE_ATTR}="${FORCE_OF[p]}"])`;
+          })
+    )
+    .join('');
   return found ? out : null;
 }
 function forceRules(rules) {
@@ -3937,17 +3945,20 @@ function forceRules(rules) {
     if (rule.cssRules) forceRules(rule.cssRules);
   }
 }
-/** Every stylesheet of the page, rewritten for forced states. One from another origin (a web font's) is not readable. */
-function forceSheets() {
-  for (const sheet of document.styleSheets) {
-    let rules;
-    try {
-      rules = sheet.cssRules;
-    } catch {
-      continue;
-    }
-    forceRules(rules);
+/** One stylesheet rewritten for forced states. One from another origin (a web font's), or still loading, is not readable. */
+function forceSheet(sheet) {
+  let rules;
+  try {
+    rules = sheet && sheet.cssRules;
+  } catch {
+    return;
   }
+  if (rules) forceRules(rules);
+}
+/** Every stylesheet of the page, those a script adopted included, rewritten for forced states. */
+function forceSheets() {
+  for (const sheet of document.styleSheets) forceSheet(sheet);
+  for (const sheet of document.adoptedStyleSheets || []) forceSheet(sheet);
 }
 /** The class an inner part of a code component placed on a page carries, in the editor from the start (see the generator's `overrideClass`). */
 const partClass = (node, part) => `so-o-${node}-${part}`.replace(/[^a-zA-Z0-9_-]/g, '-');
@@ -3977,22 +3988,39 @@ function forcedTargets() {
 function markForced() {
   const want = new Set(forcedTargets());
   for (const el of forcedEls) if (!want.has(el)) el.removeAttribute(FORCE_ATTR);
+  // A copy of a marked element the page made (re-rendering it, say) is no longer what is shown in the state.
+  for (const el of document.querySelectorAll(`[${FORCE_ATTR}]`)) if (!want.has(el)) el.removeAttribute(FORCE_ATTR);
   forcedEls.clear();
   for (const el of want) {
     if (el.getAttribute(FORCE_ATTR) !== forced.state) el.setAttribute(FORCE_ATTR, forced.state);
     forcedEls.add(el);
   }
 }
-/** A stylesheet arriving or changing (Vite replaces a <style>'s text, or adds one) is rewritten before it is painted. */
+/**
+ * A stylesheet arriving or changing (Vite replaces a <style>'s text, or adds one) is rewritten before it is painted:
+ * that one alone, so a style the page keeps changing (a drag's preview) costs one sheet each time.
+ */
 const sheetWatch = new MutationObserver((records) => {
+  if (!forced) return;
   const isSheet = (n) => !!n && (n.nodeName === 'STYLE' || (n.nodeName === 'LINK' && /\bstylesheet\b/i.test(n.rel || '')));
-  if (forced && records.some((r) => isSheet(r.target.nodeType === 1 ? r.target : r.target.parentNode) || [...r.addedNodes].some(isSheet))) forceSheets();
+  const owners = new Set();
+  for (const r of records) {
+    const at = r.target.nodeType === 1 ? r.target : r.target.parentNode;
+    if (isSheet(at)) owners.add(at);
+    for (const n of r.addedNodes) {
+      if (isSheet(n)) owners.add(n);
+      else if (n.nodeType === 1) for (const inner of n.querySelectorAll('style, link')) if (isSheet(inner)) owners.add(inner);
+    }
+  }
+  for (const n of owners) forceSheet(n.sheet);
+  // A sheet a script adopts is not in the document: checked again with any change (each one is rewritten once).
+  if (owners.size && document.adoptedStyleSheets && document.adoptedStyleSheets.length) for (const sheet of document.adoptedStyleSheets) forceSheet(sheet);
 });
 // A linked stylesheet is readable once it has loaded.
 document.addEventListener(
   'load',
   (e) => {
-    if (forced && e.target instanceof HTMLLinkElement) forceSheets();
+    if (forced && e.target instanceof HTMLLinkElement) forceSheet(e.target.sheet);
   },
   true
 );

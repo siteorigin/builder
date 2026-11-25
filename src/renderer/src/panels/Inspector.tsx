@@ -1169,7 +1169,15 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={[styledPart === 'root' ? 'Whole section' : (def.parts[styledPart]?.label ?? 'Whole section'), overrides ? changes(overrides) : ''].filter(Boolean).join(' · ')}>
           {Object.keys(def.parts).length > 1 && (
             <Field label="Part">
-              <select className="select" value={styledPart} onChange={(e) => setCodePart(e.target.value)}>
+              <select
+                className="select"
+                value={styledPart}
+                onChange={(e) => {
+                  setCodePart(e.target.value);
+                  // Another part is styled at rest until a state is chosen for it: the canvas lets go of this one.
+                  setState({ styleState: null, styleStatePart: null });
+                }}
+              >
                 {Object.entries(def.parts).map(([id, p]) => (
                   <option key={id} value={id}>
                     {id === 'root' ? `Whole ${def.name.toLowerCase()}` : p.label}
@@ -2216,7 +2224,9 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   // Under a look's own rules: what the design gives this element at each size without them (its own styles and the
   // default of every other choice), and for a component placed in the design, that component's design and the
   // changes this design makes to it.
-  const lookInherited = look
+  // Every rule on this element with the look chosen, the look's own included, weakest first: what a hover, focus or
+  // pressed state of the look shows through is worked out among them (see stateUnder).
+  const lookLayers = look
     ? node.kind === 'instance'
       ? (() => {
           const placed = state.components[node.definitionId];
@@ -2224,12 +2234,13 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           const inner = placed?.kind === 'managed' && rootId ? designLayers(placed, rootId, startChoices) : [];
           // The other choices of this design style the placed component too, as their defaults. Their rules and the
           // placed design's own are equally specific, so the stylesheet's order decides: definitions by ID.
-          const outer = designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles && l.styles !== lookOption!.styles?.[node.id]);
+          const outer = designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles);
           const layers = def.id.localeCompare(node.definitionId) < 0 ? [...outer, ...inner] : [...inner, ...outer];
-          return cascadeStyles([...layers, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }]);
+          return [...layers, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }];
         })()
-      : cascadeStyles(designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles !== lookOption!.styles?.[node.id]))
+      : designLayers(def, node.id, { [look.axis]: look.variant })
     : undefined;
+  const lookInherited = lookLayers ? cascadeStyles(lookLayers.filter((l) => l.styles !== lookOption!.styles?.[node.id])) : undefined;
   // The look's preview renders only while the Inspector is on screen: a hidden one would prepare it again on every change.
   const inspecting = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
@@ -2413,6 +2424,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
               key={`${look.axis}:${look.variant}`}
               styles={lookOption!.styles?.[node.id]}
               inherited={lookInherited}
+              layers={lookLayers}
               wideColumns
               tokens={tokens}
               allowed={node.kind === 'instance' ? (placedDef?.parts.root?.styleControls ?? styleSetFor(node)) : styleSetFor(node)}
@@ -2455,6 +2467,8 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           designSizesWin
           tokens={tokens}
           allowed={styleSetFor(node)}
+          // A list or a slot renders no element of its own: nothing would show a state of it.
+          states={node.kind !== 'repeat' && node.kind !== 'slot'}
           image={defImage}
           onSet={(property, value, expectedRevision, inState) => {
             // Resetting a value restores the original design's value, when there is one.

@@ -314,10 +314,6 @@ export function StyleControls({
   // Hover, focus and pressed states are offered where a property a state can change is, or where one is already set.
   const statesOffered = states && (((allowed?.length ? allowed : STYLE_PROPS.map((p) => p.id)).some(isStateStyleProp)) || hasStateStyles(styles));
   const state = statesOffered ? chosenState : null;
-  // The canvas shows the part being styled in the chosen state (see Canvas): this control says which, while it shows.
-  useEffect(() => {
-    if (statesOffered && state && (useStore.getState().styleStatePart ?? undefined) !== statePart) setState({ styleStatePart: statePart ?? null });
-  }, [statesOffered, state, statePart]);
   // A value set outside the offered controls (by the AI, say) still gets a row, so it can be seen and reset.
   const setOutside = allowed?.length ? [...new Set(rulesIn(styles, state).flatMap((sc) => Object.keys(sc ?? {})))].filter((id) => !allowed.includes(id)) : [];
   // In a state, only what a state can change.
