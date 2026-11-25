@@ -304,6 +304,19 @@ export function Canvas() {
   const assetDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void } | null>(null);
   /** The project revision the page shows: as it loads, the one the editor has; then each one it says it has applied. */
   const shownRevision = useRef(0);
+  /** The editor's revision, and when it took it. */
+  const revisionAt = useRef({ revision: 0, at: 0 });
+  /**
+   * The page still shows an older version of the project than the editor has: a save's update has not reached it
+   * yet (spec §18.2). What is picked or measured on it would be the old page, so picks and canvas edits wait, and work
+   * again once the page says it shows the new version. A page that never says so is waited for PAGE_CATCH_UP_MS.
+   */
+  function pageBehind(): boolean {
+    const revision = getState().snapshot?.revision ?? 0;
+    if (shownRevision.current >= revision) return false;
+    if (revisionAt.current.revision !== revision) revisionAt.current = { revision, at: Date.now() };
+    return Date.now() - revisionAt.current.at < PAGE_CATCH_UP_MS;
+  }
   const url = runtime.state === 'ready' ? runtime.url : null;
   const origin = url ? new URL(url).origin : null;
   const state = snapshot?.state;
@@ -526,7 +539,7 @@ export function Canvas() {
     setState({ selection: ref });
     setTimeout(() => {
       const desc = descFor(ref);
-      if (!desc || !canInlineEdit(ref)) return;
+      if (!desc || !canInlineEdit(ref) || pageBehind()) return;
       frameRef.current?.focus();
       beginTextEdit(ref, desc);
     }, 60);
@@ -834,8 +847,8 @@ export function Canvas() {
         case 'select': {
           // A pick on a page the editor has not yet confirmed (one leaving) selects nothing: also one made while another
           // page chosen in Pages a moment ago waits to open, which then opens. Nor does one that arrives once a workspace
-          // covers the canvas (#700): the page is out of sight.
-          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
+          // covers the canvas (#700): the page is out of sight. Nor one on a page a save has not reached yet (#735).
+          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s)) || pageBehind()) return;
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
@@ -844,7 +857,7 @@ export function Canvas() {
           break;
         }
         case 'dblclick': {
-          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
+          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s)) || pageBehind()) return;
           const chain = chainOf(p.chain);
           const ref = pick(chain, true);
           // In Component Studio the element double-clicked is the one edited, as the preview names it: a list's item
@@ -953,7 +966,7 @@ export function Canvas() {
           frameTextFocus.active = p.on === true;
           break;
         case 'contextmenu': {
-          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
+          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s)) || pageBehind()) return;
           pagePick();
           const chain = chainOf(p.chain);
           const ref = pick(chain, false);
@@ -1163,6 +1176,12 @@ export function Canvas() {
   useEffect(() => {
     if (hoverChain.current) resolveHover();
   }, [selection && refKey(selection), mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // How long the page has been behind is counted from when the editor took the revision.
+  useEffect(() => {
+    const revision = snapshot?.revision ?? 0;
+    if (revisionAt.current.revision !== revision) revisionAt.current = { revision, at: Date.now() };
+  }, [snapshot?.revision]);
 
   // Keep the bridge in sync with selection, hover and document revisions.
   useEffect(() => {
@@ -1513,7 +1532,7 @@ export function Canvas() {
     const s = getState();
     const t = structuralTarget(s.selection);
     const st = s.snapshot?.state;
-    if (!t || !st) return;
+    if (!t || !st || pageBehind()) return;
     const tree = treeFor(st, t.owner);
     const info = tree && findParent(tree, t.nodeId);
     if (!info || info.list.length < 2) return;
@@ -1775,7 +1794,7 @@ export function Canvas() {
   function startInsertDrag(drag: InsertDrag, start: { x: number; y: number; pointerId: number }): boolean {
     const s = getState();
     const snap = s.snapshot;
-    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current) return false;
+    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current || pageBehind()) return false;
     const st = snap.state;
     const owner: OwnerRef = s.templateMode ? templateOwner(s.templateMode) : { kind: 'page', id: s.pageId };
     const role = insertRole(st, drag.spec);
@@ -2000,7 +2019,7 @@ export function Canvas() {
     const s = getState();
     const snap = s.snapshot;
     const to = snap && resolvePoint(snap.state, p);
-    if (!snap || !view || !to) return;
+    if (!snap || !view || !to || pageBehind()) return;
     const r = trigger.getBoundingClientRect();
     setAdding({ point: p, trigger, at, box, anchor: { left: r.left, top: r.top, width: r.width, height: r.height }, items: offeredAt(snap.state, to, p.role, !!s.settings?.developerMode), opening: snap.workspaceKey, view: view.key, revision: snap.revision, refused: null });
   }
@@ -2067,7 +2086,7 @@ export function Canvas() {
   function startAssetDrag(drag: AssetDrag, start: { x: number; y: number; pointerId: number }): boolean {
     const s = getState();
     const snap = s.snapshot;
-    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || s.templateMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current) return false;
+    if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || s.templateMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current || pageBehind()) return false;
     const st = snap.state;
     const opening = snap.workspaceKey;
     const revision = snap.revision;
@@ -3140,6 +3159,8 @@ function stepKey(s: ReturnType<typeof getState>): string {
   return JSON.stringify([s.selection ? refKey(s.selection) : null, s.snapshot?.revision ?? null, s.pageId, s.templateMode ?? null, s.definitionMode?.definitionId ?? null, s.viewport]);
 }
 
+/** How long picks and canvas edits wait for the page to show a save before going ahead on the page as it is. */
+const PAGE_CATCH_UP_MS = 4000;
 const CHIP_H = 28;
 /** Near a container's top or bottom edge, in screen pixels, a dragged element goes beside it rather than into it. */
 const CHIP_GAP = 4;

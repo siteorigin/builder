@@ -188,7 +188,43 @@ const featuresShown = async () => {
 };
 await eventually(featuresShown, 30000);
 await settle();
-const hot = content(await featuresShown());
+content(await featuresShown());
+
+step('one save that changes the hero component and the page reaches the canvas as one update (#735)');
+// Every update packet the page is sent, and every state the hero passes through as the page changes.
+await canvas.evaluate(async () => {
+  const { createHotContext } = await import('/@vite/client');
+  window.__soUpdates = [];
+  createHotContext('/@siteorigin-test/hot-update-probe').on('vite:beforeUpdate', (p) => window.__soUpdates.push(p.updates.map((u) => u.path)));
+  window.__soHero = [];
+  const read = () => {
+    const hero = document.querySelector('main section');
+    return `${hero?.querySelector('h1')?.textContent.trim() ?? ''} | ${hero?.querySelector('[class*="__lead"]')?.textContent.trim() ?? ''}`;
+  };
+  new MutationObserver(() => window.__soHero.push(read())).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+});
+const headline2 = 'Homes with room to breathe';
+const lead2 = 'Measured plans and honest materials.';
+await apply(
+  [
+    { type: 'node.setContent', owner: { kind: 'component', id: heroCopy }, nodeId: 'heading', field: 'text', value: headline2 },
+    { type: 'instance.setProp', owner, nodeId: ids.heroId, prop: 'lead', value: lead2 }
+  ],
+  'Hero headline and lead'
+);
+const bothShown = async () => {
+  const s = await single(doc, sections, headline2, ids.reading);
+  assert.equal(s.leads.filter((t) => t === lead2).length, 1, 'the new lead appears once');
+  return s;
+};
+await eventually(bothShown, 30000);
+await settle();
+const probe = await canvas.evaluate(() => ({ updates: window.__soUpdates, hero: window.__soHero }));
+assert.equal(probe.updates.length, 1, `the save reached the page as one hot update: ${JSON.stringify(probe.updates)}`);
+assert.ok(probe.updates[0].length >= 2, `the update carries the component and the page: ${JSON.stringify(probe.updates[0])}`);
+const half = probe.hero.filter((h) => h === `${headline2} | ${lead}` || h === `Rooms that feel like home | ${lead2}`);
+assert.deepEqual(half, [], 'the canvas never showed half of the save');
+const hot = content(await bothShown());
 
 step('a full reload of the canvas shows the same page');
 ({ doc } = await reloadCanvas(0));
