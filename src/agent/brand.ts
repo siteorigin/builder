@@ -38,9 +38,9 @@ export const BRAND_ARGS = z.object({
 export type BrandArgs = z.infer<typeof BRAND_ARGS>;
 
 export const BRAND_DESCRIPTION =
-  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once), with the site\'s description, public address, language and link preview image. Send only what changes. Fonts must be installed; an error lists the choices.';
+  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once), and the site\'s public address, language and link preview image. Send only what changes. Fonts must be installed; an error lists the choices.';
 
-export const BRAND_BRIEF = 'Set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors, installed fonts, the type scale (every heading and text size at once), and the site description, public address, language and link preview image. Send only what changes.';
+export const BRAND_BRIEF = 'Set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors, installed fonts, the type scale (every heading and text size at once), and the site address, language and link preview image. Send only what changes.';
 
 export function brandToolSchema(state: ProjectState): JsonSchema {
   const fonts = installedFontNames(state);
@@ -64,9 +64,9 @@ export function brandToolSchema(state: ProjectState): JsonSchema {
       contactEmail: { type: 'string', maxLength: 120 },
       contactPhone: { type: 'string', maxLength: 30 },
       copyright: { type: 'string', maxLength: 200, description: 'Footer copyright line. Follows the site name if omitted.' },
-      baseUrl: { type: 'string', maxLength: 200, description: 'The public address the site is published at (https://…), for canonical links, the sitemap and link previews. "" clears it.' },
-      language: { type: 'string', maxLength: 20, description: 'The site\'s language code, such as "en" or "fr-CA".' },
-      socialImage: { type: 'string', maxLength: 200, description: 'Default link preview image: the assetId of a library image (search_assets). "" removes it.' }
+      baseUrl: { type: 'string', maxLength: 200, description: 'Public https:// address. "" clears it.' },
+      language: { type: 'string', maxLength: 20, description: 'Language code, such as "en".' },
+      socialImage: { type: 'string', maxLength: 200, description: 'Link preview image assetId. "" removes it.' }
     },
     additionalProperties: false
   };

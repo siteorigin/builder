@@ -7,87 +7,100 @@
  */
 import { z } from 'zod';
 import type { ProjectState } from '@shared/types';
-import { OPERATION_SCHEMAS, type EditOperation } from '@shared/ops';
-import { CRAWLER_LIMITS, foldToken } from '@shared/crawler-policy';
+import type { EditOperation } from '@shared/ops';
+import { TEXT_LIMITS } from '@shared/text-limits';
+import { CANONICAL_URL_MAX } from '@shared/seo';
+import { CRAWLER_LIMITS, CRAWLER_PRESETS, FIXED_CRAWLER_PRESETS, foldToken } from '@shared/crawler-policy';
+import { IDENTITY_LIMITS } from '@shared/site-identity';
 import { pageIdFor } from './context';
 import { fieldError, type FieldIssue } from './macros';
 import { applySelected } from './selection';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
 
-const PAGE = OPERATION_SCHEMAS['page.update'].shape;
-const SITE = OPERATION_SCHEMAS['site.update'].shape;
-const IDENTITY = SITE.identity.unwrap().unwrap();
-const POLICY = SITE.crawlerPolicy.unwrap().unwrap().shape;
+/** A library image by its assetId. "" removes it, as the operation's null does, which keeps a union out of the grammar. */
+const image = (description = 'assetId') => z.string().max(200).optional().describe(description);
+const text = (limit: number) => z.string().max(limit).optional();
+const list = (limit: number, items: number) => z.array(z.string().max(limit)).max(items).optional();
+const LOCAL = 'LocalBusiness only.';
+const CUSTOM = 'Custom only.';
 
-const IMAGE_ID = 'assetId of a library image (search_assets)';
-
+/** A page's own search settings, as page.update takes them, with "" for every clear. Shared rules are in the description. */
 export const PAGE_SEO_ARGS = z
   .object({
-    pageId: z.string().min(1).describe('The page: its ID (pg_…) or its route, such as "/about/".'),
-    seoTitle: PAGE.seoTitle.describe('Browser tab and search result title, used as written: specific, about 50 to 60 characters. "" goes back to the page title and the site name.'),
-    description: PAGE.description.describe('Search result and link preview summary: one or two sentences that answer what the page offers. "" removes it.'),
-    noindex: PAGE.noindex.describe('true asks search engines and AI answer engines to leave the page out of their results; false lets them list it.'),
-    searchHidden: PAGE.searchHidden,
-    socialImage: PAGE.socialImage.describe(`Link preview image: the ${IMAGE_ID}. null or "" uses the site's image.`),
-    canonical: PAGE.canonical,
-    language: PAGE.language,
-    updatedAt: PAGE.updatedAt
+    pageId: z.string().min(1).describe('ID or route.'),
+    seoTitle: text(TEXT_LIMITS.seoTitle),
+    description: text(TEXT_LIMITS.pageDescription),
+    noindex: z.boolean().optional(),
+    searchHidden: z.boolean().optional().describe("Out of the site's own search."),
+    socialImage: image(),
+    canonical: text(CANONICAL_URL_MAX),
+    language: text(20)
   })
   .strict();
 export type PageSeoArgs = z.infer<typeof PAGE_SEO_ARGS>;
 
-/** Crawlers named in a custom policy, as rows: a grammar cannot describe a record keyed by product token. */
-const CRAWLER_ROW = z
+/** Who publishes the site. Text clears with "" and a list with [], as the operation takes them, so only geo is nullable. */
+const IDENTITY_ARG = z
   .object({
-    token: z.string().min(1).max(CRAWLER_LIMITS.token).describe('The crawler\'s robots.txt product token, such as "GPTBot".'),
-    access: z.enum(['allow', 'disallow']).nullable().describe('"allow" lets it in, "disallow" keeps it out of the whole site; null takes it off the list.')
-  })
-  .strict();
-
-const CRAWLER_POLICY = z
-  .object({
-    preset: POLICY.preset,
-    base: POLICY.base,
-    overrides: z.array(CRAWLER_ROW).max(CRAWLER_LIMITS.overrides).optional().describe('Custom only: crawlers let in or kept out by name, whatever the base does. Only the crawlers given change.'),
-    alsoBlock: POLICY.alsoBlock,
-    disallowPaths: POLICY.disallowPaths,
-    noAiMeta: POLICY.noAiMeta
-  })
-  .strict();
-
-const GEO = IDENTITY.shape.geo.unwrap().unwrap().strict();
-
-export const SITE_SEO_ARGS = z
-  .object({
-    description: SITE.description.describe('The site\'s summary for search results, link previews and AI agents: who it is for and what it offers.'),
-    baseUrl: SITE.baseUrl.describe('The public address the site is published at (https://…), for canonical links, the sitemap and link previews. "" clears it.'),
-    language: SITE.language.describe('The site\'s language code, such as "en" or "fr-CA".'),
-    socialImage: SITE.socialImage.describe(`Default link preview image: the ${IMAGE_ID}. null or "" removes it.`),
-    favicon: SITE.favicon.describe(`Browser tab and search result icon: the ${IMAGE_ID}. null or "" removes it.`),
-    llmsTxt: SITE.llmsTxt,
-    llmsFull: SITE.llmsFull,
-    markdownMirrors: SITE.markdownMirrors,
-    llmsSummary: SITE.llmsSummary,
-    identity: IDENTITY.extend({ geo: GEO.nullable().optional().describe(IDENTITY.shape.geo.description ?? '') })
+    kind: z.enum(['Organization', 'LocalBusiness', 'Person']).optional(),
+    name: text(IDENTITY_LIMITS.name),
+    url: text(IDENTITY_LIMITS.url),
+    logo: image(),
+    sameAs: list(IDENTITY_LIMITS.url, IDENTITY_LIMITS.profiles).describe('Profile URLs (Wikidata, LinkedIn, X…).'),
+    twitterSite: text(IDENTITY_LIMITS.twitterSite),
+    address: text(IDENTITY_LIMITS.address),
+    telephone: text(IDENTITY_LIMITS.telephone),
+    email: text(IDENTITY_LIMITS.email),
+    openingHours: list(IDENTITY_LIMITS.hoursLine, IDENTITY_LIMITS.hours).describe(`${LOCAL} "Mo-Fr 09:00-17:00"`),
+    priceRange: text(IDENTITY_LIMITS.priceRange).describe(LOCAL),
+    geo: z
+      .object({ latitude: z.number().min(-90).max(90), longitude: z.number().min(-180).max(180) })
       .strict()
       .nullable()
       .optional()
-      .describe(SITE.identity.description ?? ''),
-    crawlerPolicy: CRAWLER_POLICY.nullable()
-      .optional()
-      .describe('robots.txt crawler policy. Only the fields given change; null restores the default (every crawler let in).')
+      .describe(LOCAL)
+  })
+  .strict();
+
+/** Crawlers named in a custom policy, as rows: a grammar cannot describe a record keyed by product token. */
+const CRAWLER_ROW = z.object({ token: z.string().min(1).max(CRAWLER_LIMITS.token), access: z.enum(['allow', 'disallow', 'default']) }).strict();
+
+const CRAWLER_POLICY_ARG = z
+  .object({
+    preset: z.enum(CRAWLER_PRESETS).optional(),
+    base: z.enum(FIXED_CRAWLER_PRESETS).optional().describe(CUSTOM),
+    overrides: z.array(CRAWLER_ROW).max(CRAWLER_LIMITS.overrides).optional().describe(`${CUSTOM} By robots.txt token ("GPTBot"); "default" leaves it to the base.`),
+    alsoBlock: list(CRAWLER_LIMITS.token, CRAWLER_LIMITS.overrides).describe(`${CUSTOM} Unlisted crawlers to keep out.`),
+    disallowPaths: list(CRAWLER_LIMITS.path, CRAWLER_LIMITS.paths).describe(`${CUSTOM} Paths no crawler may fetch ("/private/").`),
+    noAiMeta: z.boolean().nullable().optional().describe('noai robots meta; null follows the preset.')
+  })
+  .strict();
+
+/** The site's search, sharing and AI-agent settings, as site.update takes them, with "" for a clear. */
+export const SITE_SEO_ARGS = z
+  .object({
+    description: text(TEXT_LIMITS.siteDescription),
+    baseUrl: text(200).describe('Public https:// address.'),
+    language: text(20),
+    socialImage: image(),
+    llmsTxt: z.boolean().optional(),
+    llmsFull: z.boolean().optional(),
+    markdownMirrors: z.boolean().optional(),
+    llmsSummary: text(TEXT_LIMITS.siteDescription),
+    identity: IDENTITY_ARG.nullable().optional().describe('The publisher, for search and AI answer engines.'),
+    crawlerPolicy: CRAWLER_POLICY_ARG.nullable().optional().describe('robots.txt.')
   })
   .strict();
 export type SiteSeoArgs = z.infer<typeof SITE_SEO_ARGS>;
 
 export const PAGE_SEO_DESCRIPTION =
-  "Change how one page is found and shared, in one call: its search result title and description, whether search engines list it (noindex) and the site's own search shows it, its link preview image, canonical address, language and last revision date. Send only what changes; nothing else on the page changes.";
-export const PAGE_SEO_BRIEF = "Set one page's search title and description, noindex, site search, link preview image, canonical address, language or revision date. Send only what changes.";
+  'Set one page\'s search title and description, noindex (out of search engines and AI answers), link preview image (a library assetId), canonical address and language. Send only what changes; "" restores a default.';
+export const PAGE_SEO_BRIEF = 'Send only what changes; "" restores a default.';
 
 export const SITE_SEO_DESCRIPTION =
-  'Change how the whole site is found, shared and read by search engines and AI agents, in one call: its description, public address (baseUrl), language, default link preview image and icon, who publishes it (identity, for search engines and AI answer engines), which crawlers robots.txt lets in (crawlerPolicy), and llms.txt for AI agents. Send only what changes. Fill identity only from facts the user gave.';
-export const SITE_SEO_BRIEF = 'Set the site description, public address, language, link preview image, icon, publisher identity, crawler policy and llms.txt settings. Send only what changes; identity only from facts the user gave.';
+  'Set how search engines and AI agents find and read the whole site: description, public address, language, link preview image (a library assetId), llms.txt (llmsFull: every page in one file; markdownMirrors: a Markdown copy of each page), publisher identity and robots.txt crawler policy. Send only what changes; "" or [] clears a field, null resets identity or crawlerPolicy, and inside them only the fields given change. Identity only from facts the user gave.';
+export const SITE_SEO_BRIEF = '"" or [] clears; null resets identity or crawlerPolicy. Identity only from facts the user gave.';
 
 /** The page tool's schema; `onlyPageId` is the one page a run limited to it may change. */
 export function pageSeoToolSchema(onlyPageId?: string): JsonSchema {
@@ -109,9 +122,9 @@ const given = <T extends object>(v: T): Partial<T> => Object.fromEntries(Object.
 /** An image in the project's library. */
 const isImage = (state: ProjectState, id: string) => Object.hasOwn(state.assets.assets, id) && state.assets.assets[id].kind === 'image';
 
-/** An asset field as the operation takes it: "" removes it, as null does. */
-function imageField(state: ProjectState, field: string, value: string | null | undefined, issues: FieldIssue[]): string | null | undefined {
-  if (value === undefined || value === null || value.trim() === '') return value === undefined ? undefined : null;
+/** An image field as the operation takes it: "" removes it, as null does there. */
+function imageField(state: ProjectState, field: string, value: string, issues: FieldIssue[]): string | null {
+  if (value.trim() === '') return null;
   if (!isImage(state, value.trim())) issues.push({ field, message: `no library image has the assetId "${value}". Use an assetId search_assets returns` });
   return value.trim();
 }
@@ -126,7 +139,7 @@ export async function runPageSeo(args: PageSeoArgs, host: ToolHost, callId: stri
   const settings: Record<string, unknown> = given(rest);
   if (!Object.keys(settings).length) return fieldError([{ field: 'arguments', message: NOTHING }], 'Nothing was applied.');
   const issues: FieldIssue[] = [];
-  if (settings.socialImage !== undefined) settings.socialImage = imageField(state, 'socialImage', settings.socialImage as string | null, issues);
+  if (settings.socialImage !== undefined) settings.socialImage = imageField(state, 'socialImage', settings.socialImage as string, issues);
   if (issues.length) return fieldError(issues, 'Nothing was applied.');
   const op = { type: 'page.update', pageId, ...settings } as EditOperation;
   return applySelected([op], host, `Update ${state.pages[pageId].title} search settings`, callId);
@@ -137,12 +150,12 @@ export async function runSiteSeo(args: SiteSeoArgs, host: ToolHost, callId: stri
   const { identity, crawlerPolicy, ...rest } = args;
   const update: Record<string, unknown> = given(rest);
   const issues: FieldIssue[] = [];
-  for (const field of ['socialImage', 'favicon'] as const) if (update[field] !== undefined) update[field] = imageField(state, field, update[field] as string | null, issues);
+  if (update.socialImage !== undefined) update.socialImage = imageField(state, 'socialImage', update.socialImage as string, issues);
 
   if (identity === null) update.identity = null;
   else if (identity) {
     const patch: Record<string, unknown> = given(identity);
-    if (patch.logo !== undefined) patch.logo = imageField(state, 'identity.logo', patch.logo as string | null, issues);
+    if (patch.logo !== undefined) patch.logo = imageField(state, 'identity.logo', patch.logo as string, issues);
     if (Object.keys(patch).length) update.identity = patch;
   }
 
@@ -159,7 +172,8 @@ export async function runSiteSeo(args: SiteSeoArgs, host: ToolHost, callId: stri
         if (seen.has(key)) issues.push({ field: `crawlerPolicy.overrides[${i}].token`, message: `"${row.token}" is already in overrides[${seen.get(key)}]: send each crawler once` });
         else seen.set(key, i);
       });
-      patch.overrides = Object.fromEntries(overrides.map((row) => [row.token.trim(), row.access]));
+      // "default" takes a crawler off the list, as the operation's null does.
+      patch.overrides = Object.fromEntries(overrides.map((row) => [row.token.trim(), row.access === 'default' ? null : row.access]));
     }
     if (Object.keys(patch).length) update.crawlerPolicy = patch;
   }

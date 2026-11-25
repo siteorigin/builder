@@ -39,10 +39,10 @@ const DRAFT_DESCRIPTION = 'true keeps the page as a draft: editable and previewe
 const LANGUAGE_DESCRIPTION = 'Language code such as "fr", when not the site language. "" uses the site language. Omit to leave it.';
 const TRANSLATION_DESCRIPTION = 'Slug of the page this one translates, such as "about": links them, joining any versions it has. Each version needs its own language; a page without one uses the site language. "" unlinks. Omit to leave it.';
 
-const SEO_TITLE_DESCRIPTION = 'Search result and browser tab title, used as written: specific, about 50 to 60 characters. "" goes back to the page title and the site name. Omit to leave it.';
-const SOCIAL_IMAGE_DESCRIPTION = 'Link preview image: the assetId of a library image (search_assets). "" uses the site\'s image. Omit to leave it.';
-const NOINDEX_DESCRIPTION = 'true asks search engines and AI answer engines to leave the page out of their results; false lets them list it. Omit to leave it.';
-const CANONICAL_DESCRIPTION = 'The address search engines should treat as the original of this page, when its content is published elsewhere first (https://…). "" uses the page\'s own address. Omit to leave it.';
+const SEO_TITLE_DESCRIPTION = 'Search result title, about 50 to 60 characters. "" uses the page title.';
+const SOCIAL_IMAGE_DESCRIPTION = 'Link preview image assetId. "" uses the site\'s.';
+const NOINDEX_DESCRIPTION = 'true keeps the page out of search engines and AI answers.';
+const CANONICAL_DESCRIPTION = 'The original https:// address, when published elsewhere first. "" uses its own.';
 
 const ARTICLE_DATE_DESCRIPTION = 'YYYY-MM-DD: makes a dated article, shown in News lists.';
 /** Placed first on a new article unless the call places a header of its own: it shows the page's title and details. */
