@@ -3259,7 +3259,8 @@ function textContrast(el, read, layerOf, pictures) {
   }
   // Every combination of gradient colours: each layer's colour, its gradient's colour over it, then what is inside it.
   // A scrim's own colours (one colour, or its gradient's) lie over its picture.
-  const options = layers.map((l, i) => ((l.image.kind === 'gradient' || l.image.kind === 'scrim') && shows(i) ? [...new Map(l.image.stops.map((c) => [`${c.r},${c.g},${c.b},${c.a}`, c])).values()] : [NONE]));
+  const distinct = (stops) => [...new Map(stops.map((c) => [`${c.r},${c.g},${c.b},${c.a}`, c])).values()];
+  const options = layers.map((l, i) => (!shows(i) ? [NONE] : l.image.kind === 'gradient' ? l.image.stops : l.image.kind === 'scrim' ? distinct(l.image.stops) : [NONE]));
   // More combinations than are worth working through: a definite answer could miss the one that fails.
   if (options.reduce((n, o) => n * o.length, 1) > MAX_COMBINATIONS) return { unknown: 'gradient' };
   const results = [];

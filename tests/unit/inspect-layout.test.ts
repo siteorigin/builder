@@ -327,3 +327,37 @@ describe('layout inspection readability checks', () => {
     expect(of(r, 'low-contrast')).toEqual([expect.objectContaining({ desc: { ctx: 'page:p', node: 'code1', items: '', inside: true } })]);
   }, 30000);
 });
+
+/** A band painted the way the builder writes a background image (#354): its scrim over the picture, over its colour. */
+const photoBand = (node: string, scrim: string | null, text: string, color: string, more = '') =>
+  `<section ${so(`${node}Band`)} style="padding:24px;background-color:#808080;background-image:${scrim ? `linear-gradient(${scrim}, ${scrim}), ` : ''}url(/photo.jpg);background-size:${scrim ? '100% 100%, ' : ''}cover;background-position:${scrim ? 'center, ' : ''}50% 30%;background-repeat:no-repeat${more}"><p ${so(node)} style="color:${color}">${text}</p></section>`;
+
+describe('text over a background image', () => {
+  it.skipIf(!browserInstalled)('is readable when its scrim keeps it readable over any picture, and measured against the scrim', async () => {
+    const r = await inspect([photoBand('light', 'rgba(0, 0, 0, 0.7)', 'White words on a darkened photo', '#fff'), photoBand('dark', 'rgba(255, 255, 255, 0.8)', 'Dark words on a lightened photo', '#111')].join(''));
+    expect(r.issues.filter((i) => READABILITY.includes(i.kind))).toEqual([]);
+    // The heading and both lines measured: nothing failed, nothing left unmeasured.
+    expect(r.checks!.contrast).toMatchObject({ checked: 3, failed: 0, unverified: 0 });
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('warns over a picture with no scrim, or one too weak, and fails text a scrim hides the picture under', async () => {
+    const r = await inspect(
+      [
+        photoBand('bare', null, 'White words on a bare photo', '#fff'),
+        photoBand('weak', 'rgba(0, 0, 0, 0.2)', 'White words on a faint scrim', '#fff'),
+        // As dark as the picture under the scrim could be: it could sit on exactly that colour.
+        photoBand('inside', 'rgba(0, 0, 0, 0.7)', 'Dark words on a darkened photo', '#222'),
+        photoBand('opaque', '#777', 'Grey words on a solid scrim', '#888')
+      ].join('')
+    );
+    const unverified = of(r, 'contrast-unverified');
+    expect(unverified.map((i) => [i.desc?.node, i.reason]).sort()).toEqual([['bare', 'image'], ['inside', 'scrim'], ['weak', 'scrim']]);
+    expect(unverified.find((i) => i.reason === 'scrim')?.message).toMatch(/scrim is too light/);
+    expect(of(r, 'low-contrast')).toEqual([expect.objectContaining({ desc: { ctx: 'page:p', node: 'opaque', items: '' }, foreground: '#888888', background: '#777777' })]);
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('reads a scrim blended or sized another way as only pixels could tell', async () => {
+    const r = await inspect(photoBand('blend', 'rgba(0, 0, 0, 0.7)', 'White words on a blended scrim', '#fff', ';background-blend-mode:multiply'));
+    expect(of(r, 'contrast-unverified').map((i) => [i.desc?.node, i.reason])).toEqual([['blend', 'image']]);
+  }, 30000);
+});
