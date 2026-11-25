@@ -2,7 +2,7 @@
 import type { ProjectState } from '@shared/types';
 import { isBinding, slotChildren } from '@shared/types';
 import { partsShown } from '@shared/page-shell';
-import type { InspectionDesc, InspectionIssue, InspectionRef } from '@shared/inspection';
+import type { InspectionDesc, InspectionIssue, InspectionRef, InspectionRhythmNote } from '@shared/inspection';
 import { inspectionRef } from './model';
 
 interface Report {
@@ -143,13 +143,13 @@ export function staleImages(state: ProjectState | undefined, pageId: string, rep
 }
 
 /**
- * Name every finding by the element to change (`ref`, see inspectionRef) in place of the preview's raw address
- * (`desc`), which the assistant cannot act on. A finding whose address names nothing in the project keeps no
- * reference rather than a made-up one.
+ * Name every finding, and every note on the page's rhythm, by the element to change (`ref`, see inspectionRef) in
+ * place of the preview's raw address (`desc`), which the assistant cannot act on. One whose address names nothing in
+ * the project keeps no reference rather than a made-up one.
  */
 export function attributeFindings(state: ProjectState | undefined, report: unknown): void {
-  const r = report as { issues?: unknown } | null;
-  if (!r || typeof r !== 'object' || !Array.isArray(r.issues)) return;
+  const r = report as { issues?: unknown; rhythm?: unknown } | null;
+  if (!r || typeof r !== 'object') return;
   const resolve = (holder: { desc?: InspectionDesc; ref?: InspectionRef }) => {
     if (!holder.desc) return;
     const ref = state ? inspectionRef(state, holder.desc) : null;
@@ -157,9 +157,12 @@ export function attributeFindings(state: ProjectState | undefined, report: unkno
     delete holder.ref;
     if (ref) holder.ref = ref;
   };
-  for (const issue of r.issues as InspectionIssue[]) {
-    if (!issue || typeof issue !== 'object') continue;
-    resolve(issue);
-    if (issue.with && typeof issue.with === 'object') resolve(issue.with);
+  for (const list of [r.issues, r.rhythm]) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list as Array<InspectionIssue | InspectionRhythmNote>) {
+      if (!item || typeof item !== 'object') continue;
+      resolve(item);
+      if (item.with && typeof item.with === 'object') resolve(item.with);
+    }
   }
 }

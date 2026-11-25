@@ -70,6 +70,27 @@ export interface InspectionIssue {
   [measurement: string]: unknown;
 }
 
+/** The notes on a page's rhythm: advice on composition, never a defect (see `InspectionRhythmNote`). */
+export type RhythmKind = 'repeated-layout' | 'crowded-actions' | 'heading-scale';
+
+/**
+ * A note on how a page's sections follow one another, which the layout inspection lists apart from its findings
+ * (`report.rhythm`, on a page of two or more sections): three or more sections in a row with one layout on one
+ * background, or each with a filled button (from the first, `ref`, to the last, `with.ref`, numbered as the page lists
+ * its sections); an inner heading (`ref`) as large as the page's h1 (`with.ref`). At most one of each kind.
+ */
+export interface InspectionRhythmNote {
+  kind: RhythmKind;
+  message: string;
+  /** Where a run of sections starts and ends, numbered from 1 as the page lists them. */
+  sections?: { first: number; last: number };
+  text?: string;
+  desc?: InspectionDesc;
+  ref?: InspectionRef;
+  with?: { desc?: InspectionDesc; ref?: InspectionRef; text?: string };
+  [measurement: string]: unknown;
+}
+
 /** Each kind of finding the checks report: the elements failing, and those it could not measure. */
 export const CHECK_KINDS: Record<keyof InspectionChecks, { failed: ReadabilityKind; unverified?: ReadabilityKind }> = {
   contrast: { failed: 'low-contrast', unverified: 'contrast-unverified' },
