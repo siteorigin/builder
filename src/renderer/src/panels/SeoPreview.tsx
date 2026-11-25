@@ -13,6 +13,9 @@ import { Segmented, Switch, Tabs } from '../components/ui';
 import { lengthMeter, previewDocument, structuredPreview, withTypedSeo, type DocumentPreview, type LengthMeter as Meter, type StructuredPreview, type TypedSeo } from '../lib/seo-preview';
 import { openSiteSharing, SharingPreview } from './SharingPreview';
 import { previewHandoff } from '../lib/seoHandoff';
+import { destinationLabel } from '../lib/destinations';
+import { openEditorDestination } from '../lib/open-destination';
+import type { GraphSection } from '../lib/structured-summary';
 import { AiHandoffButton } from '../components/AiHandoff';
 
 type PreviewTab = 'search' | 'link' | 'data';
@@ -257,11 +260,55 @@ function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPrevi
   );
 }
 
-/** Where the document is published, and the structured data its exported page carries. */
+/** The structured data in words: each entity's statement, what it is good for, and its values. */
+function GraphSummary({ sections }: { sections: GraphSection[] }) {
+  return (
+    <div className="seo-summary">
+      {sections.map((s) => (
+        <section key={s.id} className="seo-entity" data-entity={s.id} aria-label={s.heading}>
+          <h4>{s.heading}</h4>
+          <p className="seo-entity-statement">{s.statement}</p>
+          {s.use && <p className="field-hint">{s.use}</p>}
+          {s.rows.length > 0 && (
+            <dl>
+              {s.rows.map((r, i) => (
+                <div key={i} className="seo-entity-row">
+                  <dt>{r.label}</dt>
+                  <dd>{r.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {s.lists.map((list) => {
+            const List = list.ordered ? 'ol' : 'ul';
+            return (
+              <div key={list.label} className="seo-entity-list">
+                <span className="seo-entity-list-label">{list.label}</span>
+                <List aria-label={list.label}>
+                  {list.items.map((item, i) => (
+                    <li key={i}>
+                      {item.text}
+                      {item.detail && <span className="seo-entity-detail">{item.detail}</span>}
+                    </li>
+                  ))}
+                </List>
+              </div>
+            );
+          })}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Where the document is published, what its typed structured data still needs, and the structured data its exported
+ * page carries: in words, with the exact JSON-LD a click away.
+ */
 function StructuredData({ structured }: { structured: StructuredPreview | null | undefined }) {
   if (structured === undefined) return <p className="field-hint">Working out the structured data…</p>;
   if (structured === null) return <p className="field-hint">This document is no longer in the project.</p>;
-  const { status, graph } = structured;
+  const { status, problem, graph } = structured;
   return (
     <div className="seo-data">
       <dl className="seo-status">
@@ -272,12 +319,27 @@ function StructuredData({ structured }: { structured: StructuredPreview | null |
           </div>
         ))}
       </dl>
+      {problem && (
+        <div className="seo-data-problem" data-code={problem.code}>
+          <p>{problem.message}</p>
+          <p className="field-hint">{problem.explanation}</p>
+          {problem.destination && (
+            <button type="button" className="link-btn" onClick={() => openEditorDestination(problem.destination!)}>
+              {destinationLabel(problem.destination)}
+            </button>
+          )}
+        </div>
+      )}
       {graph.kind === 'graph' ? (
         <>
-          <p className="field-hint">The Schema.org graph search engines and AI answer engines read: who publishes the site, the site, this page and its place in it.</p>
-          <pre className="code-view seo-graph" tabIndex={0} aria-label="Structured data as the exported page writes it" data-testid="seo-graph">
-            {graph.json}
-          </pre>
+          <p className="field-hint">What the exported page tells search engines and AI answer engines, as Schema.org structured data.</p>
+          <GraphSummary sections={graph.sections} />
+          <details className="seo-json">
+            <summary>Exact JSON-LD</summary>
+            <pre className="code-view seo-graph" tabIndex={0} aria-label="Structured data as the exported page writes it" data-testid="seo-graph">
+              {graph.json}
+            </pre>
+          </details>
         </>
       ) : graph.kind === 'none' ? (
         <p className="field-hint seo-graph-none">{graph.reason}</p>
@@ -355,7 +417,7 @@ export function SeoPreview({
         options={[
           { value: 'search', label: 'Search result', panel: () => <SearchResults state={state} doc={doc} /> },
           { value: 'link', label: 'Link preview', panel: () => <SharingPreview card={doc.card} all={place === 'view'} /> },
-          { value: 'data', label: 'Structured data', panel: () => <StructuredData structured={ready && settled.current ? structured!.value : undefined} /> }
+          { value: 'data', label: 'Structured data', panel: () => <StructuredData key={key} structured={ready && settled.current ? structured!.value : undefined} /> }
         ]}
       />
       {!readOnly && (

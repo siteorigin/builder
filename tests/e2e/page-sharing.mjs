@@ -310,7 +310,7 @@ await win.screenshot({ path: join(SHOTS, 'page-sharing-search-result.png') });
 
 step('the structured data follows the title and canonical URL as they are typed (#597)');
 await tab('Structured data').click();
-const graph = async () => JSON.parse(await section().getByTestId('seo-graph').innerText());
+const graph = async () => JSON.parse(await section().getByTestId('seo-graph').textContent());
 const webPage = async () => (await graph())['@graph'].find((n) => n['@type'] === 'WebPage');
 await eventually(async () => assert.deepEqual(await webPage().then((n) => ({ url: n.url, name: n.name })), { url: 'https://studio.example/work/kitchens/', name: 'Kitchens · Harbour Lane Studio' }));
 const status = (id) => section().locator(`[data-status="${id}"] dd`);

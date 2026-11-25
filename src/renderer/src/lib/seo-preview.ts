@@ -9,16 +9,18 @@
  * is published and its structured data read the whole website, so the editor works them out only while they show.
  */
 import type { AssetRecord, Collection, EntrySeo, PageSeo, ProjectState } from '@shared/types';
-import { seoLength, seoText, type SeoSubject } from '@shared/seo';
+import { seoLength, seoText, type SeoFinding, type SeoSubject } from '@shared/seo';
 import { serpAddress, serpSnippet, type SerpAddress, type SerpDevice, type SerpResult } from '@shared/serp';
 import { publicUrl } from '@shared/public-url';
 import { agentDiscovery, LLMS_TXT_FILE } from '@shared/llms';
 import { isArticleDate } from '@shared/articles';
-import { SEO_DESCRIPTION_RANGE, SEO_TITLE_RANGE } from '@engine/seo-rules';
+import { pageStructuredDataFinding, SEO_DESCRIPTION_RANGE, SEO_TITLE_RANGE } from '@engine/seo-rules';
 import { createSeoResolver, entryMetadata, pageMetadata, sameAddress, type SeoMetadata } from '@generator/seo-metadata';
 import { documentGraph } from '@generator/structured-data';
+import { graphScriptText } from '@generator/seo-graph';
 import { publishedState } from '@generator/index';
 import { nameOf } from './sharing';
+import { summarizeGraph, type GraphSection } from './structured-summary';
 
 /**
  * Text typed into a document's Search & sharing fields and not saved yet. Each one there stands for the saved value
@@ -218,11 +220,16 @@ export interface StatusLine {
   on: boolean;
 }
 
-/** The structured data a document's page carries, or why it carries none. */
-export type GraphView = { kind: 'graph'; json: string; types: string[] } | { kind: 'none'; reason: string } | { kind: 'error'; message: string };
+/**
+ * The structured data a document's page carries, in words and as the exported page writes it (`json`, the text of its
+ * script), or why it carries none.
+ */
+export type GraphView = { kind: 'graph'; json: string; sections: GraphSection[] } | { kind: 'none'; reason: string } | { kind: 'error'; message: string };
 
 export interface StructuredPreview {
   status: StatusLine[];
+  /** What the SEO audit says of the page's typed structured data, when it is incomplete or can't all be used. */
+  problem: SeoFinding | null;
   graph: GraphView;
 }
 
@@ -281,11 +288,11 @@ export function structuredPreview(state: ProjectState, subject: SeoSubject): Str
     try {
       const g = documentGraph(publishedState(state), subject);
       graph = g
-        ? { kind: 'graph', json: JSON.stringify(g, null, 2), types: g['@graph'].flatMap((n) => (Array.isArray(n['@type']) ? n['@type'] : [n['@type']])) }
+        ? { kind: 'graph', json: graphScriptText(g), sections: summarizeGraph(g) }
         : { kind: 'none', reason: `This ${what}’s page carries no structured data.` };
     } catch (e) {
       graph = { kind: 'error', message: e instanceof Error ? e.message : String(e) };
     }
   }
-  return { status, graph };
+  return { status, problem: pageStructuredDataFinding(state, meta), graph };
 }
