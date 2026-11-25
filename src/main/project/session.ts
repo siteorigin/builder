@@ -496,7 +496,7 @@ export interface ConvertOptions {
 }
 
 /** Said when the file in conflict is no longer the version the author compared and chose against. */
-export const CHANGED_SINCE_COMPARED = 'The file changed since you compared the versions. Look again, then choose.';
+const CHANGED_SINCE_COMPARED = 'The file changed since you compared the versions. Look again, then choose.';
 
 /**
  * One open, writable project. Owns canonical state, the revision counter, history,

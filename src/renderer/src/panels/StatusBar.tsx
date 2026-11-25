@@ -18,6 +18,7 @@ import { conflictPanes, sameVersions, savedCopyLabel, shownVersions, type Confli
 import { AiHandoffButton } from '../components/AiHandoff';
 import { Modal, Spinner, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
+import { GENERATED_DIR, defFile } from '@generator/index';
 import { auditForHealth, needsFixing, seoCountsText, seoFilterCounts, seoPillarGroups, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES, type SeoAuditResult, type SeoPillarFilter, type SeoSeverityFilter } from '../lib/seo-health';
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
@@ -268,9 +269,10 @@ const DOCUMENT_NAMES: Record<string, string> = {
 };
 
 /** What a conflicted file holds, in the words the user knows it by. The path is shown beside it. */
-function conflictSubject(state: ProjectState, path: string, designId?: string): string {
-  // A design's own file (one that can become a code component) is named for its component.
-  if (designId && Object.hasOwn(state.components, designId)) return `${state.components[designId].name} component file`;
+function conflictSubject(state: ProjectState, path: string): string {
+  // A design's own generated file is named for its component.
+  const design = path.startsWith(`${GENERATED_DIR}/`) ? Object.values(state.components).find((d) => d.kind === 'managed' && !!d.tree && defFile(d) === path) : undefined;
+  if (design) return `${design.name} component file`;
   const page = /^siteorigin\/pages\/([^/]+)\.json$/.exec(path)?.[1];
   if (page) return Object.hasOwn(state.pages, page) ? `${state.pages[page].title} page` : 'Page file';
   const component = /^siteorigin\/components\/([^/]+)\//.exec(path)?.[1];
@@ -667,15 +669,14 @@ export function HealthModal() {
    * read again, giving what a conversion expects to find), so no other choice can start meanwhile. A conversion's
    * refusal is the row's to show, beside its choice (`onRefused`); Keep's and Restore's are said as before.
    */
-  const resolve = async (conflict: ProjectSnapshot['conflicts'][number], choice: ConflictChoice, check?: () => Promise<false | { expect?: string }>, onRefused?: (message: string) => void) => {
-    const path = conflict.path;
+  const resolve = async (path: string, choice: ConflictChoice, check?: () => Promise<false | { expect?: string }>, onRefused?: (message: string) => void) => {
     if (busy) return;
     setBusy(path);
     try {
-      const checked = check ? await check() : {};
+      const checked: false | { expect?: string } = check ? await check() : {};
       if (!checked) return;
       settling.current = { path, before: snap.conflicts.map((c) => c.path) };
-      const subject = conflictSubject(st, path, conflict.convert?.definitionId);
+      const subject = conflictSubject(st, path);
       const r = await api.project.resolveConflict(path, choice, choice === 'convert' && checked.expect ? { expect: checked.expect } : undefined);
       if (!r.ok) {
         settling.current = null;
@@ -1001,7 +1002,7 @@ export function HealthModal() {
                       canUnlock={!!snap.readOnly?.canUnlock}
                       codeEnabled={codeEnabled}
                       recoveryNote={recoveryNote}
-                      onResolve={(choice, check, onRefused) => void resolve(c, choice, check, onRefused)}
+                      onResolve={(choice, check, onRefused) => void resolve(c.path, choice, check, onRefused)}
                     />
                   ))}
                 </ul>
@@ -1130,7 +1131,7 @@ function ConflictRow({
   const [versions, setVersions] = useState<ConflictVersions | 'loading' | null>(null);
   // Only the latest request's reply is shown; hiding the versions drops one still on its way.
   const asked = useRef(0);
-  const subject = conflictSubject(state, c.path, c.convert?.definitionId);
+  const subject = conflictSubject(state, c.path);
   const ids = useId();
   // Why the edited file did not become a code component, said beside that choice until another is made.
   const [refused, setRefused] = useState<string | null>(null);
