@@ -10,7 +10,6 @@ import type { ComponentDefinition, ElementNode, IconNode, InstanceNode, LinkNode
 import { STYLE_STATES, parseStyleScopeKey } from '@shared/types';
 import { STATE_STYLE_PROPS, flattenStates, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { enclosingGroup, partInInteractionGroup } from '@shared/interaction-groups';
-import { MIGRATIONS, migrateProject } from '@shared/migrations';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION } from '@catalogue/foundation/pack';
 import { P, item } from '@catalogue/dsl';
@@ -502,22 +501,6 @@ describe('a button inside a group', () => {
     (home(s).nodes.n_card as ElementNode).children.push('n_btn');
     s = style(s, 'n_btn', 'base', 'groupHover', 'background', '#123456');
     expect(generateSiteCss(s)).toMatch(/so-n-n_btn:not\([^{]+\) \{\n\t\t--so-btn-bg: #123456;\n\t\t--so-btn-bg-hover: #123456;\n\t\tbackground: var\(--so-btn-bg\);/);
-  });
-});
-
-describe('the document format', () => {
-  it('marks interaction groups with a version-only step', () => {
-    expect(MIGRATIONS.at(-1)?.id).toBe('interaction-groups');
-    let s = group(cards(), 'n_card');
-    s = style(s, 'n_arrow', 'phone', 'groupFocus', 'color', '#0000ff');
-    s = style(s, 'n_arrow', 'base', 'groupHover', 'translateX', '4px');
-    const from = MIGRATIONS.length;
-    for (const d of [s.manifest, s.site, s.tokens, s.assets, s.themeLock, ...Object.values(s.pages), ...Object.values(s.components)]) d.schemaVersion = from;
-    const before = structuredClone(s);
-    const out = migrateProject(s)!;
-    expect(out.applied).toEqual(['interaction-groups']);
-    const unversioned = (p: ProjectState) => JSON.parse(JSON.stringify({ ...p, themeLock: undefined }, (k, v) => (k === 'schemaVersion' ? undefined : v)));
-    expect(unversioned(out.state)).toEqual(unversioned(before));
   });
 });
 

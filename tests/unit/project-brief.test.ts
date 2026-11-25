@@ -119,7 +119,7 @@ describe('the brief on disk', () => {
     expect(before).toBe(17);
     for (const doc of [old.manifest, old.site, old.tokens, old.assets, old.themeLock, ...Object.values(old.pages), ...Object.values(old.components)]) doc.schemaVersion = before;
     const migrated = migrateProject(old);
-    expect(migrated?.applied).toEqual(['project-brief', 'divider-shapes', 'interaction-groups']);
+    expect(migrated?.applied).toEqual(['project-brief', 'divider-shapes']);
     expect(migrated?.state.brief).toBeUndefined();
   });
 });
