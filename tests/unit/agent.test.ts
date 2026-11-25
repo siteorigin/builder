@@ -3439,6 +3439,7 @@ describe('search and AI-agent settings (#598)', () => {
                 baseUrl: 'https://riverside.example',
                 language: 'en-AU',
                 socialImage: photo.id,
+                llmsTxt: false,
                 llmsFull: true,
                 markdownMirrors: true,
                 llmsSummary: 'A neighbourhood bakery in Riverside.',
@@ -3456,16 +3457,20 @@ describe('search and AI-agent settings (#598)', () => {
       );
       await withPhoto(env);
       const about = routeId(env.session.state, '/about/');
-      const before = { page: structuredClone(env.session.state.pages[about]), site: structuredClone(env.session.state.site) };
+      // Kept out of search engines until this request lets them list it again with noindex: false.
+      expect((await env.session.apply({ operations: [{ type: 'page.update', pageId: about, noindex: true }] }, { label: 'Hide', source: 'user' })).ok).toBe(true);
+      const before = { page: structuredClone(env.session.state.pages[about]), site: structuredClone(env.session.state.site), revision: env.session.revision };
       const steps = env.session.historyInfo().entries.length;
       const { runId, result } = await env.run('Make the site easy to find');
       expect(result?.status).toBe('completed');
+      // One batch for each call: nothing split across several, nothing left out.
+      expect(env.session.revision).toBe(before.revision + 2);
       const page = env.session.state.pages[about];
       expect(page.seo).toMatchObject({ title: 'About Riverside Bakery, baking since 1987', description: 'Who bakes your bread, and how.', searchHidden: true, socialImage: photo.id, canonical: 'https://example.org/about/' });
       expect(page.seo.noindex).toBeFalsy();
       expect(page.language).toBe('en-AU');
       const site = env.session.state.site;
-      expect(site).toMatchObject({ baseUrl: 'https://riverside.example', language: 'en-AU', socialImage: photo.id, llmsFull: true, markdownMirrors: true, llmsSummary: 'A neighbourhood bakery in Riverside.' });
+      expect(site).toMatchObject({ baseUrl: 'https://riverside.example', language: 'en-AU', socialImage: photo.id, llmsTxt: false, llmsFull: true, markdownMirrors: true, llmsSummary: 'A neighbourhood bakery in Riverside.' });
       expect(site.identity).toEqual({ kind: 'LocalBusiness', name: 'Riverside Bakery Pty Ltd', logo: photo.id, sameAs: ['https://www.wikidata.org/wiki/Q42'], telephone: '+61 2 5550 1234', openingHours: ['Mo-Fr 07:00-15:00'], geo: { latitude: -33.86, longitude: 151.2 } });
       expect(site.crawlerPolicy).toMatchObject({ preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow' }, disallowPaths: ['/drafts/'] });
       // The whole request is one step of history, and one undo takes all of it back.
@@ -3492,16 +3497,30 @@ describe('search and AI-agent settings (#598)', () => {
     expect(env.session.revision).toBe(2);
   });
 
-  it('clears with "" and null, and resets a crawler to its base with "default"', async () => {
-    let middle: ProjectState | null = null;
+  it('clears with "" and null, unsets the publisher kind with "", and leaves a crawler to its base with "default"', async () => {
+    const seen: ProjectState[] = [];
+    const look = () => seen.push(structuredClone(env.session.state));
     const env = await setup([
-      () => [call('c1', 'update_site_seo', { identity: { kind: 'Organization', email: 'hello@riverside.example', sameAs: ['https://github.com/riverside'] }, crawlerPolicy: { preset: 'custom', overrides: [{ token: 'GPTBot', access: 'disallow' }, { token: 'ClaudeBot', access: 'disallow' }] } })],
-      () => [call('c2', 'update_site_seo', { socialImage: '', identity: { email: '', sameAs: [] }, crawlerPolicy: { overrides: [{ token: 'gptbot', access: 'default' }] } })],
+      () => [
+        call('c1', 'update_site_seo', {
+          identity: { kind: 'LocalBusiness', name: 'Riverside Bakery', email: 'hello@riverside.example', sameAs: ['https://github.com/riverside'], priceRange: '$$', openingHours: ['Mo-Fr 07:00-15:00'] },
+          crawlerPolicy: { preset: 'custom', base: 'block-ai-training', overrides: [{ token: 'GPTBot', access: 'allow' }, { token: 'ClaudeBot', access: 'disallow' }] }
+        })
+      ],
       () => {
-        middle = structuredClone(env.session.state);
+        look();
+        // A person has no price range or opening hours: choosing that kind clears them; the email and profiles go by "".
+        return [call('c2', 'update_site_seo', { socialImage: '', identity: { kind: 'Person', email: '', sameAs: [] }, crawlerPolicy: { overrides: [{ token: 'gptbot', access: 'default' }] } })];
+      },
+      () => {
+        look();
         return [call('c3', 'update_page_seo', { pageId: '/', seoTitle: '', socialImage: '', canonical: '' })];
       },
-      () => [call('c4', 'update_site_seo', { identity: null, crawlerPolicy: null })],
+      () => [call('c4', 'update_site_seo', { identity: { kind: '' } })],
+      () => {
+        look();
+        return [call('c5', 'update_site_seo', { identity: null, crawlerPolicy: null })];
+      },
       () => finish('Cleared.')
     ]);
     await withPhoto(env);
@@ -3509,10 +3528,14 @@ describe('search and AI-agent settings (#598)', () => {
     await env.session.apply({ operations: [{ type: 'site.update', socialImage: photo.id }, { type: 'page.update', pageId: home, seoTitle: 'Old title', socialImage: photo.id, canonical: 'https://elsewhere.example/' }] }, { label: 'Set', source: 'user' });
     const { result } = await env.run('Tidy the search settings');
     expect(result?.status).toBe('completed');
-    // After the second call: the image gone, the email and profiles cleared, GPTBot left to the base again.
-    expect(middle!.site.socialImage ?? null).toBeNull();
-    expect(middle!.site.identity).toEqual({ kind: 'Organization' });
-    expect(middle!.site.crawlerPolicy?.overrides).toEqual({ ClaudeBot: 'disallow' });
+    const [first, second, third] = seen;
+    expect(first.site.identity).toEqual({ kind: 'LocalBusiness', name: 'Riverside Bakery', email: 'hello@riverside.example', sameAs: ['https://github.com/riverside'], priceRange: '$$', openingHours: ['Mo-Fr 07:00-15:00'] });
+    expect(first.site.crawlerPolicy).toMatchObject({ preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow', ClaudeBot: 'disallow' } });
+    // GPTBot is back to what the base does with it (kept out, as an AI training crawler); the base itself stays.
+    expect(second.site.socialImage ?? null).toBeNull();
+    expect(second.site.identity).toEqual({ kind: 'Person', name: 'Riverside Bakery' });
+    expect(second.site.crawlerPolicy).toMatchObject({ preset: 'custom', base: 'block-ai-training', overrides: { ClaudeBot: 'disallow' } });
+    expect(third.site.identity).toEqual({ name: 'Riverside Bakery' });
     const page = env.session.state.pages[home];
     expect(page.seo.title).toBeUndefined();
     expect(page.seo.socialImage ?? null).toBeNull();
@@ -3544,17 +3567,34 @@ describe('search and AI-agent settings (#598)', () => {
       },
       (req) => {
         keep(req);
+        return [call('d6', 'update_site_seo', { identity: {} })];
+      },
+      (req) => {
+        keep(req);
+        // An empty list names no crawler, so it would change nothing while the description went in.
+        return [call('d7', 'update_site_seo', { description: 'Fresh bread daily.', crawlerPolicy: { overrides: [] } })];
+      },
+      (req) => {
+        keep(req);
+        // A site always has a language: "" is no way to clear it.
+        return [call('d8', 'update_site_seo', { description: 'Fresh bread daily.', language: '' })];
+      },
+      (req) => {
+        keep(req);
         return finish('Nothing changed.');
       }
     ]);
     const before = structuredClone(env.session.state);
     const { result } = await env.run('Update search settings');
-    expect(results.map((r) => (r as { error?: string }).error)).toEqual(['VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED']);
+    expect(results.map((r) => (r as { error?: string }).error)).toEqual(['VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'INVALID_ARGUMENT']);
     expect(JSON.stringify(results[0])).toMatch(/crawlerPolicy\.overrides\[1\]\.token.*already in overrides\[0\]/);
     expect(JSON.stringify(results[1])).toMatch(/identity\.logo: no library image has the assetId \\"a_missing0\\"/);
     expect(JSON.stringify(results[2])).toMatch(/socialImage: no library image/);
     expect(JSON.stringify(results[3])).toMatch(/send at least one setting/);
     expect(JSON.stringify(results[4])).toMatch(/there is no page \\"\/nowhere\/\\"/);
+    expect(JSON.stringify(results[5])).toMatch(/send at least one setting/);
+    expect(JSON.stringify(results[6])).toMatch(/crawlerPolicy\.overrides: name each crawler to change/);
+    expect(JSON.stringify(results[7])).toMatch(/language/);
     expect(result?.status).toBe('no-changes');
     expect(env.session.state.site).toEqual(before.site);
     expect(env.session.state.pages).toEqual(before.pages);
@@ -3583,11 +3623,17 @@ describe('search and AI-agent settings (#598)', () => {
         },
         (req) => {
           expect(JSON.stringify(lastResult(req))).toMatch(/SCOPE_MISMATCH.*page\.update changes another page, not the About page/);
+          return [call('p2b', 'update_page_seo', { pageId: '/', description: 'Changed from the About page.' })];
+        },
+        (req) => {
+          expect(JSON.stringify(lastResult(req))).toMatch(/SCOPE_MISMATCH.*page\.update changes another page, not the About page/);
           // A site tool sent anyway is not one this run has.
           return [call('p3', 'update_site_seo', { baseUrl: 'https://riverside.example' })];
         },
         (req) => {
           expect(lastResult(req)).toMatchObject({ error: 'INVALID_ARGUMENT', message: 'Unknown tool "update_site_seo".' });
+          // Only the About page's own change landed.
+          expect(env.session.revision).toBe(1);
           return [call('p4', 'request_clarification', { question: 'Set the public address for the whole site?', widenScope: true })];
         },
         (req) => {
@@ -3603,13 +3649,36 @@ describe('search and AI-agent settings (#598)', () => {
       for (let i = 0; i < 300 && !asked(env); i++) await new Promise((res) => setTimeout(res, 10));
       const q = asked(env)!;
       expect(q.choices).toEqual(['Yes, allow changes across the whole site', 'No, only change the About page']);
-      env.orch.answer(r.runId!, q.id!, q.choices[answer === 'yes' ? 0 : 1]);
+      expect(env.orch.answer(r.runId!, q.id!, q.choices[answer === 'yes' ? 0 : 1])).toBe(true);
       while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
       expect(env.session.state.pages[about].seo).toMatchObject({ description: 'Who we are.', noindex: true });
       expect(env.session.state.pages[home]).toEqual(homeBefore);
       expect(env.session.state.site.baseUrl).toBe(answer === 'yes' ? 'https://riverside.example' : undefined);
-      if (answer === 'no') expect(JSON.stringify(env.adapter.requests[5].items.at(-1))).toMatch(/SCOPE_MISMATCH.*page\.update changes another page/);
+      if (answer === 'no') expect(JSON.stringify(env.adapter.requests[6].items.at(-1))).toMatch(/SCOPE_MISMATCH.*page\.update changes another page/);
+      expect(env.session.revision).toBe(answer === 'yes' ? 2 : 1);
     }
+  });
+
+  it('refuses both tools to a run limited to a selection, and changes nothing', async () => {
+    const env = await setup([
+      () => [call('x1', 'update_page_seo', { pageId: '/', noindex: true })],
+      (req) => {
+        expect(lastResult(req)).toMatchObject({ error: 'INVALID_ARGUMENT', message: 'Unknown tool "update_page_seo".' });
+        return [call('x2', 'update_site_seo', { description: 'Changed from a selection.' })];
+      },
+      (req) => {
+        expect(lastResult(req)).toMatchObject({ error: 'INVALID_ARGUMENT', message: 'Unknown tool "update_site_seo".' });
+        return finish('Nothing changed.');
+      }
+    ]);
+    const home = env.session.state.pages[env.session.state.site.homePageId];
+    const before = structuredClone(env.session.state);
+    const { result } = await env.run('Hide this page from search', { selection: { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] }, selectionLabel: 'Hero', scope: 'selection' });
+    expect(result?.status).toBe('no-changes');
+    expect(env.adapter.requests[0].tools.map((t) => t.name)).not.toEqual(expect.arrayContaining(['update_page_seo']));
+    expect(env.session.state.site).toEqual(before.site);
+    expect(env.session.state.pages).toEqual(before.pages);
+    expect(env.session.revision).toBe(0);
   });
 
   it('offers neither tool to a selection or a question, and both in a site run that has no general operations', () => {

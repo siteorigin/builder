@@ -43,7 +43,7 @@ export type PageSeoArgs = z.infer<typeof PAGE_SEO_ARGS>;
 /** Who publishes the site. Text clears with "" and a list with [], as the operation takes them, so only geo is nullable. */
 const IDENTITY_ARG = z
   .object({
-    kind: z.enum(['Organization', 'LocalBusiness', 'Person']).optional(),
+    kind: z.enum(['Organization', 'LocalBusiness', 'Person', '']).optional().describe('"" unsets it.'),
     name: text(IDENTITY_LIMITS.name),
     url: text(IDENTITY_LIMITS.url),
     logo: image(),
@@ -82,7 +82,7 @@ export const SITE_SEO_ARGS = z
   .object({
     description: text(TEXT_LIMITS.siteDescription),
     baseUrl: text(200).describe('Public https:// address.'),
-    language: text(20),
+    language: z.string().min(1).max(20).optional(),
     socialImage: image(),
     llmsTxt: z.boolean().optional(),
     llmsFull: z.boolean().optional(),
@@ -155,6 +155,8 @@ export async function runSiteSeo(args: SiteSeoArgs, host: ToolHost, callId: stri
   if (identity === null) update.identity = null;
   else if (identity) {
     const patch: Record<string, unknown> = given(identity);
+    // An unset kind is the operation's null: back to an organization named after the site.
+    if (patch.kind === '') patch.kind = null;
     if (patch.logo !== undefined) patch.logo = imageField(state, 'identity.logo', patch.logo as string, issues);
     if (Object.keys(patch).length) update.identity = patch;
   }
@@ -163,6 +165,8 @@ export async function runSiteSeo(args: SiteSeoArgs, host: ToolHost, callId: stri
   else if (crawlerPolicy) {
     const { overrides, ...policy } = crawlerPolicy;
     const patch: Record<string, unknown> = given(policy);
+    // The list changes only the crawlers it names, so an empty one would change nothing while the call reported success.
+    if (overrides && !overrides.length) issues.push({ field: 'crawlerPolicy.overrides', message: 'name each crawler to change; "default" leaves one to the base preset' });
     if (overrides?.length) {
       // One entry per crawler: robots.txt compares their names whatever the case, so two rows for one would leave
       // only the last, and the other would be lost without a word.

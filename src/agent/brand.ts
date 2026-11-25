@@ -211,16 +211,17 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   const email = contactLink('contactEmail', args.contactEmail, 'email');
   const phone = contactLink('contactPhone', args.contactPhone, 'tel');
   // How the site is found and shared, set with the brand so a rebrand ships complete.
+  // A value the site already has is left out, so a call that changes nothing says so.
   const seo: { baseUrl?: string; language?: string; socialImage?: string | null } = {};
-  if (args.baseUrl !== undefined) seo.baseUrl = args.baseUrl.trim();
+  if (args.baseUrl !== undefined && args.baseUrl.trim() !== (state.site.baseUrl ?? '')) seo.baseUrl = args.baseUrl.trim();
   if (args.language !== undefined) {
     if (!isLanguageCode(args.language.trim())) issues.push({ field: 'language', message: 'use a language code such as "fr" or "en-GB"' });
-    else seo.language = args.language.trim();
+    else if (args.language.trim() !== state.site.language) seo.language = args.language.trim();
   }
   if (args.socialImage !== undefined) {
     const id = args.socialImage.trim();
     if (id && !(Object.hasOwn(state.assets.assets, id) && state.assets.assets[id].kind === 'image')) issues.push({ field: 'socialImage', message: `no library image has the assetId "${id}". Use an assetId search_assets returns, or "" to remove it` });
-    else seo.socialImage = id || null;
+    else if ((id || null) !== (state.site.socialImage || null)) seo.socialImage = id || null;
   }
   if (issues.length) return fieldError(issues, 'Nothing was applied. Send the call again with these fields fixed.');
 

@@ -13,6 +13,7 @@ import { LIMITS, Orchestrator } from '@agent/orchestrator';
 import { LocalAdapter, openLocalAdapter, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
 import { DEFAULT_LOCAL_PROFILE, type LocalModelProfile } from '@agent/models';
 import { findForbiddenShapes } from '@agent/strict-schema';
+import Ajv2020 from 'ajv/dist/2020.js';
 import { FOCUSED_WINDOW_TOKENS, toolsForRun } from '@agent/tools';
 import { contextVerdict, estimateRequestTokens, estimateTokens } from '@agent/budget';
 import { pageGlance, pageGlanceChars } from '@agent/context';
@@ -693,8 +694,8 @@ describe('what a constrained local run sends first (#364)', () => {
    * Writing search and AI-agent settings (#598) is another: a site run, which has no apply_operations on a small model,
    * gets update_page_seo and update_site_seo (their grammar branches and signatures), the page tool takes a page's
    * search title, link preview image, noindex and canonical address, and the instructions carry one line of SEO
-   * guidance. A page run gets update_page_seo for its own page and the same line. Their `seo` bytes are made room for
-   * in the same way.
+   * guidance: 4,176 bytes measured on the site runs. A page run gets update_page_seo for its own page and the same
+   * line: 1,198 bytes. Their `seo` bytes, each with a little room, are made room for in the same way.
    */
   const SEO_BYTES = 4_250;
   const PAGE_SEO_BYTES = 1_250;
@@ -729,8 +730,9 @@ describe('what a constrained local run sends first (#364)', () => {
     expect(1 - (total - audit - frosted - copy - seo) / baseline, JSON.stringify(sent)).toBeGreaterThan(0.24);
     // The room is made only where the tool is offered.
     expect(JSON.stringify(body.response_format).includes('"audit_seo"'), label).toBe(audit > 0);
-    expect(JSON.stringify(body.response_format).includes('"update_page_seo"'), label).toBe(seo > 0);
-    expect(JSON.stringify(body.response_format).includes('"update_site_seo"'), label).toBe(label.startsWith('site'));
+    const actions = (body.response_format.json_schema.schema.properties.action.anyOf as Array<{ properties: { tool: { enum: string[] } } }>).map((b) => b.properties.tool.enum[0]);
+    expect(actions.includes('update_page_seo'), label).toBe(seo > 0);
+    expect(actions.includes('update_site_seo'), label).toBe(label.startsWith('site'));
     // Still the strict grammar, in its compact form, and the context unindented, with all it said before.
     expect(body.response_format.type).toBe('json_schema');
     expect(JSON.stringify(body.response_format.json_schema.schema)).not.toContain('"type":"string","enum"');
@@ -768,32 +770,54 @@ describe('what a constrained local run sends first (#364)', () => {
     expect(results[1]).toEqual(results[0]);
   });
 
-  it("sets the site's identity and crawler policy from a constrained reply as from a native call (#598)", async () => {
+  it("sets a page's search settings and the site's identity and crawler policy from a constrained reply as from a native call (#598)", async () => {
     const results: unknown[] = [];
+    const ajv = new Ajv2020({ strict: false });
+    const pageArgs = { pageId: '/about/', seoTitle: 'About Riverside', noindex: true, socialImage: '' };
     // Crawlers go as rows, which the grammar can hold and the tool turns into the policy's list by name.
-    const args = {
+    const siteArgs = {
       baseUrl: 'https://riverside.example',
-      identity: { kind: 'Person', name: 'Ana Riverside', sameAs: ['https://github.com/ana-riverside'] },
-      crawlerPolicy: { preset: 'custom', overrides: [{ token: 'GPTBot', access: 'disallow' }, { token: 'ClaudeBot', access: 'allow' }], disallowPaths: ['/drafts/'] }
+      identity: { kind: 'Person', name: 'Ana Riverside', sameAs: ['https://github.com/ana-riverside'], geo: null },
+      crawlerPolicy: { preset: 'custom', overrides: [{ token: 'GPTBot', access: 'disallow' }, { token: 'ClaudeBot', access: 'allow' }], disallowPaths: ['/drafts/'], noAiMeta: null }
     };
     for (const toolMode of ['constrained-json', 'native'] as const) {
       const sentBefore = server.requests.length;
       const { session, run } = await setup({ toolMode });
-      server.script(...(toolMode === 'native' ? [toolCallReply('update_site_seo', args), textReply('Done.')] : [envelopeReply('update_site_seo', args), envelopeReply('finish', { message: 'Done.' })]));
+      server.script(
+        ...(toolMode === 'native'
+          ? [toolCallReply('update_page_seo', pageArgs), toolCallReply('update_site_seo', siteArgs), textReply('Done.')]
+          : [envelopeReply('update_page_seo', pageArgs), envelopeReply('update_site_seo', siteArgs), envelopeReply('finish', { message: 'Done.' })])
+      );
       const { result } = await run('Make the site findable');
       expect(result?.status, toolMode).toBe('completed');
+      // Each reply is one the model could really have sent: it fits the grammar, or the tool's own schema, as sent.
       const first = server.requests.slice(sentBefore).find((r) => r.method === 'POST')!.body;
-      if (toolMode === 'constrained-json') {
-        expect(first.messages[0].content).toContain('\n- update_site_seo {');
-        expect(findForbiddenShapes(first.response_format.json_schema.schema)).toEqual([]);
+      for (const [tool, args] of [['update_page_seo', pageArgs], ['update_site_seo', siteArgs]] as const) {
+        if (toolMode === 'constrained-json') {
+          expect(first.messages[0].content).toContain(`\n- ${tool} {`);
+          const fits = ajv.validate(first.response_format.json_schema.schema, { brief_status: 'Working', action: { tool, args } });
+          expect(fits, `${tool}: ${JSON.stringify(ajv.errors)}`).toBe(true);
+          // Without the tool's own branch the same reply would not fit, so the grammar is what admits it.
+          const others = structuredClone(first.response_format.json_schema.schema);
+          others.properties.action.anyOf = others.properties.action.anyOf.filter((b: { properties: { tool: { enum: string[] } } }) => !b.properties.tool.enum.includes(tool));
+          expect(ajv.validate(others, { brief_status: 'Working', action: { tool, args } }), tool).toBe(false);
+        } else {
+          const offered = (first.tools as Array<{ function: { name: string; parameters: object } }>).find((t) => t.function.name === tool);
+          expect(offered, tool).toBeDefined();
+          expect(ajv.validate(offered!.function.parameters, args), `${tool}: ${JSON.stringify(ajv.errors)}`).toBe(true);
+        }
       }
+      if (toolMode === 'constrained-json') expect(findForbiddenShapes(first.response_format.json_schema.schema)).toEqual([]);
       const site = session.state.site;
-      results.push({ baseUrl: site.baseUrl, identity: site.identity, crawlerPolicy: site.crawlerPolicy });
+      const about = Object.values(session.state.pages).find((pg) => pg.route === '/about/')!;
+      results.push({ page: { title: about.seo.title, noindex: about.seo.noindex }, baseUrl: site.baseUrl, identity: site.identity, crawlerPolicy: site.crawlerPolicy, revision: session.revision });
     }
     expect(results[0]).toEqual({
+      page: { title: 'About Riverside', noindex: true },
       baseUrl: 'https://riverside.example',
       identity: { kind: 'Person', name: 'Ana Riverside', sameAs: ['https://github.com/ana-riverside'] },
-      crawlerPolicy: { preset: 'custom', overrides: { GPTBot: 'disallow', ClaudeBot: 'allow' }, disallowPaths: ['/drafts/'] }
+      crawlerPolicy: { preset: 'custom', overrides: { GPTBot: 'disallow', ClaudeBot: 'allow' }, disallowPaths: ['/drafts/'] },
+      revision: 2
     });
     expect(results[1]).toEqual(results[0]);
   });

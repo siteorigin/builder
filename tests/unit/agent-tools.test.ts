@@ -2890,10 +2890,14 @@ describe('search settings on the page and brand tools (#598)', () => {
   };
 
   it('builds a new page with its search settings, and changes them on an existing page', async () => {
+    let created: ProjectState | null = null;
     const { session, adapter, run } = await setup(
       [
         () => [call('u1', 'upsert_page_with_sections', { ...services, seoTitle: 'Garden care services in Riverside', description: 'Weekly garden visits.', socialImage: photo, noindex: true, canonical: 'https://example.org/services/' })],
-        () => [call('u2', 'upsert_page_with_sections', { slug: 'services', noindex: false, socialImage: '', seoTitle: '' })],
+        () => {
+          created = structuredClone(session.state);
+          return [call('u2', 'upsert_page_with_sections', { slug: 'services', noindex: false, socialImage: '', seoTitle: '' })];
+        },
         () => [call('u3', 'upsert_page_with_sections', { slug: 'services', socialImage: 'a_missing0' })],
         () => finish()
       ],
@@ -2903,6 +2907,7 @@ describe('search settings on the page and brand tools (#598)', () => {
     );
     const { result } = await run('Add a services page', null);
     expect(result?.status).toBe('completed');
+    expect(pageAt(created!, '/services/')!.seo).toMatchObject({ title: 'Garden care services in Riverside', description: 'Weekly garden visits.', socialImage: photo, noindex: true, canonical: 'https://example.org/services/' });
     const page = pageAt(session.state, '/services/')!;
     // The second call took the noindex, image and title back off; the description stays as the first set it.
     expect(page.seo.description).toBe('Weekly garden visits.');
@@ -2924,11 +2929,17 @@ describe('search settings on the page and brand tools (#598)', () => {
   });
 
   it("sets the site's public address, language and sharing image with the brand, alone or with the rest", async () => {
+    let published: ProjectState | null = null;
     const { session, adapter, run } = await setup(
       [
         () => [call('b1', 'update_site_brand', { baseUrl: 'https://Harbour.example/', language: 'en-NZ', socialImage: photo })],
-        () => [call('b2', 'update_site_brand', { brandColor: '#0b5cad', language: 'not a language' })],
+        () => {
+          published = structuredClone(session.state);
+          return [call('b2', 'update_site_brand', { brandColor: '#0b5cad', language: 'not a language' })];
+        },
         () => [call('b3', 'update_site_brand', { siteName: 'Harbour Plumbing', socialImage: '' })],
+        // What the site already has changes nothing, and the reply says so.
+        () => [call('b4', 'update_site_brand', { language: 'en-NZ', baseUrl: 'https://harbour.example', socialImage: '' })],
         () => finish()
       ],
       {},
@@ -2937,6 +2948,8 @@ describe('search settings on the page and brand tools (#598)', () => {
     );
     await run('Publish at harbour.example');
     expect(lastResult(adapter.requests[1])).toMatchObject({ ok: true });
+    expect(published!.site).toMatchObject({ baseUrl: 'https://harbour.example', language: 'en-NZ', socialImage: photo });
+    expect(lastResult(adapter.requests[4])).toMatchObject({ ok: true, note: 'The brand already matches.' });
     // A bad field refuses the whole call: the brand color is not applied either.
     expect(lastResult(adapter.requests[2])).toMatchObject({ error: 'VALIDATION_FAILED', fields: [{ field: 'language' }] });
     expect(session.state.tokens.overrides['color.brand']).toBeUndefined();
