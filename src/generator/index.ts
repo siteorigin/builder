@@ -2826,7 +2826,9 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
     case 'link': {
       useImport(ctx, 'SoLink', `${RUNTIME_DIR}/Link.svelte`);
       const link = isBinding(node.link) ? bindExpr(ctx, node.link) : js(resolveLink(node.link as LinkValue, ctx.rctx));
-      const label = ctx.widgets?.buttons.has(node.id) ? `(${choiceLabel(ctx, node.id)})` : bindExpr(ctx, node.label);
+      // A button choosing an option may fall back to the option's label: a conditional, so it is wrapped.
+      const choice = ctx.widgets?.buttons.has(node.id) ? choiceLabel(ctx, node.id) : bindExpr(ctx, node.label);
+      const label = choice.startsWith('has(') ? `(${choice})` : choice;
       const appearance = bindExpr(ctx, node.appearance);
       const name = nameAttr(ctx, 'aria-label', node.ariaLabel);
       // A button that changes UI state is a real button wherever it has nowhere to go (see the Link helper).
