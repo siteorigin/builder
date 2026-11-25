@@ -60,7 +60,7 @@ export async function copyProjectSource(src: string, dest: string, opts: { keepA
  * `.brief.json.swp`, `#brief.json#`, `brief.json.bak`), which can hold notes the author has since taken out.
  * Without case: on a case-insensitive disk, another spelling is the same file.
  */
-const BRIEF_COPY_RE = /^siteorigin\/[^/]*brief\.json[^/]*$/i;
+const BRIEF_COPY_RE = /^siteorigin\/(?:[.#]?brief\.json(?:[~#]|\.[^/]+)?)$/i;
 
 /** Is `p` the project brief of the project in `root`, or a copy of it an editor left beside it? */
 export function isProjectBrief(root: string, p: string): boolean {
@@ -72,7 +72,9 @@ export function inProjectSource(root: string, p: string): boolean {
   const rel = relative(root, p);
   if (!rel) return true;
   const top = rel.split(sep)[0];
-  if (EXCLUDE_TOP.has(top) || /\.tmp$/.test(p)) return false;
+  // The editor's own data (history, which holds every version of the brief) by any spelling: on a case-insensitive
+  // disk, `.SiteOrigin` is the same folder.
+  if (EXCLUDE_TOP.has(top) || top.toLowerCase() === '.siteorigin' || /\.tmp$/.test(p)) return false;
   if (PRIVATE_FILE.test(basename(p))) return false;
   try {
     return !lstatSync(p).isSymbolicLink();

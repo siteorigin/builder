@@ -4,6 +4,7 @@
  * never reach visitors: the website and every export leave them out. Site details' description is the visitor-facing
  * one, and stays where it is.
  */
+import { useRef } from 'react';
 import { EyeOff, Lock } from 'lucide-react';
 import { briefText } from '@shared/brief';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -16,15 +17,25 @@ const HINTS = {
 };
 
 export function ProjectBrief() {
-  const brief = useStore((s) => s.snapshot?.state.brief);
   const opening = useStore((s) => s.snapshot?.workspaceKey);
-  const readOnly = useStore((s) => s.snapshot?.readOnly ?? null);
   if (opening === undefined) return null;
+  // Keyed by the project's opening: text typed in one project never shows in the next.
+  return <BriefFields key={opening} />;
+}
+
+function BriefFields() {
+  const brief = useStore((s) => s.snapshot?.state.brief);
+  const readOnly = useStore((s) => s.snapshot?.readOnly ?? null);
+  // A project opened read-only shows its brief read-only. Fields that were editable stay so if the project becomes
+  // read-only later (another app took it over), as every other field does: text being typed is never swapped out
+  // from under the author, and the save it can't make says why.
+  const editable = useRef(false);
+  if (!readOnly) editable.current = true;
+  const locked = !!readOnly && !editable.current;
   const description = briefText(brief, 'description');
   const notes = briefText(brief, 'notes');
   return (
-    // Keyed by the project's opening: text typed in one project never shows in the next.
-    <div className="panel-body brief" key={opening}>
+    <div className="panel-body brief">
       <div className="brief-head">
         <h2>Project brief</h2>
         <p className="brief-private">
@@ -40,7 +51,7 @@ export function ProjectBrief() {
         )}
       </div>
       <div className="brief-fields">
-        {readOnly ? (
+        {locked ? (
           // Read-only fields stay focusable, so the brief can still be read, selected and copied.
           <>
             <Field label="Description" hint={HINTS.description}>

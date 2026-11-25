@@ -248,8 +248,11 @@ describe('copies of the project', () => {
   });
 
   it('know the brief, and copies an editor left beside it, by its path whatever its case, and nothing else by it', () => {
-    for (const name of ['brief.json', 'brief.json~', '.brief.json.swp', '#brief.json#', 'brief.json.bak']) expect(isProjectBrief('/p', join('/p', 'siteorigin', name)), name).toBe(true);
+    for (const name of ['brief.json', 'brief.json~', '.brief.json.swp', '#brief.json#', 'brief.json.bak', 'Brief.JSON~', '.Brief.json.SWP']) expect(isProjectBrief('/p', join('/p', 'siteorigin', name)), name).toBe(true);
     expect(isProjectBrief('/p', join('/p', 'SiteOrigin', 'Brief.JSON'))).toBe(true);
+    // A file of the author's own that only mentions a brief is not one.
+    expect(isProjectBrief('/p', join('/p', 'siteorigin', 'client-brief.json'))).toBe(false);
+    expect(isProjectBrief('/p', join('/p', 'siteorigin', 'brief.jsonc'))).toBe(false);
     expect(isProjectBrief('/p', join('/p', 'brief.json'))).toBe(false);
     expect(isProjectBrief('/p', join('/p', 'siteorigin', 'site.json'))).toBe(false);
     expect(isProjectBrief('/p', join('/p', 'siteorigin', 'pages', 'brief.json'))).toBe(false);
@@ -259,10 +262,16 @@ describe('copies of the project', () => {
   it('leave an editor’s backup of the brief out of an export', async () => {
     const src = project();
     writeFileSync(join(src, 'siteorigin', 'brief.json~'), 'Notes since taken out');
+    writeFileSync(join(src, 'siteorigin', 'client-brief.json'), '{}');
+    // The editor's own data, history and all, by any spelling of its folder.
+    mkdirSync(join(src, '.SiteOrigin', 'history'), { recursive: true });
+    writeFileSync(join(src, '.SiteOrigin', 'history', 'blob'), 'Notes since taken out');
     const exported = join(temp('export'), 'site');
-    await copyProjectSource(src, exported);
+    await copyProjectSource(src, exported, { keepAsset: () => true });
     expect(existsSync(join(exported, 'siteorigin', 'brief.json~'))).toBe(false);
+    expect(existsSync(join(exported, '.SiteOrigin'))).toBe(false);
     expect(existsSync(join(exported, 'siteorigin', 'site.json'))).toBe(true);
+    expect(existsSync(join(exported, 'siteorigin', 'client-brief.json'))).toBe(true);
   });
 
   it('keep the brief out of the preview’s copy and of what the preview server serves', async () => {
@@ -276,14 +285,16 @@ describe('copies of the project', () => {
       expect(existsSync(join(stage, BRIEF_FILE))).toBe(false);
       // Brought up to date after the project changed, it still leaves the brief out.
       writeFileSync(join(src, BRIEF_FILE), JSON.stringify({ schemaVersion: SCHEMA_VERSION, notes: 'Changed' }));
+      writeFileSync(join(src, 'siteorigin', '.brief.json.swp'), 'Changed');
       writeFileSync(join(src, 'siteorigin', 'site.json'), '{"changed":true}');
       await syncPreviewStage(src, stage);
       expect(readFileSync(join(stage, 'siteorigin', 'site.json'), 'utf8')).toBe('{"changed":true}');
       expect(existsSync(join(stage, BRIEF_FILE))).toBe(false);
+      expect(existsSync(join(stage, 'siteorigin', '.brief.json.swp'))).toBe(false);
     } finally {
       await removePreviewStage(stage);
     }
-    expect(previewFsPolicy('/p').deny).toContain('**/siteorigin/*brief.json*');
+    expect(previewFsPolicy('/p').deny).toEqual(expect.arrayContaining(['**/siteorigin/brief.json*', '**/siteorigin/.brief.json*', '**/siteorigin/#brief.json#']));
   });
 });
 
