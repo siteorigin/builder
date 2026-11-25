@@ -17,6 +17,7 @@ import { AUDIT_SEO_ARGS, seoReport } from './seo-report';
 import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
+import { PAGE_SEO_ARGS, PAGE_SEO_BRIEF, PAGE_SEO_DESCRIPTION, pageSeoToolSchema, runPageSeo, runSiteSeo, SITE_SEO_ARGS, SITE_SEO_BRIEF, SITE_SEO_DESCRIPTION, siteSeoToolSchema } from './seo-tools';
 import { MANAGED_COMPONENT_ARGS, MANAGED_COMPONENT_BRIEF, MANAGED_COMPONENT_DESCRIPTION, managedComponentSchema, runManagedComponent } from './managed-component';
 import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
 import { DEFINITION_ARGS, DEFINITION_BRIEFS, DEFINITION_DESCRIPTIONS, definitionAbridged, definitionTools, runDefinitionTool, type DefinitionTarget, type DefinitionToolName } from './definition';
@@ -94,6 +95,8 @@ export const TOOL_ARGS = {
   }),
   upsert_page_with_sections: UPSERT_ARGS,
   update_site_brand: BRAND_ARGS,
+  update_page_seo: PAGE_SEO_ARGS,
+  update_site_seo: SITE_SEO_ARGS,
   upsert_managed_component: MANAGED_COMPONENT_ARGS,
   ...SELECTION_ARGS,
   ...DEFINITION_ARGS
@@ -128,6 +131,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Find where the author changes one content field in the editor. Returns its current value and the exact labels the Inspector shows on the way to it (page, component, Content, then the field or the list, its item and the field), and gives the author an "Open in inspector" button for it.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
+  update_page_seo: PAGE_SEO_DESCRIPTION,
+  update_site_seo: SITE_SEO_DESCRIPTION,
   upsert_managed_component: MANAGED_COMPONENT_DESCRIPTION,
   ...SELECTION_DESCRIPTIONS,
   ...DEFINITION_DESCRIPTIONS
@@ -155,6 +160,8 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
   upsert_page_with_sections: UPSERT_BRIEF,
   update_site_brand: BRAND_BRIEF,
+  update_page_seo: PAGE_SEO_BRIEF,
+  update_site_seo: SITE_SEO_BRIEF,
   upsert_managed_component: MANAGED_COMPONENT_BRIEF,
   ...SELECTION_BRIEFS,
   ...DEFINITION_BRIEFS
@@ -310,7 +317,7 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
 
 /** Tools that take a revision or hash the model read earlier: only one of these can run per turn. */
 export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch']);
-const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand', 'upsert_managed_component'];
+const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand', 'update_page_seo', 'update_site_seo', 'upsert_managed_component'];
 const SELECTION_TOOLS = Object.keys(SELECTION_ARGS) as ToolName[];
 const DEFINITION_TOOLS = Object.keys(DEFINITION_ARGS) as DefinitionToolName[];
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
@@ -425,11 +432,16 @@ export function toolsForRun(opts: {
     // page. A small model gets the few that address one section by its ID, which the page tool cannot.
     const own = toolDefinitions({ codeEnabled, definitionOps: false, operations: focused ? FOCUSED_PAGE_OPERATIONS : PAGE_OPERATIONS }).filter((t) => t.name !== 'apply_source_patch' && t.name !== COMPONENT_CHECK);
     const upsert: ToolDefinition = { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, opts.page.route) };
-    return { tools: [upsert, ...own], mode: 'page', focused };
+    // Its own search settings, by its ID alone; the site's are the whole site's, so they wait for a wider scope.
+    const pageId = pageIdFor(state, opts.page.route);
+    const seo: ToolDefinition[] = pageId ? [{ name: 'update_page_seo', ...describe('update_page_seo'), parameters: pageSeoToolSchema(pageId) }] : [];
+    return { tools: [upsert, ...seo, ...own], mode: 'page', focused };
   }
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state) },
     { name: 'update_site_brand', ...describe('update_site_brand'), parameters: brandToolSchema(state) },
+    { name: 'update_page_seo', ...describe('update_page_seo'), parameters: pageSeoToolSchema() },
+    { name: 'update_site_seo', ...describe('update_site_seo'), parameters: siteSeoToolSchema() },
     ...(!focused || opts.componentRequest ? [managedComponentTool()] : [])
   ];
   // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
@@ -928,6 +940,10 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       return runManagedComponent(args, host, callId, (host.macros ??= newMacroMemory()));
     case 'update_site_brand':
       return runBrand(args as z.infer<typeof BRAND_ARGS>, host, callId);
+    case 'update_page_seo':
+      return runPageSeo(args as z.infer<typeof PAGE_SEO_ARGS>, host, callId);
+    case 'update_site_seo':
+      return runSiteSeo(args as z.infer<typeof SITE_SEO_ARGS>, host, callId);
     case 'update_selected_props':
     case 'edit_selected_list':
     case 'edit_selected_table':

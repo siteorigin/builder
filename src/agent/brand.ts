@@ -13,6 +13,7 @@ import { getTheme } from '@catalogue/index';
 import { TYPE_SCALE_CHOICES, scaleRoles, typeScaleOps } from '@shared/type-scale';
 import { normalizeLink } from '@engine/values';
 import { contactInText } from '@shared/contact-links';
+import { isLanguageCode } from '@shared/languages';
 import { BRAND_PROP, COPYRIGHT_PROP, brandLabel, brandPlacements, followsSiteName, siteNameText } from '@shared/site-name';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
@@ -29,14 +30,17 @@ export const BRAND_ARGS = z.object({
   typeScale: z.enum(TYPE_SCALE_CHOICES).optional(),
   contactEmail: z.string().max(120).optional(),
   contactPhone: z.string().max(30).optional(),
-  copyright: z.string().max(200).optional()
+  copyright: z.string().max(200).optional(),
+  baseUrl: z.string().max(200).optional(),
+  language: z.string().max(20).optional(),
+  socialImage: z.string().max(200).optional()
 });
 export type BrandArgs = z.infer<typeof BRAND_ARGS>;
 
 export const BRAND_DESCRIPTION =
-  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once). Send only what changes. Fonts must be installed; an error lists the choices.';
+  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once), with the site\'s description, public address, language and link preview image. Send only what changes. Fonts must be installed; an error lists the choices.';
 
-export const BRAND_BRIEF = 'Set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors, installed fonts, and the type scale (every heading and text size at once). Send only what changes.';
+export const BRAND_BRIEF = 'Set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors, installed fonts, the type scale (every heading and text size at once), and the site description, public address, language and link preview image. Send only what changes.';
 
 export function brandToolSchema(state: ProjectState): JsonSchema {
   const fonts = installedFontNames(state);
@@ -59,7 +63,10 @@ export function brandToolSchema(state: ProjectState): JsonSchema {
       },
       contactEmail: { type: 'string', maxLength: 120 },
       contactPhone: { type: 'string', maxLength: 30 },
-      copyright: { type: 'string', maxLength: 200, description: 'Footer copyright line. Follows the site name if omitted.' }
+      copyright: { type: 'string', maxLength: 200, description: 'Footer copyright line. Follows the site name if omitted.' },
+      baseUrl: { type: 'string', maxLength: 200, description: 'The public address the site is published at (https://…), for canonical links, the sitemap and link previews. "" clears it.' },
+      language: { type: 'string', maxLength: 20, description: 'The site\'s language code, such as "en" or "fr-CA".' },
+      socialImage: { type: 'string', maxLength: 200, description: 'Default link preview image: the assetId of a library image (search_assets). "" removes it.' }
     },
     additionalProperties: false
   };
@@ -203,6 +210,18 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   };
   const email = contactLink('contactEmail', args.contactEmail, 'email');
   const phone = contactLink('contactPhone', args.contactPhone, 'tel');
+  // How the site is found and shared, set with the brand so a rebrand ships complete.
+  const seo: { baseUrl?: string; language?: string; socialImage?: string | null } = {};
+  if (args.baseUrl !== undefined) seo.baseUrl = args.baseUrl.trim();
+  if (args.language !== undefined) {
+    if (!isLanguageCode(args.language.trim())) issues.push({ field: 'language', message: 'use a language code such as "fr" or "en-GB"' });
+    else seo.language = args.language.trim();
+  }
+  if (args.socialImage !== undefined) {
+    const id = args.socialImage.trim();
+    if (id && !(Object.hasOwn(state.assets.assets, id) && state.assets.assets[id].kind === 'image')) issues.push({ field: 'socialImage', message: `no library image has the assetId "${id}". Use an assetId search_assets returns, or "" to remove it` });
+    else seo.socialImage = id || null;
+  }
   if (issues.length) return fieldError(issues, 'Nothing was applied. Send the call again with these fields fixed.');
 
   const setProp = (shell: 'header' | 'footer', node: InstanceNode, prop: string, value: unknown) => {
@@ -213,9 +232,9 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   const footers = state.site.shell.footer.rootIds.map((id) => state.site.shell.footer.nodes[id]).filter((n): n is InstanceNode => n?.kind === 'instance' && state.components[n.definitionId]?.properties[COPYRIGHT_PROP]?.type === 'string');
   const copyright = (value: string): EditOperation[] => footers.filter((n) => args.siteName !== undefined || n.props[COPYRIGHT_PROP] !== value).map((n) => ({ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: n.id, prop: COPYRIGHT_PROP, value }));
   if (args.copyright !== undefined && args.siteName !== undefined) ops.push(...copyright(''));
-  if (args.siteName !== undefined || args.description !== undefined || (args.tagline !== undefined && !state.site.description)) {
+  if (args.siteName !== undefined || args.description !== undefined || (args.tagline !== undefined && !state.site.description) || Object.keys(seo).length) {
     const description = args.description ?? (!state.site.description ? args.tagline : undefined);
-    ops.push({ type: 'site.update', ...(args.siteName !== undefined ? { name: args.siteName } : {}), ...(description !== undefined ? { description } : {}) });
+    ops.push({ type: 'site.update', ...(args.siteName !== undefined ? { name: args.siteName } : {}), ...(description !== undefined ? { description } : {}), ...seo });
   }
   if (args.copyright !== undefined) ops.push(...copyright(args.copyright));
 
