@@ -682,11 +682,15 @@ function sourceWithin(state: ProjectState, definitionId: string, authority: Extr
   if (authority.owner.kind === 'component') return `component.updateSource changes code that shows wherever this design is placed: more than ${authority.label}.`;
   const def = Object.hasOwn(state.components, definitionId) ? state.components[definitionId] : undefined;
   if (!def || def.kind !== 'code' || def.owner !== 'project') return `component.updateSource changes more than ${authority.label}.`;
-  const placed = instancesOf(state, def.id);
-  // Code that loads components by pattern or at run time can render this one without naming its file: who shows it
-  // cannot be told, so it is not the selection's alone.
-  const unknown = Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && DYNAMIC_IMPORT.test(d.source ?? ''));
-  if (placed.length && placed.every((p) => sameOwner(p.owner) && allowed.has(p.node.id)) && !dependentsOf(state, def.id).length && !unknown) return null;
+  const inside = (id: string) => {
+    const placed = instancesOf(state, id);
+    return placed.length > 0 && placed.every((p) => sameOwner(p.owner) && allowed.has(p.node.id)) && !dependentsOf(state, id).length;
+  };
+  // Code that loads components by pattern or at run time can render this one without naming its file: when such code
+  // shows anywhere outside the selection, who shows this one cannot be told, so it is not the selection's alone.
+  const loaders = Object.values(state.components).filter((d) => d.id !== def.id && d.kind === 'code' && DYNAMIC_IMPORT.test(d.source ?? ''));
+  const unknown = loaders.some((d) => (instancesOf(state, d.id).length || dependentsOf(state, d.id).length) && !inside(d.id));
+  if (inside(def.id) && !unknown) return null;
   return `Changing the source of "${def.name}" changes every placement of it, and it is used outside ${authority.label}. Give the selected placement a component of its own first (component.convertToCode for a managed component, component.makeUnique for code), then patch that copy.`;
 }
 
@@ -752,7 +756,11 @@ export function requestedAuthority(state: ProjectState, requested: RequestedScop
     }
   });
   if (found.length > 1) return { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the element "${id}", which is in more than one place in the site. Name the page or component instead.` };
-  if (!found.length) return run.kind === 'site' ? { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the element "${id}", which is not in the site.` } : wider(`the element "${id}"`);
+  if (!found.length) {
+    // Not where the run may change things: elsewhere in the site, or a wrong ID.
+    const anywhere = run.kind !== 'site' && allTrees(state).some((t) => Object.hasOwn(t.tree.nodes, id));
+    return anywhere ? wider(`the element "${id}"`) : { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the element "${id}", which is not in the site.` };
+  }
   const owner = found[0];
   const node = getTree(state, owner).nodes[id];
   const label = `the ${displayName(state, node)} element`;

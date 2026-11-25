@@ -489,6 +489,7 @@ describe('the loaded context window', () => {
     expect(body.max_tokens).toBeGreaterThanOrEqual(1024);
     expect(estimateOf(body) + body.max_tokens).toBeLessThanOrEqual(window);
     // The request itself stays small: 11,763 tokens measured with the source patch's revision and scope (#740).
+    expect(body.tools.map((t: { function: { name: string } }) => t.function.name)).toContain('apply_source_patch');
     expect(estimateOf(body)).toBeLessThanOrEqual(11_800);
   });
 

@@ -5335,7 +5335,11 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     const wrapper = applyOperations(state, [{ type: 'component.createCode', name: 'Wrapper', source: `<script>\n\timport Hero from './${file}';\n</script>\n<Hero />\n` }]).state;
     expect(checkAuthority(wrapper, [patch()], whole)).toMatch(/used outside/);
     // So does code that loads components by a pattern, which never names the file.
-    const gallery = applyOperations(state, [{ type: 'component.createCode', name: 'Gallery', source: `<script>\n\tconst all = import.meta.glob('./*.svelte', { eager: true });\n</script>\n` }]).state;
+    const made2 = applyOperations(state, [{ type: 'component.createCode', name: 'Gallery', source: `<script>\n\tconst all = import.meta.glob('./*.svelte', { eager: true });\n</script>\n` }]);
+    const galleryId = (made2.results[0] as { definitionId: string }).definitionId;
+    // Placed nowhere, it shows nothing.
+    expect(checkAuthority(made2.state, [patch()], whole)).toBeNull();
+    const gallery = applyOperations(made2.state, [{ type: 'node.insert', owner: own, definitionId: galleryId }]).state;
     expect(checkAuthority(gallery, [patch()], whole)).toMatch(/makeUnique for code/);
     // A selection inside a component's design: the code shows wherever that design is placed.
     const heroDef = state.components[id].provenance!.forkedFrom!;
@@ -5365,6 +5369,10 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(requestedAuthority(state, { kind: 'page', targetIds: ['  '] }, site)).toMatchObject({ code: 'INVALID_ARGUMENT' });
     expect(requestedAuthority(state, { kind: 'page', targetIds: ['nowhere'] }, site)).toMatchObject({ code: 'SCOPE_MISMATCH', reread: true });
     expect(requestedAuthority(state, { kind: 'component', targetIds: ['constructor'] }, site)).toMatchObject({ code: 'SCOPE_MISMATCH', reread: true });
+    // An ID in two places is never taken as either of them.
+    const twice = structuredClone(state);
+    twice.pages[aboutId].nodes[heroId] = structuredClone(twice.pages[homeId].nodes[heroId]);
+    expect(requestedAuthority(twice, { kind: 'selection', targetIds: [heroId] }, site)).toMatchObject({ code: 'SCOPE_MISMATCH', reread: true, message: expect.stringMatching(/more than one place/) });
     expect(requestedAuthority(state, { kind: 'selection', targetIds: ['n_nowhere'] }, site)).toMatchObject({ code: 'SCOPE_MISMATCH' });
     // A page run: that page, or an element on it.
     expect(requestedAuthority(state, { kind: 'page', targetIds: [homeId] }, page)).toEqual({ authority: page });
@@ -5377,7 +5385,15 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(requestedAuthority(state, { kind: 'page', targetIds: [homeId] }, design)).toMatchObject({ code: 'SCOPE_MISMATCH' });
     // A selection: itself, never the page around it or a sibling. A selected part is named by its placement and stays the part.
     expect(requestedAuthority(state, { kind: 'selection', targetIds: [heroId] }, whole)).toEqual({ authority: whole });
-    expect(requestedAuthority(state, { kind: 'selection', targetIds: [nextId] }, whole)).toMatchObject({ code: 'SCOPE_MISMATCH' });
+    expect(requestedAuthority(state, { kind: 'selection', targetIds: [nextId] }, whole)).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/more than the hero/) });
+    expect(requestedAuthority(state, { kind: 'selection', targetIds: ['n_nowhere'] }, whole)).toMatchObject({ code: 'SCOPE_MISMATCH', reread: true });
+    // An element inside the selection is a narrower scope of its own.
+    const boxed = applyOperations(state, [
+      { type: 'node.insert', owner: own, index: 0, primitive: 'container', newNodeId: 'n_box001' },
+      { type: 'node.insert', owner: own, parentId: 'n_box001', primitive: 'paragraph', text: 'Inside', newNodeId: 'n_para001' }
+    ]).state;
+    const box: Authority = { kind: 'selection', owner: own, nodeId: 'n_box001', label: 'the box' };
+    expect(requestedAuthority(boxed, { kind: 'selection', targetIds: ['n_para001'] }, box)).toMatchObject({ authority: { kind: 'selection', owner: own, nodeId: 'n_para001' } });
     expect(requestedAuthority(state, { kind: 'page', targetIds: [homeId] }, whole)).toMatchObject({ code: 'SCOPE_MISMATCH' });
     const part: Authority = { ...whole, part: { regionNodeId: heroId, partId: 'heading' } };
     expect(requestedAuthority(state, { kind: 'selection', targetIds: [heroId] }, part)).toEqual({ authority: part });
@@ -5407,9 +5423,9 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(sourceOf(session.state, id)).toBe(before);
     expect(session.revision).toBe(revision);
     expect(result?.status).toBe('no-changes');
-    expect(result?.sourceDrafts).toEqual([expect.objectContaining({ definitionId: id, reason: 'rejected' })]);
+    expect(result?.sourceDrafts).toEqual([{ definitionId: id, name: session.state.components[id].name, path: expect.any(String), reason: 'rejected' }]);
     const path = result!.sourceDrafts![0].path;
-    expect(path.startsWith(`.siteorigin/recovery/ai-runs/${runId}/`)).toBe(true);
+    expect(path.startsWith(`.siteorigin/recovery/ai-runs/${runId}/rejected/`)).toBe(true);
     expect(readFileSync(join(session.dir, path), 'utf8')).toBe(attempted);
   });
 
@@ -5445,7 +5461,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     expect(sourceOf(session.state, id)).toBe(before);
     expect(result?.sourceDrafts).toEqual([expect.objectContaining({ definitionId: id, reason: 'reverted' })]);
     const path = result!.sourceDrafts![0].path;
-    expect(path.startsWith(`.siteorigin/recovery/ai-runs/${runId}/`)).toBe(true);
+    expect(path.startsWith(`.siteorigin/recovery/ai-runs/${runId}/applied/`)).toBe(true);
     expect(readFileSync(join(session.dir, path), 'utf8')).toBe(patched);
   });
 
