@@ -101,6 +101,10 @@ const PATCHES: Record<string, (def: ComponentDefinition) => void> = {
   'pricing.plans': (def) => {
     restyle(def, 'plan', { base: { borderBlockStart: tok('border.strong') } });
   },
+  'contact.details': (def) => {
+    // Each address or number is a link a thumb can hit: 44px tall at least.
+    restyle(def, 'method-value', { base: { layout: 'row', align: 'center', minHeight: '44px' } });
+  },
   'blog.grid': (def) => {
     restyle(def, 'card', { base: { paddingBlockStart: tok('space.md'), borderBlockStart: RULE }, 'base:hover': { borderBlockStart: '1px solid var(--so-color-brand)' } });
   },

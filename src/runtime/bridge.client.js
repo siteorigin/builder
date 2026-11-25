@@ -3433,6 +3433,9 @@ function readability(vw, deadline) {
       for (const el of document.querySelectorAll(INTERACTIVE)) {
         const going = each(checks.tapTargets, () => {
           if (!drawn(el) || el.closest(':disabled, [aria-disabled="true"]')) return;
+          // A control kept out of the tab order inside content hidden from assistive technology (a form's spam trap,
+          // parked off screen) is for robots: nobody is meant to tap it.
+          if (el.tabIndex < 0 && el.closest('[aria-hidden="true"]')) return;
           const s = getComputedStyle(el);
           if (visuallyHidden(el, s) || inSentence(el, s)) return;
           let r = rectOf(el);

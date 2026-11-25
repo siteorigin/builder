@@ -359,7 +359,7 @@ describe('values that cannot be known', () => {
 describe('what ships', () => {
   it('declares only tokens its theme has, with unique ids', () => {
     const declaring = listThemes().filter((t) => t.contrastPairs);
-    expect(declaring.map((t) => t.id).sort()).toEqual(['foundation', 'foundation-alt']);
+    expect(declaring.map((t) => t.id).sort()).toEqual(['editorial', 'foundation', 'foundation-alt']);
     for (const theme of declaring) {
       const ids = new Set(theme.tokens.map((t) => t.id));
       const pairs = theme.contrastPairs!;

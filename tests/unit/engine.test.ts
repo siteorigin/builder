@@ -306,6 +306,64 @@ describe('theme switching (P06, I03)', () => {
     const css = generateProject(s).get('src/lib/siteorigin/styles/components.css')!;
     expect(css).toContain('foundation-alt-hero-split');
   });
+
+  it('moves a Foundation site to Editorial and back with its content, links, images, styles and forks intact (#390)', () => {
+    let s = fresh();
+    const p = owner(s);
+    const about = s.site.pageOrder.find((id) => id !== s.site.homePageId)!;
+    const hero = firstInstance(s, 'hero.split');
+    const grid = firstInstance(s, 'features.grid');
+    const firstCard = (grid.props.items as Array<{ id: string }>)[0].id;
+    const media = firstInstance(s, 'content.media');
+    s = applyOperations(s, [
+      { type: 'asset.add', asset: { id: 'a_pic', name: 'Pic', file: 'static/assets/pic.png', mime: 'image/png', bytes: 10, hash: 'h', kind: 'image', createdAt: 'now' } },
+      { type: 'instance.setProp', owner: p, nodeId: hero.id, prop: 'image', value: { assetId: 'a_pic', alt: 'A studio' } },
+      { type: 'instance.setProp', owner: p, nodeId: hero.id, prop: 'primaryLink', value: { type: 'page', target: about } },
+      { type: 'instance.setProp', owner: p, nodeId: grid.id, prop: 'items', itemId: firstCard, field: 'title', value: 'Surveys' },
+      { type: 'instance.setVariant', owner: p, nodeId: media.id, axis: 'layout', variant: 'media-end' },
+      { type: 'node.setStyle', owner: p, nodeId: hero.id, partId: 'heading', scope: 'base', property: 'color', value: { token: 'color.accent' } },
+      { type: 'node.setStyle', owner: p, nodeId: grid.id, partId: 'cardTitle', itemId: firstCard, scope: 'base', property: 'color', value: { token: 'color.brand' } },
+      { type: 'token.set', tokenId: 'color.brand', value: '#123456' },
+      { type: 'token.set', tokenId: 'font.display', value: 'Lora' }
+    ] as EditOperation[]).state;
+    const cta = firstInstance(s, 'cta.banner');
+    const fork = applyOperations(s, [{ type: 'component.fork', definitionId: cta.definitionId }]);
+    s = fork.state;
+    const forkId = fork.results[0].definitionId as string;
+    // A project component built around a placed section keeps the definition it was made with.
+    const built = applyOperations(s, [{ type: 'component.createFromNode', owner: p, nodeId: firstInstance(s, 'stats.row').id, name: 'Figures' }]);
+    s = built.state;
+    const builtId = built.results[0].definitionId as string;
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+
+    const editorial = applyOperations(s, [{ type: 'theme.apply', themeId: 'editorial' }]).state;
+    expect(editorial.site.themeId).toBe('editorial');
+    expect(editorial.themeLock.theme).toMatchObject({ id: 'editorial' });
+    // Every placement of a theme section now uses Editorial's, with what the author set unchanged.
+    for (const page of Object.values(editorial.pages))
+      for (const n of Object.values(page.nodes)) {
+        if (n.kind !== 'instance') continue;
+        const def = editorial.components[n.definitionId];
+        if (def.owner === 'theme') expect(n.definitionId, `${page.title} ${def.componentId}`).toBe(`editorial.${def.componentId}`);
+        const was = s.pages[page.id].nodes[n.id] as InstanceNode;
+        expect({ props: n.props, overrides: n.overrides, itemOverrides: n.itemOverrides, variants: n.variants }).toEqual({ props: was.props, overrides: was.overrides, itemOverrides: was.itemOverrides, variants: was.variants });
+      }
+    expect(editorial.site.shell).toEqual({ header: expect.anything(), footer: expect.anything() });
+    expect(Object.values(editorial.site.shell.header.nodes).map((n) => (n.kind === 'instance' ? n.definitionId : n.kind))).toEqual(['editorial.shell.header']);
+    expect(editorial.components[forkId]).toEqual(s.components[forkId]);
+    expect(editorial.components[builtId]).toEqual(s.components[builtId]);
+    expect(editorial.assets).toEqual(s.assets);
+    expect(editorial.tokens).toEqual(s.tokens);
+    expect(validateState(editorial).filter((d) => d.severity === 'error')).toEqual([]);
+    // Editorial's own layout reaches the site: its split hero is asymmetric and its stylesheet is the theme's.
+    const files = generateProject(editorial);
+    expect(files.get('src/lib/siteorigin/styles/components.css')).toMatch(/\.so-editorial-hero-split__grid \{[^}]*grid-template-columns: minmax\(0, 2fr\) minmax\(0, 3fr\);/);
+    expect(files.get('src/lib/siteorigin/styles/theme.css')).toContain('Editorial theme base styles');
+
+    const back = applyOperations(editorial, [{ type: 'theme.apply', themeId: 'foundation' }]).state;
+    // Nothing was lost or changed on the way: the project is the one it was before the two switches.
+    expect(back).toEqual(s);
+  });
 });
 
 describe('review regressions', () => {

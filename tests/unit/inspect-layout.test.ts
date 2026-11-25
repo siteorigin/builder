@@ -182,6 +182,14 @@ describe('layout inspection readability checks', () => {
     expect(of(narrowest, 'small-tap-target')).toHaveLength(1);
   }, 30000);
 
+  it.skipIf(!browserInstalled)('leaves out a form’s spam trap, a control hidden from people and parked off screen (#390)', async () => {
+    const trap = (attrs: string) => `<form ${so('form')}><div style="position:absolute;inset-inline-start:-10000px;width:1px;height:1px;overflow:hidden" ${attrs}><label>Leave this field empty <input type="text" name="trap" tabindex="-1"></label></div></form>`;
+    expect(of(await inspect(trap('aria-hidden="true"')), 'small-tap-target')).toEqual([]);
+    // Without either sign that it is not for people, a small control is still reported wherever it sits.
+    expect(of(await inspect(trap('')), 'small-tap-target')).toHaveLength(1);
+    expect(of(await inspect(`<p ${so('p')} aria-hidden="true"><input type="text" style="height:20px"></p>`), 'small-tap-target')).toHaveLength(1);
+  }, 30000);
+
   it.skipIf(!browserInstalled)('counts a repeated element once with its items, and keeps every kind under the cap', async () => {
     const cards = Array.from({ length: 6 }, (_, i) => `<li ${so('card', `c${i}`)}><p ${so('cardText', `c${i}`)} style="color:#bbb">Card ${i}</p></li>`).join('');
     const pale = Array.from({ length: 50 }, (_, i) => `<p ${so(`pale${i}`)} style="color:#ccc">Pale ${i}</p>`).join('');
