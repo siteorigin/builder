@@ -33,7 +33,10 @@ describe('the previewed results page (#704)', () => {
   it('opens on a computer’s light results page until another choice is saved', () => {
     const first = { device: 'desktop', dark: false };
     for (const saved of [null, undefined, '', 'dark', '{', '7', 'null', '{"device":"watch","dark":"yes"}']) expect(parseSerpView(saved)).toEqual(first);
-    expect(parseSerpView(JSON.stringify({ device: 'mobile', dark: true }))).toEqual({ device: 'mobile', dark: true });
+    for (const device of ['desktop', 'mobile'] as const) for (const dark of [false, true]) expect(parseSerpView(JSON.stringify({ device, dark }))).toEqual({ device, dark });
+    // Each choice is read on its own: one that is unusable leaves the other as saved.
+    expect(parseSerpView('{"device":"mobile","dark":"yes"}')).toEqual({ device: 'mobile', dark: false });
+    expect(parseSerpView('{"device":"watch","dark":true}')).toEqual({ device: 'desktop', dark: true });
   });
 
   it('surrounds the result with sites on the domains reserved for examples only', () => {

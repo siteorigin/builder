@@ -98,8 +98,10 @@ function ScaledPage({ device, children }: { device: SerpDevice; children: ReactN
   const page = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ room: 0, height: 0 });
   const measure = useRef(() => {
-    const room = fit.current?.clientWidth ?? 0;
-    const height = page.current?.offsetHeight ?? 0;
+    // To the fraction of a pixel (a rounded room or height would clip the page's edge), and the height as laid out,
+    // before any scaling.
+    const room = fit.current?.getBoundingClientRect().width ?? 0;
+    const height = (page.current && parseFloat(getComputedStyle(page.current).height)) || 0;
     // Hidden, there is nothing to measure: what was measured last stands until it shows again.
     if (!room || !height) return;
     // A title line the browser sets wider than it was measured (a script the width table only estimates) is narrowed
@@ -173,6 +175,7 @@ function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPrevi
   const { device, dark } = useStore((s) => s.serpView);
   const darkId = useId();
   const r = doc.serp[device];
+  const own = { dir: 'auto', lang: doc.meta.language || undefined };
   const [first, ...rest] = FILLER_RESULTS;
   return (
     <div className="serp-previews">
@@ -215,16 +218,17 @@ function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPrevi
             <Filler result={first} />
             <div className={`serp-result serp serp-${device}`} data-device={device}>
               <ResultSite icon={<SiteIcon state={state} />} name={doc.siteName || address.host || 'Your site'} url={[address.host ?? 'No public URL', ...address.trail].join(' › ')} />
-              <div className={`serp-title${r.title.text ? '' : ' none'}`}>
+              {/* The document's own words read in its language and direction, so a right-to-left "…" falls at their end. */}
+              <div className={`serp-title${r.title.text ? '' : ' none'}`} {...(r.title.text ? own : {})}>
                 {r.title.lines.length
                   ? r.title.lines.map((line, i) => (
                       <span key={i} className="serp-title-line">
                         <span className="serp-title-text">{line}</span>
                       </span>
                     ))
-                  : 'No title'}
+                  : 'No title: results show the address instead.'}
               </div>
-              <div className={`serp-desc${r.description.text ? '' : ' none'}`}>
+              <div className={`serp-desc${r.description.text ? '' : ' none'}`} {...(r.description.text ? own : {})}>
                 {doc.date && <span className="serp-date">{doc.date}</span>}
                 {r.description.text || 'No description: search engines pick words from the page.'}
               </div>

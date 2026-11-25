@@ -251,10 +251,13 @@ assert.equal(pageFile(kitchens).seo.title, undefined, 'nothing is saved while it
 await titleBox().press('Escape');
 await eventually(async () => assert.match(await meter('title').innerText(), /^Default title:/, 'Escape puts the default back'));
 await resultsOn('Phone');
+const phoneTitle = () => result('mobile').locator('.serp-title').innerText();
+await eventually(async () => assert.equal(await phoneTitle(), 'Kitchens · Harbour Lane Studio'));
 await titleBox().fill(longTitle);
-await eventually(async () => assert.match(await result('mobile').locator('.serp-title').innerText(), /…$/, 'cut short on a phone too'));
+await eventually(async () => assert.match(await phoneTitle(), /^Kitchens in oak, [\s\S]*…$/, 'cut short on a phone too'));
 await titleBox().press('Escape');
-await eventually(async () => assert.match(await meter('title').innerText(), /^Default title:/));
+await eventually(async () => assert.equal(await phoneTitle(), 'Kitchens · Harbour Lane Studio', 'Escape puts the default back on a phone too'));
+await allSaved();
 assert.equal(pageFile(kitchens).seo.title, undefined, 'nothing was saved while it was typed');
 await resultsOn('Computer');
 // The Inspector is narrower than a computer's results: the page is scaled to fit it, and follows its height when the

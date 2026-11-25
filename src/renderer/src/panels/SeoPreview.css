@@ -40,7 +40,8 @@
     font-kerning: none;
     font-variant-ligatures: none;
     letter-spacing: normal;
-    text-align: left;
+    direction: ltr;
+    text-align: start;
   }
   .serp-page[data-serp-theme='dark'] {
     --serp-bg: #1e1f22;
@@ -69,6 +70,8 @@
   /* The document's title shows on the lines it was measured over; the browser never wraps it again. */
   .serp-title-line { display: block; white-space: nowrap; }
   .serp-title-text { display: inline-block; transform-origin: left center; }
+  /* A right-to-left line starts at the right, and is narrowed towards it. */
+  .serp-title:dir(rtl) .serp-title-text { transform-origin: right center; }
   .serp-desc { overflow-wrap: anywhere; font-size: var(--serp-desc-size); line-height: 1.58; color: var(--serp-text-2); }
   .serp-date { color: var(--serp-text-3); }
   .serp-title.none, .serp-desc.none { font-style: italic; color: var(--serp-text-3); }
