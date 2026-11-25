@@ -1178,8 +1178,15 @@ iframe { color-scheme: light dark; }
 .ov-space-handle.x::before { width: 4px; height: 16px; }
 .ov-space-handle:hover::before, .ov-space-handle.active::before { opacity: 1; width: 22px; height: 5px; }
 .ov-space-handle.x:hover::before, .ov-space-handle.x.active::before { width: 5px; height: 22px; }
+/* Gaps in pink, as a layout's own measure; a column divider is a dark bar on the grid's top edge. */
+.ov-space-handle.gap { --space-c: #c026d3; }
+.ov-space-handle.split { --space-c: #101828; }
+.ov-space-handle.split::before { height: 10px; }
+.ov-space-handle.split:hover::before, .ov-space-handle.split.active::before { height: 14px; }
 .ov-space-band { position: absolute; pointer-events: none; background: color-mix(in srgb, var(--select) 16%, transparent); }
 .ov-space-band.margin { background: rgb(180 83 9 / 0.16); }
+.ov-space-band.gap { background: rgb(192 38 211 / 0.16); }
+.ov-space-band.split { background: rgb(16 24 40 / 0.08); outline: 1px dashed rgb(16 24 40 / 0.35); outline-offset: -1px; }
 .ov-space-hud { position: absolute; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 11px; background: #101828; color: #fff; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; z-index: 2; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85), 0 4px 12px -4px rgb(16 24 40 / 0.45); transform: translate(18px, -50%); }
 .ov-space-hud.x { transform: translate(-50%, 18px); }
 .ov-space-hud .what { font-weight: 400; opacity: 0.75; }
