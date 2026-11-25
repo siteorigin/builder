@@ -195,6 +195,7 @@ try {
     const f = await win.locator('.frame-box iframe').boundingBox();
     const at = f.x + (g.left + g.first + g.gap / 2) * (await zoom());
     assert.ok(Math.abs(d.x + d.width / 2 - at) < 3, `the divider sits on the moved gutter: ${d.x + d.width / 2} vs ${at}`);
+    assert.ok(Math.abs(d.y + d.height / 2 - d0.y) < 1, `and stays at the height it was pressed at: ${d.y + d.height / 2} vs ${d0.y}`);
   });
   assert.equal((await snap()).revision, beforeSplit.revision, 'nothing is saved mid-drag');
   await win.screenshot({ path: join(OUT, 'split-drag.png') });

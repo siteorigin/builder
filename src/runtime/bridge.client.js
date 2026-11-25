@@ -265,11 +265,14 @@ function usedGap(v, along) {
   const m = PCT.exec(v);
   return m && along !== null ? (Number.parseFloat(m[1]) / 100) * along : null;
 }
-/** Whether a box's height is set rather than taken from its content (a percentage row gap needs one). */
+/**
+ * Whether a box's height is set to a length rather than taken from its content, as a percentage row gap needs. A
+ * percentage height counts as unset: it is one only where its container's height is set, which is not checked here.
+ */
 function setHeight(el) {
   try {
     const v = el.computedStyleMap && el.computedStyleMap().get('height');
-    return !!v && String(v) !== 'auto';
+    return !!v && PX.test(String(v));
   } catch {
     return false;
   }
@@ -337,7 +340,8 @@ function layoutReport(el) {
   if (!box) return null;
   const flex = /(^|\s|-)flex$/.test(s.display);
   const grid = isGrid(s.display);
-  const inner = { width: contentWidth(el, s), height: contentHeight(el, s) };
+  // The content box: inside the border (and a scrollbar on either side), and the padding.
+  const inner = { x: box.x + el.clientLeft + pxOf(s.paddingLeft), y: box.y + el.clientTop + pxOf(s.paddingTop), width: contentWidth(el, s), height: contentHeight(el, s) };
   const out = { box, inner, kind: flex ? 'flex' : grid ? 'grid' : 'block', rowGap: usedGap(s.rowGap, setHeight(el) ? inner.height : null), columnGap: usedGap(s.columnGap, inner.width) };
   const open = s.contentVisibility !== 'hidden';
   if (flex) {
@@ -370,7 +374,8 @@ function layoutReport(el) {
  * outside the page's body (so its layout and observers never see it), in the box's font, so lengths in em, ch or lh
  * come out as they would on the box. A percentage is taken of the page's width; or, with `basis` 'box' or 'boxHeight'
  * (a gap), of the box's own content width or height, or with 'parent' (a max width), of the width its container
- * gives it. Probe and host are elements of the bridge's own, sized inline, so the page's rules for divs leave them be.
+ * gives it. A box as tall as its content takes a percentage row gap as nothing, so that is what one measures there.
+ * Probe and host are elements of the bridge's own, sized inline, so the page's rules for divs leave them be.
  */
 function measureSpace(vars, desc, basis) {
   // The box the editor outlines: the first copy that shows, as the spacing report takes it.
@@ -384,7 +389,7 @@ function measureSpace(vars, desc, basis) {
     probe.style.font = s.font;
     probe.style.lineHeight = s.lineHeight;
     const parent = basis === 'parent' ? layoutParent(el) : null;
-    const width = basis === 'box' ? contentWidth(el, s) : basis === 'boxHeight' ? contentHeight(el, s) : parent ? contentWidth(parent) : null;
+    const width = basis === 'box' ? contentWidth(el, s) : basis === 'boxHeight' ? (setHeight(el) ? contentHeight(el, s) : 0) : parent ? contentWidth(parent) : null;
     if (width !== null) {
       // A box as wide as the one a percentage is taken of, holding the probe.
       host = document.createElement('so-measure');

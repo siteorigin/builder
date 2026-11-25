@@ -139,8 +139,11 @@ describe('gutters: where gap handles sit', () => {
 
   it('takes the content box\u2019s size from the page, less any scrollbar', () => {
     // A 1000px grid with a 15px scrollbar: 1fr 1fr columns share 985px less the gap.
-    const scrolled = layout({ kind: 'grid', columnGap: 24, cols: [480.5, 480.5], rows: [80], box: { x: 0, y: 0, width: 1000, height: 80 }, inner: { width: 985, height: 80 } });
+    const scrolled = layout({ kind: 'grid', columnGap: 24, cols: [480.5, 480.5], rows: [80], box: { x: 0, y: 0, width: 1000, height: 80 }, inner: { x: 0, y: 0, width: 985, height: 80 } });
     expect(gutters(scrolled, EDGES, false)[0].rect.x).toBe(480.5);
+    // Right to left, the scrollbar is on the left: the content box starts after it, and the columns run from the right edge.
+    const rtl = { ...scrolled, inner: { x: 15, y: 0, width: 985, height: 80 } };
+    expect(gutters(rtl, EDGES, true)[0].rect.x).toBe(495.5);
     const { s, t } = withSection({ layout: 'grid', columns: 2 });
     expect(planSplit(s, t, 'base', 'desktop', scrolled, EDGES)).toMatchObject({ shares: [1, 1] });
   });
@@ -492,8 +495,9 @@ describe('layoutOf: the selected box’s layout from the page', () => {
 
   it('reads a grid’s report', () => {
     expect(layoutOf(report)).toEqual({ ...report, inner: null, kind: 'grid', column: false, wrap: false, spread: false, items: [] });
-    expect(layoutOf({ ...report, inner: { width: 285, height: 100 } })?.inner).toEqual({ width: 285, height: 100 });
-    expect(layoutOf({ ...report, inner: { width: -1, height: 100 } })?.inner).toBeNull();
+    expect(layoutOf({ ...report, inner: { x: 16, y: 2, width: 285, height: 100 } })?.inner).toEqual({ x: 16, y: 2, width: 285, height: 100 });
+    expect(layoutOf({ ...report, inner: { x: 16, y: 2, width: -1, height: 100 } })?.inner).toBeNull();
+    expect(layoutOf({ ...report, inner: { width: 285, height: 100 } })?.inner).toBeNull();
     expect(layoutOf({ ...report, width: { ...report.width, content: false } })?.width?.content).toBe(false);
   });
 

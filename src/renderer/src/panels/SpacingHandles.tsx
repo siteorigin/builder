@@ -236,23 +236,11 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     const edges = { padding: pd, border: bd };
     const all = gutters(layout, edges, rtl);
     // Each layout handle takes the nearest place along its gutter or edge that leaves every handle already drawn
-    // reachable: padding and margin first, then dividers, gaps and widths. One with no room left is not drawn.
-    const placed: Spot[] = out.map((g) => ({ ...g.at, axis: g.axis }));
-    // The handle being dragged keeps the place across its drag that it had when pressed (it only follows its gutter
-    // or edge along the drag), and the others keep clear of it.
-    const held = drag.current?.grip;
-    const holding = held && held.kind !== 'padding' && held.kind !== 'margin' ? held : null;
-    if (holding) placed.push({ ...holding.at, axis: holding.axis });
-    const put = (grip: Omit<Grip, 'at'>, prefer: { x: number; y: number }, slide: { along: 'x' | 'y'; from: number; to: number }) => {
-      if (holding?.id === grip.id) {
-        out.push({ ...grip, at: grip.axis === 'x' ? { x: prefer.x, y: holding.at.y } : { x: holding.at.x, y: prefer.y } });
-        return;
-      }
-      const at = freeSpot(placed, { ...prefer, axis: grip.axis }, slide);
-      if (!at) return;
-      placed.push(at);
-      out.push({ ...grip, at: { x: at.x, y: at.y } });
-    };
+    // reachable: padding and margin first, then the one being dragged, then dividers, gaps and widths. One with no
+    // room left is not drawn.
+    // Layout handles are gathered first and placed once all are known (see `place` below).
+    const wanted: Array<{ grip: Omit<Grip, 'at'>; prefer: { x: number; y: number }; slide: { along: 'x' | 'y'; from: number; to: number } }> = [];
+    const put = (grip: Omit<Grip, 'at'>, prefer: { x: number; y: number }, slide: { along: 'x' | 'y'; from: number; to: number }) => void wanted.push({ grip, prefer, slide });
     // A divider being dragged keeps its columns while its own preview resizes them (the page no longer shows the split
     // they say), so it is drawn where its gutter has moved to.
     const split = planSplit(state, t, scope, shown, layout, edges) ?? drag.current?.grip.split ?? null;
@@ -345,6 +333,23 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
           { along: 'y', from: box.top, to: box.top + box.height }
         );
       }
+    }
+    // The handle being dragged goes first, where it is shown: across its drag where it was pressed, along it where its
+    // gutter or edge is now; the rest keep clear of it and of padding and margin, in order (dividers, gaps, widths).
+    const held = drag.current?.grip;
+    const placed: Spot[] = out.map((g) => ({ ...g.at, axis: g.axis }));
+    const mine = held ? wanted.find((w) => w.grip.id === held.id) : undefined;
+    if (held && mine) {
+      const at = held.axis === 'x' ? { x: mine.prefer.x, y: held.at.y } : { x: held.at.x, y: mine.prefer.y };
+      placed.push({ ...at, axis: held.axis });
+      out.push({ ...mine.grip, at });
+    } else if (held && held.kind !== 'padding' && held.kind !== 'margin') placed.push({ ...held.at, axis: held.axis });
+    for (const w of wanted) {
+      if (w === mine) continue;
+      const at = freeSpot(placed, { ...w.prefer, axis: w.grip.axis }, w.slide);
+      if (!at) continue;
+      placed.push(at);
+      out.push({ ...w.grip, at: { x: at.x, y: at.y } });
     }
     return out;
   };

@@ -28,6 +28,7 @@ body{margin:0;font:16px/20px sans-serif}
 #flat span{display:block;width:50px;height:20px}
 #tall{display:flex;flex-direction:column;row-gap:10%}
 #tall i{display:block;height:100px}
+#half{display:flex;flex-direction:column;row-gap:10%;height:50%}
 #hole{display:grid;grid-template-columns:100px 0px 100px 100px;column-gap:20px}
 /* A page rule that would size anything put straight into the document: the bridge's measuring box keeps its own size. */
 html > :not(head):not(body){max-width:300px;padding:7px}
@@ -39,6 +40,7 @@ html > :not(head):not(body){max-width:300px;padding:7px}
 <div id="cards"><div id="item" data-so-ctx="page:p" data-so-node="item">x</div></div>
 <div id="flat" data-so-ctx="page:p" data-so-node="flat"><span>1</span><div style="display:contents"><span>2</span><span style="position:fixed">f</span><span>3</span></div></div>
 <div id="tall" data-so-ctx="page:p" data-so-node="tall"><i>a</i><i>b</i></div>
+<div id="half" data-so-ctx="page:p" data-so-node="half"><i>a</i><i>b</i></div>
 <div id="hole" data-so-ctx="page:p" data-so-node="hole"><i>a</i><i>b</i><i>c</i></div>
 </div><script type="module" src="/bridge.js"></script></body></html>`;
 
@@ -167,7 +169,7 @@ describe.skipIf(!browserInstalled)('the page’s side of the layout handles', ()
     expect(layout.packedCols).toBe(true);
     // An auto margin on one side alone does not centre it.
     expect(layout.width).toEqual({ centered: false, max: 500, content: true, basis: 1000 });
-    expect(layout.inner).toEqual({ width: 500, height: 216 });
+    expect(layout.inner).toEqual({ x: layout.box.x, y: layout.box.y, width: 500, height: 216 });
     // Row gap styles are measured against the box's height, as its percentage row gap is.
     await send('measureSpace', { requestId: 'tall', vars: ['--so-container-half'], desc: sel('pct'), basis: 'boxHeight' });
     expect((await lastReply('spaceMeasured')).px).toEqual([108]);
@@ -179,6 +181,12 @@ describe.skipIf(!browserInstalled)('the page’s side of the layout handles', ()
     expect(layout.rowGap).toBeNull();
     // The stack's items touch: the page gave the gap no room.
     expect(layout.items.map((r: { y: number }) => Math.round(r.y - layout.box.y))).toEqual([0, 100]);
+    // A percentage style is worth nothing as its row gap, so it is no stop to snap to.
+    await send('measureSpace', { requestId: 'tall', vars: ['--so-container-half', '--so-space-lg'], desc: sel('tall'), basis: 'boxHeight' });
+    expect((await lastReply('spaceMeasured')).px).toEqual([0, 24]);
+    // A percentage height inside a box as tall as its content is no set height either.
+    await send('track', { selected: sel('half'), hovered: null });
+    expect((await lastReply('rects')).spacing.layout.rowGap).toBeNull();
   });
 
   it('reports no columns for a grid with an empty column between others, whose gaps it cannot place', async () => {

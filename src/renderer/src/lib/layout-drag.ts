@@ -23,14 +23,13 @@ const sum = (list: number[]) => list.reduce((a, b) => a + b, 0);
 /** A value as the stylesheet writes it: a site style by its CSS variable, anything else as it is. */
 const cssOf = (value: StyleValue) => (typeof value === 'object' && value !== null ? `var(${tokenVar(value.token)})` : String(value));
 
-/** The box inside the selected box's border and padding, in frame pixels: as wide and tall as the page says its
- *  content box is (a scrollbar takes room from it), or else its border box less its border and padding. */
+/** The box inside the selected box's border and padding, in frame pixels: where the page says its content box is
+ *  (a scrollbar on either side takes room from it), or else its border box less its border and padding. */
 export function contentBox(layout: FrameLayout, edges: BoxEdges): FrameRect {
   const { box, inner } = layout;
+  if (inner) return { ...inner };
   const { padding: p, border: b } = edges;
-  const width = inner ? inner.width : Math.max(0, box.width - b.left - b.right - p.left - p.right);
-  const height = inner ? inner.height : Math.max(0, box.height - b.top - b.bottom - p.top - p.bottom);
-  return { x: box.x + b.left + p.left, y: box.y + b.top + p.top, width, height };
+  return { x: box.x + b.left + p.left, y: box.y + b.top + p.top, width: Math.max(0, box.width - b.left - b.right - p.left - p.right), height: Math.max(0, box.height - b.top - b.bottom - p.top - p.bottom) };
 }
 
 // ---------------------------------------------------------------------------

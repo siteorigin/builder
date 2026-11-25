@@ -59,8 +59,8 @@ const MAX_COLUMNS = 12;
  */
 export interface FrameLayout {
   box: FrameRect;
-  /** Its content box's size: inside its padding, border and any scrollbar. Null when the page did not say. */
-  inner: { width: number; height: number } | null;
+  /** Its content box: inside its padding, border and any scrollbar (on either side). Null when the page did not say. */
+  inner: FrameRect | null;
   kind: 'flex' | 'grid' | 'block';
   /** The gaps the page uses now, in pixels (0 for `normal`); null where it could not say (one worked out with calc()). */
   rowGap: number | null;
@@ -107,7 +107,7 @@ export function layoutOf(v: unknown): FrameLayout | null {
   const w = r.width && typeof r.width === 'object' ? (r.width as Record<string, unknown>) : null;
   const width = w && size(w.basis) && (w.max === null || size(w.max)) ? { centered: w.centered === true, max: w.max as number | null, content: w.content === true, basis: w.basis } : null;
   const i = r.inner && typeof r.inner === 'object' ? (r.inner as Record<string, unknown>) : null;
-  const inner = i && size(i.width) && size(i.height) ? { width: i.width, height: i.height } : null;
+  const inner = i && finite(i.x) && finite(i.y) && size(i.width) && size(i.height) ? { x: i.x, y: i.y, width: i.width, height: i.height } : null;
   return {
     box: { x: r.box.x, y: r.box.y, width: r.box.width, height: r.box.height },
     inner,
