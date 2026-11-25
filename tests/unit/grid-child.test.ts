@@ -5,7 +5,7 @@ import type { ComponentDefinition, ElementNode, ElementRef, InstanceNode, OwnerR
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { STYLE_PROPS, STYLE_PROP_MAP, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
-import { isGridChild, styleRowGroups, withGridChildProps } from '../../src/renderer/src/lib/grid-child';
+import { designGridRef, isGridChild, styleRowGroups, withGridChildProps } from '../../src/renderer/src/lib/grid-child';
 import { captureStyle, planStylePaste } from '../../src/renderer/src/lib/style-copy';
 
 vi.stubGlobal('window', { builder: { project: { saveLocalState: async () => {} }, ai: { stop: async () => {} }, platform: 'darwin' } });
@@ -298,6 +298,42 @@ describe('whether content is a grid item through designs nested in one another',
     const tile = { ...s.at('tile'), instancePath: ['placed', 'q'] };
     expect(isGridChild(s.state, { ...tile, itemPath: ['one'] }, 'base')).toBe(true);
     expect(isGridChild(s.state, { ...tile, itemPath: ['two'] }, 'base')).toBe(false);
+  });
+
+  it('reads the item of the list that repeats the placement, not another list’s item with the same ID', () => {
+    const s = nested();
+    const shape = { type: 'enum', label: 'Shape', default: 'list', options: [{ value: 'list', label: 'List' }, { value: 'bento', label: 'Bento' }] };
+    s.outer.properties = {
+      groups: { type: 'list', label: 'Groups', itemLabel: 'Group', fields: {}, default: [{ id: 'one' }] },
+      rows: { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { kind: shape }, default: [{ id: 'one', kind: 'bento' }, { id: 'two', kind: 'list' }] }
+    } as unknown as ComponentDefinition['properties'];
+    const nodes = s.outer.tree!.nodes as Record<string, unknown>;
+    nodes.groups = { id: 'groups', kind: 'repeat', list: { $prop: 'groups' }, children: ['rows'] };
+    nodes.rows = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: ['nest'] };
+    (nodes.wrap as ElementNode).children = ['groups'];
+    // A nested placement's variant can read the item's field directly.
+    s.nest.variants = { shape: { $item: 'kind' } };
+    const tile = s.at('tile');
+    expect(isGridChild(s.state, { ...tile, itemPath: ['one', 'one'] }, 'base')).toBe(true);
+    expect(isGridChild(s.state, { ...tile, itemPath: ['one', 'two'] }, 'base')).toBe(false);
+    // The design edited on its own keeps the item selected in it.
+    const design: OwnerRef = { kind: 'component', id: 'z.outer' };
+    const selected: ElementRef = { owner: design, instancePath: [], nodeId: 'tile', itemPath: ['one', 'one'] };
+    expect(isGridChild(s.state, designGridRef(selected, design, 'tile', true), 'base')).toBe(true);
+  });
+
+  it('asks about the placement a design is edited through, and the design alone in Component Studio or a look', () => {
+    const s = nested();
+    s.outer.properties = { shape: { type: 'enum', label: 'Shape', default: 'bento', options: [{ value: 'list', label: 'List' }, { value: 'bento', label: 'Bento' }] } };
+    s.nest.variants = { shape: { $prop: 'shape' } };
+    s.placed.props = { shape: 'list' };
+    const design: OwnerRef = { kind: 'component', id: 'z.outer' };
+    const through = s.at('tile');
+    expect(isGridChild(s.state, designGridRef(through, design, 'tile', false), 'base')).toBe(false);
+    expect(isGridChild(s.state, designGridRef(through, design, 'tile', true), 'base')).toBe(true);
+    expect(isGridChild(s.state, designGridRef(null, design, 'tile', false), 'base')).toBe(true);
+    // A selection of some other node says nothing about this one.
+    expect(designGridRef({ ...through, itemPath: ['one'] }, design, 'wrap', false)).toEqual({ owner: design, instancePath: [], nodeId: 'wrap', itemPath: undefined });
   });
 
   it('reads a variant a nested placement takes from a property of the design around it', () => {

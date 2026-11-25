@@ -75,7 +75,7 @@ import { StructuredDataFields, structuredSummary } from '../components/Structure
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
-import { isGridChild } from '../lib/grid-child';
+import { designGridRef, isGridChild } from '../lib/grid-child';
 import { TagField } from './TagField';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type ListFill, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
@@ -2513,8 +2513,8 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         })()
       : designLayers(def, node.id, { [look.axis]: look.variant })
     : undefined;
-  // Whether the design itself puts this element in a grid, in the look being styled.
-  const gridChild = isGridChild(state, { owner, instancePath: [], nodeId: node.id }, scope, look ?? undefined);
+  // Whether this element is in a grid as the canvas shows it, or in the look being styled.
+  const gridChild = isGridChild(state, designGridRef(selection, owner, node.id, studio || !!look), scope, look ?? undefined);
   const lookInherited = lookLayers ? cascadeStyles(lookLayers.filter((l) => l.styles !== lookOption!.styles?.[node.id])) : undefined;
   // The look's preview renders only while the Inspector is on screen: a hidden one would prepare it again on every change.
   const inspecting = useStore((s) => s.dockOpen && s.rightTab === 'inspect');

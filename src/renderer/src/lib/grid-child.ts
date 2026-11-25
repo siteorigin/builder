@@ -2,7 +2,7 @@
  * Whether what the Inspector styles sits directly in a grid, and the style rows that follow from it: a grid item's
  * Column span and Row span show in the Layout group itself rather than behind its "more" toggle.
  */
-import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, InstanceNode, NodeTree, ProjectState, ResponsiveScope } from '@shared/types';
+import type { Binding, ComponentDefinition, ElementNode, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, ResponsiveScope } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { cascadeStyles, type StyleLayer, type StylePropDef } from '@shared/styles';
@@ -45,23 +45,39 @@ function inside(walk: Walk, outer: Frame, placement: InstanceNode): Frame | null
   return def?.kind === 'managed' && def.tree ? { tree: def.tree, def, placement, outer } : null;
 }
 
+/** How many lists repeat the placement a frame shows, those around the designs holding it included. */
+function listsAround(frame: Frame): number {
+  const { placement, outer } = frame;
+  if (!placement || !outer) return 0;
+  let count = listsAround(outer);
+  let at = findParent(outer.tree, placement.id)?.parentId;
+  for (let depth = 0; at && depth < MAX_DEPTH; depth++, at = findParent(outer.tree, at)?.parentId) if (nodeOf(outer.tree, at)?.kind === 'repeat') count++;
+  return count;
+}
+
 /**
- * What a property of a design holds here: the placement's own value, followed outward while it passes on one of the
- * design's around it or a field of the selected list item, or the default where there is neither.
+ * What a binding on a frame's placement reads: a property of the design around it, or a field of the selected item of
+ * the list repeating it there. Undefined where that cannot be told here, as a collection entry's own field.
  */
+function boundIn(walk: Walk, frame: Frame, binding: Binding, depth: number): unknown {
+  const { placement, outer } = frame;
+  if (!placement || !outer) return undefined;
+  if ('$prop' in binding) return propIn(walk, outer, binding, depth + 1);
+  if (!('$item' in binding) || !outer.def) return undefined;
+  const list = enclosingRepeatProp(outer.def, placement.id);
+  const rows = list ? propIn(walk, outer, { $prop: list }, depth + 1) : undefined;
+  // Item IDs are unique only within their list: the path names one for each list, outermost first.
+  const id = walk.itemPath?.[listsAround(frame) - 1];
+  const row = Array.isArray(rows) ? (rows as Array<Record<string, unknown>>).find((r) => r.id === id) : undefined;
+  return row?.[binding.$item];
+}
+
+/** What a property of a design holds here: the placement's value, bound or its own, or the property's default. */
 function propIn(walk: Walk, frame: Frame, binding: { $prop: string; field?: string }, depth = 0): unknown {
-  const { def, placement, outer } = frame;
+  const { def, placement } = frame;
   if (!def || depth > MAX_DEPTH) return undefined;
-  let value: unknown = placement && Object.hasOwn(placement.props, binding.$prop) ? placement.props[binding.$prop] : undefined;
-  if (placement && outer && isBinding(value)) {
-    if ('$prop' in value) value = propIn(walk, outer, value, depth + 1);
-    else if ('$item' in value) {
-      const list = outer.def ? enclosingRepeatProp(outer.def, placement.id) : undefined;
-      const rows = list ? propIn(walk, outer, { $prop: list }, depth + 1) : undefined;
-      const row = Array.isArray(rows) ? (rows as Array<Record<string, unknown>>).find((r) => walk.itemPath?.includes(r.id as string)) : undefined;
-      value = row?.[value.$item];
-    }
-  }
+  const own = placement && Object.hasOwn(placement.props, binding.$prop) ? placement.props[binding.$prop] : undefined;
+  const value = isBinding(own) ? boundIn(walk, frame, own, depth) : own;
   return propBindingValue(value, binding) ?? propBindingSchema(def.properties, binding)?.default;
 }
 
@@ -70,10 +86,10 @@ function chosenIn(walk: Walk, frame: Frame): InstanceNode['variants'] {
   const { placement, outer } = frame;
   if (!placement) return walk.look ? { [walk.look.axis]: walk.look.variant } : undefined;
   const chosen = startingVariants(placement.variants, outer?.def);
-  if (!chosen || !outer) return chosen;
+  if (!chosen) return chosen;
   return Object.fromEntries(
     Object.entries(chosen).map(([axis, v]) => {
-      const bound = isBinding(v) && '$prop' in v ? propIn(walk, outer, v) : undefined;
+      const bound = isBinding(v) ? boundIn(walk, frame, v, 0) : undefined;
       return [axis, typeof bound === 'string' ? bound : v];
     })
   );
@@ -191,6 +207,17 @@ export function isGridChild(state: ProjectState, ref: ElementRef, scope: Respons
   const node = nodeOf(frame.tree, ref.nodeId);
   if (!node || node.kind === 'repeat' || node.kind === 'slot' || wrapped(state, frame.tree, node)) return false;
   return parentIsGrid(walk, frame, node.id, scope === 'base' ? ['phone', 'tablet', 'desktop'] : [scope]);
+}
+
+/**
+ * What to ask `isGridChild` about for a node of a design being edited. Edited through a placement on the canvas, it
+ * is the box that placement shows; in Component Studio, or in a look (shown on its own), the design's, with the list
+ * item that is selected.
+ */
+export function designGridRef(selection: ElementRef | null, design: OwnerRef, nodeId: string, standalone: boolean): ElementRef {
+  const selected = selection?.nodeId === nodeId ? selection : null;
+  if (!standalone && selected?.instancePath.length === 1) return selected;
+  return { owner: design, instancePath: [], nodeId, itemPath: selected?.itemPath };
 }
 
 /** The style controls a grid item offers: a design's own list, with the spans added so the first one can be set. */
