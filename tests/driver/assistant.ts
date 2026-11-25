@@ -709,11 +709,17 @@ export const SCENARIOS: Record<string, { summary: string; steps: (p: Record<stri
     }
   },
   widen: {
-    summary: 'Ask to change more than the selection ({ question }), then finish: { then }.',
-    steps: (p) => [
-      { tool: 'request_wider_scope', args: { question: text(p, 'question') }, status: 'Asking' },
-      { tool: 'finish', args: { message: text(p, 'then') }, status: 'Finishing' }
-    ]
+    // The change after the question is what the author's answer decides: allowed, it lands; declined, the app refuses it
+    // as a change outside the selection and the run finishes without it.
+    summary: 'Ask to change more than the selection ({ question }), then rename the site if given { siteName } (a change only an allowed wider scope can make), then finish: { then }.',
+    steps: (p) => {
+      if (p.siteName !== undefined && (typeof p.siteName !== 'string' || !p.siteName.trim())) throw new DriverError('BAD_REQUEST', 'The widen scenario\'s "siteName" is text.');
+      return [
+        { tool: 'request_wider_scope', args: { question: text(p, 'question') }, status: 'Asking' },
+        ...(typeof p.siteName === 'string' ? [{ tool: 'update_site_brand', args: { siteName: p.siteName }, status: 'Renaming the site' } as Step] : []),
+        { tool: 'finish', args: { message: text(p, 'then') }, status: 'Finishing' }
+      ];
+    }
   },
   fail: {
     // The adapter sends a 400 or 422 again in another format and retries a 5xx, each taking the steps after it; a 409
