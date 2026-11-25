@@ -421,7 +421,7 @@ export function harmonizePalette(input: HarmonyInput): PaletteHarmony {
   // The CSS variables whose colour changes: each changed role's, and, round after round, any colour whose CSS uses
   // one of them (a relay). A name is matched whole, so --so-color-brand-static is not --so-color-brand.
   const moved = new Set(roles.filter((id) => !asBefore(id)).map(tokenVar));
-  const uses = (css: string) => [...css.matchAll(/var\(\s*(--[\w-]+)/g)].some((m) => moved.has(m[1]));
+  const uses = (css: string) => [...css.matchAll(/var\(\s*(--[\w-]+)/gi)].some((m) => moved.has(m[1]));
   for (let grew = true; grew; ) {
     grew = false;
     for (const t of next) if (t.group === 'color' && !moved.has(tokenVar(t.id)) && uses(resolvedCss(next, t.id) ?? '')) (moved.add(tokenVar(t.id)), (grew = true));
@@ -464,9 +464,9 @@ export function paletteChanges(tokens: readonly TokenDef[], values: Partial<Reco
     // Only a hex that is the saved colour exactly: a value that rounds to it (an oklch()) is measured otherwise, and
     // one with missing channels (rgb(none none none)) mixes otherwise in a hover colour.
     const css = resolvedCss(kept, id) ?? '';
-    const shown = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(css) ? parseColor(css) : null;
+    const shown = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(css) ? parseColor(css) : null;
     const saved = rgbOf(hex);
-    if (shown && shown.r === saved.r && shown.g === saved.g && shown.b === saved.b) after = kept;
+    if (shown && shown.a === 1 && shown.r === saved.r && shown.g === saved.g && shown.b === saved.b) after = kept;
     else out.push([id, hex]);
   }
   return out;
@@ -474,9 +474,9 @@ export function paletteChanges(tokens: readonly TokenDef[], values: Partial<Reco
 
 /**
  * Dark values that keep a site's dark palette showing what it shows now while these light colours change: each one
- * the dark palette takes from the light palette (it has no usable dark value of its own) gets the colour it shows
- * now as a dark value of its own, written out so no link can be refused or land elsewhere. One the dark palette
- * cannot show as a colour now (a `var()`) is left; the caller measures the result. The dark palette is the author's
+ * the dark palette takes from the light palette (it has no usable dark value of its own) gets the CSS it shows now
+ * as a dark value of its own, written out (never a link) so none can be refused or land elsewhere. One with no
+ * colour to show is left; the caller measures the result. The dark palette is the author's
  * to remake from the new colours (token.setColorScheme with regenerate).
  */
 export function darkPins(light: readonly TokenDef[], dark: TokensDoc['darkOverrides'], changed: readonly string[]): Array<[string, DarkColorValue]> {
@@ -485,12 +485,11 @@ export function darkPins(light: readonly TokenDef[], dark: TokensDoc['darkOverri
   return changed.flatMap((id): Array<[string, DarkColorValue]> => {
     const css = resolvedCss(now, id);
     if (Object.hasOwn(own, id) && darkValue(own[id]) !== null && css !== null) return [];
-    // A dark link that lands nowhere is dropped from the stylesheet, which shows the light colour instead.
+    // A dark link that lands nowhere is dropped from the stylesheet, which shows the light colour instead. The CSS is
+    // pinned exactly as it is, so nothing rounds; one the dark palette cannot take as a colour is left.
     const shows = css ?? resolvedCss(light, id);
-    const c = shows ? parseColor(shows) : null;
-    if (!c) return [];
-    const ch = (n: number) => Math.round(n);
-    return [[id, c.a >= 1 ? toHex6(c) : `rgb(${ch(c.r)} ${ch(c.g)} ${ch(c.b)} / ${Number(c.a.toFixed(4))})`]];
+    const pin = shows ? darkValue(shows) : null;
+    return pin === null ? [] : [[id, pin]];
   });
 }
 

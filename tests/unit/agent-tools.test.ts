@@ -885,19 +885,21 @@ describe('update_site_brand', () => {
     expect(session.state.tokens.darkOverrides!['color.brand']).toBeUndefined();
   });
 
-  it('names the dark pairs a palette leaves newly hard to read when a dark color cannot be kept', async () => {
-    // The dark palette shows the light brand, which is a CSS variable no pin can hold.
-    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { brandColor: '#1e3a5f', paletteMood: 'neutral' })], () => finish()], {}, 'business', (s) => {
+  it('names the dark pairs that newly fail when a theme switch in the same call brings pairs of its own', async () => {
+    // A dark palette that reads in Foundation: the grey palette, whose brand Signal's eyebrow pill cannot carry.
+    const grey = harmonizePalette({ brand: '#777777', mood: 'neutral', tokens: getTheme('foundation').tokens, pairs: getTheme('foundation').contrastPairs! });
+    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'signal', brandColor: '#1e3a5f', paletteMood: 'neutral' })], () => finish()], {}, 'business', (s) => {
       Object.assign(s, applyOperations(s, [{ type: 'token.setColorScheme', mode: 'system' }]).state);
-      delete s.tokens.darkOverrides!['color.brand'];
-      s.tokens.overrides['color.brand'] = 'var(--brand, #a7c7e7)';
+      s.tokens.darkOverrides = { ...grey.values };
     });
-    await run('Make it navy');
+    expect(unreadable(session.state, 'dark')).toEqual([]);
+    await run('Software look in navy');
+    expect(session.state.site.themeId).toBe('signal');
     expect(unreadable(session.state)).toEqual([]);
-    expect(session.state.tokens.darkOverrides!['color.brand']).toBeUndefined();
-    expect(unreadable(session.state, 'dark')).toEqual(expect.arrayContaining(['brand-text-background']));
+    const failing = unreadable(session.state, 'dark');
+    expect(failing).toEqual(['eyebrow-background', 'eyebrow-surface-alt']);
     expect(lastResult(adapter.requests[1]).warnings).toEqual([
-      expect.stringMatching(/^The dark palette kept its colors, and \d+ pairs there are now hard to read \(.*brand-colored links on the page.*\)\. token\.setColorScheme with regenerate: true makes the dark colors again from the new palette\.$/)
+      'The dark palette kept its colors, and 2 pairs there are now hard to read (eyebrow labels on the page, eyebrow labels on alternate sections). token.setColorScheme with regenerate: true makes the dark colors again from the new palette.'
     ]);
   });
 

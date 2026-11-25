@@ -228,6 +228,9 @@ describe('the palette follows the brand (#357)', () => {
     const blocked = (fg: string) =>
       harmonizePalette({ brand: '#f5c518', mood: 'neutral', tokens, pairs: [...theme, { id: fg, use: fg, fg, bg: 'color.custom-white', state: 'rest', group: fg }] }).unreadable.map((r) => r.pair.id);
     expect(blocked('color.custom-linked')).toEqual(['color.custom-linked']);
+    // CSS function names are not case-sensitive.
+    tokens.push(custom('color.custom-shout', 'color-mix(in srgb, VAR(--so-color-brand) 100%, #fff)'));
+    expect(blocked('color.custom-shout')).toEqual(['color.custom-shout']);
     expect(blocked('color.custom-static')).toEqual([]);
   });
 
@@ -245,6 +248,8 @@ describe('the palette follows the brand (#357)', () => {
     const changes = Object.fromEntries(paletteChanges(tokens, h.values));
     expect(changes['color.brand']).toBeUndefined(); // follows Sea, which is the brand
     expect(changes['color.background']).toBeUndefined(); // the same colour, written in capitals
+    const opaque = tokens.map((t) => (t.id === 'color.custom-sea' ? { ...t, value: '#1e3a5fff' } : t)) as TokenDef[];
+    expect(Object.fromEntries(paletteChanges(opaque, h.values))['color.brand']).toBeUndefined(); // and with full opacity spelled out
     expect(changes['color.on-brand']).toBeUndefined(); // already the theme's white
     expect(changes['color.surface-alt']).toBe(h.values['color.surface-alt']);
     // A link that would land elsewhere is replaced: Brand (strong) following Brand is not the hover shade.
@@ -263,12 +268,16 @@ describe('the palette follows the brand (#357)', () => {
   });
 
   it('pins the colours a dark palette takes from the light ones as it shows them, and leaves its own', () => {
-    const light = getTheme('foundation').tokens.map((t) => (t.id === 'color.brand' ? { ...t, value: { token: 'color.accent' } } : t.id === 'color.muted' ? { ...t, value: 'var(--muted)' } : t)) as TokenDef[];
+    const light = getTheme('foundation').tokens.map((t) => (t.id === 'color.brand' ? { ...t, value: { token: 'color.accent' } } : t.id === 'color.muted' ? { ...t, value: 'color-mix(in srgb, #5c5f59 60%, white)' } : t)) as TokenDef[];
     const dark = { 'color.background': '#101010', 'color.accent': '#ffcc00', 'color.surface': { token: 'color.gone' } };
     const pins = Object.fromEntries(darkPins(light, dark, ['color.background', 'color.brand', 'color.text', 'color.surface', 'color.muted']));
     // Brand shows the dark accent through its link: pinned as that colour, written out. A dark link that lands
-    // nowhere is no colour of its own, so Surface is pinned as the light one it shows. Muted cannot be shown as a colour.
-    expect(pins).toEqual({ 'color.brand': '#ffcc00', 'color.text': '#191a18', 'color.surface': '#ffffff' });
+    // nowhere is no colour of its own, so Surface is pinned as the light one it shows. Muted, a mix the parser cannot
+    // read, keeps its CSS exactly, so nothing rounds.
+    expect(pins).toEqual({ 'color.brand': '#ffcc00', 'color.text': '#191a18', 'color.surface': '#ffffff', 'color.muted': 'color-mix(in srgb, #5c5f59 60%, white)' });
+    // A colour nothing can show is left for the caller to measure.
+    const gone = light.map((t) => (t.id === 'color.text' ? { ...t, value: { token: 'color.gone' } } : t)) as TokenDef[];
+    expect(darkPins(gone, {}, ['color.text'])).toEqual([]);
   });
 });
 

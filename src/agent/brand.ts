@@ -222,7 +222,8 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
         if (hasDarkPalette(state.tokens)) {
           // Measured on the dark palette as the batch leaves it, against the theme now in use, beside how it read before the call.
           const before = host.state();
-          const was = new Set(evaluatePairs(effectiveTokens(before, 'dark'), getTheme(before.site.themeId).contrastPairs ?? []).filter(isFailing).map((r) => r.pair.id));
+          // Only pairs that read before and do not now: one that could not be measured before has no change to report.
+          const was = new Set(evaluatePairs(effectiveTokens(before, 'dark'), getTheme(before.site.themeId).contrastPairs ?? []).filter((r) => r.status !== 'pass').map((r) => r.pair.id));
           let fresh: string[] = [];
           try {
             const after = applyOperations(state, ops.filter((o) => o.type === 'token.set')).state;
