@@ -10,6 +10,7 @@ import { normalizePropSchema } from '@engine/schema';
 import { requiredProblems } from '@engine/required';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
 import { guaranteesValue, isEmptyPropValue, requiredGap } from '@shared/required';
+import { checkProps, type FieldIssue } from '../../src/agent/macros';
 import { compactPropsSchema, propsJsonSchema } from '../../src/agent/propschema';
 import { catalogueIndex, propSchemaSummary } from '../../src/agent/context';
 import { planComponentInspection } from '../../src/agent/component-inspection';
@@ -85,6 +86,34 @@ describe('required properties: what counts as empty', () => {
     expect(() => normalizePropSchema({ ...pages, fields: { ...pages.fields, title: { type: 'string', label: 'Title', default: 'T', required: true } } }, s, 'pages')).toThrow(/"title" shows the linked page's title while it is empty, so it cannot be required/);
     expect(() => normalizePropSchema({ ...pages, required: true }, s, 'pages')).toThrow(/page list cannot be required/);
     expect(() => normalizePropSchema({ type: 'string', label: 'T', required: 'yes' }, s, 'p')).toThrow(/required must be true or false/);
+  });
+});
+
+describe('required properties: stored values each type counts as empty', () => {
+  const sch = (type: string, extra: Record<string, unknown> = {}) => ({ type, label: 'X', default: undefined, ...extra }) as unknown as PropSchema;
+  it.each([
+    ['string', sch('string'), '\t\n ', 'a'],
+    ['richtext', sch('richtext'), [{ type: 'p', spans: [{ text: '\t' }] }, { type: 'ul', items: [[{ text: ' ' }]] }], [{ type: 'p', spans: [{ text: ' ' }] }, { type: 'p', spans: [{ text: 'b' }] }]],
+    ['link', sch('link'), { type: 'url', target: ' ' }, { type: 'page', target: 'pg_home' }],
+    ['image', sch('image'), { assetId: '', alt: 'Words' }, { assetId: 'as_x', alt: '' }],
+    ['icon', sch('icon'), '', 'leaf'],
+    ['enum', sch('enum', { options: [] }), '\t', 'a'],
+    ['choices', sch('choices'), [], [{ id: 'c', label: 'A', value: 'A' }]],
+    ['token', sch('token', { tokenGroup: 'color' }), { token: ' ' }, { token: 'color.brand' }],
+    ['number', sch('number'), Number.NaN, 0],
+    ['boolean', sch('boolean'), 'yes', false],
+    ['list', sch('list', { fields: {} }), [], [{ id: 'i' }]],
+    ['table', sch('table'), { columns: [{ id: 'c', label: 'A' }], rows: [] }, { columns: [], rows: [{ id: 'r', cells: {} }] }],
+    ['object', sch('object', { fields: { a: { type: 'string', label: 'A' }, b: { type: 'link', label: 'B' } } }), { a: ' ', b: { type: 'none', target: '' } }, { a: '', b: { type: 'url', target: 'https://x.test/' } }]
+  ])('%s', (_type, schema, empty, value) => {
+    expect(isEmptyPropValue(schema, empty)).toBe(true);
+    expect(isEmptyPropValue(schema, value)).toBe(false);
+    expect(isEmptyPropValue(schema, null)).toBe(true);
+  });
+
+  it('reads a damaged rich text block as empty, never throwing', () => {
+    const rich = { type: 'richtext', label: 'Body', default: [] } as unknown as PropSchema;
+    expect(isEmptyPropValue(rich, [{ type: 'p' }, { type: 'ul' }, { type: 'ul', items: [null] }, null])).toBe(true);
   });
 });
 
@@ -182,13 +211,25 @@ describe('required properties: schema edits and bindings', () => {
     expect(() => applyOperations(st, [{ type: 'component.setPropSchema', definitionId: inner.definitionId, prop: 'title', schema: { type: 'string', label: 'Title', default: 'Hi', required: true } }])).toThrow(/takes “Heading” as “Title”: “Title” is required, but “Heading” can be empty/);
   });
 
+  it('never trusts a list minimum, which a binding into the list does not keep, and needs the same type field by field', () => {
+    const titled = (title: PropSchema, extra: Record<string, unknown> = {}): PropSchema => ({ type: 'list', label: 'L', itemLabel: 'I', fields: { title: title as never }, default: [], ...extra }) as PropSchema;
+    const str = { type: 'string', label: 'S', default: 'x' } as PropSchema;
+    expect(guaranteesValue(titled(str, { min: 1 }))).toBe(false);
+    expect(requiredGap(titled(str, { min: 1 }), { ...titled(str), required: true } as PropSchema)).toMatch(/can be empty/);
+    const photo = { type: 'image', label: 'Photo', default: { assetId: 'a', alt: '' }, required: true } as PropSchema;
+    expect(requiredGap(titled({ type: 'number', label: 'N', default: 0 }), titled(photo))).toMatch(/“N” of “L” is a number, not a image/);
+    const obj = (a: PropSchema): PropSchema => ({ type: 'object', label: 'O', fields: { a: a as never }, default: {} }) as PropSchema;
+    expect(requiredGap(obj(str), obj({ ...str, required: true } as PropSchema))).toMatch(/its field “S” is required/);
+    expect(guaranteesValue(obj({ ...str, required: true } as PropSchema))).toBe(true);
+  });
+
   it('says which sources always have a value, field by field for lists and objects', () => {
     const str = (required = false): PropSchema => ({ type: 'string', label: 'S', default: 'x', ...(required ? { required } : {}) });
     expect(guaranteesValue(str())).toBe(false);
     expect(guaranteesValue(str(true))).toBe(true);
     expect(guaranteesValue({ type: 'number', label: 'N', default: 0 })).toBe(true);
     expect(guaranteesValue({ type: 'enum', label: 'E', default: 'a', options: [{ value: 'a', label: 'A' }, { value: '', label: 'None' }] })).toBe(false);
-    expect(guaranteesValue({ type: 'list', label: 'L', itemLabel: 'I', fields: {}, default: [], min: 1 })).toBe(true);
+    expect(guaranteesValue({ type: 'list', label: 'L', itemLabel: 'I', fields: {}, default: [], required: true })).toBe(true);
     const list = (title: PropSchema): PropSchema => ({ type: 'list', label: 'L', itemLabel: 'I', fields: { title: title as never }, default: [] });
     expect(requiredGap(list(str()), list(str(true)))).toMatch(/its field “S” is required, but “S” of “L” can be empty/);
     expect(requiredGap(list(str(true)), list(str(true)))).toBeNull();
@@ -206,6 +247,65 @@ describe('required properties: validation of stored values', () => {
     const found = introducedDiagnostics(saving(state), saving(edited));
     expect(found.map((d) => [d.code, d.message])).toEqual([['PROP_REQUIRED_EMPTY', 'Home: Card → Title is required: it needs some text.']]);
     expect(requiredProblems(edited)).toHaveLength(1);
+  });
+
+  it('reports each empty item field on its own, so a second one emptied is a new problem', () => {
+    const s = project();
+    const { state, nodeId } = placed(s, { cards: { type: 'list', label: 'Cards', itemLabel: 'Card', fields: { title: { type: 'string', label: 'Title', default: 'Card', required: true } }, default: [{ title: 'One' }, { title: 'Two' }] } });
+    const one = structuredClone(state);
+    const items = (one.pages[one.site.homePageId].nodes[nodeId] as InstanceNode).props.cards as Array<{ title: string }>;
+    items[0].title = '';
+    const two = structuredClone(one);
+    ((two.pages[two.site.homePageId].nodes[nodeId] as InstanceNode).props.cards as Array<{ title: string }>)[1].title = ' ';
+    expect(introducedDiagnostics(saving(one), saving(two)).map((d) => d.message)).toEqual(['Home: Card → Cards → Card 2 → Title is required: it needs some text.']);
+  });
+
+  it('reads an object’s left-out fields from its defaults, and checks a field’s own default apart from the items', () => {
+    const s = project();
+    const { state, nodeId, definitionId } = placed(s, {
+      action: { type: 'object', label: 'Action', required: true, fields: { label: { type: 'string', label: 'Label' }, note: { type: 'string', label: 'Note' } }, default: { label: 'Go', note: '' } },
+      links: { type: 'list', label: 'Links', itemLabel: 'Link', fields: { to: { type: 'link', label: 'To', default: 'https://example.com/', required: true } }, default: [] }
+    });
+    const edited = structuredClone(state);
+    (edited.pages[edited.site.homePageId].nodes[nodeId] as InstanceNode).props.action = { note: '' };
+    expect(requiredProblems(edited)).toEqual([]);
+    // A package import strips a field's site link: every new item would start empty.
+    const stripped = structuredClone(state);
+    const links = stripped.components[definitionId].properties.links as { fields: Record<string, { default: unknown }> };
+    links.fields.to.default = { type: 'none', target: '' };
+    expect(requiredProblems(stripped).map((p) => p.message)).toEqual(['Card → Links → To (default) is required: it needs a destination.']);
+  });
+});
+
+describe('required properties carried by a swap', () => {
+  it('starts a required list from its default items when the placement had none', () => {
+    const s = project();
+    const fields = { title: { type: 'string', label: 'Title', default: 'Card' } };
+    const from = placed(s, { cards: { type: 'list', label: 'Cards', itemLabel: 'Card', fields, default: [] } });
+    const made = applyOperations(from.state, [{ type: 'component.create', name: 'Strict' }]);
+    const strict = (made.results[0] as { definitionId: string }).definitionId;
+    const st = applyOperations(made.state, [{ type: 'component.setPropSchema', definitionId: strict, prop: 'cards', schema: { type: 'list', label: 'Cards', itemLabel: 'Card', required: true, fields, default: [{ title: 'Kept' }] } }]).state;
+    const swapped = applyOperations(st, [{ type: 'instance.swapComponent', owner: home(st), nodeId: from.nodeId, definitionId: strict }]).state;
+    const node = Object.values(swapped.pages[swapped.site.homePageId].nodes).find((n) => n.kind === 'instance' && n.definitionId === strict) as InstanceNode;
+    expect((node.props.cards as Array<{ title: string }>).map((i) => i.title)).toEqual(['Kept']);
+    expect(introducedDiagnostics(saving(st), saving(swapped))).toEqual([]);
+  });
+});
+
+describe('required properties in the AI’s value checks', () => {
+  it('checks an object patch against the placement’s own value, and refuses a required link that would wait for a page', () => {
+    const s = project();
+    const { state, definitionId } = placed(s, {
+      action: { type: 'object', label: 'Action', required: true, fields: { label: { type: 'string', label: 'Label' }, link: { type: 'link', label: 'Link' } }, default: { label: 'Go' } },
+      go: { type: 'link', label: 'Go', default: 'https://example.com/', required: true }
+    });
+    const def = state.components[definitionId];
+    const issues: FieldIssue[] = [];
+    checkProps(def, { action: { label: '' } }, state, 'props', issues, { action: { label: 'Go', link: { type: 'url', target: 'https://example.com/' } } });
+    expect(issues).toEqual([]);
+    const r = checkProps(def, { go: '/services/' }, state, 'props', issues);
+    expect(r.deferred).toEqual([]);
+    expect(issues.map((i) => [i.field, i.message])).toEqual([['props.go', 'no page uses the route /services/ yet, and “Go” is required, so it cannot wait for one: create that page first, then set this link']]);
   });
 });
 
@@ -263,5 +363,17 @@ describe('required properties in Foundation', () => {
     const nodeId = put.results[0].nodeId as string;
     const items = (put.state.pages[s.site.homePageId].nodes[nodeId] as InstanceNode).props.items as Array<{ id: string }>;
     expect(() => applyOperations(put.state, [{ type: 'instance.setProp', owner: home(s), nodeId, prop: 'items', itemId: items[0].id, field: 'question', value: '' }])).toThrow(/Questions → Question 1 → Question is required/);
+    expect(() => applyOperations(put.state, [{ type: 'instance.setProp', owner: home(s), nodeId, prop: 'items', itemId: items[1].id, field: 'answer', value: ' ' }])).toThrow(/Questions → Question 2 → Answer is required/);
+  });
+
+  it.each([
+    ['testimonials.grid', 'items', 'quote', /Testimonials → Testimonial 1 → Quote is required/],
+    ['team.grid', 'people', 'name', /People → Person 1 → Name is required/]
+  ])('refuses clearing %s %s → %s', (componentId, prop, field, message) => {
+    const s = createStarterState('blank', 'People', false);
+    const put = applyOperations(s, [{ type: 'node.insert', owner: home(s), parentId: null, componentId }]);
+    const nodeId = put.results[0].nodeId as string;
+    const items = (put.state.pages[s.site.homePageId].nodes[nodeId] as InstanceNode).props[prop] as Array<{ id: string }>;
+    expect(() => applyOperations(put.state, [{ type: 'instance.setProp', owner: home(s), nodeId, prop, itemId: items[0].id, field, value: '' }])).toThrow(message);
   });
 });

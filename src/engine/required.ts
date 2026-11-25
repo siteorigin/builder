@@ -21,29 +21,32 @@ export interface RequiredProblem {
   bound?: true;
 }
 
-/** Where a value of `schema` is empty though required: the message, with `label` as its path; null when it is not. */
-export function requiredValueProblem(schema: PropSchema, v: unknown, label: string): string | null {
+/** Each place a value of `schema` is empty though required: a message with `label` as its path, and a key telling it apart within the value. */
+export function requiredValueProblems(schema: PropSchema, v: unknown, label: string): Array<{ key: string; message: string }> {
   // A computed list's items are the site's pages, whatever is stored.
-  if (schema.type === 'list' && schema.feed) return null;
-  if (schema.required && isEmptyPropValue(schema, v)) return requiredMessage(schema, label);
+  if (schema.type === 'list' && schema.feed) return [];
+  const out: Array<{ key: string; message: string }> = [];
+  if (schema.type === 'object' && v && typeof v === 'object' && !Array.isArray(v)) {
+    // A field the object leaves out shows the object's default, or the field's own.
+    const defaults = schema.default && typeof schema.default === 'object' ? (schema.default as Record<string, unknown>) : {};
+    const o = v as Record<string, unknown>;
+    const shown = Object.fromEntries(fieldsOf(schema).map(([k, f]) => [k, Object.hasOwn(o, k) ? o[k] : Object.hasOwn(defaults, k) ? defaults[k] : f.default]));
+    if (schema.required && isEmptyPropValue(schema, shown)) out.push({ key: '', message: requiredMessage(schema, label) });
+    for (const [k, f] of fieldsOf(schema)) if (f.required && isEmptyPropValue(f, shown[k])) out.push({ key: k, message: requiredMessage(f, `${label} → ${f.label}`) });
+    return out;
+  }
+  if (schema.required && isEmptyPropValue(schema, v)) out.push({ key: '', message: requiredMessage(schema, label) });
   if (schema.type === 'list' && Array.isArray(v)) {
+    const required = fieldsOf(schema).filter(([, f]) => f.required);
+    if (!required.length) return out;
     for (const [i, item] of v.entries()) {
       const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
-      for (const [k, f] of fieldsOf(schema)) {
-        // A field an item leaves out shows the field's default.
-        if (f.required && isEmptyPropValue(f, Object.hasOwn(row, k) ? row[k] : f.default)) return requiredMessage(f, `${label} → ${schema.itemLabel} ${i + 1} → ${f.label}`);
-      }
+      const id = typeof row.id === 'string' ? row.id : String(i);
+      // A field an item leaves out shows the field's default.
+      for (const [k, f] of required) if (isEmptyPropValue(f, Object.hasOwn(row, k) ? row[k] : f.default)) out.push({ key: `${id}|${k}`, message: requiredMessage(f, `${label} → ${schema.itemLabel} ${i + 1} → ${f.label}`) });
     }
   }
-  if (schema.type === 'object' && v && typeof v === 'object' && !Array.isArray(v)) {
-    const o = v as Record<string, unknown>;
-    const defaults = schema.default && typeof schema.default === 'object' ? schema.default : {};
-    for (const [k, f] of fieldsOf(schema)) {
-      const fallback = Object.hasOwn(defaults, k) ? defaults[k] : f.default;
-      if (f.required && isEmptyPropValue(f, Object.hasOwn(o, k) ? o[k] : fallback)) return requiredMessage(f, `${label} → ${f.label}`);
-    }
-  }
-  return null;
+  return out;
 }
 
 /** The schema of what a binding in a placement's property reads: an enclosing component's property or item field, or an entry's field. */
@@ -57,15 +60,22 @@ export function bindingSource(state: ProjectState, owner: OwnerRef, node: GraphN
   return parent ? boundSchema(parent, node.id, v) : undefined;
 }
 
-/** Every required value the project leaves empty, or could leave empty through a binding. */
-export function requiredProblems(state: ProjectState): RequiredProblem[] {
+/**
+ * Every required value the project leaves empty, or could leave empty through a binding. `bindings: false` leaves
+ * bindings out, for a caller that checks them with the other binding problems (`bindingProblem`).
+ */
+export function requiredProblems(state: ProjectState, { bindings = true } = {}): RequiredProblem[] {
   const out: RequiredProblem[] = [];
   const defs = Object.values(state.components).filter((d): d is ComponentDefinition => !!d && typeof d === 'object' && !!d.properties && typeof d.properties === 'object' && Object.values(d.properties).some((s) => !!s && typeof s === 'object' && hasRequired(s)));
   for (const def of defs) {
     for (const [k, s] of Object.entries(def.properties)) {
       if (!s || typeof s !== 'object' || !hasRequired(s)) continue;
-      const problem = requiredValueProblem(s, s.default, `${def.name} → ${s.label} (default)`);
-      if (problem) out.push({ key: `default|${def.id}|${k}`, message: problem, owner: { kind: 'component', id: def.id } });
+      const owner: OwnerRef = { kind: 'component', id: def.id };
+      for (const p of requiredValueProblems(s, s.default, `${def.name} → ${s.label} (default)`)) out.push({ key: `default|${def.id}|${k}|${p.key}`, message: p.message, owner });
+      // Each field's own default starts every new item, whatever the property's default holds (an import can empty one).
+      if (!(s.type === 'list' && s.feed))
+        for (const [f, fs] of fieldsOf(s))
+          if (fs.required && isEmptyPropValue(fs, fs.default)) out.push({ key: `default|${def.id}|${k}|field|${f}`, message: requiredMessage(fs, `${def.name} → ${s.label} → ${fs.label} (default)`), owner });
     }
   }
   if (!defs.length) return out;
@@ -79,13 +89,13 @@ export function requiredProblems(state: ProjectState): RequiredProblem[] {
         const v = n.props[k];
         const key = `${owner.kind}|${owner.id}|${n.id}|${k}`;
         if (isBinding(v)) {
+          if (!bindings) continue;
           const from = bindingSource(state, owner, n, v);
           const gap = from ? requiredGap(from, s) : null;
           if (gap) out.push({ key, message: `${label}: ${def.name} → ${s.label} takes “${from!.label}”: ${gap}.`, owner, nodeId: n.id, bound: true });
           continue;
         }
-        const problem = requiredValueProblem(s, v, `${label}: ${def.name} → ${s.label}`);
-        if (problem) out.push({ key, message: problem, owner, nodeId: n.id });
+        for (const p of requiredValueProblems(s, v, `${label}: ${def.name} → ${s.label}`)) out.push({ key: `${key}|${p.key}`, message: p.message, owner, nodeId: n.id });
       }
     }
   }

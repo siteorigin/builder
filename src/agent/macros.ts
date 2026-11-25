@@ -6,7 +6,7 @@
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { propBindingValue } from '@shared/bindings';
 import { z } from 'zod';
-import type { ComponentDefinition, Condition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema, VariantAxis } from '@shared/types';
+import type { ComponentDefinition, Condition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema, ScalarPropSchema, VariantAxis } from '@shared/types';
 import { conditionHolds, conditionRef, stateInitial } from '@shared/types';
 import { effectiveItem, followsPage, teaserFields } from '@shared/page-teasers';
 import type { EditOperation } from '@shared/ops';
@@ -242,6 +242,10 @@ function resolveRouteLink(v: unknown, state: ProjectState): { value: unknown; pe
   return { value: { type: 'none', target: '' }, pendingRoute: route };
 }
 
+/** A required link can never wait for its page: an empty link is no value for it. */
+const waitingRequired = (schema: ScalarPropSchema, route: string) =>
+  `no page uses the route ${route} yet, and “${schema.label}” is required, so it cannot wait for one: create that page first, then set this link`;
+
 export interface DeferredLink {
   route: string;
   prop: string;
@@ -319,6 +323,10 @@ export function checkProps(
       // A stored link sent back as it was read stays as it is, even when its page has gone.
       const kept = storedIfUnchanged(schema, v, storedProp(k), state);
       const r = kept !== undefined ? { value: kept } : resolveRouteLink(v, state);
+      if (r.pendingRoute && schema.required) {
+        issues.push({ field: `${path}.${k}`, message: waitingRequired(schema, r.pendingRoute) });
+        continue;
+      }
       if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k });
       out[k] = r.value;
       checkValue(() => normalizeScalar(schema, r.value, state, schema.label, storedProp(k)), `${path}.${k}`, issues);
@@ -327,14 +335,21 @@ export function checkProps(
     if (schema.type === 'object' && v && typeof v === 'object' && !Array.isArray(v)) {
       // An object's link to a page made later in the run waits for it, as a list item's does.
       const copy: Record<string, unknown> = { ...(v as Record<string, unknown>) };
+      let waiting = false;
       for (const [f, fs] of Object.entries(schema.fields)) {
         if (fs.type !== 'link' || !Object.hasOwn(copy, f)) continue;
         const r = resolveRouteLink(copy[f], state);
+        if (r.pendingRoute && fs.required) {
+          issues.push({ field: `${path}.${k}.${f}`, message: waitingRequired(fs, r.pendingRoute) });
+          waiting = true;
+          continue;
+        }
         if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k, field: f });
         copy[f] = r.value;
       }
       out[k] = copy;
-      checkValue(() => normalizeProp(schema, copy, state, schema.label), `${path}.${k}`, issues);
+      // Checked as the engine merges it: fields left out keep the placement's own values.
+      if (!waiting) checkValue(() => normalizeProp(schema, copy, state, schema.label, storedProp(k)), `${path}.${k}`, issues);
       continue;
     }
     if (schema.type === 'list' && Array.isArray(v)) {
@@ -344,6 +359,7 @@ export function checkProps(
       // An id two stored items share names neither of them.
       const storedItem = (id: unknown) => (typeof id === 'string' && storedItems.filter((x) => x.id === id).length === 1 ? storedItems.find((x) => x.id === id) : undefined);
       // Links written as routes resolve first, so items are matched to stored ones as the write matches them.
+      const waiting = new Set<string>();
       const rows = v.map((it, i) => {
         if (!isRow(it)) return it;
         const copy: Record<string, unknown> = {};
@@ -354,7 +370,10 @@ export function checkProps(
             continue;
           }
           const r = resolveRouteLink(x, state);
-          if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k, itemIndex: i, field: f });
+          if (r.pendingRoute && fs.required) {
+            issues.push({ field: `${path}.${k}[${i}].${f}`, message: waitingRequired(fs, r.pendingRoute) });
+            waiting.add(`${i}|${f}`);
+          } else if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k, itemIndex: i, field: f });
           copy[f] = r.value;
         }
         return copy;
@@ -382,6 +401,7 @@ export function checkProps(
             issues.push({ field: `${itemPath}.${f}`, message: `${schema.itemLabel} has no field "${f}". Fields: ${Object.keys(schema.fields).join(', ')}` });
             continue;
           }
+          if (waiting.has(`${i}|${f}`)) continue;
           const keptValue = storedIfUnchanged(fs, (v[i] as Record<string, unknown>)[f], was?.[f], state);
           const value = keptValue !== undefined ? keptValue : x;
           copy[f] = value;

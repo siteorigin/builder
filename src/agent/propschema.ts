@@ -66,7 +66,8 @@ function requiring(s: PropSchema, schema: JsonSchema, compact = false): JsonSche
       out.properties = { ...(schema.properties as Record<string, JsonSchema>), rows: { ...((schema.properties as Record<string, JsonSchema>).rows ?? {}), minItems: 1 } };
       break;
   }
-  if (typeof out.description === 'string') out.description = `${out.description}. Required: ${requiredHint(s)}.`;
+  // A required link offers no "" for no link.
+  if (typeof out.description === 'string') out.description = `${s.type === 'link' ? out.description.replace(LINK_HELP, LINK_HELP.replace(', or "" for no link', '')) : out.description}. Required: ${requiredHint(s)}.`;
   return out;
 }
 

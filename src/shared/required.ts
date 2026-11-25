@@ -22,9 +22,12 @@ import { isImageBlock, spanRuns } from './richtext';
 
 const blank = (v: unknown) => typeof v !== 'string' || !v.trim();
 
+/** Whether a run of spans has any text; a damaged run (a hand edit) has none. */
+const runText = (run: unknown) => Array.isArray(run) && run.some((s) => !blank((s as { text?: unknown } | null)?.text));
+
 function richEmpty(v: unknown): boolean {
   if (!Array.isArray(v)) return blank(v);
-  return !(v as RichText).some((b) => !!b && typeof b === 'object' && (isImageBlock(b) || spanRuns(b).some((run) => run.some((s) => !blank(s?.text)))));
+  return !(v as RichText).some((b) => !!b && typeof b === 'object' && (isImageBlock(b) || (Array.isArray(spanRuns(b)) && spanRuns(b).some(runText))));
 }
 
 /** Whether a stored value of `schema` is empty, by the rules above. A binding is never a stored value: check its source instead. */
@@ -97,7 +100,7 @@ export const requiredMessage = (schema: PropSchema, label: string) => `${label} 
 /**
  * Whether every value `from` can hold satisfies a required `to`, so a binding of `to` to `from` can never hand it an
  * empty value: `from` is required too, or its type always has a value (a yes/no, a number, a token, a choice with no
- * empty option), or a list that keeps a minimum of items.
+ * empty option), or an object with such a field.
  */
 export function guaranteesValue(from: PropSchema | ScalarPropSchema): boolean {
   if (from.required) return true;
@@ -107,9 +110,8 @@ export function guaranteesValue(from: PropSchema | ScalarPropSchema): boolean {
     case 'token':
       return true;
     case 'enum':
-      return from.options.every((o) => !blank(o.value));
-    case 'list':
-      return !from.feed && (from.min ?? 0) >= 1;
+      return Array.isArray(from.options) && from.options.every((o) => !blank(o?.value));
+    // A list's minimum is not enforced on what a binding passes into it, so only `required` speaks for its items.
     case 'object':
       return fieldsOf(from).some(([, f]) => guaranteesValue(f));
     default:
@@ -138,6 +140,8 @@ export function requiredGap(from: PropSchema, to: PropSchema): string | null {
       if (!f.required) continue;
       const src = Object.hasOwn(fields, k) ? fields[k] : undefined;
       if (!src) return `its field “${f.label}” is required, but “${from.label}” has no field “${k}”`;
+      // A value of another type is no value for it, however sure it is to be set (a number is no picture).
+      if (src.type !== f.type) return `its field “${f.label}” is required, but “${src.label}” of “${from.label}” is a ${src.type}, not a ${f.type}`;
       if (!guaranteesValue(src)) return `its field “${f.label}” is required, but “${src.label}” of “${from.label}” can be empty`;
     }
   }

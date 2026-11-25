@@ -19,7 +19,7 @@ import { applySelected, nodeFields, STYLE_VALUE } from './selection';
 import type { Authority, PartAuthority } from './scope';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
-import { guaranteesValue, requiredHint } from '@shared/required';
+import { isEmptyPropValue, requiredHint } from '@shared/required';
 
 /** The design a run is about: a component edited everywhere, or one of its nodes selected there. */
 export interface DefinitionTarget {
@@ -534,7 +534,8 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
         return fieldError([{ field: 'change', message: (e as Error).message }], NOTHING_APPLIED);
       }
       if (change.required) {
-        if (change.default === undefined && !guaranteesValue(schema))
+        // Without a default, the one a property of its type starts with (a number's 0, an enum's first option).
+        if (change.default === undefined && isEmptyPropValue(schema, schema.default))
           return fieldError([{ field: 'change.default', message: `a required property needs a default every placement starts with: ${requiredHint(schema)}` }], NOTHING_APPLIED);
         schema.required = true;
         raw.required = true;

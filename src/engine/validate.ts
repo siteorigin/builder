@@ -553,8 +553,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   out.push(...structureDiagnostics(state));
   // A required value left empty (a hand edit, or a swap, theme change or import that carried one over). A binding that
   // could pass an empty value is reported with the other binding problems.
-  for (const p of requiredProblems(state))
-    if (!p.bound) out.push({ severity: 'error', code: 'PROP_REQUIRED_EMPTY', message: p.message, owner: p.owner, ...(p.nodeId ? { nodeId: p.nodeId } : {}), site: p.key });
+  for (const p of requiredProblems(state, { bindings: false }))
+    out.push({ severity: 'error', code: 'PROP_REQUIRED_EMPTY', message: p.message, owner: p.owner, ...(p.nodeId ? { nodeId: p.nodeId } : {}), site: p.key });
   for (const a of Object.values(state.assets.assets)) {
     // A download is the size it is; only what pages load and show is worth making smaller.
     if (a.kind !== 'document' && a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
