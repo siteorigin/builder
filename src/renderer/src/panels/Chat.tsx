@@ -26,6 +26,7 @@ import { Spinner, useMenu } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
 import { ConversationsModal } from './Conversations';
 import { activityHint } from '../lib/conversations';
+import './Chat.css';
 
 /** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
 function Inline({ text }: { text: string }) {

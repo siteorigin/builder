@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const css = readFileSync("src/renderer/src/styles.css", "utf8");
+const css = readFileSync("src/renderer/src/panels/InsertPanel.css", "utf8");
 
 describe("Insert panel compact grid", () => {
   it('never breaks a label word mid-word ("Numbered" in the two-column Basic elements grid)', () => {

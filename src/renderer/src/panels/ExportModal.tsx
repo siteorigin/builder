@@ -18,6 +18,7 @@ import { pagesSummaryText } from '../lib/export-summary';
 import { auditForHealth, seoCountsText, seoPreflight, type SeoAuditResult } from '../lib/seo-health';
 import { findingHandoff } from '../lib/seoHandoff';
 import { AiHandoffButton } from '../components/AiHandoff';
+import './ExportModal.css';
 
 type ExportKind = 'static' | 'source';
 

@@ -6,6 +6,7 @@ import { POSTS_COLLECTION_ID } from '@shared/collections';
 import { api, getState, setState, toast, undoAction, useStore } from '../store';
 import { Modal } from '../components/ui';
 import { flushOpenPost } from '../lib/post-draft';
+import './ImportReview.css';
 
 /**
  * Choose a WordPress export or a folder of Markdown posts and show what importing it would do. Nothing changes until

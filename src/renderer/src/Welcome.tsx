@@ -8,6 +8,7 @@ import { recentGroups, whereLabels } from './lib/recent-places';
 import { SettingsModal } from './panels/SettingsModal';
 import { AppMark, MARK_COLORS } from './components/AppMark';
 import { switchScheme, useEditorScheme } from './lib/appearance';
+import './Welcome.css';
 
 export function BrandMark() {
   return (

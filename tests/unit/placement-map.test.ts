@@ -30,7 +30,7 @@ describe("placement map", () => {
   });
 
   it("gives neighbour rows no border or box background, so they do not look like buttons", () => {
-    const css = readFileSync("src/renderer/src/styles.css", "utf8");
+    const css = readFileSync("src/renderer/src/panels/InsertPanel.css", "utf8");
     const rule = (sel: string) =>
       css
         .split("\n")

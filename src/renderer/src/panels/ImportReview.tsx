@@ -4,6 +4,7 @@ import type { ImportReviewRow } from '@shared/api';
 import { getState, setState } from '../store';
 import { Modal } from '../components/ui';
 import { settleImportReview } from '../lib/import-review';
+import './ImportReview.css';
 
 const size = (w?: number, h?: number) => (w && h ? `${w.toLocaleString()} × ${h.toLocaleString()}` : '');
 const megabytes = (b: number) => (b >= 1024 * 1024 ? `${(b / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);

@@ -232,6 +232,8 @@
   .modal-head > svg { width: 18px; height: 18px; flex: none; color: var(--text-2); }
   .modal-body { padding: 4px 18px 18px; overflow: auto; font-size: 13px; color: var(--text); }
   .modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--panel-2); }
+  /* The safe default in a dialog is visibly focused from the start, even when it was focused by the app. */
+  .modal [data-autofocus]:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
 
   .toasts { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%); z-index: 1100; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
   .toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; max-width: 520px; padding: 9px 12px 9px 14px; border-radius: var(--r-md); background: var(--ink); color: #fff; box-shadow: var(--shadow-lg); animation: pop-in 160ms ease-out; font-size: 13px; }

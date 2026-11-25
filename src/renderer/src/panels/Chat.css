@@ -1,0 +1,367 @@
+@layer components {
+  /* ---------- Chat ---------- */
+  /* ---------- AI panel ----------
+   * One place says what a run is doing: the run strip above the composer (phase, frozen target, Stop).
+   * A finished turn leads with its outcome; its steps fold into the result card's header. */
+  .chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .chat-head { flex: none; display: flex; align-items: center; gap: 2px; height: 38px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); }
+  .chat-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; color: var(--text-2); }
+  /* The log and, when the reader has scrolled back, a Jump to latest row under it. */
+  .chat-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  /* The log keeps a stable scrollbar gutter on the right, so its right padding is smaller: cards line up with the composer.
+     Its edges fade over a few pixels, so a turn passing under the header or the composer is cut softly, not mid-glyph. */
+  .chat-log { flex: 1; min-height: 0; overflow: auto; padding: 14px 2px 10px 12px; display: flex; flex-direction: column; gap: 8px; scrollbar-width: thin; scrollbar-color: var(--border-control) transparent; scrollbar-gutter: stable; user-select: text; scroll-padding: 12px 0; mask-image: linear-gradient(to bottom, transparent, #000 10px, #000 calc(100% - 10px), transparent); }
+  .chat-log:has(> .chat-empty) { scrollbar-gutter: auto; padding-right: 12px; mask-image: none; }
+  .chat-jump-row { flex: none; display: flex; justify-content: center; padding: 2px 12px 6px; }
+  .chat-jump { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px 0 10px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); color: var(--text); font-size: 12px; font-weight: 500; box-shadow: var(--shadow-sm); white-space: nowrap; }
+  .chat-jump:hover { background: var(--panel-2); }
+  .chat-jump svg { width: 13px; height: 13px; color: var(--text-2); }
+  /* Turns breathe; the parts of one turn sit close together. */
+  .chat-log > .msg-user:not(:first-child) { margin-top: 14px; }
+  .msg-user { align-self: flex-end; max-width: 88%; padding: 8px 12px; border-radius: var(--r-md) var(--r-md) var(--r-xs) var(--r-md); background: var(--accent-soft); color: var(--text); white-space: pre-wrap; word-wrap: break-word; line-height: 1.45; }
+  .msg-user .ctx { display: block; margin-top: 3px; font-size: 12px; color: var(--text-2); }
+  .msg-ai { display: flex; flex-direction: column; gap: 8px; }
+  .msg-ai .text { white-space: pre-wrap; word-wrap: break-word; line-height: 1.55; padding: 0 2px; }
+  .msg-ai .text p { margin: 0; }
+  /* Model text keeps its shape: paragraphs a line apart, its lists as lists, a heading it should not have written as a
+     bold line. Bullets sit in the quiet ink so the words lead. */
+  div.md { display: flex; flex-direction: column; gap: 8px; }
+  .md p { margin: 0; }
+  .md-lead { font-weight: 600; }
+  .md :is(ul, ol), .result-body .md :is(ul, ol) { display: block; margin: 0; padding: 0 0 0 18px; list-style: disc; }
+  .md li + li { margin-top: 4px; }
+  .md ol, .result-body .md ol { list-style: decimal; }
+  .md li::marker { color: var(--text-3); }
+  /* A turn that changed nothing is its answer: the words, with no card around them, then one quiet line that says the
+     site is unchanged and opens what the turn did on the way. */
+  .reply { display: flex; flex-direction: column; gap: 6px; }
+  /* The words and the line under them sit 2px in, like streamed text; the boxes keep the cards' full width. */
+  .reply-text, .reply-foot, .reply .locations { padding: 0 2px; }
+  .reply-text { font-size: 13px; line-height: 1.55; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .reply-foot { display: flex; }
+  .reply-toggle, .reply-outcome { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; margin-left: -4px; padding: 0 6px 0 4px; border: 0; border-radius: var(--r-xs); background: none; font-size: 12px; line-height: 16px; color: var(--text-3); text-align: left; }
+  .reply-toggle:hover { background: var(--hover); color: var(--text); }
+  .reply-icon { display: grid; place-items: center; flex: none; color: var(--text-3); }
+  .reply-icon svg { width: 13px; height: 13px; }
+  .reply-toggle .caret { width: 13px; height: 13px; flex: none; transition: transform 120ms; }
+  .reply-toggle[aria-expanded='true'] .caret { transform: rotate(180deg); }
+  .reply-details { display: flex; flex-direction: column; gap: 2px; padding: 6px 12px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); }
+  .reply-details .activity-list { padding: 0; border: 0; border-radius: 0; background: transparent; }
+  /* The model a turn went to, as the last line of its details, set like a step. */
+  .turn-handled { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 3px 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
+  .turn-handled svg { flex: none; width: 13px; height: 13px; margin: 2.5px 0.5px 0; color: var(--text-3); }
+  .turn-handled > span { min-width: 0; overflow-wrap: anywhere; }
+  .activity-list { margin: 0; padding: 6px 10px; list-style: none; display: flex; flex-direction: column; gap: 2px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); }
+  .activity { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
+  .activity-icon { flex: none; width: 14px; height: 18px; display: grid; place-items: center; color: var(--text-3); }
+  .activity-icon svg { width: 13px; height: 13px; }
+  .activity-icon .spinner { width: 12px; height: 12px; border-width: 1.5px; }
+  .activity.running { color: var(--text); font-weight: 500; }
+  .activity-icon .ask { color: var(--accent-text); }
+  .activity-icon .bad { color: var(--red); }
+  .activity-text { min-width: 0; overflow-wrap: anywhere; }
+  /* Folded earlier steps line up with the step labels, behind the icon column. */
+  .activity.earlier { padding: 0 0 0 22px; }
+  .steps-earlier { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 4px; margin-left: -4px; border: 0; border-radius: var(--r-xs); background: none; font-size: 12px; color: var(--text-2); }
+  .steps-earlier:hover { background: var(--hover); color: var(--text); }
+  .steps-earlier svg { width: 13px; height: 13px; transition: transform 120ms; }
+  .steps-earlier[aria-expanded='true'] svg { transform: rotate(180deg); }
+  .activity .detail { display: block; font-size: 12px; font-weight: 400; color: var(--red); }
+  .result-card { border-radius: var(--r-md); border: 1px solid var(--border); background: var(--raised); overflow: hidden; box-shadow: var(--shadow-sm); }
+  .result-head { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; row-gap: 0; min-height: 38px; padding: 4px 6px 4px 12px; font-size: 13px; font-weight: 600; color: var(--text); }
+  /* The outcome and its qualifiers wrap rather than clip, so "site unchanged" or "1 not checked" is never cut at 300px. */
+  .result-title { min-width: 0; line-height: 18px; overflow-wrap: break-word; }
+  /* What the final checks found, right under the outcome: an issue in strong words, a check that could not run in quiet
+     ones. Red stays for turns that failed; a problem a check found on a turn that worked is something to look at. */
+  /* Narrow, the steps toggle drops below rather than squeeze the outcome mid-word. */
+  .result-heading { flex: 1 1 68px; min-width: 0; display: flex; flex-direction: column; padding: 5px 0; }
+  .result-qualifiers { font-size: 12px; line-height: 16px; }
+  .result-qualifier { font-weight: 500; color: var(--text-2); }
+  .result-qualifier.issue { color: var(--text); font-weight: 600; }
+  .result-qualifier.issue svg { width: 12px; height: 12px; margin: 0 4px -1px 0; }
+  .result-icon { display: grid; place-items: center; flex: none; }
+  .result-icon svg { width: 16px; height: 16px; }
+  /* With a qualifier line under the outcome, the glyph and the steps toggle stay level with the outcome's own words. */
+  .result-head:has(.result-qualifiers) { align-items: flex-start; }
+  .result-head:has(.result-qualifiers) .result-icon { margin-top: 6px; }
+  .result-card.settled .result-head:has(.result-qualifiers) .result-icon { margin-top: 4px; }
+  .result-head:has(.result-qualifiers) .steps-toggle { margin-top: 1px; }
+  /* Hue marks only what needs attention; success, no-change and stop are told apart by icon and word. */
+  .result-card:is(.completed, .no-changes, .cancelled) .result-icon { color: var(--text-2); }
+  .result-card.failed .result-icon { color: var(--red); }
+  .result-card.conflicted .result-icon { color: var(--text); }
+  .result-card.failed .result-head { background: var(--red-soft); }
+  /* A conflict kept its changes: they worked and wait to be looked at, so the card asks in strong neutral, not alarm red. */
+  .result-card.conflicted { border-color: var(--border-control); }
+  .result-card.conflicted .result-head { background: var(--panel-2); }
+  .result-usage { font-size: 12px; font-weight: 400; color: var(--text-2); white-space: nowrap; }
+  .steps-toggle { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 6px 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; font-size: 12px; font-weight: 500; color: var(--text-2); white-space: nowrap; }
+  .steps-toggle:hover { background: var(--hover); color: var(--text); }
+  .steps-toggle svg { width: 14px; height: 14px; transition: transform 120ms; }
+  .steps-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
+  .result-steps { padding: 6px 12px; border-top: 1px solid var(--border); background: var(--panel-2); }
+  .result-steps .activity-list { padding: 0; border: 0; border-radius: 0; background: transparent; }
+  /* A settled turn's passed checks, folded in with its steps and set like them. */
+  :is(.result-steps, .reply-details) .checks { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  :is(.result-steps, .reply-details) .checks li { display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
+  :is(.result-steps, .reply-details) .checks svg { flex: none; width: 13px; height: 13px; margin: 2.5px 0.5px 0; color: var(--text-3); }
+  .result-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; border-top: 1px solid var(--border); }
+  .result-summary { white-space: pre-wrap; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+  .result-standing { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
+  :is(.result-body, .reply) .locations { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  :is(.result-body, .reply) .locations li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 13px; }
+  .location-path { min-width: 0; font-weight: 550; overflow-wrap: anywhere; }
+  .result-body ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+  .result-body .changes { gap: 0; }
+  /* Each change: its marker in a column of its own and the label beside it, so a long label wraps under itself and the
+     marker never sits alone on a line. Developer detail goes under the label. */
+  .result-body .changes li { display: grid; grid-template-columns: 4px minmax(0, 1fr); column-gap: 8px; align-items: start; font-size: 12px; min-height: 24px; color: var(--text); }
+  .result-body .changes li::before { content: ''; grid-column: 1; grid-row: 1; width: 4px; height: 4px; margin-top: 10px; border-radius: 50%; background: var(--text-3); }
+  .result-body .changes li > * { grid-column: 2; justify-self: start; }
+  .result-body .changes li > span { padding: 3px 0; line-height: 18px; }
+  .result-body .change-link { min-height: 24px; padding: 3px 0; border: 0; background: none; color: var(--accent-text); text-align: left; font-size: 12px; line-height: 18px; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); text-underline-offset: 2px; overflow-wrap: anywhere; }
+  .result-body .change-link:hover { text-decoration-color: currentColor; }
+  .result-body .change-ops { padding: 3px 0; font-family: var(--mono); font-size: 11px; line-height: 18px; color: var(--text-2); user-select: text; }
+  .result-section { display: flex; flex-direction: column; gap: 2px; }
+  .result-label { font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .result-section li { font-size: 12px; line-height: 18px; }
+  .result-body .checks { gap: 5px; }
+  .result-body .checks li { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 18px; color: var(--text-2); }
+  .result-body .checks svg { flex: none; width: 13px; height: 13px; margin-top: 2.5px; color: var(--text-3); }
+  /* An issue reads as its own outlined row with the warning glyph, so it is found at a glance after the header's count;
+     a check that could not run is the same row without the outline. */
+  .result-body .checks li.issue { color: var(--text); padding: 5px 8px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border-control); }
+  .result-body .checks li.issue svg { color: var(--text); }
+  .result-body .checks li.unverified { color: var(--text); padding: 5px 8px; border-radius: var(--r-sm); background: var(--panel-2); }
+  /* Amber means site-wide in this app, so a check that could not run takes a neutral mark and its own words. */
+  .result-body .checks li.unverified svg { color: var(--text-2); }
+  .checks-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; margin-top: -3px; padding: 0 4px; margin-left: -4px; border: 0; border-radius: var(--r-xs); background: none; font-size: 12px; color: var(--text-2); }
+  .checks-toggle:hover { background: var(--hover); color: var(--text); }
+  .result-body .checks .checks-toggle svg { width: 13px; height: 13px; margin-top: 0; color: var(--text-3); }
+  .result-body .checks .checks-toggle svg:last-child { color: inherit; transition: transform 120ms; }
+  .checks-toggle[aria-expanded='true'] svg:last-child { transform: rotate(180deg); }
+  .result-body .checks li:has(> .checks-toggle) { gap: 0; }
+  .result-body .checks .pass-detail { padding-left: 18px; }
+  .result-foot { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--panel-2); }
+  .result-qualifier.reverted { color: var(--text); font-weight: 600; }
+  /* Long unbroken values (a URL, a file name) wrap inside the card rather than clip. */
+  .result-body :is(.checks, .changes) li > span, .result-steps .checks li > span, .result-section li, .answered { min-width: 0; overflow-wrap: anywhere; }
+  /* An undone turn's original report, one click away. */
+  .report-toggle { align-self: flex-start; }
+  .report-toggle svg { width: 13px; height: 13px; transition: transform 120ms; }
+  .report-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
+  /* The questions a turn asked on the way, kept inside its card after the result. */
+  .result-answers { display: flex; flex-direction: column; gap: 6px; }
+  .result-card .result-answers .answered { border: 0; padding: 7px 10px; border-radius: var(--r-sm); }
+  /* An older turn that went cleanly and offers nothing to do: flat, tighter, the same outline. Warnings, recovery and the
+     latest turn keep the raised card. */
+  .result-card.settled { background: var(--panel); box-shadow: none; }
+  .result-card.settled .result-head { min-height: 34px; }
+  .result-card.settled .result-heading { padding: 3px 0; }
+  .result-card.settled .result-body { padding: 8px 12px 10px; gap: 6px; }
+  .result-card.settled .result-title { font-weight: 500; }
+  /* An older failure that has since been moved past is history: its words and glyph say what happened, without the alarm. */
+  .result-card.settled.failed .result-head { background: transparent; }
+  .result-card.settled.failed .result-icon { color: var(--text-2); }
+  /* Flat in both themes: a quiet card's footer does not sit lighter than the card itself. */
+  .result-card.settled .result-foot { background: transparent; }
+  .result-section > ul:not(.changes) { gap: 4px; }
+  .chat-log > .msg-user:not(:first-child):has(+ .msg-ai .settled) { margin-top: 10px; }
+  /* The question the AI is waiting on sits right above the composer, which answers it. */
+  /* The question and how to answer it stay put; only its options scroll when there are many. */
+  .question-card { flex: 0 1 auto; min-height: 72px; margin: 8px 12px 0; max-height: 60%; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--border-control) transparent; padding: 12px; border-radius: var(--r-md); border: 1px solid var(--accent); background: var(--raised); box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 10px; }
+  /* Room on every side for a focus ring. It keeps at least one option in view; on a window too short even for that, the
+     whole card scrolls instead, so a focused option is never hidden. */
+  .question-options { flex: 0 1 auto; min-height: 38px; overflow: auto; display: flex; flex-direction: column; gap: 8px; margin: -4px; padding: 4px; scroll-padding: 8px 0; scrollbar-width: thin; }
+  .question-options:has(.image-choices) { min-height: 150px; }
+  /* What saying yes to a wider change allows, before it is given. */
+  .question-scope { flex: none; display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 6px 8px; border-radius: var(--r-sm); background: var(--amber-soft); font-size: 12px; line-height: 1.4; font-weight: 500; color: var(--text); }
+  /* Site-wide, in the house's site-wide amber, with its icon and words. */
+  .question-scope svg { flex: none; width: 13px; height: 13px; margin-top: 1.5px; color: var(--amber); }
+  .question-text { flex: none; font-size: 13px; font-weight: 600; line-height: 1.45; color: var(--text); border-radius: var(--r-xs); overflow-wrap: anywhere; }
+  .question-card .choices { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+  .question-card .choice { justify-content: flex-start; height: auto; min-height: 30px; padding: 5px 10px; text-align: left; white-space: normal; line-height: 1.35; overflow-wrap: anywhere; }
+  .question-hint { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  /* On a short window the card scrolls before the conversation disappears. */
+  .chat:has(> .question-card) .chat-body { min-height: 64px; }
+  /* Library images in the chat: offered as choices, attached to a message, or shown in the log. The pictures load
+     from the local preview server; only their IDs and names go to the AI. */
+  .image-choices { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 6px; }
+  /* Each offered photo: the picture opens a larger preview, its name, and a labelled Choose that answers. Looking and
+     answering are separate targets, so a click meant to look never answers. */
+  .image-choice { display: flex; flex-direction: column; gap: 5px; min-width: 0; padding: 5px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
+  .image-choice-preview { position: relative; display: block; width: 100%; padding: 0; border: 0; border-radius: var(--r-xs); background: none; overflow: hidden; }
+  .image-choice-preview .asset-thumb { width: 100%; aspect-ratio: 16 / 10; border-radius: var(--r-xs); }
+  .image-choice-preview:disabled { cursor: default; }
+  /* Says the picture opens larger: a solid badge with a full edge, legible on bright and dark photos alike. */
+  .image-choice-zoom { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: var(--r-xs); border: 1px solid var(--border-control); background: var(--raised); color: var(--text); box-shadow: var(--shadow-sm); }
+  .image-choice-zoom svg { width: 12px; height: 12px; }
+  .image-choice-preview:hover:not(:disabled) .image-choice-zoom { background: var(--panel-2); }
+  .image-choice-name { display: flex; flex-direction: column; min-width: 0; padding: 0 2px; font-size: 12px; line-height: 1.35; }
+  .image-choice-pick { justify-content: center; width: 100%; height: 24px; margin-top: auto; }
+  /* Sits on a photo of any brightness, so it takes a solid fill and a full 3:1 edge. */
+
+  /* --text-2, because the chip's own tint takes --text-3 under 4.5:1 in dark. */
+  .image-chip-id { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .image-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
+  .msg-user .image-chips { padding: 6px 0 0; white-space: normal; }
+  /* On the request's own tint, a solid chip keeps its secondary text above 4.5:1 in dark. */
+  .msg-user .image-chip { background: var(--panel-2); }
+  .image-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; min-height: 32px; padding: 3px 2px 3px 3px; border-radius: var(--r-sm); background: var(--active); font-size: 12px; color: var(--text); vertical-align: middle; }
+  .image-chip:not(:has(button)) { padding-right: 8px; }
+  .image-chip .asset-thumb { width: 26px; border-radius: var(--r-xs); }
+  .image-chip .asset-noimg { width: 14px; height: 14px; }
+  .image-chip-text { display: flex; flex-direction: column; min-width: 0; max-width: 180px; line-height: 1.2; }
+  .image-chip.missing .image-chip-text > .ellipsis { color: var(--text-2); text-decoration: line-through; }
+  .image-chip button { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); background: none; color: var(--text-2); padding: 0; }
+  .image-chip button:hover { background: var(--hover); color: var(--text); }
+  .image-chip button svg { width: 12px; height: 12px; }
+  .answered-image { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .answered-image .image-chips { padding: 0; }
+  .image-preview { display: flex; flex-direction: column; gap: 10px; }
+  .image-preview-frame { position: relative; display: flex; align-items: center; justify-content: center; min-height: 160px; border-radius: var(--r-sm); background: var(--panel-2); overflow: hidden; }
+  .image-preview-frame img { display: block; max-width: 100%; max-height: min(60vh, 560px); width: auto; height: auto; }
+  .image-preview-frame .asset-noimg { width: 28px; height: 28px; }
+  .image-preview-meta { margin: 0; font-size: 12px; color: var(--text-2); }
+  .answered { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .answered strong { color: var(--text); font-weight: 600; }
+  .answered.unanswered > span:last-child { color: var(--text-3); font-style: italic; }
+  /* The composer is one field: a raised box whose first line is the text, then what goes with the message (what it
+     applies to, as one chip, and its images), then one row of quiet controls with Send at the end. Anywhere in the box that is not a control
+     puts the caret in the text, so the whole box takes the text cursor, and focus is the house ring around the box. */
+  .composer { flex: none; margin: 8px 12px 12px; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--raised); box-shadow: var(--shadow-sm); cursor: text; transition: border-color 120ms; }
+  .composer:hover:not(:has(button:hover, textarea:read-only)) { border-color: var(--text-3); }
+  /* A long paste (a page's whole copy) grows the box to its cap, then scrolls inside it without scrolling the chat behind. */
+  .composer textarea { display: block; width: 100%; min-height: 56px; max-height: 240px; overflow-y: auto; overscroll-behavior-y: contain; padding: 10px 12px 4px; border: 0; background: transparent; resize: none; outline: none; font-size: 14px; line-height: 1.45; user-select: text; }
+  .composer-foot { display: flex; align-items: center; gap: 2px; padding: 2px 6px 6px; cursor: default; }
+  /* Answering a question: the reply and its Send on one row, with no empty footer under it. */
+  .composer.answering { display: flex; align-items: flex-end; }
+  .composer.answering textarea { flex: 1; min-width: 0; min-height: 40px; padding: 9px 4px 9px 12px; }
+  .composer.answering .composer-foot { flex: none; padding: 6px; }
+  /* What the message applies to: one chip, its menu holds the other choices. The page it starts from is quieter and
+     gives way first when the panel is narrow. */
+  .composer-context { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; max-height: 96px; overflow-y: auto; scrollbar-width: thin; padding: 4px 6px; }
+  /* The row scrolls, so the focus ring of what is inside it is drawn 2px in, as in other clipping containers. */
+  .composer-context :focus-visible { outline-offset: -2px; }
+  /* Images flow with the scope chip, at its height, so one or two sit beside it rather than starting a row; many
+     scroll inside the row (about three lines) instead of pushing the conversation away. */
+  .composer-context .image-chips { display: contents; }
+  .composer-context .image-chip { min-height: 24px; padding: 0 0 0 3px; gap: 5px; }
+  .composer-context .image-chip .asset-thumb { width: 18px; height: 18px; object-fit: cover; }
+  .composer .chip.scope-chip { flex: 0 1 auto; min-width: 0; max-width: 100%; height: 24px; gap: 5px; padding: 0 6px; border: 0; font-size: 12px; font-weight: 500; color: var(--text-2); }
+  .composer button.scope-chip:is(:hover, [aria-expanded='true']) { color: var(--text); }
+  .composer .scope-chip svg { width: 12px; height: 12px; flex: none; }
+  .composer .scope-chip > .ellipsis:not(.scope-where) { flex: 0 1 auto; min-width: 3ch; }
+  .composer .scope-where { flex: 0 1000 auto; min-width: 5ch; font-weight: 400; color: var(--text-2); }
+  .composer .scope-where::before { content: '·'; margin-right: 5px; }
+  .composer .scope-chip.def .scope-where { color: inherit; }
+  .composer .chip.scope-chip.def { background: var(--plum-soft); color: var(--plum); font-weight: 600; }
+  /* The house hues for how far a change reaches: amber for the whole site, green for the shared header and footer. */
+  .composer .chip.scope-chip.site, .composer button.scope-chip.site:hover { background: var(--amber-soft); color: var(--amber); }
+  .composer .chip.scope-chip.shared, .composer button.scope-chip.shared:hover { background: var(--green-soft); color: var(--green); }
+  .composer button.scope-chip.def:hover { background: var(--plum-soft); color: var(--plum); }
+  .composer .scope-chip:is(.site, .shared) .scope-where { color: inherit; }
+  .composer span.scope-chip { cursor: default; }
+  .composer button.scope-chip:hover { background: var(--active); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  /* A hued chip keeps its fill on hover and takes a ring in its own colour. */
+  .composer button.scope-chip:is(.site, .shared, .def):hover { box-shadow: inset 0 0 0 1px currentColor; }
+  /* A question's context is shown, not chosen: plain words, no fill. */
+  .composer span.scope-chip:not(.def, .site, .shared) { background: transparent; padding-left: 6px; }
+  .composer :is(.scope-chip, .composer-mode) .caret { width: 12px; height: 12px; flex: none; margin-left: -1px; opacity: 0.75; }
+  /* Edit or Ask, the model, images and Send: quiet ghost controls, so the text stays the strongest thing in the box. */
+  .composer-mode { flex: none; gap: 5px; padding: 0 6px; color: var(--text-2); font-weight: 500; }
+  .composer-mode svg { width: 14px; height: 14px; }
+  /* Ask is remembered between sessions, so it stays visibly on once the placeholder has gone. */
+  .composer-mode.ask, .composer .composer-mode.ask:hover:not(:disabled) { background: var(--active); color: var(--text); }
+  .composer .composer-mode.ask:hover:not(:disabled) { box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .composer-model { min-width: 0; padding: 0 6px; color: var(--text-3); font-weight: 400; }
+  .composer-model:hover:not(:disabled) { color: var(--text); }
+  .composer-model .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .composer-model svg { width: 13px; height: 13px; }
+  .composer-attach { flex: none; }
+  .composer-attach:not(.sm) { width: 28px; height: 28px; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 2px 0 8px; border-radius: var(--r-sm); background: var(--active); font-size: 12px; color: var(--text-2); max-width: 100%; }
+  .chip.sel { background: var(--accent-soft); color: var(--accent-text); }
+  .chip svg { width: 11px; height: 11px; flex: none; }
+  /* A component edited everywhere, in the plum of the editing band. */
+  .chip.def { background: var(--plum-soft); color: var(--plum); font-weight: 600; }
+  .chip button { width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); background: none; color: inherit; padding: 0; }
+  .chip button:hover { background: var(--hover); }
+  .send-btn { flex: none; width: 28px; height: 28px; border-radius: var(--r-sm); border: 0; display: grid; place-items: center; background: var(--accent-fill); color: var(--on-accent); }
+  .send-btn:hover:not(:disabled) { background: var(--accent-fill-hover); }
+  .send-btn:disabled { background: var(--disabled-fill); color: var(--disabled-ink); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .send-btn svg { width: 15px; height: 15px; }
+  /* The empty conversation: a heading, one line, and starters as quiet rows that sit just above the box they fill.
+     Left-aligned with the rows' text, so the eye runs heading → starter → composer without a centred detour. */
+  .chat-empty { margin-top: auto; padding: 0 0 4px; display: flex; flex-direction: column; gap: 14px; align-items: stretch; text-align: left; }
+  .chat-empty.top { margin-top: 0; padding-top: 6px; }
+  .chat-empty-head { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
+  .chat-empty h3 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; color: var(--text); }
+  .chat-empty h3 svg { flex: none; width: 15px; height: 15px; color: var(--accent-text); }
+  .chat-empty-head p { margin: 0; font-size: 13px; line-height: 18px; color: var(--text-2); }
+  .chat-empty > .btn { align-self: flex-start; margin-left: 8px; }
+  .chat-privacy { margin: 0; font-size: 12px; line-height: 16px; color: var(--text-3); }
+  .chat-empty .chat-privacy { padding: 0 8px; }
+  .chat-footnote { flex: none; margin: 0 14px 10px; }
+  .composer:has(+ .chat-footnote) { margin-bottom: 6px; }
+  .suggestions { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+  .suggestions-label { margin: 0 0 2px; padding: 0 8px; font-size: 12px; line-height: 16px; color: var(--text-3); }
+  .chat-not-ready { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; width: 100%; text-align: left; }
+  .chat-not-ready .scope-note { width: 100%; }
+  /* A quiet filled row: a soft --panel-2 face marks it as something to press without the 3:1 edge of a form control, so
+     the rows never read as a second set of text fields competing with the composer. */
+  .suggestion { min-height: 30px; padding: 6px 8px; border: 0; border-radius: var(--r-sm); background: var(--panel-2); text-align: left; font-size: 13px; line-height: 18px; color: var(--text); overflow-wrap: anywhere; }
+  .suggestion:hover { background-image: linear-gradient(var(--hover), var(--hover)); }
+  .suggestion:active { background-image: linear-gradient(var(--active), var(--active)); }
+  .run-strip { flex: none; display: flex; align-items: center; gap: 8px; margin: 0 12px; padding: 6px 6px 6px 10px; border-radius: var(--r-md); background: var(--accent-soft); color: var(--text); }
+  /* The live glyph stays beside the phase it belongs to, however many lines the strip wraps to. */
+  .run-icon { flex: none; align-self: flex-start; display: grid; place-items: center; height: 16px; color: var(--accent-text); }
+  .run-icon svg { width: 15px; height: 15px; }
+  .run-icon .spinner { width: 14px; height: 14px; border-width: 1.5px; }
+  /* A provider warning sits in the panel's gutter, like the strip and the composer. */
+  .chat > .scope-note { flex: none; margin: 8px 12px 0; border-radius: var(--r-md); }
+  .run-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; line-height: 16px; }
+  .run-phase { font-size: 12px; font-weight: 600; color: var(--accent-text); }
+  /* What the run may change wraps rather than clip; its full text is also on hover. */
+  .run-target { font-size: 12px; color: var(--text-2); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+  .run-strip:not(:has(.run-actions)) { padding-right: 10px; }
+  /* The model the running turn went to, under what it may change. */
+  /* It wraps rather than cut the model's own name, which is what tells two models apart. */
+  .run-model { font-size: 11px; color: var(--text-2); overflow-wrap: anywhere; }
+  /* The model a turn went to, under the turn: quiet, and never cut by its result card. */
+  .turn-model { display: flex; align-items: flex-start; gap: 5px; min-width: 0; padding: 0 2px; font-size: 11px; color: var(--text-3); }
+  .turn-model svg { width: 12px; height: 12px; flex: none; margin-top: 2px; }
+  /* Shown only where the model changes, so it wraps rather than cut the name that tells two models apart. */
+  .turn-model > span { min-width: 0; overflow-wrap: anywhere; }
+  /* Before a message goes to a model that has not seen the recent messages of the conversation. */
+  .switch-note:not(.danger) { background: var(--panel-2); }
+  .switch-note .link:disabled { color: var(--disabled-ink); text-decoration: none; cursor: default; }
+  /* Before a message that may not fit the local model's context: an advisory, so neutral (amber means site-wide); Send
+     stays available. Its live
+     region stays in place, empty, while a local model takes the message. */
+  .headroom-live { flex: none; }
+  .headroom-live > .scope-note { margin: 8px 12px 0; border-radius: var(--r-md); }
+  .headroom-note { background: var(--panel-2); }
+  .headroom-note > svg { color: var(--text-2); }
+  .headroom-note .link:disabled { color: var(--text-3); text-decoration: none; cursor: default; }
+  .run-actions { flex: none; display: flex; gap: 6px; }
+  .run-stop svg { width: 10px; height: 10px; }
+  /* The waiting question below carries the accent ring; the strip only names the pause, so one box draws the eye.
+     The phase wraps to a second line rather than clip "Needs your answer" at the narrowest dock. */
+  .run-phase { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+  .chat-connect { flex: none; display: flex; align-items: center; gap: 10px; margin: 8px 12px 12px; padding: 10px 10px 10px 12px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
+  .chat-connect span { flex: 1; }
+  /* The history menu: up to two lines per title, so similar conversations and drafts stay distinguishable; the day sits
+     on the first line. Titles wrap, which the menu's one-line rule would otherwise prevent. */
+  .menu[aria-label='Conversations'] { width: 300px; }
+  .menu[aria-label='Conversations'] .menu-item:is([role='menuitemradio'], :has(.hint)) { height: auto; min-height: 30px; padding-top: 6px; padding-bottom: 6px; align-items: flex-start; line-height: 18px; }
+  .menu[aria-label='Conversations'] .menu-item[role='menuitemradio'] .check { height: 18px; display: grid; place-items: center; }
+  .menu[aria-label='Conversations'] .menu-item .grow { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; white-space: normal; overflow-wrap: anywhere; }
+  .menu[aria-label='Conversations'] .menu-item .hint { flex: none; }
+
+
+  .composer:has(textarea:focus) { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .chip.add { border: 1px dashed var(--border-control); background: none; color: var(--text-2); padding: 0 8px 0 4px; }
+  .chip.add:hover { border-color: var(--accent); color: var(--accent-text); }
+  .chip:not(:has(button)) { padding-right: 8px; }
+}

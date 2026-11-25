@@ -9,6 +9,7 @@ import { endEditingHold } from '../lib/leave';
 import { api, errorText, toast, useStore } from '../store';
 import { usePackPreview, usePreviewExtent } from './PackPreview';
 import { Field, Modal, Spinner, SwitchRow } from './ui';
+import './ProjectDialogs.css';
 
 /*
  * New project and Trust this project, shown over Welcome or over the open project. Either way the project behind
