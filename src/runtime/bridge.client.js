@@ -4853,8 +4853,9 @@ style.textContent =
   'html[data-so-editing] a, html[data-so-editing] summary, html[data-so-editing] button { cursor: default; } html[data-so-editing] [contenteditable] { cursor: text; }' +
   ' html:not([data-so-editing]) :is([data-so-unlinked], [data-so-editor-only]):not(#so-editor) { display: none !important; }' +
   ' html[data-so-editing] [data-so-unlinked] { cursor: default; box-shadow: none; opacity: 0.6; outline: 2px dashed #d97706; outline-offset: 2px; }' +
-  // An empty slot, where the author can put content: a labelled drop area, never part of the site.
-  ' html[data-so-editing] [data-so-slot-empty] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; box-sizing: border-box; min-height: 72px; padding: 12px 16px; border: 2px dashed rgba(100, 116, 139, 0.55); border-radius: 8px; background: rgba(148, 163, 184, 0.08); color: #475569; font: 13px/1.35 system-ui, -apple-system, sans-serif; text-align: center; }' +
+  // An empty slot, where the author can put content: a labelled drop area, never part of the site. On a dark or brand
+  // ground it takes the ground's own text color, which the theme keeps readable there.
+  ' html[data-so-editing] [data-so-slot-empty] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; box-sizing: border-box; min-height: 72px; padding: 12px 16px; border: 2px dashed color-mix(in srgb, var(--so-surface-ink, rgb(100, 116, 139)) 55%, transparent); border-radius: 8px; background: rgba(148, 163, 184, 0.08); color: var(--so-surface-ink, #475569); font: 13px/1.35 system-ui, -apple-system, sans-serif; text-align: center; }' +
   ' html[data-so-editing] [data-so-slot-empty] strong { font-weight: 600; } html[data-so-editing] [data-so-slot-empty] span { opacity: 0.8; }' +
   // An empty list of images (a Gallery or Carousel with none chosen yet): the same box, where the images will go, on a
   // light ground of its own so its words read on a dark section too.

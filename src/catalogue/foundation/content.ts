@@ -762,5 +762,67 @@ export const container = managed({
   build: (b) => sectionShell(b, [b.slot('content-slot', 'content', { name: 'Content' })], { inner: { base: { gap: tok('space.lg') } } })
 });
 
+/** One of a Split layout's two columns: a stack of whatever the placement puts in its slot. */
+const splitColumn = { layout: 'stack', gap: tok('space.md'), minWidth: '0px' } as const;
+
+/**
+ * Two named slots side by side, from tablet up; phones show Primary above Secondary. Both columns stay in the grid
+ * while empty, so what is in Secondary keeps its side (base.css drops an empty column on phones, where it would
+ * only add a gap).
+ */
+export const splitLayout = managed({
+  componentId: 'layout.split',
+  name: 'Split layout',
+  description:
+    'A section with two side-by-side areas, Primary and Secondary, in a choice of proportions. Add headings, text, images, buttons and components to each, such as an article beside a newsletter sign-up or callout. Phones show Primary above Secondary.',
+  category: 'layout',
+  tags: ['split', 'side by side', 'aside', 'layout', 'container', 'slots'],
+  icon: 'columns-2',
+  properties: {},
+  slots: {
+    primary: { label: 'Primary', description: 'The first column: on the left, and on top on phones.' },
+    secondary: { label: 'Secondary', description: 'The second column: on the right, and underneath on phones.' }
+  },
+  parts: {
+    root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'paddingInline', 'background', 'color', 'minHeight'] },
+    container: { nodeId: 'inner', label: 'Columns', styleControls: ['maxWidth', 'gap', 'rowGap', 'columnGap', 'align'] },
+    primary: { nodeId: 'split-primary', label: 'Primary column', styleControls: ['gap', 'background', 'color', 'border', 'radius', 'paddingBlock', 'paddingInline'] },
+    secondary: { nodeId: 'split-secondary', label: 'Secondary column', styleControls: ['gap', 'background', 'color', 'border', 'radius', 'paddingBlock', 'paddingInline'] }
+  },
+  variantAxes: {
+    ratio: {
+      label: 'Proportions',
+      default: 'equal',
+      options: {
+        equal: { label: 'Equal (1:1)' },
+        'wide-left': { label: 'Wide left (2:1)', styles: { inner: { base: { gridTemplate: '2fr 1fr' } } } },
+        'wide-right': { label: 'Wide right (1:2)', styles: { inner: { base: { gridTemplate: '1fr 2fr' } } } }
+      }
+    },
+    tone: toneAxis([]),
+    sticky: {
+      label: 'Secondary column',
+      default: 'flow',
+      options: {
+        flow: { label: 'Scrolls with the page' },
+        // From tablet up, below the site's sticky header while a taller Primary column scrolls past.
+        'pin-secondary': { label: 'Stays in view (sticky)', styles: { 'split-secondary': { tablet: STICKY_BELOW_HEADER, desktop: STICKY_BELOW_HEADER } } }
+      }
+    }
+  },
+  // The page tool cannot fill named slots, so a small model is offered this only once the project has it.
+  fullListingOnly: true,
+  build: (b) =>
+    sectionShell(
+      b,
+      [
+        b.el('split-primary', 'div', { name: 'Primary column', styles: splitColumn }, [b.slot('primary-slot', 'primary', { name: 'Primary' })]),
+        b.el('split-secondary', 'div', { name: 'Secondary column', styles: splitColumn }, [b.slot('secondary-slot', 'secondary', { name: 'Secondary' })])
+      ],
+      // Column sizes set for all sizes apply from tablet up; the one column is the phone's.
+      { inner: { base: { layout: 'grid', columns: 1, gridTemplate: '1fr 1fr', align: 'start', rowGap: tok('space.lg'), columnGap: tok('space.2xl') } } }
+    )
+});
+
 // Figures switch to the accent color on the dark tone for contrast.
 stats.variantAxes!.tone.options.inverse.styles!.value = { base: { color: tok('color.accent') } };

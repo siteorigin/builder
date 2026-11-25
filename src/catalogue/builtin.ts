@@ -5,7 +5,7 @@
 import type { AuthoredPack } from './pack';
 import { FOUNDATION } from './foundation/pack';
 import { heroCentered, heroSplit, pageIntro } from './foundation/heroes';
-import { articleHeader, carousel, container, featuresGrid, gallery, mediaSplit, newsList, pageList, stats, stepsMedia, tabsShowcase, textSection } from './foundation/content';
+import { articleHeader, carousel, container, featuresGrid, gallery, mediaSplit, newsList, pageList, splitLayout, stats, stepsMedia, tabsShowcase, textSection } from './foundation/content';
 import { blogFeatured, blogGrid, blogList } from './foundation/blog';
 import { logoStrip, team, testimonials } from './foundation/people';
 import { contact, cta, faq, pricing, pricingToggle } from './foundation/conversion';
@@ -52,6 +52,7 @@ export const FOUNDATION_PACK: AuthoredPack = FOUNDATION.define([
   contactForm,
   siteSearch,
   container,
+  splitLayout,
   // Blocks: compact components that go inside a column, a grid cell or a component's slot.
   featureCard,
   statCard,
