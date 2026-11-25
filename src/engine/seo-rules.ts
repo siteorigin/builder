@@ -117,6 +117,15 @@ const homeNoindex: SeoAuditRule = {
   }
 };
 
+/**
+ * What two documents share when they have the same title or description: the same words in one language (documents in
+ * different languages may share a name), told apart regardless of case and spacing. Empty for a document with none.
+ */
+export function seoDuplicateKey(d: Pick<EffectiveSeo, 'language' | 'title' | 'description'>, field: 'title' | 'description'): string {
+  const value = seoText(d[field]);
+  return value ? `${d.language.toLowerCase()}\n${value.toLowerCase()}` : '';
+}
+
 /** Missing, repeated and too short or too long titles or descriptions, on the documents search engines may list. */
 function textRule(id: string, field: 'title' | 'description'): SeoAuditRule {
   const what = field === 'title' ? 'browser title' : 'description';
@@ -127,13 +136,10 @@ function textRule(id: string, field: 'title' | 'description'): SeoAuditRule {
     check({ state, documents }) {
       const out: SeoFinding[] = [];
       const listed = documents.filter((d) => d.visibility.indexable);
-      // The same words in one language: documents in different languages may share a name.
       const groups = new Map<string, EffectiveSeo[]>();
       for (const d of listed) {
-        const value = seoText(d[field]);
-        if (!value) continue;
-        const key = `${d.language.toLowerCase()}\n${value.toLowerCase()}`;
-        groups.set(key, [...(groups.get(key) ?? []), d]);
+        const key = seoDuplicateKey(d, field);
+        if (key) groups.set(key, [...(groups.get(key) ?? []), d]);
       }
       for (const d of listed) {
         const value = seoText(d[field]);
@@ -150,7 +156,7 @@ function textRule(id: string, field: 'title' | 'description'): SeoAuditRule {
           );
           continue;
         }
-        const peers = groups.get(`${d.language.toLowerCase()}\n${value.toLowerCase()}`)!;
+        const peers = groups.get(seoDuplicateKey(d, field))!;
         if (peers.length > 1) {
           const other = peers.find((p) => p !== d)!;
           out.push(

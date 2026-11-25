@@ -3,7 +3,11 @@
 // underneath, out of reach: no key acts on what is selected there, the toolbar and the Inspector name the view, and
 // leaving it (the rail entry again, another panel, the sidebar shortcut) brings the canvas back as it was. The chosen
 // document survives switching away and back, falls back cleanly when it is deleted, and no window is ever shown.
+// With nothing chosen the view shows the overview (#707): every page and post with where it stands in search results,
+// the ones with something to fix first, kept up to date as the site changes, filtered to problems, each row opening
+// its document.
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MOD, createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
@@ -69,7 +73,8 @@ await eventually(async () => assert.equal(await holder.isVisible(), true, 'the v
 assert.equal(await rail('seo').getAttribute('aria-pressed'), 'true');
 assert.equal(await canvasInert(), true, 'the canvas under it takes no input');
 assert.equal(await view.locator('.seo-title').innerText(), 'SEO');
-assert.match(await view.innerText(), /Choose a page or post/, 'nothing is chosen yet');
+const overview = view.locator('.seo-ov');
+await eventually(async () => assert.equal(await overview.isVisible(), true, 'nothing is chosen yet: the view shows the overview'));
 await eventually(async () => assert.equal(await placeShown.innerText(), 'SEO', 'the toolbar names the view'));
 await eventually(async () => assert.equal(await inspected.innerText(), 'SEO', 'and so does the Inspector'));
 assert.equal(await inspector.locator('input, textarea, select, [contenteditable="true"]').count(), 0, 'nothing in the Inspector changes the page under the view');
@@ -96,6 +101,75 @@ assert.deepEqual(groups[1].rows, [
   { title: 'Spring open studio', address: '/blog/spring-open-studio/', draft: false },
   { title: 'Winter hours', address: '/blog/winter-hours/', draft: true }
 ]);
+
+step('the overview: a row per page and post, drafts marked, the ones with something to fix first');
+const ovRow = (key) => overview.locator(`[data-seo-row="${key}"]`);
+const ovRows = () => overview.locator('tbody .seo-ov-row').evaluateAll((els) => els.map((r) => ({ key: r.dataset.seoRow, level: r.dataset.level, draft: !!r.querySelector('th .badge') })));
+const pageKeys = s0.site.pageOrder.map((id) => `page:${id}`);
+const postKeys = ['entry:posts:en_spring', 'entry:posts:en_winter'];
+let rows = await ovRows();
+assert.deepEqual(rows.map((r) => r.key).sort(), [...pageKeys, ...postKeys].sort(), 'every page and post has a row');
+assert.deepEqual(
+  rows.filter((r) => r.draft).map((r) => r.key),
+  ['entry:posts:en_winter'],
+  'the draft is marked as one'
+);
+const RANK = { warning: 0, note: 1, ok: 2 };
+const sortedByLevel = (rs) => rs.every((r, i) => i === 0 || RANK[rs[i - 1].level] <= RANK[r.level]);
+assert.ok(sortedByLevel(rows), `the rows with something to fix come first: ${JSON.stringify(rows)}`);
+assert.match(await ovRow(`page:${about.id}`).innerText(), /About · Riverside Studio/, 'a row shows its search title, fallbacks included');
+
+step('the overview follows an edit while it shows: About given a sharing image for the site and a description of its own');
+const png = await win.evaluate(() => {
+  const c = document.createElement('canvas');
+  c.width = 1200;
+  c.height = 630;
+  const g = c.getContext('2d');
+  g.fillStyle = '#2f6f8f';
+  g.fillRect(0, 0, 1200, 630);
+  return c.toDataURL('image/png').split(',')[1];
+});
+const sharePath = join(WORK, 'share.png');
+writeFileSync(sharePath, Buffer.from(png, 'base64'));
+const imported = await win.evaluate((p) => window.builder.project.importAssets([p]), sharePath);
+assert.equal(imported.ok, true, `the picture imports: ${imported.message}`);
+assert.notEqual(await ovRow(`page:${about.id}`).getAttribute('data-level'), 'ok', 'About has something to fix to begin with');
+await apply(
+  [
+    { type: 'site.update', socialImage: imported.assetIds[0] },
+    { type: 'page.update', pageId: about.id, description: 'Meet the designers behind Riverside Studio, and how a calm, practical room comes together.' }
+  ],
+  'Share and describe About'
+);
+await eventually(async () => assert.equal(await ovRow(`page:${about.id}`).getAttribute('data-level'), 'ok', 'About has nothing left to fix, without reopening the view'));
+const aboutText = await ovRow(`page:${about.id}`).innerText();
+for (const shown of ['Meet the designers behind Riverside Studio', '90 characters', 'The site’s', 'Can be listed']) assert.ok(aboutText.includes(shown), `About’s row shows “${shown}”: ${aboutText}`);
+assert.match(await ovRow('entry:posts:en_winter').innerText(), /Draft: not on the website/, 'the draft says it is not on the website');
+rows = await ovRows();
+assert.ok(sortedByLevel(rows), 'and the order follows');
+const toFix = rows.filter((r) => r.level !== 'ok').map((r) => r.key);
+assert.ok(toFix.length > 0 && toFix.length < rows.length, `some rows still have something to fix: ${JSON.stringify(rows)}`);
+
+step('Problems only leaves out the rows with nothing to fix; a row opens its document, and Back returns to the list as it was');
+const filter = overview.getByRole('checkbox', { name: 'Problems only' });
+await filter.check();
+await eventually(async () => assert.deepEqual((await ovRows()).map((r) => r.key), toFix, 'only the rows with something to fix'));
+assert.equal(await ovRow(`page:${about.id}`).count(), 0, 'About is left out');
+const opening = toFix[0];
+await ovRow(opening).locator('.seo-ov-open').focus();
+await win.keyboard.press('Enter');
+const back = view.getByRole('button', { name: 'Back to overview' });
+await eventually(async () => assert.equal(await back.isVisible(), true, 'the row opens its document'));
+assert.equal(await view.locator('[data-seo-doc]').getAttribute('data-seo-doc'), opening);
+assert.equal(await panel.locator(`.seo-open[data-seo="${opening}"]`).getAttribute('aria-current'), 'true', 'the list marks it chosen');
+await eventually(async () => assert.equal(await back.evaluate((el) => el === document.activeElement), true, 'focus moves to Back'));
+await win.keyboard.press('Enter');
+await eventually(async () => assert.equal(await overview.isVisible(), true, 'Back returns to the overview'));
+assert.equal(await filter.isChecked(), true, 'still filtered');
+await eventually(async () => assert.equal(await ovRow(opening).locator('.seo-ov-open').evaluate((el) => el === document.activeElement), true, 'with focus on the row it opened'));
+await win.screenshot({ path: join(SHOTS, 'seo-overview.png') });
+await filter.uncheck();
+await eventually(async () => assert.equal((await ovRows()).length, rows.length));
 
 step('no key acts on the section selected under the view');
 const homeNodes = async () => {
@@ -334,11 +408,13 @@ await rail('seo').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
 await apply([{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' }], 'Delete post');
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'SEO', 'the view has nothing chosen'));
-assert.match(await view.innerText(), /Choose a page or post/);
+await eventually(async () => assert.equal(await overview.isVisible(), true, 'it shows the overview'));
+assert.equal(await ovRow('entry:posts:en_winter').count(), 0, 'without the deleted post');
 assert.equal(await panel.locator('.seo-open', { hasText: 'Winter hours' }).count(), 0, 'the list no longer has it');
 await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.equal(await panel.locator('.seo-open', { hasText: 'Winter hours' }).count(), 1, 'Undo brings the post back to the list'));
 assert.equal(await view.locator('.seo-title').innerText(), 'SEO', 'without choosing it again on its own');
+await eventually(async () => assert.equal(await ovRow('entry:posts:en_winter').count(), 1, 'and the overview lists it again'));
 await noWindowShown('the end of the run');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');

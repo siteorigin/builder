@@ -36,7 +36,7 @@ const SEVERITY = { error: 0, warning: 1, info: 2 } as const;
  * The project without the records too damaged to read (a page with no address, an entry that is not one), which
  * Project health reports: one of them never stops the audit of the rest. The project itself when it has none.
  */
-function readable(state: ProjectState): ProjectState {
+export function readableState(state: ProjectState): ProjectState {
   const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object';
   const pages = Object.entries(state.pages ?? {});
   const keptPages = pages.filter(([, p]) => isRecord(p) && typeof p.route === 'string');
@@ -67,7 +67,7 @@ export function runSeoAudit(project: ProjectState, rules: readonly SeoAuditRule[
 
 /** runSeoAudit, with the context its rules read: the readable project, its published documents and its links. */
 export function auditSeo(project: ProjectState, rules: readonly SeoAuditRule[] = []): SeoAudit {
-  const state = readable(project);
+  const state = readableState(project);
   const all = [...BASELINE_SEO_RULES, ...rules];
   const ids = new Set<string>();
   for (const rule of all) {

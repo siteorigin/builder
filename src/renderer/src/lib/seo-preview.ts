@@ -68,7 +68,7 @@ export function withTypedSeo(state: ProjectState, subject: SeoSubject, typed: Ty
 }
 
 /** Which of a document's search settings are its own rather than the fallbacks, as saved. */
-function ownSettings(state: ProjectState, subject: SeoSubject): { title: boolean; description: boolean } {
+export function ownSettings(state: ProjectState, subject: SeoSubject): { title: boolean; description: boolean } {
   const seo = subject.kind === 'page' ? own(state.pages, subject.pageId)?.seo : own(own(state.collections, subject.collectionId)?.entries, subject.entryId)?.seo;
   const s: PageSeo | EntrySeo = seo && typeof seo === 'object' ? seo : {};
   // A page's title of spaces is its own (it is saved and written as it is); a post's is trimmed away when saved.
