@@ -101,7 +101,10 @@ export function resolveRedirects(state: ProjectState): { live: LiveRedirect[]; p
   // A collection's archive pages, by address: places an address can lead to, worked out only when one might. Archive
   // pages never depend on redirects to other addresses, so working them out here never comes back round.
   let archives: Map<string, { route: string; title: string }> | undefined;
+  // Only an address under a collection's own can be one of its archive pages: any other never needs them worked out.
+  const prefixes = Object.values(state.collections ?? {}).flatMap((c) => (typeof c?.settings?.route === 'string' ? [c.settings.route.toLowerCase()] : []));
   const archiveAt = (key: string) => {
+    if (!prefixes.some((p) => key.startsWith(p))) return undefined;
     archives ??= new Map(archivePages(state).map((p) => [p.route.toLowerCase(), { route: p.route, title: state.collections[p.collectionId]?.settings?.name ?? p.route }]));
     return archives.get(key);
   };
@@ -131,8 +134,8 @@ export function resolveRedirects(state: ProjectState): { live: LiveRedirect[]; p
     if (at === key) return { ok: false, kind: 'self' };
     const page = pageAt.get(at);
     const entry = entryAt.get(at);
-    const archive = archiveAt(at);
     // A draft at an archive page's address is kept back, and the archive page is what the website has there.
+    const archive = (page && !draftPage(page)) || (entry && !isDraftEntry(entry.entry)) ? undefined : archiveAt(at);
     if (page && !(archive && draftPage(page))) return { ok: true, to: page.route, title: page.title, via: [], hops: 0, page };
     if (entry && !(archive && isDraftEntry(entry.entry))) return { ok: true, to: entry.route, title: entry.entry.title, via: [], hops: 0, entry };
     if (archive) return { ok: true, to: archive.route, title: archive.title, via: [], hops: 0 };

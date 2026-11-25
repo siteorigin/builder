@@ -333,6 +333,7 @@ describe('managing redirects', () => {
     expect(refusal(s, { type: 'redirect.add', from: '/x/', pageId: 'pg_gone' })).toBe('The page to send visitors to does not exist.');
     expect(refusal(s, { type: 'redirect.add', from: '/x/', entryId: 'en_gone' })).toBe('The post to send visitors to does not exist.');
     expect(refusal(s, { type: 'redirect.add', from: '/b/', to: '/a/' }, { type: 'redirect.add', from: '/c/', to: '/b/' }, { type: 'redirect.update', from: '/a/', to: '/c/' })).toContain('would make a loop of old addresses (/a/ → /c/ → /b/ → /a/)');
+    expect(refusal(run(s, { type: 'redirect.add', from: '/y/', to: '/x/' }), { type: 'redirect.add', from: '/x/', to: '/y/' })).toContain('Sending /x/ there would make a loop of old addresses (/x/ → /y/ → /x/)');
     expect(refusal(run(s, { type: 'redirect.add', from: '/b/', to: '/contact/' }), { type: 'redirect.add', from: '/c/', to: '/b/' }, { type: 'redirect.update', from: '/b/', to: '/c/' })).toContain('(/b/ → /c/ → /b/)');
     const b = run(s, { type: 'redirect.add', from: '/b/', to: '/a/' });
     expect(refusal(b, { type: 'redirect.update', from: '/a/', to: '/b/' })).toBe('Sending /a/ there would make a loop of old addresses (/a/ → /b/ → /a/) that never arrives anywhere. Choose another address.');
@@ -386,7 +387,10 @@ describe('redirects in the project session', () => {
     expect((await s.undo()).ok).toBe(true);
     expect(s.state.site.redirects).toEqual([{ from: '/team/', custom: true, to: '/contact/' }]);
     expect(readFileSync(rules, 'utf8')).toContain('/team/ /contact/ 301\n');
-    expect(JSON.parse(readFileSync(join(dir, VERCEL_CONFIG_FILE), 'utf8')).redirects[0].destination).toBe('/contact/');
+    expect(JSON.parse(readFileSync(join(dir, VERCEL_CONFIG_FILE), 'utf8')).redirects).toEqual([
+      { source: '/team/', destination: '/contact/', statusCode: 301 },
+      { source: '/team', destination: '/contact/', statusCode: 301 }
+    ]);
     await s.undo();
     await s.undo();
     expect(s.state.site.redirects).toEqual([{ from: '/team/', custom: true, to: '/about/' }]);

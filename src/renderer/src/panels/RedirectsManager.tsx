@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
 import type { ProjectState, RedirectHost, SiteRedirect } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { isDraftEntry, siteEntries } from '@shared/collections';
@@ -26,6 +26,8 @@ interface Draft {
   entryId: string;
   to: string;
   revision?: number;
+  /** The redirect as it was when the form opened: one changed or removed since is never written over. */
+  was?: string;
 }
 
 /**
@@ -56,7 +58,11 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<{ field: 'from' | 'to'; message: string } | null>(null);
   const list = redirectRecords(state);
-  const live = new Map(resolveRedirects(state).live.map((r) => [r.from, r]));
+  // Worked out once per project state, never per keystroke in the form.
+  const live = useMemo(() => new Map(resolveRedirects(state).live.map((r) => [r.from, r])), [state]);
+  // What the project is now, for a save that comes back refused after it has moved on.
+  const now = useRef({ state, revision });
+  now.current = { state, revision };
   const pages = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id)).map((id) => state.pages[id]);
   const posts = siteEntries(state);
   const host = redirectHost(state.site);
@@ -73,7 +79,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
   const open = (r: SiteRedirect | null) => {
     setError(null);
     const kind: Kind = !r ? 'page' : r.pageId !== undefined ? 'page' : r.entryId !== undefined ? 'post' : 'path';
-    setDraft({ from: r?.from ?? null, typed: '', kind, pageId: r?.pageId ?? pages[0]?.id ?? '', entryId: r?.entryId ?? posts[0]?.entry.id ?? '', to: r?.to ?? '', revision });
+    setDraft({ from: r?.from ?? null, typed: '', kind, pageId: r?.pageId ?? pages[0]?.id ?? '', entryId: r?.entryId ?? posts[0]?.entry.id ?? '', to: r?.to ?? '', revision, was: r ? JSON.stringify(r) : undefined });
   };
   const save = async () => {
     if (!draft) return;
@@ -87,8 +93,10 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
     // Against the project as it was when the form opened: a redirect removed and made again meanwhile is not changed.
     const done = await applyOps([op], draft.from === null ? 'Add redirect' : 'Change redirect', undefined, draft.revision);
     if (done) close();
-    // Refused, the form stays as typed; saving again checks it against the project as it is now, which the list shows.
-    else setDraft((d) => d && { ...d, revision });
+    // Refused, the form stays as typed, and saving again checks it against the project as it is now, which the list
+    // shows; unless the redirect it changes was itself changed or removed meanwhile: then the form closes on it.
+    else if (draft.from !== null && JSON.stringify(redirectRecords(now.current.state).find((r) => r.from === draft.from)) !== draft.was) close();
+    else setDraft((d) => d && { ...d, revision: now.current.revision });
   };
   const remove = async (from: string) => {
     if (await applyOps([{ type: 'redirect.remove', from }], 'Remove redirect', undefined, revision)) refocus(null);
