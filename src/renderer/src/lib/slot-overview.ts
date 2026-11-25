@@ -4,14 +4,16 @@
  * alone, counting content as the engine's contracts do.
  */
 import type { EditOperation } from '@shared/ops';
-import type { InstanceNode, OwnerRef, ProjectState, SlotDef } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, NodeTree, OwnerRef, ProjectState, SlotDef } from '@shared/types';
 import { slotChildren } from '@shared/types';
 import { newId } from '@shared/ids';
 import { definitionRole } from '@engine/insert-role';
 import { slotAccepts, slotDeclProblem, slotFill } from '@engine/slots';
-import { findParent } from '@engine/tree';
+import { shownSlots } from '@engine/theme-updates';
+import { childLists, findParent } from '@engine/tree';
+import { slotsRendered } from '@generator/card-links';
 import { treeFor } from './model';
-import { placedSlots, slotLimitWords } from './slot-contract';
+import { slotLimitWords } from './slot-contract';
 
 export interface SlotOverview {
   /** The name the component declares it under. */
@@ -24,13 +26,21 @@ export interface SlotOverview {
   children: string[];
   /** How many items it shows, as its limit counts them. */
   count: number;
-  /** Why nothing more can be added to it (its contract, or a design that never shows it), or null. */
+  /** Why nothing more can be added to it (its contract, or a placement that does not show it), or null. */
   closed: string | null;
-  /** What is wrong with a declaration a hand edit damaged (it then has no contract to show or fill), or null. */
+  /** What a hand edit damaged, in a sentence: its declaration (it then has no contract), or what it holds; or null. */
   damaged: string | null;
+  /** Why what it holds can't be taken out from here (a hand edit lists some of it elsewhere too), or null. */
+  shared: string | null;
 }
 
 const items = (n: number) => (n === 1 ? '1 item' : `${n} items`);
+
+/** What a change calls a slot: its label, or its own name when a hand edit left a label that is no text. */
+export function slotTitle(def: ComponentDefinition | undefined, slot: string): string {
+  const label: unknown = def?.slots?.[slot]?.label;
+  return typeof label === 'string' && label.trim() ? label : slot;
+}
 
 /** What a slot's contract says, in the words Edit everywhere's own Slots section uses. */
 const contractWords = (state: ProjectState, d: SlotDef): string => (d.max === 0 ? slotLimitWords(d) : `Takes ${slotAccepts(d, state)} · ${slotLimitWords(d)}`);
@@ -41,21 +51,44 @@ function closedWords(state: ProjectState, d: SlotDef, count: number): string | n
   return null;
 }
 
+const SHARED = 'Some of what this slot holds is listed somewhere else too, so it can’t be taken out here. Undo the change that did that.';
+
 /** The slots the component placed as `node` declares, in the order it declares them; none when it has none. */
 export function slotOverviews(state: ProjectState, owner: OwnerRef, node: InstanceNode): SlotOverview[] {
   const def = Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
   const tree = treeFor(state, owner);
   if (!def || !tree) return [];
-  // A design shows a slot only where it places it; code renders its slots as it likes.
-  const shown = def.kind === 'managed' ? placedSlots(def) : null;
+  const shown = slotsShownBy(state, def, node, tree);
   return Object.entries(def.slots ?? {}).map(([slot, decl]) => {
     const children = slotChildren(node, slot).filter((id) => Object.hasOwn(tree.nodes, id));
-    const damaged = slotDeclProblem(decl);
-    if (damaged) return { slot, label: slot, description: '', contract: '', children, count: children.length, closed: null, damaged };
+    const shared = heldAlone(tree, children) ? null : SHARED;
+    const problem = slotDeclProblem(decl);
+    if (problem) return { slot, label: slot, description: '', contract: '', children, count: children.length, closed: null, damaged: `The slot “${slot}” ${problem}.`, shared };
     const count = slotFill(state, tree, children, decl).count;
-    const closed = closedWords(state, decl, count) ?? (shown && !shown.has(slot) ? 'This design doesn’t show this slot, so nothing added to it would appear.' : null);
-    return { slot, label: decl.label, description: decl.description ?? '', contract: contractWords(state, decl), children, count, closed, damaged: null };
+    // A value that is no list shows nothing, and adding to it would write over it.
+    const damaged = node.slots && Object.hasOwn(node.slots, slot) && !Array.isArray(node.slots[slot]) ? `What “${decl.label}” holds is damaged.` : null;
+    const closed = closedWords(state, decl, count) ?? (shown && !shown.has(slot) ? 'This component doesn’t show this slot here, so nothing added to it would appear.' : null);
+    return { slot, label: decl.label, description: decl.description ?? '', contract: contractWords(state, decl), children, count, closed, damaged, shared };
   });
+}
+
+/**
+ * The slots this placement shows, so that what is added to them appears: not one its design leaves out, keeps in the
+ * fallback of a slot the placement fills or in a list with nothing in it, or hands to a component placed in it that
+ * renders no such slot. Null for code, which renders its slots as it likes.
+ */
+function slotsShownBy(state: ProjectState, def: ComponentDefinition, node: InstanceNode, tree: NodeTree): Set<string> | null {
+  if (def.kind !== 'managed' || !def.tree) return null;
+  const rendered = slotsRendered(state, def);
+  return new Set([...shownSlots(def, node, tree)].filter((slot) => rendered.has(slot)));
+}
+
+/** Whether each of `ids` is listed in one place only. A hand edit can list a node twice, and deleting or moving it
+ *  from a slot would then take it from wherever else it shows. */
+function heldAlone(tree: NodeTree, ids: readonly string[]): boolean {
+  if (!ids.length) return true;
+  const lists = [tree.rootIds, ...Object.values(tree.nodes).flatMap((n) => childLists(n).map((l) => l.ids))];
+  return ids.every((id) => lists.filter((l) => l.includes(id)).length === 1);
 }
 
 /** "Empty", "1 item", "3 items". A slot that can show any number says so. */
@@ -107,9 +140,12 @@ export function moveOutOps(state: ProjectState, owner: OwnerRef, nodeId: string,
   return ops;
 }
 
-/** What a placement's slot holds, in order: the nodes the project has. */
+/** What a placement's slot holds, in order, to be taken out: the nodes the project has, none when any of them is
+ *  listed somewhere else too. */
 function slotContent(state: ProjectState, owner: OwnerRef, nodeId: string, slot: string): string[] {
   const tree = treeFor(state, owner);
   const node = tree && Object.hasOwn(tree.nodes, nodeId) ? tree.nodes[nodeId] : undefined;
-  return tree && node?.kind === 'instance' ? slotChildren(node, slot).filter((id) => Object.hasOwn(tree.nodes, id)) : [];
+  if (!tree || node?.kind !== 'instance') return [];
+  const held = slotChildren(node, slot).filter((id) => Object.hasOwn(tree.nodes, id));
+  return heldAlone(tree, held) ? held : [];
 }

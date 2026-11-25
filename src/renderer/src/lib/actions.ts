@@ -23,7 +23,7 @@ import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
 import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, slotInsertAt, whereFor, whereText, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { SLOT_NO_PLACE } from './slot-contract';
-import { clearSlotOps, moveOutOps } from './slot-overview';
+import { clearSlotOps, moveOutOps, slotTitle } from './slot-overview';
 import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refExists, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
@@ -688,7 +688,7 @@ export async function insertHere(spec: InsertSpec, name: string, role: InsertRol
       : owner.kind === 'shell'
         ? now.pageId === from.pageId && now.templateMode?.collectionId === from.templateMode?.collectionId
         : now.pageId === owner.id && !now.templateMode;
-  if (id && here && now.mode === 'edit' && !now.definitionMode) {
+  if (id && here && now.mode === 'edit' && !now.definitionMode && !activeWorkspace(now)) {
     const ref: ElementRef = { owner, instancePath: [], nodeId: id };
     markArrival(ref);
     setState({ selection: ref, rightTab: 'inspect' });
@@ -709,7 +709,7 @@ export async function emptySlot(ref: ElementRef, slot: string, how: 'move' | 'cl
   if (!ops.length) return;
   const node = treeFor(snap.state, ref.owner)?.nodes[ref.nodeId];
   const def = node?.kind === 'instance' ? snap.state.components[node.definitionId] : undefined;
-  const label = def?.slots?.[slot]?.label || slot;
+  const label = slotTitle(def, slot);
   const what = subjectWords(snap.state, ref);
   const r = await commitOps(ops, how === 'move' ? `Move ${label} content out of ${what}` : `Clear ${label} of ${what}`, undefined, snap.revision);
   if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;

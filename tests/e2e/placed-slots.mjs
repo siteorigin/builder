@@ -36,7 +36,8 @@ const [{ definitionId: cardDef }] = await apply(
         quiet: { label: 'Quiet', max: 0 }
       },
       nodes: [
-        { kind: 'element', id: 'root', tag: 'article', children: ['media', 'actions', 'body', 'quiet'] },
+        // Placed in another order than they are declared, so only the declaration gives the order listed.
+        { kind: 'element', id: 'root', tag: 'article', children: ['quiet', 'body', 'media', 'actions'] },
         { kind: 'slot', id: 'media', slot: 'media' },
         { kind: 'slot', id: 'actions', slot: 'actions' },
         { kind: 'slot', id: 'body', slot: 'body' },
@@ -76,6 +77,20 @@ const selectCard = async () => {
   await inspector.locator('[data-instance-slot="content"]').getByRole('button', { name: 'Select Offer card' }).click();
   await eventually(async () => assert.equal(await name.innerText(), 'Offer card'));
 };
+/** Wait for a change to have saved: `check` reads the page and its revision from one snapshot. */
+const saved = (before, check) =>
+  eventually(async () => {
+    const now = await snapshot();
+    check(now.state.pages[pageId].nodes);
+    assert.equal(now.revision, before + 1, 'one change');
+  }, 15000);
+/** The editor has `nodeId` selected, with focus on its name in the Inspector. */
+const arrived = async (nodeId) => {
+  await openLayers();
+  await eventually(async () => assert.equal(await layer(nodeId).getAttribute('aria-selected'), 'true', `${nodeId} is selected`), 15000);
+  await focused(name, 'focus is on its name');
+};
+const focused = (locator, what) => eventually(async () => assert.equal(await locator.evaluate((el) => el === document.activeElement), true, what), 15000);
 const undo = async () => {
   const at = (await snapshot()).revision;
   await win.locator('.canvas').focus();
@@ -84,6 +99,9 @@ const undo = async () => {
 };
 
 step('the Section lists its one slot, and what it holds leads to the card');
+await openLayers();
+await layer(section).click();
+await eventually(async () => assert.match(await inspector.locator('.section-head', { hasText: 'Slots' }).innerText(), /1 slot$/));
 await selectCard();
 
 step('the card lists its slots in the order it declares them, with what each takes and holds');
@@ -92,73 +110,102 @@ assert.deepEqual(await inspector.locator('[data-slot-contract]').allInnerTexts()
 assert.deepEqual(await inspector.locator('[data-slot-count]').allInnerTexts(), ['Empty', 'Empty', 'Empty', 'Empty']);
 assert.match(await row('media').innerText(), /A picture above the words\./);
 assert.equal(await addTo('Quiet').isDisabled(), true, 'a slot that takes nothing has no Add');
-assert.match(await row('quiet').innerText(), /This slot takes no content\./);
+const describedBy = async (button) => win.locator(`[id="${await button.getAttribute('aria-describedby')}"]`).innerText();
+assert.equal(await describedBy(addTo('Quiet')), 'This slot takes no content.');
 assert.equal(await inspector.getByRole('button', { name: 'Clear Actions', exact: true }).count(), 0, 'nothing to clear while empty');
 
 step('Add on Actions offers only what Actions takes, and inserts into it alone, in one change');
 await addTo('Actions').click();
 await list.waitFor();
+await focused(list.getByRole('combobox'), 'the cursor is in its search');
 assert.equal(await list.getAttribute('aria-label'), 'Add to Actions');
 assert.deepEqual((await offered()).sort(), ['Bulleted list', 'Button', 'Heading', 'Numbered list', 'Paragraph']);
 await win.keyboard.press('Escape');
 await list.waitFor({ state: 'detached' });
-await eventually(async () => assert.equal(await addTo('Actions').evaluate((el) => el === document.activeElement), true, 'Escape hands focus back to Add'));
+await focused(addTo('Actions'), 'Escape hands focus back to Add');
+/** Add the first thing found by `words` from the open list. */
+const choose = async (words) => {
+  await focused(list.getByRole('combobox'), 'the cursor is in its search');
+  await win.keyboard.type(words);
+  await win.keyboard.press('Enter');
+};
 await addTo('Actions').click();
 await list.waitFor();
-const before = (await snapshot()).revision;
-await win.keyboard.type('button');
-await win.keyboard.press('Enter');
-await eventually(async () => assert.equal((await held('actions')).length, 1));
-assert.equal((await snapshot()).revision, before + 1, 'one change');
+let at = (await snapshot()).revision;
+await choose('button');
+await saved(at, (nodes) => assert.equal(nodes[card].slots?.actions?.length, 1));
 const [button] = await held('actions');
 assert.equal((await home()).nodes[button].kind, 'link');
-assert.deepEqual(Object.keys(await slotsOf(card)), ['actions'], 'no other slot is touched');
+assert.deepEqual(await slotsOf(card), { actions: [button] }, 'no other slot is touched');
 await list.waitFor({ state: 'detached' });
-// What was added is selected, with focus on its name.
-await eventually(async () => assert.equal(await name.evaluate((el) => el === document.activeElement), true, 'focus follows to the new button'));
+await arrived(button);
 
 step('at its limit, Add is off and says why');
 await selectCard();
 await addTo('Actions').click();
 await list.waitFor();
-await win.keyboard.type('paragraph');
-await win.keyboard.press('Enter');
-await eventually(async () => assert.equal((await held('actions')).length, 2));
+at = (await snapshot()).revision;
+await choose('paragraph');
+await saved(at, (nodes) => assert.equal(nodes[card].slots?.actions?.length, 2));
 const [, words] = await held('actions');
 // The add selects the paragraph as its reply arrives: gone back only after that.
-await eventually(async () => assert.equal(await name.evaluate((el) => el === document.activeElement && el.textContent !== 'Offer card'), true, 'the paragraph is selected'));
+await arrived(words);
 await selectCard();
 await eventually(async () => assert.equal(await row('actions').locator('[data-slot-count]').innerText(), '2 items'));
 assert.equal(await addTo('Actions').isDisabled(), true);
-const why = await addTo('Actions').getAttribute('aria-describedby');
-assert.equal(await win.locator(`[id="${why}"]`).innerText(), 'Full: it holds at most 2 items. Take something out to add more.');
+assert.equal(await describedBy(addTo('Actions')), 'Full: it holds at most 2 items. Take something out to add more.');
 await win.screenshot({ path: join(SHOTS, 'placed-slots.png') });
 
-step('an open list goes when the project changes under it, adding nothing');
+step('an open list goes when the project changes under it, adding nothing, and focus returns to its Add');
 await addTo('Body').click();
 await list.waitFor();
+await focused(list.getByRole('combobox'), 'the cursor is in its search');
 await apply([{ type: 'node.rename', owner: page, nodeId: plain, name: 'Aside' }], 'Rename the note');
 await list.waitFor({ state: 'detached' });
+await focused(addTo('Body'), 'focus returns to Add');
 assert.deepEqual(await held('body'), []);
+
+step('when the change under an open list turns its Add off, focus goes to the selection’s name');
+await addTo('Media').click();
+await list.waitFor();
+await focused(list.getByRole('combobox'), 'the cursor is in its search');
+const [{ nodeId: picture }] = await apply([{ type: 'node.insert', owner: page, parentId: card, slot: 'media', primitive: 'image' }], 'Fill Media');
+await list.waitFor({ state: 'detached' });
+await eventually(async () => assert.equal(await addTo('Media').isDisabled(), true));
+await focused(name, 'focus is not lost');
+
+step('a second slot takes what is added to it, beside the full one, which is left as it was');
+await addTo('Body').click();
+await list.waitFor();
+at = (await snapshot()).revision;
+await choose('heading');
+await saved(at, (nodes) => assert.equal(nodes[card].slots?.body?.length, 1));
+const [heading] = await held('body');
+assert.equal((await home()).nodes[heading].kind, 'text');
+assert.deepEqual(await slotsOf(card), { actions: [button, words], media: [picture], body: [heading] });
+await arrived(heading);
 
 step('what a slot holds is a click away, each named as Layers names it');
 const contents = row('actions').getByRole('list', { name: 'In Actions' }).getByRole('button');
+await selectCard();
 assert.deepEqual(await contents.allInnerTexts(), ['Button · Button', 'Text · Write something here.']);
 await contents.nth(1).click();
-await openLayers();
-await eventually(async () => assert.equal(await layer(words).getAttribute('aria-selected'), 'true', 'the paragraph is selected'), 15000);
-await eventually(async () => assert.equal(await name.evaluate((el) => el === document.activeElement), true, 'with focus on its name'));
+await arrived(words);
+await selectCard();
+await contents.nth(0).press('Enter');
+await arrived(button);
 
 step('Move out puts what Actions holds just after the card, in one Undo');
 await selectCard();
 const filled = await home();
-let at = (await snapshot()).revision;
+at = (await snapshot()).revision;
 await inspector.getByRole('button', { name: 'Move Actions content out', exact: true }).click();
-await eventually(async () => assert.deepEqual((await slotsOf(section)).content, [card, button, words, plain]));
-assert.deepEqual(await held('actions'), []);
-assert.equal((await snapshot()).revision, at + 1, 'one change');
-assert.equal(await name.innerText(), 'Offer card', 'the card stays selected');
+await saved(at, (nodes) => {
+  assert.deepEqual(nodes[section].slots.content, [card, button, words, plain]);
+  assert.deepEqual(nodes[card].slots, { actions: [], media: [picture], body: [heading] });
+});
 await eventually(async () => assert.equal(await row('actions').locator('[data-slot-count]').innerText(), 'Empty'));
+assert.equal(await name.innerText(), 'Offer card', 'the card stays selected');
 await undo();
 await eventually(async () => assert.deepEqual((await home()).nodes, filled.nodes, 'one Undo puts it all back'));
 
@@ -166,10 +213,11 @@ step('Clear deletes what Actions holds, in one Undo');
 await selectCard();
 at = (await snapshot()).revision;
 await inspector.getByRole('button', { name: 'Clear Actions', exact: true }).click();
-await eventually(async () => assert.deepEqual(await held('actions'), []));
-assert.equal((await snapshot()).revision, at + 1, 'one change');
-assert.equal(button in (await home()).nodes || words in (await home()).nodes, false, 'both are gone');
-assert.deepEqual((await slotsOf(section)).content, [card, plain]);
+await saved(at, (nodes) => {
+  assert.deepEqual(nodes[card].slots, { actions: [], media: [picture], body: [heading] });
+  assert.equal(button in nodes || words in nodes, false, 'both are gone');
+  assert.deepEqual(nodes[section].slots.content, [card, plain]);
+});
 await undo();
 await eventually(async () => assert.deepEqual((await home()).nodes, filled.nodes, 'one Undo puts it all back'));
 

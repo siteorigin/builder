@@ -175,14 +175,29 @@ function themeItems(state: ProjectState, role: InsertRole | null, only?: readonl
   });
 }
 
+/** The components the slot at `at` names, by definition or contract ID. */
+function namedIds(state: ProjectState, at: InsertAt): string[] {
+  const parent = at.parentId ? treeFor(state, at.owner)?.nodes[at.parentId] : undefined;
+  return parent?.kind === 'instance' && at.slot !== undefined ? (slotDecl(state, parent, at.slot)?.componentIds ?? []) : [];
+}
+
+/** The designs the slot at `at` names by definition ID that neither the project's own components nor the theme's list
+ *  holds: one kept from a theme the site no longer uses, which goes in as the project has it. */
+function keptDesignItems(state: ProjectState, at: InsertAt): QuickItem[] {
+  const theme = getTheme(state.site.themeId).components;
+  return namedIds(state, at).flatMap((id) => {
+    const d = own(state.components, id);
+    return d && d.owner === 'theme' && d.category !== 'shell' && !theme.some((c) => c.id === id) ? [{ ...componentItem(d), group: 'From the theme' }] : [];
+  });
+}
+
 /**
  * The components a slot at `at` names (a Bento grid's cards): offered inside it however they are otherwise inserted,
  * a theme's by its contract (named by contract, or by the ID of the theme's design of it) and the project's own as
  * they are, so a slot that takes only those never offers nothing.
  */
 function namedItems(state: ProjectState, at: InsertAt, dev: boolean): QuickItem[] {
-  const parent = at.parentId ? treeFor(state, at.owner)?.nodes[at.parentId] : undefined;
-  const ids = parent?.kind === 'instance' && at.slot !== undefined ? (slotDecl(state, parent, at.slot)?.componentIds ?? []) : [];
+  const ids = namedIds(state, at);
   if (!ids.length) return [];
   const theme = getTheme(state.site.themeId).components;
   const contracts = ids.map((id) => {
@@ -213,7 +228,7 @@ export function offeredAt(state: ProjectState, at: InsertAt, role: InsertRole, d
  * media sections, which a canvas + inside a container leaves among the page's sections.
  */
 export function slotItems(state: ProjectState, at: InsertAt, dev = false): QuickItem[] {
-  const all = [...basicItems(), ...projectInsertDefinitions(state, dev).map(componentItem), ...themeItems(state, null)];
+  const all = [...basicItems(), ...projectInsertDefinitions(state, dev).map(componentItem), ...keptDesignItems(state, at), ...themeItems(state, null)];
   // The contract alone rules most out, before anything is tried on a copy of the project.
   return fitting(state, at, 'element', all.filter((it) => !slotRefuses(state, at, it.spec)));
 }

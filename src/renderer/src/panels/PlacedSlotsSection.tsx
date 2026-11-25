@@ -63,14 +63,17 @@ function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props,
   // A second choice from a list already acted on adds nothing.
   const choosing = useRef(false);
 
-  /** Put the list away; `back` hands focus back to its button. */
+  /** Put the list away; `back` hands focus back to its button, or to the selection's name once the button is off. */
   const close = (back: boolean) => {
     const trigger = adding?.trigger;
     setAdding(null);
     if (!back) return;
     // Only focus the list left behind: anything that took focus meanwhile keeps it.
     requestAnimationFrame(() => {
-      if ((!document.activeElement || document.activeElement === document.body) && trigger?.isConnected) trigger.focus({ preventScroll: true });
+      if (document.activeElement && document.activeElement !== document.body) return;
+      // The slot filled or the project locked: Add can't take focus then.
+      const to = trigger instanceof HTMLButtonElement && trigger.isConnected && !trigger.disabled ? trigger : document.querySelector<HTMLElement>('#dock-panel-inspect .insp-name h3');
+      to?.focus({ preventScroll: true });
     });
   };
   // An open list goes with what it was opened on: an Undo, the AI, another selection or Preview.
@@ -110,26 +113,30 @@ function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props,
 
   return (
     <>
-      {locked && <p className="insp-note muted">{locked}</p>}
+      {locked && (
+        <p className="insp-note muted" id={`${id}-locked`}>
+          {locked}
+        </p>
+      )}
       {rows.map((row, i) => {
-        const addWhy = row.damaged ? 'Fix or remove this slot’s declaration before adding to it.' : row.closed;
-        const addNote = !locked && addWhy ? `${id}-add-${i}` : undefined;
-        const moveNote = !locked && moveWhy && row.children.length ? `${id}-move-${i}` : undefined;
+        const addWhy = row.damaged ? 'Undo the change that damaged this slot before adding to it.' : row.closed;
+        const takeOutWhy = row.shared ?? moveWhy;
+        // What each control is off for: the lock said once above, else the slot's own reason below it.
+        const lockNote = locked ? `${id}-locked` : undefined;
+        const addNote = lockNote ?? (addWhy ? `${id}-add-${i}` : undefined);
+        const takeOutNote = !locked && takeOutWhy && row.children.length ? `${id}-take-${i}` : undefined;
         return (
           <div key={row.slot} className="contract-group placed-slot" role="group" aria-label={row.label} data-instance-slot={row.slot}>
             <div className="contract-row">
               <div className="contract-row-main">
                 <strong className="slot-name">{row.label}</strong>
                 {row.description && <span className="faint contract-meta">{row.description}</span>}
-                {row.damaged ? (
-                  <span className="field-error">
-                    The slot “{row.slot}” {row.damaged}.
-                  </span>
-                ) : (
+                {row.contract && (
                   <span className="faint contract-meta" data-slot-contract>
                     {row.contract}
                   </span>
                 )}
+                {row.damaged && <span className="field-error">{row.damaged}</span>}
                 <span className="faint contract-meta" data-slot-count>
                   {slotCountWords(row.count)}
                 </span>
@@ -138,7 +145,7 @@ function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props,
                 <Plus aria-hidden="true" /> Add…
               </button>
             </div>
-            {addNote && (
+            {!locked && addWhy && (
               <p className="insp-note muted" id={addNote} data-slot-why>
                 {addWhy}
               </p>
@@ -160,16 +167,16 @@ function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props,
                   })}
                 </ul>
                 <div className="contract-actions">
-                  <button type="button" className="btn btn-sm" disabled={!!(locked ?? moveWhy)} aria-label={`Move ${row.label} content out`} aria-describedby={moveNote} title={`Move what it holds to just after ${nodeLabel(state, owner, selection.nodeId)}`} onClick={() => void emptySlot(selection, row.slot, 'move')}>
+                  <button type="button" className="btn btn-sm" disabled={!!(locked ?? takeOutWhy)} aria-label={`Move ${row.label} content out`} aria-describedby={lockNote ?? takeOutNote} title={`Move what it holds to just after ${nodeLabel(state, owner, selection.nodeId)}`} onClick={() => void emptySlot(selection, row.slot, 'move')}>
                     <ArrowUpFromLine aria-hidden="true" /> Move out
                   </button>
-                  <button type="button" className="btn btn-sm" disabled={!!locked} aria-label={`Clear ${row.label}`} title="Delete what it holds" onClick={() => void emptySlot(selection, row.slot, 'clear')}>
+                  <button type="button" className="btn btn-sm" disabled={!!(locked ?? row.shared)} aria-label={`Clear ${row.label}`} aria-describedby={lockNote ?? (row.shared ? takeOutNote : undefined)} title="Delete what it holds" onClick={() => void emptySlot(selection, row.slot, 'clear')}>
                     <Trash2 aria-hidden="true" /> Clear
                   </button>
                 </div>
-                {moveNote && (
-                  <p className="insp-note muted" id={moveNote}>
-                    {moveWhy}
+                {takeOutNote && (
+                  <p className="insp-note muted" id={takeOutNote}>
+                    {takeOutWhy}
                   </p>
                 )}
               </>

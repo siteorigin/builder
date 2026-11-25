@@ -6,7 +6,7 @@ import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { slotItems } from '../../src/renderer/src/lib/inline-insert';
 import { insertOps } from '../../src/renderer/src/lib/insert-at';
-import { clearSlotOps, moveOutOps, moveOutRefusal, slotCountWords, slotOverviews } from '../../src/renderer/src/lib/slot-overview';
+import { clearSlotOps, moveOutOps, moveOutRefusal, slotCountWords, slotOverviews, slotTitle } from '../../src/renderer/src/lib/slot-overview';
 
 /** A placed component's slots as the Inspector lists them (#654), what its Add offers, and how content leaves them. */
 
@@ -35,7 +35,8 @@ function offerPage() {
         quiet: { label: 'Quiet', max: 0 }
       },
       nodes: [
-        { kind: 'element', id: 'root', tag: 'article', children: ['media', 'body', 'actions', 'quiet'] },
+        // Placed in another order than they are declared, so only the declaration gives the order listed.
+        { kind: 'element', id: 'root', tag: 'article', children: ['quiet', 'body', 'media', 'actions'] },
         { kind: 'slot', id: 'media', slot: 'media' },
         { kind: 'slot', id: 'body', slot: 'body' },
         { kind: 'slot', id: 'actions', slot: 'actions' },
@@ -80,16 +81,21 @@ describe('the slots of a placed component', () => {
     expect(actions.closed).toBe('Full: it holds at most 2 items. Take something out to add more.');
     expect(media.closed).toBe('Full: it holds at most 1 item. Take something out to add more.');
     expect([body.count, body.closed]).toEqual([0, null]);
+    // Content over a limit tightened by hand is still counted, and the slot stays closed.
+    const over = structuredClone(p.state());
+    over.components[p.definitionId].slots!.actions.max = 1;
+    expect(slotOverviews(over, p.owner, home(over).nodes[p.card] as InstanceNode)[2]).toMatchObject({ count: 2, closed: 'Full: it holds at most 1 item. Take something out to add more.' });
   });
 
   it('a slot naming components says their names, and one restricted to nothing is closed', () => {
     const p = offerPage();
+    const [{ definitionId: band }] = p.run([{ type: 'component.upsert', name: 'Wide band', insertAs: 'section', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'section' }] }]);
     p.run([
-      { type: 'component.setSlot', definitionId: p.definitionId, slot: 'body', label: 'Body', componentIds: ['media.gallery'] },
+      { type: 'component.setSlot', definitionId: p.definitionId, slot: 'body', label: 'Body', componentIds: [band as string] },
       { type: 'component.setSlot', definitionId: p.definitionId, slot: 'media', label: 'Media', primitives: [], categories: [] }
     ]);
     const [media, body] = p.rows();
-    expect(body.contract).toMatch(/^Takes “.+” · No limit$/);
+    expect(body.contract).toBe('Takes “Wide band” · No limit');
     expect(body.closed).toBeNull();
     expect(media.contract).toBe('Takes nothing · At most 1');
     expect(media.closed).toBe('This slot takes no content.');
@@ -99,8 +105,22 @@ describe('the slots of a placed component', () => {
     const p = offerPage();
     const state = structuredClone(p.state());
     (state.components[p.definitionId].slots!.body as { label: unknown }).label = '';
-    const [, body] = slotOverviews(state, p.owner, home(state).nodes[p.card] as InstanceNode);
-    expect(body).toMatchObject({ slot: 'body', label: 'body', contract: '', damaged: 'has no label' });
+    (state.components[p.definitionId].slots!.actions as { max: unknown }).max = 'two';
+    const [, body, actions] = slotOverviews(state, p.owner, home(state).nodes[p.card] as InstanceNode);
+    expect(body).toMatchObject({ slot: 'body', label: 'body', contract: '', damaged: 'The slot “body” has no label.' });
+    expect(actions).toMatchObject({ slot: 'actions', contract: '', damaged: 'The slot “actions” has a limit that is not a whole number from 0 to 1000.' });
+    // Changes name a slot by its label, or by its own name when the label is not text.
+    (state.components[p.definitionId].slots!.body as { label: unknown }).label = { toString: null };
+    expect([slotTitle(state.components[p.definitionId], 'body'), slotTitle(state.components[p.definitionId], 'media')]).toEqual(['body', 'Media']);
+  });
+
+  it('a slot whose stored content is no list says so, since adding to it would write over it', () => {
+    const p = offerPage();
+    const state = structuredClone(p.state());
+    (home(state).nodes[p.card] as InstanceNode).slots = { body: 'n_lost' as unknown as string[] };
+    const rows = slotOverviews(state, p.owner, home(state).nodes[p.card] as InstanceNode);
+    expect(rows.map((r) => r.damaged)).toEqual([null, 'What “Body” holds is damaged.', null, null]);
+    expect(rows[1].contract).toBe('Takes anything · No limit');
   });
 
   it('are none for a component that declares none', () => {
@@ -121,10 +141,12 @@ describe('what a slot’s Add offers', () => {
 
   it('for a slot that takes anything: the basic elements, the project’s components and the theme’s sections', () => {
     const p = offerPage();
-    p.run([{ type: 'component.upsert', name: 'Wide band', insertAs: 'section', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'section' }] }]);
-    const band = Object.values(p.state().components).find((d) => d.name === 'Wide band')!.id;
+    const [{ definitionId: band }, { definitionId: tag }] = p.run([
+      { type: 'component.upsert', name: 'Wide band', insertAs: 'section', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'section' }] },
+      { type: 'component.upsert', name: 'Small tag', insertAs: 'element', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'div' }] }
+    ]);
     const keys = offered(p, 'body');
-    expect(keys).toEqual(expect.arrayContaining(['e:paragraph', 'e:button', 'e:bento', `c:${band}`, 's:media.gallery', 's:hero.centered']));
+    expect(keys).toEqual(expect.arrayContaining(['e:paragraph', 'e:button', 'e:bento', `c:${band}`, `c:${tag}`, 's:media.gallery', 's:hero.centered']));
   });
 
   it('for a slot that takes some kinds of element: only those', () => {
@@ -138,6 +160,32 @@ describe('what a slot’s Add offers', () => {
     const [{ definitionId: band }] = p.run([{ type: 'component.upsert', name: 'Wide band', insertAs: 'section', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'section' }] }]);
     p.run([{ type: 'component.setSlot', definitionId: p.definitionId, slot: 'body', label: 'Body', categories: ['media'], componentIds: [band as string] }]);
     expect(offered(p, 'body').sort()).toEqual([`c:${band}`, 's:media.carousel', 's:media.gallery', 's:media.video']);
+  });
+
+  it('leaves out what the place would refuse though the contract takes it: a Button once the card sits inside a link', () => {
+    const p = offerPage();
+    expect(offered(p, 'actions')).toContain('e:button');
+    const [{ nodeId: stack }] = p.run([{ type: 'node.insert', owner: p.owner, parentId: p.section, slot: 'content', primitive: 'stack' }]);
+    p.run([{ type: 'node.move', owner: p.owner, nodeId: p.card, parentId: stack as string, index: 0 }]);
+    const state = structuredClone(p.state());
+    (home(state).nodes[stack as string] as ElementNode).link = { type: 'url', target: 'https://example.com' };
+    const keys = slotItems(state, { owner: p.owner, parentId: p.card, slot: 'actions' }).map((i) => i.key);
+    expect(keys).toContain('e:paragraph');
+    expect(keys).not.toContain('e:button');
+  });
+
+  it('offers a design a slot names that the site kept from another theme, and puts that very design in', () => {
+    const p = offerPage();
+    const state = structuredClone(p.state());
+    // As a theme change leaves a design some project component builds on: installed, and no longer in the catalogue.
+    const section = state.components[(home(state).nodes[p.section] as InstanceNode).definitionId];
+    state.components['old.layout.section'] = { ...structuredClone(section), id: 'old.layout.section', name: 'Old section' };
+    state.components[p.definitionId].slots!.body = { label: 'Body', componentIds: ['old.layout.section'] };
+    const at = { owner: p.owner, parentId: p.card, slot: 'body' };
+    const items = slotItems(state, at);
+    expect(items.map((i) => [i.key, i.group])).toEqual([['c:old.layout.section', 'From the theme']]);
+    const out = applyOperations(state, insertOps(at, items[0].spec, 'element'));
+    expect((home(out.state).nodes[out.results[0].nodeId as string] as InstanceNode).definitionId).toBe('old.layout.section');
   });
 
   it('what is chosen goes into that slot and no other', () => {
@@ -156,10 +204,65 @@ describe('what a slot’s Add offers', () => {
     expect(offered(p, 'media')).toEqual([]);
   });
 
+  const UNSHOWN = 'This component doesn’t show this slot here, so nothing added to it would appear.';
+
   it('a slot the design no longer shows is closed, and says why', () => {
     const p = offerPage();
-    p.run([{ type: 'component.setSlot', definitionId: p.definitionId, slot: 'extra', label: 'Extra' }]);
-    expect(p.rows().at(-1)).toMatchObject({ slot: 'extra', count: 0, closed: 'This design doesn’t show this slot, so nothing added to it would appear.' });
+    expect(p.rows()[1].closed).toBeNull();
+    const placeholder = Object.values(p.state().components[p.definitionId].tree!.nodes).find((n) => n.kind === 'slot' && n.slot === 'body')!;
+    p.run([{ type: 'node.remove', owner: { kind: 'component', id: p.definitionId }, nodeId: placeholder.id }]);
+    expect(p.rows()[1]).toMatchObject({ slot: 'body', count: 0, closed: UNSHOWN });
+  });
+
+  it('a slot shown only in another’s fallback is closed once the placement fills that other', () => {
+    const p = offerPage();
+    const [{ definitionId }] = p.run([
+      {
+        type: 'component.upsert',
+        name: 'Swap card',
+        insertAs: 'element',
+        properties: {},
+        slots: { body: { label: 'Body' }, aside: { label: 'Aside' } },
+        nodes: [{ kind: 'element', id: 'root', tag: 'div', children: ['body'] }, { kind: 'slot', id: 'body', slot: 'body', children: ['aside'] }, { kind: 'slot', id: 'aside', slot: 'aside' }]
+      }
+    ]);
+    const [{ nodeId }] = p.run([{ type: 'node.insert', owner: p.owner, parentId: p.section, slot: 'content', definitionId: definitionId as string }]);
+    const rows = () => slotOverviews(p.state(), p.owner, home(p.state()).nodes[nodeId as string] as InstanceNode);
+    expect(rows().map((r) => r.closed)).toEqual([null, null]);
+    p.run([{ type: 'node.insert', owner: p.owner, parentId: nodeId as string, slot: 'body', primitive: 'paragraph' }]);
+    expect(rows().map((r) => r.closed)).toEqual([null, UNSHOWN]);
+  });
+
+  it('a slot handed to a component placed in the design is closed when that component renders no such slot', () => {
+    const p = offerPage();
+    const [{ definitionId: inner }] = p.run([
+      { type: 'component.upsert', name: 'Frame', insertAs: 'element', properties: {}, slots: { in: { label: 'In' } }, nodes: [{ kind: 'element', id: 'root', tag: 'div', children: ['in'] }, { kind: 'slot', id: 'in', slot: 'in' }] }
+    ]);
+    const [{ definitionId: outer }] = p.run([
+      {
+        type: 'component.upsert',
+        name: 'Framed',
+        insertAs: 'element',
+        properties: {},
+        slots: { body: { label: 'Body' } },
+        nodes: [{ kind: 'element', id: 'root', tag: 'div', children: ['body'] }, { kind: 'slot', id: 'body', slot: 'body' }]
+      }
+    ]);
+    // In the design, the Frame is placed and the slot's placeholder handed on into its In slot.
+    const design: OwnerRef = { kind: 'component', id: outer as string };
+    const { rootIds, nodes } = p.state().components[outer as string].tree!;
+    const placeholder = Object.values(nodes).find((n) => n.kind === 'slot')!.id;
+    const [{ nodeId: frameNode }] = p.run([{ type: 'node.insert', owner: design, parentId: rootIds[0], definitionId: inner as string }]);
+    p.run([{ type: 'node.move', owner: design, nodeId: placeholder, parentId: frameNode as string, slot: 'in', index: 0 }]);
+    const [{ nodeId }] = p.run([{ type: 'node.insert', owner: p.owner, parentId: p.section, slot: 'content', definitionId: outer as string }]);
+    const closed = (state: ProjectState) => slotOverviews(state, p.owner, home(state).nodes[nodeId as string] as InstanceNode)[0].closed;
+    expect(closed(p.state())).toBeNull();
+    const state = structuredClone(p.state());
+    const frame = state.components[inner as string].tree!;
+    const outlet = Object.values(frame.nodes).find((n) => n.kind === 'slot')!;
+    (frame.nodes[frame.rootIds[0]] as ElementNode).children = [];
+    delete frame.nodes[outlet.id];
+    expect(closed(state)).toBe(UNSHOWN);
   });
 });
 
@@ -201,26 +304,32 @@ describe('taking a slot’s content out', () => {
     const p = filled();
     const [{ nodeId: stack }] = p.run([{ type: 'node.insert', owner: p.owner, parentId: p.section, slot: 'content', primitive: 'stack' }]);
     p.run([{ type: 'node.move', owner: p.owner, nodeId: p.card, parentId: stack as string, index: 0 }]);
+    const [{ nodeId: below }] = p.run([{ type: 'node.insert', owner: p.owner, parentId: stack as string, primitive: 'paragraph', text: 'Below' }]);
     const out = applyOperations(p.state(), moveOutOps(p.state(), p.owner, p.card, 'actions')).state;
-    expect((home(out).nodes[stack as string] as ElementNode).children).toEqual([p.card, p.button, p.ends]);
+    expect((home(out).nodes[stack as string] as ElementNode).children).toEqual([p.card, p.button, p.ends, below]);
   });
 
   it('Move out of a section on the page puts sections on the page as they are, and each run of anything else in a new Section', () => {
     const p = filled();
-    const [{ nodeId: gallery }, { nodeId: last }] = p.run([
+    const [{ definitionId: bandDef }] = p.run([{ type: 'component.upsert', name: 'Wide band', insertAs: 'section', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'section' }] }]);
+    const [{ nodeId: gallery }, { nodeId: last }, { nodeId: band }, { nodeId: footnote }] = p.run([
       { type: 'node.insert', owner: p.owner, parentId: p.section, slot: 'content', index: 1, componentId: 'media.gallery' },
-      { type: 'node.insert', owner: p.owner, parentId: p.section, slot: 'content', primitive: 'paragraph', text: 'Last' }
+      { type: 'node.insert', owner: p.owner, parentId: p.section, slot: 'content', primitive: 'paragraph', text: 'Last' },
+      { type: 'node.insert', owner: p.owner, parentId: p.section, slot: 'content', definitionId: bandDef as string },
+      { type: 'node.insert', owner: p.owner, parentId: null, componentId: 'layout.section' }
     ]);
     const before = home(p.state()).rootIds;
     const out = applyOperations(p.state(), moveOutOps(p.state(), p.owner, p.section, 'content')).state;
     const roots = home(out).rootIds;
     const at = before.indexOf(p.section);
-    expect(roots).toHaveLength(before.length + 3);
-    expect(roots[at]).toBe(p.section);
+    expect(before.at(-1)).toBe(footnote);
+    expect(roots).toHaveLength(before.length + 4);
+    const [source, first, second, third, fourth, ...rest] = roots.slice(at);
+    expect([source, second, fourth, ...rest]).toEqual([p.section, gallery, band, footnote]);
     expect(p.slots(out, p.section)!.content).toEqual([]);
-    expect(p.slots(out, roots[at + 1])!.content).toEqual([p.card]);
-    expect(roots[at + 2]).toBe(gallery);
-    expect(p.slots(out, roots[at + 3])!.content).toEqual([p.after, last]);
+    expect(p.slots(out, first)!.content).toEqual([p.card]);
+    expect(p.slots(out, third)!.content).toEqual([p.after, last]);
+    for (const wrapper of [first, third]) expect(out.components[(home(out).nodes[wrapper] as InstanceNode).definitionId].componentId).toBe('layout.section');
     expect(validateState(out).filter((d) => d.severity === 'error')).toEqual([]);
   });
 
@@ -234,7 +343,7 @@ describe('taking a slot’s content out', () => {
     const state = p.state();
     const was = structuredClone(state);
     // The first fits beside the card; the second does not.
-    expect(() => applyOperations(state, moveOutOps(state, p.owner, p.card, 'actions'))).toThrow(/The “Two” slot of “Pair” holds at most 2 items/);
+    expect(() => applyOperations(state, moveOutOps(state, p.owner, p.card, 'actions'))).toThrow(/^Operation 2 \(node\.move\): The “Two” slot of “Pair” holds at most 2 items/);
     expect(state).toEqual(was);
   });
 
@@ -257,13 +366,34 @@ describe('taking a slot’s content out', () => {
     state = applyOperations(state, moveOutOps(state, owner, card, 'words')).state;
     expect(layout().rootIds).toHaveLength(sections + 1);
     expect(layout().rootIds.slice(-2)).toEqual([card, title]);
+    expect((layout().nodes[card] as InstanceNode).slots?.words).toEqual([]);
     expect(layout().nodes[title]).toMatchObject({ text: { $entry: 'title' } });
   });
 
   it('is refused in the shared header and footer, where the editor could not take the moved content out again', () => {
-    expect(moveOutRefusal({ kind: 'shell', id: 'footer' })).toBe('Content can’t be moved around in the shared footer. Clear removes it.');
     expect(moveOutRefusal({ kind: 'page', id: 'p' })).toBeNull();
+    for (const part of ['header', 'footer'] as const) {
+      const p = filled();
+      const owner: OwnerRef = { kind: 'shell', id: part };
+      const [{ nodeId: card }] = p.run([{ type: 'node.insert', owner, parentId: null, definitionId: p.definitionId }]);
+      p.run([{ type: 'node.insert', owner, parentId: card as string, slot: 'body', primitive: 'paragraph' }]);
+      expect(clearSlotOps(p.state(), owner, card as string, 'body')).toHaveLength(1);
+      expect(moveOutOps(p.state(), owner, card as string, 'body')).toEqual([]);
+      expect(moveOutRefusal(owner)).toBe(`Content can’t be moved around in the shared ${part}. Clear removes it.`);
+    }
+  });
+
+  it('takes nothing out of a slot whose content a hand edit also lists elsewhere, so nothing there is lost', () => {
     const p = filled();
-    expect(moveOutOps(p.state(), { kind: 'shell', id: 'header' }, p.state().site.shell.header.rootIds[0], 'content')).toEqual([]);
+    expect(p.rows().map((r) => r.shared)).toEqual([null, null, null, null]);
+    const state = structuredClone(p.state());
+    const [root] = home(state).rootIds;
+    // Body now also lists the page's own section.
+    (home(state).nodes[p.card] as InstanceNode).slots!.body.push(root);
+    const rows = slotOverviews(state, p.owner, home(state).nodes[p.card] as InstanceNode);
+    expect(rows.map((r) => !!r.shared)).toEqual([false, true, false, false]);
+    expect(clearSlotOps(state, p.owner, p.card, 'body')).toEqual([]);
+    expect(moveOutOps(state, p.owner, p.card, 'body')).toEqual([]);
+    expect(clearSlotOps(state, p.owner, p.card, 'actions')).toHaveLength(2);
   });
 });
