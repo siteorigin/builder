@@ -23,7 +23,13 @@ export interface EntryImagePlace {
  * for a replacement in some places; a value reached through a list item with no ID, or one whose ID another item of
  * its list shares, has none, and changes only with every other use, as an entry's uses do.
  */
-export type ImageUse = { target: ImageUseTarget | null; entry?: EntryImagePlace; background?: true } & ({ place: ValuePlace; value: ImageValue } | { place?: undefined; value?: undefined });
+export type ImageUse = {
+  target: ImageUseTarget | null;
+  entry?: EntryImagePlace;
+  /** A style rule's background image, and the rule that holds it, where a replacement writes its new value. */
+  background?: true;
+  holder?: Record<string, unknown>;
+} & ({ place: ValuePlace; value: ImageValue } | { place?: undefined; value?: undefined });
 
 /**
  * Whether a path from an element reaches a style rule's background image (`styles.base.backgroundImage`, a part's
@@ -69,7 +75,7 @@ function targetOf(place: ValuePlace): ImageUseTarget | null {
 export function imageUses(state: ProjectState, assetId: string): ImageUse[] {
   const out: ImageUse[] = [];
   const idOf = (x: unknown) => (x && typeof x === 'object' && typeof (x as { id?: unknown }).id === 'string' ? (x as { id: string }).id : undefined);
-  const walk = (v: unknown, at: { owner: OwnerRef; nodeId: string } | { definitionId: string }, path: Array<string | number>) => {
+  const walk = (v: unknown, at: { owner: OwnerRef; nodeId: string } | { definitionId: string }, path: Array<string | number>, holder?: Record<string, unknown>) => {
     if (Array.isArray(v)) {
       // A list item is reached by its ID only when no other item of the list has it; otherwise by position, so it
       // is never mistaken for the other one.
@@ -83,16 +89,18 @@ export function imageUses(state: ProjectState, assetId: string): ImageUse[] {
     } else if (v && typeof v === 'object') {
       if ((v as { assetId?: unknown }).assetId === assetId) {
         const place: ValuePlace = { ...at, path };
-        out.push({ place, value: v as ImageValue, target: targetOf(place), ...(isBackgroundPath(path) ? { background: true as const } : {}) });
+        // Only an element's own style rules hold a background image; a starting value's path is a property's.
+        const background = 'nodeId' in at && holder && isBackgroundPath(path);
+        out.push({ place, value: v as ImageValue, target: targetOf(place), ...(background ? { background: true as const, holder } : {}) });
       }
-      for (const [k, x] of Object.entries(v)) walk(x, at, [...path, k]);
+      for (const [k, x] of Object.entries(v)) walk(x, at, [...path, k], v as Record<string, unknown>);
     }
   };
   for (const t of allTrees(state)) for (const n of Object.values(t.tree.nodes)) walk(n, { owner: t.owner, nodeId: n.id }, []);
   for (const d of Object.values(state.components)) for (const [prop, schema] of Object.entries(d.properties)) walk(schema, { definitionId: d.id }, [prop]);
   // A design's variant options hold background images for its elements (only those: a variant styles, never fills in
   // content). Each is placed at its element, but has no target: one changes only with every other use.
-  for (const u of variantBackgrounds(state, assetId)) out.push({ place: { owner: { kind: 'component', id: u.definitionId }, nodeId: u.nodeId, path: ['variant', u.axis, u.option, u.scope, 'backgroundImage'] }, value: u.value as unknown as ImageValue, target: null, background: true });
+  for (const u of variantBackgrounds(state, assetId)) out.push({ place: { owner: { kind: 'component', id: u.definitionId }, nodeId: u.nodeId, path: ['variant', u.axis, u.option, u.scope, 'backgroundImage'] }, value: u.value as unknown as ImageValue, target: null, background: true, holder: u.holder });
   for (const pg of Object.values(state.pages)) if (pg.seo.socialImage === assetId) out.push({ target: { kind: 'pageSharing', pageId: pg.id } });
   if (state.site.favicon === assetId) out.push({ target: { kind: 'site', field: 'favicon' } });
   if (state.site.socialImage === assetId) out.push({ target: { kind: 'site', field: 'socialImage' } });
@@ -109,6 +117,8 @@ export interface VariantBackground {
   nodeId: string;
   scope: string;
   value: BackgroundImageValue;
+  /** The rule holding it. */
+  holder: Record<string, unknown>;
 }
 
 /**
@@ -125,7 +135,7 @@ export function variantBackgrounds(state: ProjectState, assetId?: string): Varia
         for (const [nodeId, rules] of Object.entries(obj(o?.styles) ? o.styles : {}))
           for (const [scope, props] of Object.entries(obj(rules) ? rules : {})) {
             const value: unknown = obj(props) ? props.backgroundImage : undefined;
-            if (obj(value) && typeof value.assetId === 'string' && (assetId === undefined || value.assetId === assetId)) out.push({ definitionId: d.id, axis, option, nodeId, scope, value: value as BackgroundImageValue });
+            if (obj(value) && typeof value.assetId === 'string' && (assetId === undefined || value.assetId === assetId)) out.push({ definitionId: d.id, axis, option, nodeId, scope, value: value as BackgroundImageValue, holder: props as Record<string, unknown> });
           }
   }
   return out;

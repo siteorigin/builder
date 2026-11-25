@@ -7,7 +7,7 @@ import { variantOptions } from '@shared/variants';
 import { z } from 'zod';
 import { DIVIDER_ICON, DIVIDER_SHAPES, STYLE_STATES, TEXT_TAGS, isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import { BACKGROUND_IMAGE, STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
-import { STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
+import { STYLE_PROPS, isStateStyleProp, placementStyleControls, stateStyleError } from '@shared/styles';
 import { getTree } from '@engine/tree';
 import { TABLE_ACTIONS, TABLE_LIMITS, type TableAction } from '@engine/table';
 import { checkProps, chooseVariants, fieldError, variantsJsonSchema, type FieldIssue } from './macros';
@@ -247,6 +247,14 @@ function emptiedBy(field: PropSchema, v: unknown): string | null {
  * its own, see definition.ts), or on a layout element whose content lives in its children. `widened`: the user has let
  * the run change more than the selection, so a selected item no longer limits its styles.
  */
+/** Whether the selected placement (or its selected part) can take a background image, which names a library image by ID. */
+export function selectionTakesBackground(state: ProjectState, target: SelectionTarget | null): boolean {
+  const r = target && !target.nested && target.owner.kind !== 'component' ? resolve(state, target) : null;
+  if (!r?.def) return false;
+  const list = placementStyleControls(r.def, target!.partId ?? 'root', false);
+  return list === undefined || !!list?.includes('backgroundImage');
+}
+
 export function selectionTools(state: ProjectState, target: SelectionTarget | null, opts: { widened?: boolean } = {}): ToolDefinition[] | null {
   if (!target || target.nested || target.owner.kind === 'component') return null;
   const r = resolve(state, target);

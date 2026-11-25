@@ -7,9 +7,14 @@
  * those longhands, so on an element that can carry a picture each `background` declaration paints them again from the
  * variables (`paintDecls`). Variables inherit, so each such element also starts them unset at zero specificity
  * (`resetDecls`): a box inside a hero never takes the hero's photograph.
+ *
+ * A design's rules live in components.css, which every page loads, so they never name a file there: they name the
+ * picture by a variable of its own (`fileVar`), which the design's .svelte file defines on :root. A design no published
+ * page imports defines nothing, ships no picture, and its rules paint none; every rule keeps its place in the cascade.
  */
-import { backgroundImageError, backgroundPosition } from '@shared/background-image';
+import { backgroundImageError, backgroundPosition, isPictureAsset } from '@shared/background-image';
 import { isScrim } from '@shared/styles';
+import { stableHash } from '@shared/ids';
 import type { AssetRecord, BackgroundImageValue, StyleValue } from '@shared/types';
 
 export const BG_VARS = { image: '--so-bg-image', size: '--so-bg-size', position: '--so-bg-position', repeat: '--so-bg-repeat' } as const;
@@ -35,6 +40,11 @@ export function paintDecls(own = 'none'): string[] {
 /** The variables unset, so the element paints only a picture its own rules give it. */
 export const resetDecls = (): string[] => Object.values(BG_VARS).map((v) => `${v}: initial`);
 
+/** The variable a design's rules name one picture by, for one size range (none: the original). */
+export function fileVar(assetId: string, span?: number): string {
+  return `--so-bgf-${assetId.replace(/[^A-Za-z0-9_-]/g, '-')}-${stableHash(assetId)}${span ? `-${span}` : ''}`;
+}
+
 /** One image the picture can be drawn from, at its width in pixels. */
 interface Candidate {
   url: string;
@@ -56,18 +66,21 @@ function candidates(asset: AssetRecord): Candidate[] {
 }
 
 /**
- * The picture for a screen at most `span` CSS pixels wide: each copy at least as wide as the screen at one device
- * pixel per CSS pixel, by its density there (a 960px copy on a 768px-wide phone is 1.25x), so the browser picks the
- * one its screen needs. Over-delivers for a box narrower than the screen, never draws a copy too small for it.
+ * The picture for a screen at most `span` CSS pixels wide, chosen by the screen's width: each copy at least as wide
+ * as the screen at one device pixel per CSS pixel, by its density there (a 960px copy on a 768px-wide phone is 1.25x),
+ * so the browser picks the one its screen needs. A box narrower than the screen gets more than it needs; a tall box
+ * that crops a wide picture to fill itself can still scale it up.
  */
 function imageFor(asset: AssetRecord, original: string, span?: number): string {
   const all = candidates(asset);
   if (span === undefined || all.length < 2) return original;
   const first = all.findIndex((c) => c.width >= span);
   if (first < 0) return original;
-  const used = all.slice(first);
+  const density = (c: Candidate) => Math.round((c.width / span) * 1000) / 1000;
+  // Two copies the same density apart would be the same choice: the narrower one is enough.
+  const used = all.slice(first).filter((c, i, list) => i === 0 || density(c) !== density(list[i - 1]));
   if (used.length === 1) return used[0].url;
-  return `image-set(${used.map((c) => `${c.url} ${Math.round((c.width / span) * 1000) / 1000}x`).join(', ')})`;
+  return `image-set(${used.map((c) => `${c.url} ${density(c)}x`).join(', ')})`;
 }
 
 /** What a background image paints with, from the library: the record and the original's address, or null when nothing can be painted. */
@@ -76,7 +89,7 @@ function resolve(raw: StyleValue, assets: Record<string, AssetRecord>): { value:
   if (backgroundImageError(raw, isScrim)) return null;
   const value = raw as BackgroundImageValue;
   const asset = Object.hasOwn(assets, value.assetId) ? assets[value.assetId] : undefined;
-  if (!asset || asset.kind !== 'image' || typeof asset.mime !== 'string' || !asset.mime.startsWith('image/')) return null;
+  if (!asset || !isPictureAsset(asset)) return null;
   const original = fileUrl(asset.file);
   return original ? { value, asset, original } : null;
 }
@@ -85,38 +98,43 @@ function resolve(raw: StyleValue, assets: Record<string, AssetRecord>): { value:
 const scrimLayer = (scrim: string) => (/^[a-z-]*gradient\(/i.test(scrim) ? scrim : `linear-gradient(${scrim}, ${scrim})`);
 
 /**
+ * The picture's layers for a screen at most `span` wide: its scrim over its file. With `files` (a design's rules), the
+ * file is named by its variable, defined in `files` for the design's own file to write.
+ */
+function layers(r: NonNullable<ReturnType<typeof resolve>>, span: number | undefined, files?: Map<string, string>): string {
+  let image = imageFor(r.asset, r.original, span);
+  if (files) {
+    const name = fileVar(r.value.assetId, span);
+    files.set(name, image);
+    image = `var(${name})`;
+  }
+  const scrim = typeof r.value.scrim === 'string' ? r.value.scrim.trim() : '';
+  return scrim ? `${scrimLayer(scrim)}, ${image}` : image;
+}
+
+/**
  * The declarations a background image writes in one rule: its variables and the longhands that paint them. `span`
  * is the widest the screen can be where the rule applies (a phone's or tablet's rule picks a copy for it; without one,
  * the original). Nothing for a value that does not name a library image's file, a scrim outside its grammar, or a
  * hand-edited shape.
  */
-export function backgroundImageDecls(raw: StyleValue, assets: Record<string, AssetRecord>, span?: number): string[] {
+export function backgroundImageDecls(raw: StyleValue, assets: Record<string, AssetRecord>, span?: number, files?: Map<string, string>): string[] {
   const r = resolve(raw, assets);
   if (!r) return [];
-  const scrim = typeof r.value.scrim === 'string' ? r.value.scrim.trim() : '';
-  const image = imageFor(r.asset, r.original, span);
+  const scrim = typeof r.value.scrim === 'string' && r.value.scrim.trim() !== '';
   const fit = r.value.size === 'contain' ? 'contain' : 'cover';
   const at = backgroundPosition(r.value);
   // The scrim covers the whole box, over the picture, whether the picture fills it or not.
-  const layers = scrim
-    ? { image: `${scrimLayer(scrim)}, ${image}`, size: `100% 100%, ${fit}`, position: `center, ${at}`, repeat: 'no-repeat, no-repeat' }
-    : { image, size: fit, position: at, repeat: 'no-repeat' };
-  return [`${BG_VARS.image}: ${layers.image}`, `${BG_VARS.size}: ${layers.size}`, `${BG_VARS.position}: ${layers.position}`, `${BG_VARS.repeat}: ${layers.repeat}`, ...paintDecls()];
+  const geometry = scrim ? { size: `100% 100%, ${fit}`, position: `center, ${at}`, repeat: 'no-repeat, no-repeat' } : { size: fit, position: at, repeat: 'no-repeat' };
+  return [`${BG_VARS.image}: ${layers(r, span, files)}`, `${BG_VARS.size}: ${geometry.size}`, `${BG_VARS.position}: ${geometry.position}`, `${BG_VARS.repeat}: ${geometry.repeat}`, ...paintDecls()];
 }
 
 /**
- * The picture alone for a phone's or tablet's screen, when a rule for every size names a library image with smaller
- * copies: what that size's own rule sets, so the original is fetched only where a screen needs it. Null when that
- * size picks the original anyway.
+ * The picture alone for a phone's or tablet's screen, when a rule for every size names it: what that size's own rule
+ * sets, so the original is fetched only where a screen needs it. Written even when the size takes the original, so a
+ * rule for every size that wins over another's keeps winning at each size. Null for a value that paints nothing.
  */
-export function backgroundImageAt(raw: StyleValue, assets: Record<string, AssetRecord>, span: number): string | null {
+export function backgroundImageAt(raw: StyleValue, assets: Record<string, AssetRecord>, span: number, files?: Map<string, string>): string | null {
   const r = resolve(raw, assets);
-  if (!r) return null;
-  const image = imageFor(r.asset, r.original, span);
-  if (image === r.original) return null;
-  const scrim = typeof r.value.scrim === 'string' ? r.value.scrim.trim() : '';
-  return `${BG_VARS.image}: ${scrim ? `${scrimLayer(scrim)}, ${image}` : image}`;
+  return r ? `${BG_VARS.image}: ${layers(r, span, files)}` : null;
 }
-
-/** Whether a declaration is one a background image writes that names a file (the only ones holding url()). */
-export const namesFile = (decl: string): boolean => decl.startsWith(`${BG_VARS.image}:`) && decl.includes('url(');

@@ -3,6 +3,7 @@ import { isArticleDate, pageArticle } from '@shared/articles';
 import { storedCanonical } from '@shared/seo';
 import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
+import { isPictureAsset } from '@shared/background-image';
 import type { BackgroundImageValue, GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
 import { STYLE_PROP_MAP, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
@@ -843,7 +844,7 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
           const asset = shape ? undefined : Object.hasOwn(state.assets.assets, (v as BackgroundImageValue).assetId) ? state.assets.assets[(v as BackgroundImageValue).assetId] : undefined;
           if (shape) out.push({ severity: 'error', code: 'STYLE_VALUE_INVALID', message: `${label}: ${shape} Nothing is written for it until it is fixed.`, owner, nodeId, site });
           else if (!asset) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${label}: a background image references a missing asset. Nothing is written for it until another picture is chosen.`, owner, nodeId, site });
-          else if (asset.kind !== 'image') out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${label}: a background image shows “${asset.name}”, which is a ${asset.kind}, not a picture. Choose an image instead.`, owner, nodeId, site });
+          else if (!isPictureAsset(asset)) out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${label}: a background image shows “${asset.name}”, which is ${asset.kind === 'image' ? 'not a picture file' : `a ${asset.kind}, not a picture`}. Choose an image instead.`, owner, nodeId, site });
           continue;
         }
         const token = v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' ? (v as { token: string }).token : undefined;

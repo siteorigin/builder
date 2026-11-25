@@ -9,7 +9,7 @@ import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectSt
 import { STYLE_STATES, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { STYLE_PROP_MAP, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
-import { isBackgroundImageValue } from '@shared/background-image';
+import { isBackgroundImageValue, isPictureAsset } from '@shared/background-image';
 import { effectiveTokens } from '@generator/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { boundaryOf, ownerLabel, pagesUsingShell, refLabel, treeFor } from './model';
@@ -223,7 +223,7 @@ function prepare(state: ProjectState, known: Known, property: string, v: unknown
   // A picture from another project, or one removed since it was copied, is not here to show.
   if (isBackgroundImageValue(v)) {
     const asset = Object.hasOwn(state.assets.assets, v.assetId) ? state.assets.assets[v.assetId] : undefined;
-    if (asset?.kind !== 'image') return { error: 'The copied background image is not in this project’s library.' };
+    if (!isPictureAsset(asset)) return { error: 'The copied background image is not in this project’s library.' };
   }
   const token = tokenRef(property, v);
   if (token && !known.tokens.has(token)) return { error: removed(token) };

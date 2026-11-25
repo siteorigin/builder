@@ -5,7 +5,7 @@
  * hold url() itself.
  */
 import { formatFocus, parseFocus } from './focus';
-import type { BackgroundImageValue, StyleValue } from './types';
+import type { AssetRecord, BackgroundImageValue, StyleValue } from './types';
 
 export const BACKGROUND_SIZES = ['cover', 'contain'] as const;
 const KEYS = new Set(['assetId', 'size', 'position', 'scrim']);
@@ -54,6 +54,11 @@ export function canonicalBackgroundImage(v: BackgroundImageValue): BackgroundIma
 export function backgroundPosition(v: Pick<BackgroundImageValue, 'position'>): string {
   const focus = v.position === undefined ? null : parseFocus(v.position);
   return focus ? formatFocus(focus) : '50% 50%';
+}
+
+/** Whether a library record is a picture a background can show: an image, with an image file. */
+export function isPictureAsset(a: Pick<AssetRecord, 'kind' | 'mime'> | null | undefined): boolean {
+  return !!a && a.kind === 'image' && typeof a.mime === 'string' && a.mime.startsWith('image/');
 }
 
 /** Whether any rule in a set of styles holds a background image. */

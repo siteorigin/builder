@@ -250,7 +250,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     }
     const layers = layersFor(src.id, at, 0);
     const styles = { ...flattenStyles(layers, { link: src.kind === 'link', shownDisplay: () => naturalDisplay(src), tooMuch }), ...states(layers, src.kind === 'link') };
-    if (Object.keys(styles).length) n.styles = styles;
+    // Values of their own, never the layers' objects: a later change to one (a picture replaced here) leaves the design alone.
+    if (Object.keys(styles).length) n.styles = structuredClone(styles);
     const from = provenance(src);
     // An action repeated in a list moved through the viewer with the list's other items (in each outer item apart).
     const list = at.repeats.at(-1);

@@ -2945,9 +2945,12 @@ const isPictureLayer = (layer) => /url\(|image-set\(|element\(|cross-fade\(|pain
  */
 function scrimCovers(s) {
   if (!s) return false;
-  const size = topLevel(s.backgroundSize || 'auto')[0] || 'auto';
-  const blend = topLevel(s.backgroundBlendMode || 'normal')[0] || 'normal';
-  return /^(100% 100%|auto|auto auto)$/.test(size) && blend === 'normal';
+  const first = (v, d) => topLevel(v || d)[0] || d;
+  // Stretched over the box, so a position in percentages moves it nowhere; one in lengths could move it off the text.
+  const size = first(s.backgroundSize, 'auto');
+  const at = first(s.backgroundPosition, '0% 0%');
+  const clip = first(s.backgroundClip, 'border-box');
+  return /^(100% 100%|auto|auto auto)$/.test(size) && /^-?[\d.]+% -?[\d.]+%$/.test(at) && /^(border-box|padding-box)$/.test(clip) && first(s.backgroundBlendMode, 'normal') === 'normal';
 }
 
 /**
@@ -2959,7 +2962,8 @@ function scrimCovers(s) {
 function backgroundOf(image, read, s) {
   if (!image || image === 'none') return { kind: 'none' };
   const layers = topLevel(image);
-  if (layers.length === 2 && isPictureLayer(layers[1]) && !isPictureLayer(layers[0]) && scrimCovers(s)) {
+  // A gradient blended in a colour space of its own (`in hsl longer hue`) passes through colours its stops do not show.
+  if (layers.length === 2 && isPictureLayer(layers[1]) && !isPictureLayer(layers[0]) && !/\bin\s+[a-z]/i.test(layers[0]) && scrimCovers(s)) {
     const top = gradientOf(layers[0], read);
     return top.kind === 'gradient' ? { kind: 'scrim', stops: top.stops } : { kind: 'picture' };
   }
@@ -3170,7 +3174,9 @@ function layerCache(read) {
       layer = { bg: read(s.backgroundColor) || NONE, image: backgroundOf(s.backgroundImage, read, s), opacity: clamp(Number(s.opacity), 0, 1), overlays: [] };
       // A background painted only inside the content box (or only on the glyphs) does not cover what is under the box.
       // A picture under a scrim stands for any colour at all (see textContrast), so nothing under it matters either.
-      layer.covers = (layer.bg.a >= 1 || layer.image.kind === 'scrim') && /^(border-box|padding-box)$/.test(s.backgroundClip || 'border-box');
+      // The colour is painted with the last layer's clip; a scrim (checked by scrimCovers) with the first's.
+      const clips = topLevel(s.backgroundClip || 'border-box');
+      layer.covers = (layer.bg.a >= 1 && /^(border-box|padding-box)$/.test(clips[clips.length - 1] || 'border-box')) || layer.image.kind === 'scrim';
       const r = boxRect(el);
       for (const which of ['::before', '::after']) {
         const p = getComputedStyle(el, which);
@@ -3288,14 +3294,22 @@ function textContrast(el, read, layerOf, pictures) {
         results.push({ ratio: contrastOf(fg, bg), fg, bg });
         return;
       }
+      // Text in a faded box over the picture shows the picture through it: its colour is the picture's too.
+      const fgLight = paint(true, WHITE);
+      if (Math.abs(luminance(fgLight) - luminance(fg)) > 1e-9) {
+        results.push({ ratio: 1, fg, bg: fg, unknown: true });
+        return;
+      }
       const dark = paint(false, BLACK);
       const light = paint(false, WHITE);
       const l = luminance(fg);
+      // A scrim that hides the picture paints one colour, whatever the picture has.
+      if (luminance(dark) === luminance(light)) results.push({ ratio: contrastOf(fg, dark), fg, bg: dark });
       // Text as light as some colour the background can take could sit on exactly that colour.
-      if (l >= luminance(dark) && l <= luminance(light)) results.push({ ratio: 1, fg, bg: l - luminance(dark) < luminance(light) - l ? dark : light, open: true });
+      else if (l >= luminance(dark) && l <= luminance(light)) results.push({ ratio: 1, fg, bg: l - luminance(dark) < luminance(light) - l ? dark : light, open: true });
       else {
         const bg = l > luminance(light) ? light : dark;
-        results.push({ ratio: contrastOf(fg, bg), fg, bg, open: luminance(dark) !== luminance(light) });
+        results.push({ ratio: contrastOf(fg, bg), fg, bg, open: true });
       }
       return;
     }
@@ -3310,6 +3324,7 @@ function textContrast(el, read, layerOf, pictures) {
   const worst = results.reduce((a, b) => (b.ratio < a.ratio ? b : a));
   // Over a picture, readable however dark or light it is: the scrim keeps it readable. Short of that, only a scrim
   // opaque enough to hide the picture says the text fails; anything less, only the picture's pixels could tell.
+  if (results.some((r) => r.unknown)) return { unknown: 'image' };
   if (scrimmed && worst.ratio >= required) return { ratio: worst.ratio, required, fg: hexOf(worst.fg), bg: hexOf(worst.bg), gradient: results.length > 1 };
   if (scrimmed && results.some((r) => r.open)) return { unknown: 'scrim' };
   if (results.length > 1) {

@@ -878,9 +878,39 @@ export function linkShapeError(propId: string, value: StyleTokenRef): string | n
  */
 export function isScrim(raw: string): boolean {
   const s = raw.trim();
-  if (!isSafeCssValue(s)) return false;
-  if (isGradient(s)) return isValidGradient(s) && splitTop(s, (ch) => ch === ',').length === 1;
-  return COLOR_RE.test(s);
+  if (s.length > 400 || !isSafeCssValue(s)) return false;
+  const m = /^(linear|radial)-gradient\((.*)\)$/is.exec(s);
+  if (!m) return isScrimColor(s);
+  const parts = splitTop(m[2], (ch) => ch === ',');
+  // A direction or shape first, when there is one; then two colour stops or more, each at up to two places.
+  const words = (p: string) => splitTop(p, (ch) => /\s/.test(ch));
+  const lead = parts.length && !isScrimColor(words(parts[0])[0] ?? '') ? parts.shift()! : null;
+  if (lead !== null && !(m[1].toLowerCase() === 'linear' ? SCRIM_DIRECTION_RE : SCRIM_SHAPE_RE).test(words(lead).join(' '))) return false;
+  return parts.length >= 2 && parts.every((p) => {
+    const [color, ...at] = words(p);
+    return isScrimColor(color) && at.length <= 2 && at.every((x) => SCRIM_STOP_RE.test(x));
+  });
+}
+
+/**
+ * A scrim's colours, fully spelled out: hex of 3, 4, 6 or 8 digits, rgb() or hsl() of plain numbers, or a few
+ * keywords. No variable, which could name nothing (or the picture itself) and make the browser drop the picture, and
+ * nothing a colour function would only read at run time.
+ */
+const SCRIM_COLOR_RE = /^(#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgba?|hsla?)\((?:[\s,/]*-?(?:\d+(?:\.\d+)?|\.\d+)(?:%|deg)?){3,4}[\s]*\)|transparent|black|white)$/i;
+const isScrimColor = (c: string) => SCRIM_COLOR_RE.test(c.replace(/\s+/g, ' ').replace(/\(\s+/g, '(').trim());
+const SCRIM_DIRECTION_RE = /^(to (top|bottom|left|right)( (top|bottom|left|right))?|-?(\d+(\.\d+)?|\.\d+)(deg|turn|rad|grad))$/i;
+const SCRIM_SHAPE_RE = /^((circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner)( (circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner))?)?( ?at( (center|top|bottom|left|right|\d+(\.\d+)?%)){1,2})?$/i;
+const SCRIM_STOP_RE = /^(0|(\d+(\.\d+)?|\.\d+)(%|px))$/;
+
+/**
+ * The image layers a `background` value paints (a gradient, or several), without the colour a value may end with:
+ * what the picture's longhands fall back on where there is no picture. 'none' for anything else or anything unsafe.
+ */
+export function backgroundImageLayers(v: StyleValue): string {
+  if (typeof v !== 'string' || !isSafeCssValue(v.trim()) || !isValidGradient(v)) return 'none';
+  const layers = splitTop(v.trim(), (ch) => ch === ',');
+  return (COLOR_RE.test(layers[layers.length - 1]) ? layers.slice(0, -1) : layers).join(', ') || 'none';
 }
 
 /** Validate a literal style value. Returns an error message or null. */
@@ -1391,6 +1421,8 @@ const SHORTHANDS: Record<string, string[]> = {
 
 /** The CSS properties one style property's declarations set (custom properties left out). */
 function cssNames(prop: string, value: StyleValue): string[] {
+  // A background image paints through these, written by the generator alone.
+  if (prop === 'backgroundImage') return isBackgroundImageValue(value) ? ['background-image', 'background-size', 'background-position', 'background-repeat'] : [];
   const decls = prop === 'customCss' ? (typeof value === 'string' ? parseCustomCss(value).decls : []) : prop === 'hidden' ? ['display: none'] : styleToCss(prop, value);
   return decls.map((d) => d.slice(0, d.indexOf(':')).trim().toLowerCase()).filter((p) => p && !p.startsWith('--'));
 }
@@ -1483,6 +1515,8 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
         if (p === 'display' || stronger.some((n) => names(n).some((q) => q === p || covers(q, p)))) continue;
         // Written again in the order one rule writes them, so a shorthand among them comes before its own longhands.
         const under = stronger.filter((n) => names(n).some((q) => covers(p, q))).sort((a, b) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop));
+        // A background image cannot be written in custom CSS: it keeps its picture, and the shorthand over it goes.
+        if (under.some((n) => n.prop === 'backgroundImage')) continue;
         const again = under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !d.startsWith('display') && !parseCustomCss(d).error);
         // What the stronger property writes cannot go in custom CSS: it keeps its value, and the shorthand goes.
         if (again.length < under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !d.startsWith('display')).length) continue;

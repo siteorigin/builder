@@ -60,6 +60,7 @@ import { resolveFontStack } from '@catalogue/fonts';
 import { codeTakesBlocks, designHasMedia, effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
 import { chosenUses, imageUses, variantBackgrounds } from './image-uses';
+import { isPictureAsset } from '@shared/background-image';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
@@ -477,7 +478,10 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         // A picture behind an element's content describes nothing: only the image changes, never a description, and
         // its size, focus and scrim stay as they are.
         if (u.background && u.value) {
-          u.value.assetId = op.withAssetId;
+          // A value of its own at that rule: another rule holding the same object (a copy made by detaching) keeps its picture.
+          const next = { ...(u.value as unknown as Record<string, unknown>), assetId: op.withAssetId };
+          if (u.holder) u.holder.backgroundImage = next;
+          else u.value.assetId = op.withAssetId;
           continue;
         }
         if (!u.value) {
@@ -1897,7 +1901,7 @@ function checkTokenRef(state: ProjectState, value: StyleValue) {
 function checkBackgroundAsset(state: ProjectState, value: BackgroundImageValue) {
   const a = own(state.assets.assets, value.assetId);
   if (!a) fail(`Background image: asset "${value.assetId}" does not exist.`);
-  if (a!.kind !== 'image' || !a!.mime?.startsWith('image/')) fail(`Background image: "${a!.name}" is not an image.`);
+  if (!isPictureAsset(a)) fail(`Background image: "${a!.name}" is not an image.`);
 }
 
 /** Style rules a definition's variant sets on one of its nodes. */
