@@ -311,6 +311,7 @@ step('the selected Split shows a + inside Main and one inside Sidebar, each on i
   await eventually(async () => assert.equal((await slotOf('main')).length, 1, 'the Heading is in Main'));
   assert.match(String((await home()).nodes[(await slotOf('main'))[0]].tag), /^h[1-6]$/, 'a Heading');
   assert.deepEqual(await slotOf('sidebar'), [], 'and not in Sidebar');
+  assert.equal((await home()).rootIds.length, 1, 'nothing added beside the Split');
   const added = await newest();
   assert.notEqual(added.id, changes?.id, 'as a change');
   await undo();
@@ -332,7 +333,9 @@ step('the selected Split shows a + inside Main and one inside Sidebar, each on i
   assert.ok((await quick.getByRole('option', { name: /^Paragraph/ }).count()) >= 1, 'a Paragraph is offered');
   await chooseQuick('Paragraph');
   await eventually(async () => assert.equal((await slotOf('sidebar')).length, 1, 'the Paragraph is in Sidebar'));
+  assert.equal((await home()).nodes[(await slotOf('sidebar'))[0]].tag, 'p', 'a Paragraph');
   assert.deepEqual(await slotOf('main'), [], 'and not in Main');
+  assert.equal((await home()).rootIds.length, 1, 'nothing added beside the Split');
   await undo();
   await eventually(async () => assert.deepEqual(await slotOf('sidebar'), []));
   assert.equal((await newest())?.id, changes?.id, 'one Undo takes it away');

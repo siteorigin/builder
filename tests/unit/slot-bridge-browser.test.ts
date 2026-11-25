@@ -109,6 +109,9 @@ describe.skipIf(!browserInstalled)('a placement’s empty slots in the preview (
       { desc: slot('main'), box: main },
       { desc: slot('sidebar'), box: side }
     ]);
+    // A new list replaces the old one.
+    await post('track', { selected: placement, hovered: null, slots: [slot('sidebar')] });
+    await expect.poll(async () => (await rects())?.slots).toEqual([{ desc: slot('sidebar'), box: side }]);
     // A new selection that tracks none drops them.
     await post('track', { selected: placement, hovered: null });
     await expect.poll(async () => (await rects())?.slots).toEqual([]);

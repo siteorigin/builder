@@ -51,8 +51,8 @@ const keyOf = (at: InsertAt) => JSON.stringify([at.parentId, at.slot ?? null, at
  * the page itself (not one placed inside another) gets one above and one below it. A container gets one inside, and so
  * does a placed component that shows one slot (once, not inside a repeat), or a part of a placement that holds exactly one of its slots (a
  * Section's Container holds its Content, #185); hovered, only while that list is empty, so moving over a filled page
- * does not scatter buttons over it. A placement showing several slots gets one in each of them that is empty, each on
- * its slot's own box (onSlot), and only while selected (#657); a slot picked by its empty box gets one in it, selected
+ * does not scatter buttons over it. A placement whose component declares several slots gets one in each of them that
+ * shows once and is empty, each on its slot's own box (onSlot), and only while selected (#657); a slot picked by its empty box gets one in it, selected
  * or hovered. Where the slot it would fill is not plain (a part holding two, a slot shown in a repeat), there is none:
  * what is chosen must go where the button is. Nothing for a repeated item, the shared header or footer, a component
  * being edited, or anything else.
@@ -98,16 +98,15 @@ function slotPoint(state: ProjectState, owner: OwnerRef, ref: ElementRef, hovere
 }
 
 /**
- * One Add button for each empty slot a selected placement shows several of, once each (#657), drawn on that slot's
- * own box: a Split's Main and Sidebar. A slot closed to content (max 0) shows no box to draw one on.
+ * One Add button for each empty slot, shown once, of a selected placement whose component declares several (#657),
+ * drawn on that slot's own box: a Split's Main and Sidebar. A slot closed to content (max 0) shows no box to draw one on.
  */
 function emptySlotPoints(state: ProjectState, tree: NodeTree, owner: OwnerRef, ref: ElementRef): AddPoint[] {
   const node = ref.instancePath.length ? undefined : own(tree.nodes, ref.nodeId);
   const def = node?.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
   if (node?.kind !== 'instance' || !def) return [];
-  const shown = shownOnceSlots(state, def.id);
-  if (shown.length < 2) return [];
-  return shown.flatMap((slot): AddPoint[] => {
+  if (Object.keys(def.slots ?? {}).length < 2) return [];
+  return shownOnceSlots(state, def.id).flatMap((slot): AddPoint[] => {
     const decl = own(def.slots, slot);
     if (!decl || decl.max === 0 || own(node.slots, slot)?.length) return [];
     const label = typeof decl.label === 'string' && decl.label.trim() ? decl.label.trim() : slot;
@@ -127,6 +126,8 @@ function insideOf(state: ProjectState, tree: NodeTree, ref: ElementRef): { nodeI
   const node = own(tree.nodes, ref.nodeId);
   if (node?.kind === 'element') return { nodeId: node.id };
   if (node?.kind !== 'instance') return null;
+  // A component declaring several slots has each drawn on its own box (emptySlotPoints), even one that alone shows once.
+  if (Object.keys(own(state.components, node.definitionId)?.slots ?? {}).length > 1) return null;
   const shown = shownOnceSlots(state, node.definitionId);
   return shown.length === 1 ? { nodeId: node.id, slot: shown[0] } : null;
 }

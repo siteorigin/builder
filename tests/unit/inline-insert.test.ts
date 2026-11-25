@@ -367,15 +367,21 @@ describe('Add buttons inside the slots of a component that shows several (#657)'
     const [main, sidebar] = addPoints(p.state(), p.owner, p.placement).map((x) => offeredAt(p.state(), resolvePoint(p.state(), x)!, 'element').map((it) => it.name));
     expect(main).toEqual(expect.arrayContaining(['Paragraph', 'Image']));
     expect(sidebar).toContain('Paragraph');
-    expect(sidebar).not.toContain('Image');
+    // Text only: nothing that is not text.
+    for (const name of ['Image', 'Button', 'Icon', 'Stack']) expect(sidebar).not.toContain(name);
   });
 
   it('a filled slot loses its button, and the empty one keeps its own on its own box', () => {
-    const p = split();
-    p.step([{ type: 'node.insert', owner: p.owner, parentId: p.id, slot: 'sidebar', primitive: 'paragraph', text: 'Open daily' }]);
-    expect(addPoints(p.state(), p.owner, p.placement).map((x) => [x.slot, x.onSlot])).toEqual([['main', true]]);
-    p.step([{ type: 'node.insert', owner: p.owner, parentId: p.id, slot: 'main', primitive: 'paragraph', text: 'Menu' }]);
-    expect(addPoints(p.state(), p.owner, p.placement)).toEqual([]);
+    for (const [first, then] of [
+      ['sidebar', 'main'],
+      ['main', 'sidebar']
+    ]) {
+      const p = split();
+      p.step([{ type: 'node.insert', owner: p.owner, parentId: p.id, slot: first, primitive: 'paragraph', text: 'Open daily' }]);
+      expect(addPoints(p.state(), p.owner, p.placement).map((x) => [x.slot, x.onSlot])).toEqual([[then, true]]);
+      p.step([{ type: 'node.insert', owner: p.owner, parentId: p.id, slot: then, primitive: 'paragraph', text: 'Menu' }]);
+      expect(addPoints(p.state(), p.owner, p.placement)).toEqual([]);
+    }
   });
 
   it('a slot picked by its empty box gets one in it, selected or hovered, the same place as its placement’s', () => {
@@ -388,9 +394,10 @@ describe('Add buttons inside the slots of a component that shows several (#657)'
       expect(own.onSlot).toBeUndefined();
       expect(addPoints(p.state(), p.owner, p.slot(name), true)).toEqual([own]);
     }
-    // Hovered once filled, it has none, as a filled container has none.
+    // Hovered once filled, it has none, as a filled container has none; still selected, it is still the place to add.
     p.step([{ type: 'node.insert', owner: p.owner, parentId: p.id, slot: 'sidebar', primitive: 'paragraph', text: 'Open daily' }]);
     expect(addPoints(p.state(), p.owner, p.slot('sidebar'), true)).toEqual([]);
+    expect(addPoints(p.state(), p.owner, p.slot('sidebar')).map((x) => x.slot)).toEqual(['sidebar']);
   });
 
   it('a single slot keeps its button where it was: on its placement, named by it', () => {
@@ -417,8 +424,8 @@ describe('Add buttons inside the slots of a component that shows several (#657)'
     // Shown once per item of a list, it would show many times, or never.
     def.tree!.nodes.rows = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: ['side'] };
     (def.tree!.nodes.sideCol as ElementNode).children = ['rows'];
-    // Main alone shows once: its button is the placement's own, as for any component showing one slot.
-    expect(addPoints(p.state(), p.owner, p.placement).map((x) => [x.side, x.slot, x.onSlot])).toEqual([['inside', 'main', undefined]]);
+    // Main alone shows once: its button is still on Main's own box, never on the Split's, where it could sit over Sidebar.
+    expect(addPoints(p.state(), p.owner, p.placement).map((x) => [x.side, x.slot, x.onSlot])).toEqual([['inside', 'main', true]]);
     expect(addPoints(p.state(), p.owner, p.slot('sidebar'))).toEqual([]);
     expect(addPoints(p.state(), p.owner, p.slot('main')).map((x) => x.slot)).toEqual(['main']);
     // A slot its component no longer declares.
@@ -426,6 +433,7 @@ describe('Add buttons inside the slots of a component that shows several (#657)'
     expect(addPoints(p.state(), p.owner, { ...p.slot('main'), itemPath: ['a'] })).toEqual([]);
     const header: OwnerRef = { kind: 'shell', id: 'header' };
     expect(addPoints(p.state(), p.owner, { ...p.slot('main'), owner: header })).toEqual([]);
+    expect(addPoints(p.state(), header, { ...p.slot('main'), owner: header })).toEqual([]);
   });
 });
 

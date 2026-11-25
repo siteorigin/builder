@@ -129,11 +129,11 @@ describe('a slot picked by its empty box (#652)', () => {
     expect(detachable(st, p.slot('sidebar'))).toBeNull();
     expect(createComponentTarget({ state: st }, p.slot('sidebar'))).toBeNull();
     // Only an Add button inside the slot itself (#657), never one beside its placement.
-    expect(addPoints(st, p.owner, p.slot('sidebar')).map((x) => [x.side, x.slot])).toEqual([['inside', 'sidebar']]);
+    expect(addPoints(st, p.owner, p.slot('sidebar')).map((x) => [x.side, x.slot, x.role])).toEqual([['inside', 'sidebar', 'element']]);
     // The section's own Content slot: none of the section's Add buttons above or below it, which it has as a placement.
     const sectionSlot: ElementRef = { owner: p.owner, instancePath: [], nodeId: p.section, slot: 'content' };
     expect(addPoints(st, p.owner, { ...sectionSlot, slot: undefined }).length).toBeGreaterThan(0);
-    expect(addPoints(st, p.owner, sectionSlot).map((x) => x.side)).toEqual(['inside']);
+    expect(addPoints(st, p.owner, sectionSlot).map((x) => [x.side, x.slot, x.role])).toEqual([['inside', 'content', 'element']]);
     // No styles of its own to copy or paste.
     expect(styleSelection(st, p.slot('sidebar'))).toBeNull();
     expect(styleSelection(st, p.placement)).not.toBeNull();
@@ -176,7 +176,10 @@ describe('the empty slots’ boxes a page reports (#657)', () => {
     const box = { x: 1, y: 2, width: 30, height: 40 };
     expect(slotBoxes([{ desc: { ...desc, tag: 'span' }, box: { ...box, extra: 1 } }])).toEqual([{ desc, box }]);
     expect(slotBoxes([{ desc: { ...desc, slot: undefined }, box }, { desc, box: { ...box, width: -1 } }, { desc }, null, 'x'])).toEqual([]);
+    expect(slotBoxes([{ desc: { ...desc, ctx: 7 }, box }, { desc: { ...desc, node: null }, box }, { desc: { ...desc, items: undefined }, box }])).toEqual([]);
     expect(slotBoxes('nope')).toEqual([]);
+    // An array carrying a `slice` of its own (a page's own payload) is read all the same.
+    expect(slotBoxes(Object.assign([{ desc, box }], { slice: 1 }))).toEqual([{ desc, box }]);
     expect(slotBoxes(Array.from({ length: 80 }, () => ({ desc, box }))).length).toBe(50);
   });
 });

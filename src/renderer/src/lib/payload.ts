@@ -217,7 +217,8 @@ const MAX_SLOTS = 50;
 /** The empty slots' boxes a page reports with its outlines (see the bridge's sendRects); a malformed entry is left out. */
 export function slotBoxes(v: unknown): SlotBox[] {
   if (!Array.isArray(v)) return [];
-  return Array.from(v.slice(0, MAX_SLOTS)).flatMap((e): SlotBox[] => {
+  // Sliced by the array's own prototype: a page's array can carry a `slice` of its own.
+  return (Array.prototype.slice.call(v, 0, MAX_SLOTS) as unknown[]).flatMap((e): SlotBox[] => {
     const o = e && typeof e === 'object' ? (e as Record<string, unknown>) : null;
     if (!o || !isDesc(o.desc) || typeof o.desc.slot !== 'string' || !isRect(o.box)) return [];
     const { ctx, node, items, slot } = o.desc;
