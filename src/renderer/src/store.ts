@@ -420,8 +420,8 @@ function scopeFollows(p: Partial<State>): Partial<State> {
   const moved =
     ('pageId' in p && p.pageId !== s.pageId) ||
     // The SEO view's document is what a message is about while the view shows (#700): opening, leaving or changing it is
-    // another view too.
-    ('seoSubject' in p && subject(p.seoSubject) !== subject(s.seoSubject)) ||
+    // another view too. One it remembers while another panel shows (let go once deleted) is not.
+    ('seoSubject' in p && subject(p.seoSubject) !== subject(s.seoSubject) && ('leftTab' in p ? p.leftTab : s.leftTab) === 'seo') ||
     ('leftTab' in p && (p.leftTab === 'seo') !== (s.leftTab === 'seo')) ||
     ('definitionMode' in p && (p.definitionMode?.definitionId ?? null) !== (s.definitionMode?.definitionId ?? null)) ||
     ('templateMode' in p && (p.templateMode?.collectionId ?? null) !== (s.templateMode?.collectionId ?? null)) ||

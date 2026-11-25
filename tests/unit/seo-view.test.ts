@@ -14,6 +14,7 @@ import { applyOperations } from '@engine/apply';
 vi.stubGlobal('window', { builder: { project: { saveLocalState: async () => undefined }, platform: 'darwin' } });
 
 const { activeWorkspace, canvasCovered } = await import('../../src/renderer/src/lib/workspace');
+const { waitingPreview } = await import('../../src/renderer/src/lib/posts');
 const { keepSeoSubject, sameSubject, seoDocument, seoDocuments } = await import('../../src/renderer/src/lib/seo-view');
 
 /** The editor's state as these tests read and set it. The store and actions are loaded by path, as in page-place. */
@@ -89,6 +90,27 @@ describe('what the editor puts in front of its page', () => {
     expect(canvasCovered('write')).toBe(true);
     expect(canvasCovered('preview')).toBe(false);
     expect(canvasCovered(null)).toBe(false);
+  });
+});
+
+describe('a post’s preview chosen in the toolbar while the writer saves', () => {
+  const writing = { leftTab: 'posts', postView: 'write', mode: 'preview', workspaceKey: 'w#1' } as const;
+
+  it('waits while the writer is in front in Preview, in the opening it was asked in', () => {
+    expect(waitingPreview(writing, 'w#1')).toBe('waits');
+  });
+
+  it('is undone once the writer is left with Preview still on: the SEO view, another panel, or none', () => {
+    expect(waitingPreview({ ...writing, leftTab: 'seo' }, 'w#1')).toBe('undone');
+    expect(waitingPreview({ ...writing, leftTab: 'pages' }, 'w#1')).toBe('undone');
+    expect(waitingPreview({ ...writing, leftTab: null }, 'w#1')).toBe('undone');
+  });
+
+  it('ends without undoing anything once a mode is chosen, the post is previewed, or another opening starts', () => {
+    expect(waitingPreview({ ...writing, mode: 'edit' }, 'w#1')).toBe('ends');
+    expect(waitingPreview({ ...writing, mode: 'edit', leftTab: 'seo' }, 'w#1')).toBe('ends');
+    expect(waitingPreview({ ...writing, postView: 'preview' }, 'w#1')).toBe('ends');
+    expect(waitingPreview({ ...writing, leftTab: 'seo', workspaceKey: 'w#2' }, 'w#1')).toBe('ends');
   });
 });
 
@@ -274,6 +296,12 @@ describe('the SEO view in the editor', () => {
     wide();
     setState({ leftTab: 'pages' });
     expect(getState().chatContextEnabled.scope, 'another panel outside the view changes nothing').toBe('site');
+    // The document it remembers, let go while another panel shows (deleted), is nothing the message was about.
+    setState({ seoSubject: null });
+    expect(getState().chatContextEnabled.scope, 'a remembered document let go outside the view').toBe('site');
+    // A scope said in the same update is kept.
+    setState({ leftTab: 'seo', seoSubject: page(about), chatContextEnabled: { page: true, scope: 'page' } });
+    expect(getState().chatContextEnabled.scope, 'its own scope, said with the change').toBe('page');
   });
 
   it('puts a post’s preview under it away too when a page is chosen', () => {

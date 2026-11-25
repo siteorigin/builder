@@ -9,6 +9,7 @@ import { Canvas, showEditedPage, stepVisitor, visitAddress } from './panels/Canv
 import { entryRoute } from '@shared/collections';
 import { saveOpenPost } from './lib/post-draft';
 import { activeWorkspace, canvasCovered } from './lib/workspace';
+import { waitingPreview } from './lib/posts';
 import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
 import { PostsPanel } from './panels/PostsPanel';
@@ -505,13 +506,15 @@ export function Editor() {
   useEffect(() => {
     // Preview chosen in the toolbar while writing, waiting for the writer's save: the request, while it still owns the
     // change it asked for. Leaving the writer, choosing a mode or opening another project meanwhile ends it.
-    let pending: object | null = null;
+    let pending: { askedIn: string | undefined } | null = null;
     return useStore.subscribe((s, prev) => {
-        if (pending && (s.leftTab !== 'posts' || s.mode !== 'preview' || s.postView !== 'write' || s.snapshot?.workspaceKey !== prev.snapshot?.workspaceKey)) {
+        const fate = pending ? waitingPreview({ ...s, workspaceKey: s.snapshot?.workspaceKey }, pending.askedIn) : null;
+        if (fate && fate !== 'waits') {
           pending = null;
           // The writer left (another panel, the SEO view) before the post's preview began: the mode it asked for goes back
-          // to Edit at once, so the page shows as it was and the writer comes back with Edit.
-          if (s.mode === 'preview' && s.postView === 'write' && prev.leftTab === 'posts' && s.leftTab !== 'posts') return setMode('edit');
+          // to Edit at once, so the page shows as it was and the writer comes back with Edit. Decided from the state
+          // alone, so an update made inside another (a panel closing in a small window) never loses it.
+          if (fate === 'undone') return setMode('edit');
         }
         // Where the last preview's visitor went is not where the next one starts: the post is on its way again.
         if (s.postView !== prev.postView && s.postPreviewAt !== null) setState({ postPreviewAt: null });
@@ -524,7 +527,7 @@ export function Editor() {
           if (!s.post) return setState({ postView: 'preview' });
           // The writer stays until what it holds is saved: text that could not be stays in view, with its note.
           const asked = s.post;
-          const request = (pending = {});
+          const request = (pending = { askedIn: s.snapshot?.workspaceKey });
           void saveOpenPost().then((saved) => {
             // Ended meanwhile: whatever the author did since is theirs.
             if (pending !== request) return;
