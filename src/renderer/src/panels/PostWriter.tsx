@@ -808,10 +808,10 @@ function coveredText(range: Range, t: Node): string {
   return text.slice(t === range.startContainer ? range.startOffset : 0, t === range.endContainer ? range.endOffset : text.length);
 }
 
-/** Whether a range covers every word inside an element. */
+/** Whether a range covers every word inside an element (spacing at a word's ends, which a page may collapse, aside). */
 function coversAll(range: Range, el: Element): boolean {
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  for (let t = walker.nextNode(); t; t = walker.nextNode()) if (t.nodeValue?.trim() && coveredText(range, t) !== t.nodeValue) return false;
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) if (t.nodeValue?.trim() && coveredText(range, t).trim() !== t.nodeValue.trim()) return false;
   return true;
 }
 

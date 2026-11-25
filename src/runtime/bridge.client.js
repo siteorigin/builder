@@ -1939,10 +1939,10 @@ function rangeLinks(range) {
   }
   return { links, plain };
 }
-/** Whether a range covers every word inside an element. */
+/** Whether a range covers every word inside an element (spacing at a word's ends, which a page may collapse, aside). */
 function coversAll(range, el) {
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  for (let t = walker.nextNode(); t; t = walker.nextNode()) if (t.nodeValue.trim() && coveredText(range, t) !== t.nodeValue) return false;
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) if (t.nodeValue.trim() && coveredText(range, t).trim() !== t.nodeValue.trim()) return false;
   return true;
 }
 /** Whether the words the field links are still there to link (the text can change underneath the field). */
