@@ -502,9 +502,17 @@ export function Editor() {
 
   // A post's preview ends however it is left (Back to writing, Edit, another post opened): the canvas goes back to the
   // page the editor shows, and the writer shows again.
-  useEffect(
-    () =>
-      useStore.subscribe((s, prev) => {
+  useEffect(() => {
+    // Preview chosen in the toolbar while writing, waiting for the writer's save: the request, while it still owns the
+    // change it asked for. Leaving the writer, choosing a mode or opening another project meanwhile ends it.
+    let pending: object | null = null;
+    return useStore.subscribe((s, prev) => {
+        if (pending && (s.leftTab !== 'posts' || s.mode !== 'preview' || s.postView !== 'write' || s.snapshot?.workspaceKey !== prev.snapshot?.workspaceKey)) {
+          pending = null;
+          // The writer left (another panel, the SEO view) before the post's preview began: the mode it asked for goes back
+          // to Edit at once, so the page shows as it was and the writer comes back with Edit.
+          if (s.mode === 'preview' && s.postView === 'write' && prev.leftTab === 'posts' && s.leftTab !== 'posts') return setMode('edit');
+        }
         // Where the last preview's visitor went is not where the next one starts: the post is on its way again.
         if (s.postView !== prev.postView && s.postPreviewAt !== null) setState({ postPreviewAt: null });
         if (prev.postView === 'preview' && s.postView === 'write') {
@@ -516,11 +524,12 @@ export function Editor() {
           if (!s.post) return setState({ postView: 'preview' });
           // The writer stays until what it holds is saved: text that could not be stays in view, with its note.
           const asked = s.post;
+          const request = (pending = {});
           void saveOpenPost().then((saved) => {
+            // Ended meanwhile: whatever the author did since is theirs.
+            if (pending !== request) return;
+            pending = null;
             const now = getState();
-            // The writer was left while it saved (another panel, the SEO view): the post's preview never began, so the
-            // mode it asked for goes back to Edit, and the writer shows with Edit when it is opened again.
-            if (now.mode === 'preview' && now.postView === 'write' && now.leftTab !== 'posts') return setMode('edit');
             if (now.mode !== 'preview' || now.leftTab !== 'posts' || now.postView !== 'write') return;
             // Another post opened while this one saved: the preview was this one's, and the other's text may not be saved.
             if (now.post?.collectionId !== asked.collectionId || now.post?.entryId !== asked.entryId) return setMode('edit');
@@ -535,9 +544,8 @@ export function Editor() {
             if (c && e) requestAnimationFrame(() => getState().postView === 'preview' && getState().post?.entryId === e.id && visitAddress(entryRoute(c, e)));
           });
         }
-      }),
-    []
-  );
+    });
+  }, []);
 
   // A panel that closes around the focused control (its shortcut, its splitter's menu) hands focus to the
   // control that opens it again: the view's rail button, or the toolbar's Right panel toggle.

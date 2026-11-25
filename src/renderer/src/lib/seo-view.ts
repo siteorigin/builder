@@ -23,7 +23,7 @@ export interface SeoDocument {
 
 /** The site's pages, or one collection's entries, as the view lists them. */
 export interface SeoDocumentGroup {
-  /** `pages`, or the collection's ID. */
+  /** `pages`, or `collection-` and the collection's ID (a collection may be called "pages"). */
   id: string;
   label: string;
   documents: SeoDocument[];
@@ -72,7 +72,7 @@ export function seoDocuments(state: ProjectState): SeoDocumentGroup[] {
     const documents = orderedEntries(c)
       .filter((e) => !!e && typeof e === 'object')
       .map((e) => entryDocument(c, e));
-    if (documents.length) groups.push({ id: c.settings.id, label: titled(c.settings.name, c.settings.id), documents });
+    if (documents.length) groups.push({ id: `collection-${c.settings.id}`, label: titled(c.settings.name, c.settings.id), documents });
   }
   return groups;
 }

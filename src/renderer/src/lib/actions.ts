@@ -981,8 +981,9 @@ export async function openSeoChat(h: SeoHandoff): Promise<boolean> {
     if (now.mode !== 'edit') setMode('edit');
     // The page itself, so the request is about the whole page; also out of a component edited everywhere or a layout.
     selectPage(h.pageId, null);
-  } else if (h.mode === 'edit' && (now.definitionMode || now.templateMode)) {
-    // A component edited everywhere or a layout would make the request about that design: the page goes back on screen.
+  } else if (h.mode === 'edit' && (now.definitionMode || now.templateMode || activeWorkspace(now))) {
+    // A component edited everywhere or a layout would make the request about that design, and the Posts workspace or the
+    // SEO view about the post or document it shows (#700): the page goes back on screen.
     selectPage(keepPagesValid(st, now.definitionMode?.returnPageId ?? now.pageId, null).pageId ?? st.site.homePageId, null);
   }
   const after = getState();

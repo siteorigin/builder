@@ -5,7 +5,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EditOperation } from '@shared/ops';
-import type { ProjectState } from '@shared/types';
+import type { ElementRef, ProjectState } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
 import { createStarterState } from '@catalogue/starters';
@@ -15,8 +15,31 @@ vi.stubGlobal('window', { builder: { project: { saveLocalState: async () => unde
 
 const { activeWorkspace, canvasCovered } = await import('../../src/renderer/src/lib/workspace');
 const { keepSeoSubject, sameSubject, seoDocument, seoDocuments } = await import('../../src/renderer/src/lib/seo-view');
-const { getState, setState } = await import('../../src/renderer/src/store');
-const { openSeoView, pageOutOfSight, selectPage } = await import('../../src/renderer/src/lib/actions');
+
+/** The editor's state as these tests read and set it. The store and actions are loaded by path, as in page-place. */
+interface EditorState {
+  screen: 'welcome' | 'editor';
+  snapshot: ProjectSnapshot | null;
+  pageId: string | null;
+  selection: ElementRef | null;
+  pagePlaces: Record<string, ElementRef>;
+  leftTab: string | null;
+  mode: 'edit' | 'preview';
+  post: { collectionId: string; entryId: string } | null;
+  postView: 'write' | 'preview';
+  seoSubject: SeoSubject | null;
+  modal: { kind: string } | null;
+  definitionMode: unknown;
+  templateMode: unknown;
+  chatContextEnabled: { page: boolean; scope: 'selection' | 'page' | 'site' };
+}
+const load = (path: string) => import(/* @vite-ignore */ path);
+const { getState, setState } = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void };
+const { openSeoView, pageOutOfSight, selectPage } = (await load('../../src/renderer/src/lib/actions')) as {
+  openSeoView: (subject?: SeoSubject | null) => boolean;
+  pageOutOfSight: (s: EditorState, pageId: string) => boolean;
+  selectPage: (pageId: string, target?: ElementRef | null) => void;
+};
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 
@@ -25,8 +48,9 @@ function site(): ProjectState {
   return run(
     createStarterState('business', 'Riverside Studio', false),
     { type: 'collection.create', collectionId: 'posts' },
-    { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring open studio', publishedAt: '2027-03-02', draft: false },
+    // The older post first, so the list's newest-first order is the collection's own, not the order they were made in.
     { type: 'entry.create', collectionId: 'posts', entryId: 'en_winter', title: 'Winter hours', publishedAt: '2026-11-14' },
+    { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring open studio', publishedAt: '2027-03-02', draft: false },
     { type: 'collection.create', collectionId: 'case-studies', name: 'Case studies', route: '/work/' },
     { type: 'entry.create', collectionId: 'case-studies', entryId: 'en_mill', title: 'The old mill', publishedAt: '2026-01-05', draft: false },
     { type: 'collection.create', collectionId: 'events', name: 'Events', route: '/events/' }
@@ -52,6 +76,8 @@ describe('what the editor puts in front of its page', () => {
 
   it('is the Posts workspace as before, and nothing once another panel or none shows', () => {
     expect(activeWorkspace({ ...base, leftTab: 'posts' })).toBe('write');
+    // Preview chosen in the toolbar while writing: the writer stays in front until what it holds is saved.
+    expect(activeWorkspace({ ...base, leftTab: 'posts', post: spring, mode: 'preview' })).toBe('write');
     expect(activeWorkspace({ ...base, leftTab: 'posts', post: spring })).toBe('write');
     expect(activeWorkspace(base)).toBeNull();
     expect(activeWorkspace({ ...base, leftTab: null })).toBeNull();
@@ -98,30 +124,41 @@ describe('the documents the SEO view lists', () => {
     const groups = seoDocuments(site());
     expect(groups.map((g) => [g.id, g.label])).toEqual([
       ['pages', 'Pages'],
-      ['case-studies', 'Case studies'],
-      ['posts', 'Posts']
+      ['collection-case-studies', 'Case studies'],
+      ['collection-posts', 'Posts']
     ]);
-    const posts = groups.find((g) => g.id === 'posts')!;
+    const posts = groups.find((g) => g.id === 'collection-posts')!;
     // Newest first, the collection's own order with none chosen: the draft is listed with the published post.
     expect(posts.documents.map((d) => [d.title, d.draft, d.address])).toEqual([
       ['Spring open studio', false, '/blog/spring-open-studio/'],
       ['Winter hours', true, '/blog/winter-hours/']
     ]);
     expect(posts.documents[0].subject).toEqual(entry('posts', 'en_spring'));
-    expect(groups.find((g) => g.id === 'case-studies')!.documents.map((d) => d.address)).toEqual(['/work/the-old-mill/']);
+    expect(groups.find((g) => g.id === 'collection-case-studies')!.documents.map((d) => d.address)).toEqual(['/work/the-old-mill/']);
     // An editorial order chosen for the collection is the list's order.
     const reordered = run(site(), { type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_winter', 'en_spring'] });
-    expect(seoDocuments(reordered).find((g) => g.id === 'posts')!.documents.map((d) => d.title)).toEqual(['Winter hours', 'Spring open studio']);
+    expect(seoDocuments(reordered).find((g) => g.id === 'collection-posts')!.documents.map((d) => d.title)).toEqual(['Winter hours', 'Spring open studio']);
+  });
+
+  it('keeps a collection called “pages” apart from the site’s pages', () => {
+    const s = run(site(), { type: 'collection.create', collectionId: 'pages', name: 'Journal', route: '/journal/' }, { type: 'entry.create', collectionId: 'pages', entryId: 'en_note', title: 'A note', publishedAt: '2026-05-01' });
+    const ids = seoDocuments(s).map((g) => g.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(seoDocuments(s).find((g) => g.label === 'Journal')?.id).toBe('collection-pages');
   });
 
   it('tells documents with the same title apart by their key and address', () => {
     const s = run(site(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring2', title: 'Spring open studio', publishedAt: '2027-03-01' });
     const twins = seoDocuments(s)
-      .find((g) => g.id === 'posts')!
+      .find((g) => g.id === 'collection-posts')!
       .documents.filter((d) => d.title === 'Spring open studio');
     expect(twins).toHaveLength(2);
     expect(new Set(twins.map((d) => d.key)).size).toBe(2);
     expect(new Set(twins.map((d) => d.address)).size).toBe(2);
+    // A document's key is what it is, never its address: it stays when the address changes.
+    const key = twins.find((d) => d.subject.kind === 'entry' && d.subject.entryId === 'en_spring2')!.key;
+    const moved = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring2', slug: 'spring-again' });
+    expect(seoDocument(moved, entry('posts', 'en_spring2'))).toMatchObject({ key, address: '/blog/spring-again/' });
   });
 });
 
@@ -130,6 +167,8 @@ describe('the document a subject names', () => {
     const s = site();
     const home = s.site.homePageId;
     expect(seoDocument(s, page(home))?.title).toBe(s.pages[home].title);
+    const about = s.site.pageOrder.find((id) => s.pages[id].title === 'About')!;
+    expect(seoDocument(s, page(about))).toMatchObject({ subject: page(about), title: 'About', address: s.pages[about].route, home: false });
     expect(seoDocument(s, entry('posts', 'en_winter'))).toMatchObject({ title: 'Winter hours', draft: true, address: '/blog/winter-hours/' });
     const renamed = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'Winter opening hours' });
     expect(seoDocument(renamed, entry('posts', 'en_winter'))?.title).toBe('Winter opening hours');
@@ -158,7 +197,10 @@ describe('the document a subject names', () => {
     noAbout.site.pageOrder = noAbout.site.pageOrder.filter((id) => id !== about);
     expect(keepSeoSubject(noAbout, page(about))).toEqual({ seoSubject: null });
     expect(sameSubject(page(about), page(about))).toBe(true);
+    expect(sameSubject(page(about), page(s.site.homePageId))).toBe(false);
     expect(sameSubject(page(about), entry('posts', about))).toBe(false);
+    expect(sameSubject(entry('posts', 'en_winter'), entry('posts', 'en_spring'))).toBe(false);
+    expect(sameSubject(page(about), null)).toBe(false);
   });
 });
 
@@ -172,11 +214,12 @@ describe('the SEO view in the editor', () => {
   beforeEach(() => setState({ screen: 'editor', snapshot: snapshot(s), pageId: home, selection: cta, leftTab: 'pages', mode: 'edit', post: null, postView: 'write', seoSubject: null, modal: null, definitionMode: null, templateMode: null, pagePlaces: { [home]: cta } }));
 
   it('opens from another panel on a given page or post, closing the dialog that asked', () => {
-    setState({ modal: { kind: 'health' } });
+    const spring = { collectionId: 'posts', entryId: 'en_spring' };
+    setState({ modal: { kind: 'health' }, pageId: about, selection: null, post: spring, postView: 'preview', mode: 'preview' });
     expect(openSeoView(entry('posts', 'en_winter'))).toBe(true);
     expect(getState()).toMatchObject({ leftTab: 'seo', seoSubject: entry('posts', 'en_winter'), modal: null });
-    // What the canvas shows and what is selected there are left as they were, under the view.
-    expect(getState()).toMatchObject({ pageId: home, selection: cta, mode: 'edit', post: null });
+    // What the canvas shows (here a post's preview over About) is left as it was, under the view.
+    expect(getState()).toMatchObject({ pageId: about, selection: null, mode: 'preview', post: spring, postView: 'preview' });
     expect(openSeoView(page(about))).toBe(true);
     expect(getState().seoSubject).toEqual(page(about));
   });
@@ -195,8 +238,10 @@ describe('the SEO view in the editor', () => {
   it('refuses a page or post the project no longer has, leaving the editor as it was', () => {
     openSeoView(page(about));
     setState({ leftTab: 'pages' });
+    setState({ modal: { kind: 'health' } });
     expect(openSeoView(entry('posts', 'en_gone'))).toBe(false);
-    expect(getState()).toMatchObject({ leftTab: 'pages', seoSubject: page(about) });
+    expect(openSeoView(page('pg_gone'))).toBe(false);
+    expect(getState()).toMatchObject({ leftTab: 'pages', seoSubject: page(about), modal: { kind: 'health' } });
     setState({ snapshot: null });
     expect(openSeoView(page(home))).toBe(false);
   });
@@ -204,12 +249,31 @@ describe('the SEO view in the editor', () => {
   it('keeps the page under it out of sight, and a page chosen elsewhere puts the view away', () => {
     openSeoView(page(about));
     expect(pageOutOfSight(getState(), home), 'the page under the view takes opening').toBe(true);
-    // Opened as another page is, at its place, rather than as the page itself.
+    // Opened as another page is, at its place (the section last selected there), rather than as the page itself.
+    setState({ selection: null });
     selectPage(home);
     expect(getState()).toMatchObject({ leftTab: 'pages', pageId: home, selection: cta });
     expect(pageOutOfSight(getState(), home)).toBe(false);
     // The view's document is kept for when it opens again.
     expect(getState().seoSubject).toEqual(page(about));
+  });
+
+  it('starts the AI’s reach again when it opens, leaves or chooses another document', () => {
+    const wide = () => setState({ chatContextEnabled: { page: true, scope: 'site' } });
+    wide();
+    openSeoView(page(about));
+    expect(getState().chatContextEnabled.scope, 'opened').toBe('selection');
+    wide();
+    setState({ seoSubject: entry('posts', 'en_winter') });
+    expect(getState().chatContextEnabled.scope, 'another document').toBe('selection');
+    wide();
+    setState({ seoSubject: entry('posts', 'en_winter') });
+    expect(getState().chatContextEnabled.scope, 'the same one again changes nothing').toBe('site');
+    setState({ leftTab: 'layers' });
+    expect(getState().chatContextEnabled.scope, 'left').toBe('selection');
+    wide();
+    setState({ leftTab: 'pages' });
+    expect(getState().chatContextEnabled.scope, 'another panel outside the view changes nothing').toBe('site');
   });
 
   it('puts a post’s preview under it away too when a page is chosen', () => {

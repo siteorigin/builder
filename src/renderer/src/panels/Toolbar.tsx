@@ -196,7 +196,7 @@ export function Toolbar() {
     ['light', 'Light colors', <Sun key="light" />],
     ['dark', 'Dark colors', <Moon key="dark" />]
   ] as const;
-  const schemeItems: MenuItem[] = SCHEMES.map(([id, label, icon]) => ({ label, icon, checked: previewScheme === id, onSelect: () => setState({ previewScheme: id }) }));
+  const schemeItems: MenuItem[] = SCHEMES.map(([id, label, icon]) => ({ label, icon, checked: previewScheme === id, disabled: seo, onSelect: () => setState({ previewScheme: id }) }));
   const schemeLabel = SCHEMES.find(([id]) => id === previewScheme)![1];
   const zoomItems: MenuItem[] = [
     { label: 'Fit to window', checked: zoom === 'fit', disabled: covered, onSelect: () => setZoom('fit') },
@@ -397,7 +397,8 @@ export function Toolbar() {
             className="icon-btn scheme-btn"
             aria-haspopup="menu"
             aria-expanded={false}
-            title={`Preview colors: ${schemeLabel.toLowerCase()}`}
+            disabled={seo}
+            title={seo ? 'The SEO view covers the canvas. Leave it to preview the page in other colors.' : `Preview colors: ${schemeLabel.toLowerCase()}`}
             aria-label={`Preview colors: ${schemeLabel.toLowerCase()}`}
             onClick={(e) => menu.openAt(e.currentTarget, schemeItems, 'Preview colors')}
           >

@@ -1,5 +1,5 @@
 import './SeoView.css';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { FileText, House, Newspaper, Search } from 'lucide-react';
 import { setState, useStore } from '../store';
 import { seoDocument, seoDocuments, seoSubjectKey, type SeoDocument } from '../lib/seo-view';
@@ -7,6 +7,8 @@ import { seoDocument, seoDocuments, seoSubjectKey, type SeoDocument } from '../l
 /**
  * The SEO view's list (#700), in the sidebar: every page of the site in its page order, then each collection's entries
  * in the collection's order, drafts included. Choosing one makes it the view's document; nothing on the canvas changes.
+ * The list is one stop in the Tab order: the chosen row (else the first), and the arrow keys, Home and End move between
+ * rows across the groups.
  */
 export function SeoPanel() {
   const snap = useStore((s) => s.snapshot);
@@ -15,6 +17,18 @@ export function SeoPanel() {
   const groups = useMemo(() => (state ? seoDocuments(state) : []), [state]);
   const listRef = useRef<HTMLDivElement>(null);
   const chosen = subject ? seoSubjectKey(subject) : null;
+  const keys = groups.flatMap((g) => g.documents.map((d) => d.key));
+  // The row last focused while it is still listed, else the chosen one, else the first.
+  const [focused, setFocused] = useState<string | null>(null);
+  const stop = focused && keys.includes(focused) ? focused : chosen && keys.includes(chosen) ? chosen : (keys[0] ?? null);
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const i = keys.indexOf((e.target as HTMLElement).dataset.seo ?? '');
+    if (i < 0) return;
+    const n = e.key === 'ArrowDown' ? i + 1 : e.key === 'ArrowUp' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? keys.length - 1 : null;
+    if (n === null || n < 0 || n >= keys.length) return;
+    e.preventDefault();
+    listRef.current?.querySelector<HTMLElement>(`[data-seo="${CSS.escape(keys[n])}"]`)?.focus();
+  };
   // The chosen document's row is brought into view when another panel opens the view on it, without taking focus.
   useEffect(() => {
     if (!chosen || !listRef.current?.offsetParent) return;
@@ -26,7 +40,7 @@ export function SeoPanel() {
       <div className="panel-head">
         <h3>SEO</h3>
       </div>
-      <div className="panel-body" ref={listRef}>
+      <div className="panel-body" ref={listRef} onKeyDown={onKey}>
         {groups.map((g) => (
           <section key={g.id} className="seo-group" aria-labelledby={`seo-group-${g.id}`}>
             <h4 id={`seo-group-${g.id}`} className="seo-group-head">
@@ -36,7 +50,15 @@ export function SeoPanel() {
               <ul className="seo-list" aria-labelledby={`seo-group-${g.id}`}>
                 {g.documents.map((d) => (
                   <li key={d.key} className={`seo-row${d.key === chosen ? ' current' : ''}`}>
-                    <button className="seo-open" data-seo={d.key} aria-current={d.key === chosen || undefined} title={d.address} onClick={() => setState({ seoSubject: d.subject })}>
+                    <button
+                      className="seo-open"
+                      data-seo={d.key}
+                      tabIndex={d.key === stop ? 0 : -1}
+                      aria-current={d.key === chosen || undefined}
+                      title={d.address}
+                      onFocus={() => setFocused(d.key)}
+                      onClick={() => setState({ seoSubject: d.subject })}
+                    >
                       <span className="seo-row-title">
                         {d.home && <House role="img" aria-label="Home page" />}
                         <span className="ellipsis">{d.title}</span>

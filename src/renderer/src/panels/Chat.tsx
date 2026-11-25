@@ -738,7 +738,8 @@ export function Chat() {
     // What the writer holds is saved first, so the AI reads the post as the author sees it. Text that could not be
     // saved stays in the writer with its note, and the message stays here.
     // Only the writer of the post the message is about: Continue for another post never waits on this one.
-    if (ctx.post && workspace === 'write' && openPostRef?.collectionId === ctx.post.collectionId && openPostRef.entryId === ctx.post.entryId) {
+    // The SEO view can choose the post the writer holds out of sight: its text is saved first too (#700).
+    if (ctx.post && (workspace === 'write' || workspace === 'seo') && openPostRef?.collectionId === ctx.post.collectionId && openPostRef.entryId === ctx.post.entryId) {
       const saved = await saveOpenPost().catch(() => false);
       if (!saved) {
         setSending(false);

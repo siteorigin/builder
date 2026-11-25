@@ -9,7 +9,7 @@ import { MOD, createProject, eventually, launch, openInspector, scratch, step } 
 
 const { WORK, SHOTS, cleanup } = scratch('seo-view');
 const { app, win, errors } = await launch(WORK);
-const frame = await createProject(win, { name: 'Riverside Studio', parentDir: join(WORK, 'sites'), starter: 'business' });
+await createProject(win, { name: 'Riverside Studio', parentDir: join(WORK, 'sites'), starter: 'business' });
 
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 const apply = async (operations, label) => {
@@ -44,7 +44,7 @@ const home = s0.pages[s0.site.homePageId];
 const about = Object.values(s0.pages).find((p) => p.title === 'About');
 assert.ok(about, 'the starter has an About page');
 
-step('a section of Home selected, with the preview marked so a reload would show');
+step('a section of Home selected, with the preview’s frame marked so a new one would show');
 await rail('layers').click();
 await win.locator(`[role="tree"] [role="treeitem"][data-owner="page:${home.id}"]`).first().click();
 await openInspector(win);
@@ -56,8 +56,11 @@ const sectionName = await eventually(async () => {
 assert.equal(await placeShown.innerText(), home.title, 'the toolbar names Home');
 const crumbs = win.locator('nav.crumbs');
 assert.equal(await crumbs.count(), 1, 'the status bar leads to the section');
-await frame.locator('html').evaluate(() => (window.__seoViewMark = 'kept'));
-const frameKept = () => frame.locator('html').evaluate(() => window.__seoViewMark === 'kept');
+// The frame element itself, not its page: the preview's own server may reload the page (new routes for the blog),
+// but a canvas taken down and put back would be a new frame.
+const frameEl = win.locator('.canvas-holder .frame-box iframe');
+await frameEl.evaluate((el) => (el.dataset.seoViewMark = 'kept'));
+const frameKept = async () => (await frameEl.count()) === 1 && (await frameEl.evaluate((el) => el.dataset.seoViewMark === 'kept'));
 
 step('the rail entry opens the SEO view over the canvas, which stays loaded out of reach');
 assert.equal(await rail('seo').getAttribute('aria-label'), 'SEO');
@@ -109,6 +112,19 @@ await win.waitForTimeout(800);
 assert.equal(await homeNodes(), homeBefore, 'Home keeps its sections, in their order');
 assert.equal(await holder.isVisible(), true, 'and Escape leaves the view open');
 
+step('the command menu offers nothing that acts on the covered canvas, and still goes to the page under the view');
+await win.keyboard.press(`${MOD}+K`);
+const cmdk = win.locator('.cmdk');
+await cmdk.waitFor();
+await win.keyboard.type('phone width');
+const phoneRow = cmdk.getByRole('option', { name: /^Preview at phone width/ });
+await eventually(async () => assert.equal(await phoneRow.getAttribute('aria-disabled'), 'true', 'a width waits while the view covers the canvas'));
+assert.match(await phoneRow.innerText(), /Not in the SEO view/);
+await cmdk.getByRole('combobox').fill('');
+await eventually(async () => assert.equal(await cmdk.getByRole('option', { name: new RegExp(`^Go to ${home.title}`) }).count(), 1, 'Home, under the view, is offered to go to'));
+await win.keyboard.press('Escape');
+await cmdk.waitFor({ state: 'detached' });
+
 step('choosing a page, then a draft post, shows each as the view’s document');
 const row = (title) => panel.locator('.seo-open', { hasText: title }).first();
 await row('About').click();
@@ -122,13 +138,26 @@ await eventually(async () => assert.equal(await view.locator('.seo-title').inner
 assert.equal(await view.locator('.seo-address').innerText(), '/blog/winter-hours/');
 assert.match(await view.innerText(), /draft is left out of the website/i);
 assert.equal(await row('About').getAttribute('aria-current'), null, 'one document is chosen at a time');
+assert.equal(await row('Winter hours').getAttribute('aria-current'), 'true');
+await eventually(async () => assert.equal(await inspected.innerText(), 'Winter hours', 'the Inspector names the chosen post'));
+// The list is one Tab stop, on the chosen row; the arrow keys move between rows across the groups, and Enter chooses.
+assert.deepEqual(await panel.locator('.seo-open[tabindex="0"]').allInnerTexts().then((t) => t.map((x) => x.split('\n')[0])), ['Winter hours'], 'the chosen row is the list’s Tab stop');
+await row('Winter hours').focus();
+await win.keyboard.press('ArrowUp');
+await eventually(async () => assert.equal(await row('Spring open studio').evaluate((el) => el === document.activeElement), true, 'Up goes to the row above'));
+await win.keyboard.press('Home');
+await eventually(async () => assert.equal(await panel.locator('.seo-open').first().evaluate((el) => el === document.activeElement), true, 'Home goes to the first page'));
+await win.keyboard.press('Enter');
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), s0.pages[s0.site.pageOrder[0]].title, 'Enter chooses it'));
+await row('Winter hours').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
 await win.screenshot({ path: join(SHOTS, 'seo-view.png') });
 
 step('the rail entry again leaves the view: the canvas is back as it was, the same preview and the same selection');
 await rail('seo').click();
 await eventually(async () => assert.equal(await holder.isVisible(), false, 'the view goes'));
 assert.equal(await canvasInert(), false, 'the canvas takes input again');
-assert.equal(await frameKept(), true, 'the preview was never reloaded');
+assert.equal(await frameKept(), true, 'the preview’s frame stayed loaded under the view');
 await eventually(async () => assert.equal(await inspected.innerText(), sectionName, 'Home’s section is still selected'));
 assert.equal(await placeShown.innerText(), home.title, 'and the toolbar names Home');
 assert.equal(await win.getByRole('button', { name: 'Edit', exact: true }).isDisabled(), false, 'the mode can change again');
@@ -165,17 +194,60 @@ await rail('posts').click();
 await win.locator('.post-row .post-open', { hasText: 'Spring open studio' }).click();
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer shows the post'));
 const modeButton = (name) => win.locator('.toolbar [aria-label="Mode"]').getByRole('button', { name, exact: true });
-// Both in one task, so the view opens while the writer's save for the preview is still on its way.
-await win.evaluate(() => {
+// Left alone, Preview from the toolbar previews the post once the writer has saved it.
+await modeButton('Preview').click();
+await eventually(async () => assert.equal(await win.locator('.posts-previewing').isVisible(), true, 'the post is previewed'));
+await win.locator('.posts-previewing').getByRole('button', { name: 'Back to writing' }).click();
+await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'back in the writer'));
+await eventually(async () => assert.equal(await modeButton('Edit').getAttribute('aria-pressed'), 'true'));
+// Now both in one task, so the view opens while the writer's save for the preview is still on its way.
+const writingAtClick = await win.evaluate(() => {
   document.querySelector('.toolbar [aria-label="Mode"] [aria-label="Preview"]').click();
+  const writing = !document.querySelector('.post-writer-holder').hidden;
   document.querySelector('.rail [data-rail="seo"]').click();
+  return writing;
 });
+assert.equal(writingAtClick, true, 'Preview was chosen from the writer');
 await eventually(async () => assert.equal(await holder.isVisible(), true, 'the view is open'));
 await eventually(async () => assert.equal(await modeButton('Edit').getAttribute('aria-pressed'), 'true', 'the post’s preview never began, so Edit is the mode again'));
 await rail('posts').click();
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer is back'));
 assert.equal(await modeButton('Preview').getAttribute('aria-pressed'), 'false', 'with Preview ready to choose again');
 assert.equal(await modeButton('Preview').isDisabled(), false);
+
+step('opened from Preview, the view covers the canvas’s own controls, and leaving it returns to the same Preview');
+await rail('pages').click();
+await modeButton('Preview').click();
+await eventually(async () => assert.equal(await win.locator('.preview-pill').isVisible(), true, 'the page is previewed'));
+await win.keyboard.press(`${MOD}+K`);
+await cmdk.waitFor();
+await win.keyboard.type('SEO panel');
+await eventually(async () => assert.equal(await cmdk.getByRole('option', { name: /^Show the SEO panel/ }).getAttribute('aria-selected'), 'true'));
+await win.keyboard.press('Enter');
+await eventually(async () => assert.equal(await holder.isVisible(), true, 'the command menu opens the view'));
+// The pill sits where the view is drawn: what is painted there is the view, never the pill (the canvas is inert, so
+// it is told apart by its own paint, not by hit-testing).
+const pillBox = await win.locator('.preview-pill').boundingBox();
+await win.locator('.seo-view-holder').evaluate((el) => (el.style.background = 'rgb(1, 2, 3)'));
+const shot = await win.screenshot({ clip: { x: pillBox.x + pillBox.width / 2 - 1, y: pillBox.y + pillBox.height / 2 - 1, width: 2, height: 2 } });
+await win.locator('.seo-view-holder').evaluate((el) => (el.style.background = ''));
+const painted = await win.evaluate(async (b64) => {
+  const img = new Image();
+  img.src = `data:image/png;base64,${b64}`;
+  await img.decode();
+  const c = document.createElement('canvas');
+  c.width = img.width;
+  c.height = img.height;
+  const g = c.getContext('2d');
+  g.drawImage(img, 0, 0);
+  return [...g.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+}, shot.toString('base64'));
+assert.deepEqual(painted, [1, 2, 3], 'the view paints over the Preview pill');
+await win.screenshot({ path: join(SHOTS, 'seo-view-over-preview.png') });
+await rail('seo').click();
+await eventually(async () => assert.equal(await holder.isVisible(), false));
+assert.equal(await modeButton('Preview').getAttribute('aria-pressed'), 'true', 'the canvas is still in Preview');
+await modeButton('Edit').click();
 
 step('the chosen post deleted while the view is open: the view falls back to nothing chosen');
 await rail('seo').click();
