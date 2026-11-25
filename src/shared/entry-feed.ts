@@ -85,6 +85,30 @@ export function entryQueryKey(query: EntryQuery, max?: number): string {
   return JSON.stringify([query.collection, query.category, query.tag, query.count ?? null, max ?? null]);
 }
 
+/**
+ * The entry feeds code reads from `so_pages`, by the keys its source names: code converted from a design keeps the
+ * reads its design's feeds were written with (`so_pages?.entries?.["…"]`), each naming what its placement chose, with
+ * the read as its source spells it (`raw`). A key this version did not write is left out.
+ */
+export function codeEntryQueries(source: string): Array<{ key: string; query: EntryQuery; max?: number; raw: string }> {
+  const out: Array<{ key: string; query: EntryQuery; max?: number; raw: string }> = [];
+  for (const m of source.matchAll(/so_pages\?\.entries\?\.\[("(?:[^"\\]|\\.)*")\]/g)) {
+    try {
+      const key: unknown = JSON.parse(m[1]);
+      const parts: unknown = typeof key === 'string' ? JSON.parse(key) : null;
+      if (!Array.isArray(parts) || parts.length !== 5) continue;
+      const [collection, category, tag, count, max] = parts;
+      if (![collection, category, tag].every((v) => typeof v === 'string') || ![count, max].every((v) => v === null || (typeof v === 'number' && Number.isInteger(v) && v >= 0))) continue;
+      const query: EntryQuery = { collection, category, tag, ...(typeof count === 'number' ? { count } : {}) };
+      // Read back under the key it was written with, so the rows land where the code looks.
+      if (entryQueryKey(query, max ?? undefined) === key) out.push({ key, query, ...(typeof max === 'number' ? { max } : {}), raw: m[0] });
+    } catch {
+      // Not a key this version wrote: nothing to hand down for it.
+    }
+  }
+  return out;
+}
+
 /** The collection an entry feed reads: the one it names (none when it names one the project lacks), else the one whose entry's page it is on, else the blog, else the first by ID. */
 export function feedCollection(state: ProjectState, query: Pick<EntryQuery, 'collection'>, place: Pick<FeedPlace, 'entry'> = {}): Collection | undefined {
   const collections = state.collections ?? {};

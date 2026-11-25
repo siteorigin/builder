@@ -778,6 +778,28 @@ export const OPERATION_SCHEMAS = {
     .describe('Add a collection of entries kept apart from the pages, such as blog posts or projects.'),
   'collection.update': z.object({ type: z.literal('collection.update'), collectionId: z.string(), ...COLLECTION_SETTINGS }),
   'collection.remove': z.object({ type: z.literal('collection.remove'), collectionId: z.string() }).describe('Delete a collection and every entry in it. Refused while anything outside it links to one of its entries.'),
+  'collection.createTerm': z
+    .object({
+      type: z.literal('collection.createTerm'),
+      collectionId: z.string(),
+      taxonomyId: z.string().max(60).describe('The grouping: "categories" or "tags" (added to a collection that has none), or another grouping the collection has.'),
+      label: z.string().min(1).max(80).describe('The term\'s name as readers see it; no other term of the grouping may have it, ignoring case.'),
+      termId: z.string().max(60).optional().describe('Its stable ID, also its archive address (category/<ID>/): lowercase letters, numbers and hyphens. Defaults to a slug of the name, numbered when taken.')
+    })
+    .describe('Add a category, a tag or another term to one of a collection\'s groupings.'),
+  'collection.renameTerm': z
+    .object({
+      type: z.literal('collection.renameTerm'),
+      collectionId: z.string(),
+      taxonomyId: z.string().max(60),
+      termId: z.string().max(60),
+      label: z.string().min(1).max(80).describe('Its new name.'),
+      newTermId: z.string().max(60).optional().describe('Its new ID and archive address. Defaults to a slug of the new name (the ID it has, when that slug is the same).')
+    })
+    .describe('Rename a term. Its name and ID change together: every entry filed under it stays filed under it, and every list of entries that chooses it, by name or ID, goes on listing the same entries.'),
+  'collection.removeTerm': z
+    .object({ type: z.literal('collection.removeTerm'), collectionId: z.string(), taxonomyId: z.string().max(60), termId: z.string().max(60) })
+    .describe('Delete a term from its grouping and from every entry filed under it. Refused while a list of entries chooses entries by it.'),
   'entry.create': z.object({
     type: z.literal('entry.create'),
     collectionId: z.string(),
