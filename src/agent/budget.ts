@@ -65,6 +65,9 @@ interface ReadInfo {
   extras?: string[];
   /** The project revision it was read at, when the result says. */
   revision?: number;
+  /** read_collection_entry and list_collection_entries: the collection, and the entry, it read. */
+  collectionId?: string;
+  entryId?: string;
 }
 
 const PROJECT_EXTRAS = ['tokens', 'catalogue', 'components'];
@@ -124,6 +127,15 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     // A check that left some of its cases unmeasured never stands in for one that measured them.
     return { ...base, ...(body?.incomplete === true ? { partial: true } : {}), target: `component-check:${componentSample(body, args)}:${id}:${Number(body?.offset ?? args.offset ?? 0)}` };
   }
+  if (item.name === 'read_collection_entry' || item.name === 'list_collection_entries') {
+    // Each part of a long post, and each page of a list, is its own read: a later part never stands in for an earlier one.
+    const collectionId = String(body?.collectionId ?? args.collectionId ?? '');
+    const offset = Number(body?.offset ?? args.offset ?? 0);
+    if (!collectionId) return null;
+    if (item.name === 'list_collection_entries') return { ...base, target: `entries:${JSON.stringify([collectionId, offset])}`, collectionId };
+    const entryId = String(body?.entryId ?? args.entryId ?? '');
+    return entryId ? { ...base, target: `entry:${JSON.stringify([collectionId, entryId, offset])}`, collectionId, entryId } : null;
+  }
   if (item.name === 'audit_seo') {
     // The page it was narrowed to as the result names it (a route and its page's ID are one page), the pillar, and
     // which part of each list it showed: each is its own read, never made out of date by a part or a scope it did not show.
@@ -176,6 +188,17 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
     const sample = componentSample(body, args);
     const offset = Number(body?.offset ?? args.offset ?? 0);
     return `${TOMBSTONE}inspect_component ${body?.definitionId ?? args.definitionId ?? args.componentId}${sample === 'defaults' ? '' : ` placed at ${sample}`}${offset ? ` from offset ${offset}` : ''}${rev}. Inspect it again if you need it.]`;
+  }
+  if (read.name === 'read_collection_entry') {
+    const at = Number(body?.offset ?? args.offset ?? 0);
+    const title = typeof body?.title === 'string' ? ` "${body.title.slice(0, 40)}"` : '';
+    const of = typeof body?.length === 'number' ? ` of ${body.length} characters` : '';
+    return `${TOMBSTONE}read_collection_entry ${String(body?.collectionId ?? args.collectionId).slice(0, 60)}/${String(body?.entryId ?? args.entryId).slice(0, 40)}${title}${at ? ` from offset ${at}` : ''}${of}${rev}. Read this part again before relying on its text or rewriting it.]`;
+  }
+  if (read.name === 'list_collection_entries') {
+    const at = Number(body?.offset ?? args.offset ?? 0);
+    const total = typeof body?.total === 'number' ? `, ${body.total} entries` : '';
+    return `${TOMBSTONE}list_collection_entries ${String(body?.collectionId ?? args.collectionId).slice(0, 60)}${at ? ` from offset ${at}` : ''}${total}${rev}. List it again for the current entries.]`;
   }
   if (read.name === 'audit_seo') {
     // A page the model named that no result confirmed is shown as far as a line allows.
@@ -235,11 +258,15 @@ export function applyContextBudget(
     const reads: ReadInfo[] = [];
     let lastMutation = -1;
     const changes: Array<{ index: number; text: string }> = [];
+    /** Each post a write landed on, as its result names it: never words in a post that happen to name another. */
+    const entryWrites: Array<{ index: number; collectionId: string; entryId: string }> = [];
     items.forEach((it, i) => {
       if (it.kind !== 'tool_result') return;
       if (!it.isError && opts.isMutation(it.name)) {
         lastMutation = i;
         changes.push({ index: i, text: `${JSON.stringify(argsByCall.get(it.callId) ?? {})} ${it.content}` });
+        const written = it.name === 'upsert_collection_entry' ? parse(it.content) : null;
+        if (written?.ok === true && typeof written.collectionId === 'string' && typeof written.entryId === 'string') entryWrites.push({ index: i, collectionId: written.collectionId, entryId: written.entryId });
       }
       const read = describeRead(it, i, argsByCall.get(it.callId) ?? {});
       if (read) reads.push(read);
@@ -264,6 +291,9 @@ export function applyContextBudget(
     const stale = (r: ReadInfo): boolean => {
       const changedAfter = (id: string) => changes.some((c) => c.index > r.index && c.text.includes(id));
       if (r.name === 'read_page') return changedAfter(r.pageId!);
+      // A post goes out of date when a later write lands on it, and a list of a collection when one lands on any of its posts.
+      if (r.name === 'read_collection_entry') return entryWrites.some((w) => w.index > r.index && w.collectionId === r.collectionId && w.entryId === r.entryId);
+      if (r.name === 'list_collection_entries') return entryWrites.some((w) => w.index > r.index && w.collectionId === r.collectionId);
       // A patch names its component; a later read with another hash shows a change made some other way.
       if (r.name === 'read_source') return changedAfter(r.definitionId!) || (!!r.hash && reads.some((n) => n.index > r.index && n.target === r.target && !!n.hash && n.hash !== r.hash));
       // A measurement, an element's props, an audit and the project summary all describe the revision they were read at:

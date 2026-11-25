@@ -13,7 +13,9 @@ import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditab
 import { chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { headroomWarning, replayedWords, smallToolsCover } from '../lib/chatHeadroom';
-import { selectPage } from '../lib/actions';
+import { openPost, selectPage } from '../lib/actions';
+import { postShown, postWorkspace } from '../lib/posts';
+import { saveOpenPost } from '../lib/post-draft';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
@@ -84,6 +86,8 @@ function summaryOf(r: NonNullable<ChatMessage['result']>) {
  */
 function scopeOf(ctx?: ChatContext | null, state?: ProjectState): string {
   if (!ctx) return '';
+  // A post's request reaches that post alone, which its target names.
+  if (ctx.post && typeof ctx.post === 'object') return targetOf(ctx);
   const inComponent = typeof ctx.component?.name === 'string';
   if (ctx.mode !== 'ask' && !ctx.selectionLabel && !inComponent && ctx.pageTitle) return ctx.scope === 'page' ? `This page · ${ctx.pageTitle}` : `Whole site · from ${ctx.pageTitle}`;
   // A part of a placed component can change the whole placement (agent/scope.ts), which is the real boundary.
@@ -147,6 +151,12 @@ export function Chat() {
   const selection = useStore((s) => s.selection);
   const pageId = useStore((s) => s.pageId);
   const definitionMode = useStore((s) => s.definitionMode);
+  // The post the Posts workspace shows, written or previewed: the next message is about it, not the page under it.
+  const openPostRef = useStore((s) => s.post);
+  const leftTab = useStore((s) => s.leftTab);
+  const postView = useStore((s) => s.postView);
+  const editorMode = useStore((s) => s.mode);
+  const postPreviewAt = useStore((s) => s.postPreviewAt);
   const snap = useStore((s) => s.snapshot);
   const viewport = useStore((s) => s.viewport);
   const ctxOn = useStore((s) => s.chatContextEnabled);
@@ -406,7 +416,16 @@ export function Chat() {
   if (!snap) return null;
   const st = snap.state;
   // What the next message is about: the page, or the component edited everywhere, and the element within it.
-  const scope = composerScope(st, { pageId, selection, definitionMode });
+  // While the Posts workspace is in front, the element or design behind it is never the target: the post it shows, or
+  // the page its preview went on to, is.
+  const workspace = postWorkspace({ leftTab, postView, mode: editorMode, post: openPostRef });
+  const shownPost = workspace ? postShown(st, workspace, openPostRef, postPreviewAt) : null;
+  const scope = composerScope(st, {
+    pageId: shownPost?.kind === 'page' ? shownPost.pageId : pageId,
+    selection: workspace ? null : selection,
+    definitionMode: workspace ? null : definitionMode,
+    post: shownPost?.kind === 'post' ? shownPost.ref : null
+  });
   const { page, component } = scope;
   const selLabel = scope.selectionLabel;
   const sel = selLabel?.toLowerCase();
@@ -418,13 +437,13 @@ export function Chat() {
   const localModel = configured && provider?.id === 'local';
   const headroom =
     localModel && !asking && settings
-      ? headroomWarning({ draft, history: replayedWords(msgs), contextWindow: settings.ai.local.contextWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !(toSelection && !!selection && smallToolsCover(st, selection)) })
+      ? headroomWarning({ draft, history: replayedWords(msgs), contextWindow: settings.ai.local.contextWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !scope.post && !(toSelection && !!scope.selection && smallToolsCover(st, scope.selection)) })
       : null;
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
   // edited everywhere offers none.
   // A local server or model that failed its last check is said instead, so no starters are offered.
-  const fresh = !component && msgs.length === 0 && configured && !notReady && !!conversation && !draft.trim();
+  const fresh = !component && !scope.post && msgs.length === 0 && configured && !notReady && !!conversation && !draft.trim();
   const suggestions: Array<{ text: string; kind: string }> = !fresh
     ? []
     : askMode
@@ -455,7 +474,8 @@ export function Chat() {
   // The run's scope is named as it stood when it was sent, so a rename or a removal meanwhile cannot rewrite it.
   if (activeRunId && workingUser?.context && frozenScope.current.run !== activeRunId) frozenScope.current = { run: activeRunId, text: scopeOf(workingUser.context, st) };
   const sentScope = activeRunId && frozenScope.current.run === activeRunId ? frozenScope.current.text : '';
-  const stripDetail = workingUser?.context ? (widened && workingUser.context.pageTitle ? `Whole site · from ${workingUser.context.pageTitle}` : sentScope || scopeOf(workingUser.context, st)) : '';
+  const sentPost = typeof workingUser?.context?.post?.title === 'string' ? workingUser.context.post.title : null;
+  const stripDetail = workingUser?.context ? (widened && (sentPost !== null || workingUser.context.pageTitle) ? `Whole site · from ${sentPost !== null ? `the post “${sentPost || 'Untitled'}”` : workingUser.context.pageTitle}` : sentScope || scopeOf(workingUser.context, st)) : '';
   const hasLibraryImages = Object.values(st.assets.assets).some((a) => a?.kind === 'image');
   /** Add a library image to the message, or take it out again; the draft stays as it is. */
   const toggleImage = (id: string) => {
@@ -489,7 +509,10 @@ export function Chat() {
   type ScopeChoice = { value: ChatEditScope; label: string; description: string; icon: ReactNode; title: string; chip: string; where?: string };
   // An edit is limited by the containing placement; a question is about the element itself.
   const selName = askMode ? selLabel : (boundary ?? selLabel);
-  const scopeOptions: ScopeChoice[] = component
+  const scopeOptions: ScopeChoice[] = scope.post
+    ? // A post is the one thing the message is about: shown, not chosen. The AI asks before changing more.
+      [{ value: 'page' as const, label: 'This post', description: askMode ? 'The post you have open' : 'Its words and details', icon: <Pencil />, title: askMode ? `The post “${scope.post.title}”` : `Only the post “${scope.post.title}”`, chip: scope.post.title, where: 'this post' }]
+    : component
     ? [
         ...(selLabel ? [{ value: 'selection' as const, label: selLabel, description: 'Only this element', icon: <MousePointerClick />, title: askMode ? `${selLabel}, in ${component.name}` : `Only ${selLabel}, in ${component.name} everywhere it is used`, chip: selLabel, where: `${component.name} everywhere` }] : []),
         { value: 'site' as const, label: `All of ${component.name}`, description: 'Everywhere it is used', icon: <Component />, title: askMode ? `${component.name}, the component you are editing everywhere` : `All of ${component.name}, everywhere it is used`, chip: component.name, where: 'everywhere' }
@@ -592,12 +615,14 @@ export function Chat() {
   const send = async (text = draft, context?: ChatContext): Promise<boolean> => {
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
-    // The assistant has no tools for collections yet: an edit sent from a layout would land on the page behind it.
-    if (getState().templateMode && (context ? context.mode !== 'ask' : !askMode))
+    // The assistant has no tools for collection layouts: an edit sent from one would land on the page behind it. A post
+    // open in the Posts workspace, or the page its preview went on to, is a target of its own instead.
+    const ownTarget = context ? !!context.post : !!scope.post || shownPost?.kind === 'page';
+    if (getState().templateMode && !ownTarget && (context ? context.mode !== 'ask' : !askMode))
       return (toast('The assistant can’t change a collection’s layout yet. Click Done to go back to the page, or ask it a question.', 'info'), false);
     // A code component open in Component Studio is not one the AI edits: an edit sent now would reach the page behind
     // it. A question changes nothing, so it is still asked.
-    const code = !context && !askMode ? uneditableDesign(st, definitionMode) : null;
+    const code = !context && !askMode && !ownTarget ? uneditableDesign(st, definitionMode) : null;
     if (code) return (toast(`From Component Studio, the AI can’t be asked to change a code component like ${code} yet. Edit its code, or click Done editing to ask for a change to a page.`, 'info'), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
@@ -608,6 +633,16 @@ export function Chat() {
     taRef.current?.focus();
     setSending(true);
     nearBottom.current = true;
+    // What the writer holds is saved first, so the AI reads the post as the author sees it. Text that could not be
+    // saved stays in the writer with its note, and the message stays here.
+    // Only the writer of the post the message is about: Continue for another post never waits on this one.
+    if (ctx.post && workspace === 'write' && openPostRef?.collectionId === ctx.post.collectionId && openPostRef.entryId === ctx.post.entryId) {
+      const saved = await saveOpenPost().catch(() => false);
+      if (!saved) {
+        setSending(false);
+        return (toast('Part of the post is not saved yet, so the AI would not see it. See the note above its text.', 'error'), false);
+      }
+    }
     // Sent for the model the composer names now: if Settings or the local server would send it elsewhere by the time it
     // runs, nothing is sent and the turn says so.
     let r: Awaited<ReturnType<typeof api.ai.send>>;
@@ -1583,7 +1618,21 @@ function ResultCard({
       const s = getState();
       const st = s.snapshot?.state;
       const view = st ? retryView(st, ctx, { pageId: s.pageId, definitionMode: s.definitionMode }) : null;
+      // A request about a post goes back to that post, in the writer, before the request goes back into the box: one the
+      // writer cannot leave yet (text it could not save) stays open, and the box keeps what it holds.
+      if (view?.post && !(await openPost(view.post.collectionId, view.post.entryId))) return;
+      // Anything written into the box while the open post was saving is the author's own: it is never replaced unasked.
+      if (view?.post && (draftFor(getState().chatDrafts, conv.id).trim() !== typed || imagesFor(getState().chatImages, conv.id).join('\n') !== attached.join('\n')))
+        return void toast('The post is open. What you wrote meanwhile is kept, so the earlier request was not put back.', 'info');
+      // A request about a page leaves the Posts workspace, and a collection's layout behind it, whose post or layout
+      // would otherwise stay in front of the page it is about.
+      const covering = postWorkspace(getState());
+      const leavePosts =
+        ctx?.post === undefined && covering
+          ? { ...(getState().leftTab === 'posts' ? { leftTab: 'pages' as const } : {}), ...(covering === 'preview' ? { mode: 'edit' as const } : {}), ...(getState().templateMode && !view?.definitionMode ? { templateMode: null } : {}) }
+          : {};
       setState({
+        ...leavePosts,
         chatDrafts: withDraft(getState().chatDrafts, conv.id, user.text),
         chatImages: withImages(getState().chatImages, conv.id, originalImages),
         // Editing a component everywhere happens in Edit, never in Preview.

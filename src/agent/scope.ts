@@ -3,7 +3,8 @@
  * by declaring a different scope. A request sent with a selection attached is limited to that element
  * until the user explicitly approves a wider change. A part selected inside a placement (its heading, one card) is
  * limited to that part: its own content and styles, never the rest of the placement. A request about one page is
- * limited to that page's sections and its own settings.
+ * limited to that page's sections and its own settings. A request sent while a post is open in the Posts workspace is
+ * limited to that post.
  */
 import type { ChatContext } from '@shared/api';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
@@ -13,6 +14,7 @@ import { enclosingRepeatProp, findParent, getTree, itemLinkPairs, settledRoot, s
 import { repeatedPartList } from '@shared/item-styles';
 import { bindingSites } from '@engine/schema';
 import { walkOperations } from '@engine/apply';
+import type { CollectionWriteGrant } from '@shared/collection-grant';
 
 /** A part selected inside a placement: the run may change only what that part shows. */
 export interface PartAuthority {
@@ -34,21 +36,39 @@ export interface PartAuthority {
  * - selection: one element and what is inside it; with `part`, only what that part of a placement shows.
  * - component: one component's whole design, edited everywhere: every node of it (all its top-level nodes) and its
  *   own contract (properties, defaults, parts, variants and slots). Every change applies to every placement.
+ * - entry: one post of a collection, open in the Posts workspace: its own words and details, filed under categories
+ *   its collection already has. A new post, a new category (which can change what a feed on a page chooses) and
+ *   anything on a page need the user's approval.
  */
 export type Authority =
   | { kind: 'site' }
   | { kind: 'page'; pageId: string; label: string }
   | { kind: 'selection'; owner: OwnerRef; nodeId: string; label: string; part?: PartAuthority }
-  | { kind: 'component'; definitionId: string; label: string };
+  | { kind: 'component'; definitionId: string; label: string }
+  | { kind: 'entry'; collectionId: string; entryId: string; label: string };
 
 /** How a page is named where a run's limit is said: "the About page". */
 export const pageLabel = (title: unknown) => `the ${(typeof title === 'string' && title.trim()) || 'current'} page`;
+
+/** How a post is named where a run's limit is said: the post “Spring open studio”. */
+export const postLabel = (title: unknown) => `the post “${(typeof title === 'string' && title.trim()) || 'Untitled'}”`;
+
+/** The post a request names, while its collection still has it. */
+export function liveEntry(state: ProjectState, collectionId: string, entryId: string) {
+  const c = Object.hasOwn(state.collections ?? {}, collectionId) ? state.collections[collectionId] : undefined;
+  return c && Object.hasOwn(c.entries, entryId) ? c.entries[entryId] : undefined;
+}
 
 /**
  * What a request may change as it starts, from what it was sent with. A request that chose its scope says so; one
  * saved before scopes could be chosen means what it meant then: its selection, its component, or the whole site.
  */
-export function requestAuthority(ctx: Pick<ChatContext, 'pageId' | 'pageTitle' | 'selection' | 'selectionLabel' | 'component' | 'scope'> | undefined, state: ProjectState): Authority {
+export function requestAuthority(ctx: Pick<ChatContext, 'pageId' | 'pageTitle' | 'selection' | 'selectionLabel' | 'component' | 'scope' | 'post'> | undefined, state: ProjectState): Authority {
+  // A post open in the Posts workspace: the request is about it, whatever page lies under the writer. Named as it is now.
+  if (ctx?.post && !ctx.component) {
+    const { collectionId, entryId, title } = ctx.post;
+    return { kind: 'entry', collectionId, entryId, label: postLabel(liveEntry(state, collectionId, entryId)?.title ?? title) };
+  }
   if (ctx?.scope === 'page' && !ctx.component) {
     // Named as it is now: the run's messages talk about the page the author sees.
     const live = Object.hasOwn(state.pages, ctx.pageId) ? state.pages[ctx.pageId].title : ctx.pageTitle;
@@ -263,7 +283,7 @@ function writesDefault(state: ProjectState, op: EditOperation): string | null {
  *  are visual edits to a managed component, never code, so they do not depend on Developer mode. A page's run never
  *  may: a component's contract shows on every page it is placed on. */
 export function canEditContracts(authority: Authority): boolean {
-  if (authority.kind === 'page') return false;
+  if (authority.kind === 'page' || authority.kind === 'entry') return false;
   return authority.kind !== 'selection' || authority.owner.kind === 'component';
 }
 
@@ -494,6 +514,9 @@ export interface AuthorityGrants {
   /** The menu links to the page that the page tool compiled, because the call asked for them (addToHeaderNav,
    *  addToFooterNav). Only these exact insertions reach the shared header and footer. */
   navigation?: EditOperation[];
+  /** The one post (and the categories it is filed under) the post tool's call writes: the project refuses every other
+   *  collection change from a run (see shared/collection-grant). */
+  collectionWrite?: CollectionWriteGrant;
 }
 
 const sameOp = (a: EditOperation, b: EditOperation) => a === b || JSON.stringify(a) === JSON.stringify(b);
@@ -542,6 +565,7 @@ function checkPageOne(state: ProjectState, op: EditOperation, authority: Extract
 export function checkAuthority(state: ProjectState, ops: EditOperation[], authority: Authority, grants: AuthorityGrants = {}): string | null {
   if (authority.kind === 'site') return null;
   if (authority.kind === 'component') return checkComponentAuthority(state, ops, authority);
+  if (authority.kind === 'entry') return checkEntryAuthority(state, ops, authority);
   if (authority.kind === 'page') return walkOperations(state, ops, (draft, op) => checkPageOne(draft, op, authority, grants));
   return walkOperations(state, ops, (draft, op) => checkOne(draft, op, authority));
 }
@@ -610,6 +634,24 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
   }
 }
 
+/**
+ * Returns null when every operation changes only the one post: its own words and details, filed under categories it
+ * may already be filed under. A new category is refused: the engine may move a feed on a page onto another term so it
+ * goes on listing what it did, which reaches beyond the post.
+ */
+function checkEntryAuthority(state: ProjectState, ops: EditOperation[], authority: Extract<Authority, { kind: 'entry' }>): string | null {
+  const label = authority.label;
+  if (!liveEntry(state, authority.collectionId, authority.entryId)) return `${label[0].toUpperCase()}${label.slice(1)} is no longer in the site.`;
+  for (const op of ops) {
+    if (op.type === 'collection.createTerm') return `Adding the category “${op.label}” changes the categories every post of the collection can be filed under: more than ${label}.`;
+    if (op.type === 'entry.create') return `Creating a new post changes more than ${label}.`;
+    if (op.type !== 'entry.update' || op.collectionId !== authority.collectionId || op.entryId !== authority.entryId) return `${op.type} changes something outside ${label}.`;
+    // A new address keeps the old one working site-wide; the post tool never sends one, but the check stays honest.
+    if (op.slug !== undefined) return `A new address for ${label} changes the site's addresses: more than the post.`;
+  }
+  return null;
+}
+
 export const WIDEN_YES = 'Yes, allow changes beyond the selection';
 export const WIDEN_NO = 'No, only change the selection';
 
@@ -617,6 +659,6 @@ export const WIDEN_NO = 'No, only change the selection';
 export function widenChoices(authority: Authority): [string, string] {
   if (authority.kind === 'component') return [`Yes, allow changes beyond ${authority.label}`, `No, only change ${authority.label}`];
   // Allowing more lets the run change anything on the site, so the answer says that.
-  if (authority.kind === 'page') return ['Yes, allow changes across the whole site', `No, only change ${authority.label}`];
+  if (authority.kind === 'page' || authority.kind === 'entry') return ['Yes, allow changes across the whole site', `No, only change ${authority.label}`];
   return [WIDEN_YES, WIDEN_NO];
 }

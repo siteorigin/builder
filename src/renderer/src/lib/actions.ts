@@ -1036,11 +1036,16 @@ export function openSiteStyles() {
 
 /**
  * Open a post in the writer: the Posts panel shows, with the post chosen. `picture` (counted from 1) asks the writer
- * to bring that picture of its text into view, as Show in Assets does.
+ * to bring that picture of its text into view, as Show in Assets does. False when the post open now has text that
+ * could not be saved, which keeps it open.
  */
-export async function openPost(collectionId: string, entryId: string, picture?: number): Promise<void> {
+export async function openPost(collectionId: string, entryId: string, picture?: number): Promise<boolean> {
   const s = getState();
   // Never over text the open post could not save: it stays, with its note above the text.
-  if (s.post?.entryId !== entryId && !(await flushOpenPost())) return void toast('The post you are writing has text that is not saved yet. See the note above its text.', 'error');
+  if (s.post?.entryId !== entryId && !(await flushOpenPost())) {
+    toast('The post you are writing has text that is not saved yet. See the note above its text.', 'error');
+    return false;
+  }
   setState({ modal: null, leftTab: 'posts', post: { collectionId, entryId }, postView: 'write', postReveal: picture ? { entryId, picture, seq: (getState().postReveal?.seq ?? 0) + 1 } : null });
+  return true;
 }

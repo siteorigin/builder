@@ -7,6 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import type { ComponentDefinition, PageDoc, ProjectBriefDoc, ProjectState, SiteDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import { BRIEF_FILE } from '@shared/brief';
+import { collectionGrantRefusal, type CollectionWriteGrant } from '@shared/collection-grant';
 import type { ApplyResult, EditBatch, EditOperation } from '@shared/ops';
 import type { AiTurnReview, FileText, RestoreVersionResult, SavedCopy, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
@@ -2049,8 +2050,9 @@ export class ProjectSession extends EventEmitter {
   /**
    * `codeAllowed: false` refuses code, and copies that would make new code, as the project is when the batch applies.
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
+   * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant).
    */
-  apply(batch: EditBatch, opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport }): Promise<ApplyResult> {
+  apply(batch: EditBatch, opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant }): Promise<ApplyResult> {
     return this.serialize(async () => {
       const fingerprint = sha(JSON.stringify(batch.operations));
       if (opts.idempotencyKey && this.idempotency.has(opts.idempotencyKey)) {
@@ -2096,9 +2098,13 @@ export class ProjectSession extends EventEmitter {
       // The project brief is the author's own (#518): the assistant reads it as background (#519) but never changes it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'The project brief can only be changed in the editor.', recoverable: true } };
-      // Collections have no tools of their own yet: the assistant neither sees nor changes them.
-      if ((opts.source === 'ai' || opts.runId) && ops.some(isCollectionOperation))
-        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections and their entries can only be changed in the editor for now.', recoverable: true } };
+      // The assistant writes a post only through its post tool, whose call grants exactly that batch: one entry, and the
+      // categories it is filed under. Any other collection change, a layout's included, is the editor's.
+      const ai = opts.source === 'ai' || !!opts.runId;
+      const granted = ai && opts.collectionWrite ? collectionGrantRefusal(ops, opts.collectionWrite) : null;
+      if (granted) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: granted, recoverable: true } };
+      if (ai && !opts.collectionWrite && ops.some(isCollectionOperation))
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections and their entries can only be changed in the editor, apart from a post written with upsert_collection_entry.', recoverable: true } };
       // A library image's file is only ever one the importer checked and wrote.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'asset.relink'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can give an image a new file. Ask the user to locate it in Assets.', recoverable: true } };

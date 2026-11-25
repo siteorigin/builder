@@ -482,6 +482,12 @@ export interface ChatContext {
    * which were limited to their selection when they had one and could change the whole site otherwise.
    */
   scope?: ChatEditScope;
+  /**
+   * The post open in the Posts workspace when the request was sent (written, or previewed), with its title then. The
+   * request is about that post: it may change only it until the author allows more, whatever page lies under the
+   * writer, so it is sent with no selection, component or scope. Absent for a request about a page or the site.
+   */
+  post?: { collectionId: string; entryId: string; title: string };
   viewport: number;
   /** Library images the author attached to the request, by asset ID. The AI is told their IDs and what the library says about them (name, size, description, alt text), never the pictures or their files. */
   assetIds?: string[];
