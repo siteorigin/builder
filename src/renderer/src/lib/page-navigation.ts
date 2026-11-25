@@ -165,3 +165,49 @@ export function inHeaderMenu(state: ProjectState, pageId: string): boolean {
   const items = menu && menuItems(menu);
   return !!items?.some((it) => pageLink(it?.link, pageId));
 }
+
+/** The footer's links made from the header menu's top-level links. */
+export interface FooterCopyPlan {
+  /** The edit that replaces every footer link with a copy of a header link, as one change. */
+  op: EditOperation;
+  /** How many links the footer will list, and how many it lists now (all replaced). */
+  count: number;
+  replaces: number;
+  /** Header links left out because the footer holds fewer links than the header shows. */
+  left: number;
+  /** Whether the footer already lists exactly these links, in this order. */
+  matches: boolean;
+}
+
+/** A value as JSON with its keys in order, so two links that say the same compare equal however they were written. */
+const canonical = (v: unknown): string =>
+  JSON.stringify(v, (_k, x: unknown) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+
+/**
+ * Copy the header menu's top-level links into the footer's links, replacing the footer's own: each keeps its label and
+ * destination, in the header's order, and any other field a footer link has starts at its default. A link shown in a
+ * submenu stays out, and a footer that holds fewer links than the header shows takes the first ones. Null when there
+ * is no header menu with a top-level link, no footer menu, or either list comes from somewhere else.
+ */
+export function footerCopyPlan(state: ProjectState): FooterCopyPlan | null {
+  const header = headerMenu(state);
+  const footer = shellMenu(state, 'footer');
+  const from = header && menuItems(header);
+  const now = footer && menuItems(footer);
+  if (!header || !footer || !from || !now) return null;
+  const under = menuGroups(header.schema) ? shownUnder(from) : from.map(() => false);
+  const top = from.filter((it, i) => !under[i] && !!it && typeof it === 'object');
+  if (!top.length) return null;
+  // Each link as the header shows it: a field it leaves out reads as the header's default for that field.
+  const shown = (it: MenuItem, menu: NonNullable<ReturnType<typeof shellMenu>>, key: 'label' | 'link') => (Object.hasOwn(it, key) ? it[key] : (menu.schema.fields[key] as { default?: unknown }).default);
+  const copied = top.slice(0, footer.schema.max ?? top.length).map((it) => ({ label: structuredClone(shown(it, header, 'label')), link: structuredClone(shown(it, header, 'link')) }));
+  if (footer.schema.min !== undefined && copied.length < footer.schema.min) return null;
+  const same = (want: (typeof copied)[number], have: MenuItem) => !!have && typeof have === 'object' && (['label', 'link'] as const).every((key) => canonical(want[key]) === canonical(shown(have, footer, key)));
+  return {
+    op: { type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: footer.node.id, prop: 'links', value: copied },
+    count: copied.length,
+    replaces: now.length,
+    left: top.length - copied.length,
+    matches: now.length === copied.length && copied.every((it, i) => same(it, now[i]))
+  };
+}
