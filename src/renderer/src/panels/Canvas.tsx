@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { newId } from '@shared/ids';
 import { applyOps, commitOps } from '../store';
@@ -26,7 +26,7 @@ import { ARRIVAL_MS, arrivalShown, takeArrival } from '../lib/arrival';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { hasDarkPalette } from '@shared/color-scheme';
-import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
+import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
@@ -2759,7 +2759,7 @@ export function Canvas() {
                   icon={kindIcon(state, selection)}
                   parent={isPart && !definitionMode ? chromeLabel(state, { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] }) : null}
                   repeats={selBoxes.length}
-                  item={itemOf(state, selection)}
+                  item={itemStep(state, selection)}
                   repeatsLabel={selLabel ? `${selLabel.toLowerCase()}${/s$/.test(selLabel) ? '' : 's'}` : 'items'}
                   sib={siblings(state, structuralTarget(selection))}
                   onWidth={setChipW}
@@ -2861,20 +2861,6 @@ function kindIcon(state: ProjectState, ref: ElementRef) {
   }
 }
 
-/** For a part picked in one repeated item (one card of three), which item it is: "2 of 3". */
-function itemOf(state: ProjectState, ref: ElementRef): { n: number; count: number } | null {
-  const itemId = ref.itemPath?.[0];
-  if (!itemId || !ref.instancePath.length) return null;
-  const inst = resolveRef(state, { owner: ref.owner, instancePath: [], nodeId: ref.instancePath[0] }).node;
-  if (inst?.kind !== 'instance') return null;
-  for (const [key, prop] of Object.entries(state.components[inst.definitionId]?.properties ?? {})) {
-    const list = prop.type === 'list' ? (inst.props as Record<string, unknown> | undefined)?.[key] : null;
-    const n = Array.isArray(list) ? list.findIndex((it) => !!it && typeof it === 'object' && (it as { id?: unknown }).id === itemId) : -1;
-    if (n >= 0) return { n: n + 1, count: (list as unknown[]).length };
-  }
-  return null;
-}
-
 const CHIP_H = 28;
 /** Near a container's top or bottom edge, in screen pixels, a dragged element goes beside it rather than into it. */
 const CHIP_GAP = 4;
@@ -2899,7 +2885,7 @@ function chipPlacement(box: { top: number; height: number }, topLevel: boolean, 
  * (WAI-ARIA APG toolbar); the drag handle is pointer-only, with Move up and Move down as its keyboard
  * equivalent. Delete is not here: it lives at the end of More actions, in red, and on the Delete key.
  */
-function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: { n: number; count: number } | null; sib: { index: number; count: number } | null; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
+function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
   // With the inspector out of sight (dock closed, or AI / Site styles showing), the chip offers the way back.
@@ -2914,10 +2900,12 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
   const orphaned = () => focusIn.current && !!lastFocused.current && !lastFocused.current.isConnected && (!document.activeElement || document.activeElement === document.body);
   const [w, setW] = useState(200);
   const buttons = () => [...(ref.current?.querySelectorAll<HTMLElement>('button') ?? [])];
-  // A new selection starts the toolbar's Tab stop at its first control.
+  // A new selection starts the toolbar's Tab stop at its first control, unless it was made from the chip (Previous or
+  // Next item), whose control keeps focus and the Tab stop.
   const key = selection ? refKey(selection) : '';
   useLayoutEffect(() => {
-    current.current = 0;
+    const i = buttons().indexOf(document.activeElement as HTMLElement);
+    current.current = i >= 0 ? i : 0;
   }, [key]);
   /** Too narrow for everything (a phone frame, many actions): the parent link and Edit text, which More actions
    *  also offers, step out of the chip rather than being clipped while still focusable. */
@@ -3032,7 +3020,25 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
           </button>
         )}
         {/* One card picked on the page vs the part in every card (picked in Layers): say which. */}
-        {item ? <span className="of">· {item.n} of {item.count}</span> : repeats > 1 && <span className="of">· all {repeats} {repeatsLabel}</span>}
+        {item ? (
+          <>
+            <span className="sep" aria-hidden="true">
+              ·
+            </span>
+            {/* The same part in the card before or after: the selection moves, the list never changes. */}
+            <button className="icon-btn step" title="Previous item" aria-label="Previous item" aria-disabled={!item.prev || undefined} onClick={guard(!!item.prev, () => setState({ selection: item.prev }))}>
+              <ChevronLeft />
+            </button>
+            <span className="of" data-testid="chip-item-pos">
+              {item.n} of {item.count}
+            </span>
+            <button className="icon-btn step" title="Next item" aria-label="Next item" aria-disabled={!item.next || undefined} onClick={guard(!!item.next, () => setState({ selection: item.next }))}>
+              <ChevronRight />
+            </button>
+          </>
+        ) : (
+          repeats > 1 && <span className="of">· all {repeats} {repeatsLabel}</span>
+        )}
       </span>
       <span className="chip-sep" aria-hidden="true" />
       <button className="icon-btn" title={`Ask AI about this (${keys('⌘J')})`} aria-label="Ask AI about this" aria-keyshortcuts={ariaKeys('Meta+J')} onClick={() => askAiAbout(selection)}>

@@ -515,6 +515,34 @@ export function refExists(state: ProjectState, ref: ElementRef): boolean {
   return !items || items.includes(itemId!);
 }
 
+/**
+ * For a part picked in one repeated item (one card of three): which item it is ("2 of 3"), and the same part in the
+ * item before and after it, which the selection chip's Previous and Next select. Null at the first and last item: the
+ * steps never wrap. Stepping names another item only, so it never changes the list.
+ */
+export function itemStep(state: ProjectState, ref: ElementRef): { n: number; count: number; prev: ElementRef | null; next: ElementRef | null } | null {
+  const itemId = ref.itemPath?.[0];
+  if (!itemId || !ref.instancePath.length) return null;
+  const inst = resolveRef(state, { owner: ref.owner, instancePath: [], nodeId: ref.instancePath[0] }).node;
+  if (inst?.kind !== 'instance') return null;
+  for (const [key, prop] of Object.entries(state.components[inst.definitionId]?.properties ?? {})) {
+    const list = prop.type === 'list' ? (inst.props as Record<string, unknown> | undefined)?.[key] : null;
+    if (!Array.isArray(list)) continue;
+    const idAt = (i: number) => {
+      const it = list[i] as { id?: unknown } | null | undefined;
+      return it && typeof it === 'object' && typeof it.id === 'string' && it.id ? it.id : null;
+    };
+    const n = list.findIndex((_, i) => idAt(i) === itemId);
+    if (n < 0) continue;
+    const at = (i: number): ElementRef | null => {
+      const id = i >= 0 && i < list.length ? idAt(i) : null;
+      return id ? { ...ref, itemPath: [id, ...ref.itemPath!.slice(1)] } : null;
+    };
+    return { n: n + 1, count: list.length, prev: at(n - 1), next: at(n + 1) };
+  }
+  return null;
+}
+
 type View = { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode; templateMode?: TemplateMode | null };
 
 /**
