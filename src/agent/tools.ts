@@ -642,6 +642,7 @@ function valueHint(p: StylePropDef): string {
   if (p.id === 'columnSpan' || p.id === 'rowSpan') return ' (a grid child; above 1 for all sizes it applies from tablet up, set it at scope phone to span there)';
   if (p.id === 'backdropBlur') return ` or one length in px, rem or em up to ${BLUR_LIMITS.px}px or ${BLUR_LIMITS.rem}rem, 0 for none: blurs what shows through a background at less than full strength, for frosted glass`;
   if (p.kind === 'color') return ' (a color token at part strength is {"token": "color.surface", "alpha": 0.7} for 70%, a see-through surface)';
+  if (p.kind === 'media') return ': {"assetId": a library image\'s ID, "size": "cover" (default) or "contain", "position": "X% Y%" focus (default center), "scrim": a color or one gradient over the picture}; give it a scrim whenever text sits on top, so the text stays readable';
   if (p.group !== 'motion') return '';
   if (p.id === 'translateX' || p.id === 'translateY') return ` (0 or one length such as "-4px": at most ${TRANSLATE_LIMITS.px}px, ${TRANSLATE_LIMITS.rem}rem or em, or ${TRANSLATE_LIMITS['%']}% either way)`;
   if (p.kind === 'number') return ` (${p.integer ? 'whole number ' : ''}${p.min} to ${p.max}${p.unit ? ` ${p.unit}` : ''})`;

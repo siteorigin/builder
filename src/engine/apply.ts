@@ -27,7 +27,7 @@ import type {
   RichText,
   VariantAxis
 } from '@shared/types';
-import type { Binding, EntryDoc } from '@shared/types';
+import type { BackgroundImageValue, Binding, EntryDoc } from '@shared/types';
 import { withAuthoredRel } from '@shared/link-rel';
 import { APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
@@ -57,9 +57,9 @@ import { documentFormat, isDocumentMime } from '@shared/document-files';
 import { getTheme, listThemes, themeLockEntry } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
 import { resolveFontStack } from '@catalogue/fonts';
-import { codeTakesBlocks, effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
+import { codeTakesBlocks, designHasMedia, effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
-import { chosenUses, imageUses } from './image-uses';
+import { chosenUses, imageUses, variantBackgrounds } from './image-uses';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
@@ -474,6 +474,12 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       const altReview: AltReview[] = [];
       for (const u of uses) {
         const t = u.target;
+        // A picture behind an element's content describes nothing: only the image changes, never a description, and
+        // its size, focus and scrim stay as they are.
+        if (u.background && u.value) {
+          u.value.assetId = op.withAssetId;
+          continue;
+        }
         if (!u.value) {
           if (t?.kind === 'pageSharing') state.pages[t.pageId].seo.socialImage = op.withAssetId;
           else if (t?.kind === 'site') {
@@ -624,6 +630,8 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
   };
   for (const t of allTrees(state)) walk(t.tree.nodes);
   for (const d of Object.values(state.components)) walk(d.properties);
+  // A design's variant options style its elements, a background image among them.
+  for (const v of variantBackgrounds(state)) fn(v.value);
   for (const p of Object.values(state.pages)) walk(p.seo);
   for (const c of Object.values(state.collections ?? {})) {
     // A custom field's default, and each entry's value of a picture field: only those hold a picture.
@@ -1885,6 +1893,13 @@ function checkTokenRef(state: ProjectState, value: StyleValue) {
   }
 }
 
+/** A background image names a library image, never a font, a document or an asset the library no longer has. */
+function checkBackgroundAsset(state: ProjectState, value: BackgroundImageValue) {
+  const a = own(state.assets.assets, value.assetId);
+  if (!a) fail(`Background image: asset "${value.assetId}" does not exist.`);
+  if (a!.kind !== 'image' || !a!.mime?.startsWith('image/')) fail(`Background image: "${a!.name}" is not an image.`);
+}
+
 /** Style rules a definition's variant sets on one of its nodes. */
 function variantStyles(state: ProjectState, owner: OwnerRef, nodeId: string, variant: string, partId?: string, axis?: string) {
   if (owner.kind !== 'component') fail('Variants belong to component definitions. Edit the component to style a variant.');
@@ -1975,6 +1990,7 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
     const err = validateStyleValue(op.property, op.value);
     if (err) fail(err);
     checkTokenRef(state, op.value);
+    if (STYLE_PROP_MAP[op.property].kind === 'media') checkBackgroundAsset(state, op.value as BackgroundImageValue);
     // A link is stored token first, its strength only when below full, so equal links compare equal.
     if (typeof op.value === 'object') op = { ...op, value: canonicalStyleValue(op.value) };
     // Column sizes are kept on one line with single spaces, as the inspector's field shows them.
@@ -3183,6 +3199,8 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   // Content placed in such a slot could no longer be checked for links inside the card's own link.
   const carded = slotsInsideCards(state, def);
   if (carded.length) fail(`"${def.name}" places its ${carded.map((s) => `“${def.slots?.[s]?.label ?? s}”`).join(', ')} content inside a card that links somewhere, which a code component cannot keep free of other links. Remove the card's link first.`);
+  // Source holds a picture's address for good: the library could no longer count, replace or keep that use.
+  if (designHasMedia(def)) fail(`"${def.name}" shows a background image from the library, which a code copy would hold only as a file address the library no longer tracks. Remove the background image from its design first.`);
   const name = op.name?.trim() || `${def.name} (code)`;
   const newId = projectDefId(name, 'code');
   const sourcePath = `${CUSTOM_DIR}/${pascal(name)}-${newId.slice(-5).replace(/[^A-Za-z0-9]/g, '')}.svelte`;

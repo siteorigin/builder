@@ -43,8 +43,15 @@ export function parseStyleScopeKey(key: string): { scope: ResponsiveScope; state
  * 70%), mixed with transparent, for a see-through surface that still follows the token.
  */
 export type StyleTokenRef = { token: string; alpha?: number };
-/** A literal style value or a reference to a site token. */
-export type StyleValue = string | number | boolean | StyleTokenRef;
+/**
+ * A library image painted behind an element's content (a hero's photograph): how it fills the box (`cover`, the
+ * default, or `contain`), the point that stays in view when it is cropped ("X% Y%", centred by default) and an
+ * optional scrim, a colour or one gradient painted over it so text on top stays readable. Only the `backgroundImage`
+ * style property holds one (see shared/background-image.ts); it never names a token.
+ */
+export type BackgroundImageValue = { assetId: string; size?: 'cover' | 'contain'; position?: string; scrim?: string; token?: never };
+/** A literal style value, a reference to a site token, or a background image (`backgroundImage` only). */
+export type StyleValue = string | number | boolean | StyleTokenRef | BackgroundImageValue;
 export type StyleProps = Record<string, StyleValue>;
 /**
  * Style rules by where they apply: each size range's resting rules, and the rules for its interactive states, side by

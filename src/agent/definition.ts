@@ -7,7 +7,7 @@
  */
 import { z } from 'zod';
 import { DIVIDER_SHAPES, STYLE_STATES, isBinding, type ComponentDefinition, type GraphNode, type NodeTree, type ProjectState, type PropSchema, type StateAction } from '@shared/types';
-import { STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
+import { BACKGROUND_IMAGE, STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
 import { STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { axesOf } from '@shared/variants';
 import { bindingSlots, declaredState, enclosingList, normalizePropSchema } from '@engine/schema';
@@ -118,7 +118,7 @@ export const DEFINITION_ARGS = {
       scope: z.enum(['base', 'phone', 'tablet', 'desktop']),
       state: z.enum(['hover', 'focus', 'active']).optional(),
       styles: z
-        .array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, z.null()]) }).strict())
+        .array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, BACKGROUND_IMAGE, z.null()]) }).strict())
         .min(1)
         .max(12)
     })

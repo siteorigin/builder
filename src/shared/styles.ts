@@ -1,4 +1,5 @@
 import { isFocusValue } from './focus';
+import { backgroundImageError, canonicalBackgroundImage, isBackgroundImageValue } from './background-image';
 import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleState, StyleTokenRef, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 import { parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
 
@@ -7,7 +8,7 @@ import { parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
  * Anything outside this list belongs in a code component.
  */
 
-export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' | 'ratio' | 'focus' | 'textStyle' | 'font' | 'shadow' | 'border' | 'css' | 'tracks';
+export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' | 'ratio' | 'focus' | 'textStyle' | 'font' | 'shadow' | 'border' | 'css' | 'tracks' | 'media';
 
 export interface StylePropDef {
   id: string;
@@ -139,6 +140,7 @@ export const STYLE_PROPS: StylePropDef[] = [
   ] },
   { id: 'color', label: 'Text color', group: 'appearance', kind: 'color', tokenGroup: 'color' },
   { id: 'background', label: 'Background', description: 'A color, or a linear-, radial- or conic-gradient(). A Site styles color can be made see-through.', group: 'appearance', kind: 'color', tokenGroup: 'color' },
+  { id: 'backgroundImage', label: 'Background image', group: 'appearance', kind: 'media', description: 'A picture from the library behind the content: filling the box, cropped around its focus, or shown whole. A scrim (a color or gradient over the picture) keeps text on top readable. The background color shows wherever the picture does not reach.' },
   { id: 'border', label: 'Border', group: 'appearance', kind: 'border', tokenGroup: 'border' },
   edge('borderBlockStart', 'Border top', 'appearance', 'border', 'border', '1px solid #ddd'),
   edge('borderBlockEnd', 'Border bottom', 'appearance', 'border', 'border', '1px solid #ddd'),
@@ -200,6 +202,8 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
   const spacing = [...margins, 'paddingBlock', 'paddingInline', 'paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd'];
   const borders = ['border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd'];
   const appearance = ['color', 'background', ...borders, 'radius', 'shadow', 'opacity', 'backdropBlur'];
+  // A box that holds content can show a picture behind it.
+  const boxAppearance = ['color', 'background', 'backgroundImage', ...borders, 'radius', 'shadow', 'opacity', 'backdropBlur'];
   // How an item sits inside a grid or stack parent.
   const child = ['columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'order'];
   const placed = ['position', 'inset', 'zIndex'];
@@ -215,7 +219,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
     case 'icon':
       return ['color', 'fontSize', 'background', 'radius', ...margins, ...child, ...placed, ...end];
     case 'element':
-      return ['layout', 'columns', 'gridTemplate', 'align', 'justify', 'wrap', 'gap', 'rowGap', 'columnGap', ...child, ...spacing, 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'maxHeight', 'marginInline', 'overflow', 'textAlign', ...appearance, ...placed, ...end];
+      return ['layout', 'columns', 'gridTemplate', 'align', 'justify', 'wrap', 'gap', 'rowGap', 'columnGap', ...child, ...spacing, 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'maxHeight', 'marginInline', 'overflow', 'textAlign', ...boxAppearance, ...placed, ...end];
     default:
       return undefined;
   }
@@ -223,16 +227,21 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
 
 /**
  * The style controls a component part offers: the part's own list, plus Image focus on an image it lets authors
- * crop to an aspect ratio. Derived rather than stored, so components already in a project offer it too.
+ * crop to an aspect ratio, and Background image on a box whose background it lets authors change. Derived rather
+ * than stored, so components already in a project offer them too.
  */
 export function partStyleControls(def: Pick<ComponentDefinition, 'parts' | 'tree'>, partId: string): string[] | undefined {
   const part = Object.hasOwn(def.parts, partId) ? def.parts[partId] : undefined;
   const list = part?.styleControls;
   if (!part || !list?.length) return list;
   const node = def.tree && Object.hasOwn(def.tree.nodes, part.nodeId) ? def.tree.nodes[part.nodeId] : undefined;
-  const at = list.indexOf('aspectRatio');
-  if (node?.kind !== 'image' || at < 0 || list.includes('objectPosition')) return list;
-  return [...list.slice(0, at + 1), 'objectPosition', ...list.slice(at + 1)];
+  const after = (list: string[], prop: string, add: string) => {
+    const at = list.indexOf(prop);
+    return at < 0 || list.includes(add) ? list : [...list.slice(0, at + 1), add, ...list.slice(at + 1)];
+  };
+  if (node?.kind === 'image') return after(list, 'aspectRatio', 'objectPosition');
+  if (node?.kind === 'element') return after(list, 'background', 'backgroundImage');
+  return list;
 }
 
 /** What a code component's part offers when it names no controls of its own. */
@@ -336,6 +345,7 @@ export function tokenRefCss(ref: StyleTokenRef): string {
  * links compare equal. Anything else is returned as it is.
  */
 export function canonicalStyleValue(v: StyleValue): StyleValue {
+  if (isBackgroundImageValue(v)) return backgroundImageError(v, isScrim) ? v : canonicalBackgroundImage(v);
   if (typeof v !== 'object' || v === null || typeof v.token !== 'string') return v;
   // A malformed link (another key, a strength out of range) is left as it is, so it never compares equal to a good one.
   if (Object.keys(v).some((k) => k !== 'token' && k !== 'alpha') || (v.alpha !== undefined && !(typeof v.alpha === 'number' && v.alpha >= 0 && v.alpha <= 1))) return v;
@@ -862,10 +872,23 @@ export function linkShapeError(propId: string, value: StyleTokenRef): string | n
   return null;
 }
 
+/**
+ * A background image's scrim: a colour, or one gradient (a background colour already shows beneath the picture, and
+ * several layers would paint over each other).
+ */
+export function isScrim(raw: string): boolean {
+  const s = raw.trim();
+  if (!isSafeCssValue(s)) return false;
+  if (isGradient(s)) return isValidGradient(s) && splitTop(s, (ch) => ch === ',').length === 1;
+  return COLOR_RE.test(s);
+}
+
 /** Validate a literal style value. Returns an error message or null. */
 export function validateStyleValue(propId: string, value: StyleValue): string | null {
-  const def = STYLE_PROP_MAP[propId];
+  const def = Object.hasOwn(STYLE_PROP_MAP, propId) ? STYLE_PROP_MAP[propId] : undefined;
   if (!def) return `Unknown style property "${propId}".`;
+  // A picture is named by its library asset, never by a token or an address.
+  if (def.kind === 'media') return backgroundImageError(value, isScrim);
   if (typeof value === 'object' && value !== null) {
     if (typeof value.token !== 'string') return 'Token reference must have a token ID.';
     if (!def.tokenGroup) return `${def.label} cannot use a token.`;
@@ -935,7 +958,7 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
 }
 
 function cssValue(v: StyleValue): string {
-  if (typeof v === 'object' && v !== null) return tokenRefCss(v);
+  if (typeof v === 'object' && v !== null) return typeof v.token === 'string' ? tokenRefCss(v as StyleTokenRef) : '';
   return String(v);
 }
 
@@ -945,7 +968,10 @@ const CHECKED_AT_OUTPUT = new Set([
   'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing', 'backdropBlur'
 ]);
 
-/** Convert one style property into CSS declarations. */
+/**
+ * Convert one style property into CSS declarations. A background image writes nothing here: only the generator
+ * writes one, from the library's record of the picture (generator/background.ts).
+ */
 export function styleToCss(propId: string, raw: StyleValue): string[] {
   if (typeof raw === 'object' && raw !== null && typeof raw.token !== 'string') return [];
   // A link holding more than its token (a strength) is read again: a hand-edited one on a property that cannot

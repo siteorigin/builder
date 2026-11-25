@@ -6,7 +6,7 @@
 import { variantOptions } from '@shared/variants';
 import { z } from 'zod';
 import { DIVIDER_ICON, DIVIDER_SHAPES, STYLE_STATES, TEXT_TAGS, isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
-import { STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
+import { BACKGROUND_IMAGE, STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
 import { STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { getTree } from '@engine/tree';
 import { TABLE_ACTIONS, TABLE_LIMITS, type TableAction } from '@engine/table';
@@ -45,7 +45,7 @@ export const SELECTION_ARGS = {
       resetItem: z.boolean().optional(),
       scope: z.enum(['base', 'phone', 'tablet', 'desktop']),
       state: z.enum(['hover', 'focus', 'active']).optional(),
-      styles: z.array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, z.null()]) }).strict()).max(12)
+      styles: z.array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, BACKGROUND_IMAGE, z.null()]) }).strict()).max(12)
     })
     .strict(),
   request_wider_scope: z.object({ question: z.string().min(1).max(300) })
@@ -57,7 +57,7 @@ export const SELECTION_DESCRIPTIONS: Record<keyof typeof SELECTION_ARGS, string>
   edit_selected_table:
     'Change one cell, row or column of a table in the selected element, by the row and column IDs in its content: set a cell, rename a column, or insert, remove or move a row or column. Other cells stay where they are.',
   style_selected_element:
-    'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}. Add state "hover", "focus" (keyboard focus) or "active" (while pressed) to style how it looks in that state only (colors, background, border, corner radius, shadow, opacity and backdrop blur); set transition on the resting style to animate the change; null values clear the state\'s value. For a see-through surface, give color or background a color token at part strength, {"token":"color.surface","alpha":0.7} for 70% (a plain {"token"} is full strength again); add backdropBlur such as "12px" for frosted glass, "0" for none. For a cropped image, objectPosition takes the focal point as "X% Y%" across and down, each 0 to 100 with at most one decimal, such as "50% 20%". Motion: translateX and translateY take a length such as "-4px", scale a factor such as 1.03, rotate degrees such as -2, transformOrigin "center" or an edge or corner such as "top left", transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration milliseconds such as 200 and transitionEasing ease, ease-out, linear or smooth. Grids: gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem", "2fr repeat(2, 1fr)" or "repeat(auto-fit, minmax(18rem, 1fr))" (as many columns as fit, each at least 18rem or the whole grid when narrower); a grid child spans columns with columnSpan (1 to 12 or full) and rows with rowSpan (1 to 6). Set for all sizes, a template and spans above 1 apply from tablet up, so phones keep their own columns unless scope "phone" sets them. A repeated part (a card) is styled for every item unless itemId names the one item to style; that item then differs from its siblings, and null values return it to the shared style.',
+    'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}. Add state "hover", "focus" (keyboard focus) or "active" (while pressed) to style how it looks in that state only (colors, background, border, corner radius, shadow, opacity and backdrop blur); set transition on the resting style to animate the change; null values clear the state\'s value. For a see-through surface, give color or background a color token at part strength, {"token":"color.surface","alpha":0.7} for 70% (a plain {"token"} is full strength again); add backdropBlur such as "12px" for frosted glass, "0" for none. For a cropped image, objectPosition takes the focal point as "X% Y%" across and down, each 0 to 100 with at most one decimal, such as "50% 20%". For a picture behind a container's or section's content, backgroundImage takes {"assetId": a library image's ID, "size": "cover" or "contain", "position": "X% Y%", "scrim": a color such as "rgba(0, 0, 0, 0.55)" or one gradient}; give it a scrim whenever text sits on top. Motion: translateX and translateY take a length such as "-4px", scale a factor such as 1.03, rotate degrees such as -2, transformOrigin "center" or an edge or corner such as "top left", transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration milliseconds such as 200 and transitionEasing ease, ease-out, linear or smooth. Grids: gridTemplate takes a preset or column sizes such as "16rem 1fr 14rem", "2fr repeat(2, 1fr)" or "repeat(auto-fit, minmax(18rem, 1fr))" (as many columns as fit, each at least 18rem or the whole grid when narrower); a grid child spans columns with columnSpan (1 to 12 or full) and rows with rowSpan (1 to 6). Set for all sizes, a template and spans above 1 apply from tablet up, so phones keep their own columns unless scope "phone" sets them. A repeated part (a card) is styled for every item unless itemId names the one item to style; that item then differs from its siblings, and null values return it to the shared style.',
   request_wider_scope: 'Ask the user for permission to change more than the selected element, when the request cannot be done inside it.'
 };
 
@@ -67,7 +67,7 @@ export const SELECTION_BRIEFS: Record<keyof typeof SELECTION_ARGS, string> = {
   edit_selected_list: 'Update, insert, remove or move one item of a list.',
   edit_selected_table: 'Set a cell, rename a column, or insert, remove or move a row or column, by the IDs in its content.',
   style_selected_element:
-    'scope styles one screen size, base all; state, that state only. Prefer tokens such as {"token":"space.lg"}; a color token with "alpha":0.7 paints at 70%, see-through; backdropBlur "12px" frosts what shows through. objectPosition is a focal point "X% Y%" across and down (each 0 to 100, at most one decimal, such as "50% 20%"). translateX/Y take a length ("-4px"), scale a factor (1.03), rotate degrees, transformOrigin center or an edge or corner ("top left"), transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration ms, transitionEasing ease, ease-out, linear or smooth. gridTemplate takes a preset or column sizes ("16rem 1fr", "repeat(auto-fit, minmax(18rem, 1fr))"); a grid child spans columnSpan 1 to 12 or full and rowSpan 1 to 6. Set for all sizes, a template and spans above 1 apply from tablet up; phones keep their own unless scope phone sets them. A repeated part (a card) is styled for every item unless itemId names one; null values return it to the shared style.',
+    'scope styles one screen size, base all; state, that state only. Prefer tokens such as {"token":"space.lg"}; a color token with "alpha":0.7 paints at 70%, see-through; backdropBlur "12px" frosts what shows through. objectPosition is a focal point "X% Y%" across and down (each 0 to 100, at most one decimal, such as "50% 20%"). backgroundImage is {"assetId", "size", "position", "scrim"}: a library picture behind a container, with a scrim when text sits on it. translateX/Y take a length ("-4px"), scale a factor (1.03), rotate degrees, transformOrigin center or an edge or corner ("top left"), transition a preset (none, colors, shadow, transform, opacity, common), transitionDuration ms, transitionEasing ease, ease-out, linear or smooth. gridTemplate takes a preset or column sizes ("16rem 1fr", "repeat(auto-fit, minmax(18rem, 1fr))"); a grid child spans columnSpan 1 to 12 or full and rowSpan 1 to 6. Set for all sizes, a template and spans above 1 apply from tablet up; phones keep their own unless scope phone sets them. A repeated part (a card) is styled for every item unless itemId names one; null values return it to the shared style.',
   request_wider_scope: 'Ask permission to change more than the selected element.'
 };
 
@@ -172,9 +172,20 @@ export const STYLE_VALUE: JsonSchema = {
       required: ['token'],
       additionalProperties: false
     },
+    {
+      type: 'object',
+      properties: {
+        assetId: { type: 'string', description: 'backgroundImage only: the ID of a library image (search_assets finds one).' },
+        size: { type: 'string', enum: ['cover', 'contain'], description: 'cover (the default) fills the box and crops; contain shows the whole picture.' },
+        position: { type: 'string', description: 'The focus kept in view when cropped: "X% Y%" across and down, such as "50% 30%". Defaults to the center.' },
+        scrim: { type: 'string', description: 'A color such as "rgba(0, 0, 0, 0.55)" or one linear-gradient() painted over the picture, so text on top stays readable.' }
+      },
+      required: ['assetId'],
+      additionalProperties: false
+    },
     { type: 'null' }
   ],
-  description: 'A value, a token reference, or null to remove the override.'
+  description: 'A value, a token reference, a background image (backgroundImage only), or null to remove the override.'
 };
 
 type ListSchema = Extract<PropSchema, { type: 'list' }>;

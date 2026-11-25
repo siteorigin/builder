@@ -35,6 +35,7 @@ import type {
   SlotDef,
   TextStyleValue,
   StateAction,
+  StyleValue,
   TokenDef,
   TokenValue,
   UiStateSchema
@@ -62,6 +63,8 @@ import {
   wideOnlyStyle,
   withColumnSizes
 } from '@shared/styles';
+import { RANGE_WIDTHS, backgroundImageAt, backgroundImageDecls, namesFile, paintDecls, resetDecls } from './background';
+import { hasBackgroundImage } from '@shared/background-image';
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -619,6 +622,12 @@ interface RuleOpts {
   /** Converted code's own stylesheet: the marker each hide is gated on (see `shownGate`). */
   gateHides?: string;
   /**
+   * Set for an element that can carry a background image (its own rules or a weaker layer's give it one): the library
+   * its pictures are written from, and where the declarations naming a file go instead of this stylesheet (a design's
+   * own .svelte file, so a design that only drafts place never makes the website ship its picture). See background.ts.
+   */
+  media?: MediaOpts;
+  /**
    * Overrides of what a code component renders: its own scoped styles can be more specific than any number of
    * classes (an id, a long descendant chain), so every declaration is important. Only its own important ones win.
    */
@@ -693,6 +702,41 @@ const shownGate = (raw: string, size: 'phone' | 'tablet' | 'desktop', mark: stri
 const ORDER = styleDeclOrder;
 
 
+/** Where a background image's declarations go (see RuleOpts.media). */
+interface MediaOpts {
+  assets: Record<string, AssetRecord>;
+  /** The rules for declarations naming a file, with how their selectors are finished; without it, they stay in place. */
+  urls?: { rules: RuleSet; wrap: (sel: string) => string };
+}
+
+/** What an element's own `background` paints as an image (a gradient), for the picture's longhands to fall back on. */
+function ownBackgroundImage(v: StyleValue): string {
+  return typeof v === 'string' && isValidGradient(v) ? v.trim() : 'none';
+}
+
+/**
+ * A background image in one rule: its declarations into `decls` (those naming a file into the file rules instead,
+ * when there are any), and, for a rule at every size, the copy a phone's and a tablet's screen need, in those sizes'
+ * own rules. Written by the generator from the library, never through safeDecl, which refuses url() everywhere else.
+ */
+function addBackgroundImage(rules: RuleSet, raw: string, selector: string, value: StyleValue, scope: ResponsiveScope, state: StyleState | null, media: MediaOpts, decls: string[], strong?: boolean) {
+  const span = scope === 'phone' ? RANGE_WIDTHS.phone : scope === 'tablet' ? RANGE_WIDTHS.tablet : undefined;
+  const own = backgroundImageDecls(value, media.assets, span);
+  if (!own.length) return;
+  const files = media.urls;
+  const list = (at: ResponsiveScope) => (state ? (files ?? { rules }).rules.states[state][at] : (files ?? { rules }).rules[at]);
+  const write = (sel: string, ds: string[]) => `${sel} {\n${ds.map((d) => `\t${strong ? important(d) : d};`).join('\n')}\n}`;
+  const fileSel = files ? files.wrap(raw) : selector;
+  decls.push(...own.filter((d) => !(files && namesFile(d))));
+  const named = own.filter((d) => files && namesFile(d));
+  if (named.length) list(scope).push(write(fileSel, named));
+  if (scope !== 'base') return;
+  for (const size of ['phone', 'tablet'] as const) {
+    const at = backgroundImageAt(value, media.assets, RANGE_WIDTHS[size]);
+    if (at) list(size).push(write(fileSel, [at]));
+  }
+}
+
 /** Each declaration once, at its last place in the rule: for the generated declarations the builder writes itself. */
 const lastCopies = (decls: string[]) => decls.filter((d, i) => decls.lastIndexOf(d) === i);
 /** Both shift axes write the same translate: once is enough. Nothing else is touched, so no value can shift onto another. */
@@ -706,6 +750,9 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
   const quiet = wrap(`:where(${raw})`);
   const styles = resolveVisibility(withColumnSizes(input));
   const rule = (decls: string[]) => `${selector} {\n${decls.map((d) => `\t${opts.important ? important(d) : d};`).join('\n')}\n}`;
+  const media = opts.link ? undefined : opts.media;
+  // A picture's variables never come from an element around this one.
+  if (media) rules.base.push(`${quiet} {\n${resetDecls().map((d) => `\t${d};`).join('\n')}\n}`);
   for (const scope of ['base', 'phone', 'tablet', 'desktop'] as const) {
     // Showing a part a weaker layer hides needs an explicit display value, decided before visibility folding, and
     // only in the ranges where it is hidden: anywhere else the weaker layer's own layout must keep applying.
@@ -721,6 +768,10 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
     const gated = !!opts.gateHides && props.hidden === true;
     for (const k of keys) {
       if (gated && k === 'hidden') continue;
+      if (k === 'backgroundImage') {
+        if (media) addBackgroundImage(rules, raw, selector, props[k], scope, null, media, decls, opts.important);
+        continue;
+      }
       const out = styleToCss(k, props[k]);
       // Links and buttons paint from --so-btn-bg / --so-btn-fg, so a styled button keeps its hover state
       // whatever the specificity of the rule that styles it.
@@ -732,6 +783,8 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
       if (opts.link && k === 'color') out.push(...out.map((d) => d.replace(/^color:/, '--so-btn-fg:')));
       const target = scope === 'base' && wideOnlyStyle(k, props[k], opts.wideColumns) ? wide : decls;
       target.push(...out.filter(safeDecl));
+      // The background shorthand resets the picture's longhands: they paint it again, from wherever it is set.
+      if (media && k === 'background' && out.length) target.push(...paintDecls(ownBackgroundImage(props[k])));
       fallback.push(...styleFallbackCss(k, props[k]).filter(safeDecl));
       reduced.push(...styleReducedMotionCss(k, props[k]).filter(safeDecl));
     }
@@ -770,8 +823,13 @@ function addStateRules(rules: RuleSet, raw: string, input: ResponsiveStyles, opt
       const props = input[styleScopeKey(scope, state)];
       if (!props || typeof props !== 'object') continue;
       const decls: string[] = [];
+      const media = opts.link ? undefined : opts.media;
       for (const k of Object.keys(props).sort((a, b) => ORDER(a) - ORDER(b) || a.localeCompare(b))) {
         if (!isStateStyleProp(k)) continue;
+        if (k === 'backgroundImage') {
+          if (media) addBackgroundImage(rules, `${base}:where(${STATE_PSEUDO[state]})`, wrap(`${base}:where(${STATE_PSEUDO[state]})`), props[k], scope, state, media, decls, opts.important);
+          continue;
+        }
         const out = styleToCss(k, props[k]);
         // It paints through the variable too, so a stronger layer's resting colour (which sets only the variable)
         // still wins, as it does over every other state value; a text button paints no background of its own.
@@ -779,6 +837,7 @@ function addStateRules(rules: RuleSet, raw: string, input: ResponsiveStyles, opt
           out.splice(0, out.length, ...out.flatMap((d) => (d.startsWith('background:') ? [d.replace(/^background:/, '--so-btn-bg:'), d.replace(/^background:/, '--so-btn-bg-hover:'), 'background: var(--so-btn-bg)'] : [d])));
         if (opts.link && k === 'color') out.push(...out.map((d) => d.replace(/^color:/, '--so-btn-fg:')));
         decls.push(...out.filter(safeDecl));
+        if (media && k === 'background' && out.length) decls.push(...paintDecls(ownBackgroundImage(props[k])));
       }
       if (!decls.length) continue;
       const selector = wrap(`${base}:where(${STATE_PSEUDO[state]})`);
@@ -875,20 +934,51 @@ export function pageNodeClass(nodeId: string): string {
   return `so-n-${nodeId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
 
+/** Whether a design's element has a background image from the design itself: in its own rules or a variant option's. */
+function designMedia(def: ComponentDefinition | undefined, nodeId: string): boolean {
+  const tree = def?.tree;
+  if (!tree || !Object.hasOwn(tree.nodes, nodeId)) return false;
+  return hasBackgroundImage(tree.nodes[nodeId].styles) || axesOf(def).some(([, a]) => Object.values(a.options).some((o) => !!o.styles && Object.hasOwn(o.styles, nodeId) && hasBackgroundImage(o.styles[nodeId])));
+}
+
+/** The background image options for an element that can carry one (see RuleOpts.media). */
+function mediaFor(state: ProjectState, capable: boolean, urls?: MediaOpts['urls']): MediaOpts | undefined {
+  return capable ? { assets: state.assets.assets, ...(urls ? { urls } : {}) } : undefined;
+}
+
+/** Whether a design, or a placement in it, sets a background image anywhere. */
+export function designHasMedia(def: ComponentDefinition): boolean {
+  const tree = def.tree;
+  if (!tree) return false;
+  return Object.values(tree.nodes).some((n) => hasBackgroundImage(n.styles) || (n.kind === 'instance' && Object.values(n.overrides ?? {}).some((o) => hasBackgroundImage(o)))) || axesOf(def).some(([, a]) => Object.values(a.options).some((o) => Object.values(o.styles ?? {}).some((st) => hasBackgroundImage(st))));
+}
+
+/**
+ * The rules of a design that name a picture's file, for its own .svelte file's <style> block: the site loads them only
+ * where a page imports the design, and the website's export ships only what the files it builds name, so a design that
+ * only drafts place never brings its picture. Their selectors are global, as components.css writes them.
+ */
+function designFileCss(state: ProjectState, def: ComponentDefinition): string {
+  if (!designHasMedia(def)) return '';
+  const files = newRules();
+  definitionRules(state, def, false, { rules: files, wrap: (sel) => `:global(${sel})` });
+  return emitRules(files);
+}
+
 /**
  * A managed definition's node, nested-override and variant rules. `standalone` emits them for a component's own
  * <style> block: selectors are global (the class prefix already makes them unique, and parts rendered by child
  * components must match). Specificity matches components.css, so variant rules still beat node rules at every
  * range; site.css gives code-component overrides one more class so they win wherever this stylesheet lands.
  */
-function definitionRules(state: ProjectState, def: ComponentDefinition, standalone = false): RuleSet {
+function definitionRules(state: ProjectState, def: ComponentDefinition, standalone = false, urls?: MediaOpts['urls']): RuleSet {
   const rules = newRules();
   if (!def.tree) return rules;
   const wrap = (sel: string) => (standalone ? `:global(${sel})` : sel);
   for (const id of Object.keys(def.tree.nodes).sort()) {
     const n = def.tree.nodes[id];
-    addRules(rules, `.${nodeClass(def, id)}`, n.styles, { link: n.kind === 'link', wrap, gateHides: standalone ? shownMark(def) : undefined });
-    if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, def, n, `.${nodeClass(def, id)}`, wrap);
+    addRules(rules, `.${nodeClass(def, id)}`, n.styles, { link: n.kind === 'link', wrap, gateHides: standalone ? shownMark(def) : undefined, media: mediaFor(state, designMedia(def, id), urls) });
+    if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, def, n, `.${nodeClass(def, id)}`, wrap, urls);
   }
   const axes = axesOf(def);
   const legacy = usesLegacyVariantClass(state, def);
@@ -905,7 +995,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
         const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `.${variantClass(def, axis, vid)}.${nodeClass(def, nid)}`;
         // An axis earlier in the cascade may be what hides this node, so showing it again has to undo that too.
         const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).flatMap((o) => (o.styles?.[nid] ? [o.styles[nid]] : [])));
-        const opts = { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone ? shownMark(def) : undefined };
+        const opts = { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone ? shownMark(def) : undefined, media: mediaFor(state, designMedia(def, nid), urls) };
         addRules(rules, sel, v.styles![nid], opts);
         // First-format converted code marks only its root with the option, so its nodes are still matched through
         // the root, except a node that carries option classes of its own: one of a placement inside it.
@@ -1010,7 +1100,8 @@ export function generateComponentsCss(state: ProjectState): string {
   if (derived(state, 'dividerShapes', usesDividerShapes)) parts.push(bandCss());
   for (const def of sortedDefs(state)) {
     if (def.kind !== 'managed' || !def.tree) continue;
-    const css = emitRules(definitionRules(state, def));
+    // A design's pictures are named in its own .svelte file (see designFileCss), never here.
+    const css = emitRules(definitionRules(state, def, false, { rules: newRules(), wrap: (sel) => sel }));
     if (css) parts.push(`/* ${inComment(def.name)} (${inComment(def.id)}) */\n${css}`);
   }
   return parts.join('\n\n') + '\n';
@@ -1020,7 +1111,7 @@ export function generateComponentsCss(state: ProjectState): string {
  * Overrides set on an instance that sits inside a definition (`owner`) use descendant selectors from the nested
  * instance root; a code component's inner parts take classes of the design's own instead.
  */
-function addOverrideRules(rules: RuleSet, state: ProjectState, owner: ComponentDefinition, inst: InstanceNode, rootSelector: string, wrap = (sel: string) => sel) {
+function addOverrideRules(rules: RuleSet, state: ProjectState, owner: ComponentDefinition, inst: InstanceNode, rootSelector: string, wrap = (sel: string) => sel, urls?: MediaOpts['urls']) {
   const def = state.components[inst.definitionId];
   if (!def) return;
   for (const partId of Object.keys(inst.overrides ?? {}).sort()) {
@@ -1030,7 +1121,7 @@ function addOverrideRules(rules: RuleSet, state: ProjectState, owner: ComponentD
     // A code component's own styles are scoped, so its inner parts are reached only by the classes it is given.
     if (def.kind === 'code' && partId !== 'root') {
       const cls = nestedOverrideClass(owner, inst.id, partId);
-      addRules(rules, `.${cls}.${cls}.${cls}`, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId), wrap });
+      addRules(rules, `.${cls}.${cls}.${cls}`, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId, urls), wrap });
       continue;
     }
     // Doubled root selector: nested overrides must beat the nested definition's variant rules.
@@ -1040,7 +1131,7 @@ function addOverrideRules(rules: RuleSet, state: ProjectState, owner: ComponentD
     // placed inside this one (in its slot). Its state rules name the class the part takes for this override instead,
     // as strong as the resting rule.
     const marker = nestedStateMarker(owner, def, inst, partId);
-    addRules(rules, sel, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId), wrap, ...(marker ? { stateSelector: `.${marker}`.repeat(3) } : {}) });
+    addRules(rules, sel, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId, urls), wrap, ...(marker ? { stateSelector: `.${marker}`.repeat(3) } : {}) });
   }
 }
 
@@ -1069,13 +1160,14 @@ function stylesCode(state: ProjectState, def: ComponentDefinition, partId: strin
   return false;
 }
 
-function overrideOpts(state: ProjectState, def: ComponentDefinition, inst: InstanceNode, partId: string): RuleOpts {
+function overrideOpts(state: ProjectState, def: ComponentDefinition, inst: InstanceNode, partId: string, urls?: MediaOpts['urls']): RuleOpts {
   const nodeId = def.parts[partId]?.nodeId ?? def.tree?.rootIds[0] ?? '';
   return {
     link: def.tree?.nodes[nodeId]?.kind === 'link',
     wideColumns: true,
     unhide: unhider(def, nodeId, inst.variants, inst.overrides?.[partId] ?? {}),
-    important: stylesCode(state, def, partId)
+    important: stylesCode(state, def, partId),
+    media: mediaFor(state, designMedia(def, nodeId) || hasBackgroundImage(inst.overrides?.[partId]), urls)
   };
 }
 
@@ -1120,7 +1212,8 @@ function itemOverrideOpts(state: ProjectState, def: ComponentDefinition, inst: I
     link: def.tree?.nodes[nodeId]?.kind === 'link',
     wideColumns: true,
     unhide: unhider(def, nodeId, inst.variants, own, [], inst.overrides?.[partId] ? [inst.overrides[partId]] : []),
-    important: stylesCode(state, def, partId)
+    important: stylesCode(state, def, partId),
+    media: mediaFor(state, designMedia(def, nodeId) || hasBackgroundImage(inst.overrides?.[partId]) || hasBackgroundImage(own))
   };
 }
 
@@ -1170,7 +1263,7 @@ export function generateSiteCss(state: ProjectState): string {
           }
         }
       } else {
-        addRules(rules, `.${pageNodeClass(id)}`, n.styles, { link: n.kind === 'link' });
+        addRules(rules, `.${pageNodeClass(id)}`, n.styles, { link: n.kind === 'link', media: mediaFor(state, hasBackgroundImage(n.styles)) });
       }
     }
   }
@@ -3232,9 +3325,12 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   const uid = ctx.usesUid ? `\tconst uid = $props.id();\n` : '';
   // Each placement holds its own UI state, starting where the design says.
   const states = [...ctx.states!.values()].map((s) => `\tlet ${s.local} = $state(${js(s.schema.initial)});\n`).join('');
+  // A design's own pictures: a converted copy's <style> block holds every rule already.
+  const pictures = standalone ? '' : designFileCss(state, def);
   return (
     HEADER_NOTE(`siteorigin/components/${def.id}/component.json`) +
-    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}${states}${filters}${editingState(ctx)}${overlays}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
+    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}${states}${filters}${editingState(ctx)}${overlays}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n` +
+    (pictures ? `\n<style>\n${indentBlock(pictures)}\n</style>\n` : '')
   );
 }
 
