@@ -160,7 +160,7 @@ describe('what a slot’s Add offers', () => {
     const p = offerPage();
     const [{ definitionId: band }] = p.run([{ type: 'component.upsert', name: 'Wide band', insertAs: 'section', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'section' }] }]);
     p.run([{ type: 'component.setSlot', definitionId: p.definitionId, slot: 'body', label: 'Body', categories: ['media'], componentIds: [band as string] }]);
-    expect(offered(p, 'body').sort()).toEqual([`c:${band}`, 's:media.carousel', 's:media.gallery', 's:media.video']);
+    expect(offered(p, 'body').sort()).toEqual([`c:${band}`, 's:block.video', 's:media.carousel', 's:media.gallery', 's:media.video']);
   });
 
   it('leaves out what the place would refuse though the contract takes it: a Button once the card sits inside a link', () => {
