@@ -91,6 +91,7 @@ describe('loading a theme pack release', () => {
     });
     const { pack } = await loadPackDir(dir, user(root));
     expect(pack.components.find((c) => c.componentId === 'media.carousel')!.tree!.nodes.caption).toMatchObject({ shape: 'icon', icon: 'leaf' });
+    expect(Object.values(pack.articleTemplate!.nodes)).toContainEqual(expect.objectContaining({ kind: 'divider', shape: 'wave' }));
   });
 
   it('loads a valid pack exactly as it was built, with its digest and files', async () => {

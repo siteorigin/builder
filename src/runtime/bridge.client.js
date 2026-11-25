@@ -930,7 +930,7 @@ function placeReveal(roots = revealRoots()) {
       if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: instant ? 'instant' : 'smooth' });
     }
   } else if (reveal) {
-    const el = roots.find((r) => r.tagName !== 'HR' && rectOf(r));
+    const el = roots.find((r) => !isSeparator(r) && rectOf(r));
     const side = el ? sideScroller(el) : null;
     if (side) {
       const at = offsetAlong(side, el);

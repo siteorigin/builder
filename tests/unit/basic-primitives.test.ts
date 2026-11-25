@@ -111,6 +111,16 @@ describe('inserting a badge', () => {
     } finally {
       theme.tokens = all;
     }
+    // A site style of another kind (a pill radius declared as spacing) is left out too.
+    const typed = theme as { tokens: { id: string; group: string }[] };
+    typed.tokens = all.map((t) => (t.id === 'radius.pill' ? { ...t, group: 'space' } : t)) as never;
+    try {
+      const badge = insert(start, owner, { primitive: 'badge' });
+      expect(nodes(badge.s)[badge.id].styles?.base).not.toHaveProperty('radius');
+      expect(validateState(badge.s).filter((d) => d.code === 'TOKEN_GROUP' || d.code === 'TOKEN_MISSING')).toEqual([]);
+    } finally {
+      theme.tokens = all;
+    }
   });
 
   it('sits in a line of text: allowed inside a paragraph container, where a figure is reported', () => {
@@ -163,6 +173,10 @@ describe('inserting a figure', () => {
     const r = applyOperations(s, insertOps(at, { primitive: 'paragraph' }, 'element', 'n_para0001'));
     const kids = (nodes(r.state)[id] as ElementNode).children.map((c) => (nodes(r.state)[c] as { tag?: string }).tag ?? nodes(r.state)[c].kind);
     expect(kids).toEqual(['image', 'p', 'figcaption']);
+    // With its caption or its image selected, the same.
+    const [image, caption] = (nodes(s)[id] as ElementNode).children;
+    expect(placeFor(s, owner, 'element', { owner, instancePath: [], nodeId: caption })).toMatchObject({ parentId: id, index: 1 });
+    expect(placeFor(s, owner, 'element', { owner, instancePath: [], nodeId: image })).toMatchObject({ parentId: id, index: 1 });
     // A figure without a caption takes it at the end.
     const bare = insert(start, owner, { primitive: 'figure', text: '' });
     expect(placeFor(bare.s, owner, 'element', { owner, instancePath: [], nodeId: bare.id })).toEqual({ owner, parentId: bare.id });
@@ -195,7 +209,7 @@ describe('decorative divider shapes', () => {
     const star = insert(start, owner, { primitive: 'divider', shape: 'icon', icon: 'star' });
     expect(nodes(star.s)[star.id]).toMatchObject({ icon: 'star' });
     const plain = insert(start, owner, { primitive: 'divider', shape: 'icon' });
-    expect('icon' in nodes(plain.s)[plain.id]).toBe(false);
+    expect(nodes(plain.s)[plain.id]).toEqual({ id: plain.id, kind: 'divider', shape: 'icon' });
   });
 
   it('changes shape and icon afterwards, keeping only what the shape shows', () => {
@@ -210,6 +224,7 @@ describe('decorative divider shapes', () => {
     expect((nodes(s)[id] as DividerNode).icon).toBe('heart');
     // An icon is a name, never bound: a binding is refused and the chosen icon kept.
     expect(fail(s, [{ type: 'node.setContent', owner, nodeId: id, field: 'icon', value: { $prop: 'mark' } }])).toThrow(/the name of an icon/);
+    expect(fail(s, [{ type: 'node.setContent', owner, nodeId: id, field: 'icon', value: 5 }])).toThrow(/the name of an icon/);
     set('icon', null);
     expect('icon' in nodes(s)[id]).toBe(false);
     set('icon', 'heart');
@@ -236,6 +251,7 @@ describe('decorative divider shapes', () => {
     expect(into({ primitive: 'divider', shape: 'wave', icon: 'star' })).toThrow(/starts with an icon/);
     expect(into({ componentId: 'layout.section', shape: 'wave' })).toThrow(/Only a divider has a shape/);
     expect(into({ primitive: 'repeat', bind: 'items', icon: 'star' })).toThrow(/Only a divider has a shape/);
+    expect(into({ primitive: 'slot', bind: 'content', shape: 'wave' })).toThrow(/Only a divider has a shape/);
     expect(fail(s, [{ type: 'node.setContent', owner, nodeId: id, field: 'shape', value: 'zigzag' }])).toThrow(/shape must be line, angle, wave, icon/);
     expect(fail(s, [{ type: 'node.setContent', owner, nodeId: id, field: 'icon', value: 'star' }])).toThrow(/Only a divider of shape "icon"/);
     expect(fail(image.s, [{ type: 'node.setContent', owner, nodeId: image.id, field: 'shape', value: 'wave' }])).toThrow(/Only dividers have a shape/);
@@ -254,6 +270,7 @@ describe('decorative divider shapes', () => {
     expect(damaged({})).toEqual([]);
     expect(damaged({ shape: 'zigzag' })[0]).toMatchObject({ severity: 'error', nodeId: id, site: `${id}|shape` });
     expect(damaged({ shape: { $prop: 'edge' } })).toHaveLength(1);
+    expect(damaged({ shape: null })).toHaveLength(1);
     expect(damaged({ icon: 'not-an-icon' })[0].message).toMatch(/not available/);
     expect(damaged({ shape: 'wave', icon: 'star' })[0].message).toMatch(/only a divider of shape "icon"/);
     expect(damaged({ icon: { $prop: 'mark' } })[0].message).toMatch(/not available/);
@@ -287,10 +304,13 @@ describe('decorative divider shapes', () => {
     ]);
     const def = made.state.components[made.results[0].definitionId as string];
     const source = generateStandaloneComponent(made.state, def);
-    expect(source).toContain(':global(:where(.so-band)) { display: block; width: 100%; height: 3rem; color: var(--so-color-brand, currentColor); }');
+    expect(source).toContain(':global(:where(.so-band)) { display: block; width: 100%; height: 3rem; }');
     expect(source).toContain(':global(.so-band-icon > .so-band-icon__rule)');
     expect(source).toContain(':global(:where(.so-band-icon > .so-icon))');
     const css = compile(source, { filename: 'Edge.svelte', generate: 'server', runes: true }).css?.code ?? '';
+    // A design holding only an icon divider takes them too.
+    const iconOnly = applyOperations(s, [{ type: 'component.upsert', name: 'Mark', properties: {}, nodes: [{ kind: 'element', id: 'root', children: ['mark'] }, { kind: 'divider', id: 'mark', shape: 'icon' }] } as EditOperation]);
+    expect(generateStandaloneComponent(iconOnly.state, iconOnly.state.components[iconOnly.results[0].definitionId as string])).toContain(':global(:where(.so-band-icon))');
     // Unscoped, so the icon its helper draws is reached too.
     expect(css).toContain(':where(.so-band-icon > .so-icon)');
     expect(css).not.toMatch(/\.so-band-icon\.svelte-/);
@@ -322,6 +342,11 @@ describe('Insert → Basics', () => {
     expect(made('divider-wave')).toMatchObject({ kind: 'divider', shape: 'wave' });
     expect(made('divider-icon')).toMatchObject({ kind: 'divider', shape: 'icon' });
     expect(made('badge')).toMatchObject({ kind: 'element', tag: 'span', name: 'Badge' });
+    // On a bare page, inside the Section made for it.
+    const bare = createStarterState('blank', 'Test Studio', false);
+    const home: OwnerRef = { kind: 'page', id: bare.site.homePageId };
+    const onBare = applyOperations(bare, insertOps({ owner: home, parentId: null }, basicSpec(byId['divider-wave']), 'element', 'n_tile0002'));
+    expect(onBare.state.pages[home.id].nodes.n_tile0002).toMatchObject({ kind: 'divider', shape: 'wave' });
     expect(made('figure')).toMatchObject({ kind: 'element', tag: 'figure', name: 'Figure' });
   });
 
@@ -372,7 +397,7 @@ describe('the exported site', () => {
     const angle = add({ primitive: 'divider', shape: 'angle' });
     const wave = add({ primitive: 'divider', shape: 'wave' });
     const ornament = add({ primitive: 'divider', shape: 'icon', icon: 'leaf' });
-    // The wave in the author's own color; the others in the brand color the band styles give them.
+    // The wave in the author's own color; the others in the text color around them.
     s = applyOperations(s, [{ type: 'node.setStyle', owner, nodeId: wave, scope: 'base', property: 'color', value: { token: 'color.accent' } }]).state;
     return { s, badge, figure, angle, wave, ornament, image: nodes(s)[image] as ImageNode };
   }
@@ -400,8 +425,8 @@ describe('the exported site', () => {
     expect(bands[1]).toMatch(/class="[^"]*so-band--wave[^"]*"[\s\S]*<path d="M0 12 Q25 0 50 12 T100 12 V24 H0 Z" fill="currentColor"/);
     const ornament = html.match(/<div class="[^"]*so-band-icon[^"]*"[^>]*>[\s\S]*?<\/div>/)?.[0] ?? '';
     expect(ornament).toContain('aria-hidden="true"');
-    expect(ornament.match(/so-band-icon__rule/g)).toHaveLength(2);
-    expect(ornament).toMatch(/<svg\b[^>]*class="[^"]*so-icon/);
+    // A hairline either side of the icon.
+    expect(ornament).toMatch(/^<div[^>]*>\s*<span class="so-band-icon__rule"><\/span>\s*<svg\b[^>]*class="[^"]*so-icon[\s\S]*?<\/svg>\s*<span class="so-band-icon__rule"><\/span>\s*<\/div>$/);
     // The leaf it names, not the stand-in icon.
     expect(ornament).toContain('d="M11 20a10 10 0 0010-10');
     // Nothing loads or runs: no file, link, script or handler of their own.
@@ -413,9 +438,10 @@ describe('the exported site', () => {
     const { s, wave } = site();
     const files = generateProject(s);
     const css = files.get(`${STYLES_DIR}/components.css`)!;
-    // The brand color until the design gives one, at no specificity, so a node's own color wins.
-    expect(css).toContain(':where(.so-band) { display: block; width: 100%; height: 3rem; color: var(--so-color-brand, currentColor); }');
-    expect(css).toContain(':where(.so-band-icon) { display: flex; align-items: center; gap: 0.75rem; width: 100%; color: var(--so-color-brand, currentColor); }');
+    // At no specificity, so a node's own size and color win; with none, a band takes the text color around it.
+    expect(css).toContain(':where(.so-band) { display: block; width: 100%; height: 3rem; }');
+    expect(css).toContain(':where(.so-band-icon) { display: flex; align-items: center; gap: 0.75rem; width: 100%; }');
+    expect(css).not.toMatch(/so-band[^{]*\{[^}]*\bcolor:/);
     // The hairlines outweigh a theme's reset of plain spans.
     expect(css).toContain('.so-band-icon > .so-band-icon__rule { display: block; flex: 1 1 0; min-width: 0; height: 0; border: 0; border-top: 1px solid currentColor; opacity: 0.35; }');
     // The wave's own color is its token's custom property, on the class its svg carries.

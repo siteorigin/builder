@@ -132,9 +132,17 @@ function slotCounts(state: ProjectState, definitionId: string, done: Map<string,
  * Anywhere else, at the end (no index).
  */
 function beforeCaption(tree: NodeTree, node: ElementNode): { index?: number } {
-  if (node.tag !== 'figure' || !node.children.length) return {};
-  const last = own(tree.nodes, node.children[node.children.length - 1]);
-  return last?.kind === 'text' && last.tag === 'figcaption' ? { index: node.children.length - 1 } : {};
+  const index = captionSafe(tree, node.id, node.children.length);
+  return index === node.children.length ? {} : { index };
+}
+
+/** A place among `parentId`'s children, moved before a figure's trailing caption when it would follow it. */
+function captionSafe(tree: NodeTree, parentId: string | null | undefined, index: number): number {
+  const parent = parentId ? own(tree.nodes, parentId) : undefined;
+  if (parent?.kind !== 'element' || parent.tag !== 'figure' || !parent.children.length) return index;
+  const end = parent.children.length;
+  const last = own(tree.nodes, parent.children[end - 1]);
+  return last?.kind === 'text' && last.tag === 'figcaption' && index >= end ? end - 1 : index;
 }
 
 /**
@@ -168,7 +176,8 @@ export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole,
         }
         return { owner, parentId: null, index: tree.rootIds.indexOf(top) + 1 };
       }
-      return { owner, parentId: info.parentId, slot: info.slot, index: info.index + 1 };
+      // Just after the selection; after a figure's caption, before it instead.
+      return { owner, parentId: info.parentId, slot: info.slot, index: captionSafe(tree, info.parentId, info.index + 1) };
     }
   }
   if (role === 'element' && owner.kind === 'page') {
@@ -189,7 +198,7 @@ export function insideComponent(state: ProjectState, at: InsertAt | null): Inser
   const tree = treeFor(state, at.owner);
   if (tree?.rootIds.length !== 1) return at;
   const node = own(tree.nodes, tree.rootIds[0]);
-  if (node?.kind === 'element') return { owner: at.owner, parentId: node.id };
+  if (node?.kind === 'element') return { owner: at.owner, parentId: node.id, ...beforeCaption(tree, node) };
   const slot = node?.kind === 'instance' ? slotFor(state, node.definitionId) : undefined;
   if (slot) return { owner: at.owner, parentId: node!.id, slot };
   return node?.kind === 'repeat' || node?.kind === 'slot' ? at : null;

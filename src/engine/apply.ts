@@ -1224,13 +1224,20 @@ function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>[
   const id = newId('n');
   const space = (t: string) => ({ token: t });
   const { text } = start;
-  // A badge's and a figure's site styles: those the site's theme (or its own tokens) declare, so a theme without one
-  // still takes them, with the rest of their styles.
-  let tokens: Set<string> | undefined;
+  // A badge's and a figure's site styles: those the site's theme (or its own tokens) declare, of a kind the property
+  // takes, so a theme without one, or with one of another kind, still takes them, with the rest of their styles.
+  let groups: Map<string, string> | undefined;
   const declared = <T extends Record<string, unknown>>(styles: T): T => {
-    tokens ??= new Set(declaredTokens(state).map((t) => t.id));
-    const known = tokens;
-    return Object.fromEntries(Object.entries(styles).filter(([, v]) => !(v && typeof v === 'object' && 'token' in v) || known.has((v as { token: string }).token))) as T;
+    groups ??= new Map(declaredTokens(state).map((t) => [t.id, t.group]));
+    const known = groups;
+    const fits = (prop: string, v: unknown) => {
+      if (!v || typeof v !== 'object' || !('token' in v)) return true;
+      const group = known.get((v as { token: string }).token);
+      const want = Object.hasOwn(STYLE_PROP_MAP, prop) ? STYLE_PROP_MAP[prop].tokenGroup : undefined;
+      const takes: readonly string[] = Array.isArray(want) ? want : want === undefined ? [] : [want];
+      return group !== undefined && takes.includes(group);
+    };
+    return Object.fromEntries(Object.entries(styles).filter(([prop, v]) => fits(prop, v))) as T;
   };
   if (start.shape !== undefined && kind !== 'divider') fail('Only a divider has a shape.');
   if (start.icon !== undefined && kind !== 'badge' && !(kind === 'divider' && start.shape === 'icon')) fail('Only a badge, or a divider of shape "icon", starts with an icon.');
@@ -1261,8 +1268,8 @@ function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>[
     case 'divider': {
       const shape = start.shape ?? 'line';
       if (shape === 'line') return [{ id, kind: 'divider' }];
-      // Drawn in the site's brand color until the author picks another (see the generator's band styles), so it shows
-      // on any section's background a theme gives it.
+      // Drawn in the text color around it until the author picks another, so it shows on whatever background the
+      // section it sits in has.
       const icon = startIcon(start.icon);
       return [{ id, kind: 'divider', shape, ...(icon ? { icon } : {}) }];
     }

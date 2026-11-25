@@ -116,6 +116,7 @@ describe('the brief on disk', () => {
     const old = fresh();
     // The format the brief's step upgrades from (its place in the list plus one).
     const before = MIGRATIONS.findIndex((m) => m.id === 'project-brief') + 1;
+    expect(before).toBe(17);
     for (const doc of [old.manifest, old.site, old.tokens, old.assets, old.themeLock, ...Object.values(old.pages), ...Object.values(old.components)]) doc.schemaVersion = before;
     const migrated = migrateProject(old);
     expect(migrated?.applied).toEqual(['project-brief', 'divider-shapes']);
