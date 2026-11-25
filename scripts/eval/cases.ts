@@ -342,11 +342,16 @@ const placementShows = (s: ProjectState, def: ComponentDefinition, props: Record
   const node = makeInstance(def, props, variants);
   return renderedContent(s, { rootIds: [node.id], nodes: { [node.id]: node } }).filter((c) => !c.defNodeId || !def.tree?.nodes[c.defNodeId] || !hiddenEverywhere(def, c.defNodeId, variants));
 };
-/** What one placement already on Home shows, less what its design's styles hide at every screen size. */
+/**
+ * What one placement already on Home shows, less what its design's styles hide at every screen size; nothing when the
+ * placement's own styles hide it at every size.
+ */
 const homePlacementShows = (s: ProjectState, nodeId: string) => {
   const placed = home(s).nodes[nodeId] as InstanceNode | undefined;
   const def = placed?.kind === 'instance' ? s.components[placed.definitionId] : undefined;
   const variants = placed?.variants as Record<string, string> | undefined;
+  const own = (placed?.overrides?.root ?? {}) as Record<string, Record<string, unknown> | undefined>;
+  if (SIZES.every((size) => (own[size]?.hidden ?? own.base?.hidden) === true)) return [];
   return renderedContent(s, { ...home(s), rootIds: [nodeId] }).filter((c) => !def || !c.defNodeId || !def.tree?.nodes[c.defNodeId] || !hiddenEverywhere(def, c.defNodeId, variants));
 };
 const textOf = (c: RenderedContent): string[] => (c.kind !== 'text' ? [] : typeof c.value === 'string' ? [plain(c.value)] : Array.isArray(c.value) ? richTextToPlain(c.value as RichText).split(/\n+/).map(plain) : []).filter(Boolean);
@@ -399,7 +404,10 @@ const placedLastOnHome = (before: ProjectState, after: ProjectState, def: Compon
   const lastId = h.rootIds.at(-1) ?? '';
   const last = h.nodes[lastId] as InstanceNode | undefined;
   const was = home(before);
-  return !!def && last?.kind === 'instance' && last.definitionId === def.id && same(was.rootIds, h.rootIds.slice(0, -1)) && Object.keys(was.nodes).every((id) => same(was.nodes[id], h.nodes[id])) && shows(homePlacementShows(after, lastId));
+  // Home's earlier sections, and the designs they show, as they were.
+  const designs = Object.values(was.nodes).flatMap((n) => (n.kind === 'instance' ? [n.definitionId] : []));
+  const kept = Object.keys(was.nodes).every((id) => same(was.nodes[id], h.nodes[id])) && designs.every((id) => same(before.components[id], after.components[id]));
+  return !!def && last?.kind === 'instance' && last.definitionId === def.id && same(was.rootIds, h.rootIds.slice(0, -1)) && kept && shows(homePlacementShows(after, lastId));
 };
 const tokenOf = (v: unknown) => (v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' && (v as { alpha?: unknown }).alpha === undefined ? (v as { token: string }).token : undefined);
 const SIZES = ['phone', 'tablet', 'desktop'] as const;
@@ -420,11 +428,14 @@ const nearestStyle = (def: ComponentDefinition, nodeId: string, size: Size, prop
   }
   return undefined;
 };
+/** Custom CSS that can take something off the page or out of sight. */
+const CSS_HIDES = /display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(\.0*)?\s*(;|!|$)|clip|(max-)?height\s*:\s*0/i;
 /**
- * Whether styles hide a node, or a container around it, at every screen size. Hidden at one size only is judged where
- * it matters, by the measurer (see phoneRepairChecks).
+ * Whether styles hide a node, or a container around it, at every screen size: by Hidden, or by custom CSS that can.
+ * Hidden at one size only is judged where it matters, by the measurer (see phoneRepairChecks).
  */
-const hiddenEverywhere = (def: ComponentDefinition, nodeId: string, variants?: Record<string, string>) => SIZES.every((size) => lineage(def, nodeId).some((n) => styleAt(def, n, size, 'hidden', variants) === true));
+const hiddenEverywhere = (def: ComponentDefinition, nodeId: string, variants?: Record<string, string>) =>
+  SIZES.every((size) => lineage(def, nodeId).some((n) => styleAt(def, n, size, 'hidden', variants) === true || CSS_HIDES.test(String(styleAt(def, n, size, 'customCss', variants) ?? ''))));
 /**
  * Whether every side of a node is padded with `token` at one size. A side's longhand and its shorthand can both be
  * set from different rules, and which wins depends on the order the stylesheet writes them in: both must be the token.
@@ -485,6 +496,8 @@ const phoneRepairChecks = (after: ProjectState, def: ComponentDefinition | undef
     check('desktop-kept', fits(desktop) && readable(desktop) && desktop?.boxes[root] === 720 && !!line && tokenOf(nearestStyle(def, line, 'desktop', 'background')) === 'color.surface', String(desktop?.boxes[root]))
   ];
 };
+/** An inspection that found something, could not measure something, or did not run. */
+const stillWrong = (r: Record<string, unknown> | null) => !r || r.ok === false || !!r.error || ['findings', 'runtimeErrors', 'failed'].some((k) => Array.isArray(r[k]) && (r[k] as unknown[]).length > 0);
 const intro = (heading: string) => ({ componentId: 'intro.page', props: { heading, lead: `${heading}, explained simply.` } });
 const closing = { componentId: 'cta.banner', props: { heading: 'Ready when you are', primaryLabel: 'Get in touch', primaryLink: '/contact/' } };
 
@@ -1039,14 +1052,19 @@ export const EVAL_CASES: EvalCase[] = [
       const found =
         def &&
         axesOf(def)
-          .filter(([axis, a]) => /tone/i.test(`${axis} ${a.label ?? ''}`))
-          .flatMap(([axis, a]) => Object.entries(a.options).filter(([, o]) => /inverse/i.test(o.label ?? '')).map(([option]) => ({ axis, option, isDefault: a.default === option })))[0];
+          .filter(([axis, a]) => plain(a.label || axis) === 'tone')
+          .flatMap(([axis, a]) => Object.entries(a.options).filter(([, o]) => plain(o.label ?? '') === 'inverse').map(([option]) => ({ axis, option, isDefault: a.default === option })))[0];
       const inverse = found ? { [found.axis]: found.option } : undefined;
       const texts = def ? textNodes(def) : [];
       const root = def?.tree?.rootIds[0] ?? '';
-      // How it looks: the panel's background, and each text's color and what it sits on.
+      // How it looks: the panel's background, each text's color and what it sits on, and every other style of the
+      // design's nodes (colors are compared where they show, so moving one onto the texts changes nothing).
       const look = (d: ComponentDefinition, variants?: Record<string, string>) =>
-        JSON.stringify([SIZES.map((size) => styleAt(d, d.tree!.rootIds[0], size, 'background', variants)), textNodes(d).map((n) => SIZES.map((size) => [nearestStyle(d, n, size, 'color', variants), nearestStyle(d, n, size, 'background', variants)]))]);
+        JSON.stringify([
+          SIZES.map((size) => styleAt(d, d.tree!.rootIds[0], size, 'background', variants)),
+          textNodes(was).map((n) => SIZES.map((size) => [nearestStyle(d, n, size, 'color', variants), nearestStyle(d, n, size, 'background', variants), lineage(d, n).some((a) => styleAt(d, a, size, 'hidden', variants) === true)])),
+          Object.keys(was.tree!.nodes).map((n) => SIZES.map((size) => Object.entries(designStyles(d, n, variants)[size] ?? {}).filter(([prop]) => !COLOR_PROPS.has(prop)).sort(([a], [b]) => a.localeCompare(b))))
+        ]);
       const placement = Object.values(home(after).nodes).find((n) => n.kind === 'instance' && n.definitionId === was.id) as InstanceNode | undefined;
       return [
         check('inverse-option', !!found),
@@ -1193,7 +1211,10 @@ export const EVAL_CASES: EvalCase[] = [
       const was = defNamed(before, 'Service panel')!;
       const def = after.components[was.id];
       const field = def && editedBy(after, def, 'Ask at reception');
-      const schema = field ? def.properties[field] : undefined;
+      // A property, or a field of an object property.
+      const [prop, sub] = (field ?? '').split('.');
+      const top = field ? def.properties[prop] : undefined;
+      const schema = sub && top?.type === 'object' ? top.fields[sub] : top;
       const caption = def && nodeShowing(after, def, 'Ask at reception');
       const placements = Object.values(home(before).nodes).filter((n): n is InstanceNode => n.kind === 'instance' && n.definitionId === was.id);
       const now = placements.map((p) => home(after).nodes[p.id] as InstanceNode | undefined);
@@ -1264,7 +1285,7 @@ export const EVAL_CASES: EvalCase[] = [
           ];
         },
         () => [call('inspect_component', { definitionId: id() })],
-        (req) => finish((lastResult(req) as Inspected)?.findings?.length ? 'Counter hours still has problems on phones.' : 'Counter hours now fills a phone screen and its text is readable there; desktop is unchanged.')(req)
+        (req) => finish(stillWrong(lastResult(req)) ? 'Counter hours still has problems on phones.' : 'Counter hours now fills a phone screen and its text is readable there; desktop is unchanged.')(req)
       ];
     }
   },
@@ -1314,7 +1335,7 @@ export const EVAL_CASES: EvalCase[] = [
           return [call('apply_operations', { expectedRevision: r.revision, operations: [{ type: 'node.setStyle', owner: { kind: 'component', id: id() }, nodeId: 'panel', scope: 'phone', property: 'width', value: 'fill' }] })];
         },
         () => [call('inspect_component', { definitionId: id() })],
-        (req) => finish((lastResult(req) as Inspected)?.findings?.length ? 'Opening hours still has problems on phones.' : 'Made Opening hours; on phones it now fills the screen, and it stays 720px wide on desktop.')(req)
+        (req) => finish(stillWrong(lastResult(req)) ? 'Opening hours still has problems on phones.' : 'Made Opening hours; on phones it now fills the screen, and it stays 720px wide on desktop.')(req)
       ];
     }
   }

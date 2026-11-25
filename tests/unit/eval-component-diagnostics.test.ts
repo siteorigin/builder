@@ -92,6 +92,29 @@ describe('static component measurement for the benchmark', () => {
     expect(width({ base: { width: '50%' } })).toMatchObject({ box: 195, findings: [] });
     // Sized by its content: it wraps, so it fits, at a width only a browser knows.
     expect(width({ base: { width: 'fit' } })).toMatchObject({ box: undefined, checked: 2, unmeasured: [], findings: [] });
+    // A minimum width of auto sets no floor.
+    expect(width({ base: { width: '720px', minWidth: 'auto' } }, 1280)).toMatchObject({ box: 720, findings: [] });
+    // Under a cap that cannot be worked out a width that fits still fits, but its own width is not known.
+    expect(width({ base: { width: '720px', maxWidth: 'calc(100% - 1000px)' } }, 1280)).toEqual({ box: undefined, checked: 2, unmeasured: [], findings: [] });
+  });
+
+  it('works out a percentage from the container and a vw from the screen', () => {
+    const inside = (lineStyles: Styles) => measure(panel({ base: { width: '200px' } }, lineStyles), 390);
+    expect(inside({ base: { width: '50%' } }).boxes.line).toBe(100);
+    const wide = inside({ base: { width: '110vw' } });
+    expect(wide.boxes.line).toBeCloseTo(429);
+    expect(kinds(wide)).toEqual(['element-overflow@line']);
+  });
+
+  it('finds items side by side in a row that need more room than it has, unless the row wraps', () => {
+    const row = (wrap: boolean) => {
+      const p = panel({ base: { layout: 'row', ...(wrap ? { wrap: true } : {}) } }, { base: { minWidth: '250px' } });
+      Object.assign((p.state.components[p.id].tree!.nodes.band.styles as Styles).base, { width: 'fill', minWidth: '250px' });
+      return measure(p, 390, { props: { wide: true } });
+    };
+    expect(kinds(row(false))).toEqual(['element-overflow@panel']);
+    expect(row(false).findings[0].message).toContain('at least 500px');
+    expect(kinds(row(true))).toEqual([]);
   });
 
   it('leaves a width or a color it cannot work out unmeasured, never passed', () => {
@@ -102,8 +125,10 @@ describe('static component measurement for the benchmark', () => {
     expect(measure(panel({ base: { width: '20em' } }), 390).widths.unmeasured).toEqual(['panel']);
     expect(measure(panel({ base: { width: '720px', maxWidth: 'calc(100% - 2rem)' } }), 390).widths.unmeasured).toEqual(['panel']);
     expect(measure(panel({ base: { width: '200px', maxWidth: 'calc(100% - 2rem)' } }), 390).widths.unmeasured).toEqual([]);
-    // Custom CSS that may set a width.
+    // Custom CSS can change anything: set for every size, and also when a size's own custom CSS wins the cascade there.
     expect(measure(panel({ base: { width: 'fill', customCss: 'width: 720px;' } }), 390).widths.unmeasured).toEqual(['panel']);
+    expect(measure(panel({ base: { width: 'fill', customCss: 'width: 720px;' }, phone: { customCss: 'letter-spacing: 1px;' } }), 390).widths.unmeasured).toEqual(['panel']);
+    expect(measure(panel({ base: SURFACE }, { phone: { customCss: 'display: none;' } }), 390).texts).toEqual([{ nodeId: 'line', ratio: null }]);
     // A picture behind the text, and text faded, in a box that can cut it off, or painted by custom CSS.
     const pictured = panel({ base: SURFACE });
     handSet(pictured, 'panel', { backgroundImage: { assetId: 'a1' } });
@@ -148,22 +173,25 @@ describe('static component measurement for the benchmark', () => {
     const results = await staticInspector(() => p.state)(inspectionSteps(target, window));
     expect(results.every((r) => r.state === 'ready')).toBe(true);
     const checks = (r: ComponentPreviewResult) => (r.report as { checks: Record<string, { checked: number }> }).checks;
-    expect(checks(results[0]).overflow.checked).toBeGreaterThan(0);
-    expect(checks(results[0]).contrast.checked).toBeGreaterThan(0);
+    // The panel and its line; the lines and box conditions leave out are not measured.
+    expect(checks(results[0]).overflow).toEqual({ checked: 2, failed: 1 });
+    expect(checks(results[0]).contrast).toEqual({ checked: 1, failed: 1, unverified: 0 });
     const digest = digestComponentInspection(target, window, results, { offset: 0, total: cases.length, all: cases });
     expect(digest.measured).toBe(results.length);
     const findings = digest.content.findings as Array<{ kind: string; at?: { nodeId: string }; in: string[] }>;
     expect(findings.map((f) => `${f.kind}@${f.at?.nodeId}`)).toEqual(['element-overflow@panel', 'low-contrast@line']);
     expect(findings[0].in.join(' ')).toContain('phone');
     expect(findings[0].in.join(' ')).not.toContain('desktop');
-    // A width it cannot work out fails the measurement, which says why, rather than reading as clean.
-    const odd = panel({ base: { width: 'calc(100% + 400px)' } });
+    // A width it cannot work out is reported beside what was found, so the measurement never reads as clean.
+    const odd = panel({ base: { width: 'calc(100% + 400px)' } }, UNREADABLE);
     const oddTarget = resolveInspectTarget(odd.state, { definitionId: odd.id });
     if ('error' in oddTarget) throw new Error(oddTarget.error);
     const oddCases = planComponentInspection(oddTarget).slice(0, 1);
     const oddDigest = digestComponentInspection(oddTarget, oddCases, await staticInspector(() => odd.state)(inspectionSteps(oddTarget, oddCases)), { offset: 0, total: 1 });
-    expect(oddDigest.measured).toBe(0);
-    expect(JSON.stringify(oddDigest.content)).toContain('could not be measured without a browser');
+    expect(oddDigest.measured).toBe(2);
+    expect((oddDigest.content.findings as Array<{ kind: string }>).map((f) => f.kind)).toEqual(['low-contrast']);
+    expect(JSON.stringify(oddDigest.content.runtimeErrors)).toContain('The width of \\"panel\\" could not be measured without a browser');
+    expect(oddDigest.content.summary).not.toContain('no problems found');
     // A design that is not there cannot be measured, and says so.
     expect(await staticInspector(() => p.state)([{ spec: { definitionId: 'proj.gone' }, width: 390 }])).toEqual([{ state: 'error', error: 'There is no such component to measure.', width: 390 }]);
   });

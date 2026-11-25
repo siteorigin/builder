@@ -3,8 +3,8 @@
  * design alone, for inspect_component and for grading. It measures two things and nothing else: whether an element's
  * width fits the screen, and whether the text that renders has enough contrast with what is behind it, from the
  * site's colors. Anything it cannot work out is counted as unmeasured, never as a pass: a width it cannot resolve, a
- * color it cannot read, text faded by opacity or in a box that can cut it off, and custom CSS that may override
- * either. Overlaps, cut-off text, tap targets and spacing need a browser, so they are never reported here.
+ * color it cannot read, text faded by opacity or in a box that can cut it off, and anything under custom CSS, which
+ * can change either. Overlaps, cut-off text, tap targets and spacing need a browser, so they are never reported here.
  */
 import type { ComponentPreviewResult, ComponentPreviewSpec, ComponentPreviewStep } from '@shared/component-preview';
 import { PREVIEW_NODE_ID, previewCtx } from '@shared/component-preview';
@@ -24,9 +24,6 @@ const PAGE_TEXT = 'color.text';
 const PAGE_BACKGROUND = 'color.background';
 const REM_PX = 16;
 const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 1 };
-/** Custom CSS that may set a width, or the paint of text, past what the named styles say. */
-const CUSTOM_WIDTH = /(^|[;{\s])(min-|max-)?width\s*:/i;
-const CUSTOM_PAINT = /(^|[;{\s])(color|background(-color|-image)?|opacity|filter|mix-blend-mode)\s*:/i;
 
 export interface StaticFinding {
   kind: 'element-overflow' | 'low-contrast';
@@ -48,7 +45,7 @@ export interface StaticMeasurement {
 }
 
 /** A width in pixels, one that takes the room it is given, one sized by its content, or one that cannot be worked out. */
-export type Length = { px: number } | 'fill' | 'content' | 'unknown';
+type Length = { px: number } | 'fill' | 'content' | 'unknown';
 
 const tokenRef = (v: unknown): { token: string; alpha?: number } | null => (v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' ? (v as { token: string; alpha?: number }) : null);
 const isSet = (v: unknown) => v !== undefined && v !== null;
@@ -64,10 +61,10 @@ function cssOf(tokens: TokenDef[], v: unknown): string | null {
 }
 
 /**
- * A width style value in a box `room` pixels wide. An em depends on the element's font size, so it is unknown here;
- * a rem is the root's 16px.
+ * A width style value in a container `room` pixels wide on a screen `screen` pixels wide. An em depends on the
+ * element's font size, so it is unknown here; a rem is the root's 16px.
  */
-export function lengthOf(tokens: TokenDef[], v: unknown, room: number): Length {
+function lengthOf(tokens: TokenDef[], v: unknown, room: number, screen: number): Length {
   if (!isSet(v)) return 'fill';
   if (typeof v === 'number') return { px: v };
   const css = cssOf(tokens, v)?.trim().toLowerCase();
@@ -77,27 +74,43 @@ export function lengthOf(tokens: TokenDef[], v: unknown, room: number): Length {
   const m = /^(-?\d*\.?\d+)(px|rem|%|vw)?$/.exec(css);
   if (!m) return 'unknown';
   const n = Number(m[1]);
-  if (m[2] === '%' || m[2] === 'vw') return { px: (n / 100) * room };
+  if (m[2] === '%') return { px: (n / 100) * room };
+  if (m[2] === 'vw') return { px: (n / 100) * screen };
   return { px: m[2] === 'rem' ? n * REM_PX : n };
 }
 
+/** The smallest width a style lets an element shrink to: nothing below its minimum width, in pixels, or unknown. */
+function minWidthOf(tokens: TokenDef[], st: StyleProps, room: number, screen: number): number | 'unknown' {
+  if (!isSet(st.minWidth) || ['auto', '0', 'none'].includes(String(st.minWidth))) return 0;
+  const min = lengthOf(tokens, st.minWidth, room, screen);
+  return min === 'fill' ? room : min === 'content' || min === 'unknown' ? 'unknown' : min.px;
+}
+
 /**
- * The width an element renders at in `room` pixels (a minimum width wins over a maximum, which caps the width), or
- * 'content' when its content sizes it, or 'unknown'.
+ * The width an element renders at in a container `room` pixels wide (a minimum width wins over a maximum, which
+ * caps the width), or 'fits' when it is known to fit the room but not at what width (sized by its content, or under a
+ * cap that cannot be worked out), or 'unknown'.
  */
-function boxWidth(tokens: TokenDef[], st: StyleProps, room: number): number | 'content' | 'unknown' {
-  const w = lengthOf(tokens, st.width, room);
-  const max = st.maxWidth === 'none' || !isSet(st.maxWidth) ? null : lengthOf(tokens, st.maxWidth, room);
-  const min = isSet(st.minWidth) ? lengthOf(tokens, st.minWidth, room) : null;
-  if (w === 'unknown' || min === 'unknown' || min === 'content') return 'unknown';
-  const floor = min === null ? 0 : min === 'fill' ? room : min.px;
-  if (w === 'content') return floor > room ? floor : 'content';
+function boxWidth(tokens: TokenDef[], st: StyleProps, room: number, screen: number): number | 'fits' | 'unknown' {
+  const w = lengthOf(tokens, st.width, room, screen);
+  const max = st.maxWidth === 'none' || !isSet(st.maxWidth) ? null : lengthOf(tokens, st.maxWidth, room, screen);
+  const floor = minWidthOf(tokens, st, room, screen);
+  if (w === 'unknown' || floor === 'unknown') return 'unknown';
+  if (w === 'content') return floor > room ? floor : 'fits';
   let px = w === 'fill' ? room : w.px;
-  if (max === 'unknown') {
-    // An unknown cap may or may not hold a width too wide for the room.
-    if (px > room) return 'unknown';
-  } else if (max !== null && max !== 'content') px = Math.min(px, max === 'fill' ? room : max.px);
+  if (max === 'unknown' || max === 'content') {
+    // A cap that cannot be worked out holds the width to at most what it was: the width itself is not known.
+    if (px > room) return floor > room ? floor : 'unknown';
+    return floor > 0 && floor >= px ? floor : 'fits';
+  }
+  if (max !== null) px = Math.min(px, max === 'fill' ? room : max.px);
   return Math.max(px, floor);
+}
+
+/** Whether custom CSS is set on a design node, at any size or state or in any variant option: it can change anything. */
+function customCssOn(def: ComponentDefinition, nodeId: string): boolean {
+  const sets = (styles: unknown) => Object.values((styles ?? {}) as Record<string, StyleProps | undefined>).some((st) => typeof st?.customCss === 'string' && st.customCss.trim() !== '');
+  return sets(def.tree?.nodes[nodeId]?.styles) || Object.values(def.variantAxes ?? {}).some((axis) => Object.values(axis?.options ?? {}).some((o) => sets(o?.styles?.[nodeId])));
 }
 
 /** A color style value as opaque sRGB: see-through over `under`, or null when it cannot be known without a browser. */
@@ -158,7 +171,7 @@ export function measureComponent(state: ProjectState, spec: ComponentPreviewSpec
   const seen = new Set<string>();
 
   /** `room`: the width its container gives it. `doubtful`: something around it may change how its text looks. */
-  const visit = (id: string, room: number, color: unknown, behind: Rgba | null, doubtful: boolean) => {
+  const visit = (id: string, room: number, color: unknown, behind: Rgba | null, doubtful: boolean): void => {
     const n: GraphNode | undefined = tree.nodes[id];
     // A node a condition leaves out of this placement is not on the page at all.
     if (!n || seen.has(id) || !shown.nodes.has(id)) return;
@@ -167,18 +180,18 @@ export function measureComponent(state: ProjectState, spec: ComponentPreviewSpec
     if (n.kind === 'instance') return;
     const st: StyleProps = (designStyles(def, id, spec.variants)[size] ?? {}) as StyleProps;
     if (st.hidden === true) return;
-    const custom = typeof st.customCss === 'string' ? st.customCss : '';
+    const custom = customCssOn(def, id);
     // An opaque background of its own is known whatever is behind it; a picture, or a see-through one over a picture, is not.
     if (isSet(st.backgroundImage)) behind = null;
     else if (isSet(st.background)) behind = paint(tokens, st.background, behind);
     const fg = isSet(st.color) ? st.color : color;
     const opacity = typeof st.opacity === 'number' ? st.opacity : isSet(st.opacity) ? Number(cssOf(tokens, st.opacity)) : 1;
     const clips = ['hidden', 'clip'].includes(String(st.overflow)) && (isSet(st.height) || isSet(st.maxHeight));
-    const unsure = doubtful || !(opacity >= 1) || clips || CUSTOM_PAINT.test(custom);
+    const unsure = doubtful || !(opacity >= 1) || clips || custom;
 
     let inner = room;
     if (n.kind !== 'repeat' && n.kind !== 'slot') {
-      const box = CUSTOM_WIDTH.test(custom) ? 'unknown' : boxWidth(tokens, st, room);
+      const box = custom ? 'unknown' : boxWidth(tokens, st, room, width);
       if (box === 'unknown') out.widths.unmeasured.push(id);
       else {
         out.widths.checked++;
@@ -198,6 +211,16 @@ export function measureComponent(state: ProjectState, spec: ComponentPreviewSpec
       if (ratio !== null && ratio < TEXT_CONTRAST)
         out.findings.push({ kind: 'low-contrast', nodeId: id, message: `Its text has a contrast of ${formatRatio(ratio)} against what is behind it, below ${TEXT_CONTRAST}:1.` });
     }
+    // Items side by side in a row that does not wrap: their minimum widths together can be more than the row has.
+    if (st.layout === 'row' && st.wrap !== true && !custom) {
+      const items = childLists(n).flatMap((l) => l.ids).flatMap((c) => (shown.nodes.has(c) && tree.nodes[c]?.kind !== 'repeat' ? [c] : []));
+      const need = items.reduce((sum, c) => {
+        const own = (designStyles(def, c, spec.variants)[size] ?? {}) as StyleProps;
+        const min = own.hidden === true ? 0 : minWidthOf(tokens, own, inner, width);
+        return typeof min === 'number' && typeof sum === 'number' ? sum + min : 'unknown';
+      }, 0 as number | 'unknown');
+      if (typeof need === 'number' && need > inner + 0.5) out.findings.push({ kind: 'element-overflow', nodeId: id, message: `Its items need at least ${Math.round(need)}px side by side, more than the ${Math.round(inner)}px it has, so they spill out.` });
+    }
     for (const list of childLists(n)) for (const child of list.ids) visit(child, inner, fg, behind, unsure);
   };
   for (const root of tree.rootIds) visit(root, width, { token: PAGE_TEXT }, page, false);
@@ -208,8 +231,8 @@ export function measureComponent(state: ProjectState, spec: ComponentPreviewSpec
 function report(state: ProjectState, step: ComponentPreviewStep): ComponentPreviewResult {
   const m = measureComponent(state, step.spec, step.width);
   if ('error' in m) return { state: 'error', error: m.error, width: step.width };
-  // A width that could not be worked out is a measurement that failed, never a clean one.
-  const error = m.widths.unmeasured.length ? `The width of ${m.widths.unmeasured.map((id) => `"${id}"`).join(', ')} could not be measured without a browser: give it a length, a percentage, fill or fit.` : undefined;
+  // A width that could not be worked out is reported beside what was found, so the step never reads as clean.
+  const unmeasured = m.widths.unmeasured.length ? [`The width of ${m.widths.unmeasured.map((id) => `"${id}"`).join(', ')} could not be measured without a browser: give it a length, a percentage, fill or fit, without custom CSS.`] : [];
   const ctx = `${previewCtx(m.definitionId)}|${PREVIEW_NODE_ID}`;
   const unverified = m.texts.filter((t) => t.ratio === null).length;
   return {
@@ -219,7 +242,7 @@ function report(state: ProjectState, step: ComponentPreviewStep): ComponentPrevi
     bounds: null,
     report: {
       viewportWidth: step.width,
-      ...(error ? { error } : {}),
+      ...(unmeasured.length ? { runtimeErrors: unmeasured } : {}),
       issues: m.findings.map((f) => ({ kind: f.kind, message: f.message, desc: { ctx, node: f.nodeId, items: '' } })),
       checks: {
         overflow: { checked: m.widths.checked, failed: m.findings.filter((f) => f.kind === 'element-overflow').length },

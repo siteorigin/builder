@@ -378,6 +378,16 @@ describe('agent benchmark', () => {
       expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && delete a.variant))).toEqual(['default-unchanged']);
       expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && a.styles.pop()))).toEqual(['inverse-text']);
       expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && (a.styles[0].value = '#14211d')))).toEqual(['inverse-background']);
+      // The panel hidden for every placement as well: both options look the same, which is not the look kept.
+      const hidden: EvalCase = {
+        ...tone,
+        script: (state) => {
+          const [add, style, end] = tone.script(state);
+          const hide = () => [{ type: 'done' as const, stopReason: 'tool_use' as const, text: '', toolCalls: [{ id: 'h1', name: 'style_definition_element', arguments: JSON.stringify({ nodeId: 'panel', scope: 'base', styles: [{ property: 'hidden', value: true }] }) }] }];
+          return [add, style, hide, end];
+        }
+      };
+      expect(await failing(hidden)).toEqual(['default-unchanged']);
       // Dark behind the heading alone, not the panel; and an Inverse option on an axis that is not a tone.
       expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && (a.nodeId = 'title')))).toEqual(['inverse-background', 'inverse-text']);
       expect(await failing(editCalls(tone, (n, a) => (n === 'add_definition_variant' || n === 'style_definition_element') && (n === 'add_definition_variant' ? (a.axis = 'layout') : (a.variant.axis = 'layout'))))).toEqual(['inverse-option', 'inverse-background', 'inverse-text', 'placement-keeps-default']);
@@ -474,6 +484,8 @@ describe('agent benchmark', () => {
       // Readable once fixed, but then hidden, or faded out, on phones.
       expect(await failing(fixes((list) => list.push(line('hidden', true))))).toEqual(['readable-on-phone']);
       expect(await failing(fixes((list) => list.push(line('opacity', 0))))).toEqual(['readable-on-phone']);
+      // Custom CSS can change anything about the line, at any size: nothing about it is measured.
+      expect(await failing(fixes((list) => list.push(line('customCss', 'display: none;'))))).toEqual(['fits-on-phone', 'readable-on-phone', 'desktop-kept']);
       // Full width on desktop too; and capped narrower than the desktop panel was.
       expect(await failing(fixes((list) => (list[0].scope = 'base')))).toEqual(['desktop-kept']);
       expect(await failing(fixes((list) => Object.assign(list[0], { scope: 'base', property: 'maxWidth', value: '300px' })))).toEqual(['desktop-kept']);
