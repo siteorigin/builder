@@ -6,9 +6,9 @@
  * what may change.
  */
 import { z } from 'zod';
-import { DIVIDER_SHAPES, STYLE_STATES, isBinding, type ComponentDefinition, type GraphNode, type NodeTree, type ProjectState, type PropSchema, type StateAction } from '@shared/types';
+import { DIVIDER_SHAPES, STYLE_SCOPES, STYLE_STATES, isBinding, type ComponentDefinition, type GraphNode, type NodeTree, type ProjectState, type PropSchema, type StateAction } from '@shared/types';
 import { BACKGROUND_IMAGE, STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
-import { STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
+import { CONTAINER_SCOPE_HELP, STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { axesOf } from '@shared/variants';
 import { bindingSlots, declaredState, enclosingList, normalizePropSchema } from '@engine/schema';
 import { subtreeIds } from '@engine/tree';
@@ -116,7 +116,7 @@ export const DEFINITION_ARGS = {
       nodeId: z.string().optional(),
       partId: z.string().optional(),
       variant: z.object({ axis: z.string(), option: z.string() }).strict().optional(),
-      scope: z.enum(['base', 'phone', 'tablet', 'desktop']),
+      scope: z.enum(STYLE_SCOPES),
       state: z.enum(STYLE_STATES).optional(),
       styles: z
         .array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, BACKGROUND_IMAGE, z.null()]) }).strict())
@@ -234,7 +234,7 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
   const tools: ToolDefinition[] = [];
   const describe = (name: DefinitionToolName) => ({ name, description: DEFINITION_DESCRIPTIONS[name], brief: DEFINITION_BRIEFS[name] });
   const styleProps = {
-    scope: { type: 'string', enum: ['base', 'phone', 'tablet', 'desktop'] },
+    scope: { type: 'string', enum: [...STYLE_SCOPES], description: CONTAINER_SCOPE_HELP },
     state: { type: 'string', enum: [...STYLE_STATES], description: 'Style only this state: hover, focus (keyboard focus) or active (while pressed); groupHover or groupFocus while the nearest interaction group around it (a card) is hovered or holds focus, which can also shift, scale and rotate it. Omit for the resting style.' },
     styles: {
       type: 'array',

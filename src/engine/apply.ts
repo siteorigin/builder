@@ -15,8 +15,8 @@ import type {
   PageDoc,
   ProjectState,
   PropSchema,
-  ResponsiveScope,
   ResponsiveStyles,
+  StyleScope,
   StyleScopeKey,
   StyleState,
   StyleValue,
@@ -30,9 +30,9 @@ import type {
 import type { BackgroundImageValue, Binding, EntryDoc } from '@shared/types';
 import { withAuthoredRel } from '@shared/link-rel';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
-import { APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
+import { APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isContainerScope, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
-import { STYLE_PROP_MAP, canonicalStyleValue, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, canonicalStyleValue, containerStyleError, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
 import { planRouteMove, routeFolder, type RouteMove } from '@shared/page-tree';
 import { VISITOR_TEXT_KEYS, isVisitorTextKey, ownVisitorText, ownVisitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
@@ -2111,6 +2111,9 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
     if (isGroupStyleState(op.state) && (node.kind === 'repeat' || node.kind === 'slot')) fail('A list or a slot shows no element of its own for its group to restyle. Style an element inside it instead.');
   }
   if (op.value !== null) {
+    // Clearing one is always allowed, as for a state, so a hand-edited document can be cleaned up.
+    const inContainer = isContainerScope(op.scope) ? containerStyleError(op.property) : null;
+    if (inContainer) fail(inContainer);
     const err = validateStyleValue(op.property, op.value);
     if (err) fail(err);
     checkTokenRef(state, op.value);
@@ -2126,7 +2129,7 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
       op = { ...op, value: font.stack };
     }
   }
-  const scope = styleScopeKey(op.scope as ResponsiveScope, op.state);
+  const scope = styleScopeKey(op.scope, op.state);
   if (op.variant !== undefined) {
     const v = variantStyles(state, op.owner, op.nodeId, op.variant, op.partId, op.axis);
     v.styles![op.nodeId] ??= {};
@@ -2236,7 +2239,7 @@ function nodeResetStyles(state: ProjectState, op: Op<'node.resetStyles'>): OpRes
  * Remove the rules a reset names from one set of styles: those of its size (resting and every state) and of its state
  * (at every size), or the one rule of both. A key naming neither a size nor a state goes only with every rule.
  */
-function clearStyles(styles: ResponsiveStyles, filter: { scope?: ResponsiveScope; state?: StyleState }) {
+function clearStyles(styles: ResponsiveStyles, filter: { scope?: StyleScope; state?: StyleState }) {
   for (const key of Object.keys(styles) as StyleScopeKey[]) {
     const at = parseStyleScopeKey(key);
     const named = at ? (filter.scope === undefined || at.scope === filter.scope) && (filter.state === undefined || at.state === filter.state) : filter.scope === undefined && filter.state === undefined;

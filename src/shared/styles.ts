@@ -1,7 +1,7 @@
 import { isFocusValue } from './focus';
 import { backgroundImageError, canonicalBackgroundImage, isBackgroundImageValue } from './background-image';
-import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleState, StyleTokenRef, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
-import { parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
+import type { ComponentDefinition, ContainerScope, ResponsiveScope, ResponsiveStyles, StyleScope, StyleProps, StyleState, StyleTokenRef, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import { isContainerScope, parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
 
 /**
  * The finite set of visual style properties the editor and AI can set.
@@ -78,6 +78,9 @@ export const STYLE_PROPS: StylePropDef[] = [
     { value: '1fr 1fr', label: 'Equal halves' }, { value: '1fr 2fr', label: 'Narrow, wide' }, { value: '2fr 1fr', label: 'Wide, narrow' },
     { value: '1fr 1.5fr', label: 'Slightly wider second' }, { value: '1.5fr 1fr', label: 'Slightly wider first' },
     { value: 'auto-fit-sm', label: 'As many as fit (small)' }, { value: 'auto-fit-md', label: 'As many as fit (medium)' }
+  ] },
+  { id: 'containerType', label: 'Query container', group: 'layout', kind: 'enum', advanced: true, description: 'Makes this box the width its contents\' container rules (narrow, medium, wide) read, so a card in a narrow column can stack while the same card in a wide one stays side by side. Use it on a box its parent sizes, such as a grid column or a stretched stack: inside one sized to its content (a horizontal stack without grow, Fit content) it shrinks to nothing.', options: [
+    { value: 'inline-size', label: 'Its width' }, { value: 'normal', label: 'None' }
   ] },
   { id: 'gap', label: 'Gap', group: 'layout', kind: 'length', tokenGroup: 'space', placeholder: '24px' },
   { id: 'rowGap', label: 'Row gap', group: 'layout', kind: 'length', tokenGroup: 'space', placeholder: '24px', advanced: true },
@@ -248,7 +251,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
     case 'icon':
       return ['color', 'fontSize', 'background', 'radius', ...margins, ...child, ...placed, ...end];
     case 'element':
-      return ['layout', 'columns', 'gridTemplate', 'align', 'justify', 'wrap', 'gap', 'rowGap', 'columnGap', ...child, ...spacing, 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'maxHeight', 'marginInline', 'overflow', 'textAlign', ...boxAppearance, ...placed, ...end];
+      return ['layout', 'columns', 'gridTemplate', 'containerType', 'align', 'justify', 'wrap', 'gap', 'rowGap', 'columnGap', ...child, ...spacing, 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'maxHeight', 'marginInline', 'overflow', 'textAlign', ...boxAppearance, ...placed, ...end];
     default:
       return undefined;
   }
@@ -1056,7 +1059,7 @@ function cssValue(v: StyleValue): string {
 
 /** Fixed-grammar properties: a hand-edited document that breaks the grammar writes nothing. */
 const CHECKED_AT_OUTPUT = new Set([
-  'gridTemplate', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
+  'containerType', 'gridTemplate', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
   'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing', 'backdropBlur'
 ]);
 
@@ -1080,6 +1083,8 @@ export function styleToCss(propId: string, raw: StyleValue): string[] {
       return ['display: block'];
     case 'columns':
       return [`grid-template-columns: repeat(${Number(value)}, minmax(0, 1fr))`];
+    case 'containerType':
+      return [`container-type: ${v}`];
     case 'align':
       return [`align-items: ${v}`];
     case 'justify':
@@ -1274,6 +1279,33 @@ export const MEDIA_QUERIES: Record<'phone' | 'tablet' | 'desktop', string> = {
   tablet: '(min-width: 768px) and (max-width: 1023.98px)',
   desktop: '(min-width: 1024px)'
 };
+
+/**
+ * The width ranges container rules apply in, of the nearest query container around the element (see
+ * `CONTAINER_SCOPES`). Exclusive, with no gap at fractional widths (a column's width rarely is a whole number, so
+ * each upper bound is strict rather than .98px short): a sidebar column of a 1280px desktop page is narrow, its main
+ * column wide.
+ */
+export const CONTAINER_QUERIES: Record<ContainerScope, string> = {
+  'cq-narrow': '(width < 480px)',
+  'cq-medium': '(min-width: 480px) and (width < 720px)',
+  'cq-wide': '(min-width: 720px)'
+};
+/** The container width ranges as the editor and the assistant name them. */
+export const CONTAINER_SCOPE_LABEL: Record<ContainerScope, string> = { 'cq-narrow': 'Narrow container', 'cq-medium': 'Medium container', 'cq-wide': 'Wide container' };
+export const CONTAINER_SCOPE_RANGE: Record<ContainerScope, string> = { 'cq-narrow': 'under 480px wide', 'cq-medium': '480px to 720px wide', 'cq-wide': '720px wide and over' };
+/** How the container width ranges work, for the assistant's tools and the operation schema. */
+export const CONTAINER_SCOPE_HELP =
+  'Scope "cq-narrow" (under 480px), "cq-medium" (480px to 720px) or "cq-wide" (720px and over) styles by the width of the nearest query container around it instead of the screen: set containerType "inline-size" (base) on a box its parent sizes, such as a column, and one card inside can stack in a narrow column and sit side by side in a wide one at the same screen size. They beat the screen sizes, apply nowhere without a query container around it, and cannot set hidden.';
+
+/**
+ * Why a container width range cannot hold `prop`, or null when it can. Visibility stays with the screen sizes: folding
+ * a hide that holds in some containers into the sizes' own shows and hides would show or hide the wrong thing where a
+ * screen size and a container range both apply.
+ */
+export function containerStyleError(prop: string): string | null {
+  return prop === 'hidden' ? 'Hidden cannot change with the width of the container around it: show or hide it for screen sizes instead.' : null;
+}
 
 export const VIEWPORT_PRESETS = {
   desktop: 1280,
@@ -1678,11 +1710,12 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
   layers.forEach((layer, index) => {
     for (const [key, props] of Object.entries(layer.styles ?? {})) {
       const at = parseStyleScopeKey(key);
-      if (!at || !props || typeof props !== 'object') continue;
+      // Container width ranges are folded on their own (see flattenContainers).
+      if (!at || isContainerScope(at.scope) || !props || typeof props !== 'object') continue;
       for (const [prop, value] of Object.entries(props)) {
         // A state value no state can hold reaches no stylesheet.
         if (value === undefined || (at.state && !isStateStyleProp(prop, at.state))) continue;
-        decls.push({ prop, value, index, strength: layer.strength, scope: at.scope, state: at.state, names: cssNames(prop, value) });
+        decls.push({ prop, value, index, strength: layer.strength, scope: at.scope as ResponsiveScope, state: at.state, names: cssNames(prop, value) });
       }
     }
   });
@@ -1743,6 +1776,84 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
     if (!any) continue;
     const packed = packSizes(bySize, false);
     for (const scope of ['base', ...CASCADE_SIZES] as const) if (packed[scope]) out[styleScopeKey(scope, state)] = packed[scope];
+  }
+  return out;
+}
+
+/**
+ * The rules for container width ranges (resting and in each state) that the layers above `beneath` give one element,
+ * folded into one set of styles beside what `flattenStyles` and `flattenStates` make of the rest: or null when one
+ * element's rules cannot show exactly what the layers do. Folded, a container range's rule sits in the result's own
+ * container block, after every screen size and as strong as every other rule of the result, so the fold is refused
+ * where a rule of another layer that beat it would then lose to it, or would beat it where it lost: a stronger (or
+ * as strong and later) rule for a screen size or the same range, a state that a different strength ranked otherwise,
+ * or two properties sharing a CSS property in one range. A stronger rule for every size that sets the same property,
+ * and is not kept off phones, decides it everywhere, so that container rule never showed and is left out. Ranges
+ * never overlap, so rules for different ranges never meet. A layer beneath stays where it is: a container rule of its
+ * own that beat one of the result's is refused, since the result is written over it.
+ */
+export function flattenContainers(layers: StyleLayer[], opts: Pick<FlattenOptions, 'beneath'> = {}): ResponsiveStyles | null {
+  const beneath = opts.beneath ?? 0;
+  type Decl = { prop: string; value: StyleValue; index: number; strength: number; scope: StyleScope; state?: StyleState; names: string[]; everywhere: boolean };
+  const decls: Decl[] = [];
+  layers.forEach((layer, index) => {
+    for (const [key, props] of Object.entries(layer.styles ?? {})) {
+      const at = parseStyleScopeKey(key);
+      if (!at || !props || typeof props !== 'object') continue;
+      for (const [prop, value] of Object.entries(props)) {
+        if (value === undefined || (at.state && !isStateStyleProp(prop, at.state))) continue;
+        if (isContainerScope(at.scope) && containerStyleError(prop)) continue;
+        const everywhere = at.scope === 'base' && !at.state && !wideOnlyStyle(prop, value, layer.wideColumns);
+        decls.push({ prop, value, index, strength: layer.strength, scope: at.scope, state: at.state, names: cssNames(prop, value), everywhere });
+      }
+    }
+  });
+  const ranged = decls.filter((d) => isContainerScope(d.scope));
+  if (!ranged.length) return {};
+  const family = (n: string) => (n.includes('radius') ? 'radius' : n.startsWith('border') ? 'border' : n);
+  const axes = (a: Decl, b: Decl) => (a.prop === 'translateX' && b.prop === 'translateY') || (a.prop === 'translateY' && b.prop === 'translateX');
+  const touch = (a: Decl, b: Decl) => a.prop === b.prop || (!axes(a, b) && !paintedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y)))));
+  // Where both apply, before the fold: the stronger layer's, or as strong, the later one's.
+  const beats = (a: Decl, b: Decl) => a.strength > b.strength || (a.strength === b.strength && a.index > b.index);
+  const own = (d: Decl) => d.index >= beneath;
+  const left = new Set<Decl>();
+  for (const c of ranged) {
+    for (const r of decls) {
+      if (r.index === c.index || !touch(c, r)) continue;
+      if (isContainerScope(r.scope) && r.scope !== c.scope) continue;
+      if (!own(c)) {
+        // A layer beneath keeps its own rule, now under the result: it may not have beaten one of the result's.
+        if (own(r) && beats(c, r)) return null;
+        continue;
+      }
+      // A display shown over another layer's hide: folded, the result's own hide follows it (see the generator's
+      // addContainerRules), so the container range would no longer show it.
+      if (r.prop === 'hidden' && r.value === true && !beats(r, c)) return null;
+      if ((r.state ?? null) !== (c.state ?? null)) {
+        // Between a state and another state or the resting style, the state written later wins in one stylesheet, as
+        // it did in two of the same strength; across strengths the stronger won, which the fold would change.
+        if (r.strength !== c.strength) return null;
+        continue;
+      }
+      if (!beats(r, c)) continue;
+      if (r.scope === c.scope) {
+        // The same range in the same state: the stronger value is the one folded, for the same property.
+        if (r.prop !== c.prop) return null;
+        left.add(c);
+        continue;
+      }
+      if (r.everywhere && r.prop === c.prop) {
+        left.add(c);
+        continue;
+      }
+      return null;
+    }
+  }
+  const out: ResponsiveStyles = {};
+  // Weaker first, so the stronger value of a property in one range is the one kept.
+  for (const c of ranged.filter((d) => own(d) && !left.has(d)).sort((a, b) => a.strength - b.strength || a.index - b.index)) {
+    const key = styleScopeKey(c.scope, c.state);
+    (out[key] ??= {})[c.prop] = c.value;
   }
   return out;
 }

@@ -5,9 +5,9 @@
  */
 import { variantOptions } from '@shared/variants';
 import { z } from 'zod';
-import { DIVIDER_ICON, DIVIDER_SHAPES, STYLE_STATES, TEXT_TAGS, isBinding, isGroupStyleState, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
+import { DIVIDER_ICON, DIVIDER_SHAPES, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, isBinding, isGroupStyleState, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import { BACKGROUND_IMAGE, STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
-import { STYLE_PROPS, isStateStyleProp, placementStyleControls, stateStyleError } from '@shared/styles';
+import { CONTAINER_SCOPE_HELP, STYLE_PROPS, isStateStyleProp, placementStyleControls, stateStyleError } from '@shared/styles';
 import { codeTakesOverrides, getTree } from '@engine/tree';
 import { TABLE_ACTIONS, TABLE_LIMITS, type TableAction } from '@engine/table';
 import { checkProps, chooseVariants, fieldError, variantsJsonSchema, type FieldIssue } from './macros';
@@ -44,7 +44,7 @@ export const SELECTION_ARGS = {
       partId: z.string().optional(),
       itemId: z.string().optional(),
       resetItem: z.boolean().optional(),
-      scope: z.enum(['base', 'phone', 'tablet', 'desktop']),
+      scope: z.enum(STYLE_SCOPES),
       state: z.enum(STYLE_STATES).optional(),
       styles: z.array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, BACKGROUND_IMAGE, z.null()]) }).strict()).max(12)
     })
@@ -366,7 +366,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
               resetItem: { type: 'boolean', description: 'With itemId: first return that item to the shared style at every size, clearing its own styles (with state, only its rule for that state at scope); then apply styles, which may be empty.' }
             }
           : {}),
-        scope: { type: 'string', enum: ['base', 'phone', 'tablet', 'desktop'] },
+        scope: { type: 'string', enum: [...STYLE_SCOPES], description: CONTAINER_SCOPE_HELP },
         state: {
           type: 'string',
           enum: states,

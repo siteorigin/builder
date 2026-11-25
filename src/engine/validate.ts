@@ -5,10 +5,10 @@ import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
 import { isPictureAsset } from '@shared/background-image';
 import type { BackgroundImageValue, GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
-import { STYLE_PROP_MAP, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, containerStyleError, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
-import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
+import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isContainerScope, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
 import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldSchema } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
@@ -844,10 +844,13 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     for (const [scopeId, scope] of Object.entries(rs ?? {})) {
       const at = parseStyleScopeKey(scopeId);
       // Rules under a key that names no size or state reach no stylesheet; the site styles they name are still checked.
-      if (!at) out.push({ severity: 'error', code: 'STYLE_SCOPE_INVALID', message: `${label}: some styles are kept under "${scopeId}", which is neither a screen size nor a hover, focus or pressed state.`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}` });
+      if (!at) out.push({ severity: 'error', code: 'STYLE_SCOPE_INVALID', message: `${label}: some styles are kept under "${scopeId}", which is neither a screen size, a container width nor a hover, focus or pressed state.`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}` });
       for (const [prop, v] of Object.entries(scope ?? {})) {
         if (at?.state && !isStateStyleProp(prop, at.state))
           out.push({ severity: 'error', code: 'STYLE_STATE_PROPERTY', message: `${label}: ${stateStyleError(prop, at.state)}`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}|${prop}` });
+        // Written nowhere: the stylesheet folds visibility for screen sizes only.
+        const inContainer = at && isContainerScope(at.scope) ? containerStyleError(prop) : null;
+        if (inContainer) out.push({ severity: 'error', code: 'STYLE_CONTAINER_PROPERTY', message: `${label}: ${inContainer}`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}|${prop}` });
         // A background image names a library image, and is written only while it does.
         if (Object.hasOwn(STYLE_PROP_MAP, prop) && STYLE_PROP_MAP[prop].kind === 'media') {
           const site = `${nodeId ?? ''}|${layer}|${scopeId}|${prop}`;

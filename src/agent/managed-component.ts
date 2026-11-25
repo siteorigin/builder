@@ -12,10 +12,10 @@ import { z } from 'zod';
 import type { EditOperation, Op } from '@shared/ops';
 import type { ComponentDefinition, LinkValue, PropSchema, ProjectState, TokenGroup, UiStateSchema } from '@shared/types';
 import { linkRels, withRels } from '@shared/link-rel';
-import { APPEAR_PRESETS, COMPONENT_CATEGORIES, DIVIDER_SHAPES, ELEMENT_ACTIONS, OVERLAY_MODES, SLOT_PRIMITIVES, STYLE_STATES } from '@shared/types';
+import { APPEAR_PRESETS, COMPONENT_CATEGORIES, DIVIDER_SHAPES, ELEMENT_ACTIONS, OVERLAY_MODES, SLOT_PRIMITIVES, STYLE_SCOPES, STYLE_STATES } from '@shared/types';
 import { TABLE_LIMITS } from '@engine/table';
 import { MAX_CHOICES } from '@engine/values';
-import { STYLE_PROP_MAP } from '@shared/styles';
+import { CONTAINER_SCOPE_HELP, STYLE_PROP_MAP } from '@shared/styles';
 import { newId } from '@shared/ids';
 import { projectDefinitionId } from '@shared/component-ids';
 import { normalizeRoute } from '@shared/routes';
@@ -32,7 +32,7 @@ import type { ToolHost, ToolOutcome } from './tools';
 /** The design node IDs the engine keeps (see DESIGN_NODE_ID in shared/ops.ts). */
 const NODE_ID_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const MAX_ISSUES = 12;
-const SCOPES = ['base', 'phone', 'tablet', 'desktop'] as const;
+const SCOPES = STYLE_SCOPES;
 const STATES = STYLE_STATES;
 const APPEARANCES = ['primary', 'secondary', 'text', 'light', 'link', 'plain'] as const;
 const TOKEN_GROUPS = ['color', 'font', 'space', 'container', 'radius', 'shadow', 'border'] as const satisfies readonly TokenGroup[];
@@ -87,7 +87,7 @@ const STATE = z.discriminatedUnion('type', [
 const STYLE_FIELDS = {
   property: z.string().describe('A style property such as layout, gap, columns, paddingBlock, background, color, textStyle, radius.'),
   value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, BACKGROUND_IMAGE]),
-  scope: z.enum(SCOPES).optional().describe('Screen size; "base" (the default) is every size.'),
+  scope: z.enum(SCOPES).optional().describe(`Screen size; "base" (the default) is every size. ${CONTAINER_SCOPE_HELP}`),
   state: z.enum(STATES).optional()
 };
 const STYLES = z.array(z.object(STYLE_FIELDS).strict()).max(80).optional();

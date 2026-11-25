@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
 import { sha256Hex } from './sha256';
-import { COMPONENT_CATEGORIES, DIVIDER_SHAPES, LINK_RELS, OVERLAY_MODES, SLOT_PRIMITIVES, STYLE_STATES } from './types';
+import { COMPONENT_CATEGORIES, DIVIDER_SHAPES, LINK_RELS, OVERLAY_MODES, SLOT_PRIMITIVES, STYLE_SCOPES, STYLE_STATES } from './types';
+import { CONTAINER_SCOPE_HELP } from './styles';
 import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
@@ -45,7 +46,7 @@ const IMAGE_USE = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('site'), field: z.enum(['favicon', 'socialImage', 'logo']) })
 ]);
 
-const scope = z.enum(['base', 'phone', 'tablet', 'desktop']).describe('Responsive scope. "base" applies at all sizes.');
+const scope = z.enum(STYLE_SCOPES).describe(`Responsive scope. "base" applies at all sizes; "phone", "tablet" and "desktop" at one screen size. ${CONTAINER_SCOPE_HELP}`);
 const styleState = z
   .enum(STYLE_STATES)
   .describe(

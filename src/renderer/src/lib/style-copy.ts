@@ -5,9 +5,9 @@
  * Pure: it reads a project and says what a paste would change, for the editor to show and send.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleScopeKey, StyleState, StyleValue } from '@shared/types';
-import { STYLE_STATES, parseStyleScopeKey, styleScopeKey } from '@shared/types';
-import { STYLE_PROP_MAP, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
+import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleScope, StyleScopeKey, StyleState, StyleValue } from '@shared/types';
+import { CONTAINER_SCOPES, STYLE_STATES, isContainerScope, parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { CONTAINER_SCOPE_LABEL, STYLE_PROP_MAP, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { isBackgroundImageValue, isPictureAsset } from '@shared/background-image';
 import { effectiveTokens } from '@generator/index';
@@ -18,11 +18,12 @@ export const STYLE_SCOPES: ResponsiveScope[] = ['base', 'phone', 'tablet', 'desk
 export const SCOPE_LABELS: Record<ResponsiveScope, string> = { base: 'All sizes', phone: 'Phone', tablet: 'Tablet', desktop: 'Desktop' };
 export const STATE_LABELS: Record<StyleState, string> = { groupHover: 'group hover', groupFocus: 'group focus', hover: 'hover', focus: 'focus', active: 'pressed' };
 /** A size's resting rule and then its state rules: every rule a paste for that size writes. */
-const keysAt = (scope: ResponsiveScope): StyleScopeKey[] => [scope, ...STYLE_STATES.map((st) => styleScopeKey(scope, st))];
-/** Every rule a set of styles can hold, in the order a paste lists them. */
-const ALL_KEYS: StyleScopeKey[] = STYLE_SCOPES.flatMap(keysAt);
+const keysAt = (scope: StyleScope): StyleScopeKey[] => [scope, ...STYLE_STATES.map((st) => styleScopeKey(scope, st))];
+/** Every rule a set of styles can hold, in the order a paste lists them: the screen sizes', then the container widths'. */
+const ALL_KEYS: StyleScopeKey[] = [...STYLE_SCOPES, ...CONTAINER_SCOPES].flatMap(keysAt);
+const scopeLabel = (scope: StyleScope) => (isContainerScope(scope) ? CONTAINER_SCOPE_LABEL[scope] : SCOPE_LABELS[scope]);
 /** Where a change applies, in words: "Phone", or "All sizes, hover". */
-export const changeLabel = (c: { scope: ResponsiveScope; state?: StyleState }) => (c.state ? `${SCOPE_LABELS[c.scope]}, ${STATE_LABELS[c.state]}` : SCOPE_LABELS[c.scope]);
+export const changeLabel = (c: { scope: StyleScope; state?: StyleState }) => (c.state ? `${scopeLabel(c.scope)}, ${STATE_LABELS[c.state]}` : scopeLabel(c.scope));
 
 /** Which sizes a paste writes: every size the copy holds a change for, or only the changes made for one. */
 export type PasteScope = 'every' | ResponsiveScope;

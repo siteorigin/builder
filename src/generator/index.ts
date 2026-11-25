@@ -40,10 +40,12 @@ import type {
   TokenValue,
   UiStateSchema
 } from '@shared/types';
-import { DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, RESPONSIVE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isGroupStyleState, isStateRef, slotChildren, stateInitial, styleScopeKey, type Condition, type GroupStyleState } from '@shared/types';
+import { CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, slotChildren, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
 import { INTERACTION_GROUP_CLASS, groupLookup, isInteractionGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import {
+  CONTAINER_QUERIES,
   MEDIA_QUERIES,
+  containerStyleError,
   REDUCED_MOTION_QUERY,
   TRANSLATE_DECL,
   gridTemplateShares,
@@ -594,8 +596,10 @@ type RuleSet = {
   phone: string[];
   tablet: string[];
   desktop: string[];
+  /** Rules for each width range of the query container around the element, written after every screen size's. */
+  container: Record<ContainerScope, string[]>;
   reduced: string[];
-  states: Record<StyleState, Record<ResponsiveScope, string[]>>;
+  states: Record<StyleState, Record<StyleScope, string[]>>;
   /**
    * The copy of a picture a phone's or tablet's screen takes, for a rule written for every size (see
    * addBackgroundImage): first in that size's block, so it beats every rule for all sizes, as later layers' own copies
@@ -603,9 +607,10 @@ type RuleSet = {
    */
   copies: Record<StyleState | 'rest', { phone: string[]; tablet: string[] }>;
 };
-const sizeLists = (): Record<ResponsiveScope, string[]> => ({ base: [], phone: [], tablet: [], desktop: [] });
+const containerLists = (): Record<ContainerScope, string[]> => ({ 'cq-narrow': [], 'cq-medium': [], 'cq-wide': [] });
+const sizeLists = (): Record<StyleScope, string[]> => ({ base: [], phone: [], tablet: [], desktop: [], ...containerLists() });
 const copyLists = () => ({ phone: [] as string[], tablet: [] as string[] });
-const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], reduced: [], states: { groupHover: sizeLists(), groupFocus: sizeLists(), hover: sizeLists(), focus: sizeLists(), active: sizeLists() }, copies: { rest: copyLists(), groupHover: copyLists(), groupFocus: copyLists(), hover: copyLists(), focus: copyLists(), active: copyLists() } });
+const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], container: containerLists(), reduced: [], states: { groupHover: sizeLists(), groupFocus: sizeLists(), hover: sizeLists(), focus: sizeLists(), active: sizeLists() }, copies: { rest: copyLists(), groupHover: copyLists(), groupFocus: copyLists(), hover: copyLists(), focus: copyLists(), active: copyLists() } });
 const WIDE_QUERY = '(min-width: 768px)';
 /**
  * Where each interactive state applies. `:where()` adds no weight, so a state rule is exactly as strong as the rule it
@@ -762,7 +767,7 @@ interface MediaOpts {
  * and a tablet's screen need, in those sizes' own rules. Written by the generator from the library, never through
  * safeDecl, which refuses url() everywhere else.
  */
-function addBackgroundImage(rules: RuleSet, selector: string, value: StyleValue, scope: ResponsiveScope, state: StyleState | null, media: MediaOpts, decls: string[], strong?: boolean) {
+function addBackgroundImage(rules: RuleSet, selector: string, value: StyleValue, scope: StyleScope, state: StyleState | null, media: MediaOpts, decls: string[], strong?: boolean) {
   const span = scope === 'phone' ? RANGE_WIDTHS.phone : scope === 'tablet' ? RANGE_WIDTHS.tablet : undefined;
   const own = backgroundImageDecls(value, media.assets, span, media.files);
   if (!own.length) return;
@@ -844,7 +849,58 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
     if (wide.length && props.customCss !== undefined) wide.push(...styleToCss('customCss', props.customCss).filter(safeDecl));
     if (wide.length) rules.wide.push(rule(wide));
   }
+  addContainerRules(rules, raw, styles, opts);
   addStateRules(rules, raw, input, opts);
+}
+
+/**
+ * The resting rules for each width range of the query container around the element, in their own blocks after every
+ * screen size's, so they win over a screen size's value of the same layer. They never show what this layer hides: a
+ * layout (or custom CSS) setting a display is followed, in the same block, by the hide at each screen size where the
+ * element is hidden (`styles` is folded, as the stylesheet writes its hides).
+ */
+function addContainerRules(rules: RuleSet, raw: string, styles: ResponsiveStyles, opts: RuleOpts) {
+  const wrap = opts.wrap ?? ((sel: string) => sel);
+  const selector = wrap(raw);
+  const quiet = wrap(`:where(${raw})`);
+  const media = opts.link ? undefined : opts.media;
+  const mark = (d: string) => (opts.important ? important(d) : d);
+  for (const scope of CONTAINER_SCOPES) {
+    const props = styles[scope];
+    if (!props || typeof props !== 'object') continue;
+    const decls: string[] = [];
+    const fallback: string[] = [];
+    const reduced: string[] = [];
+    for (const k of Object.keys(props).sort((a, b) => ORDER(a) - ORDER(b) || a.localeCompare(b))) {
+      // Validation reports what a container range cannot hold (visibility); nothing is written for it.
+      if (containerStyleError(k)) continue;
+      if (k === 'backgroundImage') {
+        if (media) addBackgroundImage(rules, selector, props[k], scope, null, media, decls, opts.important);
+        continue;
+      }
+      const out = styleToCss(k, props[k]);
+      if (opts.link && k === 'background' && out.length) {
+        const v = props[k];
+        out.splice(0, out.length, ...out.map((d) => d.replace(/^background:/, '--so-btn-bg:')), `--so-btn-bg-hover: ${typeof v === 'string' && isValidGradient(v) ? v.trim() : 'initial'}`);
+      }
+      if (opts.link && k === 'color') out.push(...out.map((d) => d.replace(/^color:/, '--so-btn-fg:')));
+      const safe = out.filter(safeDecl);
+      decls.push(...safe);
+      if (media && k === 'background' && safe.length) decls.push(...paintDecls(backgroundImageLayers(props[k])));
+      fallback.push(...styleFallbackCss(k, props[k]).filter(safeDecl));
+      reduced.push(...styleReducedMotionCss(k, props[k]).filter(safeDecl));
+    }
+    const list = rules.container[scope];
+    if (fallback.length) list.push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
+    if (decls.length) list.push(`${selector} {\n${oneTranslate(decls).map((d) => `\t${mark(d)};`).join('\n')}\n}`);
+    if (reduced.length) rules.reduced.push(`${opts.important ? selector : quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
+    if (!decls.some((d) => /^display\s*:/i.test(d))) continue;
+    for (const size of ['phone', 'tablet', 'desktop'] as const) {
+      if (styles.base?.hidden !== true && styles[size]?.hidden !== true) continue;
+      const hide = opts.gateHides ? wrap(shownGate(raw, size, opts.gateHides)) : selector;
+      list.push(`@media ${MEDIA_QUERIES[size]} {\n\t${hide} {\n\t\t${mark('display: none')};\n\t}\n}`);
+    }
+  }
 }
 
 /**
@@ -860,7 +916,7 @@ function addStateRules(rules: RuleSet, raw: string, input: ResponsiveStyles, opt
   for (const state of STYLE_STATES) {
     const group = isGroupStyleState(state);
     if (group && !opts.grouped) continue;
-    for (const scope of RESPONSIVE_SCOPES) {
+    for (const scope of STYLE_SCOPES) {
       const props = input[styleScopeKey(scope, state)];
       if (!props || typeof props !== 'object') continue;
       const decls: string[] = [];
@@ -892,6 +948,8 @@ function addStateRules(rules: RuleSet, raw: string, input: ResponsiveStyles, opt
   if (fallback.length) rules.base.push(`${wrap(`:where(${base})`)} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
 }
 
+const containerBlock = (query: string, list: string[]) => `@container ${query} {\n${list.map((r) => r.replace(/^/gm, '\t')).join('\n')}\n}`;
+
 function emitRules(rules: RuleSet): string {
   const out: string[] = [...rules.base];
   const block = (query: string, list: string[]) => `@media ${query} {\n${list.map((r) => r.replace(/^/gm, '\t')).join('\n')}\n}`;
@@ -901,16 +959,21 @@ function emitRules(rules: RuleSet): string {
     if (!list.length) continue;
     out.push(block(MEDIA_QUERIES[scope], list));
   }
+  // Each container width range after every screen size, so it wins over a screen size's value in the same layer.
+  for (const scope of CONTAINER_SCOPES) if (rules.container[scope].length) out.push(containerBlock(CONTAINER_QUERIES[scope], rules.container[scope]));
   // Every state after every resting rule, so a state beats the resting style at every size, as hand-written `:hover`
   // does; within a state, a size's own rule after the rule for all sizes; and the element's own states after its
   // group's, active after focus after hover, so the state a visitor is in last, and nearest, wins while several hold.
   for (const state of STYLE_STATES)
-    for (const scope of RESPONSIVE_SCOPES) {
+    for (const scope of STYLE_SCOPES) {
       const list = scope === 'phone' || scope === 'tablet' ? [...rules.copies[state][scope], ...rules.states[state][scope]] : rules.states[state][scope];
       if (!list.length) continue;
-      const query = [scope === 'base' ? null : MEDIA_QUERIES[scope], state === 'hover' || state === 'groupHover' ? HOVER_QUERY : null].filter(Boolean).join(' and ');
-      if (query) out.push(block(query, list));
-      else out.push(...list);
+      const cq = isContainerScope(scope);
+      const query = [scope === 'base' || cq ? null : MEDIA_QUERIES[scope], state === 'hover' || state === 'groupHover' ? HOVER_QUERY : null].filter(Boolean).join(' and ');
+      // A container range's state rules sit in its container block, inside the hover query where there is one.
+      const body = cq ? [containerBlock(CONTAINER_QUERIES[scope], list)] : list;
+      if (query) out.push(block(query, body));
+      else out.push(...body);
     }
   // Last, and with !important as the theme's own rule has, so no duration set for any size outlasts it.
   if (rules.reduced.length) out.push(block(REDUCED_MOTION_QUERY, [...new Set(rules.reduced)]));
@@ -2708,6 +2771,8 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
   const boxes: SizingBox[] = [[{ styles: node.styles ?? {}, tier: 0 }]];
   sizingBoxes(walk, ctx.tree, node.id, null, '', boxes);
   if (walk.unknown) return null;
+  // A container width range can change how wide a box on the way is, at a width no screen size tells: the default holds.
+  if (boxes.some((box) => box.some(({ styles }) => CONTAINER_SCOPES.some((scope) => SIZING_PROPS.some((prop) => styles[scope]?.[prop] !== undefined))))) return null;
   // A cropped picture (cover) fills its box both ways, so it can need more width than the box has.
   const asset = node.kind === 'image' && !isBinding(node.image) && node.image?.assetId ? ctx.state.assets.assets[node.image.assetId] : undefined;
   const aspect = asset?.width && asset.height ? asset.width / asset.height : null;
