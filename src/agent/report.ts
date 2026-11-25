@@ -186,6 +186,11 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       }
       case 'node.remove':
         return plain(op, `Removed ${name(op.owner, op.nodeId)} from ${where(op.owner)}`, linkTo(op.owner));
+      case 'node.removeKeepContent': {
+        // The first of what took its place that the run left in place.
+        const kept = ((results[i] ?? {}) as { nodeIds?: string[] }).nodeIds?.find((id) => nodeIn(after, op.owner, id));
+        return plain(op, `Removed ${name(op.owner, op.nodeId)} from ${where(op.owner)}, keeping what it held`, linkTo(op.owner, kept));
+      }
       case 'node.move':
         return plain(op, `Moved ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
       case 'node.wrap': {

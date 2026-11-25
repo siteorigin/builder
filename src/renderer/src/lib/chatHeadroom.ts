@@ -18,7 +18,7 @@ import { MAX_REPLAYED_ANSWER, replayedHistory } from '@shared/turn-model';
  * native set takes about 17,000 tokens, under half the window, so the half is what counts. Measured on the business
  * starter's Home page and rounded up (tests/unit/chat-headroom.test.ts keeps them honest).
  */
-export const LOCAL_OVERHEAD_TOKENS = { constrained: 3584, focused: 10_240 } as const;
+export const LOCAL_OVERHEAD_TOKENS = { constrained: 3584, focused: 10_752 } as const;
 /** About what a request without the page tools takes before its message: a selection's, a component's or a question's. */
 export const SMALL_OVERHEAD_TOKENS = 3072;
 /** The smallest reply worth asking for, as the assistant keeps it free (budget.ts MIN_OUTPUT_TOKENS). */

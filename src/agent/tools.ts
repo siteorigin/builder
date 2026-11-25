@@ -238,8 +238,11 @@ export const PAGE_OPERATIONS = new Set<OperationType>([
   ...(Object.keys(OP_REACH) as OperationType[]).filter((t) => ['node', 'insert', 'copy'].includes(OP_REACH[t]) && t !== 'component.makeUnique' && t !== 'component.convertToCode'),
   'page.update'
 ]);
-/** A small model's page run: the page tool builds sections, and these remove or reorder one by its ID and set the page's own settings. */
-export const FOCUSED_PAGE_OPERATIONS = new Set<OperationType>(['node.remove', 'node.move', 'page.update']);
+/**
+ * A small model's page run: the page tool builds sections, and these remove one by its ID (whole, or keeping what it
+ * holds) or reorder it, and set the page's own settings.
+ */
+export const FOCUSED_PAGE_OPERATIONS = new Set<OperationType>(['node.remove', 'node.removeKeepContent', 'node.move', 'page.update']);
 
 /** What building a new component takes: making it, its design, its contract and its placement. */
 const COMPONENT_BUILD_OPERATIONS = new Set<OperationType>([
@@ -261,6 +264,7 @@ const COMPONENT_BUILD_OPERATIONS = new Set<OperationType>([
   'node.setStateAction',
   'node.insert',
   'node.remove',
+  'node.removeKeepContent',
   'node.move',
   'node.wrap',
   'node.unwrap',
