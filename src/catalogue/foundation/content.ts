@@ -259,6 +259,17 @@ function showcaseTab(n: ShowcaseTab, sample: { label: string; icon: string; head
   );
 }
 
+/**
+ * The showcase's tones. On the dark one a text action reads in the tone's own ink, as the base stylesheet draws a text
+ * button in a dark section, rather than the brand colour it has on a light one.
+ */
+function showcaseTone() {
+  const axis = toneAxis(['lead', ...SHOWCASE_TABS.map((n) => `copy-${n}`)]);
+  const inverse = axis.options.inverse;
+  const actions = Object.fromEntries(SHOWCASE_TABS.map((n) => [`action-${n}`, { base: { color: tok('color.on-inverse') } }]));
+  return { ...axis, options: { ...axis.options, inverse: { ...inverse, styles: { ...inverse.styles, ...actions } } } };
+}
+
 export const tabsShowcase = managed({
   componentId: 'tabs.showcase',
   name: 'Tabbed showcase',
@@ -310,7 +321,7 @@ export const tabsShowcase = managed({
   state: {
     tab: { type: 'enum', label: 'Tabs', options: SHOWCASE_TABS.map((n) => ({ value: `tab${n}`, label: `Tab ${n}` })), initial: 'tab1' }
   },
-  variantAxes: { tone: toneAxis(['lead', ...SHOWCASE_TABS.map((n) => `copy-${n}`)]) },
+  variantAxes: { tone: showcaseTone() },
   build: (b) => {
     const field = (n: ShowcaseTab, name: string) => ({ $prop: `tab${n}`, field: name });
     // Tabs 3 to 6 are there while their labels are; each one's panel is the only child of a wrapper shown on the same
@@ -348,7 +359,7 @@ export const tabsShowcase = managed({
           {
             name: 'Tab list',
             ariaLabel: prop('heading'),
-            styles: { base: { layout: 'row', wrap: false, gap: tok('space.xs'), align: 'center', paddingBlock: '4px', paddingInline: '4px', marginInline: '-4px', customCss: 'overflow-x: auto' }, tablet: { wrap: true }, desktop: { wrap: true } }
+            styles: { base: { layout: 'row', wrap: false, gap: tok('space.xs'), align: 'center', paddingBlock: tok('space.2xs'), paddingInline: tok('space.2xs'), marginInline: `calc(-1 * var(${tokenVar('space.2xs')}))`, customCss: 'overflow-x: auto' }, tablet: { wrap: true }, desktop: { wrap: true } }
           },
           tabs
         ),
