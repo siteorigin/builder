@@ -43,7 +43,7 @@ import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
-import { collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -403,8 +403,10 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     case 'collection.renameTerm':
     case 'collection.removeTerm':
       return true;
+    // So is turning pages on (their addresses), entry text off (every entry's text), or a field that names entries of
+    // another collection.
     case 'collection.update':
-      return o.route !== undefined;
+      return o.route !== undefined || o.pages !== undefined || o.hasBody !== undefined || o.fields !== undefined;
     // A rebuild is checked against every placement of the component, in files it may leave as they are.
     case 'component.upsert':
       return o.definitionId !== undefined;
@@ -425,11 +427,21 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     // So is a container turned into a slot: what it held moves into placements in other files, and must nest there.
     case 'component.containerToSlot':
       return true;
+    // A reference names entries of another collection, in their own files.
     case 'entry.update':
-      return o.slug !== undefined;
+      return o.slug !== undefined || (o.values !== undefined && Object.keys(o.values).some((k) => state.collections[o.collectionId]?.settings.fields?.[k]?.type === 'reference'));
     default:
       return false;
   }
+}
+
+/**
+ * The files a change is checked against beyond those it writes, when it does not read the whole project: an entry's
+ * edit is allowed by its collection's settings (a synced collection's entries are read-only), so a settings file
+ * changed outside the app since it was read makes the edit wait for it.
+ */
+function alsoReads(ops: EditOperation[]): string[] {
+  return [...new Set(ops.flatMap((o) => (o.type === 'entry.update' ? [collectionDocPath(o.collectionId)] : [])))];
 }
 
 /** A page's document path, capturing the page ID. */
@@ -1757,7 +1769,7 @@ export class ProjectSession extends EventEmitter {
    * instead of recording a new step (undo and redo). A save that fails is kept for the editor to show until a later one
    * succeeds; one stopped cleanly by a file saved outside the app is a conflict instead, which Project health lists.
    */
-  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean }): Promise<SessionEvent> {
+  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean; reads?: string[] }): Promise<SessionEvent> {
     try {
       return await this.writeState(next, opts);
     } catch (e) {
@@ -1769,7 +1781,7 @@ export class ProjectSession extends EventEmitter {
     }
   }
 
-  private async writeState(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean }): Promise<SessionEvent> {
+  private async writeState(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean; reads?: string[] }): Promise<SessionEvent> {
     // A state whose theme is not available here would be generated from the wrong pack.
     const pin = themePinProblem(next);
     if (pin) throw new Error(pin);
@@ -1805,6 +1817,8 @@ export class ProjectSession extends EventEmitter {
       const unloaded = await this.unloadedEdit(new Set([...Object.keys(changed), MANIFEST]));
       if (unloaded) throw new DiskConflictError(unloaded);
     }
+    // So does one checked against a few files it does not write (see alsoReads).
+    for (const path of opts.reads ?? []) if (!Object.hasOwn(changed, path) && !sameContent(path, await this.diskContent(path), this.docs.get(path) ?? null)) throw new DiskConflictError(path);
     // Never overwrite a newer version on disk (for example an edit the file watcher has not delivered yet). A file
     // that already holds exactly what this change leaves there (a source kept when its definition was deleted
     // outside the app, say) is not overwritten by it.
@@ -2527,7 +2541,7 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;
       try {
-        ev = await this.persist(next, { ...opts, wholeProject: ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state)) });
+        ev = await this.persist(next, { ...opts, wholeProject: ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state)), reads: alsoReads(ops) });
       } catch (e) {
         if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
         throw e;

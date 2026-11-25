@@ -2138,7 +2138,8 @@ export function describeDraftLink(state: ProjectState, l: DraftLink): string {
 export function draftTarget(state: ProjectState, l: Pick<DraftLink, 'pageId' | 'entryId'>): { title: string; route: string } | undefined {
   if (l.pageId !== undefined) return Object.hasOwn(state.pages, l.pageId) ? state.pages[l.pageId] : undefined;
   const found = l.entryId !== undefined ? findEntry(state, l.entryId) : undefined;
-  return found ? { title: found.entry.title, route: entryRoute(found.collection, found.entry) } : undefined;
+  const route = found ? entryRoute(found.collection, found.entry) : undefined;
+  return found && route !== undefined ? { title: found.entry.title, route } : undefined;
 }
 
 export interface PageSection {

@@ -7,7 +7,7 @@
  */
 import type { Collection, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, ProjectState, PropSchema } from '@shared/types';
 import { conditionHolds, conditionRef, isBindingRef, isEntryBinding } from '@shared/types';
-import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryFieldSchema, entryFieldValue, entryValuePresent, type EntryNeighbours, type EntryReadContext } from '@shared/entry-fields';
+import { ENTRY_CONTENT_FIELDS, entryFieldSchema, entryFieldValue, entryValuePresent, isEntryDateField, type EntryNeighbours, type EntryReadContext } from '@shared/entry-fields';
 import { isDraftEntry, siteEntries } from './index';
 import { derived } from './cache';
 
@@ -114,7 +114,7 @@ function boundValue(read: EntryReadContext, node: GraphNode, field: string, entr
   // The entry's text left out where it is placed, and nowhere else (a condition on it still holds as it does).
   if (withoutBody && entryField === 'body') return field === 'prop' ? (nested ? asType(nested.type, []) : undefined) : asType('richtext', []);
   if (!schema) return emptyFor(node, field, nested);
-  if (field === 'datetime') return ENTRY_DATE_FIELDS.has(entryField) ? entryFieldValue(read, entryField, 'raw') : undefined;
+  if (field === 'datetime') return isEntryDateField(read.collection, entryField) ? entryFieldValue(read, entryField, 'raw') : undefined;
   // A number or yes/no property takes the value itself (the minutes of a reading time); a text, as readers see it.
   const raw = field === 'prop' && (nested?.type === 'number' || nested?.type === 'boolean');
   const value = entryFieldValue(read, entryField, raw ? 'raw' : 'shown');

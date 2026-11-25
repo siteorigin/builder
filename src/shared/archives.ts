@@ -7,7 +7,7 @@
  * line agrees about it.
  */
 import type { Collection, EntryDoc, ProjectState } from './types';
-import { archivePageSize, findEntry, hasCategoryArchives, isDraftEntry, isTermId, siteEntries } from './collections';
+import { archivePageSize, findEntry, hasArchivePages, hasCategoryArchives, isDraftEntry, isTermId, siteEntries } from './collections';
 import { hasTerm, publishedEntries } from './entry-feed';
 import { validateRoute } from './routes';
 
@@ -72,6 +72,7 @@ export function archivePages(state: ProjectState): ArchivePage[] {
   // Each collection's own address is its index's, whichever collection's series comes first.
   const indexes = new Set(
     Object.values(state.collections ?? {})
+      .filter((c) => hasArchivePages(c?.settings))
       .map((c) => c?.settings?.route)
       .filter((r): r is string => typeof r === 'string')
       .map((r) => r.toLowerCase())
@@ -80,7 +81,7 @@ export function archivePages(state: ProjectState): ArchivePage[] {
   for (const id of Object.keys(state.collections ?? {}).sort()) {
     const collection = state.collections[id];
     const prefix: unknown = collection?.settings?.route;
-    if (!collection?.entries || collection.settings?.id !== id || typeof prefix !== 'string' || prefix === '/' || validateRoute(prefix)) continue;
+    if (!collection?.entries || collection.settings?.id !== id || !hasArchivePages(collection.settings) || typeof prefix !== 'string' || prefix === '/' || validateRoute(prefix)) continue;
     const size = archivePageSize(collection.settings);
     const all = publishedEntries(state, collection);
     const series = (category: string | undefined, entries: EntryDoc[]) => {

@@ -6,7 +6,7 @@
  */
 import type { AssetRecord, CollectionTaxonomy, LinkValue, ProjectState, RichBlock, RichSpan, RichText } from '@shared/types';
 import { validateOperation, type EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, isTermId, routeOwners, underArchiveFolder } from '@shared/collections';
+import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasDetailPages, isTermId, routeOwners, underArchiveFolder } from '@shared/collections';
 import { todayArticleDate } from '@shared/articles';
 import { addressSlug, numberedSlug, slugify, validateRoute, validateSegment } from '@shared/routes';
 import { cleanBlocks, isImageBlock, isListBlock, spanRuns } from '@shared/richtext';
@@ -86,6 +86,8 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   const name = existing?.settings.name ?? 'Posts';
   const owners = routeOwners(state);
   const taken = new Map(owners.map((o) => [lower(o.route), o.label]));
+  // Imported posts keep their old permalinks working, which needs pages of their own to send visitors to.
+  if (existing && !hasDetailPages(existing.settings)) problems.push(`The ${name} collection has no entry pages, so the posts would have no addresses. Turn its entry pages on, then import again.`);
   if (!existing) {
     const holder = taken.get(lower(route)) ?? owners.find((o) => underArchiveFolder(route, o.route))?.label ?? archiveRouteOwner(state, route)?.label;
     if (holder) problems.push(`The posts would go to ${route}, which is the address of ${holder}. Move that first, then import again.`);

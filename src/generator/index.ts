@@ -345,7 +345,7 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       // An entry's page, at its current address: a link to an entry the site does not publish shows its words alone.
       const found = findEntry(ctx.state, link.target);
       if (!found || !isEntryPath(found.collection, found.entry)) return null;
-      href = entryRoute(found.collection, found.entry);
+      href = entryRoute(found.collection, found.entry)!;
       break;
     }
   }
@@ -4478,7 +4478,8 @@ export function entryFile(route: string): string {
 export function generateEntry(state: ProjectState, collectionId: string, entryId: string, opts: GenerateOptions = {}): string {
   const collection = state.collections[collectionId];
   const entry = collection.entries[entryId];
-  const route = entryRoute(collection, entry);
+  // Only an entry the site has a page for is written (see siteEntries), so it has an address.
+  const route = entryRoute(collection, entry)!;
   const file = entryFile(route);
   const tree = materializeTemplate(state, collection, entry, entryNeighbours(state, collectionId, entryId));
   const ctx: EmitCtx = {
@@ -5055,7 +5056,7 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
       const cid = entry.collection.settings.id;
       const eid = entry.entry.id;
       // The entry's address is read from the tracked state, so a later rename of the entry makes this file again.
-      files.set(redirectFile(from), file(`redirect:${cid}:${eid}:${from}`, (s) => generateRedirect(s, from, { route: entryRoute(s.collections[cid], s.collections[cid].entries[eid]) })));
+      files.set(redirectFile(from), file(`redirect:${cid}:${eid}:${from}`, (s) => generateRedirect(s, from, { route: entryRoute(s.collections[cid], s.collections[cid].entries[eid])! })));
     }
     // A page of a collection's archive, at an address that never moves: the address is in the key.
     else files.set(redirectFile(from), file(`redirect:to:${from}:${to}`, (s) => generateRedirect(s, from, { route: to })));

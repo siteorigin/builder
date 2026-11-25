@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import type { Collection, EntryDoc, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { assignedTermIds, orderedEntries, termIdFor } from '@shared/collections';
+import { assignedTermIds, entryRoute, orderedEntries, termIdFor } from '@shared/collections';
 import { isImageBlock, richTextToMarkdown, type RichBlock, type RichText } from '@shared/richtext';
 import { MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS } from '@engine/values';
 import { fieldError, type FieldIssue } from './macros';
@@ -136,7 +136,7 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
       entryId: entry.id,
       // The details come with the first part: a later part is only more of the text.
       ...(part.start === 0
-        ? { title: entry.title, publishedAt: entry.publishedAt, draft: entry.draft !== false, ...(entry.excerpt ? { excerpt: entry.excerpt } : {}), categories: categoryNames(collection, entry), route: `${collection.settings.route}${entry.slug}/` }
+        ? { title: entry.title, publishedAt: entry.publishedAt, draft: entry.draft !== false, ...(entry.excerpt ? { excerpt: entry.excerpt } : {}), categories: categoryNames(collection, entry), ...(entryRoute(collection, entry) !== undefined ? { route: entryRoute(collection, entry) } : {}) }
         : {}),
       format: 'markdown',
       length: text.length,

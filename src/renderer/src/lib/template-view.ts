@@ -54,7 +54,7 @@ export function shownView(state: ProjectState, pageId: string | null, mode: Temp
     if (!c) return null;
     const entry = mode.entryId ? own(c.entries, mode.entryId) : undefined;
     const routable = !!entry && sampleEntries(state, mode.collectionId).some((e) => e.id === entry.id);
-    return { key: `template:${mode.collectionId}:${mode.entryId ?? ''}`, route: routable ? entryRoute(c, entry) : null, title: `${c.settings.name} layout`, template: mode };
+    return { key: `template:${mode.collectionId}:${mode.entryId ?? ''}`, route: routable ? (entryRoute(c, entry) ?? null) : null, title: `${c.settings.name} layout`, template: mode };
   }
   const page = pageId ? own(state.pages, pageId) : undefined;
   return page ? { key: page.id, route: page.route, title: page.title } : null;

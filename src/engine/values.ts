@@ -14,11 +14,16 @@ import { REQUIRED_REFUSAL, isEmptyPropValue, requiredMessage, shownValue } from 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
 
 /**
- * Where a link is stored decides what it may go to. Links to collection entries are kept only in entries' own text
- * (`entries`) until entries are pages of the website: anywhere else nothing could show them yet.
+ * Where a link is stored decides what it may go to. Links to collection entries are kept only in entries' own text and
+ * custom fields (`entries`) until entries are pages of the website: anywhere else nothing could show them yet.
  */
 export interface LinkScope {
   entries?: boolean;
+  /**
+   * Whether rich text is an article (an entry's own text): section headings, pictures between paragraphs, and an
+   * article's length. Absent: it is wherever entry links are kept. An entry's rich text field is not.
+   */
+  article?: boolean;
 }
 
 /** A page link's section, written after its route or ID: empty or not an ID, there is no section to go to. */
@@ -71,7 +76,7 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
       // A download goes nowhere else: it has no section and opens no tab of its own.
       return { type, target };
     case 'entry': {
-      if (!scope.entries) fail(`${label}: links to collection entries can only be made in an entry's text for now.`);
+      if (!scope.entries) fail(`${label}: links to collection entries can only be made in an entry's text or fields for now.`);
       if (!findEntry(state, target)) fail(`${label}: entry "${target.slice(0, 60)}" does not exist.`);
       // An entry has no sections to jump to yet.
       return l.newTab ? { type, target, newTab: true } : { type, target };
@@ -154,7 +159,8 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
     if (!out && /^tel:/i.test(t)) fail(`${label}: "${t.slice(4, 44)}" is not a valid telephone number.`);
     return out;
   };
-  const fromText = (s: string) => parseRichText(s, { markdown: true, link, plainAs, articles: !!scope.entries });
+  const isArticle = scope.article ?? !!scope.entries;
+  const fromText = (s: string) => parseRichText(s, { markdown: true, link, plainAs, articles: isArticle });
   const span = (raw: unknown): RichSpan => {
     if (typeof raw === 'string') return { text: raw };
     if (!raw || typeof raw !== 'object' || typeof (raw as RichSpan).text !== 'string') fail(`${label}: a span needs { text, strong?, em?, link? }.`);
@@ -173,7 +179,7 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
   // Section headings and pictures between paragraphs belong to an article: an entry's text has them, and nothing else
   // shows them yet (a component's text sits under headings of its own).
   const article = (type: string) => {
-    if (!scope.entries) fail(`${label}: ${type === 'h2' ? 'section headings (h2)' : 'pictures'} can only be placed in a collection entry's text.`);
+    if (!isArticle) fail(`${label}: ${type === 'h2' ? 'section headings (h2)' : 'pictures'} can only be placed in a collection entry's text.`);
   };
   const figure = (raw: Record<string, unknown>): RichBlock => {
     article('image');
@@ -205,7 +211,7 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
   const out = mergeLists(cleanBlocks(blocks!));
   // Every character counts, the line breaks inside a block included; the gaps between blocks do not.
   const chars = out.reduce((n, b) => n + (isImageBlock(b) ? b.alt.length + (b.caption?.length ?? 0) : spanRuns(b).flat().reduce((m, sp) => m + sp.text.length, 0)), 0);
-  if (out.length > (scope.entries ? MAX_ENTRY_BLOCKS : MAX_RICH_BLOCKS) || chars > (scope.entries ? MAX_ENTRY_CHARS : MAX_RICH_CHARS)) fail(`${label}: text is too long.`);
+  if (out.length > (isArticle ? MAX_ENTRY_BLOCKS : MAX_RICH_BLOCKS) || chars > (isArticle ? MAX_ENTRY_CHARS : MAX_RICH_CHARS)) fail(`${label}: text is too long.`);
   return out;
 }
 

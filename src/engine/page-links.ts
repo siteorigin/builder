@@ -3,7 +3,7 @@ import { labelKeyFor } from '@generator/checks';
 import { allTrees } from './tree';
 import { effectiveItem } from '@shared/page-teasers';
 
-/** What holds a stored link: the header, footer, a page or a component, or a collection entry's text. */
+/** What holds a stored link: the header, footer, a page or a component, a collection's field defaults (as its layout), or a collection entry's text and fields. */
 export type LinkHolder = OwnerRef | { kind: 'entry'; id: string; collectionId: string };
 
 /** A stored link to a page or entry: what it is called and where it lives, for reviewing what a change to it moves. */
@@ -120,12 +120,18 @@ function linkUses(state: ProjectState, kind: 'page' | 'entry', target: string | 
     collect(def.properties, owner, where, def.name);
   }
   for (const p of Object.values(state.pages)) if (p.id !== pageId) collect(p.seo, { kind: 'page', id: p.id }, p.title, 'Page settings');
-  for (const c of Object.values(state.collections ?? {}))
+  for (const c of Object.values(state.collections ?? {})) {
+    // Only the text and link and rich text fields hold links: other custom fields are plain values, whatever they are
+    // named, so each field's value is read by its kind and never the values as a whole.
+    const linking = Object.entries(c.settings.fields ?? {}).filter(([, f]) => f?.type === 'link' || f?.type === 'richtext');
+    for (const [, f] of linking) collect(f.default, { kind: 'template', id: c.settings.id }, `${c.settings.name} (default)`, f.label);
     for (const e of Object.values(c.entries)) {
       if (kind === 'entry' && ids.has(e.id)) continue;
       const owner: LinkHolder = { kind: 'entry', id: e.id, collectionId: c.settings.id };
-      // Only the text holds links: custom fields are plain values, whatever they are named.
-      collect(e.body, owner, `${typeof e.title === 'string' ? e.title : e.id} (${c.settings.name})`, 'Entry text');
+      const where = `${typeof e.title === 'string' ? e.title : e.id} (${c.settings.name})`;
+      collect(e.body, owner, where, 'Entry text');
+      for (const [name, f] of linking) if (e.values && Object.hasOwn(e.values, name)) collect(e.values[name], owner, where, f.label);
     }
+  }
   return out;
 }

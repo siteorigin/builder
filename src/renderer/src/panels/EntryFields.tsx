@@ -7,7 +7,7 @@
 import type { GraphNode, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { conditionRef, isEntryBinding } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldLabel, entryFieldSchemas } from '@shared/entry-fields';
+import { entryChoiceProblem, entryFieldLabel, entryFieldSchemas, isEntryDateField } from '@shared/entry-fields';
 import { acceptedTypes, type BindField } from '@engine/schema';
 import { applyOps } from '../store';
 import { Field, Section } from '../components/ui';
@@ -71,7 +71,7 @@ export function EntryFieldsSection({ state, owner, node }: { state: ProjectState
     const ops: EditOperation[] = [{ type: 'node.setBinding', owner, nodeId: node.id, field: place.field, ...(place.prop ? { prop: place.prop } : {}), binding: field ? { $entry: field } : null }];
     // A text showing a date states it for machines too (a <time>); showing anything else, it states none.
     if (node.kind === 'text' && !node.rich && place.field === 'text') {
-      if (ENTRY_DATE_FIELDS.has(field)) ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'datetime', binding: { $entry: field } });
+      if (isEntryDateField(collection, field)) ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'datetime', binding: { $entry: field } });
       else if (isEntryBinding(node.datetime)) ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'datetime', binding: null });
     }
     void applyOps(ops, field ? `Show ${entryFieldLabel(collection, field)}` : `Unbind ${place.label}`);

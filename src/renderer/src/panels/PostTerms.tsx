@@ -395,7 +395,7 @@ function TermList({ collection, taxonomy, onRenamed }: { collection: Collection;
                   </button>
                   {archived && editing.text.trim() && editing.text.trim() !== t.label && next !== t.id && (
                     <p className="term-moves" id={`${uid}-${t.id}-moves`}>
-                      Its archive moves from {archiveRoute(collection.settings.route, t.id, 1)} to {archiveRoute(collection.settings.route, next, 1)}. Its posts and lists of posts follow it.
+                      Its archive moves from {archiveRoute(collection.settings.route ?? '', t.id, 1)} to {archiveRoute(collection.settings.route ?? '', next, 1)}. Its posts and lists of posts follow it.
                     </p>
                   )}
                 </form>
@@ -405,7 +405,7 @@ function TermList({ collection, taxonomy, onRenamed }: { collection: Collection;
                     <span className="term-label ellipsis">{t.label}</span>
                     <span className="term-meta">
                       {posts(n)}
-                      {archived ? ` · ${archiveRoute(collection.settings.route, t.id, 1)}` : ''}
+                      {archived ? ` · ${archiveRoute(collection.settings.route ?? '', t.id, 1)}` : ''}
                     </span>
                   </span>
                   <span className="term-actions">

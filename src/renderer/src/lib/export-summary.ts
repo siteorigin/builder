@@ -20,7 +20,7 @@ function countByCollection(entries: SiteEntry[]): Array<{ name: string; count: n
   for (const { collection } of entries) {
     const found = groups.get(collection.settings.id);
     if (found) found.count++;
-    else groups.set(collection.settings.id, { name: (typeof collection.settings.name === 'string' ? collection.settings.name.trim() : '') || collection.settings.id, route: collection.settings.route, count: 1 });
+    else groups.set(collection.settings.id, { name: (typeof collection.settings.name === 'string' ? collection.settings.name.trim() : '') || collection.settings.id, route: collection.settings.route ?? '', count: 1 });
   }
   const all = [...groups.values()];
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();

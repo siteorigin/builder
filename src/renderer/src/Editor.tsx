@@ -557,7 +557,8 @@ export function Editor() {
             const c = now.post && now.snapshot?.state.collections[now.post.collectionId];
             const e = c && now.post && Object.hasOwn(c.entries, now.post.entryId) ? c.entries[now.post.entryId] : undefined;
             // Unless the preview ended meanwhile (a page chosen): the canvas stays on that page, which the editor names.
-            if (c && e) requestAnimationFrame(() => getState().postView === 'preview' && getState().post?.entryId === e.id && visitAddress(entryRoute(c, e)));
+            const route = c && e ? entryRoute(c, e) : undefined;
+            if (e && route !== undefined) requestAnimationFrame(() => getState().postView === 'preview' && getState().post?.entryId === e.id && visitAddress(route));
           });
         }
     });
