@@ -1,12 +1,11 @@
 import './SeoPreview.css';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Globe } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { createSeoResolver } from '@generator/seo-metadata';
-import { getState, useStore } from '../store';
-import { saveOpenPost } from '../lib/post-draft';
-import { postWorkspace } from '../lib/posts';
+import { useStore } from '../store';
+import { postPreviewHandoff } from '../lib/actions';
 import { AssetImage } from '../components/AssetImage';
 import { Tabs } from '../components/ui';
 import { lengthMeter, previewDocument, structuredPreview, withTypedSeo, type DocumentPreview, type LengthMeter as Meter, type StructuredPreview, type TypedSeo } from '../lib/seo-preview';
@@ -173,12 +172,32 @@ function StructuredData({ structured }: { structured: StructuredPreview | null |
 /**
  * A page's or a post's Search & sharing previews, in tabs: its search result on a computer and a phone, the card a
  * shared link makes, and its structured data with where it is published. `shown` says whether the previews are on
- * screen: the structured data, which reads the whole website, is worked out only while its tab shows. Optimize with AI
+ * screen: the structured data, which reads the whole website, is worked out only while its tab shows. `typed` is the
+ * text typed into the document's fields and not saved yet, which `overlay` lays over the project. Optimize with AI
  * opens the AI panel about them (#599): an edit of a page's search title and description, or for a post, which the AI
- * can't change yet, a question that suggests them, from what is typed in its fields now.
+ * can't change yet, a question that suggests them, from what is typed in its fields now. `place` says where they are:
+ * beside the document's own settings (the Inspector, the post writer), or in the SEO view on the document chosen there.
  */
-export function SeoPreview({ state, subject, overlay, doc, shown = true }: { state: ProjectState; subject: SeoSubject; overlay: ProjectState; doc: DocumentPreview | null; shown?: boolean }) {
+export function SeoPreview({
+  state,
+  subject,
+  overlay,
+  typed,
+  doc,
+  shown = true,
+  place = 'inline'
+}: {
+  state: ProjectState;
+  subject: SeoSubject;
+  overlay: ProjectState;
+  typed: TypedSeo;
+  doc: DocumentPreview | null;
+  shown?: boolean;
+  place?: 'inline' | 'view';
+}) {
   const key = subjectKey(subject);
+  // The same document's previews can be in two places at once (the SEO view, and the writer out of sight under it).
+  const uid = useId();
   // Each document opens on its search result.
   const [chosen, setChosen] = useState<{ key: string; tab: PreviewTab }>({ key, tab: 'search' });
   const tab = chosen.key === key ? chosen.tab : 'search';
@@ -206,12 +225,12 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
   }, [showing, overlay, key]);
   if (!doc) return null;
   return (
-    <div className="seo-preview">
+    <div className={`seo-preview${place === 'view' ? ' seo-preview-wide' : ''}`} data-seo-preview={key}>
       <Tabs<PreviewTab>
         value={tab}
         onChange={(v) => setChosen({ key, tab: v })}
-        label="Preview"
-        idBase={`seo-preview-${key.replace(/[^A-Za-z0-9_-]/g, '-')}`}
+        label={place === 'view' ? 'Preview surface' : 'Preview'}
+        idBase={`seo-preview-${uid.replace(/[^A-Za-z0-9_-]/g, '')}-${key.replace(/[^A-Za-z0-9_-]/g, '-')}`}
         options={[
           { value: 'search', label: 'Search result', panel: () => <SearchResults state={state} doc={doc} /> },
           { value: 'link', label: 'Link preview', panel: () => <SharingPreview card={doc.card} /> },
@@ -222,20 +241,12 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
         <div className="seo-preview-ai">
           <AiHandoffButton
             label="Optimize with AI"
-            request={async () => {
-              if (subject.kind === 'page') return previewHandoff(overlay, subject);
-              // The post's other fields (its excerpt, its text) are saved first, so the question quotes them as typed;
-              // what could not be saved is said in the writer. Its search title and description are what the previews
-              // show, typed or saved.
-              const opening = getState().snapshot?.workspaceKey;
-              await saveOpenPost();
-              const now = getState();
-              // The author moved on while it saved (another post, the writer put away, a dialog, another project): the
-              // question is not asked.
-              const writing = postWorkspace(now) === 'write' && now.post?.collectionId === subject.collectionId && now.post?.entryId === subject.entryId;
-              if (!now.snapshot || now.snapshot.workspaceKey !== opening || now.modal || !writing) return null;
-              return previewHandoff(now.snapshot.state, subject, overlay);
-            }}
+            request={() =>
+              // A page's request names the page alone. A post's other fields (its excerpt, its text) are saved first when
+              // the writer holds it, so the question quotes them as typed; its search title and description are what the
+              // previews show, typed or saved.
+              subject.kind === 'page' ? previewHandoff(overlay, subject) : postPreviewHandoff(subject, typed, place === 'view' ? 'view' : 'writer')
+            }
           />
           {subject.kind === 'entry' && <span className="field-hint">Suggests a title and description for you to paste in.</span>}
         </div>

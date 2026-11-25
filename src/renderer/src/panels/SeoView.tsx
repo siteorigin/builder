@@ -1,8 +1,11 @@
 import './SeoView.css';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { FileText, House, Newspaper, Search } from 'lucide-react';
+import type { ProjectState } from '@shared/types';
 import { setState, useStore } from '../store';
 import { seoDocument, seoDocuments, seoSubjectKey, type SeoDocument } from '../lib/seo-view';
+import { SeoPreview, useDocumentPreview, useTypedSeo } from './SeoPreview';
+import type { TypedSeo } from '../lib/seo-preview';
 
 /**
  * The SEO view's list (#700), in the sidebar: every page of the site in its page order, then each collection's entries
@@ -89,10 +92,37 @@ function kindOf(d: SeoDocument, collectionName: string | undefined): string {
 }
 
 /**
- * The SEO view (#700), in the canvas's place while its panel shows: the document chosen in the list, by its title and
- * address, or a prompt to choose one. The canvas stays loaded underneath, as it was.
+ * The chosen document's previews at the view's width (#701): its search result, link preview and structured data,
+ * picked with the surface selector above them, read from the same answers as the previews beside its settings, with
+ * `typed` (text typed into its fields and not saved yet) laid over the saved settings, as there.
  */
-export function SeoView() {
+function SeoViewPreviews({ state, doc, typed, shown }: { state: ProjectState; doc: SeoDocument; typed: TypedSeo; shown: boolean }) {
+  const { overlay, doc: preview } = useDocumentPreview(state, doc.subject, typed);
+  return <SeoPreview state={state} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} place="view" />;
+}
+
+/**
+ * One document in the view, which holds what is typed for it and not saved yet: one per document and opening (see
+ * SeoView's key), so nothing of one document (its surface, its typed text, its structured data) shows for another. Its
+ * fields will report through `on` what they show (useTypedSeo).
+ */
+function SeoViewDocument({ state, doc, collection, shown }: { state: ProjectState; doc: SeoDocument; collection: string | undefined; shown: boolean }) {
+  const { typed } = useTypedSeo(doc.key);
+  return (
+    <div className="seo-doc" data-seo-doc={doc.key}>
+      <p className="seo-doc-kind">{kindOf(doc, collection)}</p>
+      {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published.</p>}
+      <SeoViewPreviews state={state} doc={doc} typed={typed} shown={shown} />
+    </div>
+  );
+}
+
+/**
+ * The SEO view (#700), in the canvas's place while its panel shows: the document chosen in the list, by its title and
+ * address, with its previews (#701), or a prompt to choose one. The canvas stays loaded underneath, as it was. `shown`
+ * says whether the view is in front: its structured data is worked out only then.
+ */
+export function SeoView({ shown }: { shown: boolean }) {
   const snap = useStore((s) => s.snapshot);
   const subject = useStore((s) => s.seoSubject);
   const state = snap?.state;
@@ -117,17 +147,8 @@ export function SeoView() {
         )}
       </div>
       <div className="seo-scroll">
-        {doc ? (
-          <div className="seo-doc" key={doc.key} data-seo-doc={doc.key}>
-            <p className="seo-doc-kind">{kindOf(doc, collection)}</p>
-            <dl className="seo-doc-facts">
-              <dt>Title</dt>
-              <dd>{doc.title}</dd>
-              <dt>Address</dt>
-              <dd>{doc.address}</dd>
-            </dl>
-            {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published.</p>}
-          </div>
+        {doc && state && snap ? (
+          <SeoViewDocument key={`${snap.workspaceKey}\n${doc.key}`} state={state} doc={doc} collection={collection} shown={shown} />
         ) : (
           <div className="seo-none">
             <Search aria-hidden="true" />

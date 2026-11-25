@@ -720,7 +720,7 @@ export function Editor() {
           <PostWriter hidden={!writing} />
         </div>
         <div className="seo-view-holder" style={{ left: RAIL_WIDTH + shown.left, right: shown.right }} hidden={!seoing}>
-          <SeoView />
+          <SeoView shown={seoing} />
         </div>
         <Seam side="right" width={shown.right} max={panelMax('right', windowWidth, prefs)} at={shown.right} restore={() => setState({ dockOpen: true })} />
         <aside id="editor-dock" className="dock" style={{ width: shown.right, display: dockOpen ? undefined : 'none' }} aria-label="Right panel">

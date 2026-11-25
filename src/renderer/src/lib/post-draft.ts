@@ -8,6 +8,7 @@
  * and never in the middle of a composition.
  */
 import type { RichText } from '@shared/types';
+import type { PostRef } from './posts';
 
 /** How a save ended, as the checked write reports it (store.ts commitIfUnchanged), or `failed` with why. */
 export type DraftSaveOutcome =
@@ -254,16 +255,24 @@ export class PostDraft {
   }
 }
 
-/** How the writer on screen saves its post now: its text, and (`all`) its fields too. Set while a post is open in it. */
-let openWriter: { flush: () => Promise<boolean>; all?: () => Promise<boolean> } | null = null;
+/**
+ * How the writer on screen saves its post now: its text, and (`all`) its fields too, and which post that is. Set while a
+ * post is open in it.
+ */
+let openWriter: { flush: () => Promise<boolean>; all?: () => Promise<boolean>; post?: PostRef } | null = null;
 
-/** The writer registers how its open post is saved; returns the unregister. */
-export function setOpenWriter(flush: () => Promise<boolean>, all?: () => Promise<boolean>): () => void {
-  const mine = { flush, all };
+/** The writer registers how its open post is saved, and which post it holds; returns the unregister. */
+export function setOpenWriter(flush: () => Promise<boolean>, all?: () => Promise<boolean>, post?: PostRef): () => void {
+  const mine = { flush, all, post };
   openWriter = mine;
   return () => {
     if (openWriter === mine) openWriter = null;
   };
+}
+
+/** The post the writer holds now, while one is open in it and it said which (it stays mounted while hidden). */
+export function openWriterPost(): PostRef | null {
+  return openWriter?.post ?? null;
 }
 
 /**
@@ -272,6 +281,16 @@ export function setOpenWriter(flush: () => Promise<boolean>, all?: () => Promise
  */
 export function saveOpenPost(): Promise<boolean> {
   return openWriter ? (openWriter.all ?? openWriter.flush)() : Promise.resolve(true);
+}
+
+/**
+ * Save everything the writer holds of `post`, and only of it: a writer holding another post (or not saying which) is
+ * left alone, and there is nothing of `post` unsaved (true). False when what it holds could not be saved.
+ */
+export function savePostIfOpen(post: PostRef): Promise<boolean> {
+  const w = openWriter;
+  if (!w?.post || w.post.collectionId !== post.collectionId || w.post.entryId !== post.entryId) return Promise.resolve(true);
+  return (w.all ?? w.flush)();
 }
 
 /**

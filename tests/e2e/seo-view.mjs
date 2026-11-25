@@ -153,6 +153,86 @@ await row('Winter hours').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
 await win.screenshot({ path: join(SHOTS, 'seo-view.png') });
 
+step('the chosen document’s previews at the view’s width: each surface for a page and a post, from the surface selector (#701)');
+await apply(
+  [
+    { type: 'site.update', baseUrl: 'https://riverside.example' },
+    { type: 'page.update', pageId: about.id, seoTitle: 'About the studio · Riverside', description: 'A pottery studio by the river, with wheel and hand-building classes for every level.' },
+    { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', seoTitle: 'Spring open studio at Riverside', description: 'Throw, glaze and fire with us at the spring open studio, with free taster sessions all weekend.' }
+  ],
+  'Search settings'
+);
+const surface = (name) => view.getByRole('tab', { name, exact: true });
+const surfaceShown = async (name) => (await surface(name).getAttribute('aria-selected')) === 'true';
+const result = (device) => view.locator(`.serp-${device}`);
+const card = view.locator('.share-card');
+const graphShown = view.getByTestId('seo-graph');
+/** Nothing in the view scrolls sideways: not the view, not the computer's result. */
+const noSidewaysScroll = async (where) => {
+  const widths = await view.evaluate((el) => [el.querySelector('.seo-scroll'), el.querySelector('.serp-frame-desktop')].map((n) => (n ? { scroll: n.scrollWidth, client: n.clientWidth } : null)));
+  for (const w of widths) assert.ok(w && w.scroll <= w.client, `${where}: nothing scrolls sideways (${JSON.stringify(widths)})`);
+};
+const documents = [
+  { title: 'About', seoTitle: 'About the studio · Riverside', description: 'A pottery studio by the river', url: `https://riverside.example${about.route}`, trail: `riverside.example › ${about.route.split('/').filter(Boolean).join(' › ')}` },
+  { title: 'Spring open studio', seoTitle: 'Spring open studio at Riverside', description: 'Throw, glaze and fire with us', url: 'https://riverside.example/blog/spring-open-studio/', trail: 'riverside.example › blog › spring-open-studio' }
+];
+for (const d of documents) {
+  await row(d.title).click();
+  await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), d.title));
+  // Each document opens on its search result, whatever surface the one before was left on.
+  await eventually(async () => assert.equal(await surfaceShown('Search result'), true, `${d.title} opens on its search result`));
+  assert.equal(await graphShown.count(), 0, 'the structured data is not worked out while another surface shows');
+  await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), d.seoTitle, `${d.title}’s result on a computer`));
+  assert.equal(await result('mobile').locator('.serp-title').innerText(), d.seoTitle, `${d.title}’s result on a phone`);
+  assert.ok((await result('desktop').locator('.serp-desc').innerText()).includes(d.description), `${d.title}’s description`);
+  assert.equal(await result('desktop').locator('.serp-url').innerText(), d.trail, `${d.title}’s address`);
+  await noSidewaysScroll(`${d.title}’s search result`);
+  await surface('Link preview').click();
+  await eventually(async () => assert.equal(await card.locator('.share-card-host').innerText(), 'riverside.example', `${d.title}’s link preview`));
+  assert.ok((await card.locator('.share-card-desc').innerText()).includes(d.description), `${d.title}’s card carries its description`);
+  assert.equal(await card.locator('.share-card-title').innerText(), d.seoTitle, `${d.title}’s card carries its title`);
+  await surface('Structured data').click();
+  await eventually(async () => {
+    const node = JSON.parse(await graphShown.innerText())['@graph'].find((n) => n['@type'] === 'WebPage' || n['@type'] === 'AboutPage');
+    assert.equal(node?.url, d.url, `${d.title}’s structured data names its address`);
+  }, 20000);
+}
+await win.screenshot({ path: join(SHOTS, 'seo-view-structured-data.png') });
+// Back to the page: its search result, never the post's preview or surface.
+await row('About').click();
+await eventually(async () => assert.equal(await surfaceShown('Search result'), true, 'About opens on its search result again'));
+assert.equal(await result('desktop').locator('.serp-title').innerText(), documents[0].seoTitle);
+assert.equal(await graphShown.count(), 0);
+// A surface chosen for one document is that document's alone: the next opens on its search result, and coming back
+// opens on it again.
+await surface('Link preview').click();
+await eventually(async () => assert.equal(await surfaceShown('Link preview'), true));
+await row('Spring open studio').click();
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), documents[1].seoTitle, 'the post’s result, not the page’s card'));
+assert.equal(await surfaceShown('Search result'), true);
+await row('About').click();
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), documents[0].seoTitle));
+assert.equal(await surfaceShown('Search result'), true, 'About opens on its search result, not the surface it was left on');
+// A draft is left out of the website: its structured data says so.
+await row('Winter hours').click();
+await eventually(async () => assert.match(await view.innerText(), /draft is left out of the website/i));
+await surface('Structured data').click();
+await eventually(async () => assert.ok((await view.locator('.seo-graph-none').innerText()).trim(), 'the draft’s structured data says why it has none'));
+// Optimize with AI is in the view, on the chosen document.
+assert.equal(await view.getByRole('button', { name: 'Optimize with AI' }).count(), 1, 'Optimize with AI is in the view');
+// In a 1280px window, with both side panels open, the computer's result still fits whole, laid out at the width it is
+// measured against.
+await row('About').click();
+await eventually(async () => assert.equal(await surfaceShown('Search result'), true));
+await win.setViewportSize({ width: 1280, height: 800 });
+await eventually(async () => assert.equal(await win.evaluate(() => window.innerWidth), 1280));
+assert.equal(await win.locator('#editor-dock').isVisible(), true, 'the right panel is open');
+await eventually(() => noSidewaysScroll('a 1280px window'));
+await win.screenshot({ path: join(SHOTS, 'seo-view-1280.png') });
+await win.setViewportSize({ width: 1440, height: 900 });
+await row('Winter hours').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
+
 step('the rail entry again leaves the view: the canvas is back as it was, the same preview and the same selection');
 await rail('seo').click();
 await eventually(async () => assert.equal(await holder.isVisible(), false, 'the view goes'));
