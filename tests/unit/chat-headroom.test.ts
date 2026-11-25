@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { estimateRequestTokens } from '@agent/budget';
-import { FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
+import { estimateTokens, FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
 import type { CanonicalModelRequest, ModelCapabilities } from '@agent/types';
 import { runCase, ScriptedAdapter, type EvalCase } from '../../scripts/eval/harness';
 import type { ChatMessage } from '@shared/api';
@@ -124,9 +124,21 @@ describe('composer headroom for a local model', () => {
     ]);
     // A long answer is replayed cut short; an unanswered question still says what it asked.
     expect(words).toEqual(['Build the services page', 'Which services?', 'Repairs', 'Checks', answer.slice(0, 4000), 'And the order?', '', 'Built it.']);
-    // Only the messages a request replays count: the oldest beyond them do not.
+    // The messages a request replays count in full, and the older ones as the summary it sends before them.
     const many = Array.from({ length: 30 }, (_, i) => msg(i % 2 ? 'assistant' : 'user', `message ${i}`));
-    expect(replayedWords(many)).toEqual(many.slice(-12).map((m) => m.text));
+    const replayed = replayedWords(many);
+    expect(replayed.slice(1)).toEqual(many.slice(-12).map((m) => m.text));
+    expect(replayed[0]).toMatch(/^\[Summary of the earlier conversation/);
+    expect(replayed[0]).toContain('The author asked: "message 0"');
+    expect(replayed[0]).toContain('Reply: message 17');
+    expect(replayed[0]).not.toContain('message 18');
+    // A message that fits beside the recent messages alone can be tipped over by the summary.
+    const room = messageRoom(8192, 'native', false);
+    const recentTokens = replayed.slice(1).reduce((n, m) => n + estimateTokens(m), 0);
+    const summaryTokens = estimateTokens(replayed[0]);
+    const draft = a(room - recentTokens - Math.floor(summaryTokens / 2));
+    expect(warn(draft, { contextWindow: 8192, history: replayed.slice(1), pageTools: false })).toBeNull();
+    expect(warn(draft, { contextWindow: 8192, history: replayed, pageTools: false })?.kind).toBe('history');
     // A conversation saved before several questions existed asked its one question in `question`.
     expect(replayedWords([msg('assistant', 'Done.', { question: { id: 'q', text: 'Which page?', choices: ['Home'], answered: 'Home' } as never })])).toEqual(['Which page?', 'Home', 'Home', 'Done.']);
     // An answer long enough to tip a follow-up over is counted.

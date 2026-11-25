@@ -224,18 +224,26 @@ describe('the model that handled each turn', () => {
     expect(lastTurn().model).toEqual({ provider: 'local', id: 'studio-a', label: 'studio-a', unanswered: true });
   });
 
-  it('carries only the replayed window of earlier messages to the model', async () => {
+  it('carries the replayed window of earlier messages in full, and the ones before it as a summary', async () => {
     const { models, orch, ctx, settle } = await setup();
-    // The window holds six earlier exchanges: the eighth request no longer sends the first note.
+    // The window holds six earlier exchanges: the seventh request sends them all as they were said.
     const last = REPLAYED_MESSAGES / 2 + 2;
     for (let i = 1; i <= last; i++) {
       await orch.send(`note number ${i}.`, ctx);
       await settle();
     }
-    const sent = JSON.stringify(models['studio-a'].requests.at(-1)!.items);
-    expect(sent).not.toContain('note number 1.');
-    expect(sent).toContain('note number 2.');
-    expect(sent).toContain(`note number ${last}.`);
+    const texts = (r: number) => models['studio-a'].requests[r].items.map((i) => ('text' in i ? i.text : ''));
+    expect(texts(last - 2)[0]).toBe('note number 1.');
+    expect(texts(last - 2).join('\n')).not.toContain('Summary of the earlier conversation');
+    // The eighth no longer replays the first note in full: it comes first, in a labelled summary, and only there.
+    const sent = texts(last - 1);
+    expect(sent[0]).toMatch(/^\[Summary of the earlier conversation/);
+    expect(sent[0]).toContain('The author asked: "note number 1."');
+    expect(sent.filter((t) => t.includes('note number 1.'))).toHaveLength(1);
+    // Then exchanges two to seven as they were said, in order, and the new request.
+    const users = sent.slice(1).filter((t) => /^note number \d+\.$/.test(t));
+    expect(users).toEqual(Array.from({ length: last - 2 }, (_, i) => `note number ${i + 2}.`));
+    expect(sent.at(-1)).toContain(`note number ${last}.`);
     expect(REPLAYED_MESSAGES).toBe(12);
   });
 

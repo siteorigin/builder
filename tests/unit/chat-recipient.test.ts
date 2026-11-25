@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChatMessage, ProviderStatus } from '@shared/api';
 import type { TurnModel } from '@shared/turn-model';
 import { REPLAYED_MESSAGES } from '@shared/turn-model';
+import { SUMMARY_TURNS } from '@shared/earlier-summary';
 import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../../src/renderer/src/lib/chatRecipient';
 
 const t = '2026-11-24T09:00:00.000Z';
@@ -176,15 +177,27 @@ describe('the notice before a message goes to another model', () => {
     expect(switchNotice([...exchange(localSol), ...exchange(SOL)], nextRecipient(anthropic, models({})))?.earlier).toEqual([SOL, localSol]);
   });
 
-  it('counts only the messages the next request carries', () => {
+  it('counts the messages the next request carries, summarised ones too', () => {
     const old = exchange(A);
-    // Enough newer turns, all by the next model, push A's out of the replayed window.
+    // Enough newer turns, all by the next model, push A's out of the replayed window: the next model has seen it.
     const newer = Array.from({ length: REPLAYED_MESSAGES / 2 }, () => exchange(B)).flat();
     expect(switchNotice([...old, ...newer], toLocal('studio-b'))).toBeNull();
-    // A turn that is no longer replayed is not named, even when it is the only other model.
+    // A turn before the window still goes out, in the summary, so it is named.
     const unknownNewer = Array.from({ length: REPLAYED_MESSAGES / 2 }, () => exchange()).flat();
-    expect(switchNotice([...old, ...unknownNewer], toLocal('studio-b'))?.earlier).toEqual([]);
+    expect(switchNotice([...old, ...unknownNewer], toLocal('studio-b'))?.earlier).toEqual([A]);
     expect(switchNotice([...old, ...unknownNewer.slice(2)], toLocal('studio-b'))?.earlier).toEqual([A]);
+    // One so old the summary only counts it is not.
+    const many = Array.from({ length: SUMMARY_TURNS + REPLAYED_MESSAGES / 2 }, () => exchange()).flat();
+    expect(switchNotice([...old, ...many], toLocal('studio-b'))?.earlier).toEqual([]);
+  });
+
+  it('says summarised local turns leave the computer when a hosted model takes over', () => {
+    // A local turn, then enough hosted ones to push it out of the replayed window.
+    const thread = [...exchange(A), ...Array.from({ length: REPLAYED_MESSAGES / 2 }, () => exchange(SONNET)).flat()];
+    const notice = switchNotice(thread, nextRecipient(openai, models({})))!;
+    expect(notice.earlier).toEqual([SONNET, A]);
+    expect(notice.leavesComputer).toBe(true);
+    expect(switchNoticeText(notice)).toContain('Those messages leave this computer.');
   });
 
   it('is absent with no conversation yet, or no provider chosen', () => {

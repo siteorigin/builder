@@ -59,7 +59,7 @@ async function setup(endpoint: Partial<LocalEndpoint> = {}, opts: LocalAdapterOp
     const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection, selectionLabel, viewport: 1280, ...(mode ? { mode } : {}), ...(component ? { component } : {}), ...(scope ? { scope } : {}) };
     const r = await orch.send(text, ctx);
     expect(r.ok).toBe(true);
-    await expect.poll(() => orch.busy || busy, { timeout: 5000, interval: 5 }).toBe(false);
+    await expect.poll(() => orch.busy || busy, { timeout: 15_000, interval: 5 }).toBe(false);
     const msg = [...events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message;
     return { runId: r.runId!, result: msg?.result };
   };
@@ -509,26 +509,33 @@ describe('the loaded context window', () => {
     expect(chatPosts()[0].body.max_tokens).toBeLessThan(DEFAULT_LOCAL_PROFILE.maxOutput);
   });
 
-  it('advises a new conversation when the earlier messages are what no longer fit', async () => {
+  it('summarises the earlier messages, rather than refusing, when they are what no longer fit', async () => {
     const { run } = await setup({ contextWindow: 24_576, toolMode: 'native' });
-    server.script(textReply('x'.repeat(80_000)));
+    server.script(textReply('x'.repeat(80_000)), textReply('Done.'));
     await run('Hi');
     const { result } = await run('Hi again');
-    expect(result?.status).toBe('failed');
-    expect(result?.summary).toMatch(/Start a new conversation/);
-    expect(result?.summary).toMatch(/24,576-token context/);
-    expect(chatPosts()).toHaveLength(1);
+    expect(result?.status).toBe('no-changes');
+    expect(chatPosts()).toHaveLength(2);
+    // The long reply goes out shortened, in the labelled summary, with the request it answered.
+    const sent = (chatPosts()[1].body.messages as Array<{ content: string }>).map((m) => m.content);
+    const summary = sent.find((t) => t.startsWith('[Summary of the earlier conversation'));
+    expect(summary).toContain('The author asked: "Hi"');
+    expect(sent.join('\n')).not.toContain('x'.repeat(1000));
+    expect(sent.at(-1)).toContain('Hi again');
   });
 
-  it('tells a long conversation from a setup problem by the server count too', async () => {
+  it('summarises the earlier messages when the server count says they do not fit, and asks again once', async () => {
     const { run } = await setup({ toolMode: 'native' });
     server.script(textReply('x'.repeat(80_000)));
     await run('Hi');
-    server.script(llamaOverflow(30_000, 16_384));
+    server.script(llamaOverflow(30_000, 16_384), textReply('Done.'));
     const { result } = await run('Hi again');
-    expect(result?.status).toBe('failed');
-    expect(result?.summary).toMatch(/Start a new conversation/);
-    expect(result?.summary).toMatch(/16,384-token context/);
+    expect(result?.status).toBe('no-changes');
+    const [refused, retried] = chatPosts().slice(1).map((p) => JSON.stringify(p.body.messages));
+    expect(chatPosts()).toHaveLength(3);
+    expect(refused).toContain('x'.repeat(1000));
+    expect(retried).toContain('Summary of the earlier conversation');
+    expect(retried).not.toContain('x'.repeat(1000));
   });
 
   it('keeps the valid work when the context fills up after a change', async () => {
@@ -539,7 +546,7 @@ describe('the loaded context window', () => {
     expect(headerName(session, header)).toBe('Kept');
   });
 
-  it('offers only the small tools when the general ones would not fit a known window', async () => {
+  it('summarises a long earlier reply before giving up the general tools, and offers the small ones when the request itself needs it', async () => {
     // Measure both requests for this project, then replay a conversation that leaves room for one but not the other.
     const measure = async (window: number) => {
       const { run } = await setup({ contextWindow: window, toolMode: 'native' });
@@ -555,17 +562,28 @@ describe('the loaded context window', () => {
     expect(general.estimate - focused.estimate).toBeGreaterThan(2000);
     const history = FOCUSED_WINDOW_TOKENS - 1024 - Math.round((general.estimate + focused.estimate) / 2);
 
-    const before = chatPosts().length;
-    const { run } = await setup({ contextWindow: FOCUSED_WINDOW_TOKENS, toolMode: 'native' });
+    const toolNames = (body: Record<string, any>) => (body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name);
+    // A long earlier reply is summarised, and the request keeps the general tools.
+    let before = chatPosts().length;
+    const replayed = await setup({ contextWindow: FOCUSED_WINDOW_TOKENS, toolMode: 'native' });
     server.script(textReply('x'.repeat(history * 4)), textReply('Done.'));
-    await run('Hi');
-    const { result } = await run('Hi');
-    expect(result?.status).toBe('no-changes');
-    const sent = chatPosts().slice(before);
+    await replayed.run('Hi');
+    expect((await replayed.run('Hi')).result?.status).toBe('no-changes');
+    let sent = chatPosts().slice(before);
     expect(sent).toHaveLength(2);
-    expect((sent[1].body.tools as Array<{ function: { name: string } }>).map((t) => t.function.name)).not.toContain('apply_operations');
-    // Three full runs and a long replayed history: slower than most under a loaded machine.
-  }, 20_000);
+    expect(toolNames(sent[1].body)).toContain('apply_operations');
+    expect(JSON.stringify(sent[1].body.messages)).toContain('Summary of the earlier conversation');
+    // A request whose own message leaves room only for the small tools is offered those.
+    before = chatPosts().length;
+    const { run } = await setup({ contextWindow: FOCUSED_WINDOW_TOKENS, toolMode: 'native' });
+    server.script(textReply('Done.'));
+    const { result } = await run('x'.repeat(history * 4));
+    expect(result?.status).toBe('no-changes');
+    sent = chatPosts().slice(before);
+    expect(sent).toHaveLength(1);
+    expect(toolNames(sent[0].body)).not.toContain('apply_operations');
+    // Five full runs, a long replayed history and a long request: slower than most under a loaded machine.
+  }, 40_000);
 
   it('tries the small tools once when the server refuses the first request a known window was thought to hold', async () => {
     const { run } = await setup({ contextWindow: FOCUSED_WINDOW_TOKENS, toolMode: 'native' });

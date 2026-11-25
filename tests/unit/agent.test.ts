@@ -4903,3 +4903,100 @@ describe('the preview check before a changed run finishes (#742)', () => {
     expect(JSON.stringify(env.session.state.pages[homeId])).toBe(before);
   });
 });
+
+describe('the earlier conversation as a summary (#745)', () => {
+  /** The texts of request `i`, in order. */
+  const texts = (adapter: FakeAdapter, i: number) => adapter.requests[i].items.map((it) => (it.kind === 'tool_result' ? '' : it.text));
+  const SUMMARY = /^\[Summary of the earlier conversation/;
+
+  it('sends a summary that keeps an early decision once the conversation is longer than the window', async () => {
+    const { adapter, run } = await setup([]);
+    await run('Keep the whole site warm, no blue.');
+    for (let i = 2; i <= 8; i++) await run(`Request number ${i}.`);
+    // The seventh request still replays everything in full.
+    expect(texts(adapter, 6)[0]).toBe('Keep the whole site warm, no blue.');
+    // The eighth starts with the summary, which holds the decision; the window replays the rest as it was said.
+    const eighth = texts(adapter, 7);
+    expect(eighth[0]).toMatch(SUMMARY);
+    expect(eighth[0]).toContain('The author asked: "Keep the whole site warm, no blue."');
+    expect(eighth.slice(1).join('\n')).not.toContain('warm, no blue');
+    expect(eighth[1]).toBe('Request number 2.');
+  });
+
+  it('builds one for a stored conversation without one, with the answers given, and stores it', async () => {
+    const env = await setup([]);
+    const dir = env.session.local('sessions', 'chat');
+    mkdirSync(dir, { recursive: true });
+    const t = '2026-01-01T00:00:00.000Z';
+    const messages: ChatMessage[] = [
+      { id: 'm_u0', role: 'user', text: 'Start a services page', time: t },
+      { id: 'm_a0', role: 'assistant', text: 'Added it.', time: t, runId: 'run_0', questions: [{ id: 'q', text: 'Which accent colour?', choices: ['Blue', 'Amber'], answered: 'Amber, never blue' }], result: { status: 'no-changes', summary: 'Noted the accent.', changes: [], validation: [], canUndo: false } }
+    ];
+    for (let i = 1; i <= 6; i++) messages.push({ id: `m_u${i}`, role: 'user', text: `Note ${i}`, time: t }, { id: `m_a${i}`, role: 'assistant', text: 'Done.', time: t, runId: `run_${i}`, result: { status: 'no-changes', summary: 'Done.', changes: [], validation: [], canUndo: false } });
+    writeFileSync(join(dir, 'c_older1.json'), JSON.stringify({ id: 'c_older1', title: 'Older', createdAt: t, messages } satisfies Conversation));
+    await env.orch.openConversation('c_older1');
+    await env.run('Now the footer');
+    const first = texts(env.adapter, 0);
+    expect(first[0]).toMatch(SUMMARY);
+    expect(first[0]).toContain('Asked "Which accent colour?"; the author answered "Amber, never blue".');
+    const saved = JSON.parse(readFileSync(join(dir, 'c_older1.json'), 'utf8')) as Conversation;
+    expect(saved.earlierSummary).toMatchObject({ covered: 2, throughId: 'm_a0', omitted: 0 });
+  });
+
+  it('reuses the stored summary rather than building it again, and extends it as messages leave the window', async () => {
+    const env = await setup([]);
+    const dir = env.session.local('sessions', 'chat');
+    mkdirSync(dir, { recursive: true });
+    const t = '2026-01-01T00:00:00.000Z';
+    const messages: ChatMessage[] = [];
+    for (let i = 0; i < 7; i++) messages.push({ id: `m_u${i}`, role: 'user', text: `Message ${i}`, time: t }, { id: `m_a${i}`, role: 'assistant', text: 'Done.', time: t });
+    // What a fresh summary would never say: only the stored one can have put it in the request.
+    const earlierSummary = { covered: 2, throughId: 'm_a0', turns: [{ from: 0, asked: 'Stored: headings stay in serif' }], omitted: 0 };
+    writeFileSync(join(dir, 'c_stored1.json'), JSON.stringify({ id: 'c_stored1', title: 'Stored', createdAt: t, messages, earlierSummary } satisfies Conversation));
+    await env.orch.openConversation('c_stored1');
+    await env.run('Next');
+    expect(texts(env.adapter, 0)[0]).toContain('Stored: headings stay in serif');
+    expect(texts(env.adapter, 0)[0]).not.toContain('Message 0');
+    // One more exchange leaves the window: it is added to the stored summary, which is not rebuilt.
+    await env.run('And next');
+    const summary = texts(env.adapter, 1)[0];
+    expect(summary).toContain('Stored: headings stay in serif');
+    expect(summary).toContain('The author asked: "Message 1"');
+    expect(summary).not.toContain('Message 0');
+    const saved = JSON.parse(readFileSync(join(dir, 'c_stored1.json'), 'utf8')) as Conversation;
+    expect(saved.earlierSummary).toMatchObject({ covered: 4, throughId: 'm_a1', turns: [{ asked: 'Stored: headings stay in serif' }, { asked: 'Message 1' }] });
+  });
+
+  it('says where each summarised change stands now: still in the site, or undone after it was summarised', async () => {
+    const { session, adapter, run } = await setup([() => [call('e1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'site.update', name: 'Renamed' }] })], () => finish('Renamed the site.')]);
+    await run('Rename the site');
+    for (let i = 2; i <= 8; i++) await run(`Request number ${i}.`);
+    const applied = adapter.requests.at(-1)!.items[0];
+    expect(applied.kind === 'user' && applied.text).toContain('Reply: Renamed the site. Changes:');
+    expect(applied.kind === 'user' && applied.text).toContain('Its changes are still in the site.');
+    // Undone from the toolbar after it left the window: the next request says so.
+    await session.undo();
+    expect(session.state.site.name).toBe('Test');
+    await run('Request number 9.');
+    const undone = adapter.requests.at(-1)!.items[0];
+    expect(undone.kind === 'user' && undone.text).toContain('Its changes were undone afterwards.');
+  });
+
+  it('summarises the earlier messages to fit a small window, and the run goes ahead', async () => {
+    const caps: Partial<ReturnType<AgentModelAdapter['capabilities']>> = {};
+    const { adapter, run } = await setup([() => finish('Here is the long copy: ' + 'x'.repeat(400_000))], { capabilities: caps });
+    await run('Write the long copy');
+    const firstRequest = adapter.requests[0];
+    const first = estimateRequestTokens(firstRequest.system, firstRequest.tools, firstRequest.items);
+    // Room for the first request and a reply, but not for the long reply replayed in full, even with less of the page.
+    Object.assign(caps, { contextWindowTokens: first + 4096, maxOutputTokens: 1024, contextWindowKnown: true });
+    const { result } = await run('Shorter please');
+    expect(result?.status).toBe('no-changes');
+    expect(adapter.requests).toHaveLength(2);
+    const sent = texts(adapter, 1);
+    expect(sent[0]).toMatch(SUMMARY);
+    expect(sent[0]).toContain('The author asked: "Write the long copy"');
+    expect(sent.join('\n')).not.toContain('x'.repeat(1000));
+    expect(sent.at(-1)).toContain('Shorter please');
+  });
+});
