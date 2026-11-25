@@ -352,6 +352,8 @@ Resolve each style source as base plus the override for the one active range. Fo
 
 Text, links and image references are shared across sizes. Alternate content by breakpoint is outside the normal editor contract. Reset removes the override; it does not write a duplicated inherited value.
 
+**Container widths.** A box can be a query container (`containerType: inline-size`, written as `container-type: inline-size`): new columns of a column layout are, and a design can make the box around a slot one. Style rules can then target the width of the nearest query container around an element instead of the screen: `cq-narrow` (under 480 px), `cq-medium` (480 px to under 720 px) and `cq-wide` (720 px and over), stored beside the screen sizes and combinable with states (`cq-narrow:hover`). They are written as plain `@container` rules after every screen size's rules of the same layer, so a container range beats a screen size there and a stronger layer still beats both; without a query container around the element none of them applies. They never set `hidden`: visibility stays with the screen sizes, and a container layout never shows what a screen size hides. So one card placed in a wide 2fr column and in a narrow 1fr sidebar stays side by side in the first and stacks in the second at one desktop width, with no script. A query container's own width never comes from its content, so it belongs on a box its parent sizes (a grid column, a stretched stack); validation warns when one sits where it would shrink to nothing.
+
 ### 7.2 Token categories
 
 | Category | Initial examples |
@@ -699,7 +701,7 @@ Raw JSON document replacement is not the standard tool. Mutations must preserve 
 ### 13.3 Mutation envelope
 
 ```ts
-type ResponsiveScope = 'base' | 'phone' | 'tablet' | 'desktop';
+type ResponsiveScope = 'base' | 'phone' | 'tablet' | 'desktop' | 'cq-narrow' | 'cq-medium' | 'cq-wide';
 
 interface EditBatch {
   expectedRevision: number;
