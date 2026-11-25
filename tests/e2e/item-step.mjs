@@ -78,7 +78,7 @@ await selectedIs(1);
 step('Previous scrolls a card out of sight back into view, with the Inspector closed');
 // The Inspector reveals its item on the page too: closed, only the selection's own scroll can bring the card back.
 await win.getByRole('button', { name: 'Right panel', exact: true }).click();
-await eventually(async () => assert.equal(await win.locator('#dock-panel-inspect').count(), 0, 'the Inspector is closed'));
+await eventually(async () => assert.equal(await chip.getByRole('button', { name: 'Edit', exact: true }).count(), 1, 'the Inspector is closed: the chip offers the way back'));
 await frame.locator('html').evaluate(() => window.scrollTo(0, 0));
 await eventually(async () => {
   const r = await title(0).evaluate((el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom, h: innerHeight }));
@@ -111,8 +111,8 @@ const label = async (i, value) => {
   assert.equal(r.ok, true, r.error?.message);
 };
 await label(0, 'Plan with us');
-await label(2, 'Start a project');
-const link = (i) => frame.getByText(['Plan with us', null, 'Start a project'][i], { exact: true }).first();
+await label(2, 'Talk to the delivery team');
+const link = (i) => frame.getByText(['Plan with us', null, 'Talk to the delivery team'][i], { exact: true }).first();
 await eventually(async () => assert.equal(await link(2).count(), 1, 'the last card shows its link'));
 await link(0).scrollIntoViewIfNeeded();
 await link(0).click({ modifiers: ['Alt'] });
