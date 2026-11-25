@@ -8,6 +8,8 @@ import { AssetImage } from '../components/AssetImage';
 import { Tabs } from '../components/ui';
 import { lengthMeter, previewDocument, structuredPreview, withTypedSeo, type DocumentPreview, type LengthMeter as Meter, type StructuredPreview, type TypedSeo } from '../lib/seo-preview';
 import { openSiteSharing, SharingPreview } from './SharingPreview';
+import { previewHandoff } from '../lib/seoHandoff';
+import { AiHandoffButton } from '../components/AiHandoff';
 
 type PreviewTab = 'search' | 'link' | 'data';
 
@@ -168,7 +170,9 @@ function StructuredData({ structured }: { structured: StructuredPreview | null |
 /**
  * A page's or a post's Search & sharing previews, in tabs: its search result on a computer and a phone, the card a
  * shared link makes, and its structured data with where it is published. `shown` says whether the previews are on
- * screen: the structured data, which reads the whole website, is worked out only while its tab shows.
+ * screen: the structured data, which reads the whole website, is worked out only while its tab shows. Optimize with AI
+ * opens the AI panel about them (#599): an edit of a page's search title and description, or for a post, which the AI
+ * can't change yet, a question that suggests them, from what is typed in its fields now.
  */
 export function SeoPreview({ state, subject, overlay, doc, shown = true }: { state: ProjectState; subject: SeoSubject; overlay: ProjectState; doc: DocumentPreview | null; shown?: boolean }) {
   const key = subjectKey(subject);
@@ -178,6 +182,7 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
   const [structured, setStructured] = useState<{ key: string; value: StructuredPreview | null } | null>(null);
   const showing = shown && tab === 'data' && !!doc;
   const ready = structured?.key === key;
+  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   // Whether the tab has shown this document's structured data since it was last opened.
   const settled = useRef(false);
   useEffect(() => {
@@ -210,6 +215,12 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
           { value: 'data', label: 'Structured data', panel: () => <StructuredData structured={ready && settled.current ? structured!.value : undefined} /> }
         ]}
       />
+      {!readOnly && (
+        <div className="seo-preview-ai">
+          <AiHandoffButton label="Optimize with AI" request={() => previewHandoff(overlay, subject)} />
+          {subject.kind === 'entry' && <span className="field-hint">Suggests a title and description for you to paste in.</span>}
+        </div>
+      )}
     </div>
   );
 }

@@ -16,6 +16,8 @@ import { destinationLabel, noteState } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
 import { pagesSummaryText } from '../lib/export-summary';
 import { auditForHealth, seoCountsText, seoPreflight, type SeoAuditResult } from '../lib/seo-health';
+import { findingHandoff } from '../lib/seoHandoff';
+import { AiHandoffButton } from '../components/AiHandoff';
 
 type ExportKind = 'static' | 'source';
 
@@ -349,10 +351,10 @@ function FormReview({ notes, disabled, folded }: { notes: ExportNote[]; disabled
 /**
  * The SEO and agentic preflight: what keeps the website from being found, shared or read by search engines, link
  * previews and AI agents (the SEO audit's problems and warnings), counted, with a few of them and the way to where each
- * is fixed, and the way to all of them in Project health. It never stops the export: an author may publish before the
- * site has a public URL, say. With nothing to fix, it is one quiet line.
+ * is fixed (and Fix with AI, when the AI can fix it), and the way to all of them in Project health. It never stops the
+ * export: an author may publish before the site has a public URL, say. With nothing to fix, it is one quiet line.
  */
-function SeoPreflight({ audit, disabled, folded }: { audit: SeoAuditResult; disabled: boolean; folded: boolean }) {
+function SeoPreflight({ audit, state, disabled, folded }: { audit: SeoAuditResult; state: ProjectState; disabled: boolean; folded: boolean }) {
   const baseId = useId();
   // Folded to its counted heading while something more urgent needs the room; the rows are one click away.
   const [listOpen, setListOpen] = useState(false);
@@ -407,6 +409,7 @@ function SeoPreflight({ audit, disabled, folded }: { audit: SeoAuditResult; disa
                     {destinationLabel(f.destination)}
                   </button>
                 )}
+                {findingHandoff(state, f) && <AiHandoffButton label="Fix with AI" disabled={disabled} describedBy={`${baseId}-${i}`} request={() => findingHandoff(getState().snapshot?.state ?? state, f)} />}
               </div>
             </div>
           </li>
@@ -823,7 +826,7 @@ export function ExportModal() {
             )}
             {state && <FormReview notes={formNotes} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
             {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} readOnly={readOnly} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} onSettle={() => firstControl()?.focus()} />}
-            {seoAudit && <SeoPreflight audit={seoAudit} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
+            {seoAudit && state && <SeoPreflight audit={seoAudit} state={state} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
             {plan && <PagesSummary published={plan.published} drafts={plan.drafts} publishedEntries={plan.publishedEntries} draftEntries={plan.draftEntries} />}
             <div className="export-choice" role="group" aria-labelledby="export-choice-title">
               <div className="export-choice-head">

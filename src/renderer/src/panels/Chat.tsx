@@ -12,6 +12,7 @@ import { PROVIDER_LABELS, turnModelText } from '@shared/turn-model';
 import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
 import { chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
+import { auditOnce } from '../lib/seo-health';
 import { headroomWarning, replayedWords, smallToolsCover } from '../lib/chatHeadroom';
 import { openPost, selectPage } from '../lib/actions';
 import { postShown, postWorkspace } from '../lib/posts';
@@ -34,6 +35,12 @@ function Md({ text }: { text: string }) {
     </span>
   );
 }
+
+/** The SEO audit's findings for the starters (#599): none when the audit could not read the project, which Project health reports. */
+const seoFindingsOf = (state: ProjectState) => {
+  const audit = auditOnce(state);
+  return audit.ok ? audit.findings : [];
+};
 
 /** Said when a starter widens what the AI may change, so the change of scope is heard as well as seen. */
 const WIDENED_SAY = 'What the AI may change is now the whole site, for this message.';
@@ -370,10 +377,22 @@ export function Chat() {
   // A starter that needs more than this page widens the scope for its own draft only, kept per conversation: the
   // scope is Whole site while that draft is in front of the author (again after coming back to it), and the earlier
   // choice returns once the draft is cleared or sent (a sent message keeps the scope it was sent with) or another
-  // conversation is shown. Picking a scope by hand ends it, so a choice the author made is never undone.
+  // conversation is shown. Picking a scope by hand ends it, so a choice the author made is never undone, and so does a
+  // scope set from elsewhere since (Fix with AI opening its own conversation as Whole site, say): `widenedTo` is the
+  // scope setting the widening made, and only that one is put back.
   const starterWidened = useRef(new Map<string, ChatEditScope>());
   const widenedHere = useRef<string | null>(null);
+  const widenedTo = useRef<object | null>(null);
   const setScope = (to: ChatEditScope) => setState({ chatContextEnabled: { ...getState().chatContextEnabled, scope: to } });
+  const widen = () => {
+    setScope('site');
+    widenedTo.current = getState().chatContextEnabled;
+  };
+  /** Put the scope back from a widening, unless something else has set it since. */
+  const unwiden = (to: ChatEditScope) => {
+    if (getState().chatContextEnabled === widenedTo.current && getState().chatContextEnabled.scope === 'site') setScope(to);
+    widenedTo.current = null;
+  };
   /** A draft moved to another conversation takes its widened scope along. */
   const moveWidened = (from: string, to: string) => {
     const scope = starterWidened.current.get(from);
@@ -387,7 +406,7 @@ export function Chat() {
     if (left && left !== id) {
       widenedHere.current = null;
       const from = starterWidened.current.get(left);
-      if (from !== undefined && getState().chatContextEnabled.scope === 'site') setScope(from);
+      if (from !== undefined) unwiden(from);
     }
     const from = id ? starterWidened.current.get(id) : undefined;
     if (!id || from === undefined) return;
@@ -395,7 +414,7 @@ export function Chat() {
       starterWidened.current.delete(id);
       if (widenedHere.current === id) {
         widenedHere.current = null;
-        if (getState().chatContextEnabled.scope === 'site') setScope(from);
+        unwiden(from);
       }
       // Cleared, so the next widening is announced again.
       setAnnounce((said) => (said === WIDENED_SAY ? '' : said));
@@ -405,7 +424,7 @@ export function Chat() {
       const now = getState().chatContextEnabled.scope;
       if (now !== 'site') starterWidened.current.set(id, now);
       widenedHere.current = id;
-      setScope('site');
+      widen();
       // Coming back to the draft widens again, so it is said again.
       setAnnounce('');
       requestAnimationFrame(() => setAnnounce(WIDENED_SAY));
@@ -454,7 +473,7 @@ export function Chat() {
             `Which parts of the “${page.title}” page are shared with other pages?`
           ].map((text) => ({ text, kind: 'ask' }))
         : []
-      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: { page: ctxOn.page, selection: toSelection } });
+      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: { page: ctxOn.page, selection: toSelection }, seoFindings: seoFindingsOf(st) });
   const stepNow = currentStep(working?.activities);
   // The run strip is the one place that says what a run is doing now: an edit's current step, or its phase. A question
   // is always "Reading the site", as the dock tab and the canvas say it, followed by its current step.
@@ -897,7 +916,7 @@ export function Chat() {
                         if (!askMode && !component && s.kind !== 'page' && s.kind !== 'selection' && chosen !== 'site') {
                           starterWidened.current.set(conversation.id, ctxOn.scope);
                           widenedHere.current = conversation.id;
-                          setState({ chatContextEnabled: { ...ctxOn, scope: 'site' } });
+                          widen();
                           setAnnounce(WIDENED_SAY);
                         }
                         setChatDraft(conversation.id, s.text);

@@ -24,6 +24,8 @@ import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { sampleEntries } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 import { editLabel, placeWords } from './edit-label';
+import { draftFor, imagesFor, withDraft } from './chatDrafts';
+import type { SeoHandoff } from './seoHandoff';
 
 export type { InsertSpec, Primitive } from './insert-search';
 
@@ -913,6 +915,66 @@ export function writePageWithAi(pageId: string) {
   if (!s.snapshot || s.pageId !== pageId) return;
   setState({ selection: null, rightTab: 'chat', dockOpen: true, chatMode: 'edit', chatContextEnabled: { page: true, scope: 'page' }, chatFocus: { workspaceKey: s.snapshot.workspaceKey, pageId, at: Date.now() } });
   saveLocal({ chatMode: 'edit' });
+}
+
+/** A Fix with AI already opening its conversation: a second click waits for it rather than opening another. */
+let seoOpening = false;
+
+/**
+ * Open the AI chat with an SEO request in the message box (#599: Fix with AI in Project health and the export dialog,
+ * Optimize with AI in Search & sharing; see lib/seoHandoff), closing the dialog it came from. An edit of one page opens
+ * that page, as Write with AI does; an edit of the whole site leaves the page on screen, out of a component edited
+ * everywhere or a layout; a question leaves everything where it is. Nothing is sent: the author reads the request,
+ * changes it if they like, and sends it. A message already being written is never replaced: the request goes to a new
+ * conversation, and the message stays with its own (offered under Not sent yet). True once the chat shows the request.
+ */
+export async function openSeoChat(h: SeoHandoff): Promise<boolean> {
+  const s = getState();
+  const snap = s.snapshot;
+  if (!snap || seoOpening) return false;
+  // While the AI works (or waits on an answer) the chat is busy with that request; this one would sit unseen behind it.
+  if (s.activeRunId) return (toast('The AI is still working on a request. Try again once it has finished.', 'info'), false);
+  if (!s.conversation) return (toast('The AI conversation is still loading. Try again in a moment.', 'info'), false);
+  const opening = snap.workspaceKey;
+  let conversation = s.conversation;
+  if (draftFor(s.chatDrafts, conversation.id).trim() || imagesFor(s.chatImages, conversation.id).length) {
+    seoOpening = true;
+    try {
+      conversation = await api.ai.newConversation();
+    } catch (e) {
+      if (getState().snapshot?.workspaceKey === opening) toast((e as Error)?.message || 'Could not start a new AI conversation.', 'error');
+      return false;
+    } finally {
+      seoOpening = false;
+    }
+    // The author may have moved on meanwhile: another project, or the page it is about removed.
+    if (getState().snapshot?.workspaceKey !== opening) return false;
+  }
+  const now = getState();
+  const st = now.snapshot!.state;
+  if (h.mode === 'edit' && h.scope === 'page') {
+    if (!Object.hasOwn(st.pages, h.pageId)) return (toast('That page is no longer on the site.', 'info'), false);
+    if (now.mode !== 'edit') setMode('edit');
+    // The page itself, so the request is about the whole page; also out of a component edited everywhere or a layout.
+    selectPage(h.pageId, null);
+  } else if (h.mode === 'edit' && (now.definitionMode || now.templateMode)) {
+    // A component edited everywhere or a layout would make the request about that design: the page goes back on screen.
+    selectPage(keepPagesValid(st, now.definitionMode?.returnPageId ?? now.pageId, null).pageId ?? st.site.homePageId, null);
+  }
+  const after = getState();
+  const scope = h.mode === 'edit' ? { chatContextEnabled: { page: true, scope: h.scope } } : {};
+  setState({
+    modal: null,
+    rightTab: 'chat',
+    dockOpen: true,
+    chatMode: h.mode,
+    ...scope,
+    ...(conversation.id !== after.conversation?.id ? { conversation } : {}),
+    chatDrafts: withDraft(after.chatDrafts, conversation.id, h.text),
+    ...(after.pageId ? { chatFocus: { workspaceKey: opening, pageId: after.pageId, at: Date.now() } } : {})
+  });
+  saveLocal({ chatMode: h.mode });
+  return true;
 }
 
 /**
