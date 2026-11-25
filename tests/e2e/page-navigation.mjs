@@ -3,6 +3,7 @@
 // one undo step while the address stays /lookbook/. A rename from the inspector offers the same, and a label the
 // author changed is left out. Moving a page in Pages leaves the header menu's order alone and says so, with a way to
 // match it that keeps an external link in its place and adds no page that is not in the menu.
+// The footer's links take the header menu's top-level links in one step from the inspector, and Undo gives them back.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -137,6 +138,34 @@ step('moving a page outside the menu says the menu is unchanged');
 await pageMenu('Notes', 'Move up');
 await win.locator('.toast', { hasText: 'isn’t in the header menu' }).waitFor();
 assert.equal(await note.count(), 0, 'no menu order to offer for a page outside the menu');
+
+step('Copy from header menu fills the footer’s links with the header’s top-level links, and Undo brings its own back (#575)');
+/** The footer's Explore links as visitors read them, in the canvas. */
+const footerLinks = async () => (await frame.locator('footer:not(main footer) nav').first().locator('a').allInnerTexts()).map((t) => t.trim());
+const footerOwn = await footerLinks();
+const headerNow = await menu();
+assert.notDeepEqual(footerOwn, headerNow, 'the footer starts with links of its own');
+// The canvas is scaled to fit beside the panels, so the footer is selected with a click on its site name.
+await frame.locator('footer:not(main footer) p').first().dispatchEvent('click');
+await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
+const footerList = win.locator('#dock-panel-inspect [data-list="links"]');
+const copy = footerList.getByRole('button', { name: 'Copy from header menu' });
+await copy.waitFor({ timeout: 10000 });
+assert.match(await footerList.locator('.insp-note', { hasText: 'Replaces' }).innerText(), new RegExp(`Replaces the ${footerOwn.length} links here`));
+await copy.click();
+await eventually(async () => assert.deepEqual(await footerLinks(), headerNow), 30000);
+const footerTargets = async () => {
+  const st = (await snapshot()).state;
+  const of = (part) => st.site.shell[part].nodes[st.site.shell[part].rootIds[0]].props.links.filter((l) => !l.sub).map((l) => [l.label, JSON.stringify(l.link)]);
+  return { header: of('header'), footer: of('footer') };
+};
+const both = await footerTargets();
+assert.deepEqual(both.footer, both.header, 'each footer link has its header link’s label and destination');
+await eventually(async () => assert.equal(await copy.getAttribute('aria-disabled'), 'true', 'nothing more to copy'));
+assert.equal(await footerList.locator('.insp-note', { hasText: 'already match the header menu' }).count(), 1);
+await win.locator('.toast', { hasText: 'The footer now lists' }).getByRole('button', { name: 'Undo' }).click();
+await eventually(async () => assert.deepEqual(await footerLinks(), footerOwn), 30000);
+assert.deepEqual(await menu(), headerNow, 'the header menu is unchanged');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

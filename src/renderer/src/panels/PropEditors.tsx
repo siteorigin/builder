@@ -1,5 +1,5 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, CornerDownRight, FilePlus, Image as ImageIcon, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Copy, CornerDownRight, FilePlus, Image as ImageIcon, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, NumberProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -1462,7 +1462,19 @@ export interface ListReveal {
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages }: {
+/** A way to fill a list in one step from elsewhere in the project, offered under it (the footer's links from the header menu). */
+export interface ListFill {
+  /** What its button says. */
+  label: string;
+  /** Said under the button: what it does to the rows already here. */
+  note: string | null;
+  /** Why there is nothing to do now (the list already holds what it would bring), or null when there is. */
+  blocked: string | null;
+  /** Make the change: settles once it has been applied or refused. */
+  run: () => Promise<unknown>;
+}
+
+export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -1500,13 +1512,15 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   everywhere?: boolean;
   /** For a list that takes several library images at once (a Gallery): the item field each image goes in. */
   pickImages?: string | null;
+  /** For a list: a way to fill it from elsewhere in the project in one step. */
+  fill?: ListFill;
 }) {
   if (schema.type === 'list' && schema.feed) return <ComputedList name={name} schema={schema} state={state} place={place} />;
   // Fields inside belong to this property of the node around them (see FieldHome).
   if (schema.type === 'list')
     return (
       <FieldHome part={`prop:${name}`} alive={alive}>
-        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} />
+        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} fill={fill} />
       </FieldHome>
     );
   if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} />;
@@ -1816,7 +1830,7 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
  * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
  * with the reason once the list is full or at its minimum.
  */
-function ListEditor({ name, schema, items, onList, read, itemAlive, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string }) {
+function ListEditor({ name, schema, items, onList, read, itemAlive, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages, fill }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string; fill?: ListFill }) {
   // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
   // now), so the page keeps that item open while the list takes it over.
   const [open, setOpen] = useState<string | null>(() => {
@@ -1835,6 +1849,9 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
   const [said, setSaid] = useState({ text: '', count: 0 });
   const addNoteId = useId();
   const removeNoteId = useId();
+  const fillNoteId = useId();
+  // While a fill is being applied it can't be asked for again.
+  const [filling, setFilling] = useState(false);
   const ids = items.map((i) => i.id).join(',');
   useEffect(() => {
     const a = after.current;
@@ -2144,6 +2161,29 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
           <p className="insp-note muted" id={removeNoteId}>
             {removeNote}
           </p>
+        )}
+        {fill && (
+          <>
+            {/* Stays focusable while there is nothing to do, saying why. */}
+            <button
+              className="btn btn-sm insp-fill"
+              aria-disabled={fill.blocked || filling ? true : undefined}
+              aria-busy={filling || undefined}
+              aria-describedby={(fill.blocked ?? fill.note) ? fillNoteId : undefined}
+              onClick={() => {
+                if (fill.blocked || filling) return;
+                setFilling(true);
+                void fill.run().finally(() => setFilling(false));
+              }}
+            >
+              <Copy /> {fill.label}
+            </button>
+            {(fill.blocked ?? fill.note) && (
+              <p className="insp-note muted" id={fillNoteId}>
+                {fill.blocked ?? fill.note}
+              </p>
+            )}
+          </>
         )}
         <span className="sr-only" role="status">
           {said.text}

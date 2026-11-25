@@ -57,18 +57,18 @@ import { effectiveTokens, isDraftPage } from '@generator/index';
 import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
-import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
+import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs, shellMenu } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
 import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
-import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
+import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
 import { TagField } from './TagField';
-import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
+import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type ListFill, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
 import { EntranceField, StaggerSwitch, appearSummary } from './EntranceControls';
@@ -89,6 +89,7 @@ import { openSiteSharing } from './SharingPreview';
 import { LengthMeter, SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
 import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
+import { footerCopyPlan } from '../lib/page-navigation';
 import { BindingControl, PartSection, PropertiesSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
 import { LivePreview } from './InsertPanel';
 import { EntryBoundNote, EntryFieldsSection } from './EntryFields';
@@ -143,6 +144,36 @@ function siteNameHint(state: ProjectState, node: InstanceNode, prop: string, use
       </button>
     </>
   );
+}
+
+const COPY_HEADER_MENU = 'Copy header menu to footer links';
+const linkCount = (n: number) => `${n} link${n === 1 ? '' : 's'}`;
+
+/**
+ * Under the shared footer's links: copy the header menu's top-level links into them, replacing the footer's own, as
+ * one step with an Undo (#575). None when the header has no links to copy.
+ */
+function footerCopyFill(state: ProjectState): ListFill | undefined {
+  const plan = footerCopyPlan(state);
+  if (!plan) return undefined;
+  const replaces = plan.replaces === 1 ? 'Replaces the link here.' : plan.replaces ? `Replaces the ${plan.replaces} links here.` : null;
+  const fits = plan.left ? `Only the first ${plan.count} fit.` : null;
+  return {
+    label: 'Copy from header menu',
+    note: [replaces, fits].filter(Boolean).join(' ') || null,
+    blocked: plan.matches ? 'These links already match the header menu.' : null,
+    run: copyHeaderMenuToFooter
+  };
+}
+
+/** Copy the header menu into the footer's links, planned on the project as it is now and applied only to it. */
+async function copyHeaderMenuToFooter() {
+  const now = getState().snapshot;
+  const plan = now && footerCopyPlan(now.state);
+  if (!now || !plan || plan.matches) return;
+  const r = await commitOps([plan.op], COPY_HEADER_MENU, undefined, now.revision);
+  if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
+  toast(`The footer now lists the header menu’s ${linkCount(plan.count)}.`, 'info', undoAction(r));
 }
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: Exclude<ListOp, { kind: 'pick' }>): EditOperation {
@@ -1022,6 +1053,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const fixedUnlinked = unlinked.filter((b) => !b.link);
   // A video section says whether its address is a video visitors can play, where it loads from, and when it needs a title.
   const video = def.componentId === 'media.video' ? videoFieldNotes(node.props) : undefined;
+  // The shared footer's menu takes the header menu's links in one step (#575).
+  const footerMenuId = owner.kind === 'shell' && owner.id === 'footer' ? shellMenu(state, 'footer')?.node.id : undefined;
   const videoNote = (key: string) => (key === 'url' || key === 'title' ? video?.[key as keyof VideoFieldNotes] : undefined);
   const videoEmpty = !!video && !String(node.props.url ?? '').trim();
   // A renamed section still says what it is: the name is the author's, the kind line the component's.
@@ -1117,6 +1150,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   action={hideAction(own)}
                   place={schema.type === 'list' ? { ref: selection, list: key } : undefined}
                   pickImages={pickImagesField(def, key, schema)}
+                  fill={key === 'links' && footerMenuId === node.id ? footerCopyFill(state) : undefined}
                 />
               );
             }}
