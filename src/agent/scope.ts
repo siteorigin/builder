@@ -315,6 +315,7 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'token.remove': 'wider',
   'token.replace': 'wider',
   'site.update': 'wider',
+  'brief.update': 'wider',
   'component.create': 'wider',
   // A rebuild moves every placement to the new contract.
   'component.upsert': 'wider',

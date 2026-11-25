@@ -8,6 +8,7 @@ import { existsSync, lstatSync, promises as fs, readdirSync, statSync } from 'no
 import { basename, dirname, join, relative, sep } from 'node:path';
 import type { AssetRecord, NodeTree, PageDoc, ProjectState } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
+import { BRIEF_FILE } from '@shared/brief';
 import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameLanguage } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
@@ -33,12 +34,17 @@ const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'buil
 /** Private files that never leave the project folder. */
 const PRIVATE_FILE = /^(\.env(\..*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa.*|id_ed25519.*|id_ecdsa.*|id_dsa.*|.*\.(pem|key|p12|pfx|ppk|keystore|jks|asc|gpg))$/i;
 
-export async function copyProjectSource(src: string, dest: string, opts: { keepAsset?: (rel: string) => boolean } = {}) {
+/**
+ * Copy the project's source from `src` to `dest`. The project brief (#518) is private to the project and is left out
+ * unless `keepBrief` says the copy is the project itself (Duplicate project), so no export ever carries it.
+ */
+export async function copyProjectSource(src: string, dest: string, opts: { keepAsset?: (rel: string) => boolean; keepBrief?: boolean } = {}) {
   await fs.cp(src, dest, {
     recursive: true,
     verbatimSymlinks: true,
     filter: (p) => {
       if (!inProjectSource(src, p)) return false;
+      if (!opts.keepBrief && isProjectBrief(src, p)) return false;
       const rel = relative(src, p);
       if (!rel || !opts.keepAsset) return true;
       try {
@@ -48,6 +54,11 @@ export async function copyProjectSource(src: string, dest: string, opts: { keepA
       }
     }
   });
+}
+
+/** Is `p` the project brief of the project in `root`? Compared without case: on a case-insensitive disk, another spelling is the same file. */
+export function isProjectBrief(root: string, p: string): boolean {
+  return relative(root, p).split(sep).join('/').toLowerCase() === BRIEF_FILE;
 }
 
 /** Is `p` part of the project source in `root`: not tools, caches, builds, private files or links? */

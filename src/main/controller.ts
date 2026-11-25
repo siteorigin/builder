@@ -1353,7 +1353,8 @@ export class Controller {
       // opening it was asked in is still the open one.
       await s.exclusive(async () => {
         if (!current()) throw Object.assign(new Error('stale'), { code: 'STALE_OPENING' });
-        await copyProjectSource(s.dir, tmp);
+        // The copy is the project itself, brief and all.
+        await copyProjectSource(s.dir, tmp, { keepBrief: true });
       });
       const manifestPath = join(tmp, MANIFEST_FILE);
       const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));

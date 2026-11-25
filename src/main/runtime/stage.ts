@@ -6,7 +6,7 @@
  */
 import { constants, existsSync, lstatSync, mkdtempSync, readlinkSync, realpathSync, promises as fs } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { copyProjectSource, inProjectSource } from '../export';
+import { copyProjectSource, inProjectSource, isProjectBrief } from '../export';
 import { realFileInside } from '../../runtime/policy';
 import { ISOLATED_DIR } from '@shared/component-preview';
 
@@ -102,7 +102,8 @@ export async function syncPreviewStage(project: string, stage: string): Promise<
   const devFrom = existsSync(dev) && realFileInside(project, dev) ? await fs.realpath(dev) : null;
   const variants = await mirror(devFrom, join(stage, ...DEV_CACHE), (root, p) => notLink(p) && !isolatedIn(root, p));
   // Compared without case: on a case-insensitive disk, another spelling is the same file.
-  const sources = await mirror(project, stage, (root, p) => inProjectSource(root, p) && !(dirname(p) === root && BUILD_CONFIG.has(relative(root, p).toLowerCase())));
+  // The project brief stays out of the copy, as it does from the first one (copyProjectSource).
+  const sources = await mirror(project, stage, (root, p) => inProjectSource(root, p) && !isProjectBrief(root, p) && !(dirname(p) === root && BUILD_CONFIG.has(relative(root, p).toLowerCase())));
   const now = new Date();
   for (const rel of variants) {
     if (sources.has(rel)) continue;

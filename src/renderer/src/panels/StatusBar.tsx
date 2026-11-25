@@ -254,7 +254,8 @@ const DOCUMENT_NAMES: Record<string, string> = {
   'siteorigin/site.json': 'Site settings',
   'siteorigin/tokens.json': 'Site styles',
   'siteorigin/assets.json': 'Asset library',
-  'siteorigin/theme-lock.json': 'Theme record'
+  'siteorigin/theme-lock.json': 'Theme record',
+  'siteorigin/brief.json': 'Project brief'
 };
 
 /** What a conflicted file holds, in the words the user knows it by. The path is shown beside it. */

@@ -565,6 +565,13 @@ export const OPERATION_SCHEMAS = {
       .optional()
       .describe('Who publishes the site, for search engines and AI answer engines. Only the fields given change; null clears one (so does "" for text, or [] for a list), and identity: null clears all of it. Opening hours, price range and geo belong to a LocalBusiness: another kind clears them.')
   }),
+  // Editor only: the project's private brief (#518), which never reaches the website. Only the fields given change;
+  // "" clears one.
+  'brief.update': z.object({
+    type: z.literal('brief.update'),
+    description: limited(TEXT_LIMITS.projectDescription).optional(),
+    notes: limited(TEXT_LIMITS.projectNotes).optional()
+  }),
 
   'component.create': z
     .object({

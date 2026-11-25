@@ -12,6 +12,7 @@ import { itemStylesOf, placementItems, repeatedPartList } from '@shared/item-sty
 import { ownVisitorTextFor } from '@shared/visitor-text';
 import { coordinatesText } from '@shared/site-identity';
 import { knownCrawler } from '@shared/crawler-policy';
+import { BRIEF_FIELDS, briefText } from '@shared/brief';
 
 /**
  * A typed edit made while the AI is working is held, not dropped. Each operation it is made of names one
@@ -194,6 +195,9 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       if (op.crawlerPolicy !== undefined) fields.crawlerPolicy = crawlerPolicyRead(state, op.crawlerPolicy);
       return found(fields);
     }
+    case 'brief.update':
+      // Each field of the brief is its own, read as the panel shows it: "" for one the project has not written.
+      return found(Object.fromEntries(BRIEF_FIELDS.filter((k) => op[k] !== undefined).map((k) => [k, briefText(state.brief, k)])));
     case 'node.rename': {
       const node = nodeOf(state, op.owner, op.nodeId);
       return typeof node === 'string' ? gone(node) : found(node.name);
@@ -441,7 +445,7 @@ export function shownValue(v: unknown): string | null {
 /** What the author typed into a batch: the value its first operation writes, when that is plain text. */
 export function typedText(op: EditOperation): string | null {
   const o = op as Record<string, unknown>;
-  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'asset.update' || op.type === 'entry.update') {
+  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'asset.update' || op.type === 'entry.update' || op.type === 'brief.update') {
     const key = Object.keys(o).find((k) => k !== 'type' && !TARGET_KEYS.has(k) && o[k] !== undefined);
     if (key === 'font') return shownValue((o.font as { family?: unknown } | undefined)?.family);
     if (key === 'visitorText') {
@@ -469,7 +473,7 @@ export function shownField(op: EditOperation, read: unknown): string | null {
   else if (op.type === 'site.update' && op.crawlerPolicy) {
     const part = (o.crawlerPolicy && typeof o.crawlerPolicy === 'object' ? o.crawlerPolicy : {}) as Record<string, unknown>;
     return crawlerPolicyText(op.crawlerPolicy, (k) => part[k]);
-  } else if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'component.rename') v = listText(Object.values(o)[0]);
+  } else if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'component.rename' || op.type === 'brief.update') v = listText(Object.values(o)[0]);
   else if (op.type === 'asset.update') {
     const asset = (o.asset ?? {}) as Record<string, unknown>;
     const key = Object.keys(op).find((k) => k !== 'type' && k !== 'assetId');
@@ -510,6 +514,7 @@ export function placeOf(state: ProjectState, op: EditOperation): string {
   if (typeof o.tokenId === 'string') return [...getTheme(state.site.themeId).tokens, ...state.tokens.custom].find((t) => t.id === o.tokenId)?.label ?? 'Site style';
   if (typeof o.assetId === 'string') return has(state.assets.assets, o.assetId)?.name ?? 'File';
   if (typeof o.definitionId === 'string') return has(state.components, o.definitionId)?.name ?? 'Component';
+  if (op.type === 'brief.update') return 'Project brief';
   return 'Site settings';
 }
 

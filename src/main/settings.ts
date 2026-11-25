@@ -3,6 +3,7 @@ import { existsSync, promises as fs, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AppSettings, LocalCheck, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
 import { PROVIDER_LABELS } from '@shared/turn-model';
+import { BRIEF_FILE, storedBriefDescription } from '@shared/brief';
 import { atomicWrite } from './project/fsutil';
 import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
@@ -254,7 +255,29 @@ export async function renameRecent(dir: string, name: string) {
 export async function recents(): Promise<RecentProject[]> {
   const s = await loadSettings();
   // Only a pin given as one counts: a hand-edited file can hold anything.
-  return s.recents.map((r) => ({ ...withPin(r, r.pinned === true), missing: !existsSync(join(r.dir, MANIFEST)) }));
+  return Promise.all(
+    s.recents.map(async (r) => {
+      const missing = !existsSync(join(r.dir, MANIFEST));
+      // Read from the folder each time, so a card says what the project's brief says now, however it was changed.
+      const description = missing ? '' : await briefDescription(r.dir);
+      return { ...withPin(r, r.pinned === true), missing, ...(description ? { description } : {}) };
+    })
+  );
+}
+
+/** The most of a brief a card reads: a brief within its limits is far smaller. */
+const MAX_BRIEF_BYTES = 1024 * 1024;
+
+/** The description of the project brief (#518) in `dir`, or '' when it has none, or none that can be read. */
+async function briefDescription(dir: string): Promise<string> {
+  try {
+    const file = join(dir, BRIEF_FILE);
+    const st = await fs.lstat(file);
+    if (!st.isFile() || st.size > MAX_BRIEF_BYTES) return '';
+    return storedBriefDescription(await fs.readFile(file, 'utf8'));
+  } catch {
+    return '';
+  }
 }
 
 export async function removeRecent(dir: string) {

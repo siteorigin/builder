@@ -150,6 +150,27 @@ describe('a duplicated project (#176)', () => {
     expect(readFileSync(join(original, 'siteorigin/site.json'), 'utf8')).toBe(siteBefore);
   });
 
+  it('carries the project brief (#518), which each project then keeps for itself', async () => {
+    const sites = temp('sites');
+    const original = await makeProject(sites, 'storefront', 'Storefront');
+    const c = controller();
+    expect((await c.trustAndOpen(original)).ok).toBe(true);
+    const brief = { description: 'The Storefront shop site.', notes: 'Client: Ana.\nLaunch before the autumn sale.' };
+    expect((await c.apply({ operations: [{ type: 'brief.update', ...brief }] }, { label: 'Edit project notes', opening: c.openingKey! })).ok).toBe(true);
+    expect(await c.flush()).toBe(true);
+    expect(await c.duplicate({ name: 'Fall Campaign', parentDir: sites, opening: c.openingKey! })).toMatchObject({ ok: true });
+    const copy = join(sites, 'fall-campaign');
+    expect(read(copy, 'siteorigin/brief.json')).toMatchObject(brief);
+    expect((await recents()).find((r) => r.dir === copy)?.description).toBe(brief.description);
+    // Edited in the copy, the brief changes there alone.
+    expect(await c.open(copy)).toEqual({ ok: true });
+    expect(c.snapshot()!.state.brief).toMatchObject(brief);
+    expect((await c.apply({ operations: [{ type: 'brief.update', description: 'The autumn campaign.' }] }, { label: 'Edit project description', opening: c.openingKey! })).ok).toBe(true);
+    await c.close();
+    expect(read(copy, 'siteorigin/brief.json').description).toBe('The autumn campaign.');
+    expect(read(original, 'siteorigin/brief.json')).toMatchObject(brief);
+  });
+
   it('explains a name or destination it cannot use, and writes nothing', async () => {
     const sites = temp('sites');
     const original = await makeProject(sites, 'storefront', 'Storefront');

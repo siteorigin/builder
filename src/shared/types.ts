@@ -979,6 +979,19 @@ export interface ProjectManifest {
   app: string;
 }
 
+/**
+ * The project brief (#518): `siteorigin/brief.json`, what the project is for, kept for its author alone. It travels
+ * with the project folder and Duplicate project, and never reaches the website or an export. Absent while both fields
+ * are empty.
+ */
+export interface ProjectBriefDoc {
+  schemaVersion: number;
+  /** What the site is and who it is for, in a line or two. Recent projects shows it under the project's name. */
+  description: string;
+  /** Free-form working notes: the client, the audience, what the site should achieve. */
+  notes: string;
+}
+
 export interface ThemeLock {
   schemaVersion: number;
   /**
@@ -1088,6 +1101,8 @@ export interface ProjectState {
   themeLock: ThemeLock;
   /** Collections by ID. Empty for a project without any (and for every project stored before collections). */
   collections: Record<string, Collection>;
+  /** The private project brief. Absent while it is empty, as for every project stored before it existed. */
+  brief?: ProjectBriefDoc;
 }
 
 // ---------------------------------------------------------------------------

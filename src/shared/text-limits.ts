@@ -16,7 +16,11 @@ export const TEXT_LIMITS = {
   /** A library image's suggested description, which a newly placed copy starts from. */
   altSuggestion: 300,
   /** A library file's own notes. */
-  assetDescription: 500
+  assetDescription: 500,
+  /** The project brief's description (#518): what the site is and who it is for, in a line or two. */
+  projectDescription: 320,
+  /** The project brief's working notes. */
+  projectNotes: 20000
 } as const;
 
 /** Why text over a limit was refused: its length and the limit, for the author and for a model to repair from. */

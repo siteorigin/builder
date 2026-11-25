@@ -26,6 +26,11 @@ export interface RecentProject {
    */
   pinned?: boolean;
   missing?: boolean;
+  /**
+   * The project brief's description (#518), read from the project's folder when the list is asked for: never kept in
+   * the settings. Absent when the project has none, or its folder is missing.
+   */
+  description?: string;
 }
 
 export interface AppSettings {

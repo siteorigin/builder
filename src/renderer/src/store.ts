@@ -21,7 +21,9 @@ export const api = window.builder;
 
 export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets';
 export type { PostRef };
-export type RightTab = 'inspect' | 'chat' | 'styles';
+export type RightTab = 'inspect' | 'chat' | 'styles' | 'project';
+/** Every view of the right panel, for checking one remembered from an earlier opening. */
+export const RIGHT_TABS: readonly RightTab[] = ['inspect', 'chat', 'styles', 'project'];
 export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'swap-component'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions'; review?: boolean; opening?: string } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health'; section?: 'seo' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'post-import'; opening: string; preview: PostImportPreview } | { kind: 'paste-style'; ref: ElementRef; opening: string };
 
 export interface Rect {

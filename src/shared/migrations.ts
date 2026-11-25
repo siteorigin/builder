@@ -445,6 +445,12 @@ export const MIGRATIONS: Migration[] = [
     description:
       'A container in a managed component can show over the page as a modal dialog or a drawer (overlay: "dialog" | "drawer-start" | "drawer-end" | "drawer-bottom") while its condition, which reads a yes/no UI state, holds. Nothing in the documents changes; the new version only keeps an older editor, which would show the dialog in its place as an ordinary container and drop it from designs it rebuilds, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'project-brief',
+    description:
+      'A project can keep a private brief, a description and working notes, in siteorigin/brief.json, which exports leave out. Nothing in the documents changes; the new version only keeps an older editor, which would neither show nor undo the brief and would copy it into every source export, from opening the project for editing.',
+    migrate() {}
   }
 ];
 
@@ -555,7 +561,7 @@ export function matchesLock(hash: string | undefined, def: ComponentDefinition):
 /** Every document of a project, which each carry their own `schemaVersion`. */
 function documents(project: ProjectState): Array<{ schemaVersion: number }> {
   const collections = Object.values(project.collections ?? {}).flatMap((c) => [c.settings, ...Object.values(c.entries)]);
-  return [project.manifest, project.site, project.tokens, project.assets, project.themeLock, ...Object.values(project.pages), ...Object.values(project.components), ...collections];
+  return [project.manifest, project.site, project.tokens, project.assets, project.themeLock, ...Object.values(project.pages), ...Object.values(project.components), ...collections, ...(project.brief ? [project.brief] : [])];
 }
 
 /** A missing or malformed version counts as the first format: migrations leave current documents unchanged. */

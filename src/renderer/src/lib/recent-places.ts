@@ -24,9 +24,12 @@ export function whereLabels(all: RecentProject[]): Map<string, string> {
   return out;
 }
 
-/** Whether a recent project matches a filter (already trimmed and lower-cased): by its name or where it lives. */
+/**
+ * Whether a recent project matches a filter (already trimmed and lower-cased): by its name, where it lives, or its
+ * brief's description (#518), all of it, past what its card has room to show.
+ */
 export function matchesFilter(r: RecentProject, filter: string): boolean {
-  return `${r.name}\n${shortPath(r.dir)}\n${r.dir}`.toLowerCase().includes(filter);
+  return `${r.name}\n${shortPath(r.dir)}\n${r.dir}\n${r.description ?? ''}`.toLowerCase().includes(filter);
 }
 
 /**

@@ -6,7 +6,7 @@ import { installComponent, makeInstance } from '@engine/install';
 import { validateState } from '@engine/validate';
 import { MEDIA_QUERIES, validateStyleValue } from '@shared/styles';
 import { applyOperations } from '@engine/apply';
-import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, generateProject, js, propLocals, resolveLink } from '@generator/index';
+import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, generateProject, js, propLocals, publishedState, resolveLink } from '@generator/index';
 import { externalLink } from '@shared/links';
 import { GenerationCache } from '@generator/cache';
 import { DRAFTS_JS, usedIcons } from '@generator/runtime-files';
@@ -1462,3 +1462,33 @@ describe('empty slots in the editor preview (issue #96)', () => {
     expect(generateProject(s, { instrument: true }).get(homeFile)).toContain('<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty={"content"}><strong>{"Body"}</strong></span>');
   });
 });
+
+describe('the private project brief (#518)', () => {
+  it('never reaches the website: every generated file, sitemap and meta tag is the same with or without it', () => {
+    const s = fresh();
+    applyAndKeep(s, [
+      { type: 'site.update', baseUrl: 'https://harbour.example', description: 'Wheel classes and studio pottery in Leeds.' },
+      { type: 'page.create', title: 'Classes', route: '/classes/' }
+    ]);
+    const cache = new GenerationCache();
+    const outputs = (state: ProjectState) => [generateProject(state), generateProject(state, { instrument: true }), generateProject(publishedState(state)), generateProject(state, {}, cache)];
+    const without = outputs(s);
+    const markers = ['BRIEF-DESC-5c1e', 'BRIEF-NOTES-9a7f'];
+    const withBrief = applyOperations(s, [{ type: 'brief.update', description: `For Ana's studio ${markers[0]}`, notes: `Client notes\n${markers[1]}` }]).state;
+    expect(withBrief.brief?.notes).toContain(markers[1]);
+    const withOut = outputs(withBrief);
+    withOut.forEach((files, i) => {
+      // Byte for byte the files made without a brief, in the clean, editor, published and cached runs alike.
+      expect([...files.entries()]).toEqual([...without[i].entries()]);
+      for (const [path, text] of files) for (const m of markers) expect(path.includes(m) || text.includes(m), `${path} holds ${m}`).toBe(false);
+    });
+    // The visitor-facing description still reaches the meta tags, and the sitemap is made.
+    const files = withOut[0];
+    expect(files.get('static/sitemap.xml')).toContain('https://harbour.example/classes/');
+    expect([...files.values()].some((t) => t.includes('Wheel classes and studio pottery in Leeds.'))).toBe(true);
+  });
+});
+
+function applyAndKeep(s: ProjectState, ops: Parameters<typeof applyOperations>[1]) {
+  Object.assign(s, applyOperations(s, ops).state);
+}

@@ -261,12 +261,14 @@ export function Welcome() {
     return (
       <li key={r.dir} className={`recent-item${r.missing ? ' missing' : ''}${isLatest ? ' latest' : ''}`}>
         {/* A missing project's card finds it: the picker opens, and the same project found elsewhere takes over this entry (#217). */}
-        <button className="recent-card" disabled={!!opening} aria-busy={busy || undefined} title={`${r.name}\n${r.dir}`} onClick={() => void (r.missing ? open(undefined, { folder: true, replaces: r.dir }) : open(r.dir))}>
+        <button className="recent-card" disabled={!!opening} aria-busy={busy || undefined} title={r.description ? `${r.name}\n${r.description}\n${r.dir}` : `${r.name}\n${r.dir}`} onClick={() => void (r.missing ? open(undefined, { folder: true, replaces: r.dir }) : open(r.dir))}>
           <div className="recent-thumb" aria-hidden="true">
             {busy ? <Spinner decorative /> : initials(r.name)}
           </div>
           <div className="recent-meta">
             <strong>{r.name}</strong>
+            {/* The project brief's description (#518): the author's own words for what the project is, cut short to fit. */}
+            {r.description && <span className="desc">{r.description}</span>}
             <span className="where">
               <Folder aria-hidden="true" />
               {r.missing ? (
@@ -450,7 +452,7 @@ export function Welcome() {
                     className="input"
                     type="search"
                     value={filter}
-                    placeholder="Filter by name or folder"
+                    placeholder="Filter by name, folder or description"
                     aria-label="Filter recent projects"
                     spellCheck={false}
                     disabled={!!opening}
