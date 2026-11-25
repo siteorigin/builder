@@ -11,7 +11,7 @@ export const EDITORIAL = createPack({
   id: 'editorial',
   name: 'Editorial',
   version: '0.1.0',
-  license: 'GPL-3.0-or-later',
+  license: 'MIT-0',
   description: 'High-contrast and typographic, for magazines, architects and studios: a display serif, hairline rules and asymmetric columns.',
   tokens: EDITORIAL_TOKENS,
   contrastPairs: EDITORIAL_CONTRAST_PAIRS,

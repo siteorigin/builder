@@ -11,7 +11,7 @@ export const FOUNDATION = createPack({
   id: 'foundation',
   name: 'Foundation',
   version: '0.1.0',
-  license: 'GPL-3.0-or-later',
+  license: 'MIT-0',
   description: 'Clean and restrained, for service businesses, studios and personal sites.',
   tokens: FOUNDATION_TOKENS,
   contrastPairs: FOUNDATION_CONTRAST_PAIRS,

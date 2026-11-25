@@ -72,7 +72,7 @@ Before a public release (spec §24 and §25.2):
 - [ ] Smoke-test every advertised provider live (it costs money): `npm run test:ai` for OpenAI, reading the logged replies as well as the exit code; Anthropic has no live smoke script yet and needs one.
 - [ ] Wire-level adapter tests for the OpenAI Responses and Anthropic Messages streams: multi-turn tool loops, each provider's truncation signal (`incomplete`, `max_tokens`), OpenAI's `parallel_tool_calls: false`, rate-limit retries in the orchestrator and the fixer's `tools: []` request.
 - [ ] An agent benchmark: a fixed set of graded prompts (targeted copy edit, retheme, add a page with a nav link, a five-page site, fixing a broken code component, a phone-only spacing change) scored on completion, turns, invalid operations, scope violations and a clean project afterwards (spec §24.3).
-- [ ] Root `LICENSE` (GPL-3.0-or-later) and `CONTRIBUTING.md` present. Exports that redistribute the starter images include `resources/starter-assets/NOTICE.md` (they don't yet); check both the source and static exports.
+- [ ] Root `LICENSE` (Apache-2.0) and `CONTRIBUTING.md` present. Exports that redistribute the starter images include `resources/starter-assets/NOTICE.md` (they don't yet); check both the source and static exports.
 - [ ] **TODO: signing and notarization.** macOS: a Developer ID Application certificate (`CSC_LINK` / `CSC_KEY_PASSWORD`) and notarization credentials (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`), then mount the DMG on a second Mac and check the bundled `.app` with `spctl -a -vv` and `xcrun stapler validate`. Windows: an Authenticode certificate for the NSIS installer. Until then builds are ad-hoc signed or unsigned, and Gatekeeper and SmartScreen warn.
 - [ ] `npm run dist` on each platform; install the DMG and NSIS installer (and launch the AppImage) on a clean machine, create a project offline, export it and build the export.
 - [ ] Tag the release (`vX.Y.Z`) on `main`.
@@ -96,4 +96,4 @@ Editor components (React) and website components (Svelte, generated from the the
 
 ## Licence
 
-GPL-3.0-or-later. Icons are from Lucide (ISC). The Inter and Fraunces fonts are under the SIL Open Font License. The starter sample images are original and free to reuse (see `resources/starter-assets/NOTICE.md`).
+SiteOrigin Builder is licensed under Apache-2.0. The Foundation and Editorial themes, whose components are copied into every exported website, are licensed under MIT-0, so a site owner needs no attribution or licence file for the theme code. Icons are from Lucide (ISC). The Inter and Fraunces fonts are under the SIL Open Font License. The starter sample images are original and free to reuse (see `resources/starter-assets/NOTICE.md`).
