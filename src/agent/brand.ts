@@ -14,6 +14,7 @@ import { TYPE_SCALE_CHOICES, scaleRoles, typeScaleOps } from '@shared/type-scale
 import { normalizeLink } from '@engine/values';
 import { contactInText } from '@shared/contact-links';
 import { isLanguageCode } from '@shared/languages';
+import { checkPublicUrl } from '@shared/public-url';
 import { BRAND_PROP, COPYRIGHT_PROP, brandLabel, brandPlacements, followsSiteName, siteNameText } from '@shared/site-name';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
@@ -213,7 +214,13 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   // How the site is found and shared, set with the brand so a rebrand ships complete.
   // A value the site already has is left out, so a call that changes nothing says so.
   const seo: { baseUrl?: string; language?: string; socialImage?: string | null } = {};
-  if (args.baseUrl !== undefined && args.baseUrl.trim() !== (state.site.baseUrl ?? '')) seo.baseUrl = args.baseUrl.trim();
+  if (args.baseUrl !== undefined) {
+    // Checked first and compared as the site keeps it, so a spelling of the same address changes nothing, and an
+    // address that cannot be used is refused even when the site already has it.
+    const url = checkPublicUrl(args.baseUrl);
+    if (!url.ok) issues.push({ field: 'baseUrl', message: url.message });
+    else if (url.url !== (state.site.baseUrl ?? '')) seo.baseUrl = url.url;
+  }
   if (args.language !== undefined) {
     if (!isLanguageCode(args.language.trim())) issues.push({ field: 'language', message: 'use a language code such as "fr" or "en-GB"' });
     else if (args.language.trim() !== state.site.language) seo.language = args.language.trim();

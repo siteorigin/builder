@@ -2896,7 +2896,7 @@ describe('search settings on the page and brand tools (#598)', () => {
         () => [call('u1', 'upsert_page_with_sections', { ...services, seoTitle: 'Garden care services in Riverside', description: 'Weekly garden visits.', socialImage: photo, noindex: true, canonical: 'https://example.org/services/' })],
         () => {
           created = structuredClone(session.state);
-          return [call('u2', 'upsert_page_with_sections', { slug: 'services', noindex: false, socialImage: '', seoTitle: '' })];
+          return [call('u2', 'upsert_page_with_sections', { slug: 'services', noindex: false, socialImage: '', seoTitle: '', canonical: '' })];
         },
         () => [call('u3', 'upsert_page_with_sections', { slug: 'services', socialImage: 'a_missing0' })],
         () => finish()
@@ -2909,9 +2909,9 @@ describe('search settings on the page and brand tools (#598)', () => {
     expect(result?.status).toBe('completed');
     expect(pageAt(created!, '/services/')!.seo).toMatchObject({ title: 'Garden care services in Riverside', description: 'Weekly garden visits.', socialImage: photo, noindex: true, canonical: 'https://example.org/services/' });
     const page = pageAt(session.state, '/services/')!;
-    // The second call took the noindex, image and title back off; the description stays as the first set it.
+    // The second call took the noindex, image, title and canonical address back off; the description stays as set.
     expect(page.seo.description).toBe('Weekly garden visits.');
-    expect(page.seo.canonical).toBe('https://example.org/services/');
+    expect(page.seo.canonical).toBeUndefined();
     expect(page.seo.noindex).toBeFalsy();
     expect(page.seo.socialImage ?? null).toBeNull();
     expect(page.seo.title).toBeUndefined();
@@ -2939,7 +2939,8 @@ describe('search settings on the page and brand tools (#598)', () => {
         },
         () => [call('b3', 'update_site_brand', { siteName: 'Harbour Plumbing', socialImage: '' })],
         // What the site already has changes nothing, and the reply says so.
-        () => [call('b4', 'update_site_brand', { language: 'en-NZ', baseUrl: 'https://harbour.example', socialImage: '' })],
+        () => [call('b4', 'update_site_brand', { language: 'en-NZ', baseUrl: 'https://Harbour.example:443/', socialImage: '' })],
+        () => [call('b5', 'update_site_brand', { siteName: 'Harbour Plumbing Ltd', baseUrl: 'http://harbour.example' })],
         () => finish()
       ],
       {},
@@ -2950,11 +2951,14 @@ describe('search settings on the page and brand tools (#598)', () => {
     expect(lastResult(adapter.requests[1])).toMatchObject({ ok: true });
     expect(published!.site).toMatchObject({ baseUrl: 'https://harbour.example', language: 'en-NZ', socialImage: photo });
     expect(lastResult(adapter.requests[4])).toMatchObject({ ok: true, note: 'The brand already matches.' });
+    // An address the site cannot use is refused with the rest of the call, never dropped while the name goes in.
+    expect(lastResult(adapter.requests[5])).toMatchObject({ error: 'VALIDATION_FAILED', fields: [{ field: 'baseUrl', message: expect.stringContaining('https://') }] });
     // A bad field refuses the whole call: the brand color is not applied either.
     expect(lastResult(adapter.requests[2])).toMatchObject({ error: 'VALIDATION_FAILED', fields: [{ field: 'language' }] });
     expect(session.state.tokens.overrides['color.brand']).toBeUndefined();
     const site = session.state.site;
     expect(site).toMatchObject({ baseUrl: 'https://harbour.example', language: 'en-NZ', name: 'Harbour Plumbing' });
+    expect(session.revision).toBe(2);
     expect(site.socialImage ?? null).toBeNull();
     const schema = adapter.requests[0].tools.find((t) => t.name === 'update_site_brand')!.parameters as { properties: Record<string, unknown> };
     expect(Object.keys(schema.properties)).toEqual(expect.arrayContaining(['baseUrl', 'language', 'socialImage']));

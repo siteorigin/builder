@@ -3436,6 +3436,7 @@ describe('search and AI-agent settings (#598)', () => {
             expect(lastResult(req)).toMatchObject({ ok: true });
             return [
               call('s2', 'update_site_seo', {
+                description: 'Bread, pastries and coffee in Riverside, baked each morning.',
                 baseUrl: 'https://riverside.example',
                 language: 'en-AU',
                 socialImage: photo.id,
@@ -3470,7 +3471,7 @@ describe('search and AI-agent settings (#598)', () => {
       expect(page.seo.noindex).toBeFalsy();
       expect(page.language).toBe('en-AU');
       const site = env.session.state.site;
-      expect(site).toMatchObject({ baseUrl: 'https://riverside.example', language: 'en-AU', socialImage: photo.id, llmsTxt: false, llmsFull: true, markdownMirrors: true, llmsSummary: 'A neighbourhood bakery in Riverside.' });
+      expect(site).toMatchObject({ description: 'Bread, pastries and coffee in Riverside, baked each morning.', baseUrl: 'https://riverside.example', language: 'en-AU', socialImage: photo.id, llmsTxt: false, llmsFull: true, markdownMirrors: true, llmsSummary: 'A neighbourhood bakery in Riverside.' });
       expect(site.identity).toEqual({ kind: 'LocalBusiness', name: 'Riverside Bakery Pty Ltd', logo: photo.id, sameAs: ['https://www.wikidata.org/wiki/Q42'], telephone: '+61 2 5550 1234', openingHours: ['Mo-Fr 07:00-15:00'], geo: { latitude: -33.86, longitude: 151.2 } });
       expect(site.crawlerPolicy).toMatchObject({ preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow' }, disallowPaths: ['/drafts/'] });
       // The whole request is one step of history, and one undo takes all of it back.
@@ -3534,7 +3535,8 @@ describe('search and AI-agent settings (#598)', () => {
     // GPTBot is back to what the base does with it (kept out, as an AI training crawler); the base itself stays.
     expect(second.site.socialImage ?? null).toBeNull();
     expect(second.site.identity).toEqual({ kind: 'Person', name: 'Riverside Bakery' });
-    expect(second.site.crawlerPolicy).toMatchObject({ preset: 'custom', base: 'block-ai-training', overrides: { ClaudeBot: 'disallow' } });
+    expect(second.site.crawlerPolicy).toMatchObject({ preset: 'custom', base: 'block-ai-training' });
+    expect(second.site.crawlerPolicy?.overrides).toEqual({ ClaudeBot: 'disallow' });
     expect(third.site.identity).toEqual({ name: 'Riverside Bakery' });
     const page = env.session.state.pages[home];
     expect(page.seo.title).toBeUndefined();
@@ -3551,7 +3553,7 @@ describe('search and AI-agent settings (#598)', () => {
       () => [call('d1', 'update_site_seo', { description: 'Fresh bread daily.', crawlerPolicy: { preset: 'custom', overrides: [{ token: 'GPTBot', access: 'allow' }, { token: 'gptbot', access: 'default' }] } })],
       (req) => {
         keep(req);
-        return [call('d2', 'update_site_seo', { description: 'Fresh bread daily.', identity: { logo: 'a_missing0' } })];
+        return [call('d2', 'update_site_seo', { description: 'Fresh bread daily.', socialImage: 'a_missing1', identity: { logo: 'a_missing0' } })];
       },
       (req) => {
         keep(req);
@@ -3589,6 +3591,7 @@ describe('search and AI-agent settings (#598)', () => {
     expect(results.map((r) => (r as { error?: string }).error)).toEqual(['VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'INVALID_ARGUMENT']);
     expect(JSON.stringify(results[0])).toMatch(/crawlerPolicy\.overrides\[1\]\.token.*already in overrides\[0\]/);
     expect(JSON.stringify(results[1])).toMatch(/identity\.logo: no library image has the assetId \\"a_missing0\\"/);
+    expect(JSON.stringify(results[1])).toMatch(/socialImage: no library image has the assetId \\"a_missing1\\"/);
     expect(JSON.stringify(results[2])).toMatch(/socialImage: no library image/);
     expect(JSON.stringify(results[3])).toMatch(/send at least one setting/);
     expect(JSON.stringify(results[4])).toMatch(/there is no page \\"\/nowhere\/\\"/);

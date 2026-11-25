@@ -730,7 +730,7 @@ describe('what a constrained local run sends first (#364)', () => {
     expect(1 - (total - audit - frosted - copy - seo) / baseline, JSON.stringify(sent)).toBeGreaterThan(0.24);
     // The room is made only where the tool is offered.
     expect(JSON.stringify(body.response_format).includes('"audit_seo"'), label).toBe(audit > 0);
-    const actions = (body.response_format.json_schema.schema.properties.action.anyOf as Array<{ properties: { tool: { enum: string[] } } }>).map((b) => b.properties.tool.enum[0]);
+    const actions = (body.response_format.json_schema.schema.properties.action.anyOf as Array<{ properties: { tool: { enum: string[] } } }>).flatMap((b) => b.properties.tool.enum);
     expect(actions.includes('update_page_seo'), label).toBe(seo > 0);
     expect(actions.includes('update_site_seo'), label).toBe(label.startsWith('site'));
     // Still the strict grammar, in its compact form, and the context unindented, with all it said before.
