@@ -2710,8 +2710,8 @@ describe('a run limited to one page (#513)', () => {
     expect([local.mode, local.focused]).toEqual(['page', true]);
     expect(names(local.tools)).toEqual(expect.arrayContaining(['upsert_page_with_sections', 'apply_operations', 'read_page']));
     expect(names(local.tools)).not.toContain('update_site_brand');
-    expect(types(local.tools)).toEqual(['node.move', 'node.remove', 'page.update']);
-    expect([...FOCUSED_PAGE_OPERATIONS].sort()).toEqual(['node.move', 'node.remove', 'page.update']);
+    expect(types(local.tools)).toEqual(['node.move', 'node.remove', 'node.removeKeepContent', 'page.update']);
+    expect([...FOCUSED_PAGE_OPERATIONS].sort()).toEqual(['node.move', 'node.remove', 'node.removeKeepContent', 'page.update']);
     expect(Object.keys(offered(local.tools).find((o) => (o.type as { const: string }).const === 'page.update')!)).not.toContain('route');
     // Once widened, the run is a site run again.
     expect(toolsForRun({ ...base, page: null, definitionOps: true, capabilities: { toolCalling: 'native', contextWindowTokens: 400000 } }).mode).toBe('site');

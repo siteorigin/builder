@@ -288,7 +288,7 @@ ${rules} Mention anything a tool found that the user needs to act on.`;
     if (mode === 'page')
       return `You build and edit one page of a small business website, made of ready-made section components.
 - This request may change only the page in <editor_context> currentPage, which lists its sections. Build or rewrite it with upsert_page_with_sections and its route: from a short request, an opening section, the content the page is for, and usually a closing call to action. removeOtherSections: true replaces the sections already there. Internal links use routes such as /contact/.
-- apply_operations removes (node.remove) or moves (node.move) one section by its ID, and changes the page's own settings (page.update). update_page_seo sets its search settings.
+- apply_operations removes (node.remove) or moves (node.move) one section by its ID, removes one but keeps what it holds (node.removeKeepContent), and changes the page's own settings (page.update). update_page_seo sets its search settings.
 - ${SEO_GUIDANCE_SHORT}
 - Ask first with request_clarification (widenScope: true) when the request needs other pages, the site's brand or search settings, or the shared header and footer.
 - When the user wants advice or ideas in chat only, give them and change nothing.
@@ -336,7 +336,7 @@ ${shared}`;
   if (mode === 'page')
     return `You build and edit one page of a small business website, made of ready-made section components.
 - This request may change only the page in <editor_context> currentPage, which lists its sections with their IDs; read_page shows their full content. upsert_page_with_sections builds or rewrites it in one call, with all its sections, by its route: from a short request, an opening section, the content the page is for, and usually a closing call to action. ${PAGE_FROM_COPY} ${REPLACE_PLACEHOLDERS} addToHeaderNav / addToFooterNav add a menu link to it.
-- apply_operations removes or moves one section by its ID (node.remove, node.move) and changes the page's own settings (page.update). update_page_seo sets its search settings.
+- apply_operations removes or moves one section by its ID (node.remove, node.move), removes one but keeps what it holds (node.removeKeepContent), and changes the page's own settings (page.update). update_page_seo sets its search settings.
 - read_project with sections ["catalogue"] lists every component with its properties.
 - Internal links use routes such as /contact/.
 - ${SEO_GUIDANCE_SHORT}
@@ -1349,7 +1349,7 @@ export class Orchestrator {
             };
         }
         // The shared header and footer are edited in place; removing one would empty it on every page.
-        const shellRoot = operations.find((o) => (o.type === 'node.remove' || o.type === 'node.removeKeepContent') && o.owner.kind === 'shell' && session.state.site.shell[o.owner.id as 'header' | 'footer']?.rootIds.includes(o.nodeId));
+        const shellRoot = operations.find((o) => (o.type === 'node.remove' || o.type === 'node.removeKeepContent') && o.owner.kind === 'shell' && session.state.site.shell[o.owner.id as 'header' | 'footer']?.rootIds?.includes(o.nodeId));
         if (shellRoot)
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'The shared header and footer cannot be removed. Edit their properties with instance.setProp and instance.listInsert instead.' } };
         const denied = checkAuthority(session.state, operations, authority, grants);

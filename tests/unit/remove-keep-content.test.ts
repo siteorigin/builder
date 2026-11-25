@@ -197,17 +197,21 @@ describe('Delete a container and keep what it holds', () => {
     expect(home(r.state).nodes).not.toHaveProperty('n_empty');
   });
 
-  it('follows the order the component declares its slots in, not the order they were filled', () => {
+  it('follows the order the component declares its slots in, not the order they were filled or their names', () => {
     const { s, split } = project();
     const o = page(s);
     const r0 = apply(s, [
+      // Declared last, though its name sorts first.
+      { type: 'component.setSlot', definitionId: split, slot: 'aside', label: 'Aside' },
       ...inGrid(s, split),
+      { type: 'node.insert', newNodeId: 'n_c', owner: o, parentId: 'n_split', slot: 'aside', primitive: 'paragraph', text: 'C' },
       { type: 'node.insert', newNodeId: 'n_b', owner: o, parentId: 'n_split', slot: 'right', primitive: 'button', text: 'B' },
       { type: 'node.insert', newNodeId: 'n_a', owner: o, parentId: 'n_split', slot: 'left', primitive: 'paragraph', text: 'A' }
     ]).state;
-    expect(Object.keys(inst(r0, 'n_split').slots!)).toEqual(['right', 'left']);
+    expect(Object.keys(r0.components[split].slots!)).toEqual(['left', 'right', 'aside']);
+    expect(Object.keys(inst(r0, 'n_split').slots!)).toEqual(['aside', 'right', 'left']);
     const r = lift(r0, 'n_split');
-    expect((home(r.state).nodes.n_grid as ElementNode).children).toEqual(['n_first', 'n_a', 'n_b']);
+    expect((home(r.state).nodes.n_grid as ElementNode).children).toEqual(['n_first', 'n_a', 'n_b', 'n_c']);
   });
 
   it('on a page’s top level, lands a component made as a section bare and wraps one made as an element', () => {
@@ -229,9 +233,10 @@ describe('Delete a container and keep what it holds', () => {
     const { s } = filled(atTop);
     const placed = apply(s, [{ type: 'node.insert', newNodeId: 'n_other', owner: page(s), componentId: 'layout.section' }]).state;
     const sectionDef = placed.components[inst(placed, 'n_other').definitionId];
-    sectionDef.slots!.content = { ...sectionDef.slots!.content, primitives: ['link'], categories: ['hero'] };
+    // The first new Section takes its heading and card; the one after the hero would get a button.
+    sectionDef.slots!.content = { ...sectionDef.slots!.content, primitives: ['text'], categories: ['custom'] };
     const before = JSON.stringify(placed);
-    expect(() => lift(placed, 'n_split')).toThrow(/The “Content” slot of “Section” takes hero components and buttons, not .*Delete “Split” with what it holds instead/);
+    expect(() => lift(placed, 'n_split')).toThrow('The “Content” slot of “Section” takes custom components and text, not a button. Delete “Split” with what it holds instead, or move that content out of it first.');
     expect(JSON.stringify(placed)).toBe(before);
   });
 });
@@ -342,6 +347,44 @@ describe('What can’t be deleted keeping its content', () => {
     expect(() => lift(ghost, 'n_split')).toThrow(/holds content in “old”, a slot its component no longer has/);
   });
 
+  it('refuses content listed twice or under the placement itself', () => {
+    const { s } = filled(inGrid);
+    const twice = structuredClone(s);
+    inst(twice, 'n_split').slots!.right = ['n_hero', 'n_heading'];
+    expect(() => lift(twice, 'n_split')).toThrow('What “Split” holds is damaged (listed twice, or missing), so it can’t be kept. Delete “Split” with what it holds instead.');
+    const self = structuredClone(s);
+    inst(self, 'n_split').slots!.right = ['n_split'];
+    expect(() => lift(self, 'n_split')).toThrow(/is damaged/);
+  });
+
+  it('suggests detaching a slotless placement only where it can be detached', () => {
+    const { s, split, card } = filled(atTop);
+    expect(() => lift(s, 'n_card')).toThrow('“Card” has no slots, so it holds no content of its own to keep. Delete it, or detach it to keep its elements.');
+    const own = { kind: 'component' as const, id: split };
+    const d = apply(s, [{ type: 'node.insert', newNodeId: 'n_inner', owner: own, parentId: s.components[split].tree!.rootIds[0], definitionId: card }]).state;
+    expect(() => lift(d, 'n_inner', own)).toThrow('“Card” has no slots, so it holds no content of its own to keep. Delete it instead.');
+  });
+
+  it('refuses a list of tab buttons, and keeps a state’s button held beside other content', () => {
+    const s = createStarterState('business', 'Test Studio', false);
+    const placed = home(s).rootIds.map((id) => home(s).nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'features.grid')!;
+    const f = apply(s, [{ type: 'component.fork', definitionId: placed.definitionId }]);
+    const id = f.results[0].definitionId as string;
+    const own = { kind: 'component' as const, id };
+    const t = f.state.components[id].tree!;
+    const tab = (nid: string, value: string) => ({ id: nid, kind: 'link' as const, link: { type: 'none' as const, target: '' }, label: value, appearance: 'primary', stateAction: { state: 'view', op: 'set' as const, value } });
+    t.nodes.tabs = { id: 'tabs', kind: 'element', tag: 'div', children: ['t1', 't2'] };
+    t.nodes.t1 = tab('t1', 'a');
+    t.nodes.t2 = tab('t2', 'b');
+    t.nodes.mixed = { id: 'mixed', kind: 'element', tag: 'div', children: ['t3', 'note'] };
+    t.nodes.t3 = tab('t3', 'a');
+    t.nodes.note = { id: 'note', kind: 'text', tag: 'p', text: 'Pick one' };
+    (t.nodes.inner as ElementNode).children.push('tabs', 'mixed');
+    expect(() => lift(f.state, 'tabs', own)).toThrow(/is the list of buttons that choose what the component shows \(its tabs\)/);
+    const r = lift(f.state, 'mixed', own);
+    expect((r.state.components[id].tree!.nodes.inner as ElementNode).children.slice(-2)).toEqual(['t3', 'note']);
+  });
+
   it('refuses the shared header', () => {
     const s = createStarterState('business', 'Test Studio', false);
     const header = s.site.shell.header!;
@@ -405,5 +448,10 @@ describe('What an assistant run may delete keeping its content', () => {
     const r = apply(s, [op]);
     const [change] = describeOps([op], s, r.state, r.results);
     expect(change.label).toBe('Removed Split from Home, keeping what it held');
+    expect(change.nodeId).toBe('n_heading');
+    // What took its place, removed later in the run, is not linked to: the next of it still there is.
+    const gone: EditOperation = { type: 'node.remove', owner: page(s), nodeId: 'n_heading' };
+    const later = apply(r.state, [gone]);
+    expect(describeOps([op, gone], s, later.state, [...r.results, ...later.results])[0].nodeId).toBe('n_card');
   });
 });
