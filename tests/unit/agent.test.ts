@@ -4496,8 +4496,8 @@ describe('the preview check before a changed run finishes (#742)', () => {
     // As it was before the run reached it (at phone width too, for phone styles a later step might add), then as it
     // finished, at the width the preview was at.
     expect(inspected).toEqual([
-      [homeId, 390, 0],
       [homeId, 1280, 0],
+      [homeId, 390, 0],
       [homeId, 1280, 1]
     ]);
     expect(result!.checks?.[0]).toEqual({ status: 'pass', text: 'Fits the screen at desktop width on Home.' });
@@ -4698,8 +4698,8 @@ describe('the preview check before a changed run finishes (#742)', () => {
     const { result } = await env.run('Make the brand colour navy, and check the About page');
     expect(result?.status).toBe('completed');
     expect(inspected).toEqual([
-      [about.id, 390],
       [about.id, 1280],
+      [about.id, 390],
       [about.id, 1280]
     ]);
     expect(result!.checks?.slice(0, 2)).toEqual([
@@ -4755,6 +4755,56 @@ describe('the preview check before a changed run finishes (#742)', () => {
     expect(built.definitionId).toBeTruthy();
     expect(Object.values(parts.session.state.components).some((d) => d.name === 'Promo')).toBe(true);
     expect(none).toEqual([]);
+  });
+
+  it('holds to a problem it found when a later check of the unchanged page could not run, and shows only what broke on the reverted card', async () => {
+    let homeId = '';
+    let down = false;
+    const env = await setup(
+      [
+        () => [call('i1', 'inspect_layout', { pageId: aboutOf(env.session).id, viewport: 'desktop' })],
+        () => [restyle(env.session)],
+        () => finish('Done.'),
+        // The model checks the page again while the preview is down, and finishes without a fix.
+        () => ((down = true), [call('i2', 'inspect_layout', { pageId: homeId, viewport: 'desktop' })]),
+        () => finish('Done.'),
+        () => finish('Done.')
+      ],
+      {
+        inspectLayout: async (pageId, width) => {
+          if (down) return { error: 'The preview is not running.' };
+          // About already has a missing image, which is not this request's doing.
+          if (pageId !== homeId) return { ...clean(width), images: { total: 1, loaded: 0, failed: 1, unverified: 0, failedFiles: ['old.jpg'] } };
+          return env.session.revision >= 1 ? wide(width) : clean(width);
+        }
+      }
+    );
+    homeId = env.session.state.site.homePageId;
+    const { result } = await env.run('Give the hero more room');
+    expect(result?.status).toBe('failed');
+    expect(repairPrompts(env.adapter)).toHaveLength(LIMITS.repairPasses);
+    expect(result!.checks).toEqual([{ status: 'issue', text: 'Content is wider than the screen at desktop width on Home.' }]);
+  });
+
+  it('checks a change to a component on the pages it is placed on', async () => {
+    const inspected: string[] = [];
+    const env = await setup(
+      [
+        () => {
+          const def = Object.values(env.session.state.components).find((d) => d.name === 'About intro')!;
+          return [call('c1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'node.setStyle', owner: { kind: 'component', id: def.id }, nodeId: def.tree!.rootIds[0], scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } }] })];
+        },
+        () => finish('Gave the intro more room.')
+      ],
+      { inspectLayout: async (pageId, width) => (inspected.push(pageId), clean(width)) }
+    );
+    const about = aboutOf(env.session);
+    // A component of its own, placed on About alone.
+    expect((await env.session.apply({ operations: [{ type: 'component.makeUnique', owner: { kind: 'page', id: about.id }, nodeId: about.rootIds[0], name: 'About intro' }] }, { label: 'Make unique', source: 'user' })).ok).toBe(true);
+    const { result } = await env.run('Give the intro more room');
+    expect(result?.status).toBe('completed');
+    expect(new Set(inspected)).toEqual(new Set([about.id]));
+    expect(result!.checks?.[0]).toEqual({ status: 'pass', text: 'Fits the screen at desktop width on About.' });
   });
 
   it('never lands a change when the request is stopped while the page is measured before it', async () => {

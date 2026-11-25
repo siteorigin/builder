@@ -12,7 +12,7 @@ import { canCarryOn, summaryNow, turnState, type TurnHistory } from '@shared/tur
 import { getTheme } from '@catalogue/index';
 import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
-import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
+import { describeOps, InspectionLog, inspectionChecks, pagesTouched, type Viewport } from './report';
 import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { PreviewCheck } from './preview-check';
 import { compactProjectSummary, describeSelection, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
@@ -1967,7 +1967,8 @@ export class Orchestrator {
             // The application checks the pages the run changed in the preview itself (#742), reusing any check the model
             // made after its last change. What the run broke goes back to the model on the validation errors' repair budget.
             const { targets, unchecked } = preview.plan(session.state);
-            const unmeasured = targets.filter((t) => !inspections.fresh(t.pageId, t.viewport));
+            // A check the model made that could not run is tried once more by the application.
+            const unmeasured = targets.filter((t) => !inspections.fresh(t.pageId, t.viewport)?.ok);
             if (unmeasured.length) {
               const p = addActivity('Checking the changed pages in the preview', 'inspect_layout');
               for (const t of unmeasured) {
@@ -1984,15 +1985,17 @@ export class Orchestrator {
             const broke = preview.introduced(session.state, latest);
             if (broke.length) {
               if (repairs >= LIMITS.repairPasses) {
-                // What the preview found is shown with the rollback: the changes it describes are gone.
-                const evidence = inspections.checks(session.state).filter((c) => c.status === 'issue');
-                await revertAndFinish('failed', 'The changes caused problems in the preview that could not be repaired.', broke.join(' '), undefined, evidence);
+                // What the preview found on the pages that broke is shown with the rollback: the changes it describes are gone.
+                const evidence = broke.flatMap((b) =>
+                  inspectionChecks(true, { viewport: b.viewport, report: inspections.fresh(b.pageId, b.viewport)?.report }, Object.hasOwn(session.state.pages, b.pageId) ? ` on ${session.state.pages[b.pageId].title}` : '').filter((c) => c.status === 'issue')
+                );
+                await revertAndFinish('failed', 'The changes caused problems in the preview that could not be repaired.', broke.map((b) => b.problems).join(' '), undefined, evidence);
                 return;
               }
               repairs++;
               this.setStatus('repairing');
               addActivity('Fixing a problem', 'repair');
-              items.push({ kind: 'user', text: `The app checked the changed pages in the preview and found problems this request brought in. Fix them, then finish:\n${broke.map((b) => `- ${b}`).join('\n')}` });
+              items.push({ kind: 'user', text: `The app checked the changed pages in the preview and found problems this request brought in. Fix them, then finish:\n${broke.map((b) => `- ${b.problems}`).join('\n')}` });
               msg.text = '';
               continue outer;
             }

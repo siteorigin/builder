@@ -4,7 +4,7 @@ import { pageDirection, siteDirection } from '@shared/languages';
 import type { EditOperation, OperationType } from '@shared/ops';
 import { scopeForWidth } from '@shared/styles';
 import type { ProjectState } from '@shared/types';
-import { placementCounts } from '@engine/tree';
+import { instancesOf, placementCounts } from '@engine/tree';
 import { named } from './completeness';
 import type { Viewport } from './report';
 
@@ -141,8 +141,10 @@ export interface Reach {
   shared: boolean;
   /** Whether it changed what page lists and post feeds show, on whichever pages have them. */
   lists: boolean;
-  /** Whether it set or reset styles for phone screens. */
+  /** Whether it set or reset styles for phone screens that show somewhere. */
   phone: boolean;
+  /** Placed components whose design, contract or code it changed: where they are placed is where that shows. */
+  components: Set<string>;
   /** What it changed that no page check can measure. */
   unreachable: Set<Unreachable>;
 }
@@ -171,13 +173,14 @@ const isPhoneScoped = (op: EditOperation) =>
  * state it led to, pages it created count as changed and pages it removed do not.
  */
 export function visibleReach(ops: EditOperation[], before: ProjectState, after?: ProjectState): Reach {
-  const reach: Reach = { pages: new Set(), shared: false, lists: false, phone: false, unreachable: new Set() };
+  const reach: Reach = { pages: new Set(), shared: false, lists: false, phone: false, components: new Set(), unreachable: new Set() };
   const article = (pageId: string) => !!pageArticle(Object.hasOwn(before.pages, pageId) ? before.pages[pageId] : undefined);
   // A component placed nowhere shows on no page yet: building one costs nothing until it is placed, which is a page edit.
   let counts: Record<string, number> | undefined;
   const placed = (definitionId: string) => ((counts ??= placementCounts(before))[definitionId] ?? 0) > 0;
   for (const op of ops) {
-    if (isPhoneScoped(op)) reach.phone = true;
+    // Phone styles count only where they show: a component not placed yet has none.
+    let shows = false;
     switch (LOOK[op.type] ?? 'shared') {
       case 'none':
         break;
@@ -188,21 +191,31 @@ export function visibleReach(ops: EditOperation[], before: ProjectState, after?:
         // A rebuild without a definition makes a new component; one with a definition reaches its placements.
         const definitionId = 'definitionId' in op ? op.definitionId : undefined;
         if (op.type === 'component.upsert' && definitionId === undefined) break;
-        if (typeof definitionId === 'string' && op.type.startsWith('component.') && !placed(definitionId)) break;
-        reach.shared = true;
+        if (typeof definitionId === 'string' && op.type.startsWith('component.')) {
+          if (!placed(definitionId)) break;
+          reach.components.add(definitionId);
+        }
+        reach.shared = shows = true;
         break;
       }
       case 'owner': {
         const owner = op.type === 'node.copy' || op.type === 'node.paste' ? op.toOwner : 'owner' in op ? op.owner : undefined;
-        if (owner?.kind === 'page') reach.pages.add(owner.id);
-        else if (owner?.kind === 'template') reach.unreachable.add('posts');
-        else if (owner?.kind !== 'component' || placed(owner.id)) reach.shared = true;
+        if (owner?.kind === 'page') {
+          reach.pages.add(owner.id);
+          shows = true;
+        } else if (owner?.kind === 'template') reach.unreachable.add('posts');
+        else if (owner?.kind !== 'component' || placed(owner.id)) {
+          if (owner?.kind === 'component') reach.components.add(owner.id);
+          reach.shared = shows = true;
+        }
         break;
       }
       case 'fields':
         fieldsReach(op, reach, before, article);
+        shows = true;
         break;
     }
+    if (shows && isPhoneScoped(op)) reach.phone = true;
   }
   if (after) {
     for (const id of Object.keys(after.pages)) if (!Object.hasOwn(before.pages, id)) reach.pages.add(id);
@@ -380,6 +393,8 @@ export class PreviewCheck {
   private edited: string[] = [];
   private shared = false;
   private phone = false;
+  /** Placed components the run changed, whose placements show the change. */
+  private components = new Set<string>();
   private unreachable = new Set<Unreachable>();
   /** Pages and widths whose problems were sent back for repair: checked again until they are gone. */
   private flagged = new Map<string, CheckTarget>();
@@ -408,11 +423,16 @@ export class PreviewCheck {
     return WIDTH_ORDER.filter((w) => out.has(w));
   }
 
-  /** Pages a change every page shows is checked on besides the pages the run changed: those the request names, else Home. */
-  private sampled(state: ProjectState, edited: string[]): string[] {
-    const names = namedPages(state, this.request).filter((p) => !edited.includes(p));
-    if (!edited.length && !names.length) return Object.hasOwn(state.pages, state.site.homePageId) ? [state.site.homePageId] : [];
-    return names.slice(0, MAX_SAMPLED_PAGES);
+  /**
+   * Pages a change every page shows is checked on besides `edited`, the pages the run changed: those the request names,
+   * then those a changed component is placed on, else Home.
+   */
+  private sampled(state: ProjectState, edited: string[], components: Set<string>): string[] {
+    const names = namedPages(state, this.request);
+    const placements = state.site.pageOrder.filter((id) => [...components].some((d) => instancesOf(state, d).some((i) => i.owner.kind === 'page' && i.owner.id === id)));
+    const out = [...new Set([...names, ...placements])].filter((p) => !edited.includes(p) && Object.hasOwn(state.pages, p));
+    if (!edited.length && !out.length) return Object.hasOwn(state.pages, state.site.homePageId) ? [state.site.homePageId] : [];
+    return out.slice(0, MAX_SAMPLED_PAGES);
   }
 
   /**
@@ -423,8 +443,11 @@ export class PreviewCheck {
   async beforeApply(ops: EditOperation[], state: ProjectState, measure: (pageId: string, viewport: Viewport) => Promise<Measurement>, seen: (pageId: string, viewport: Viewport) => Measurement | undefined) {
     const reach = visibleReach(ops, state);
     const pages = new Set(reach.pages);
-    if (reach.shared && !this.shared) for (const p of this.sampled(state, this.edited)) pages.add(p);
-    const widths = WIDTH_ORDER.filter((w) => w === 'phone' || this.widths(this.phone || reach.phone).includes(w));
+    // The pages the finish will sample, from what this batch changes: the ones it edits directly are checked anyway.
+    if (reach.shared && !this.shared) for (const p of this.sampled(state, [...this.edited, ...reach.pages], new Set([...this.components, ...reach.components]))) pages.add(p);
+    // The widths the run needs first, so a slow preview spends the time left on them; phone last.
+    const needed = this.widths(this.phone || reach.phone);
+    const widths = [...needed, ...(needed.includes('phone') ? [] : (['phone'] as const))];
     for (const pageId of pages) {
       if (!Object.hasOwn(state.pages, pageId)) continue;
       for (const viewport of widths) {
@@ -452,6 +475,7 @@ export class PreviewCheck {
     for (const p of reach.pages) if (!this.edited.includes(p)) this.edited.push(p);
     if (reach.shared) this.shared = true;
     if (reach.phone) this.phone = true;
+    for (const d of reach.components) this.components.add(d);
     for (const u of reach.unreachable) this.unreachable.add(u);
     return reach;
   }
@@ -464,7 +488,7 @@ export class PreviewCheck {
   plan(state: ProjectState): { targets: CheckTarget[]; unchecked: ChatCheck[] } {
     const live = (id: string) => Object.hasOwn(state.pages, id);
     const edited = this.edited.filter(live);
-    const pages = this.shared ? [...edited, ...this.sampled(state, edited)] : edited;
+    const pages = this.shared ? [...edited, ...this.sampled(state, edited, this.components)] : edited;
     const unchecked: ChatCheck[] = [];
     // A change every page shows is checked on a few of them; the rest are said to be unchecked.
     if (this.shared && state.site.pageOrder.some((id) => live(id) && !pages.includes(id))) unchecked.push({ status: 'unverified', text: "Didn't check the other pages that show the changes to what pages share in the preview." });
@@ -480,8 +504,8 @@ export class PreviewCheck {
    * The problems the run brought in, from the latest measurement of each page and width, said for the model. A page
    * measured only after the run reached it, or a measurement that could not run, has none: its rows say what it found.
    */
-  introduced(state: ProjectState, measured: Array<CheckTarget & { m: Measurement | undefined }>): string[] {
-    const out: string[] = [];
+  introduced(state: ProjectState, measured: Array<CheckTarget & { m: Measurement | undefined }>): Array<CheckTarget & { problems: string }> {
+    const out: Array<CheckTarget & { problems: string }> = [];
     for (const { pageId, viewport, m } of measured) {
       const key = keyOf(pageId, viewport);
       if (!m?.ok) continue;
@@ -496,7 +520,7 @@ export class PreviewCheck {
       const page = Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
       const where = `${page ? `${page.title} (page ${pageId})` : `Page ${pageId}`} at ${viewport} width`;
       const shown = found.slice(0, PROBLEMS_SHOWN);
-      out.push(`${where}: ${shown.join(' ')}${found.length > shown.length ? ` And ${found.length - shown.length} more.` : ''}`);
+      out.push({ pageId, viewport, problems: `${where}: ${shown.join(' ')}${found.length > shown.length ? ` And ${found.length - shown.length} more.` : ''}` });
     }
     return out;
   }

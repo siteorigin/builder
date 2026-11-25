@@ -629,7 +629,8 @@ export function pagesTouched(ops: EditOperation[], state?: ProjectState): Set<st
  */
 export class InspectionLog {
   /** `report`: the measurement as the preview gave it, before it was cut to fit a tool result. */
-  private latest = new Map<string, { pageId: string; ok: boolean; content: unknown; report?: unknown; stale: boolean }>();
+  /** `good`: the last measurement that ran, kept while a later check of the unchanged page could not run. */
+  private latest = new Map<string, { pageId: string; ok: boolean; content: unknown; report?: unknown; stale: boolean; good?: { report?: unknown } }>();
   /**
    * Component checks (inspect_component), by component and sample, each window of cases kept by its offset;
    * `pageId`: the page of the placement whose content was the sample.
@@ -637,14 +638,23 @@ export class InspectionLog {
   private components = new Map<string, { windows: Map<number, { ok: boolean; content: unknown; stale: boolean }>; pageId?: string }>();
 
   record(pageId: string, viewport: string, ok: boolean, content: unknown, report?: unknown) {
+    const key = `${pageId}\n${viewport}`;
+    // A check that could not run says nothing new about a page that has not changed since it was measured: the card
+    // shows it could not run, and the measurement before it still stands for the application's own check.
+    const known = this.latest.get(key);
+    const good = ok || !known || known.stale ? undefined : known.ok ? { report: known.report } : known.good;
     // Setting an existing key keeps the order of first inspection while the result is the latest one.
-    this.latest.set(`${pageId}\n${viewport}`, { pageId, ok, content, report, stale: false });
+    this.latest.set(key, { pageId, ok, content, report, stale: false, ...(good ? { good } : {}) });
   }
 
-  /** The latest check of a page at a width, while no later edit has changed the page. */
+  /**
+   * The latest measurement of a page at a width that ran, while no later edit has changed the page; else whether the
+   * latest check could not run.
+   */
   fresh(pageId: string, viewport: string): { ok: boolean; report?: unknown } | undefined {
     const e = this.latest.get(`${pageId}\n${viewport}`);
-    return e && !e.stale ? { ok: e.ok, report: e.report } : undefined;
+    if (!e || e.stale) return undefined;
+    return e.ok ? { ok: true, report: e.report } : e.good ? { ok: true, report: e.good.report } : { ok: false };
   }
 
   /** A check of one component on its own; `key` names the component and its sample, `offset` the window of its cases. */
