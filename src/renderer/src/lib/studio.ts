@@ -61,6 +61,17 @@ export function studioStates(def: ComponentDefinition, view: StudioView): Record
   return out;
 }
 
+/**
+ * The design as the studio shows it: its UI state starting at the values previewed, which a component placed inside it
+ * follows where its variant is bound to that state. The project's design itself is never changed.
+ */
+export function previewedState(def: ComponentDefinition, view: StudioView | undefined): Pick<ComponentDefinition, 'state'> {
+  if (!view || !def.state) return def;
+  const state = { ...def.state };
+  for (const [name, value] of Object.entries(studioStates(def, view))) if (state[name].initial !== value) state[name] = { ...state[name], initial: value } as (typeof state)[string];
+  return { state };
+}
+
 /** The isolated preview request for what the studio shows: the design, its variant options, its sample content and its UI state. */
 export function studioSpec(def: ComponentDefinition, view: StudioView, styled?: Styled): ComponentPreviewSpec {
   const all = studioVariants(def, view, styled);

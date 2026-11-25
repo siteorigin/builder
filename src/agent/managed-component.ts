@@ -22,7 +22,7 @@ import { STYLE_TOKEN_REF, validateOperation } from '@shared/ops';
 import { sha256Hex } from '@shared/sha256';
 import { applyOperations } from '@engine/apply';
 import type { EngineError } from '@engine/tree';
-import { MAX_UI_STATES, acceptedTypes, checkPropName, isProtoKey, normalizePropSchema, normalizeUiState, stateActionProblem, type BindField } from '@engine/schema';
+import { MAX_UI_STATES, acceptedTypes, checkPropName, declaredState, isProtoKey, normalizePropSchema, normalizeUiState, stateActionProblem, stateUsers, type BindField } from '@engine/schema';
 import { normalizeLink } from '@engine/values';
 import { fieldError, type FieldIssue, type MacroMemory } from './macros';
 import type { JsonSchema } from './propschema';
@@ -580,9 +580,12 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   const refusedStates = new Set<string>();
   (args.state ?? []).forEach((st, i) => {
     const at = `state[${i}]`;
-    if (reservedKey(st.name, `${at}.name`, issues)) return;
+    if (reservedKey(st.name, `${at}.name`, issues)) return refusedStates.add(st.name);
     if (Object.hasOwn(uiState, st.name)) return issues.push({ field: `${at}.name`, message: `"${st.name}" is listed twice` });
-    if (Object.hasOwn(properties, st.name)) return issues.push({ field: `${at}.name`, message: `"${st.name}" is already a property. UI state needs a name of its own` });
+    if (Object.hasOwn(properties, st.name)) {
+      refusedStates.add(st.name);
+      return issues.push({ field: `${at}.name`, message: `"${st.name}" is already a property. UI state needs a name of its own` });
+    }
     try {
       checkPropName(st.name, 'State');
     } catch (e) {
@@ -597,10 +600,21 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
       issues.push({ field: /starts as/.test(message) ? `${at}.initial` : /option/.test(message) ? `${at}.options` : at, message });
     }
   });
-  const stateNames = () => (Object.keys(uiState).length ? ` (${Object.keys(uiState).join(', ')})` : '. Declare it in state');
+  // Left out of a rebuild, the component keeps the state its design does not use, which the new design may read; state
+  // its design uses must be described again, so working tabs or toggles are never dropped unseen.
+  const known: Record<string, UiStateSchema> = args.state !== undefined ? uiState : {};
+  if (args.state === undefined && was?.state && typeof was.state === 'object' && !Array.isArray(was.state)) {
+    const used = Object.keys(was.state).filter((name) => stateUsers(was, name).length);
+    if (used.length) issues.push({ field: 'state', message: `"${was.name}" has UI state its design reads or its buttons change (${used.join(', ')}). Send state again with the rebuild; an empty list removes it` });
+    for (const name of Object.keys(was.state)) {
+      const kept = declaredState(was, name);
+      if (kept && !Object.hasOwn(properties, name)) known[name] = kept;
+    }
+  }
+  const stateNames = () => (Object.keys(known).length ? ` (${Object.keys(known).join(', ')})` : '. Declare it in state');
   /** A condition that reads UI state: state the call declares, compared (if at all) with a value it can hold. */
   const checkStateCondition = (v: unknown, name: string, at: string, id: string) => {
-    const s = Object.hasOwn(uiState, name) ? uiState[name] : undefined;
+    const s = Object.hasOwn(known, name) ? known[name] : undefined;
     if (refusedStates.has(name)) return;
     if (!s) return issues.push({ field: at, message: `"${id}" reads the UI state "${name}", which is not one of the state${stateNames()}` });
     if (!isRecord(v) || !('ref' in v)) return;
@@ -711,7 +725,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     }
     // A button's state action changes state the call declares, in a way that state can change.
     if (n.kind === 'link' && n.stateAction && !refusedStates.has(n.stateAction.state)) {
-      const problem = stateActionProblem({ state: uiState, properties: {} } as unknown as ComponentDefinition, n.stateAction);
+      const problem = stateActionProblem({ state: known, properties: {} } as unknown as ComponentDefinition, n.stateAction);
       if (problem) issues.push({ field: `${at}.stateAction`, message: `"${n.id}" ${problem}` });
     }
     if (n.kind === 'repeat') {

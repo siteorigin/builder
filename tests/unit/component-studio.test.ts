@@ -218,7 +218,7 @@ function stateful(): { state: ProjectState; id: string } {
       type: 'component.upsert',
       name: 'Plan switch',
       properties: {},
-      state: { plan: { type: 'enum', label: 'Plan', options: ['monthly', 'annual'] }, open: { type: 'boolean', label: 'Details', initial: true } },
+      state: { plan: { type: 'enum', label: 'Plan', options: ['monthly', 'annual'] }, open: { type: 'boolean', label: 'Details' } },
       nodes: [
         { kind: 'element', id: 'root', tag: 'section', children: ['tabs', 'monthly', 'annual', 'more', 'drawer'] },
         { kind: 'element', id: 'tabs', children: ['monthlyTab', 'annualTab'] },
@@ -238,11 +238,15 @@ describe('Component Studio: UI state (#377)', () => {
   it('previews each state at the author’s value while the state can hold it, and asks only for what differs from the start', () => {
     const { state, id } = stateful();
     const def = state.components[id];
-    expect(studioStates(def, NEW_STUDIO)).toEqual({ plan: 'monthly', open: true });
+    expect(studioStates(def, NEW_STUDIO)).toEqual({ plan: 'monthly', open: false });
     expect(studioSpec(def, NEW_STUDIO)).toEqual({ definitionId: id });
     expect(studioSpec(def, { ...NEW_STUDIO, states: { plan: 'annual' } })).toEqual({ definitionId: id, states: { plan: 'annual' } });
+    // Both at once, each kept.
+    expect(studioSpec(def, { ...NEW_STUDIO, states: { plan: 'annual', open: true } })).toEqual({ definitionId: id, states: { plan: 'annual', open: true } });
     // Off is a value of its own, asked for when the design starts on.
-    expect(studioSpec(def, { ...NEW_STUDIO, states: { open: false } })).toEqual({ definitionId: id, states: { open: false } });
+    const startsOpen = { ...def, state: { ...def.state!, open: { type: 'boolean' as const, label: 'Details', initial: true } } };
+    expect(studioSpec(startsOpen, { ...NEW_STUDIO, states: { open: false } })).toEqual({ definitionId: id, states: { open: false } });
+    expect(studioSpec(startsOpen, { ...NEW_STUDIO, states: { open: true } })).toEqual({ definitionId: id });
     // An option or a state gone since (an Undo), or a value of the wrong kind, shows where the design starts.
     expect(studioSpec(def, { ...NEW_STUDIO, states: { plan: 'lifetime', gone: true, open: 'yes' as never } })).toEqual({ definitionId: id });
     expect(studioStates({ ...def, state: { plan: { type: 'enum', label: 'Plan', options: [], initial: 'x' } as never } }, NEW_STUDIO)).toEqual({});
@@ -255,7 +259,9 @@ describe('Component Studio: UI state (#377)', () => {
     if ('error' in out) throw new Error(out.error);
     const file = out.files.get(defFile(state.components[id]))!;
     expect(file).toContain('let so_state_plan = $state("annual");');
+    // The drawer starts closed in the design, and open in the preview.
     expect(file).toContain('let so_state_open = $state(true);');
+    expect(state.components[id].state!.open.initial).toBe(false);
     // The drawer is marked open in place, and the editor's own Show to edit button steps aside while it is.
     expect(file).toContain(`data-so-overlay-open={so_state_open ? '' : undefined}`);
     expect(file).toMatch(/\{#if !\(so_state_open\)\}\s*<button type="button" class="so-overlay-peek"/);
@@ -265,5 +271,23 @@ describe('Component Studio: UI state (#377)', () => {
     expect(generateComponentPreview(state, { definitionId: id, states: { open: 'yes' } })).toEqual({ error: '"Plan switch" → Details: "yes" is not one of its values.' });
     // A page's placements keep the author's own Show to edit: the project's editor and site variants never mark one open.
     for (const instrument of [true, false]) expect([...generateProject(state, { instrument }).values()].some((f) => f.includes('data-so-overlay-open'))).toBe(false);
+  });
+
+  it('opens in place only the studied design’s own dialogs and drawers, never those of a component placed inside it', () => {
+    const { state, id } = stateful();
+    // A wrapper placing the switch twice: its preview is the wrapper's, so the switch's drawers keep Show to edit.
+    const wrapped = applyOperations(state, [{ type: 'component.create', definitionId: 'proj.wrapper-aaaaa', name: 'Wrapper' }]).state;
+    const wrapper = wrapped.components['proj.wrapper-aaaaa'];
+    const root = wrapper.tree!.rootIds[0];
+    const both = applyOperations(wrapped, [
+      { type: 'node.insert', owner: own(wrapper.id), parentId: root, definitionId: id },
+      { type: 'node.insert', owner: own(wrapper.id), parentId: root, definitionId: id }
+    ]).state;
+    const out = generateComponentPreview(both, { definitionId: wrapper.id });
+    if ('error' in out) throw new Error(out.error);
+    expect(out.files.get(defFile(both.components[id]))).not.toContain('data-so-overlay-open');
+    const own_ = generateComponentPreview(both, { definitionId: id });
+    if ('error' in own_) throw new Error(own_.error);
+    expect(own_.files.get(defFile(both.components[id]))).toContain('data-so-overlay-open');
   });
 });

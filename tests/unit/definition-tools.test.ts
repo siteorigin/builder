@@ -13,6 +13,7 @@ import { executeTool, toolsForRun, type ToolHost } from '@agent/tools';
 import { definitionTarget, definitionTools, type DefinitionTarget } from '@agent/definition';
 import { authorityFor, checkAuthority, type Authority } from '@agent/scope';
 import { findForbiddenShapes, OPEN_VALUE_KEY, toStrictSchema } from '@agent/strict-schema';
+import { Ajv } from 'ajv';
 import { hasOpenSchema } from '@agent/propschema';
 import type { ToolDefinition } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
@@ -25,7 +26,7 @@ const names = (t: ToolDefinition[]) => t.map((x) => x.name);
 const tool = (t: ToolDefinition[], name: string) => t.find((x) => x.name === name)!;
 type Schema = { enum?: string[]; anyOf?: Schema[]; properties?: Record<string, Schema>; type?: string | string[] };
 const prop = (t: ToolDefinition, ...path: string[]): Schema => path.reduce<Schema>((s, k) => s.properties![k], t.parameters as Schema);
-const MICRO = ['edit_definition_node', 'bind_definition_field', 'manage_component_prop', 'manage_component_state', 'style_definition_element', 'add_definition_variant', 'insert_definition_node', 'remove_definition_node'];
+const MICRO = ['edit_definition_node', 'bind_definition_field', 'manage_component_prop', 'style_definition_element', 'add_definition_variant', 'insert_definition_node', 'remove_definition_node'];
 
 /** A project with the Split hero copied for editing everywhere, as the editor makes one. */
 async function hero(prepare?: (s: ProjectState) => void) {
@@ -79,6 +80,8 @@ describe('choosing the definition tools', () => {
         const r = toolsForRun({ ...base, selection: target === inner ? { owner, nodeId: 'content' } : null, capabilities, definitionTarget: target });
         expect(r).toMatchObject({ mode: 'definition', focused: true });
         expect(names(r.tools)).toEqual(expect.arrayContaining([...MICRO, 'read_component', 'request_clarification']));
+        // Declaring UI state is the whole design's; a node with no button to wire gets no state tool (#377).
+        expect(names(r.tools).includes('manage_component_state')).toBe(target === whole);
         expect(names(r.tools)).not.toContain('apply_operations');
         for (const t of r.tools) {
           expect(findForbiddenShapes(toStrictSchema(t.parameters)), t.name).toEqual([]);
@@ -369,6 +372,12 @@ describe('UI state with the definition tools (#377)', () => {
     expect(branches.map((b) => b.properties!.action.enum![0])).toEqual(['add', 'remove', 'on_click']);
     expect(branches[2].properties!.nodeId.enum).toEqual(['primary', 'secondary']);
 
+    // The calls a constrained model sends fit the schema it is held to.
+    const fits = (name: string, args: unknown) => new Ajv({ strict: false }).validate(toStrictSchema(tool(tools, name).parameters), args);
+    expect(fits('manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'toggle', state: 'open' } })).toBe(true);
+    expect(fits('manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'set', state: 'open', value: true } })).toBe(true);
+    expect(fits('bind_definition_field', { nodeId: 'lead', field: 'when', binding: { $state: 'open' } })).toBe(true);
+    expect(fits('bind_definition_field', { nodeId: 'lead', field: 'when', binding: { $state: 'gone' } })).toBe(false);
     expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'toggle', state: 'open' } })).ok).toBe(true);
     expect(def().tree!.nodes.secondary).toMatchObject({ stateAction: { state: 'open', op: 'toggle' } });
     expect((await run(host, 'bind_definition_field', { nodeId: 'lead', field: 'when', binding: { $state: 'open' } })).ok).toBe(true);
@@ -402,21 +411,45 @@ describe('UI state with the definition tools (#377)', () => {
     expect(await fieldOf('bind_definition_field', { nodeId: 'lead', field: 'text', binding: { $state: 'plan' } })).toMatch(/bind it to when or unless/);
     expect(await fieldOf('bind_definition_field', { nodeId: 'lead', field: 'when', binding: { $state: 'period' } })).toMatch(/has no UI state "period"/);
     expect(session.revision).toBe(revision);
+    // A step that goes round keeps going round.
+    expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'primary', op: 'next', state: 'plan', wrap: true } })).ok).toBe(true);
+    expect(session.state.components[id].tree!.nodes.primary).toMatchObject({ stateAction: { state: 'plan', op: 'next', wrap: true } });
   });
 
-  it('lets a run on a node selected in the design add a new state and wire its own buttons, but never change one the design has', async () => {
-    const { session, id, owner } = await hero((s) => void s);
+  it('offers only clearing a button’s action when it names state the design no longer has', async () => {
+    const { session, id } = await hero();
+    const host = hostFor(session, authorityOf(session.state, id, null));
+    expect((await run(host, 'manage_component_state', { change: { action: 'add', state: 'open', label: 'Open', type: 'boolean' } })).ok).toBe(true);
+    expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'toggle', state: 'open' } })).ok).toBe(true);
+    // A hand edit took the declaration away, leaving the button's action naming nothing.
+    delete session.state.components[id].state;
+    const branches = prop(tool(definitionTools(session.state, { definitionId: id })!, 'manage_component_state'), 'change').anyOf!;
+    expect(branches.map((b) => [b.properties!.action.enum![0], b.properties!.op?.enum])).toEqual([['add', undefined], ['on_click', ['none']]]);
+    expect(branches[1].properties!.nodeId.enum).toEqual(['secondary']);
+    expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'none' } })).ok).toBe(true);
+    expect((session.state.components[id].tree!.nodes.secondary as { stateAction?: unknown }).stateAction).toBeUndefined();
+  });
+
+  it('lets a run on a node selected in the design wire its own buttons to the states it has, but never declare or remove one', async () => {
+    const { session, id, owner } = await hero();
     const whole = hostFor(session, authorityOf(session.state, id, null));
     expect((await run(whole, 'manage_component_state', { change: { action: 'add', state: 'plan', label: 'Plan', type: 'enum', options: ['monthly', 'annual'] } })).ok).toBe(true);
     const selected = authorityOf(session.state, id, { owner, instancePath: [], nodeId: 'actions' });
     const host = hostFor(session, selected);
-    expect((await run(host, 'manage_component_state', { change: { action: 'add', state: 'open', label: 'Open', type: 'boolean' } })).ok).toBe(true);
     expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'primary', op: 'set', state: 'plan', value: 'annual' } })).ok).toBe(true);
-    // Removing a state, or changing one the design has, reaches every button and panel using it.
+    expect(session.state.components[id].tree!.nodes.primary).toMatchObject({ stateAction: { state: 'plan', op: 'set', value: 'annual' } });
+    // Any state at all stops every placement being detached or converted to code: declaring one is the whole design's.
     const tools = definitionTools(session.state, definitionTarget(selected)!)!;
-    expect(prop(tool(tools, 'manage_component_state'), 'change').anyOf!.map((b) => b.properties!.action.enum![0])).toEqual(['add', 'on_click']);
-    const relabel: EditOperation = { type: 'component.setState', definitionId: id, state: 'plan', schema: { type: 'enum', options: ['monthly', 'weekly'] } };
-    expect(checkAuthority(session.state, [relabel], selected)).toBeTruthy();
-    expect(checkAuthority(session.state, [{ type: 'component.removeState', definitionId: id, state: 'open' }], selected)).toBeTruthy();
+    expect(prop(tool(tools, 'manage_component_state'), 'change', 'action').enum).toEqual(['on_click']);
+    const revision = session.revision;
+    const add = await run(host, 'manage_component_state', { change: { action: 'add', state: 'open', label: 'Open', type: 'boolean' } });
+    expect(add.ok).toBe(false);
+    expect(session.revision).toBe(revision);
+    for (const op of [
+      { type: 'component.setState', definitionId: id, state: 'open', schema: { type: 'boolean' } },
+      { type: 'component.setState', definitionId: id, state: 'plan', schema: { type: 'enum', options: ['monthly', 'weekly'] } },
+      { type: 'component.removeState', definitionId: id, state: 'plan' }
+    ] as EditOperation[])
+      expect(checkAuthority(session.state, [op], selected), op.type).toBeTruthy();
   });
 });

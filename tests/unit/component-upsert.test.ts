@@ -548,6 +548,29 @@ describe('component.upsert: building a managed component in one operation (#358)
     expect(plain.components[id].state).toBeUndefined();
     // Left out, the state of a design that uses it is refused rather than dropped unseen.
     expect(() => applyOperations(rebuilt, [{ type: 'component.upsert', definitionId: id, name: 'Plan switch', properties: {}, nodes: [{ kind: 'element', id: 'root', children: [] }] }])).toThrow(/\(plan, open\)\. Describe it again with state/);
+    // At most 20 variables, as component.setState allows.
+    const many = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`s${i}`, { type: 'boolean' as const }]));
+    expect(() => applyOperations(st, [tabs({ state: { ...many, ...tabs().state } })])).toThrow(/at most 20 UI state variables/);
+  });
+
+  it('keeps unused state a rebuild leaves out: checked against the new properties, refused where a hand edit damaged it, kept as it is when the map itself is damaged (#377)', () => {
+    const st = createStarterState('blank', 'Expo', false);
+    const plain = (extra: Partial<Upsert> = {}): Upsert => ({ type: 'component.upsert', name: 'Toggle', properties: {}, nodes: [{ kind: 'element', id: 'root', children: ['more'] }, { kind: 'link', id: 'more', link: { type: 'none', target: '' }, label: 'More' }], ...extra });
+    const made = applyOperations(st, [plain({ state: { open: { type: 'boolean', label: 'Open' } } })]);
+    const id = made.results[0].definitionId as string;
+    const toggling = (extra: Partial<Upsert> = {}) => plain({ definitionId: id, nodes: [{ kind: 'element', id: 'root', children: ['more'] }, { kind: 'link', id: 'more', link: { type: 'none', target: '' }, label: 'More', stateAction: { state: 'open', op: 'toggle' } }], ...extra });
+    // Kept, and the rebuilt design may use it again.
+    expect(applyOperations(made.state, [toggling()]).state.components[id].state).toEqual({ open: { type: 'boolean', label: 'Open', initial: false } });
+    // A new property under its name is refused, rather than leaving two things called "open".
+    expect(() => applyOperations(made.state, [plain({ definitionId: id, properties: { open: { type: 'boolean', label: 'Open' } } })])).toThrow(/"open" is both a new property and UI state/);
+    // A declaration a hand edit damaged is kept for validation to report, but nothing new may use it.
+    const damaged = structuredClone(made.state);
+    (damaged.components[id].state!.open as { initial: unknown }).initial = 'yes';
+    expect(() => applyOperations(damaged, [toggling()])).toThrow(/"more" changes the UI state "open", which is damaged/);
+    expect(applyOperations(damaged, [plain({ definitionId: id })]).state.components[id].state).toEqual(damaged.components[id].state);
+    const nulled = structuredClone(made.state);
+    (nulled.components[id] as { state: unknown }).state = null;
+    expect((applyOperations(nulled, [plain({ definitionId: id })]).state.components[id] as { state: unknown }).state).toBeNull();
   });
 
   it('is never offered to the assistant as a raw operation, and is refused if sent anyway', async () => {

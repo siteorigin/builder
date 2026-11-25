@@ -30,6 +30,7 @@ import {
   bindingSites,
   boundSchema,
   checkStateName,
+  damagedState,
   enclosingList,
   isProtoKey,
   normalizeProperties,
@@ -80,13 +81,13 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   // component declares stays (checked again against the new properties), unless its design used it: a description
   // that does not say what becomes of working tabs or toggles is refused rather than dropping them unseen.
   const uiState = op.state !== undefined ? designState(op, candidate) : was && keptState(was, candidate);
-  if (uiState) candidate.state = uiState;
+  if (uiState !== undefined) candidate.state = uiState;
   else delete candidate.state;
   checkBindings(state, candidate, bindingSites(candidate));
   // A filter, a button's state action or a dialog that would not work is refused here, where load validation would
   // only report it.
   for (const n of Object.values(tree.nodes)) {
-    const problem = repeatFilterProblem(candidate, n) ?? (n.kind === 'link' && n.stateAction !== undefined ? stateActionProblem(candidate, n.stateAction) : null) ?? overlayProblem(candidate, n);
+    const problem = repeatFilterProblem(candidate, n) ?? (n.kind === 'link' && n.stateAction !== undefined ? actionProblem(candidate, n.stateAction) : null) ?? overlayProblem(candidate, n);
     if (problem) fail(`${describeNode(n)} ${problem}`);
   }
 
@@ -116,7 +117,7 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   def.parts = parts;
   if (variantAxes) def.variantAxes = variantAxes;
   else delete def.variantAxes;
-  if (uiState) def.state = uiState;
+  if (uiState !== undefined) def.state = uiState;
   else delete def.state;
   delete def.slots;
   // Every placement's values move to the new schema: kept where they still fit, refused where they no longer do. The
@@ -204,6 +205,16 @@ function designState(op: UpsertOp, candidate: ComponentDefinition): Record<strin
     out[name] = normalizeUiState(decl, name);
   }
   return out;
+}
+
+/**
+ * What is wrong with a described button's state action: state the component keeps in a form a hand edit damaged (which
+ * validation would only report, while the button did nothing) is refused here, as node.setStateAction refuses it.
+ */
+function actionProblem(def: ComponentDefinition, action: unknown): string | null {
+  const name = (action as { state?: unknown }).state;
+  if (typeof name === 'string' && damagedState(def, name)) return `changes the UI state "${name}", which is damaged. Describe it again with state.`;
+  return stateActionProblem(def, action);
 }
 
 /** A rebuilt component's own UI state, when the description leaves it out: kept while its design does not use it. */
@@ -541,6 +552,8 @@ function checkBindings(state: ProjectState, def: ComponentDefinition, sites: Bin
     const { node, field, binding: b } = site;
     const at = `${where}${describeNode(node)}`;
     if (isStateRef(b)) {
+      // A design built whole never reads state in a form a hand edit damaged: it would show only where it starts.
+      if (!where && damagedState(def, b.$state)) fail(`${at} reads the UI state "${b.$state}", which is damaged. Describe it again with state.`);
       const problem = stateRefProblem(state, def, site, b);
       if (problem) fail(`${at} ${problem}`);
       continue;

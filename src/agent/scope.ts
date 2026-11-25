@@ -380,9 +380,6 @@ function definitionOpAllowed(state: ProjectState, op: EditOperation, authority: 
       return op.definitionId === def.id && !op.makeDefault && addsOptionToExistingAxis(def, op.variant, op.axis, op.axisLabel);
     case 'component.setSlot':
       return op.definitionId === def.id && !Object.hasOwn(def.slots ?? {}, op.slot);
-    case 'component.setState':
-      // A new variable changes no placement (they never set it) and nothing reads it yet; changing one reaches every button and panel using it.
-      return op.definitionId === def.id && !Object.hasOwn(def.state ?? {}, op.state);
     default:
       return false;
   }

@@ -119,7 +119,7 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
   if (Array.isArray(node.props.fields) && spec.props && 'fields' in spec.props && namesFormFields(def)) node.props.fields = settleFormKeys([], node.props.fields as ListItem[], new Set(), formDefaults(def));
 
   const files: FileMap = new Map();
-  for (const [path, content] of generateLibrary(shown, { instrument: true, previewOpen: true })) {
+  for (const [path, content] of generateLibrary(shown, { instrument: true, previewOpen: def.id })) {
     // Tokens, base styles and fonts are the project's own; page styles belong to pages.
     if (path.startsWith(`${FONTS_DIR}/`) || (path.startsWith(`${STYLES_DIR}/`) && path !== PREVIEW_COMPONENT_STYLES)) continue;
     files.set(path, content);

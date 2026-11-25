@@ -22,7 +22,7 @@ import { UTIL_JS } from '@generator/runtime-files';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { P, eq, prop, uiState, type ComponentSpec } from '@catalogue/dsl';
 import { FOUNDATION } from '@catalogue/foundation/pack';
-import { OPERATION_SCHEMAS, validateOperation } from '@shared/ops';
+import { MODEL_BINDING, OPERATION_SCHEMAS, validateOperation } from '@shared/ops';
 import { MIGRATIONS, migrateProject } from '@shared/migrations';
 import { SCHEMA_VERSION } from '@shared/types';
 import { OP_REACH } from '@agent/scope';
@@ -547,7 +547,9 @@ describe('state buttons inside cards that link', () => {
     const actionless = introducedDiagnostics(one, validateState(s));
     expect(actionless.filter((d) => d.code === 'CARD_LINK_INTERACTIVE')).toEqual([]);
     expect(validateState(s).filter((d) => d.code === 'CARD_LINK_INTERACTIVE').map((d) => d.nodeId)).toEqual(['card-a']);
-    expect(actionless.map((d) => [d.code, d.message])).toEqual([['BUTTON_UNLINKED', expect.stringMatching(/the “Switch” button has no link/)]]);
+    expect(actionless.filter((d) => !REUSABILITY_CODES.has(d.code)).map((d) => [d.code, d.message])).toEqual([['BUTTON_UNLINKED', expect.stringMatching(/the “Switch” button has no link/)]]);
+    // Its action made it a control every placement shares (#377); without one, it is a button with no destination.
+    expect(actionless.filter((d) => REUSABILITY_CODES.has(d.code)).map((d) => [d.nodeId, d.message])).toEqual([['card-a-btn', expect.stringMatching(/the “Switch” button has no destination in the design/)]]);
   });
 
   it('keeps a placement whose content sits in several cards one problem while those cards are repaired one by one', () => {
@@ -1128,38 +1130,57 @@ describe('the document format and the assistant', () => {
     for (const t of types) expect(Object.hasOwn(OPERATION_SCHEMAS, t)).toBe(true);
     // A new state is the design's own addition; removing one changes every placement; a button is one node.
     expect(types.map((t) => OP_REACH[t])).toEqual(['definition', 'wider', 'node']);
-    const offered = JSON.stringify(toolDefinitions({ codeEnabled: true, definitionOps: true }).find((t) => t.name === 'apply_operations')!.parameters);
+    // Without Developer mode too: state is design, not code.
+    const offered = JSON.stringify(toolDefinitions({ codeEnabled: false, definitionOps: true }).find((t) => t.name === 'apply_operations')!.parameters);
     expect(offered).toContain('component.setPropSchema');
     expect(offered).toContain('node.setBinding');
     for (const t of types) expect(offered).toContain(t);
-    expect(offered).toContain('$state');
-    // A collection entry's field stays the layout's own: never offered for a design.
-    expect(offered).not.toContain('$entry');
+    // node.setBinding's binding takes a read of UI state, never a collection entry's field (the layout's own).
+    expect(MODEL_BINDING.safeParse({ $state: 'open' }).success).toBe(true);
+    expect(MODEL_BINDING.safeParse({ $entry: 'title' }).success).toBe(false);
+    expect(MODEL_BINDING.safeParse({ $state: 'open', $prop: 'title' }).success).toBe(false);
+    expect(offered).toContain('"$state"');
+    expect(offered).not.toContain('"$entry"');
     // A run that may not change a design is offered none of them.
     const page = JSON.stringify(toolDefinitions({ codeEnabled: true, definitionOps: false }).find((t) => t.name === 'apply_operations')!.parameters);
     for (const t of types) expect(page).not.toContain(t);
   });
 
   it('applies state the assistant sends, checked by the engine like any edit', async () => {
-    const s = fresh();
+    let s = fresh();
     const { def } = billingDef(s);
-    const sent: unknown[][] = [];
+    let revision = 1;
     const host = {
       state: () => s,
-      revision: () => 1,
+      revision: () => revision,
       diagnostics: () => validateState(s),
-      apply: async (ops: unknown[]) => (sent.push(ops), { ok: true, revision: 2, results: [] })
+      apply: async (ops: EditOperation[]) => {
+        try {
+          s = applyOperations(s, ops).state;
+          return { ok: true, revision: ++revision, results: [] };
+        } catch (e) {
+          return { ok: false, revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message } };
+        }
+      }
     } as unknown as Parameters<typeof executeTool>[2];
-    const send = (operations: unknown[]) => executeTool('apply_operations', JSON.stringify({ expectedRevision: 1, operations }), host, 'c1');
+    const send = (operations: unknown[]) => executeTool('apply_operations', JSON.stringify({ expectedRevision: revision, operations }), host, `c${revision}`);
     for (const op of [
-      { type: 'component.setState', definitionId: def.id, state: 'tab', schema: { type: 'boolean' } },
-      { type: 'node.setStateAction', owner: owner(def), nodeId: 'toggle-btn', action: null },
+      { type: 'component.setState', definitionId: def.id, state: 'tab', schema: { type: 'boolean', label: 'Tab' } },
+      { type: 'node.setStateAction', owner: owner(def), nodeId: 'toggle-btn', action: { state: 'tab', op: 'toggle' } },
       { type: 'node.setBinding', owner: owner(def), nodeId: 'title', field: 'when', binding: { $state: 'open' } }
     ]) {
       const out = await send([op]);
       expect(out.ok, JSON.stringify(out.content)).toBe(true);
     }
-    expect(sent.map((ops) => (ops[0] as { type: string }).type)).toEqual(['component.setState', 'node.setStateAction', 'node.setBinding']);
+    const d = s.components[def.id];
+    expect(d.state!.tab).toEqual({ type: 'boolean', label: 'Tab', initial: false });
+    expect((d.tree!.nodes['toggle-btn'] as LinkNode).stateAction).toEqual({ state: 'tab', op: 'toggle' });
+    expect(d.tree!.nodes.title.when).toEqual({ $state: 'open' });
+    // The engine still judges: removing state a button changes is refused, and nothing changes.
+    const before = JSON.stringify(s);
+    expect((await send([{ type: 'component.removeState', definitionId: def.id, state: 'tab' }])).ok).toBe(false);
+    expect(JSON.stringify(s)).toBe(before);
+    expect((await send([{ type: 'component.removeState', definitionId: def.id, state: 'nope' }])).ok).toBe(false);
   });
 });
 
@@ -1199,7 +1220,7 @@ describe('UI state built by the assistant in one call (#377)', () => {
     expect(lists).toHaveLength(1);
     const tabs = tagsWith(html, 'role', 'tab');
     expect(tabs.map((t) => attrOf(t, 'aria-selected'))).toEqual(['false', 'true']);
-    // Both panels are in the page, the one for the tab not chosen hidden on screen; each names its tab.
+    // Both panels are in the page, the one for the tab not chosen hidden on screen.
     const panels = tagsWith(html, 'role', 'tabpanel');
     expect(panels).toHaveLength(2);
     expect(panels.map((p) => attrOf(p, 'class')!.split(' ').includes(STATE_OFF_CLASS))).toEqual([true, false]);

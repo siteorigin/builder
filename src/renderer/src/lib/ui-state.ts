@@ -8,7 +8,10 @@
 import type { ComponentDefinition, ElementNode, GraphNode, OverlayMode, StateAction, UiStateSchema } from '@shared/types';
 import { OVERLAY_MODES } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { checkPropName, declaredState, overlayProblem, stateUsers, MAX_UI_STATES } from '@engine/schema';
+import { booleanStateGuard, checkPropName, declaredState, overlayProblem, stateUsers, MAX_UI_STATES } from '@engine/schema';
+
+/** The most options a choice takes (see normalizeUiState). */
+export const MAX_STATE_OPTIONS = 50;
 
 /** The words an option value or a state name is made from: letters and digits, split at everything else. */
 const words = (label: string) =>
@@ -33,13 +36,14 @@ export function stateNameFor(def: ComponentDefinition, label: string): string {
   const w = words(label).map((x) => x.toLowerCase());
   let base = w.length ? w[0] + w.slice(1).map((x) => x.charAt(0).toUpperCase() + x.slice(1)).join('') : 'state';
   if (!/^[a-z]/.test(base)) base = `state${base.charAt(0).toUpperCase()}${base.slice(1)}`;
-  base = base.slice(0, 36);
-  const taken = (n: string) => Object.hasOwn(def.properties, n) || Object.hasOwn(def.state ?? {}, n);
-  if (validName(base) && !taken(base)) return base;
-  for (let i = 2; ; i++) {
-    const name = `${validName(base) ? base : 'state'}${i}`;
-    if (validName(name) && !taken(name)) return name;
+  base = base.slice(0, 30);
+  const free = (n: string) => validName(n) && !Object.hasOwn(def.properties, n) && !Object.hasOwn(def.state ?? {}, n);
+  // A reserved word ("item", whose numbered forms are reserved too) takes a suffix first.
+  for (const stem of validName(base) ? [base] : [`${base}State`, 'state']) {
+    if (free(stem)) return stem;
+    for (let i = 2; i < 1000; i++) if (free(`${stem}${i}`)) return `${stem}${i}`;
   }
+  return 'uiState';
 }
 
 /** An option's stored value, from its label: lowercase words joined by hyphens, free of the others ("Pay yearly" → "pay-yearly"). */
@@ -64,16 +68,17 @@ export function newStateProblem(def: ComponentDefinition, label: string, type: U
   if (!label.trim()) return 'Name the state.';
   if (Object.keys(def.state ?? {}).length >= MAX_UI_STATES) return `A component can have at most ${MAX_UI_STATES} UI states.`;
   if (type === 'enum' && options.length < 2) return 'A choice needs two options or more, separated by commas.';
+  if (type === 'enum' && options.length > MAX_STATE_OPTIONS) return `A choice can have at most ${MAX_STATE_OPTIONS} options.`;
   return null;
 }
 
 /** Add a UI state variable: yes/no (starting off), or a choice between options (starting at the first). */
 export function addStateOp(def: ComponentDefinition, label: string, type: UiStateSchema['type'], options: string[]): EditOperation {
   const name = stateNameFor(def, label);
-  const values: string[] = [];
+  const values = new Set<string>();
   const opts = options.map((l) => {
     const value = optionValueFor(l, values);
-    values.push(value);
+    values.add(value);
     return { value, label: l };
   });
   return { type: 'component.setState', definitionId: def.id, state: name, schema: type === 'boolean' ? { type, label: label.trim() } : { type, label: label.trim(), options: opts } };
@@ -99,7 +104,7 @@ export function initialStateOp(def: ComponentDefinition, name: string, initial: 
 /** A new option at the end of a choice. */
 export function addOptionOp(def: ComponentDefinition, name: string, label: string): EditOperation | null {
   const s = declared(def, name);
-  if (!s || s.type !== 'enum' || !label.trim()) return null;
+  if (!s || s.type !== 'enum' || !label.trim() || s.options.length >= MAX_STATE_OPTIONS) return null;
   const value = optionValueFor(label, s.options.map((o) => o.value));
   return { type: 'component.setState', definitionId: def.id, state: name, schema: { ...s, options: [...s.options, { value, label: label.trim() }] } };
 }
@@ -177,7 +182,9 @@ export function clickChoices(def: ComponentDefinition): ClickChoice[] {
 export function clickActionOp(def: ComponentDefinition, node: GraphNode, choice: ClickChoice, wrap?: boolean): EditOperation {
   let action = choice.action;
   if (action && (action.op === 'next' || action.op === 'prev')) {
-    const was = node.kind === 'link' ? node.stateAction : undefined;
+    // What the button does now, as the project holds it (not as the Inspector last showed it).
+    const live = def.tree?.nodes[node.id] ?? node;
+    const was = live.kind === 'link' ? live.stateAction : undefined;
     const keep = wrap ?? (was && (was.op === 'next' || was.op === 'prev') ? was.wrap : undefined);
     action = { ...action, ...(keep ? { wrap: true } : {}) };
   }
@@ -200,6 +207,13 @@ export function overlayRefusal(def: ComponentDefinition, node: ElementNode): str
   const shown: ElementNode = { ...node, overlay: node.overlay ?? OVERLAY_MODES[0] };
   const tree = def.tree ? { ...def.tree, nodes: { ...def.tree.nodes, [node.id]: shown } } : def.tree;
   return overlayProblem({ ...def, tree }, shown);
+}
+
+/** The value of its yes/no state a dialog or drawer opens at, in words ("Menu open is on"); null when nothing opens it. */
+export function overlayOpensWhen(def: ComponentDefinition, node: ElementNode): string | null {
+  const guard = booleanStateGuard(def, node);
+  const s = guard ? declared(def, guard.state) : null;
+  return guard && s ? `${s.label || guard.state} is ${guard.shows ? 'on' : 'off'}` : null;
 }
 
 /** Show a container over the page in one of the ways, or in its place again (null). */

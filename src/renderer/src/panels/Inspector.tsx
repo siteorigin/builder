@@ -60,7 +60,8 @@ import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
 import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs, shellMenu } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
-import { stateActionProblem } from '@engine/schema';
+import { stateActionRuns } from '@engine/schema';
+import { previewedState } from '../lib/studio';
 import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
 import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
@@ -2282,12 +2283,16 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const look = target && lookable ? target : null;
   const lookAxis = look ? def.variantAxes![look.axis] : undefined;
   const lookOption = look ? lookAxis!.options[look.variant] : undefined;
+  // Component Studio previews the design's UI state at the values its toolbar shows: a component placed in the design
+  // whose variant follows that state is styled as the canvas shows it.
+  const studioView = useStore((s) => (s.definitionMode?.definitionId === def.id ? s.definitionMode.studio : undefined));
+  const stateShown = previewedState(def, studioView);
   // A component placed in the design: its choices as the site starts them. One this design's state or property sets
   // shows that one's default.
   const startChoices: InstanceNode['variants'] =
     node.kind === 'instance'
       ? Object.fromEntries(
-          Object.entries(startingVariants(node.variants, def) ?? {}).map(([axis, v]) => [axis, isBinding(v) && '$prop' in v ? ((propBindingSchema(def.properties, v)?.default as string | undefined) ?? v) : v])
+          Object.entries(startingVariants(node.variants, stateShown) ?? {}).map(([axis, v]) => [axis, isBinding(v) && '$prop' in v ? ((propBindingSchema(def.properties, v)?.default as string | undefined) ?? v) : v])
         )
       : undefined;
   // Under a look's own rules: what the design gives this element at each size without them (its own styles and the
@@ -2384,7 +2389,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const designUnlinked =
     node.kind === 'link' &&
     !isBinding(node.link) &&
-    (!node.stateAction || !!stateActionProblem(def, node.stateAction)) &&
+    !stateActionRuns(def, node.stateAction) &&
     (node.appearance === 'primary' || node.appearance === 'secondary') &&
     typeof node.label === 'string' &&
     !!node.label.trim() &&
@@ -2528,11 +2533,11 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         ) : node.kind === 'instance' ? (
           <StyleControls
             styles={node.overrides?.root}
-            inherited={placedDef?.kind === 'managed' && placedDef.tree ? designStyles(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, def)) : undefined}
+            inherited={placedDef?.kind === 'managed' && placedDef.tree ? designStyles(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, stateShown)) : undefined}
             wideColumns
             tokens={tokens}
             allowed={placedDef?.parts.root?.styleControls ?? styleSetFor(node)}
-            layers={placedDef?.kind === 'managed' && placedDef.tree ? designLayers(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, def)) : undefined}
+            layers={placedDef?.kind === 'managed' && placedDef.tree ? designLayers(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, stateShown)) : undefined}
             onSet={(property, value, expectedRevision, inState) =>
               commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId: 'root', ...styleAt(scope, inState), property, value }], styleLabel(state, property, refTo(owner, node.id), undefined, value, inState), styleKey(property, `${def.id}:${node.id}:root:${styleScopeKey(scope, inState)}:${property}`), expectedRevision)
             }

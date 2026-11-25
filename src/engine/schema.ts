@@ -639,6 +639,15 @@ export function stateActionProblem(def: ComponentDefinition, action: unknown): s
 }
 
 /**
+ * Whether a button's state action works in the generated site: the state is declared well formed (one a hand edit
+ * damaged is left out of the component, so its buttons do nothing) and the action is one it can make.
+ */
+export function stateActionRuns(def: ComponentDefinition, action: unknown): boolean {
+  const name = action && typeof action === 'object' && !Array.isArray(action) ? (action as { state?: unknown }).state : undefined;
+  return typeof name === 'string' && !!declaredState(def, name) && !stateActionProblem(def, action);
+}
+
+/**
  * What is wrong with a repeat's category filter (RepeatNode.filter), as words that follow the repeat's name, or null when
  * it works or there is none. The pills go just above the element holding the repeat, so that element must hold the
  * repeat alone, inside the design's top element, where a row of buttons may go (not in a list, a carousel's slides or a

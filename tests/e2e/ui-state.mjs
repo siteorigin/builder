@@ -51,14 +51,16 @@ try {
         name: 'Billing tabs',
         properties: {},
         nodes: [
-          { kind: 'element', id: 'root', tag: 'section', children: ['tabs', 'monthly', 'annual'] },
+          { kind: 'element', id: 'root', tag: 'section', children: ['tabs', 'monthly', 'annual', 'drawer'] },
           { kind: 'element', id: 'tabs', name: 'Tabs', children: ['monthlyTab', 'annualTab'] },
           { kind: 'link', id: 'monthlyTab', name: 'Monthly button', link: none, label: 'Monthly', appearance: 'secondary' },
           { kind: 'link', id: 'annualTab', name: 'Annual button', link: none, label: 'Annual', appearance: 'secondary' },
           { kind: 'element', id: 'monthly', name: 'Monthly panel', children: ['monthlyText'] },
           { kind: 'text', id: 'monthlyText', name: 'Monthly price', text: '$12 a month' },
           { kind: 'element', id: 'annual', name: 'Annual panel', children: ['annualText'] },
-          { kind: 'text', id: 'annualText', name: 'Annual price', text: '$120 a year' }
+          { kind: 'text', id: 'annualText', name: 'Annual price', text: '$120 a year' },
+          { kind: 'element', id: 'drawer', name: 'Terms drawer', children: ['drawerText'] },
+          { kind: 'text', id: 'drawerText', name: 'Terms', text: 'Cancel any time.' }
         ]
       }
     ],
@@ -153,7 +155,42 @@ try {
   await eventually(async () => assert.equal(await annualText.evaluate((el) => getComputedStyle(el).textAlign), 'center', 'the preview shows it'), 30000);
   assert.deepEqual((await snapshot()).state.pages, baseline.state.pages, 'no page changes');
 
+  step('a yes/no state shows a container as a drawer, which the toolbar previews open in place to edit');
+  await selectRow('root');
+  await expand('UI state');
+  await inspector.getByLabel('Name of the state').fill('Terms open');
+  await inspector.getByLabel('Kind of state').selectOption('boolean');
+  await inspector.getByRole('button', { name: 'Add state' }).click();
+  await eventually(async () => assert.deepEqual((await design()).state.termsOpen, { type: 'boolean', label: 'Terms open', initial: false }));
+  await selectRow('drawer');
+  await expand('Conditions');
+  await inspector.getByLabel('Show when…', { exact: true }).selectOption('state:termsOpen');
+  await eventually(async () => assert.deepEqual((await design()).tree.nodes.drawer.when, { $state: 'termsOpen' }));
+  await expand('Dialog or drawer');
+  await inspector.getByLabel('Show it').selectOption('drawer-end');
+  await eventually(async () => assert.equal((await design()).tree.nodes.drawer.overlay, 'drawer-end'));
+  const termsOpen = band.locator('[data-studio-state="termsOpen"]');
+  await eventually(async () => assert.equal(await shown('drawerText'), false, 'the closed drawer is out of sight while editing'), 30000);
+  await termsOpen.selectOption('true');
+  await eventually(async () => assert.equal(await shown('drawerText'), true, 'previewed open, its content shows in place'), 30000);
+  await inStudio(' [data-so-node="drawerText"]').first().dispatchEvent('click');
+  await eventually(async () => assert.equal(await row('drawerText').getAttribute('aria-selected'), 'true', 'and can be picked there'), 15000);
+  assert.equal((await design()).state.termsOpen.initial, false, 'visitors still find it closed');
+  await termsOpen.selectOption('false');
+  await eventually(async () => assert.equal(await shown('drawerText'), false, 'previewed closed again, it is out of sight'), 30000);
+
   step('every change undoes cleanly, back to the component as it was');
+  // The first Undo takes back only the last change: the drawer is shown in place again, the rest stays.
+  {
+    const at = (await snapshot()).revision;
+    await win.locator('.canvas').focus();
+    await win.keyboard.press(`${MOD}+z`);
+    await eventually(async () => assert.notEqual((await snapshot()).revision, at), 15000);
+    const after = await design();
+    assert.equal(after.tree.nodes.drawer.overlay, undefined, 'the drawer is back in its place');
+    assert.deepEqual(after.tree.nodes.drawer.when, { $state: 'termsOpen' }, 'its condition stays');
+    assert.equal(after.tree.nodes.annualText.styles?.base?.textAlign, 'center', 'and so does the style');
+  }
   for (let i = 0; i < 20 && JSON.stringify(await design()) !== JSON.stringify(baseline.state.components[defId]); i++) {
     const at = (await snapshot()).revision;
     await win.locator('.canvas').focus();
@@ -234,6 +271,14 @@ try {
     assert.equal(await annualTab.getAttribute('aria-selected'), 'true', 'the Annual tab is chosen');
     assert.equal(await placed('[data-so-node="annual"]').isVisible(), true, 'its panel shows');
     assert.equal(await placed('[data-so-node="monthly"]').isVisible(), false, 'and the other is hidden');
+  });
+  // And back again.
+  const monthlyTab = frame.getByRole('tab', { name: 'Monthly' });
+  await monthlyTab.dispatchEvent('click');
+  await eventually(async () => {
+    assert.equal(await monthlyTab.getAttribute('aria-selected'), 'true', 'the Monthly tab is chosen again');
+    assert.equal(await placed('[data-so-node="monthly"]').isVisible(), true, 'its panel shows');
+    assert.equal(await placed('[data-so-node="annual"]').isVisible(), false, 'and Annual is hidden');
   });
   await win.screenshot({ path: join(SHOTS, 'ui-state-ai-preview.png') });
   await win.locator('.toolbar').getByRole('button', { name: 'Edit', exact: true }).click();

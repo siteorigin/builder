@@ -1,7 +1,7 @@
 /**
  * The edits Edit everywhere's UI State & Interaction controls plan (#377): a component's UI state variables, what a
- * button's click does to them, and a container shown as a dialog or drawer. Each plan goes through the engine, which
- * stays the judge, and is undone as one step like any other edit.
+ * button's click does to them, and a container shown as a dialog or drawer. Each plan is one operation the engine
+ * checks, as any edit is; its Undo is the editor's own, covered by tests/e2e/ui-state.mjs.
  */
 import { describe, expect, it } from 'vitest';
 import type { ComponentDefinition, ElementNode, LinkNode, ProjectState } from '@shared/types';
@@ -21,6 +21,7 @@ import {
   optionLabels,
   optionValueFor,
   overlayOp,
+  overlayOpensWhen,
   overlayRefusal,
   removeOptionOp,
   removeStateOp,
@@ -72,11 +73,20 @@ describe('UI state controls: names and options', () => {
     expect(stateNameFor(def, '   ')).toBe('state');
     expect(stateNameFor({ ...def, state: { open: { type: 'boolean', label: 'Open', initial: false } } }, 'Open')).toBe('open2');
     expect(stateNameFor(def, 'Café menu')).toBe('cafeMenu');
+    // A reserved word is never a name it suggests, and the engine takes the one it does.
+    expect(stateNameFor(def, 'Prototype')).toBe('prototypeState');
+    expect(stateNameFor(def, 'Item')).toBe('itemState');
+    expect(() => applyOperations(state, [addStateOp(def, 'Prototype', 'boolean', [])])).not.toThrow();
   });
 
   it('makes option values from labels, each once, and reads a comma-separated list', () => {
     expect(optionValueFor('Pay yearly', [])).toBe('pay-yearly');
     expect(optionValueFor('Monthly', ['monthly'])).toBe('monthly-2');
+    expect(optionValueFor('Pay yearly', ['pay-yearly', 'pay-yearly-2'])).toBe('pay-yearly-3');
+    // Labels that read the same as values each get their own.
+    const { state, id } = plain();
+    const op = addStateOp(state.components[id], 'Plan', 'enum', ['Pay yearly', 'Pay  yearly', 'Pay-yearly']) as { schema: { options: Array<{ value: string }> } };
+    expect(op.schema.options.map((o) => o.value)).toEqual(['pay-yearly', 'pay-yearly-2', 'pay-yearly-3']);
     expect(optionValueFor('!!!', [])).toBe('option');
     expect(optionLabels(' Monthly, Annual ,, monthly, Lifetime')).toEqual(['Monthly', 'Annual', 'Lifetime']);
   });
@@ -88,6 +98,11 @@ describe('UI state controls: names and options', () => {
     expect(newStateProblem(def, 'Billing', 'enum', ['Monthly'])).toMatch(/two options or more/);
     expect(newStateProblem(def, 'Billing', 'enum', ['Monthly', 'Annual'])).toBeNull();
     expect(newStateProblem(def, 'Open', 'boolean', [])).toBeNull();
+    expect(newStateProblem(def, 'Billing', 'enum', Array.from({ length: 51 }, (_, i) => `Option ${i}`))).toMatch(/at most 50 options/);
+    const full = { ...def, state: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`s${i}`, { type: 'boolean' as const, label: `S${i}`, initial: false }])) };
+    expect(newStateProblem(full, 'Open', 'boolean', [])).toMatch(/at most 20 UI states/);
+    const fifty = { ...def, state: { plan: { type: 'enum' as const, label: 'Plan', options: Array.from({ length: 50 }, (_, i) => ({ value: `o${i}`, label: `O${i}` })), initial: 'o0' } } };
+    expect(addOptionOp(fifty, 'plan', 'One more')).toBeNull();
   });
 });
 
@@ -103,6 +118,10 @@ describe('UI state controls: building two tabs and a drawer, step by step', () =
     def = step(s, (d) => addOptionOp(d, 'billing', 'Lifetime'));
     def = step(s, (d) => renameOptionOp(d, 'billing', 'lifetime', 'Forever'));
     expect(def.state!.billing).toMatchObject({ options: [{ value: 'monthly' }, { value: 'annual' }, { value: 'lifetime', label: 'Forever' }], initial: 'annual' });
+    // Removing an option they do not start at keeps where they start.
+    def = step(s, (d) => addOptionOp(d, 'billing', 'Weekly'));
+    def = step(s, (d) => removeOptionOp(d, 'billing', 'weekly'));
+    expect(def.state!.billing).toMatchObject({ options: [{ value: 'monthly' }, { value: 'annual' }, { value: 'lifetime' }], initial: 'annual' });
     // Removing the option placements start at moves them to the first left; a choice keeps two.
     def = step(s, (d) => removeOptionOp(d, 'billing', 'annual'));
     expect(def.state!.billing).toMatchObject({ options: [{ value: 'monthly' }, { value: 'lifetime' }], initial: 'monthly' });
@@ -146,8 +165,11 @@ describe('UI state controls: building two tabs and a drawer, step by step', () =
     expect(overlayRefusal(def, def.tree!.nodes.drawer as ElementNode)).toBeNull();
     // The design's top element never can be one.
     expect(overlayRefusal(def, def.tree!.nodes.root as ElementNode)).toMatch(/top element/);
-    def = step(s, (d) => overlayOp(d, d.tree!.nodes.drawer, 'drawer-end'));
-    expect((def.tree!.nodes.drawer as ElementNode).overlay).toBe('drawer-end');
+    for (const mode of ['dialog', 'drawer-start', 'drawer-bottom', 'drawer-end'] as const) {
+      def = step(s, (d) => overlayOp(d, d.tree!.nodes.drawer, mode));
+      expect((def.tree!.nodes.drawer as ElementNode).overlay).toBe(mode);
+    }
+    expect(overlayOpensWhen(def, def.tree!.nodes.drawer as ElementNode)).toBe('Menu open is on');
     def = step(s, (d) => overlayOp(d, d.tree!.nodes.drawer, null));
     expect((def.tree!.nodes.drawer as ElementNode).overlay).toBeUndefined();
   });

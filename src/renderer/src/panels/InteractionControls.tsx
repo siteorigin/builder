@@ -17,6 +17,7 @@ import { applyOps, getState } from '../store';
 import { DraftInput, Field, Section, SwitchRow } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import {
+  MAX_STATE_OPTIONS,
   OVERLAY_LABEL,
   actionWords,
   addOptionOp,
@@ -28,6 +29,7 @@ import {
   newStateProblem,
   optionLabels,
   overlayOp,
+  overlayOpensWhen,
   overlayRefusal,
   removeOptionOp,
   removeStateOp,
@@ -185,14 +187,18 @@ const onEnter = (add: () => void) => (e: KeyboardEvent<HTMLInputElement>) => {
 
 function AddOption({ def, name, label }: { def: ComponentDefinition; name: string; label: string }) {
   const [text, setText] = useState('');
+  const s = declaredState(def, name);
+  const full = s?.type === 'enum' && s.options.length >= MAX_STATE_OPTIONS;
   const add = async () => {
-    if (!text.trim()) return;
-    if ((await run(def.id, (d) => addOptionOp(d, name, text), `Add ${text.trim()} option`)) !== null) setText('');
+    const sent = text;
+    if (!sent.trim() || full) return;
+    // Only the text sent is cleared: one typed while it was being saved stays.
+    if ((await run(def.id, (d) => addOptionOp(d, name, sent), `Add ${sent.trim()} option`)) !== null) setText((t) => (t === sent ? '' : t));
   };
   return (
     <div className="contract-add">
       <input className="input sm" value={text} placeholder="New option" aria-label={`New ${label.toLowerCase()} option`} maxLength={LABEL_MAX} onChange={(e) => setText(e.target.value)} onKeyDown={onEnter(() => void add())} />
-      <button className="btn btn-sm" disabled={!text.trim()} onClick={() => void add()}>
+      <button className="btn btn-sm" disabled={!text.trim() || full} title={full ? `A choice can have at most ${MAX_STATE_OPTIONS} options` : undefined} onClick={() => void add()}>
         <Plus aria-hidden="true" /> Add
       </button>
     </div>
@@ -207,10 +213,12 @@ function NewState({ def }: { def: ComponentDefinition }) {
   const problem = newStateProblem(def, label, type, listed);
   const add = async () => {
     if (problem) return;
+    const [sentLabel, sentOptions] = [label, options];
     const done = await run(def.id, (d) => (newStateProblem(d, label, type, listed) ? null : addStateOp(d, label, type, listed)), `Add ${label.trim()} state`);
+    // Only what was sent is cleared: text typed while it was being saved stays.
     if (done !== null) {
-      setLabel('');
-      setOptions('');
+      setLabel((t) => (t === sentLabel ? '' : t));
+      setOptions((t) => (t === sentOptions ? '' : t));
     }
   };
   const any = Object.keys(def.state ?? {}).length > 0;
@@ -248,9 +256,14 @@ export function ClickActionSection({ def, node, level }: { def: ComponentDefinit
   const known = choices.some((c) => c.key === key);
   const stepping = !!action && (action.op === 'next' || action.op === 'prev');
   const name = node.name?.trim() || 'the button';
+  // A plan made from what the section shows: refused (nothing sent) when the button's action changed since.
+  const still = (d: ComponentDefinition) => {
+    const live = d.tree?.nodes[node.id];
+    return live?.kind === 'link' && clickKey(live.stateAction) === key ? live : null;
+  };
   return (
     <Section title="When clicked" id="def-click" level={level} scope={action ? actionWords(def, action) : undefined}>
-      {choices.length > 1 ? (
+      {choices.length > 1 || action ? (
         <>
           <Field label="Also changes" controlId={id} hint="The button keeps its link. With no link it only does this, and every placement shows it.">
             <select
@@ -278,7 +291,7 @@ export function ClickActionSection({ def, node, level }: { def: ComponentDefinit
               hint="After the last option it goes back to the first (and before the first, to the last)."
               onChange={(v) => {
                 const choice = choices.find((c) => c.key === key);
-                if (choice) void run(def.id, (d) => clickActionOp(d, node, choice, v), v ? `Go round when ${name} is clicked` : `Stop at the end when ${name} is clicked`);
+                if (choice) void run(def.id, (d) => (still(d) ? clickActionOp(d, still(d)!, choice, v) : null), v ? `Go round when ${name} is clicked` : `Stop at the end when ${name} is clicked`);
               }}
             />
           )}
@@ -292,8 +305,10 @@ export function ClickActionSection({ def, node, level }: { def: ComponentDefinit
 
 /** Whether to offer the Dialog or drawer control for a node: a container below the top, while the design has a yes/no state or it already is one. */
 export function overlayOffered(def: ComponentDefinition, node: GraphNode): node is ElementNode {
-  if (node.kind !== 'element' || def.tree?.rootIds.includes(node.id)) return false;
-  return node.overlay !== undefined || Object.keys(def.state ?? {}).some((n) => declaredState(def, n)?.type === 'boolean');
+  if (node.kind !== 'element') return false;
+  // One set already (a hand edit's on the top element, say) can always be cleared.
+  if (node.overlay !== undefined) return true;
+  return !def.tree?.rootIds.includes(node.id) && Object.keys(def.state ?? {}).some((n) => declaredState(def, n)?.type === 'boolean');
 }
 
 /** Show a container over the page as a dialog or drawer while its yes/no state is on, or in its place. */
@@ -301,12 +316,19 @@ export function OverlaySection({ def, node, level }: { def: ComponentDefinition;
   const id = useId();
   const refusal = overlayRefusal(def, node);
   const mode = node.overlay;
+  // A value a hand edit left that is no way of showing it: listed as it is, so choosing In its place clears it.
+  const known = !mode || (OVERLAY_MODES as readonly string[]).includes(mode);
+  const opens = overlayOpensWhen(def, node);
   return (
-    <Section title="Dialog or drawer" id="def-overlay" level={level} defaultOpen={!!mode} scope={mode ? OVERLAY_LABEL[mode] : undefined}>
+    <Section title="Dialog or drawer" id="def-overlay" level={level} defaultOpen={!!mode} scope={mode ? (known ? OVERLAY_LABEL[mode] : String(mode)) : undefined}>
       <Field
         label="Show it"
         controlId={id}
-        hint={mode && !refusal ? 'Over the page while its state is on: the state’s buttons open and close it, and Escape closes it. Preview it open in Component Studio to edit what is inside.' : undefined}
+        hint={
+          mode && !refusal && opens
+            ? `Over the page while ${opens}: its buttons open and close it, and Escape closes it. Preview it open in Component Studio to edit what is inside.`
+            : undefined
+        }
       >
         <select
           id={id}
@@ -318,6 +340,7 @@ export function OverlaySection({ def, node, level }: { def: ComponentDefinition;
           }}
         >
           <option value="">In its place</option>
+          {!known && <option value={String(mode)}>{String(mode)} (not a dialog or drawer)</option>}
           {OVERLAY_MODES.map((m) => (
             <option key={m} value={m} disabled={!!refusal && m !== mode}>
               {OVERLAY_LABEL[m]}

@@ -720,6 +720,13 @@ describe('UI state in one call (#377)', () => {
   }
   const nodeAt = (id: string) => planSwitch().nodes.findIndex((n) => n.id === id);
 
+  it('fits the strict schema a constrained model is held to, a state row, an action and a state condition included', () => {
+    const strict = toStrictSchema(managedComponentSchema());
+    expect(accepts(strict, JSON.parse(JSON.stringify(planSwitch({ placeOnPage: { pageId: '/' } }))))).toBe(true);
+    expect(accepts(strict, { ...planSwitch(), state: [{ type: 'enum', name: 'plan', label: 'Plan', options: [{ value: 'monthly', label: 'Monthly' }] }] })).toBe(false);
+    expect(accepts(strict, { ...planSwitch(), state: [{ type: 'toggle', name: 'open', label: 'Open' }] })).toBe(false);
+  });
+
   it('builds working tabs and a drawer in one call without Developer mode, placed and undone in one step', async () => {
     const { s, call, home } = await session();
     const out = await call(planSwitch({ placeOnPage: { pageId: '/' } }));
@@ -732,6 +739,7 @@ describe('UI state in one call (#377)', () => {
     expect(def.tree!.nodes.annualTab).toMatchObject({ kind: 'link', stateAction: { state: 'plan', op: 'set', value: 'annual' } });
     expect(def.tree!.nodes.annual.when).toEqual({ ref: { $state: 'plan' }, eq: 'annual' });
     expect(def.tree!.nodes.drawer).toMatchObject({ overlay: 'drawer-end', when: { $state: 'open' } });
+    expect(def.tree!.nodes.more).toMatchObject({ kind: 'link', stateAction: { state: 'open', op: 'toggle' } });
     expect(errors(s.state)).toEqual([]);
     // The generated component holds the state and makes the tab list and the drawer, in the site and the editor.
     const svelte = generateManagedComponent(s.state, def, {});
@@ -763,6 +771,7 @@ describe('UI state in one call (#377)', () => {
     expect(await fields(planSwitch({ state: [...states, { type: 'boolean', name: 'plan', label: 'Again' }] }))).toEqual([{ field: 'state[2].name', message: '"plan" is listed twice' }]);
     expect(await fields(planSwitch({ state: [{ type: 'boolean', name: 'heading', label: 'Heading' }, ...states] }))).toEqual([{ field: 'state[0].name', message: expect.stringMatching(/"heading" is already a property/) }]);
     expect(await fields(planSwitch({ state: [{ ...states[0], initial: 'yearly' }, states[1]] }))).toEqual([{ field: 'state[0].initial', message: expect.stringMatching(/starts as "yearly", which is not one of its options/) }]);
+    expect(await fields(withNode('annual', { when: undefined, unless: { ref: { $state: 'plan' }, ne: 'yearly' } }))).toEqual([{ field: `nodes[${nodeAt('annual')}].unless.ne`, message: expect.stringMatching(/"yearly" is not one of the options of "plan"/) }]);
     // A drawer no yes/no state opens is the engine's to refuse, named by its node.
     expect(await fields(withNode('drawer', { when: undefined }))).toEqual([{ field: `nodes[${nodeAt('drawer')}]`, message: expect.stringMatching(/no yes\/no UI state of the component opens/) }]);
     expect(applies()).toBe(0);
@@ -774,10 +783,10 @@ describe('UI state in one call (#377)', () => {
     const made = await call(planSwitch());
     const definitionId = made.content.definitionId as string;
     const plain = planSwitch().nodes.filter((n) => !['tabs', 'monthlyTab', 'annualTab', 'monthly', 'annual', 'more', 'drawer', 'monthlyPrice', 'annualPrice', 'terms'].includes(n.id)).map((n) => (n.id === 'root' ? { ...n, children: ['heading'] } : n));
-    // Rebuilt with no word about its state, its tabs would vanish unseen: refused, naming it.
+    // Rebuilt with no word about its state, its tabs would vanish unseen: refused, naming the field to send.
     const silent = await call({ name: 'Plan switch', definitionId, properties: planSwitch().properties, nodes: plain });
     expect(silent.ok).toBe(false);
-    expect(JSON.stringify(silent.content)).toMatch(/UI state its design reads or its buttons change \(plan, open\)\. Describe it again with state/);
+    expect(silent.content.fields).toEqual([{ field: 'state', message: expect.stringMatching(/\(plan, open\)\. Send state again with the rebuild; an empty list removes it/) }]);
     // A rebuild that keeps the tabs and drops the drawer describes the state it keeps.
     const kept = await call(
       planSwitch({ definitionId, state: [planSwitch().state[0]], nodes: planSwitch().nodes.filter((n) => !['more', 'drawer', 'terms'].includes(n.id)).map((n) => (n.id === 'root' ? { ...n, children: ['heading', 'tabs', 'monthly', 'annual'] } : n)) })
@@ -789,5 +798,22 @@ describe('UI state in one call (#377)', () => {
     expect(cleared.ok, JSON.stringify(cleared.content)).toBe(true);
     expect(s.state.components[definitionId].state).toBeUndefined();
     expect(errors(s.state)).toEqual([]);
+  });
+
+  it('reads state a rebuild leaves out but keeps, and a ne comparison, as the engine does', async () => {
+    const { s, call } = await session();
+    const made = await call(planSwitch());
+    const definitionId = made.content.definitionId as string;
+    // Down to one button and its drawer, with the plan state given and kept unused; then a rebuild that leaves state out
+    // keeps it and may read it again.
+    const drawerOnly = planSwitch().nodes.filter((n) => ['root', 'heading', 'more', 'drawer', 'terms'].includes(n.id)).map((n) => (n.id === 'root' ? { ...n, children: ['heading', 'more', 'drawer'] } : n));
+    expect((await call(planSwitch({ definitionId, nodes: drawerOnly }))).ok).toBe(true);
+    const back = planSwitch().nodes.map((n) => (n.id === 'annual' ? { ...n, when: undefined, unless: { ref: { $state: 'plan' }, ne: 'annual' } } : n));
+    const unused = planSwitch({ definitionId, nodes: drawerOnly.filter((n) => !['more', 'drawer', 'terms'].includes(n.id)).map((n) => (n.id === 'root' ? { ...n, children: ['heading'] } : n)) });
+    expect((await call(unused)).ok).toBe(true);
+    const reread = await call({ name: 'Plan switch', definitionId, properties: planSwitch().properties, nodes: back });
+    expect(reread.ok, JSON.stringify(reread.content)).toBe(true);
+    expect(s.state.components[definitionId].tree!.nodes.annual.unless).toEqual({ ref: { $state: 'plan' }, ne: 'annual' });
+    expect(Object.keys(s.state.components[definitionId].state!)).toEqual(['plan', 'open']);
   });
 });

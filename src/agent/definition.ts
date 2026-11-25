@@ -317,10 +317,12 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
     ...(whole && props.length ? [closed({ action: { type: 'string', enum: ['remove'] }, prop: { type: 'string', enum: props } }, ['action', 'prop'])] : [])
   ];
   tools.push({ ...describe('manage_component_prop'), parameters: closed({ change: oneOf(changes) }, ['change']) });
-  // UI state: a node selected in the design may add a variable and wire its own buttons; removing one reaches the whole design.
+  // UI state: declaring or removing a variable is the whole design's (a component with state can no longer be detached
+  // or converted to code, on every placement); a node selected in it wires its own buttons to the states it has.
   const buttons = nodes.filter((id) => tree.nodes[id]?.kind === 'link');
+  const acting = buttons.filter((id) => (tree.nodes[id] as { stateAction?: unknown }).stateAction !== undefined);
   const stateChanges = [
-    closed(
+    ...(whole ? [closed(
       {
         action: { type: 'string', enum: ['add'] },
         state: { type: 'string', description: 'A new camelCase name, such as "tab" or "open"; not a property name.' },
@@ -330,7 +332,7 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
         initial: { anyOf: [{ type: 'boolean' }, { type: 'string' }], description: 'What every placement starts with: true or false, or an option. Defaults to false, or the first option.' }
       },
       ['action', 'state', 'label', 'type']
-    ),
+    )] : []),
     ...(whole && states.length ? [closed({ action: { type: 'string', enum: ['remove'] }, state: { type: 'string', enum: states } }, ['action', 'state'])] : []),
     ...(buttons.length && states.length
       ? [
@@ -346,9 +348,12 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
             ['action', 'nodeId', 'op']
           )
         ]
-      : [])
+      : acting.length
+        ? // No state it can name: only clearing what a button already does (one naming state the design lost, say).
+          [closed({ action: { type: 'string', enum: ['on_click'] }, nodeId: idSchema(acting, 'The button.'), op: { type: 'string', enum: ['none'] } }, ['action', 'nodeId', 'op'])]
+        : [])
   ];
-  tools.push({ ...describe('manage_component_state'), parameters: closed({ change: oneOf(stateChanges) }, ['change']) });
+  if (stateChanges.length) tools.push({ ...describe('manage_component_state'), parameters: closed({ change: oneOf(stateChanges) }, ['change']) });
   // Styles: any rendered node, by ID or by part; a variant's rule is set on a node of its first top-level element.
   const styled = nodes.filter((id) => rendered(tree.nodes[id]));
   const parts = Object.keys(def.parts).filter((p) => styled.includes(def.parts[p].nodeId));
@@ -535,6 +540,9 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
   if (name === 'manage_component_state') {
     const { change } = args as z.infer<(typeof DEFINITION_ARGS)['manage_component_state']>;
     const known = () => (Object.keys(def.state ?? {}).length ? `States: ${Object.keys(def.state ?? {}).join(', ')}` : 'It has none: add one first');
+    // Declaring or removing a variable reaches every placement (one with state can no longer be detached): the whole design's.
+    if (change.action !== 'on_click' && target.nodeId !== undefined)
+      return fieldError([{ field: 'change.action', message: 'adding or removing UI state changes the whole component: ask the author first, or wire this button to a state the component has' }], NOTHING_APPLIED);
     if (change.action === 'add') {
       // Setting one it has would change it, and every button and panel that uses it.
       if (Object.hasOwn(def.state ?? {}, change.state)) return fieldError([{ field: 'change.state', message: `"${def.name}" already has the UI state "${change.state}". ${known()}` }], NOTHING_APPLIED);

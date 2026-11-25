@@ -110,11 +110,12 @@ import { siteTwitterHandle } from '@shared/site-identity';
 export interface GenerateOptions {
   instrument?: boolean;
   /**
-   * The editor's isolated component preview only (Component Studio, with `instrument`): a dialog or drawer whose UI
-   * state is at its open value shows in place while editing, as one the author shows does, so the state the studio
-   * previews is on the canvas to select and style. A page's placements keep the author's own Show to edit.
+   * The editor's isolated component preview only (Component Studio, with `instrument`): the definition whose UI state
+   * the studio previews. Its dialogs and drawers whose state is at the open value show in place while editing, as one
+   * the author shows does, so they are on the canvas to select and style. Every other design (a component placed
+   * inside it, a page's placements) keeps the author's own Show to edit.
    */
-  previewOpen?: boolean;
+  previewOpen?: string;
 }
 
 export type FileMap = Map<string, string>;
@@ -3134,7 +3135,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
     locals,
     standalone,
     states: stateLocals(def),
-    previewOpen: !!opts.instrument && !!opts.previewOpen
+    previewOpen: !!opts.instrument && opts.previewOpen === def.id
   };
   ctx.widgets = stateWidgets(ctx);
   ctx.filters = repeatFilters(def);

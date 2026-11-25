@@ -468,6 +468,7 @@ describe('serving an isolated preview', () => {
     expect(previewSpec({ componentId: 'content.media' })).toEqual({ componentId: 'content.media' });
     // UI state previewed at another value goes through (#377): a choice's option, or on and off.
     expect(previewSpec({ definitionId: 'c1', states: { plan: 'annual', open: false } })).toEqual({ definitionId: 'c1', states: { plan: 'annual', open: false } });
+    expect(previewSpec({ definitionId: 'c1', states: { open: true } })).toEqual({ definitionId: 'c1', states: { open: true } });
     expect(previewSpec({ definitionId: 'd'.repeat(200) })).not.toBeNull();
     expect(previewSpec({ componentId: 'c'.repeat(200) })).not.toBeNull();
     for (const bad of [null, 'c1', [], { definitionId: 3 }, { definitionId: '' }, { definitionId: 'd'.repeat(201) }, { componentId: 'c'.repeat(201) }, { variants: { tone: 2 } }, { props: [] }, { states: [] }, { states: { open: 1 } }, { states: { plan: { value: 'annual' } } }, { props: { big: 'x'.repeat(300_000) } }]) expect(previewSpec(bad)).toBeNull();

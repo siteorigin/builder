@@ -245,11 +245,16 @@ describe('the operation that makes a container a dialog or drawer', () => {
   it('is the assistant’s to set, with the rest of UI state, now that the site opens it (#377)', async () => {
     const s = fresh();
     const def = bookingDef(s);
-    let applied = 0;
-    const host = { state: () => s, revision: () => 1, diagnostics: () => validateState(s), apply: async () => ((applied += 1), { ok: true, revision: 2, results: [] }) } as unknown as Parameters<typeof executeTool>[2];
+    let state = s;
+    const host = {
+      state: () => state,
+      revision: () => 1,
+      diagnostics: () => validateState(state),
+      apply: async (ops: EditOperation[]) => ((state = applyOperations(state, ops).state), { ok: true, revision: 2, results: [] })
+    } as unknown as Parameters<typeof executeTool>[2];
     const out = await executeTool('apply_operations', JSON.stringify({ expectedRevision: 1, operations: [{ type: 'node.setContent', owner: owner(def), nodeId: 'dialog', field: 'overlay', value: 'drawer-end' }] }), host, 'c1');
     expect(out.ok, JSON.stringify(out.content)).toBe(true);
-    expect(applied).toBe(1);
+    expect((state.components[def.id].tree!.nodes.dialog as { overlay?: string }).overlay).toBe('drawer-end');
   });
 });
 
