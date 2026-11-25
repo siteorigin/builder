@@ -13,7 +13,7 @@ import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOf
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
 import { findingHandoff } from '../lib/seoHandoff';
-import { conflictPanes, sameVersions, savedCopyLabel, type ConflictVersions } from '../lib/conflict-versions';
+import { conflictPanes, sameVersions, savedCopyLabel, shownVersions, type ConflictVersions } from '../lib/conflict-versions';
 import { AiHandoffButton } from '../components/AiHandoff';
 import { Modal, Spinner, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
@@ -1213,11 +1213,6 @@ function ConflictRow({
   );
 }
 
-/** The versions a compare answer holds, with the attempted one only when the answer has it. */
-function shownVersions(r: ConflictVersions): ConflictVersions {
-  return { builder: r.builder, disk: r.disk, ...(r.attempted !== undefined ? { attempted: r.attempted } : {}) };
-}
-
 /** The versions not used when conflicts were settled: still there to read, find in the folder, or take off the list. */
 function SavedCopies({ copies, state, dir, readOnly }: { copies: SavedCopy[]; state: ProjectState; dir: string; readOnly: boolean }) {
   return (
@@ -1232,7 +1227,7 @@ function SavedCopies({ copies, state, dir, readOnly }: { copies: SavedCopy[]; st
 function SavedCopyRow({ copy: c, state, dir, readOnly }: { copy: SavedCopy; state: ProjectState; dir: string; readOnly: boolean }) {
   const [content, setContent] = useState<FileContent | 'loading' | null>(null);
   const asked = useRef(0);
-  const which = savedCopyLabel(c.side);
+  const which = savedCopyLabel(c);
   const when = new Date(c.savedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
   const view = async () => {
     const ask = ++asked.current;
@@ -1260,10 +1255,12 @@ function SavedCopyRow({ copy: c, state, dir, readOnly }: { copy: SavedCopy; stat
             <button className="btn btn-sm" aria-expanded={!!content} onClick={() => void view()}>
               {content ? 'Hide copy' : 'View copy'}
             </button>
-            <button className="btn btn-sm btn-ghost" onClick={() => void api.projects.reveal(`${dir}/${c.file}`)}>
-              <FolderOpen aria-hidden="true" />
-              Show in folder
-            </button>
+            {!c.removed && (
+              <button className="btn btn-sm btn-ghost" onClick={() => void api.projects.reveal(`${dir}/${c.file}`)}>
+                <FolderOpen aria-hidden="true" />
+                Show in folder
+              </button>
+            )}
             {!readOnly && (
               <button className="btn btn-sm btn-ghost" title="The file stays in the recovery folder." onClick={() => void dismiss()}>
                 <X aria-hidden="true" />

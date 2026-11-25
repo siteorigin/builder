@@ -869,10 +869,11 @@ describe('the version an AI run attempted, when it rolled back around a conflict
 
   it('shows the file on disk, the pre-run version and the version the run tried to save', async () => {
     const { dir, s } = await runWithExternalEdit();
+    const external = readFileSync(join(dir, SITE), 'utf8');
     await s.abortRun();
     expect(s.conflicts).toEqual([expect.objectContaining({ path: SITE, kind: 'canonical', aiRun: true })]);
     const compared = await s.compareConflict(SITE);
-    expect(compared.disk).toEqual({ state: 'text', text: readFileSync(join(dir, SITE), 'utf8') });
+    expect(compared.disk).toEqual({ state: 'text', text: external });
     expect(nameIn(compared.builder)).toBe('Persist');
     expect(nameIn(compared.attempted)).toBe('AI name');
     expect(JSON.parse(text(compared.attempted)).description).not.toBe('Edited in another editor');
@@ -886,7 +887,9 @@ describe('the version an AI run attempted, when it rolled back around a conflict
     site.description = 'Edited in another editor';
     write(dir, SITE, site);
     await s.abortRun();
-    expect(nameIn((await s.compareConflict(SITE)).attempted)).toBe('Second batch');
+    const attempted = JSON.parse(text((await s.compareConflict(SITE)).attempted));
+    expect(attempted.name).toBe('Second batch');
+    expect(attempted.description).not.toBe('Edited in another editor');
   });
 
   it('shows a file the run created as missing before the run, and one it deleted as missing in its attempt', async () => {
@@ -915,9 +918,69 @@ describe('the version an AI run attempted, when it rolled back around a conflict
     const removed = await s.compareConflict(aboutPath);
     expect(removed.attempted).toEqual({ state: 'missing' });
     expect(removed.builder).toEqual({ state: 'text', text: original });
-    // A removal has no file to keep a copy of.
+    // A removal is listed with no file to keep, and still is after reopening.
     expect(await s.resolveConflict(aboutPath, 'restore')).toEqual({ ok: true });
-    expect(s.savedCopies.map((c) => c.side)).toEqual(['external']);
+    expect(s.savedCopies).toEqual([expect.objectContaining({ path: aboutPath, side: 'attempted', removed: true }), expect.objectContaining({ path: aboutPath, side: 'external' })]);
+    const removal = s.savedCopies[0];
+    expect(existsSync(join(dir, removal.file))).toBe(false);
+    expect(await s.readSavedCopy(removal.id)).toEqual({ ok: true, content: { state: 'missing' } });
+    await s.close();
+    expect((await reopen(dir)).savedCopies).toContainEqual(removal);
+  });
+
+  it('recovers a removal the run attempted as missing after a crash', async () => {
+    const { dir, s } = await make();
+    expect((await s.apply({ operations: [{ type: 'page.create', title: 'Spare' }] }, { label: 'Add' })).ok).toBe(true);
+    const spare = Object.values(s.state.pages).find((p) => p.title === 'Spare')!.id;
+    const sparePath = `siteorigin/pages/${spare}.json`;
+    const original = readFileSync(join(dir, sparePath), 'utf8');
+    await s.beginRun('run_r');
+    expect((await s.apply({ operations: [{ type: 'page.remove', pageId: spare }] }, { label: 'AI', source: 'ai', runId: 'run_r', history: false })).ok).toBe(true);
+    writeFileSync(join(dir, sparePath), original.replace('"title"', '"note": "by hand",\n  "title"'));
+    const again = await reopen(dir);
+    const compared = await again.compareConflict(sparePath);
+    expect(compared.builder).toEqual({ state: 'text', text: original });
+    expect(compared.attempted).toEqual({ state: 'missing' });
+  });
+
+  it('keeps the attempted version named while it cannot be read, and shows it once it can', async () => {
+    const { dir } = await runWithExternalEdit();
+    const marker = read(dir, '.siteorigin/sessions/active-run.json');
+    const blob = join(dir, '.siteorigin/history/blobs', `${marker.paths[SITE].after}.json`);
+    const away = join(dir, 'away.tmp');
+    await fsp.rename(blob, away);
+    // Crash, and the attempted version cannot be read as the project reopens.
+    const again = await reopen(dir);
+    expect((await again.compareConflict(SITE)).attempted).toEqual({ state: 'unreadable' });
+    expect(readFileSync(join(dir, '.siteorigin/conflicts.json'), 'utf8')).toContain(marker.paths[SITE].after);
+    await fsp.rename(away, blob);
+    expect(nameIn((await again.compareConflict(SITE)).attempted)).toBe('AI name');
+  });
+
+  it('holds a conflict put back by hand until its attempted version can be listed under Saved copies', async () => {
+    const { dir, s } = await runWithExternalEdit();
+    const marker = readFileSync(join(dir, '.siteorigin/sessions/active-run.json'), 'utf8');
+    await s.abortRun();
+    const pre = text((await s.compareConflict(SITE)).builder);
+    await s.close();
+    // A crash before the rollback cleared its marker; the file is then put back by hand, and the recovery folder
+    // cannot be written to as the project reopens.
+    writeFileSync(join(dir, '.siteorigin/sessions/active-run.json'), marker);
+    writeFileSync(join(dir, SITE), pre);
+    const recovery = join(dir, '.siteorigin/recovery');
+    mkdirSync(recovery, { recursive: true });
+    await fsp.chmod(recovery, 0o500);
+    let again: ProjectSession;
+    try {
+      again = await reopen(dir);
+      expect(again.conflicts).toEqual([expect.objectContaining({ path: SITE, aiRun: true })]);
+      expect(again.savedCopies).toEqual([]);
+    } finally {
+      await fsp.chmod(recovery, 0o755);
+    }
+    expect((await again.reloadFromDisk()).ok).toBe(true);
+    expect(again.conflicts).toEqual([]);
+    expect(again.savedCopies).toEqual([expect.objectContaining({ path: SITE, side: 'attempted' })]);
   });
 
   it('keeps the attempted version when the file is put back by hand, in the open project or before it reopens', async () => {
@@ -997,7 +1060,9 @@ describe('the version an AI run attempted, when it rolled back around a conflict
     expect(copy).toMatchObject({ path: SITE, kind: 'canonical' });
     expect(await restored.s.readSavedCopy(copy.id)).toEqual({ ok: true, content: attempted });
     await restored.s.close();
-    expect((await reopen(restored.dir)).savedCopies.some((c) => c.id === copy.id && c.side === 'attempted')).toBe(true);
+    const reopened = await reopen(restored.dir);
+    expect(reopened.savedCopies).toContainEqual(copy);
+    expect(await reopened.readSavedCopy(copy.id)).toEqual({ ok: true, content: attempted });
 
     const kept = await runWithExternalEdit();
     await kept.s.abortRun();
@@ -1013,7 +1078,10 @@ describe('the version an AI run attempted, when it rolled back around a conflict
     writeFileSync(join(dir, HOME), '<h1>Hero edited by hand</h1>\n');
     expect((await s.apply({ operations: [{ type: 'site.update', name: 'Touch' }] }, { label: 'Touch' })).ok).toBe(true);
     expect(s.conflicts).toEqual([expect.not.objectContaining({ aiRun: true })]);
-    expect(Object.keys(await s.compareConflict(HOME)).sort()).toEqual(['builder', 'disk', 'ok']);
+    const generated = await s.compareConflict(HOME);
+    expect(Object.keys(generated).sort()).toEqual(['builder', 'disk', 'ok']);
+    expect(generated.disk).toEqual({ state: 'text', text: '<h1>Hero edited by hand</h1>\n' });
+    expect(generated.builder).toMatchObject({ state: 'text', text: expect.stringContaining('Generated by SiteOrigin Builder') });
     await s.resolveConflict(HOME, 'restore');
     expect(s.savedCopies.map((c) => c.side)).toEqual(['external']);
 
@@ -1029,7 +1097,10 @@ describe('the version an AI run attempted, when it rolled back around a conflict
     const again = await reopen(other.dir);
     expect(again.conflicts).toEqual([expect.objectContaining({ path: SITE, kind: 'canonical' })]);
     expect(again.conflicts[0].aiRun).toBeUndefined();
-    expect(Object.keys(await again.compareConflict(SITE)).sort()).toEqual(['builder', 'disk', 'ok']);
+    const manual = await again.compareConflict(SITE);
+    expect(Object.keys(manual).sort()).toEqual(['builder', 'disk', 'ok']);
+    expect(nameIn(manual.builder)).toBe('Saved by the app');
+    expect(JSON.parse(text(manual.disk)).description).toBe('Edited by hand');
     expect(await again.resolveConflict(SITE, 'restore')).toEqual({ ok: true });
     expect(again.savedCopies.map((c) => c.side)).toEqual(['external']);
   });

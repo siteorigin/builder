@@ -268,6 +268,8 @@ export interface SavedCopy {
   savedAt: number;
   /** Where the copy is, relative to the project folder. */
   file: string;
+  /** The version had no file (an AI request that removed it): nothing was written to `file`. */
+  removed?: boolean;
 }
 
 /** A version of a file as text to show, or why it is not shown as text. */

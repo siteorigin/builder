@@ -32,12 +32,18 @@ export function conflictPanes(kind: 'canonical' | 'generated', v: ConflictVersio
   ];
 }
 
+/** The versions a compare answer holds, with the attempted one only when the answer has it. */
+export function shownVersions(r: ConflictVersions): ConflictVersions {
+  return { builder: r.builder, disk: r.disk, ...(r.attempted !== undefined ? { attempted: r.attempted } : {}) };
+}
+
 /** Whether versions read again before a choice are the ones shown: every version shown, the attempted one too. */
 export function sameVersions(shown: ConflictVersions, now: ConflictVersions): boolean {
   return (['builder', 'disk', 'attempted'] as const).every((k) => JSON.stringify(shown[k]) === JSON.stringify(now[k]));
 }
 
 /** What a saved copy is a copy of. */
-export function savedCopyLabel(side: SavedCopy['side']): string {
-  return side === 'external' ? 'The file as edited outside SiteOrigin Builder' : side === 'attempted' ? 'The AI request’s attempted version' : 'SiteOrigin Builder’s version';
+export function savedCopyLabel(copy: Pick<SavedCopy, 'side' | 'removed'>): string {
+  if (copy.side === 'attempted') return copy.removed ? 'The AI request’s attempted version, which removed the file' : 'The AI request’s attempted version';
+  return copy.side === 'external' ? 'The file as edited outside SiteOrigin Builder' : 'SiteOrigin Builder’s version';
 }
