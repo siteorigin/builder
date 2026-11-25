@@ -38,6 +38,7 @@ import { newId } from '@shared/ids';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { checkPublicUrl } from '@shared/public-url';
 import { patchIdentity } from '@shared/site-identity';
+import { patchPageStructuredData } from '@shared/page-structured-data';
 import { patchCrawlerPolicy } from '@shared/crawler-policy';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
@@ -858,6 +859,9 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
     if (plan.moves.length > 1) moved = plan.moves;
   }
   if (op.navLabel !== undefined) page.navLabel = op.navLabel || undefined;
+  // A page whose search settings were written by hand as something else starts them afresh before any is set, so what
+  // this edit saves there (its structured data, and a search setting beside it) keeps.
+  if (op.structuredData !== undefined && (!page.seo || typeof page.seo !== 'object' || Array.isArray(page.seo))) page.seo = {};
   if (op.seoTitle !== undefined) page.seo.title = op.seoTitle || undefined;
   if (op.description !== undefined) page.seo.description = op.description || undefined;
   if (op.noindex !== undefined) page.seo.noindex = op.noindex || undefined;
@@ -900,6 +904,12 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
   else if (op.updatedAt !== undefined) {
     if (!isArticleDate(op.updatedAt)) fail(`The revision date "${op.updatedAt}" is not a calendar date written YYYY-MM-DD.`);
     page.updatedAt = op.updatedAt;
+  }
+  if (op.structuredData !== undefined) {
+    const next = patchPageStructuredData(page.seo.structuredData, op.structuredData);
+    if (!next.ok) fail(`“${page.title}”: ${next.message}`);
+    else if (next.value) page.seo.structuredData = next.value;
+    else delete page.seo.structuredData;
   }
   applyArticle(page, op);
   return moved ? { route: page.route, moved } : { route: page.route };

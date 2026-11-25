@@ -1,6 +1,6 @@
 import type { EditOperation } from '@shared/ops';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
-import type { GraphNode, NodeTree, OwnerRef, ProjectState, TableValue } from '@shared/types';
+import type { GraphNode, NodeTree, OwnerRef, PageDoc, ProjectState, TableValue } from '@shared/types';
 import { conditionRef, isBinding, isComparison, styleScopeKey } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { displayName, enclosingRepeatProp } from '@engine/tree';
@@ -13,6 +13,7 @@ import { ownVisitorTextFor } from '@shared/visitor-text';
 import { coordinatesText } from '@shared/site-identity';
 import { knownCrawler } from '@shared/crawler-policy';
 import { BRIEF_FIELDS, briefText } from '@shared/brief';
+import { isPageStructuredType, STRUCTURED_FACTS } from '@shared/page-structured-data';
 
 /**
  * A typed edit made while the AI is working is held, not dropped. Each operation it is made of names one
@@ -112,6 +113,27 @@ function crawlerPolicyRead(state: ProjectState, patch: Record<string, unknown> |
   return { preset: own('preset'), ...Object.fromEntries(identityKeys(patch).map((k) => [k, k === 'alsoBlock' ? unlistedOverrides(own('overrides')) : own(k)])) };
 }
 
+/** What a page is for search engines, as stored: its record, whatever shape it was saved in. */
+const structuredRecord = (page: PageDoc): unknown => (page.seo && typeof page.seo === 'object' ? page.seo.structuredData : undefined);
+
+/**
+ * The parts of a page's structured data an edit writes, as stored: the one fact's value, or each fact's. Choosing a
+ * type keeps or drops every fact, so it reads the whole record (null when there is none).
+ */
+function structuredDataRead(page: PageDoc, patch: Record<string, unknown>): unknown {
+  const stored = structuredRecord(page);
+  if (patch.type !== undefined) return stored ?? null;
+  const own = (k: string) => (stored && typeof stored === 'object' && Object.hasOwn(stored, k) ? (stored as Record<string, unknown>)[k] : undefined);
+  const keys = identityKeys(patch);
+  return keys.length === 1 ? own(keys[0]) : Object.fromEntries(keys.map((k) => [k, own(k)]));
+}
+
+/** The type a page's structured data has; null when it has none. */
+function structuredTypeRead(page: PageDoc): unknown {
+  const stored = structuredRecord(page);
+  return stored && typeof stored === 'object' && !Array.isArray(stored) ? ((stored as Record<string, unknown>).type ?? null) : null;
+}
+
 /** The kind of publisher the site has chosen; null when none is chosen (or the identity is cleared). */
 function publisherRead(state: ProjectState): unknown {
   const stored: unknown = state.site.identity;
@@ -160,6 +182,12 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       // A byline, excerpt or news-list choice belongs to an article: once the page is no longer one, it has gone.
       // An edit that also dates the page makes it an article itself.
       if (!page.article && !keys.includes('articleDate') && keys.some((k) => k === 'byline' || k === 'excerpt' || k === 'newsHidden')) return gone('article');
+      // A fact belongs to a type: once the page is no type that states it, it has gone. An edit choosing the type has not.
+      if (op.structuredData && op.structuredData.type === undefined) {
+        const type = structuredTypeRead(page);
+        const facts = isPageStructuredType(type) && type !== 'WebPage' ? STRUCTURED_FACTS[type] : [];
+        if (identityKeys(op.structuredData).some((k) => !(facts as readonly string[]).includes(k))) return gone('page type');
+      }
       const read = Object.fromEntries(keys.map((k) => [k, at(page, PAGE_FIELDS[k])]));
       // A new address moves the pages inside the page too: pages added there, or moved, since change what it does.
       // And it takes over an old address kept at its destination: whose that is matters as well.
@@ -169,6 +197,12 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
         const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
         const holder = kept.find((r) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === to) as { pageId?: unknown; entryId?: unknown } | undefined;
         read.keptFor = holder?.pageId ?? (holder?.entryId !== undefined ? { entryId: holder.entryId } : null);
+      }
+      // What the page is, fact by fact: a held price waits on no change to the currency. A fact belongs to the type it
+      // was typed for, though: a page made another type meanwhile is a conflict, never turned back by the fact.
+      if (op.structuredData !== undefined) {
+        read.structuredData = structuredDataRead(page, op.structuredData);
+        if (op.structuredData.type === undefined) read.structuredType = structuredTypeRead(page);
       }
       return found(read);
     }
@@ -405,6 +439,8 @@ export function fieldKey(operations: EditOperation[]): string {
           if (op.type === 'site.update' && k === 'identity') return [k, op.identity ? identityKeys(op.identity) : null];
           // So is the crawler policy, part by part: its paths and the crawlers it names are separate fields.
           if (op.type === 'site.update' && k === 'crawlerPolicy') return [k, op.crawlerPolicy ? identityKeys(op.crawlerPolicy) : null];
+          // And what a page is, fact by fact; choosing its type is a field of its own.
+          if (op.type === 'page.update' && k === 'structuredData' && op.structuredData) return [k, identityKeys(op.structuredData)];
           return [k];
         })
         .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
@@ -452,8 +488,8 @@ export function typedText(op: EditOperation): string | null {
       const text = Object.values((o.visitorText as { text?: Record<string, unknown> } | undefined)?.text ?? {});
       return text.length === 1 ? shownValue(text[0]) : null;
     }
-    if (key === 'identity') {
-      const given = Object.values((o.identity ?? {}) as Record<string, unknown>).filter((v) => v !== undefined);
+    if (key === 'identity' || key === 'structuredData') {
+      const given = Object.values((o[key] ?? {}) as Record<string, unknown>).filter((v) => v !== undefined);
       return given.length === 1 ? shownValue(listText(given[0])) : null;
     }
     if (key === 'crawlerPolicy') return crawlerPolicyText(o.crawlerPolicy, (k) => (o.crawlerPolicy as Record<string, unknown>)[k]);

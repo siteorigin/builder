@@ -767,7 +767,31 @@ export interface PageSeo {
    * page's public URL.
    */
   canonical?: string;
+  /**
+   * What the page is, beyond a web page, for search engines and AI answer engines (shared/page-structured-data.ts): an
+   * About or Contact page, or the page of one of the publisher's own services, products, events or guides, with the
+   * facts that describe it. Absent: a web page.
+   */
+  structuredData?: PageStructuredData;
 }
+
+/** Whether a product can be had now, as Schema.org's ItemAvailability names it. */
+export type ProductAvailability = 'InStock' | 'OutOfStock' | 'PreOrder' | 'BackOrder' | 'LimitedAvailability' | 'MadeToOrder' | 'SoldOut' | 'Discontinued';
+
+/**
+ * The kind of thing a page is and the facts it states, one kind at a time. A fact may be missing while the author
+ * fills it in: the page's structured data names the entity only once the facts it needs are there.
+ */
+export type PageStructuredData =
+  | { type: 'AboutPage' }
+  | { type: 'ContactPage' }
+  | { type: 'Service'; serviceType?: string; areaServed?: string }
+  | { type: 'Product'; price?: string; currency?: string; availability?: ProductAvailability; offerUrl?: string }
+  | { type: 'Event'; startDate?: string; endDate?: string; venue?: string; address?: string }
+  | { type: 'HowTo'; steps?: string[] };
+
+/** A page's structured type: a plain web page, or one a PageStructuredData record makes it. */
+export type PageStructuredType = 'WebPage' | PageStructuredData['type'];
 
 /**
  * A collection entry's search and sharing settings, read through generator/seo-metadata. Each one left out falls back

@@ -1,11 +1,12 @@
 /**
  * The baseline SEO and agentic readiness rules (see seo-audit.ts), over what every project already holds: its public
  * URL, the Home page's search setting, each page's and entry's title and description, sharing images and the site
- * icon, links between pages and the words on them, the pictures and headings in collection entries' text, and who
- * publishes the site (its identity, and the profiles that confirm it).
+ * icon, links between pages and the words on them, the pictures and headings in collection entries' text, who
+ * publishes the site (its identity, and the profiles that confirm it), and the facts of the pages typed for structured data.
  *
  * Titles and descriptions are judged on the documents search engines may list; links and entries' text on everything
- * the website publishes. Drafts are never judged: they are not on the website.
+ * the website publishes. Drafts are never judged: they are not on the website. A page the author says is a service,
+ * product, event or guide is judged on the facts its structured data needs.
  */
 import type { EditorDestination } from '@shared/api';
 import type { EffectiveSeo, SeoFinding, SeoPillar } from '@shared/seo';
@@ -20,6 +21,7 @@ import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
 import { showsEntryText, type SiteLink } from '@generator/checks';
 import { isLibraryImage } from '@generator/seo-graph';
 import { sitePublisher } from '@shared/site-identity';
+import { inspectPageStructuredData, typePhrase } from '@shared/page-structured-data';
 import { publishedState } from '@generator/index';
 import { bodyImageProblems } from './collections';
 import type { SeoAuditContext, SeoAuditRule } from './seo-audit';
@@ -487,5 +489,44 @@ const entityReadiness: SeoAuditRule = {
   }
 };
 
+/**
+ * Pages the author says are a service, a product, an event or a guide (shared/page-structured-data.ts) whose structured
+ * data can't say so yet: a fact it needs is missing (a product's price, an event's start), two contradict each other,
+ * or one saved by hand can't be used. Only the author knows the facts, so the AI is not offered to fill them in.
+ * Judged on the pages whose structured data the website writes, or will once it has a public URL.
+ */
+const pageStructuredData: SeoAuditRule = {
+  id: 'page-structured-data',
+  check({ state, documents }) {
+    const out: SeoFinding[] = [];
+    for (const d of documents) {
+      if (d.subject.kind !== 'page' || !d.visibility.indexable) continue;
+      const page = state.pages[d.subject.pageId];
+      const seo = page.seo && typeof page.seo === 'object' ? page.seo : undefined;
+      const found = inspectPageStructuredData(seo?.structuredData);
+      if (!found.issues.length) continue;
+      out.push(
+        finding('entity', {
+          severity: 'warning',
+          code: found.ready ? 'SEO_PAGE_STRUCTURED_DATA_UNUSABLE' : 'SEO_PAGE_STRUCTURED_DATA_INCOMPLETE',
+          message: found.ready
+            ? `${named(state, d)} has structured data that can’t all be used: ${found.issues.map((i) => i.message).join(' ')}`
+            : found.type === 'WebPage'
+              ? `${named(state, d)} has a page type that can’t be used: ${found.issues.map((i) => i.message).join(' ')}`
+              : `${named(state, d)} is marked as ${typePhrase(found.type)}, but its structured data can’t name it until its facts are complete: ${found.issues.map((i) => i.message).join(' ')}`,
+          owner: ownerOf(d),
+          site: 'structuredData',
+          explanation: found.ready
+            ? 'Search engines and AI answer engines compare services, products, events and guides by the facts their pages state. A fact that can’t be used is left out on its own; the rest is written as before.'
+            : 'Search engines and AI answer engines compare services, products, events and guides by the facts their pages state. Until the facts it needs (a price, a start date) are there, the page’s structured data leaves the entity out; the rest of it is written as before.',
+          aiFixable: false,
+          destination: { kind: 'pageSeo', pageId: d.subject.pageId, field: 'structuredData' }
+        })
+      );
+    }
+    return out;
+  }
+};
+
 /** Every baseline rule, in the order their findings are listed within a pillar. */
-export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness, agenticDiscovery, crawlerPolicy];
+export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness, pageStructuredData, agenticDiscovery, crawlerPolicy];

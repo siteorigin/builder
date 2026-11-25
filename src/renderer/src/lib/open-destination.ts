@@ -25,7 +25,8 @@ const PAGE_SEO_FIELDS: Record<Extract<EditorDestination, { kind: 'pageSeo' }>['f
   title: '#page-seo-title',
   description: '#page-seo-description',
   noindex: '#page-seo-noindex',
-  socialImage: '[data-seo-field="socialImage"] button'
+  socialImage: '[data-seo-field="socialImage"] button',
+  structuredData: '#page-structured-type'
 };
 
 /**
@@ -50,10 +51,11 @@ export function openEditorDestination(dest: EditorDestination) {
   if (dest.kind === 'pageSeo') {
     if (!Object.hasOwn(snap.state.pages, dest.pageId)) return toast('That page is no longer on the site.', 'info');
     if (s.mode !== 'edit') setMode('edit');
-    // The page itself is selected, so the Inspector shows its settings, with Search & sharing opened at the field.
+    // The page itself is selected, so the Inspector shows its settings, with Search & sharing (or Structured data, for
+    // what the page is) opened at the field.
     selectPage(dest.pageId, null);
     setState({ modal: null, rightTab: 'inspect', dockOpen: true });
-    return revealWhenShown('page-seo', PAGE_SEO_FIELDS[dest.field]);
+    return revealWhenShown(dest.field === 'structuredData' ? 'page-structured-data' : 'page-seo', PAGE_SEO_FIELDS[dest.field]);
   }
   if (dest.kind === 'entry') {
     const collection = Object.hasOwn(snap.state.collections ?? {}, dest.collectionId) ? snap.state.collections[dest.collectionId] : undefined;
