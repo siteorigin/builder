@@ -6,7 +6,7 @@
  * closed drawer can be selected and styled. Each change is planned from the project as it is when the author acts
  * (lib/ui-state) and sent against that revision, as the contract controls do, and is one Undo.
  */
-import { useId, useRef, useState, type ComponentProps, type KeyboardEvent } from 'react';
+import { useId, useState, type KeyboardEvent } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import type { ProjectSnapshot } from '@shared/api';
 import type { ComponentDefinition, ElementNode, GraphNode, OverlayMode, UiStateSchema } from '@shared/types';
@@ -63,28 +63,6 @@ function run(defId: string, plan: (def: ComponentDefinition) => EditOperation | 
 const KIND_WORDS: Record<UiStateSchema['type'], string> = { boolean: 'Yes/no', enum: 'Choice' };
 
 /**
- * A state's or option's label. A rename is refused, keeping what was typed, when the label changed elsewhere (an Undo,
- * the AI) after the author started typing, so it never writes over the newer one.
- */
-function LabelInput({ defId, read, rename, ...rest }: Omit<ComponentProps<typeof DraftInput>, 'onCommit' | 'onLive'> & { defId: string; read: (def: ComponentDefinition) => string | undefined; rename: (v: string) => unknown }) {
-  const from = useRef<string | null>(null);
-  return (
-    <DraftInput
-      {...rest}
-      limit={LABEL_MAX}
-      onLive={() => void (from.current ??= rest.value)}
-      onCommit={(v) => {
-        const started = from.current;
-        from.current = null;
-        const now = current(defId);
-        if (!v.trim() || (started !== null && now && read(now.def) !== started)) return false;
-        void rename(v);
-      }}
-    />
-  );
-}
-
-/**
  * The component's UI state variables: add a yes/no state or a choice, rename it, its options and where every placement
  * starts, and remove what nothing uses any more (the engine names what still does).
  */
@@ -122,7 +100,15 @@ function StateGroup({ def, name }: { def: ComponentDefinition; name: string }) {
       <div className="contract-row">
         <div className="contract-row-main">
           <Field label="State" controlId={`${id}-label`}>
-            <LabelInput id={`${id}-label`} value={s.label} defId={def.id} read={(d) => declaredState(d, name)?.label} rename={(v) => run(def.id, (d) => renameStateOp(d, name, v), `Rename ${s.label || name} state`)} />
+            <DraftInput
+              id={`${id}-label`}
+              value={s.label}
+              limit={LABEL_MAX}
+              onCommit={(v) => {
+                if (!v.trim()) return false;
+                void run(def.id, (d) => renameStateOp(d, name, v), `Rename ${s.label || name} state`);
+              }}
+            />
           </Field>
           <span className="faint contract-meta">
             {KIND_WORDS[s.type]} · {uses.length ? `used by ${uses.join(', ')}` : 'not used yet'}
@@ -155,16 +141,15 @@ function StateGroup({ def, name }: { def: ComponentDefinition; name: string }) {
             {s.options.map((o) => (
               <li key={o.value} className="contract-row" data-option={o.value}>
                 <div className="contract-row-main">
-                  <LabelInput
+                  <DraftInput
                     className="sm"
                     value={o.label}
+                    limit={LABEL_MAX}
                     ariaLabel={`Name of the ${o.label} option`}
-                    defId={def.id}
-                    read={(d) => {
-                      const now = declaredState(d, name);
-                      return now?.type === 'enum' ? now.options.find((x) => x.value === o.value)?.label : undefined;
+                    onCommit={(v) => {
+                      if (!v.trim()) return false;
+                      void run(def.id, (d) => renameOptionOp(d, name, o.value, v), `Rename ${o.label} option`);
                     }}
-                    rename={(v) => run(def.id, (d) => renameOptionOp(d, name, o.value, v), `Rename ${o.label} option`)}
                   />
                   <span className="faint contract-meta">
                     {s.initial === o.value ? (

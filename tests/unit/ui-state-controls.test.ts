@@ -9,6 +9,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
+import { checkHeld, fieldKey, readFields } from '../../src/renderer/src/lib/held';
 import {
   actionWords,
   addOptionOp,
@@ -154,6 +155,23 @@ describe('UI state controls: building two tabs and a drawer, step by step', () =
     expect(stateUseWords(def, 'billing')).toEqual(['Monthly (its click)', 'Annual (its click)']);
     expect(() => step(s, (d) => removeStateOp(d, 'billing'))).toThrow(/still used by/);
     expect(validateState(s.state).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('holds a label typed while the state changed elsewhere, rather than writing over the newer one', () => {
+    const s = plain();
+    const def = step(s, (d) => addStateOp(d, 'Billing', 'enum', ['Monthly', 'Annual']));
+    const typedAt = s.state;
+    const rename = renameOptionOp(def, 'billing', 'annual', 'Yearly')!;
+    const base = readFields(typedAt, [rename])!.map((r) => (r.found ? r.value : undefined));
+    expect(checkHeld(typedAt, [rename], base)).toEqual({ kind: 'apply' });
+    // Another rename of the same state is the same field; another state's is not.
+    expect(fieldKey([renameStateOp(def, 'billing', 'Plan')!])).toBe(fieldKey([rename]));
+    // Renamed elsewhere (the AI, say) after typing began: the typed rename is held for the author.
+    step(s, (d) => renameOptionOp(d, 'billing', 'annual', 'Per year'));
+    expect(checkHeld(s.state, [rename], base)).toMatchObject({ kind: 'changed' });
+    // And when the state is gone, so is what the rename was for.
+    const gone = { ...s.state, components: { ...s.state.components, [s.id]: { ...s.state.components[s.id], state: undefined } } };
+    expect(checkHeld(gone, [rename], base)).toMatchObject({ kind: 'changed' });
   });
 
   it('shows a container as a drawer only once a yes/no state shows it, and in its place again', () => {
