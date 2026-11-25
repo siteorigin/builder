@@ -1,6 +1,6 @@
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewSpec, ComponentPreviewStep, PreparedComponentPreview } from '@shared/component-preview';
 import { api, getState } from '../store';
-import { acceptMessage, newSessionId, postToFrame, type BridgeMessage } from './bridge';
+import { acceptMessage, newSessionId, postToFrame, viewAfter, type BridgeMessage, type FrameView } from './bridge';
 import type { ElementRef } from '@shared/types';
 import { attributeFindings, failedImages, missingImages, missingSections, staleImages } from './inspect-check';
 import { descOf } from './model';
@@ -65,11 +65,14 @@ async function measure(req: InspectRequest): Promise<unknown> {
       frame.remove();
       resolve(report);
     };
+    /** The load the frame last reported: a result measured on another one says nothing of this page. */
+    let view: FrameView | null = null;
     const onMsg = (e: MessageEvent) => {
-      const m = acceptMessage(e, frame, origin, sessionId);
+      const m = acceptMessage(e, frame, origin, sessionId, view);
       if (!m) return;
+      view = viewAfter(m, view);
       if (m.type === 'ready') {
-        postToFrame(frame, origin, sessionId, 'mode', { mode: 'preview' });
+        postToFrame(frame, origin, sessionId, 'mode', { mode: 'preview' }, view);
         // The frame waits (up to 4s) for fonts and images itself, and up to 2.5s more to request again
         // images that showed nothing, before measuring; loading and measuring get separate deadlines.
         clearTimeout(timer);
@@ -78,7 +81,7 @@ async function measure(req: InspectRequest): Promise<unknown> {
         // Elements asked for are found as the canvas finds a selection, against the project as it is now.
         const state = getState().snapshot?.state;
         const targets = Array.isArray(req.targets) && state ? req.targets.map((t) => descOf(state, t)) : undefined;
-        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds], ...(targets ? { targets } : {}) });
+        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds], ...(targets ? { targets } : {}) }, view);
       } else if (m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === req.requestId) done((m.payload as { report: unknown }).report);
     };
     let timer = setTimeout(() => done({ error: 'Timed out loading the page.' }), 12000);
@@ -141,15 +144,22 @@ export function componentFrame(): ComponentFrame {
   let abandon: (() => void) | null = null;
   /** The address of the preview loading or shown, which the bridge's messages must come from. */
   let address: string | null = null;
+  /** The load of `address` the frame reported: every later report must come from it. */
+  let view: FrameView | null = null;
   let disposed = false;
   let queue: Promise<unknown> = Promise.resolve();
   /** The one message being waited for: settled by it, by its deadline, or by dispose. */
   let waiting: { accept: (m: BridgeMessage) => boolean; done: (m: BridgeMessage | null) => void } | null = null;
 
   const onMsg = (e: MessageEvent) => {
-    const m = acceptMessage(e, frame, origin, sessionId);
-    if (!m || !waiting || m.navigationId !== address) return;
-    if (waiting.accept(m)) waiting.done(m);
+    const m = acceptMessage(e, frame, origin, sessionId, view);
+    if (!m) return;
+    if (m.type === 'ready') {
+      // Only the load of the preview asked for counts (an earlier one in the same frame says nothing of it).
+      if (!address || (m.payload as { path?: unknown }).path !== address) return;
+      view = { navigationId: m.navigationId, revision: m.revision };
+    }
+    if (waiting?.accept(m)) waiting.done(m);
   };
   window.addEventListener('message', onMsg);
 
@@ -224,6 +234,7 @@ export function componentFrame(): ComponentFrame {
       definitionId = shownDefinition = prepared.definitionId;
       origin = new URL(runtime.url).origin;
       address = prepared.path;
+      view = null;
       const target = frame;
       const ready = await next(
         (m) => m.type === 'ready',
@@ -238,14 +249,14 @@ export function componentFrame(): ComponentFrame {
       if (!state?.mounted) return fail(state?.error ? `The component could not be shown: ${state.error}` : 'The component could not be shown.');
       shownFrom = from;
       // Shown as visitors see it: what only the author sees in Edit (a button with nowhere to go) stays hidden.
-      postToFrame(frame, origin, sessionId, 'mode', { mode: 'preview' });
+      postToFrame(frame, origin, sessionId, 'mode', { mode: 'preview' }, view);
     }
     const requestId = newSessionId();
     const target = frame;
     const measured = await next(
       (m) => m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === requestId,
       PREVIEW_MEASURE_MS,
-      () => postToFrame(target, origin, sessionId, 'inspect', { requestId, ...(measure?.readability ? { readability: true } : {}), ...(measure?.gaps ? { gaps: true } : {}) })
+      () => postToFrame(target, origin, sessionId, 'inspect', { requestId, ...(measure?.readability ? { readability: true } : {}), ...(measure?.gaps ? { gaps: true } : {}) }, view)
     );
     if (disposed) return fail('The component preview was closed.');
     if (!measured) return fail('Timed out measuring the component preview.');

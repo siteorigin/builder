@@ -8,7 +8,7 @@ import { childLists, placesOf } from '@engine/tree';
 import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
-import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
+import { acceptMessage, newSessionId, postToFrame, type FrameView } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
 import { catalogueRole, elementWhere, nodeLabel, sectionWhere, slotRefusal, slotWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } from '../lib/insert-search';
@@ -508,21 +508,26 @@ export function LivePreview({ spec, fallback, label, maxH = LIVE_MAX_H }: { spec
     let measure = '';
     const origin = new URL(url).origin;
     let path = '';
+    /** The load of `path` the frame reported, which every later report must come from. */
+    let view: FrameView | null = null;
     const remeasure: Array<ReturnType<typeof setTimeout>> = [];
     let poll: ReturnType<typeof setInterval> | undefined;
     let sized = false;
     let over = false;
     const onMsg = (e: MessageEvent) => {
-      const m = acceptMessage(e, frame.current, origin, session);
-      if (!m || gone || over || m.navigationId !== path) return;
+      const m = acceptMessage(e, frame.current, origin, session, view);
+      if (!m || gone || over) return;
       if (m.type === 'ready') {
+        // Only the load of the preview prepared here counts (an earlier one in the same frame says nothing of it).
+        if (!path || (m.payload as { path?: unknown }).path !== path) return;
+        view = { navigationId: m.navigationId, revision: m.revision };
         if (!(m.payload as { preview?: { mounted?: boolean } }).preview?.mounted) return setLive({ phase: 'failed' });
-        postToFrame(frame.current, origin, session, 'mode', { mode: 'preview' });
+        postToFrame(frame.current, origin, session, 'mode', { mode: 'preview' }, view);
         // Measured at once, and again as late images and fonts settle its height.
         const ask = () => {
           if (gone) return;
           measure = newSessionId();
-          postToFrame(frame.current, origin, session, 'inspect', { requestId: measure });
+          postToFrame(frame.current, origin, session, 'inspect', { requestId: measure }, view);
         };
         ask();
         remeasure.push(setTimeout(ask, 700), setTimeout(ask, 1800));

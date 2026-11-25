@@ -78,7 +78,10 @@ async function page() {
 /** Report something to the editor exactly as the page's bridge does. */
 async function bridge(type, payload) {
   const content = await page();
-  await content.evaluate(([t, p]) => window.parent.postMessage({ protocolVersion: 1, sessionId: window.name, navigationId: location.pathname, revision: 0, type: t, payload: p }, '*'), [type, payload]);
+  await content.evaluate(
+    ([t, p]) => window.parent.postMessage({ protocolVersion: 1, sessionId: window.name, navigationId: document.documentElement.getAttribute('data-so-navigation'), revision: 0, type: t, payload: p }, '*'),
+    [type, payload]
+  );
 }
 
 /**

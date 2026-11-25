@@ -44,9 +44,24 @@ function readablePath(pathname) {
 /** The path of the page the frame shows, as readablePath spells it. */
 const shownPath = () => readablePath(location.pathname);
 
+/**
+ * This document's own name, so a later load of the same page is never taken for it, and how many times it has moved
+ * to another page in place: together they name the navigation each message comes from (§17.4). The editor drops what
+ * a navigation it has moved past reports about the page.
+ */
+const documentId = 'd' + Array.from(crypto.getRandomValues(new Uint32Array(2)), (n) => n.toString(36)).join('');
+let navigationSeq = 0;
+let navigationId = `${documentId}.0`;
+/** A page arrived in place: what is sent from here on is about it. Shown on the page for the test driver. */
+function nextNavigation() {
+  navigationId = `${documentId}.${++navigationSeq}`;
+  document.documentElement.setAttribute('data-so-navigation', navigationId);
+}
+document.documentElement.setAttribute('data-so-navigation', navigationId);
+
 function send(type, payload = {}) {
   if (!sessionId || parentWin === window) return;
-  parentWin.postMessage({ protocolVersion: PROTOCOL, sessionId, navigationId: location.pathname, revision, type, payload }, '*');
+  parentWin.postMessage({ protocolVersion: PROTOCOL, sessionId, navigationId, revision, type, payload }, '*');
 }
 
 function descOf(el) {
@@ -4665,6 +4680,8 @@ window.addEventListener('message', async (e) => {
       scheduleRects();
       break;
     case 'scrollTo': {
+      // Asked about a page this frame has since left: the editor asks again once it knows the page that is here.
+      if (m.navigationId && m.navigationId !== navigationId) break;
       // A newer request replaces one still waiting. One for an element the page does not show yet (just inserted, its
       // hot update still on the way) waits for it while editing.
       const desc = m.payload.desc;
@@ -4942,6 +4959,7 @@ window.addEventListener('unhandledrejection', (e) => {
 });
 
 function reportNav() {
+  nextNavigation();
   stopKeeping();
   pendingScroll = null;
   send('navigated', { path: shownPath() });

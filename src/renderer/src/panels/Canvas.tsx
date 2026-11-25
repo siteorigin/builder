@@ -12,7 +12,7 @@ import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';
-import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
+import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type FrameView } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
@@ -318,6 +318,8 @@ export function Canvas() {
     if (revisionAt.current.revision !== revision) revisionAt.current = { revision, at: Date.now() };
     return Date.now() - revisionAt.current.at < PAGE_CATCH_UP_MS;
   }
+  /** The navigation and revision the frame of `session` last reported showing; reports about any other are stale. */
+  const frameView = useRef<{ session: string; view: FrameView | null }>({ session: '', view: null });
   const url = runtime.state === 'ready' ? runtime.url : null;
   const origin = url ? new URL(url).origin : null;
   const state = snapshot?.state;
@@ -497,7 +499,9 @@ export function Canvas() {
     };
   }, [emptyPage, frameReady, pageId, viewport, snapshot?.revision, applied]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const post = (type: string, payload: unknown = {}) => postToFrame(frameRef.current, origin, session, type, payload);
+  /** What the frame of the current session shows, as it last reported (null before it reported a page). */
+  const viewNow = () => (frameView.current.session === session ? frameView.current.view : null);
+  const post = (type: string, payload: unknown = {}) => postToFrame(frameRef.current, origin, session, type, payload, viewNow());
   // Saving or leaving the project asks the preview to hand back an inline edit that is still open.
   useEffect(() => {
     setCanvasCommit(() => post('commitTextEdit'));
@@ -648,8 +652,13 @@ export function Canvas() {
   // Bridge messages
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
-      const m = acceptMessage(e, frameRef.current, origin, session);
+      const view = viewNow();
+      const m = acceptMessage(e, frameRef.current, origin, session, view);
       if (!m) return;
+      // A page loaded, moved on in place or caught up with a change: what it reports from here on is about that.
+      frameView.current = { session, view: viewAfter(m, view) };
+      // A measurement the editor waits on, taken from a page or revision since left, answers as nothing measured.
+      const stale = staleFor(m, frameView.current.view);
       const s = getState();
       const st = s.snapshot?.state;
       const p = m.payload as Record<string, unknown>;
@@ -1039,7 +1048,7 @@ export function Canvas() {
           const w = measureWaiters.current.get(String(p.requestId));
           if (w) {
             measureWaiters.current.delete(String(p.requestId));
-            w(p.rects);
+            w(stale ? null : p.rects);
           }
           break;
         }
@@ -1047,7 +1056,7 @@ export function Canvas() {
           const w = measureWaiters.current.get(String(p.requestId));
           if (w) {
             measureWaiters.current.delete(String(p.requestId));
-            w(p.px);
+            w(stale ? null : p.px);
           }
           break;
         }
@@ -1055,7 +1064,7 @@ export function Canvas() {
           const w = measureWaiters.current.get(String(p.requestId));
           if (w) {
             measureWaiters.current.delete(String(p.requestId));
-            w(p);
+            w(stale ? null : p);
           }
           break;
         }

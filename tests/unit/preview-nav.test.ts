@@ -37,7 +37,10 @@ interface Report {
   navId?: number;
 }
 const reports = () => page.evaluate<Report[]>(`window.reports`);
-const command = (type: string, payload: unknown) => page.evaluate(`document.querySelector('iframe').contentWindow.postMessage(${JSON.stringify({ protocolVersion: 1, sessionId: 'so-test', type, payload })}, '*')`);
+const command = (type: string, payload: unknown, navigationId = '') =>
+  page.evaluate(`document.querySelector('iframe').contentWindow.postMessage(${JSON.stringify({ protocolVersion: 1, sessionId: 'so-test', navigationId, revision: 0, type, payload })}, '*')`);
+/** The navigation each `ready` and `navigated` came from, in order. */
+const navigations = () => page.evaluate<Array<{ type: string; navigationId: string }>>(`window.navigations`);
 const gotoCalls = () => frame.evaluate<number>(`window.gotoCalls`);
 const release = (n: number) => frame.evaluate(`window.releases[${n}]()`);
 /** Everything the bridge has sent so far, once it has all arrived: messages from one frame arrive in order. */
@@ -60,8 +63,9 @@ describe.skipIf(!browserInstalled)('the preview frame answering the editor’s p
       if (url.origin === HOST) return route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>host</title><body style="margin:0"><iframe name="so-test" src="${SITE}/" style="border:0;width:700px;height:400px"></iframe></body>` });
       return route.abort();
     });
-    await page.addInitScript(`if (location.origin === '${HOST}') { window.reports = []; window.flushed = false; window.addEventListener('message', (e) => {
+    await page.addInitScript(`if (location.origin === '${HOST}') { window.reports = []; window.navigations = []; window.flushed = false; window.addEventListener('message', (e) => {
       if (!e.data || e.data.sessionId !== 'so-test') return;
+      if (e.data.type === 'ready' || e.data.type === 'navigated') window.navigations.push({ type: e.data.type, navigationId: e.data.navigationId });
       if (e.data.type === 'navigated') window.reports.push(e.data.payload);
       if (e.data.type === 'measured') window.measured = e.data.payload;
       if (e.data.type === 'flushed') window.flushed = true;
@@ -106,6 +110,47 @@ describe.skipIf(!browserInstalled)('the preview frame answering the editor’s p
     expect(await flushed()).toEqual([{ path: '/contact/' }, { path: '/contact/', navId: 2 }]);
     expect(await frame.evaluate(`window.loads`)).toBe(1);
     expect(await frame.evaluate(`location.pathname`)).toBe('/contact/');
+  });
+
+  it('names each load of a page, and each page it moves to in place, as a navigation of its own', async () => {
+    const [loaded] = await navigations();
+    expect(loaded.type).toBe('ready');
+    expect(loaded.navigationId).toMatch(/^d[0-9a-z]+\.0$/);
+    const doc = loaded.navigationId.slice(0, -2);
+    // The same page loaded again is another navigation, of another document.
+    await frame.evaluate(`setTimeout(() => location.reload())`);
+    await expect.poll(async () => (await navigations()).filter((n) => n.type === 'ready').length).toBe(2);
+    const reloaded = (await navigations())[1].navigationId;
+    expect(reloaded).toMatch(/^d[0-9a-z]+\.0$/);
+    expect(reloaded).not.toBe(loaded.navigationId);
+    expect(await frame.evaluate(`location.pathname`)).toBe('/');
+    // A page reached in place is the next navigation of that document: the site's report and the answer both name it.
+    await frame.waitForSelector('html[data-so-editing]', { state: 'attached' });
+    await command('navigate', { path: '/about/', navId: 1 });
+    await expect.poll(gotoCalls).toBe(1);
+    await release(1);
+    await expect.poll(async () => (await reports()).length).toBe(2);
+    const moved = reloaded.slice(0, -2) + '.1';
+    expect((await navigations()).slice(2)).toEqual([
+      { type: 'navigated', navigationId: moved },
+      { type: 'navigated', navigationId: moved }
+    ]);
+    expect(doc).not.toBe(reloaded.slice(0, -2));
+  });
+
+  it('ignores a scroll asked of a page it has since left', async () => {
+    await frame.evaluate(`document.querySelector('main').insertAdjacentHTML('beforeend', '<div style="height: 3000px"></div><p data-so-ctx="page:p" data-so-node="far">Far</p>')`);
+    const [loaded] = await navigations();
+    await command('navigate', { path: '/about/', navId: 1 });
+    await expect.poll(gotoCalls).toBe(1);
+    await release(1);
+    await expect.poll(async () => (await reports()).length).toBe(2);
+    const desc = { ctx: 'page:p', node: 'far', items: '' };
+    await command('scrollTo', { desc }, loaded.navigationId);
+    await flushed();
+    expect(await frame.evaluate(`window.scrollY`)).toBe(0);
+    await command('scrollTo', { desc }, (await navigations()).at(-1)!.navigationId);
+    await expect.poll(() => frame.evaluate(`window.scrollY`)).toBeGreaterThan(0);
   });
 
   it('measures each sibling with the CSS order it is laid out by', async () => {
