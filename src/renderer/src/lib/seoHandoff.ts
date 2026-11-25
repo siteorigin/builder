@@ -35,8 +35,20 @@ function linkWords(message: string): string | null {
   return m && m[1].trim() ? m[1] : null;
 }
 
-/** The request for one finding, or null when the AI cannot fix it, it is not one this knows, or what it names has gone. */
+/**
+ * The request for one finding, or null when the AI cannot fix it, it is not one this knows, or what it names has gone.
+ * It is worked out while Project health and the export dialog draw: a project document with something unexpected in it
+ * (a page with no title) offers no request rather than taking the dialog down.
+ */
 export function findingHandoff(state: ProjectState, f: SeoFinding): SeoHandoff | null {
+  try {
+    return forFinding(state, f);
+  } catch {
+    return null;
+  }
+}
+
+function forFinding(state: ProjectState, f: SeoFinding): SeoHandoff | null {
   if (!f.aiFixable || !f.destination) return null;
   const d = f.destination;
   if (d.kind === 'pageSeo') {
@@ -57,7 +69,8 @@ export function findingHandoff(state: ProjectState, f: SeoFinding): SeoHandoff |
     const site = (text: string): SeoHandoff => ({ mode: 'edit', scope: 'site', text });
     if (f.code === 'SEO_LLMS_TXT_OFF') return site('Turn on llms.txt so AI agents get an index of the site’s pages');
     if (f.code === 'SEO_SEARCH_CRAWLERS_BLOCKED') return site('Let search engines crawl the whole website again in robots.txt, keeping the other crawler rules');
-    if (f.code === 'SEO_AI_SEARCH_CRAWLERS_BLOCKED') return site('Let AI search engines crawl the whole website again in robots.txt, keeping AI training crawlers out and the other crawler rules');
+    // Only the AI search engines the audit names: whether AI training crawlers are let in is the author's choice, kept as it is.
+    if (f.code === 'SEO_AI_SEARCH_CRAWLERS_BLOCKED') return site('Let AI search engines crawl the whole website again in robots.txt, keeping the other crawler rules');
     return null;
   }
   if (d.kind === 'element' && f.code === 'SEO_LINK_TEXT_GENERIC') {
@@ -81,9 +94,10 @@ export function findingHandoff(state: ProjectState, f: SeoFinding): SeoHandoff |
 const POST_LINE = 300;
 const POST_OPENING = 600;
 
+/** One line of at most `max` characters as a reader counts them, so a cut never splits an emoji or an accented letter. */
 function clip(text: string, max: number): string {
-  const one = seoText(text);
-  return one.length > max ? `${one.slice(0, max - 1).trimEnd()}…` : one;
+  const chars = [...seoText(text)];
+  return chars.length > max ? `${chars.slice(0, max - 1).join('').trimEnd()}…` : chars.join('');
 }
 
 function plainBody(body: unknown): string {
@@ -100,6 +114,14 @@ function plainBody(body: unknown): string {
  * laid over it (lib/seo-preview's `withTypedSeo`), so a description changed a moment ago is the one asked about.
  */
 export function previewHandoff(state: ProjectState, subject: SeoSubject): SeoHandoff | null {
+  try {
+    return forPreview(state, subject);
+  } catch {
+    return null;
+  }
+}
+
+function forPreview(state: ProjectState, subject: SeoSubject): SeoHandoff | null {
   if (subject.kind === 'page') {
     const page = own(state.pages, subject.pageId);
     if (!page) return null;

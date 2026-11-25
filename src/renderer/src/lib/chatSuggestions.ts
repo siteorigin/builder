@@ -41,8 +41,9 @@ const own = <T>(map: Record<string, T>, key: string): T | undefined => (Object.h
 
 /** A title as a prompt names it: one line, curly-quoted, with no quote of its own to end it early. */
 export function quoted(text: string): string {
-  const one = text.replace(/\s+/g, ' ').replace(/["“”]/g, "'").trim();
-  return `“${one.length > 60 ? `${one.slice(0, 59).trimEnd()}…` : one}”`;
+  // By characters as a reader counts them, so a long title is never cut through an emoji.
+  const one = [...text.replace(/\s+/g, ' ').replace(/["“”]/g, "'").trim()];
+  return `“${one.length > 60 ? `${one.slice(0, 59).join('').trimEnd()}…` : one.join('')}”`;
 }
 
 /** How a page is named in a prompt: by its title, with its address when another page has the same title. */
@@ -347,9 +348,10 @@ function seoStarter(state: ProjectState, findings: readonly SeoFinding[], page: 
     return copy.get(p.id)!;
   };
   const texts = findings.filter(isPageText);
+  // Home kept out of search engines needs no copy to fix.
+  if (page && findings.some((f) => f.aiFixable && f.code === 'SEO_HOME_NOINDEX' && f.owner?.id === page.id)) return { kind: 'page', text: `Let search engines list the ${pageName(state, page)} page again` };
   if (hasCopy(page)) {
     const on = pageName(state, page);
-    if (findings.some((f) => f.aiFixable && f.code === 'SEO_HOME_NOINDEX' && f.owner?.id === page.id)) return { kind: 'page', text: `Let search engines list the ${on} page again` };
     const mine = texts.filter((f) => f.destination.pageId === page.id);
     if (mine.length)
       return {

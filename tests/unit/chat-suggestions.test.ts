@@ -654,6 +654,8 @@ describe('a starter about search and AI readiness, from the SEO audit (#599)', (
     // Home asked not to be listed comes first.
     const home = state.site.homePageId;
     expect(starters(state, home, { seoFindings: [meta('SEO_DESCRIPTION_MISSING', home, 'description'), meta('SEO_HOME_NOINDEX', home, 'noindex')] })[1]).toEqual({ kind: 'page', text: 'Let search engines list the “Home” page again' });
+    // Seen from another page, Home's listing is the whole site's to fix, not the open page's.
+    expect(starters(state, about, { seoFindings: [meta('SEO_HOME_NOINDEX', home, 'noindex')] })[1]).toEqual({ kind: 'site', text: 'Audit the site’s SEO and AI readiness and fix what you can' });
   });
 
   it('asks for other pages’ search titles and meta descriptions as a change to the whole site', () => {
@@ -685,6 +687,12 @@ describe('a starter about search and AI readiness, from the SEO audit (#599)', (
     expect(audited.map((f) => f.code)).toEqual(expect.arrayContaining(['SEO_DESCRIPTION_MISSING', 'SEO_ENTITY_IDENTITY_MISSING']));
     for (const pageId of [home, second]) expect(starters(state, pageId, { seoFindings: audited })).toEqual(starters(state, pageId));
     expect(starters(state, second, { seoFindings: [siteFinding('SEO_LLMS_TXT_OFF'), meta('SEO_TITLE_MISSING', home, 'title')] })).toEqual(starters(state, second));
+    // A new Blank site, its Home with nothing on it, as the chat first shows it.
+    const blank = createStarterState('blank', 'Kloof', false);
+    expect(blank.pages[blank.site.homePageId].rootIds).toEqual([]);
+    expect(starters(blank, blank.site.homePageId, { seoFindings: runSeoAudit(blank) })).toEqual(starters(blank, blank.site.homePageId));
+    // Home kept out of search engines needs no copy to fix.
+    expect(starters(state, home, { seoFindings: [meta('SEO_HOME_NOINDEX', home, 'noindex')] })[1]).toEqual({ kind: 'page', text: 'Let search engines list the “Home” page again' });
   });
 
   it('steps aside for a scoped selection’s own starters', () => {
@@ -692,7 +700,9 @@ describe('a starter about search and AI readiness, from the SEO audit (#599)', (
     const home = state.site.homePageId;
     const ref: ElementRef = { owner: { kind: 'page', id: home }, instancePath: [], nodeId: state.pages[home].rootIds[0] };
     const findings = [meta('SEO_DESCRIPTION_MISSING', home, 'description')];
-    expect(starters(state, home, { selection: ref, seoFindings: findings })).toEqual(starters(state, home, { selection: ref }));
-    expect(starters(state, home, { selection: ref, seoFindings: findings }).every((s) => s.kind === 'selection')).toBe(true);
+    const picked = starters(state, home, { selection: ref, seoFindings: findings });
+    expect(picked.length).toBeGreaterThan(0);
+    expect(picked).toEqual(starters(state, home, { selection: ref }));
+    expect(picked.every((s) => s.kind === 'selection')).toBe(true);
   });
 });

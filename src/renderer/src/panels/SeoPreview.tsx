@@ -3,7 +3,8 @@ import { Globe } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { createSeoResolver } from '@generator/seo-metadata';
-import { useStore } from '../store';
+import { getState, useStore } from '../store';
+import { saveOpenPost } from '../lib/post-draft';
 import { AssetImage } from '../components/AssetImage';
 import { Tabs } from '../components/ui';
 import { lengthMeter, previewDocument, structuredPreview, withTypedSeo, type DocumentPreview, type LengthMeter as Meter, type StructuredPreview, type TypedSeo } from '../lib/seo-preview';
@@ -217,7 +218,17 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
       />
       {!readOnly && (
         <div className="seo-preview-ai">
-          <AiHandoffButton label="Optimize with AI" request={() => previewHandoff(overlay, subject)} />
+          <AiHandoffButton
+            label="Optimize with AI"
+            request={async () => {
+              if (subject.kind === 'page') return previewHandoff(overlay, subject);
+              // The post's other fields (its excerpt, its text) are saved first, so the question quotes them as typed;
+              // what could not be saved is said in the writer, and the question quotes what the previews show.
+              const saved = await saveOpenPost();
+              const now = getState().snapshot?.state;
+              return previewHandoff(saved && now ? now : overlay, subject);
+            }}
+          />
           {subject.kind === 'entry' && <span className="field-hint">Suggests a title and description for you to paste in.</span>}
         </div>
       )}

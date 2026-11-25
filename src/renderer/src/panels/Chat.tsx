@@ -10,7 +10,7 @@ import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDra
 import { nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
 import { PROVIDER_LABELS, turnModelText } from '@shared/turn-model';
 import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
-import { chatFocusStep } from '../lib/page-start';
+import { CHAT_FOCUS_WAIT_MS, chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { auditOnce } from '../lib/seo-health';
 import { headroomWarning, replayedWords, smallToolsCover } from '../lib/chatHeadroom';
@@ -473,7 +473,7 @@ export function Chat() {
             `Which parts of the “${page.title}” page are shared with other pages?`
           ].map((text) => ({ text, kind: 'ask' }))
         : []
-      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: { page: ctxOn.page, selection: toSelection }, seoFindings: seoFindingsOf(st) });
+      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: { page: ctxOn.page, selection: toSelection }, seoFindings: dockOpen && rightTab === 'chat' ? seoFindingsOf(st) : undefined });
   const stepNow = currentStep(working?.activities);
   // The run strip is the one place that says what a run is doing now: an edit's current step, or its phase. A question
   // is always "Reading the site", as the dock tab and the canvas say it, followed by its current step.
@@ -600,9 +600,26 @@ export function Chat() {
     if (step === 'drop') return void setState({ chatFocus: null });
     if (step === 'show-box') return setDraftFirst(true);
     if (step === 'wait' || !ta) return;
-    ta.focus();
-    ta.setSelectionRange(ta.value.length, ta.value.length);
-    setState({ chatFocus: null });
+    // A request put in the box from elsewhere (Fix with AI) may run to several lines.
+    sizeToFit(ta);
+    const take = () => {
+      ta.focus();
+      if (document.activeElement !== ta) return false;
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      return true;
+    };
+    if (take()) return void setState({ chatFocus: null });
+    // A dialog closed by the same click (Fix with AI in Project health) keeps the rest of the window inert until it has
+    // gone: the box takes focus once it lets go, or the request lapses as one that waited too long does.
+    const req = chatFocus;
+    let frame = 0;
+    const retry = () => {
+      if (getState().chatFocus !== req) return;
+      if (take() || Date.now() - req.at > CHAT_FOCUS_WAIT_MS) return void setState({ chatFocus: null });
+      frame = requestAnimationFrame(retry);
+    };
+    frame = requestAnimationFrame(retry);
+    return () => cancelAnimationFrame(frame);
   }, [chatFocus, snap?.workspaceKey, pageId, dockOpen, rightTab, configured, asking, draftFirst]);
 
   /** Answer the waiting question, with a choice, an offered picture or the composer's text. Each question takes one answer. */

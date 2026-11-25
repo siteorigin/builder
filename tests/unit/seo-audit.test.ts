@@ -316,7 +316,7 @@ describe('baseline rules', () => {
       expect.objectContaining({ code: 'SEO_ENTRY_HEADING_SKIP', severity: 'warning', pillar: 'agentic', message: expect.stringContaining('“Fees” is a Heading 4 after a Heading 2'), site: 'body|heading|1', aiFixable: false, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body' } })
     ]);
     const deeper = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h2', spans: [{ text: 'Classes' }] }, { type: 'h3', spans: [{ text: 'Fees' }] }, { type: 'h2', spans: [{ text: 'Dates' }] }, { type: 'h4', spans: [{ text: 'Spring' }] }] });
-    expect(only(deeper, 'SEO_ENTRY_HEADING_SKIP').map((f) => f.site)).toEqual(['body|heading|3']);
+    expect(only(deeper, 'SEO_ENTRY_HEADING_SKIP').map((f) => [f.site, f.aiFixable])).toEqual([['body|heading|3', false]]);
     // Its first heading follows whatever its layout shows above the text, so it is not judged.
     const first = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h4', spans: [{ text: 'Fees' }] }, { type: 'p', spans: [{ text: 'Twenty a class.' }] }] });
     expect(only(first, 'SEO_ENTRY_HEADING_SKIP')).toEqual([]);

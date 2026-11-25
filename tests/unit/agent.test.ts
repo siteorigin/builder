@@ -3422,6 +3422,8 @@ describe('from an SEO finding to its fix in one undoable turn (#599)', () => {
     const description = 'Meet the designers behind Test and see how they plan calm, practical homes.';
     const env = await setup([
       (req) => {
+        // The request reaches the model as the box held it.
+        expect(JSON.stringify(req.items)).toContain('Write a meta description for the “About” page');
         const names = req.tools.map((t) => t.name);
         // The page's own search settings and the audit, and nothing of the whole site's.
         expect(names).toEqual(expect.arrayContaining(['audit_seo', 'update_page_seo']));

@@ -933,8 +933,11 @@ export async function openSeoChat(h: SeoHandoff): Promise<boolean> {
   const snap = s.snapshot;
   if (!snap || seoOpening) return false;
   // While the AI works (or waits on an answer) the chat is busy with that request; this one would sit unseen behind it.
-  if (s.activeRunId) return (toast('The AI is still working on a request. Try again once it has finished.', 'info'), false);
+  // The run's status says so: its ID stays on the last run once that has ended.
+  if (s.runStatus) return (toast('The AI is still working on a request. Try again once it has finished.', 'info'), false);
   if (!s.conversation) return (toast('The AI conversation is still loading. Try again in a moment.', 'info'), false);
+  const pageGone = (st: ProjectState) => h.mode === 'edit' && h.scope === 'page' && !Object.hasOwn(st.pages, h.pageId);
+  if (pageGone(snap.state)) return (toast('That page is no longer on the site.', 'info'), false);
   const opening = snap.workspaceKey;
   let conversation = s.conversation;
   if (draftFor(s.chatDrafts, conversation.id).trim() || imagesFor(s.chatImages, conversation.id).length) {
@@ -947,13 +950,17 @@ export async function openSeoChat(h: SeoHandoff): Promise<boolean> {
     } finally {
       seoOpening = false;
     }
-    // The author may have moved on meanwhile: another project, or the page it is about removed.
+    // Another project opened meanwhile: the request was for the one before.
     if (getState().snapshot?.workspaceKey !== opening) return false;
+    // The AI now writes to the new conversation, so the chat shows it whatever follows; the message being written stays
+    // with its own (under Not sent yet).
+    setState({ conversation });
   }
   const now = getState();
   const st = now.snapshot!.state;
   if (h.mode === 'edit' && h.scope === 'page') {
-    if (!Object.hasOwn(st.pages, h.pageId)) return (toast('That page is no longer on the site.', 'info'), false);
+    // Removed while the conversation opened.
+    if (pageGone(st)) return (toast('That page is no longer on the site.', 'info'), false);
     if (now.mode !== 'edit') setMode('edit');
     // The page itself, so the request is about the whole page; also out of a component edited everywhere or a layout.
     selectPage(h.pageId, null);
@@ -969,7 +976,6 @@ export async function openSeoChat(h: SeoHandoff): Promise<boolean> {
     dockOpen: true,
     chatMode: h.mode,
     ...scope,
-    ...(conversation.id !== after.conversation?.id ? { conversation } : {}),
     chatDrafts: withDraft(after.chatDrafts, conversation.id, h.text),
     ...(after.pageId ? { chatFocus: { workspaceKey: opening, pageId: after.pageId, at: Date.now() } } : {})
   });
