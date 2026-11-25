@@ -4157,6 +4157,11 @@ export class ProjectSession extends EventEmitter {
           } catch (e) {
             if (!(e instanceof DiskConflictError)) throw e;
             changedOutside.push(e.path);
+            // A collection's settings changed outside (a source attached): its entries the run wrote are held too,
+            // never taken back under it.
+            const settings = collectionPathOf(e.path);
+            if (settings && settings.entryId === undefined)
+              for (const p of touched) if (collectionPathOf(p)?.collectionId === settings.collectionId && collectionPathOf(p)?.entryId !== undefined) changedOutside.push(p);
           }
         }
         if (changedOutside.length) await this.revertAroundConflicts(run, touched, changedOutside);

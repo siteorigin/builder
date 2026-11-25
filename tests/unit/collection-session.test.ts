@@ -284,6 +284,19 @@ describe('collections on disk', () => {
     expect(read(dir, `${POSTS}/entries/en_winter.json`).title).toBe('Changed');
   });
 
+  it('holds an entry a cancelled AI run wrote when its collection was synced outside the app meanwhile (#673)', async () => {
+    const { dir, s } = await make();
+    await ok(s.apply({ operations: blog }, { label: 'Start' }));
+    expect(await s.beginRun('run_sync')).toBeNull();
+    // Through its post tool, whose call grants this one entry.
+    await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'By the AI' }] }, { label: 'AI', source: 'ai', runId: 'run_sync', history: false, collectionWrite: { collectionId: 'posts', entryId: 'en_winter' } }));
+    writeFileSync(join(dir, `${POSTS}/collection.json`), JSON.stringify({ ...read(dir, `${POSTS}/collection.json`), sourceId: 'wordpress' }, null, 2));
+    const r = await s.abortRun();
+    expect(r.restored).toBe(false);
+    // Never taken back under the source: the run's version stays on disk, the earlier one held for the author.
+    expect(read(dir, `${POSTS}/entries/en_winter.json`).title).toBe('By the AI');
+  });
+
   it('writes a structured collection’s settings and fields and reads them back exactly (#673)', async () => {
     const { dir, s } = await make();
     await ok(

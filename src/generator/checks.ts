@@ -1892,6 +1892,8 @@ export interface DraftLink {
   pageId?: string;
   entryId?: string;
   anchor?: string;
+  /** For a link in a collection's layout: the published entry whose page shows it (one of its link fields, say). */
+  shownOn?: string;
 }
 
 /** A draft a link can lead to: a page, or a collection entry. */
@@ -1996,7 +1998,7 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     }
     return mayLink.get(collectionId)!;
   };
-  const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree }> = [
+  const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree; shownOn?: string }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
     // Each shared part, when a published page shows it: the header and footer can be on different pages.
     ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
@@ -2004,7 +2006,7 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     // elements that entry shows. Read only for a layout that links where a draft could be at all.
     ...entries
       .filter((e) => !draftEntryIds.has(e.entry.id) && layoutMayLinkToDraft(e.collection.settings.id))
-      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry) }))
+      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry), shownOn: e.entry.id }))
   ];
   const seen = new Set<string>();
   // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
@@ -2024,7 +2026,7 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       const id = JSON.stringify([src.owner, reportId, key, to]);
       if (seen.has(id)) continue;
       seen.add(id);
-      draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to });
+      draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to, ...(src.shownOn ? { shownOn: src.shownOn } : {}) });
     }
   // A published entry's text: a link to a draft entry, a page link to a draft page, or a typed address of one.
   for (const { entry, collection } of entries) {

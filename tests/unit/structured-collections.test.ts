@@ -18,6 +18,7 @@ import { publicationPlan } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { collectionHasBody, collectionKind, hasArchivePages, hasDetailPages, isDataOnly, siteEntries } from '@shared/collections';
 import { entryFieldSchemas, entryFieldValue } from '@shared/entry-fields';
+import { syncedEntryChange } from '@engine/collections';
 import { collectionsFromDocs, stateToDocs } from '../../src/main/project/documents';
 import { planPostImport } from '../../src/main/posts-import/plan';
 import type { ParsedSource } from '../../src/main/posts-import/source';
@@ -375,6 +376,12 @@ describe('references when an entry goes', () => {
     // Each entry named that is gone is a problem of its own, so a second going is noticed too.
     hand.collections.projects.entries.en_hall.values.crew = ['en_gone', 'en_lost', 'en_okafor'];
     expect(validateState(hand).filter((d) => d.code === 'REFERENCE_BROKEN').map((d) => d.site)).toEqual(['values|lead|en_gone', 'values|crew|en_gone', 'values|crew|en_lost']);
+    // Whatever else is wrong with it: a damaged default, or something not an ID beside the IDs.
+    hand.collections.projects.entries.en_hall.values.crew = ['en_lost', 42] as never;
+    (hand.collections.projects.settings.fields.lead as { default: unknown }).default = 'en_okafor';
+    const found = validateState(hand);
+    expect(found.filter((d) => d.code === 'REFERENCE_BROKEN').map((d) => d.site)).toEqual(['values|lead|en_gone', 'values|crew|en_lost']);
+    expect(found.find((d) => d.code === 'FIELD_VALUE_INVALID' && d.site === 'values|crew')?.message).toMatch(/Crew is not a list of entry IDs/);
     // A collection whose own layout links to its own entries goes with them.
     const linked = structuredClone(s);
     linked.collections.projects.settings.template.nodes.n_self = { id: 'n_self', kind: 'link', label: 'Self', link: { type: 'entry', target: 'en_hall' } } as never;
@@ -432,12 +439,36 @@ describe('a synced collection', () => {
     // A field taken away would take its value from an entry; a term, its filing.
     expect(() => apply(team, [{ type: 'collection.update', collectionId: 'team', fields: {} }])).toThrow(synced);
     expect(() => apply(team, [{ type: 'collection.removeTerm', collectionId: 'team', taxonomyId: 'office', termId: 'cpt' }])).toThrow(synced);
-    expect(() => apply(team, [{ type: 'collection.remove', collectionId: 'projects' }, { type: 'collection.remove', collectionId: 'team' }])).toThrow(/remove the entries of the Team collection/);
+    expect(() => apply(team, [{ type: 'collection.remove', collectionId: 'projects' }, { type: 'collection.remove', collectionId: 'team' }])).toThrow(/Detach it from the source before removing it/);
+    // Nor made again under its ID in the same change, which a check of the outcome alone would take for a detach.
+    expect(() => apply(team, [{ type: 'collection.remove', collectionId: 'projects' }, { type: 'collection.remove', collectionId: 'team' }, { type: 'collection.create', collectionId: 'team' }])).toThrow(/Detach it from the source/);
+    // Detached first, it goes.
+    expect(run(team, { type: 'collection.remove', collectionId: 'projects' }, { type: 'collection.update', collectionId: 'team', sourceId: null }, { type: 'collection.remove', collectionId: 'team' }).collections).not.toHaveProperty('team');
     // What leaves them as they are goes ahead: a field added, a label changed.
     expect(run(team, { type: 'collection.update', collectionId: 'team', name: 'People', fields: { role: { type: 'string', label: 'Role' }, phone: { type: 'string', label: 'Phone' } } }).collections.team.settings.name).toBe('People');
     // Detached in the same change, anything goes: first, or in the very operation.
     expect(run(team, { type: 'collection.update', collectionId: 'team', sourceId: null }, { type: 'collection.update', collectionId: 'team', fields: {} }).collections.team.entries.en_ruiz.values).toEqual({});
     expect(run(team, { type: 'collection.update', collectionId: 'team', sourceId: null, fields: {} }).collections.team.entries.en_ruiz.values).toEqual({});
+  });
+
+  it('is never left synced with entries that differ from what they were (an undo that attaches it again, say)', () => {
+    const local = studio();
+    const attached = structuredClone(local);
+    attached.collections.team.settings.sourceId = 'people-api';
+    // Attached again as it was: nothing of its entries changes.
+    expect(syncedEntryChange(local, attached)).toBeNull();
+    // Attached again with an entry taken back to an earlier version.
+    const rolledBack = structuredClone(attached);
+    rolledBack.collections.team.entries.en_ruiz.title = 'Ana';
+    expect(syncedEntryChange(local, rolledBack)).toMatch(/would change the entries of the Team collection/);
+    // Keys in another order say the same.
+    const reordered = structuredClone(attached);
+    const e = reordered.collections.team.entries.en_ruiz;
+    reordered.collections.team.entries.en_ruiz = Object.fromEntries(Object.entries(e).reverse()) as typeof e;
+    expect(syncedEntryChange(local, reordered)).toBeNull();
+    // A synced collection made by the change, or detached by it, is the change's own.
+    expect(syncedEntryChange({ ...local, collections: {} }, attached)).toBeNull();
+    expect(syncedEntryChange(attached, local)).toBeNull();
   });
 
   it('refuses pointing its entries’ links or references elsewhere, as removing what they go to would', () => {
@@ -523,7 +554,10 @@ describe('checks before the website goes out', () => {
       { type: 'entry.create', collectionId: 'projects', entryId: 'en_memo', title: 'Memo', draft: true },
       { type: 'entry.create', collectionId: 'projects', entryId: 'en_park', title: 'Park', draft: false, values: { summary: 'See [the memo](entry:en_memo).' } }
     );
-    expect(publicationPlan(two).draftLinks.map((l) => l.entryId).sort()).toEqual(['en_memo', 'en_plan']);
+    expect(publicationPlan(two).draftLinks.map((l) => [l.entryId, l.shownOn]).sort()).toEqual([
+      ['en_memo', 'en_park'],
+      ['en_plan', 'en_hall']
+    ]);
   });
 });
 

@@ -569,6 +569,9 @@ function layoutReads(c: Collection): Set<string> {
 
 export function collectionRemove(state: ProjectState, op: Op<'collection.remove'>, atStart?: Map<string, EntryAddress>): OpResult {
   const c = getCollection(state, op.collectionId);
+  // Its entries are the source's: it is detached first, so a collection made again under its ID is never mistaken for it.
+  if (isSyncedCollection(c.settings))
+    throw new EngineError('VALIDATION_FAILED', `The ${c.settings.name} collection is synced from an external source, so its entries are read-only here. Detach it from the source before removing it.`);
   // Another collection's reference field names its entries, even while no entry has chosen one yet.
   for (const other of Object.values(state.collections)) {
     if (other.settings.id === c.settings.id) continue;
@@ -626,18 +629,19 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 /**
- * Why going from `before` to `after` changes what a synced collection's entries say, or null: a collection synced in
- * both whose entries differ (a field or grouping taken from them, a term renamed on them, a picture replaced in them,
- * an undo of an edit made before it was synced), or one removed while synced. The source is where they change, and its
- * next sync would put back what it says. Its settings (its layout, its order) stay the author's, and detaching it
- * makes its entries local. Worded to follow "This" or "it".
+ * Why going from `before` to `after` changes what a synced collection's entries say, or null: a collection synced
+ * afterwards whose entries differ from what they were (a field or grouping taken from them, a term renamed on them, a
+ * picture replaced in them; an undo of an edit made before a sync, or one that attaches it again as it takes an edit
+ * back). The source is where they change, and its next sync would put back what it says. Its settings (its layout,
+ * its order) stay the author's; a collection detached by the change, or made by it, is local. Removing a synced
+ * collection is refused on its own (see collectionRemove). Worded to follow "This" or "it".
  */
 export function syncedEntryChange(before: ProjectState, after: ProjectState): string | null {
-  for (const c of Object.values(before.collections ?? {})) {
+  for (const c of Object.values(after.collections ?? {})) {
     if (!isSyncedCollection(c?.settings)) continue;
-    const now = own(after.collections ?? {}, c.settings.id);
-    if (now && (!isSyncedCollection(now.settings) || sameValue(c.entries, now.entries))) continue;
-    return `would ${now ? 'change' : 'remove'} the entries of the ${c.settings.name} collection, which is synced from an external source, so they are read-only here. Change them in the source, or detach the collection from it first.`;
+    const was = own(before.collections ?? {}, c.settings.id);
+    if (!was || sameValue(was.entries, c.entries)) continue;
+    return `would change the entries of the ${c.settings.name} collection, which is synced from an external source, so they are read-only here. Change them in the source, or detach the collection from it first.`;
   }
   return null;
 }
@@ -1042,8 +1046,9 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
       }
       for (const [k, v] of Object.entries(e.values && typeof e.values === 'object' ? e.values : {})) {
         const f = own(fields, k);
-        // A damaged field is reported once, above; its values cannot be judged.
-        if (f && damaged(f)) continue;
+        // A damaged field is reported once, above; its values cannot be judged. A reference to a collection there is
+        // can, whatever its default says.
+        if (f && damaged(f) && !(f.type === 'reference' && typeof f.collection === 'string' && Object.hasOwn(state.collections, f.collection))) continue;
         if (!f) {
           out.push({ severity: 'warning', code: 'FIELD_VALUE_INVALID', message: `${what}: the collection has no field "${k}".`, owner: eo, site: `values|${k}` });
           continue;
@@ -1184,11 +1189,14 @@ function fieldDamaged(state: ProjectState, f: CollectionFieldSchema | undefined)
  * a problem of its own.
  */
 function referenceProblems(state: ProjectState, f: ReferenceFieldSchema, v: unknown): Array<{ message: string; missing?: string }> {
-  const ids = f.multiple ? v : [v];
-  if (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')) return [{ message: `is not ${f.multiple ? 'a list of entry IDs' : 'an entry ID'}.` }];
+  const given = f.multiple ? v : [v];
+  const ids = Array.isArray(given) ? given.filter((id): id is string => typeof id === 'string') : [];
+  // Each entry ID it holds is checked whatever else is wrong with it: those are what it shows.
+  const out: Array<{ message: string; missing?: string }> = [];
+  if (!Array.isArray(given) || ids.length !== given.length) out.push({ message: `is not ${f.multiple ? 'a list of entry IDs' : 'an entry ID'}.` });
+  else if (new Set(ids).size !== ids.length) out.push({ message: 'names an entry twice.' });
   const target = own(state.collections, f.collection)!;
-  const out: Array<{ message: string; missing?: string }> = new Set(ids).size !== ids.length ? [{ message: 'names an entry twice.' }] : [];
-  for (const id of new Set(ids as string[]))
+  for (const id of new Set(ids))
     if (id !== '' && !Object.hasOwn(target.entries, id)) out.push({ message: `names "${id}", which the ${target.settings.name} collection has no entry for, so it shows nothing there.`, missing: id });
   return out;
 }
