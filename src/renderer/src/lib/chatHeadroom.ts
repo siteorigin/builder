@@ -3,7 +3,8 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { getTree } from '@engine/tree';
 import { DEFAULT_LOCAL_CONTEXT_WINDOW, localContextWindow, type LocalToolMode } from '@shared/local';
 import { estimateTokens, FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
-import { MAX_REPLAYED_ANSWER, replayedHistory } from '@shared/turn-model';
+import { MAX_REPLAYED_ANSWER } from '@shared/turn-model';
+import { planReplay, summaryText } from '@shared/earlier-summary';
 
 /**
  * Whether a message, such as a page's copy pasted whole, may be too long for a local model's context, said in the
@@ -83,11 +84,13 @@ export function smallToolsCover(state: ProjectState, ref: ElementRef): boolean {
 }
 
 /**
- * The words a request replays of the conversation before it, as the assistant replays them: the last messages, and
- * in each earlier turn the questions it asked with their answers (a long answer cut short) before its reply.
+ * The words a request replays of the conversation before it, as the assistant replays them: the summary of its older
+ * messages, then the last messages, and in each earlier turn the questions it asked with their answers (a long answer
+ * cut short) before its reply.
  */
 export function replayedWords(messages: readonly ChatMessage[]): string[] {
-  return replayedHistory(messages).flatMap((m) => {
+  const { summary, recent } = planReplay(messages);
+  return [...(summary ? [summaryText(summary)] : []), ...recent.flatMap((m) => {
     const said = typeof m.text === 'string' ? m.text : '';
     if (m.role === 'user') return [said];
     // A transcript is read back from disk: anything malformed is left out, as the assistant leaves it out.
@@ -95,7 +98,7 @@ export function replayedWords(messages: readonly ChatMessage[]): string[] {
       typeof q?.text === 'string' ? [q.text, ...(Array.isArray(q.choices) ? q.choices.filter((c) => typeof c === 'string') : []), typeof q.answered === 'string' ? q.answered.slice(0, MAX_REPLAYED_ANSWER) : ''] : []
     );
     return [...asked, said];
-  });
+  })];
 }
 
 const n = (t: number) => t.toLocaleString('en-US');
@@ -120,6 +123,7 @@ export function headroomWarning(input: HeadroomInput): HeadroomWarning | null {
       : kind === 'draft'
         ? // No count of the message itself: the note is announced, and would be again at every key typed.
           `This message is longer than ${context} leaves room for (about ${n(roomTokens)} tokens). Send the copy a few sections at a time, or ${larger}.`
-        : `With this conversation's earlier messages, this message may not fit ${context}. Start a new conversation and send it there, or send the copy a few sections at a time.`;
+        : // The assistant makes room by summarising more of the earlier messages; the author may want them kept in full.
+          `With this conversation's earlier messages, this message may not fit ${context}, so the assistant will shorten more of them to a summary. To keep them in full, send the copy a few sections at a time or start a new conversation.`;
   return { kind, draftTokens, historyTokens, roomTokens, windowTokens, assumed, text };
 }

@@ -1,5 +1,6 @@
 import type { ChatMessage, ProviderId, ProviderStatus } from '@shared/api';
-import { readTurnModel, replayedHistory, turnModelText, type TurnModel } from '@shared/turn-model';
+import { readTurnModel, turnModelText, type TurnModel } from '@shared/turn-model';
+import { sentMessages } from '@shared/earlier-summary';
 
 /**
  * Where the next message goes, as Settings choose it now. It is never the model of a turn already running: that one
@@ -75,15 +76,16 @@ export interface SwitchNotice {
 
 /**
  * The notice for the next message, or null when its recipient already has this conversation's recent messages.
- * Each request carries the replayed window (`replayedHistory`), so the recipient has seen every turn in it up to the
- * newest one it answered: only turns after that are new to it. A turn it never answered (stopped, refused) does not
+ * Each request carries the replayed window and a summary of the turns before it (`sentMessages`), so the recipient has
+ * seen every turn in them up to the newest one it answered: only turns after that are new to it. A summarised turn
+ * counts like a recent one, since what it said goes out too. A turn it never answered (stopped, refused) does not
  * count, and a turn that names no model may have been for anyone, so both keep the notice.
  */
 export function switchNotice(messages: readonly ChatMessage[], next: NextRecipient | null): SwitchNotice | null {
   if (!next) return null;
   const earlier: TurnModel[] = [];
   let unknown = false;
-  for (const m of [...replayedHistory(messages)].reverse()) {
+  for (const m of [...sentMessages(messages)].reverse()) {
     if (m.role !== 'assistant') continue;
     const turn = turnRecipient(m);
     if (!turn) {
