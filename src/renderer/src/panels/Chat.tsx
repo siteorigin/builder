@@ -10,8 +10,9 @@ import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDra
 import { nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
 import { PROVIDER_LABELS, turnModelText } from '@shared/turn-model';
 import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
-import { chatFocusStep } from '../lib/page-start';
+import { CHAT_FOCUS_WAIT_MS, chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
+import { auditOnce } from '../lib/seo-health';
 import { headroomWarning, replayedWords, smallToolsCover } from '../lib/chatHeadroom';
 import { openPost, selectPage } from '../lib/actions';
 import { postShown, postWorkspace } from '../lib/posts';
@@ -34,6 +35,12 @@ function Md({ text }: { text: string }) {
     </span>
   );
 }
+
+/** The SEO audit's findings for the starters (#599): none when the audit could not read the project, which Project health reports. */
+const seoFindingsOf = (state: ProjectState) => {
+  const audit = auditOnce(state);
+  return audit.ok ? audit.findings : [];
+};
 
 /** Said when a starter widens what the AI may change, so the change of scope is heard as well as seen. */
 const WIDENED_SAY = 'What the AI may change is now the whole site, for this message.';
@@ -370,10 +377,22 @@ export function Chat() {
   // A starter that needs more than this page widens the scope for its own draft only, kept per conversation: the
   // scope is Whole site while that draft is in front of the author (again after coming back to it), and the earlier
   // choice returns once the draft is cleared or sent (a sent message keeps the scope it was sent with) or another
-  // conversation is shown. Picking a scope by hand ends it, so a choice the author made is never undone.
+  // conversation is shown. Picking a scope by hand ends it, so a choice the author made is never undone, and so does a
+  // scope set from elsewhere since (Fix with AI opening its own conversation as Whole site, say): `widenedTo` is the
+  // scope setting the widening made, and only that one is put back.
   const starterWidened = useRef(new Map<string, ChatEditScope>());
   const widenedHere = useRef<string | null>(null);
+  const widenedTo = useRef<object | null>(null);
   const setScope = (to: ChatEditScope) => setState({ chatContextEnabled: { ...getState().chatContextEnabled, scope: to } });
+  const widen = () => {
+    setScope('site');
+    widenedTo.current = getState().chatContextEnabled;
+  };
+  /** Put the scope back from a widening, unless something else has set it since. */
+  const unwiden = (to: ChatEditScope) => {
+    if (getState().chatContextEnabled === widenedTo.current && getState().chatContextEnabled.scope === 'site') setScope(to);
+    widenedTo.current = null;
+  };
   /** A draft moved to another conversation takes its widened scope along. */
   const moveWidened = (from: string, to: string) => {
     const scope = starterWidened.current.get(from);
@@ -387,7 +406,7 @@ export function Chat() {
     if (left && left !== id) {
       widenedHere.current = null;
       const from = starterWidened.current.get(left);
-      if (from !== undefined && getState().chatContextEnabled.scope === 'site') setScope(from);
+      if (from !== undefined) unwiden(from);
     }
     const from = id ? starterWidened.current.get(id) : undefined;
     if (!id || from === undefined) return;
@@ -395,7 +414,7 @@ export function Chat() {
       starterWidened.current.delete(id);
       if (widenedHere.current === id) {
         widenedHere.current = null;
-        if (getState().chatContextEnabled.scope === 'site') setScope(from);
+        unwiden(from);
       }
       // Cleared, so the next widening is announced again.
       setAnnounce((said) => (said === WIDENED_SAY ? '' : said));
@@ -405,7 +424,7 @@ export function Chat() {
       const now = getState().chatContextEnabled.scope;
       if (now !== 'site') starterWidened.current.set(id, now);
       widenedHere.current = id;
-      setScope('site');
+      widen();
       // Coming back to the draft widens again, so it is said again.
       setAnnounce('');
       requestAnimationFrame(() => setAnnounce(WIDENED_SAY));
@@ -454,7 +473,7 @@ export function Chat() {
             `Which parts of the “${page.title}” page are shared with other pages?`
           ].map((text) => ({ text, kind: 'ask' }))
         : []
-      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: { page: ctxOn.page, selection: toSelection } });
+      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: { page: ctxOn.page, selection: toSelection }, seoFindings: dockOpen && rightTab === 'chat' ? seoFindingsOf(st) : undefined });
   const stepNow = currentStep(working?.activities);
   // The run strip is the one place that says what a run is doing now: an edit's current step, or its phase. A question
   // is always "Reading the site", as the dock tab and the canvas say it, followed by its current step.
@@ -581,9 +600,31 @@ export function Chat() {
     if (step === 'drop') return void setState({ chatFocus: null });
     if (step === 'show-box') return setDraftFirst(true);
     if (step === 'wait' || !ta) return;
-    ta.focus();
-    ta.setSelectionRange(ta.value.length, ta.value.length);
-    setState({ chatFocus: null });
+    // A request put in the box from elsewhere (Fix with AI) may run to several lines.
+    sizeToFit(ta);
+    const take = () => {
+      ta.focus();
+      if (document.activeElement !== ta) return false;
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      return true;
+    };
+    if (take()) return void setState({ chatFocus: null });
+    // A dialog closed by the same click (Fix with AI in Project health) keeps the rest of the window inert until it has
+    // gone: the box takes focus once it lets go, unless the author has put focus somewhere meanwhile or the request has
+    // waited too long, which lets it lapse.
+    const req = chatFocus;
+    const unclaimed = () => {
+      const at = document.activeElement;
+      return !at || at === document.body || !!at.closest('[inert]');
+    };
+    let frame = 0;
+    const retry = () => {
+      if (getState().chatFocus !== req) return;
+      if (Date.now() - req.at > CHAT_FOCUS_WAIT_MS || !unclaimed() || take()) return void setState({ chatFocus: null });
+      frame = requestAnimationFrame(retry);
+    };
+    frame = requestAnimationFrame(retry);
+    return () => cancelAnimationFrame(frame);
   }, [chatFocus, snap?.workspaceKey, pageId, dockOpen, rightTab, configured, asking, draftFirst]);
 
   /** Answer the waiting question, with a choice, an offered picture or the composer's text. Each question takes one answer. */
@@ -897,7 +938,7 @@ export function Chat() {
                         if (!askMode && !component && s.kind !== 'page' && s.kind !== 'selection' && chosen !== 'site') {
                           starterWidened.current.set(conversation.id, ctxOn.scope);
                           widenedHere.current = conversation.id;
-                          setState({ chatContextEnabled: { ...ctxOn, scope: 'site' } });
+                          widen();
                           setAnnounce(WIDENED_SAY);
                         }
                         setChatDraft(conversation.id, s.text);

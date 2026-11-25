@@ -71,13 +71,14 @@ const ownerOf = (meta: EffectiveSeo): Owner => (meta.subject.kind === 'page' ? {
 
 /**
  * Where a document's title or description is changed: a page's own Search & sharing field; an entry's own search
- * title or description when it has one (it is what search engines are shown), else its title or excerpt.
+ * title or description when it has one (it is what search engines are shown), else its title or excerpt. The AI can
+ * set a page's (update_page_seo); collections and their entries are changed only in the editor for now.
  */
 function fieldFix(state: ProjectState, meta: EffectiveSeo, field: 'title' | 'description'): { destination: EditorDestination; aiFixable: boolean } {
   if (meta.subject.kind === 'page') return { destination: { kind: 'pageSeo', pageId: meta.subject.pageId, field }, aiFixable: true };
   const seo = entryOf(state, meta)?.entry.seo;
   const own = seo && typeof seo === 'object' && seoText(field === 'title' ? seo.title : seo.description) !== '';
-  return { destination: { kind: 'entry', collectionId: meta.subject.collectionId, entryId: meta.subject.entryId, field: field === 'title' ? (own ? 'seoTitle' : 'title') : own ? 'seoDescription' : 'excerpt' }, aiFixable: true };
+  return { destination: { kind: 'entry', collectionId: meta.subject.collectionId, entryId: meta.subject.entryId, field: field === 'title' ? (own ? 'seoTitle' : 'title') : own ? 'seoDescription' : 'excerpt' }, aiFixable: false };
 }
 
 const baseUrl: SeoAuditRule = {
@@ -305,7 +306,8 @@ const genericLinkText: SeoAuditRule = {
           code: 'SEO_LINK_TEXT_GENERIC',
           message: `A link says only “${seoText(l.label)}”${l.owner.kind === 'shell' ? ` in the shared ${l.owner.id}` : ''}.`,
           explanation: 'Search engines, screen readers and AI agents read a link’s words to learn where it goes; words that name the destination say so where “read more” cannot.',
-          aiFixable: true,
+          // A page's or the shared header's or footer's link is the AI's to reword; an entry's text and a collection's layout are the editor's for now.
+          aiFixable: l.owner.kind !== 'entry' && l.owner.kind !== 'template',
           ...linkFix(state, l)
         })
       );
@@ -370,7 +372,8 @@ const entryHeadings: SeoAuditRule = {
               owner: { kind: 'entry', id: entry.id },
               site: `body|heading|${i}`,
               explanation: 'Search engines, screen readers and AI agents read headings as the outline of the text; a skipped level makes that outline look like something is missing.',
-              aiFixable: true,
+              // An entry's text is changed only in the editor for now.
+              aiFixable: false,
               destination: { kind: 'entry', collectionId: collection.settings.id, entryId: entry.id, field: 'body' }
             })
           );

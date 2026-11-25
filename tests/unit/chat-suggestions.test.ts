@@ -10,6 +10,8 @@ import { installComponent, makeInstance } from '@engine/install';
 import { headerMenu } from '@engine/tree';
 import { assetUsages } from '@engine/apply';
 import { chatSuggestions, type ChatSuggestion, type SuggestionInput } from '../../src/renderer/src/lib/chatSuggestions';
+import type { SeoFinding } from '@shared/seo';
+import { runSeoAudit } from '@engine/seo-audit';
 
 const ALL = { page: true, selection: true };
 
@@ -620,5 +622,87 @@ describe('selection starters follow the component the element belongs to', () =>
     state.pages[second].nodes.n_text = { id: 'n_text', kind: 'text', tag: 'p', text: 'Words' };
     state.pages[second].rootIds.push('n_text');
     expect(ask(state, second, on('n_text'))).toEqual(['Make the Text warmer and more confident', 'Make the Text shorter and easier to scan', 'Suggest three other ways to write the Text']);
+  });
+});
+
+describe('a starter about search and AI readiness, from the SEO audit (#599)', () => {
+  const biz = () => createStarterState('business', 'Studio', false);
+  const idOf = (state: ProjectState, title: string) => state.site.pageOrder.find((id) => state.pages[id].title === title)!;
+  const meta = (code: string, pageId: string, field: 'title' | 'description' | 'noindex'): SeoFinding => ({ code, severity: 'warning', message: code, pillar: 'content', explanation: '', aiFixable: true, owner: { kind: 'page', id: pageId }, destination: { kind: 'pageSeo', pageId, field } });
+  const siteFinding = (code: string, aiFixable = true): SeoFinding => ({ code, severity: 'info', message: code, pillar: 'agentic', explanation: '', aiFixable });
+
+  it('comes second, beside the page’s own first starter, when the audit finds something the AI can fix on a page with copy', () => {
+    const state = biz();
+    const home = state.site.homePageId;
+    const without = starters(state, home);
+    const audited = runSeoAudit(state);
+    // The Studio starter's Home is titled by the site's name alone, which is short for a search result.
+    expect(audited).toContainEqual(expect.objectContaining({ code: 'SEO_TITLE_LENGTH', owner: { kind: 'page', id: home }, aiFixable: true }));
+    const list = starters(state, home, { seoFindings: audited });
+    expect(list).toEqual([without[0], { kind: 'page', text: 'Improve the search title of the “Home” page for search results and AI answers' }, ...without.slice(1)]);
+    // Nothing to fix leaves the starters as they were.
+    expect(starters(state, home, { seoFindings: [] })).toEqual(without);
+  });
+
+  it('writes the open page’s missing search title and meta description, as a change to that page', () => {
+    const state = biz();
+    const about = idOf(state, 'About');
+    const at = (findings: SeoFinding[]) => starters(state, about, { seoFindings: findings })[1];
+    expect(at([meta('SEO_DESCRIPTION_MISSING', about, 'description')])).toEqual({ kind: 'page', text: 'Write the missing meta description for the “About” page' });
+    expect(at([meta('SEO_TITLE_MISSING', about, 'title'), meta('SEO_DESCRIPTION_MISSING', about, 'description')])).toEqual({ kind: 'page', text: 'Write the missing search title and meta description for the “About” page' });
+    expect(at([meta('SEO_DESCRIPTION_MISSING', about, 'description'), meta('SEO_TITLE_DUPLICATE', about, 'title')])).toEqual({ kind: 'page', text: 'Improve the search title and meta description of the “About” page for search results and AI answers' });
+    // Home asked not to be listed comes first.
+    const home = state.site.homePageId;
+    expect(starters(state, home, { seoFindings: [meta('SEO_DESCRIPTION_MISSING', home, 'description'), meta('SEO_HOME_NOINDEX', home, 'noindex')] })[1]).toEqual({ kind: 'page', text: 'Let search engines list the “Home” page again' });
+    // Seen from another page, Home's listing is the whole site's to fix, not the open page's.
+    expect(starters(state, about, { seoFindings: [meta('SEO_HOME_NOINDEX', home, 'noindex')] })[1]).toEqual({ kind: 'site', text: 'Audit the site’s SEO and AI readiness and fix what you can' });
+  });
+
+  it('asks for other pages’ search titles and meta descriptions as a change to the whole site', () => {
+    const state = biz();
+    const about = idOf(state, 'About');
+    const contact = idOf(state, 'Contact');
+    expect(starters(state, about, { seoFindings: [meta('SEO_DESCRIPTION_MISSING', contact, 'description')] })[1]).toEqual({ kind: 'site', text: 'Write the missing meta descriptions for the site’s pages' });
+    expect(starters(state, about, { seoFindings: [meta('SEO_DESCRIPTION_MISSING', contact, 'description'), meta('SEO_TITLE_LENGTH', state.site.homePageId, 'title')] })[1]).toEqual({ kind: 'site', text: 'Improve the search titles and meta descriptions the audit flags on the site’s pages' });
+    // A finding the AI can't fix, or about a page that has gone, asks for nothing.
+    expect(starters(state, about, { seoFindings: [{ ...meta('SEO_DESCRIPTION_MISSING', contact, 'description'), aiFixable: false }] })).toEqual(starters(state, about));
+    expect(starters(state, about, { seoFindings: [meta('SEO_DESCRIPTION_MISSING', 'pg_gone', 'description')] })).toEqual(starters(state, about));
+  });
+
+  it('sets up structured data and llms.txt for AI agents, asking for what only the author knows', () => {
+    const state = biz();
+    const home = state.site.homePageId;
+    const at = (findings: SeoFinding[]) => starters(state, home, { seoFindings: findings })[1];
+    expect(at([siteFinding('SEO_ENTITY_IDENTITY_MISSING', false), siteFinding('SEO_LLMS_TXT_OFF')])).toEqual({ kind: 'site', text: 'Set up the site’s structured data and llms.txt for search engines and AI agents, and ask me for any details you need' });
+    expect(at([siteFinding('SEO_ENTITY_SAME_AS_MISSING', false)])).toEqual({ kind: 'site', text: 'Set up the site’s structured data for search engines and AI agents, and ask me for any details you need' });
+    expect(at([siteFinding('SEO_LLMS_TXT_OFF')])).toEqual({ kind: 'site', text: 'Turn on llms.txt so AI agents get an index of the site’s pages' });
+    // Anything else the AI can fix is for an audit to find.
+    expect(at([siteFinding('SEO_SEARCH_CRAWLERS_BLOCKED')])).toEqual({ kind: 'site', text: 'Audit the site’s SEO and AI readiness and fix what you can' });
+  });
+
+  it('waits for copy: an empty or mostly empty page has nothing to describe, and a site without copy nothing to set up', () => {
+    const { state, home, second } = lighthouse();
+    const audited = runSeoAudit(state);
+    // The Blank site's Home has no description, and no publisher is named; neither is offered while nothing is written.
+    expect(audited.map((f) => f.code)).toEqual(expect.arrayContaining(['SEO_DESCRIPTION_MISSING', 'SEO_ENTITY_IDENTITY_MISSING']));
+    for (const pageId of [home, second]) expect(starters(state, pageId, { seoFindings: audited })).toEqual(starters(state, pageId));
+    expect(starters(state, second, { seoFindings: [siteFinding('SEO_LLMS_TXT_OFF'), meta('SEO_TITLE_MISSING', home, 'title')] })).toEqual(starters(state, second));
+    // A new Blank site, its Home with nothing on it, as the chat first shows it.
+    const blank = createStarterState('blank', 'Kloof', false);
+    expect(blank.pages[blank.site.homePageId].rootIds).toEqual([]);
+    expect(starters(blank, blank.site.homePageId, { seoFindings: runSeoAudit(blank) })).toEqual(starters(blank, blank.site.homePageId));
+    // Home kept out of search engines needs no copy to fix.
+    expect(starters(state, home, { seoFindings: [meta('SEO_HOME_NOINDEX', home, 'noindex')] })[1]).toEqual({ kind: 'page', text: 'Let search engines list the “Home” page again' });
+  });
+
+  it('steps aside for a scoped selection’s own starters', () => {
+    const state = biz();
+    const home = state.site.homePageId;
+    const ref: ElementRef = { owner: { kind: 'page', id: home }, instancePath: [], nodeId: state.pages[home].rootIds[0] };
+    const findings = [meta('SEO_DESCRIPTION_MISSING', home, 'description')];
+    const picked = starters(state, home, { selection: ref, seoFindings: findings });
+    expect(picked.length).toBeGreaterThan(0);
+    expect(picked).toEqual(starters(state, home, { selection: ref }));
+    expect(picked.every((s) => s.kind === 'selection')).toBe(true);
   });
 });

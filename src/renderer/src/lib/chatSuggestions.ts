@@ -1,4 +1,5 @@
 import type { AssetRecord, ComponentDefinition, ElementRef, ImageValue, NodeTree, PageDoc, ProjectState, PropSchema } from '@shared/types';
+import type { SeoFinding } from '@shared/seo';
 import { propBindingValue } from '@shared/bindings';
 import { isBinding } from '@shared/types';
 import { isRichBlock, richTextToPlain } from '@shared/richtext';
@@ -9,7 +10,8 @@ import { listPropFor, refLabel, resolveRef } from './model';
  * The starters offered in an empty AI conversation. Each is chosen from what the project holds right now (the page
  * being edited, the selection, the pages that exist, the images available), so none names a page, an image or an
  * element that is not there. The text is both what the button says and what goes into the composer, so a starter
- * keeps its target, and its page, once it is edited, sent or restored from a draft.
+ * keeps its target, and its page, once it is edited, sent or restored from a draft. One starter can be about how well
+ * the site is found and read by search engines and AI agents, chosen from the SEO audit's findings (#599).
  */
 export type SuggestionKind = 'page' | 'cross-page' | 'create-page' | 'selection' | 'site';
 
@@ -27,6 +29,8 @@ export interface SuggestionInput {
   selection: ElementRef | null;
   /** What the next message is scoped to; the same switches the message is sent with. */
   context: { page: boolean; selection: boolean };
+  /** The SEO audit's findings for the project as it is (engine/seo-audit), when the chat has them: the SEO starter's source. */
+  seoFindings?: readonly SeoFinding[];
 }
 
 /** A page with this little of its own copy is mostly empty: a title and a line or two. */
@@ -36,13 +40,14 @@ const SPARSE_CHARS = 200;
 const own = <T>(map: Record<string, T>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
 
 /** A title as a prompt names it: one line, curly-quoted, with no quote of its own to end it early. */
-function quoted(text: string): string {
-  const one = text.replace(/\s+/g, ' ').replace(/["“”]/g, "'").trim();
-  return `“${one.length > 60 ? `${one.slice(0, 59).trimEnd()}…` : one}”`;
+export function quoted(text: string): string {
+  // By code point, so a long title is never cut through an emoji.
+  const one = [...text.replace(/\s+/g, ' ').replace(/["“”]/g, "'").trim()];
+  return `“${one.length > 60 ? `${one.slice(0, 59).join('').trimEnd()}…` : one.join('')}”`;
 }
 
 /** How a page is named in a prompt: by its title, with its address when another page has the same title. */
-function pageName(state: ProjectState, page: PageDoc): string {
+export function pageName(state: ProjectState, page: PageDoc): string {
   const norm = (t: string) => t.replace(/\s+/g, ' ').trim().toLowerCase();
   const twin = Object.values(state.pages).some((p) => p.id !== page.id && norm(p.title) === norm(page.title));
   return twin ? `${quoted(page.title)} (${page.route})` : quoted(page.title);
@@ -311,6 +316,66 @@ function createPageStarter(state: ProjectState): string | null {
 }
 
 // ---------------------------------------------------------------------------
+// Search & AI readiness
+// ---------------------------------------------------------------------------
+
+type PageTextFinding = SeoFinding & { destination: { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' } };
+const isPageText = (f: SeoFinding): f is PageTextFinding => f.aiFixable && f.destination?.kind === 'pageSeo' && (f.destination.field === 'title' || f.destination.field === 'description');
+
+/** "search title", "meta description" or both, as a request names the fields these findings are about. */
+function fieldWords(found: PageTextFinding[], plural: boolean): string {
+  const s = plural ? 's' : '';
+  const title = found.some((f) => f.destination.field === 'title');
+  const description = found.some((f) => f.destination.field === 'description');
+  return [title ? `search title${s}` : '', description ? `meta description${s}` : ''].filter(Boolean).join(' and ');
+}
+
+/** The identity search engines and AI agents read a site's structured data for: who runs it, and their profiles elsewhere. */
+const IDENTITY_CODES = new Set(['SEO_ENTITY_IDENTITY_MISSING', 'SEO_ENTITY_SAME_AS_MISSING']);
+
+/**
+ * The one starter about how well the site is found, shared and read by search engines and AI agents, from the audit's
+ * findings, best first: the search title and meta description of the page the message goes to (or Home hidden from
+ * search engines), then other pages' search titles and meta descriptions, then the site's structured data and llms.txt
+ * for AI agents, then an audit of anything else the AI can fix. A page is named only once it has copy of its own: an
+ * empty page has nothing to describe yet, and a site with no copy anywhere has nothing to set up for search yet.
+ */
+function seoStarter(state: ProjectState, findings: readonly SeoFinding[], page: PageDoc | undefined): ChatSuggestion | null {
+  const copy = new Map<string, boolean>();
+  const hasCopy = (p: PageDoc | undefined): p is PageDoc => {
+    if (!p) return false;
+    if (!copy.has(p.id)) copy.set(p.id, p.rootIds.length > 0 && !isSparse(pageContent(state, p)));
+    return copy.get(p.id)!;
+  };
+  const texts = findings.filter(isPageText);
+  // Home kept out of search engines needs no copy to fix.
+  if (page && findings.some((f) => f.aiFixable && f.code === 'SEO_HOME_NOINDEX' && f.owner?.id === page.id)) return { kind: 'page', text: `Let search engines list the ${pageName(state, page)} page again` };
+  if (hasCopy(page)) {
+    const on = pageName(state, page);
+    const mine = texts.filter((f) => f.destination.pageId === page.id);
+    if (mine.length)
+      return {
+        kind: 'page',
+        text: mine.every((f) => f.code.endsWith('_MISSING')) ? `Write the missing ${fieldWords(mine, false)} for the ${on} page` : `Improve the ${fieldWords(mine, false)} of the ${on} page for search results and AI answers`
+      };
+  }
+  const others = texts.filter((f) => f.destination.pageId !== page?.id && hasCopy(own(state.pages, f.destination.pageId)));
+  if (others.length)
+    return {
+      kind: 'site',
+      text: others.every((f) => f.code.endsWith('_MISSING')) ? `Write the missing ${fieldWords(others, true)} for the site’s pages` : `Improve the ${fieldWords(others, true)} the audit flags on the site’s pages`
+    };
+  const llms = findings.some((f) => f.aiFixable && f.code === 'SEO_LLMS_TXT_OFF');
+  // Who runs the site is the author's to say, so the AI asks for it rather than making it up.
+  const identity = findings.some((f) => IDENTITY_CODES.has(f.code));
+  if ((llms || identity) && state.site.pageOrder.some((id) => hasCopy(own(state.pages, id))))
+    return { kind: 'site', text: identity ? `Set up the site’s structured data${llms ? ' and llms.txt' : ''} for search engines and AI agents, and ask me for any details you need` : 'Turn on llms.txt so AI agents get an index of the site’s pages' };
+  // Titles and descriptions of pages with no copy yet, and llms.txt for a site with none, wait for it.
+  if (findings.some((f) => f.aiFixable && !isPageText(f) && f.code !== 'SEO_LLMS_TXT_OFF')) return { kind: 'site', text: 'Audit the site’s SEO and AI readiness and fix what you can' };
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Starters for a selection
 // ---------------------------------------------------------------------------
 
@@ -391,7 +456,7 @@ function selectionStarters(input: SuggestionInput, ref: ElementRef): ChatSuggest
 
 // ---------------------------------------------------------------------------
 
-/** The starters to offer, best first: a scoped selection's own, else the page's pictures and copy, another page, and a missing page. */
+/** The starters to offer, best first: a scoped selection's own, else the page's pictures or copy, search and AI readiness, the page's copy, another page, and a missing page. */
 export function chatSuggestions(input: SuggestionInput): ChatSuggestion[] {
   try {
     return suggest(input);
@@ -425,6 +490,9 @@ function suggest(input: SuggestionInput): ChatSuggestion[] {
   }
   const create = createPageStarter(state);
   if (create) out.push({ kind: 'create-page', text: create });
+  // Second, so it shows beside the page's own first starter, of the three the chat shows.
+  const seo = input.seoFindings ? seoStarter(state, input.seoFindings, page) : null;
+  if (seo) out.splice(Math.min(1, out.length), 0, seo);
   // A small site with little to point at still gets something to try that does not depend on any page.
   if (out.length < 3) out.push({ kind: 'site', text: 'Make the brand color a deep navy blue across the whole site' });
   return out;

@@ -3,11 +3,15 @@ import { Globe } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { createSeoResolver } from '@generator/seo-metadata';
-import { useStore } from '../store';
+import { getState, useStore } from '../store';
+import { saveOpenPost } from '../lib/post-draft';
+import { postWorkspace } from '../lib/posts';
 import { AssetImage } from '../components/AssetImage';
 import { Tabs } from '../components/ui';
 import { lengthMeter, previewDocument, structuredPreview, withTypedSeo, type DocumentPreview, type LengthMeter as Meter, type StructuredPreview, type TypedSeo } from '../lib/seo-preview';
 import { openSiteSharing, SharingPreview } from './SharingPreview';
+import { previewHandoff } from '../lib/seoHandoff';
+import { AiHandoffButton } from '../components/AiHandoff';
 
 type PreviewTab = 'search' | 'link' | 'data';
 
@@ -168,7 +172,9 @@ function StructuredData({ structured }: { structured: StructuredPreview | null |
 /**
  * A page's or a post's Search & sharing previews, in tabs: its search result on a computer and a phone, the card a
  * shared link makes, and its structured data with where it is published. `shown` says whether the previews are on
- * screen: the structured data, which reads the whole website, is worked out only while its tab shows.
+ * screen: the structured data, which reads the whole website, is worked out only while its tab shows. Optimize with AI
+ * opens the AI panel about them (#599): an edit of a page's search title and description, or for a post, which the AI
+ * can't change yet, a question that suggests them, from what is typed in its fields now.
  */
 export function SeoPreview({ state, subject, overlay, doc, shown = true }: { state: ProjectState; subject: SeoSubject; overlay: ProjectState; doc: DocumentPreview | null; shown?: boolean }) {
   const key = subjectKey(subject);
@@ -178,6 +184,7 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
   const [structured, setStructured] = useState<{ key: string; value: StructuredPreview | null } | null>(null);
   const showing = shown && tab === 'data' && !!doc;
   const ready = structured?.key === key;
+  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   // Whether the tab has shown this document's structured data since it was last opened.
   const settled = useRef(false);
   useEffect(() => {
@@ -210,6 +217,28 @@ export function SeoPreview({ state, subject, overlay, doc, shown = true }: { sta
           { value: 'data', label: 'Structured data', panel: () => <StructuredData structured={ready && settled.current ? structured!.value : undefined} /> }
         ]}
       />
+      {!readOnly && (
+        <div className="seo-preview-ai">
+          <AiHandoffButton
+            label="Optimize with AI"
+            request={async () => {
+              if (subject.kind === 'page') return previewHandoff(overlay, subject);
+              // The post's other fields (its excerpt, its text) are saved first, so the question quotes them as typed;
+              // what could not be saved is said in the writer. Its search title and description are what the previews
+              // show, typed or saved.
+              const opening = getState().snapshot?.workspaceKey;
+              await saveOpenPost();
+              const now = getState();
+              // The author moved on while it saved (another post, the writer put away, a dialog, another project): the
+              // question is not asked.
+              const writing = postWorkspace(now) === 'write' && now.post?.collectionId === subject.collectionId && now.post?.entryId === subject.entryId;
+              if (!now.snapshot || now.snapshot.workspaceKey !== opening || now.modal || !writing) return null;
+              return previewHandoff(now.snapshot.state, subject, overlay);
+            }}
+          />
+          {subject.kind === 'entry' && <span className="field-hint">Suggests a title and description for you to paste in.</span>}
+        </div>
+      )}
     </div>
   );
 }

@@ -141,9 +141,11 @@ describe('baseline rules', () => {
     const lengths = (n: number) => only(run(state, { type: 'page.update', pageId: services, description: x(n) }), 'SEO_DESCRIPTION_LENGTH').length;
     expect(SEO_DESCRIPTION_RANGE).toEqual({ min: 50, max: 160 });
     expect([49, 50, 160, 161].map(lengths)).toEqual([1, 0, 0, 1]);
-    // An entry's is changed in its excerpt.
+    // An entry's is changed in its excerpt, in the editor: the AI changes no collection entry yet (#599).
     const entryless = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', excerpt: 'Short.' });
-    expect(only(entryless, 'SEO_DESCRIPTION_LENGTH')).toEqual([expect.objectContaining({ owner: { kind: 'entry', id: 'en_spring' }, aiFixable: true, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'excerpt' } })]);
+    expect(only(entryless, 'SEO_DESCRIPTION_LENGTH')).toEqual([expect.objectContaining({ owner: { kind: 'entry', id: 'en_spring' }, aiFixable: false, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'excerpt' } })]);
+    // A page's the AI can set.
+    expect(only(run(state, { type: 'page.update', pageId: services, description: x(10) }), 'SEO_DESCRIPTION_LENGTH')).toEqual([expect.objectContaining({ owner: { kind: 'page', id: services }, aiFixable: true })]);
   });
 
   it('says once when pages are shared without a picture, and on its own for a page whose picture has gone', () => {
@@ -272,7 +274,8 @@ describe('baseline rules', () => {
       })
     ]);
     const text = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [...POST_BODY, { type: 'p', spans: [{ text: 'For dates, ' }, { text: 'read more', link: { type: 'page', target: 'pg_services' } }] }] });
-    expect(runSeoAudit(text)).toEqual([expect.objectContaining({ code: 'SEO_LINK_TEXT_GENERIC', owner: { kind: 'entry', id: 'en_spring' }, site: 'link|body:0', destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body' } })]);
+    // A post's text is changed in the editor: the AI changes no collection entry yet (#599).
+    expect(runSeoAudit(text)).toEqual([expect.objectContaining({ code: 'SEO_LINK_TEXT_GENERIC', owner: { kind: 'entry', id: 'en_spring' }, site: 'link|body:0', aiFixable: false, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body' } })]);
     // Words that name the destination are fine, however they start.
     const named = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [...POST_BODY, { type: 'p', spans: [{ text: 'Read more about our classes', link: { type: 'page', target: 'pg_services' } }] }] });
     expect(runSeoAudit(named)).toEqual([]);
@@ -310,10 +313,10 @@ describe('baseline rules', () => {
     const { state } = seoSite();
     const skipped = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h2', spans: [{ text: 'Classes' }] }, { type: 'h4', spans: [{ text: 'Fees' }] }, { type: 'h2', spans: [{ text: 'Dates' }] }] });
     expect(runSeoAudit(skipped)).toEqual([
-      expect.objectContaining({ code: 'SEO_ENTRY_HEADING_SKIP', severity: 'warning', pillar: 'agentic', message: expect.stringContaining('“Fees” is a Heading 4 after a Heading 2'), site: 'body|heading|1', aiFixable: true, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body' } })
+      expect.objectContaining({ code: 'SEO_ENTRY_HEADING_SKIP', severity: 'warning', pillar: 'agentic', message: expect.stringContaining('“Fees” is a Heading 4 after a Heading 2'), site: 'body|heading|1', aiFixable: false, destination: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring', field: 'body' } })
     ]);
     const deeper = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h2', spans: [{ text: 'Classes' }] }, { type: 'h3', spans: [{ text: 'Fees' }] }, { type: 'h2', spans: [{ text: 'Dates' }] }, { type: 'h4', spans: [{ text: 'Spring' }] }] });
-    expect(only(deeper, 'SEO_ENTRY_HEADING_SKIP').map((f) => f.site)).toEqual(['body|heading|3']);
+    expect(only(deeper, 'SEO_ENTRY_HEADING_SKIP').map((f) => [f.site, f.aiFixable])).toEqual([['body|heading|3', false]]);
     // Its first heading follows whatever its layout shows above the text, so it is not judged.
     const first = run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [{ type: 'h4', spans: [{ text: 'Fees' }] }, { type: 'p', spans: [{ text: 'Twenty a class.' }] }] });
     expect(only(first, 'SEO_ENTRY_HEADING_SKIP')).toEqual([]);

@@ -32,6 +32,18 @@ export function auditForHealth(state: ProjectState): SeoAuditResult {
   }
 }
 
+const audited = new WeakMap<ProjectState, SeoAuditResult>();
+
+/**
+ * The audit of one saved project state, worked out once however often it is asked for: the chat's starters ask on
+ * every render of an empty conversation, and a saved state is never changed, only replaced.
+ */
+export function auditOnce(state: ProjectState): SeoAuditResult {
+  let result = audited.get(state);
+  if (!result) audited.set(state, (result = auditForHealth(state)));
+  return result;
+}
+
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 /** How each severity is counted, as Project health names its own lists. */
 const SEVERITY_WORDS: Record<SeoSeverity, string> = { error: 'problem', warning: 'warning', info: 'note' };

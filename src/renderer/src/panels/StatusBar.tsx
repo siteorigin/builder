@@ -10,6 +10,8 @@ import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
 import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOfSight, selectPage } from '../lib/actions';
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
+import { findingHandoff } from '../lib/seoHandoff';
+import { AiHandoffButton } from '../components/AiHandoff';
 import { Modal, Spinner, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 import { auditForHealth, needsFixing, seoCountsText, seoFilterCounts, seoPillarGroups, seoReadiness, seoSeverityChoices, SEO_PILLAR_NAMES, type SeoAuditResult, type SeoPillarFilter, type SeoSeverityFilter } from '../lib/seo-health';
@@ -443,9 +445,10 @@ const SEVERITY_NAMES: Record<SeoSeverityFilter, string> = { all: 'All', error: '
 /**
  * What keeps the website from being found, shared and read by search engines, link previews and AI agents (the SEO
  * audit), apart from the project's own checks above: counted on its own, so the status bar's count stays the project's.
- * Its findings are grouped by pillar and filtered by pillar and severity; each that one place fixes leads there.
+ * Its findings are grouped by pillar and filtered by pillar and severity; each that one place fixes leads there, and
+ * each the AI can fix offers Fix with AI.
  */
-function SeoReadiness({ audit, focusOnOpen }: { audit: SeoAuditResult; focusOnOpen: boolean }) {
+function SeoReadiness({ audit, state, focusOnOpen }: { audit: SeoAuditResult; state: ProjectState; focusOnOpen: boolean }) {
   const headId = useId();
   const pillarId = useId();
   const severityId = useId();
@@ -534,7 +537,7 @@ function SeoReadiness({ audit, focusOnOpen }: { audit: SeoAuditResult; focusOnOp
               </h4>
               <ul>
                 {g.findings.map((f) => (
-                  <SeoRow key={diagnosticKey(f)} finding={f} />
+                  <SeoRow key={diagnosticKey(f)} finding={f} state={state} />
                 ))}
               </ul>
             </li>
@@ -557,18 +560,24 @@ function SeoReadiness({ audit, focusOnOpen }: { audit: SeoAuditResult; focusOnOp
   );
 }
 
-/** One finding: what it is, why it matters, and the way to where it is fixed when one place fixes it. */
-function SeoRow({ finding: f }: { finding: SeoFinding }) {
+/** One finding: what it is, why it matters, the way to where it is fixed when one place fixes it, and Fix with AI when the AI can. */
+function SeoRow({ finding: f, state }: { finding: SeoFinding; state: ProjectState }) {
   const dest = f.destination;
+  const fix = findingHandoff(state, f);
   return (
     <HealthRow
       tone={f.severity === 'error' ? 'danger' : f.severity === 'warning' ? 'warn' : 'quiet'}
       icon={f.severity === 'error' ? <CircleAlert /> : f.severity === 'warning' ? <TriangleAlert /> : <Info />}
       actions={
-        dest ? (
-          <button className="btn btn-sm" onClick={() => openEditorDestination(dest)}>
-            {destinationLabel(dest)}
-          </button>
+        dest || fix ? (
+          <>
+            {dest && (
+              <button className="btn btn-sm" onClick={() => openEditorDestination(dest)}>
+                {destinationLabel(dest)}
+              </button>
+            )}
+            {fix && <AiHandoffButton label="Fix with AI" request={() => findingHandoff(getState().snapshot?.state ?? state, f)} />}
+          </>
         ) : undefined
       }
     >
@@ -967,7 +976,7 @@ export function HealthModal() {
             {diagnosticRows(notes, 'n')}
           </HealthGroup>
         )}
-        {seoAudit && <SeoReadiness audit={seoAudit} focusOnOpen={atSeo} />}
+        {seoAudit && projectState && <SeoReadiness audit={seoAudit} state={projectState} focusOnOpen={atSeo} />}
         {updates.length > 0 && (
           <HealthGroup title="Updates" count={updates.length} tone="quiet" anchor="updates">
             <HealthRow

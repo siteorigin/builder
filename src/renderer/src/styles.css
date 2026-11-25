@@ -4370,6 +4370,8 @@ button.asset-use:hover svg.go { color: var(--text); }
 .seo-preview .tabs { margin: 0; padding: 0; }
 .seo-preview .tab { height: 30px; padding: 0 8px; font-size: 12px; }
 .post-fields > .seo-preview { grid-column: 1 / -1; margin-bottom: 6px; }
+.seo-preview-ai { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.seo-preview-ai .field-hint { margin: 0; }
 .serp-previews { display: flex; flex-direction: column; gap: 8px; }
 .serp { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 10px 12px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); font-family: Arial, 'Helvetica Neue', Helvetica, sans-serif; }
 /* Results at 0.8 of their size: a computer's 600px title line is 480px here, a phone's 320px lines 256px, so lines break where they would there. */
