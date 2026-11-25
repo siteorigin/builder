@@ -721,6 +721,10 @@ export const OPERATION_SCHEMAS = {
     ),
   'component.duplicate': z.object({ type: z.literal('component.duplicate'), definitionId: z.string(), name: z.string().min(1).max(60) }),
   'component.rename': z.object({ type: z.literal('component.rename'), definitionId: z.string(), name: z.string().min(1).max(60), description: z.string().max(300).optional() }),
+  // Editor only: where Insert and quick-add put a new placement of a project component (#661).
+  'component.setInsertAs': z
+    .object({ type: z.literal('component.setInsertAs'), definitionId: z.string(), insertAs: z.enum(['section', 'element']).nullable() })
+    .describe('Where Insert puts a new placement: one of a page\'s sections, or an element inside a layout; null lets the editor tell from the design.'),
   'component.fork': z.object({ type: z.literal('component.fork'), definitionId: z.string() }),
   'component.convertToCode': z.object({ type: z.literal('component.convertToCode'), owner, nodeId: z.string(), name: z.string().max(60).optional() }),
   'component.createCode': z.object({

@@ -4,6 +4,8 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
+import { inferredRole, placementRole } from '@engine/insert-role';
+import { quickItems } from '../../src/renderer/src/lib/inline-insert';
 import { definitionRole, elementWhere, heldSlot, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, placeFor, placementOf, sectionWhere, whereFor, type InsertAt } from '../../src/renderer/src/lib/insert-at';
 
 /**
@@ -443,5 +445,76 @@ describe('a column layout comes with its empty columns, in one change (#514)', (
     expect(insertSelection(insertOps(at, { primitive: 'grid' }, 'element', 'n_plain'), 'n_plain')).toBe('n_plain');
     expect(insertSelection(insertOps({ owner: p.owner, parentId: null }, { primitive: 'heading' }, 'element', 'n_title'), 'n_title')).toBe('n_title');
     expect(insertOps(at, { primitive: 'stack', columns: 2 }, 'element')).toEqual([{ type: 'node.insert', owner: p.owner, parentId: p.grid, slot: undefined, index: undefined, primitive: 'stack' }]);
+  });
+});
+
+describe('A component’s placement role, chosen in Component Studio (#661)', () => {
+  it('component.setInsertAs sets where Insert and + put it, and changes nothing else', () => {
+    const p = exhibitors();
+    const offered = (st: ProjectState, role: 'section' | 'element') => quickItems(st, role).some((i) => i.spec.definitionId === p.cardDef);
+    expect(offered(p.state, 'element')).toBe(true);
+    const out = apply(p.state, [{ type: 'component.setInsertAs', definitionId: p.cardDef, insertAs: 'section' }]);
+    const { insertAs, ...rest } = out.state.components[p.cardDef];
+    const { insertAs: was, ...restBefore } = p.state.components[p.cardDef];
+    expect([was, insertAs]).toEqual(['element', 'section']);
+    expect(rest).toEqual(restBefore);
+    expect(out.state.pages).toEqual(p.state.pages);
+    expect(validateState(out.state)).toEqual(validateState(p.state));
+    expect(insertRole(out.state, { definitionId: p.cardDef })).toBe('section');
+    expect(offered(out.state, 'section')).toBe(true);
+    expect(offered(out.state, 'element')).toBe(false);
+    // With a card in the grid selected, it now goes after the section holding the grid, not beside the card.
+    expect(insertAt(out.state, p.owner, 'section', ref(p.owner, p.card), p.cardDef)).toEqual({ owner: p.owner, parentId: null, index: home(out.state).rootIds.indexOf(p.section) + 1 });
+  });
+
+  it('null hands it back to the editor, which tells it from the design (Automatic)', () => {
+    const p = exhibitors();
+    const chosen = apply(p.state, [{ type: 'component.setInsertAs', definitionId: p.cardDef, insertAs: 'section' }]).state;
+    // What Automatic would say, while the author's choice stands.
+    expect(inferredRole(chosen, p.cardDef)).toBe('element');
+    expect(chosen.components[p.cardDef].insertAs).toBe('section');
+    const cleared = apply(chosen, [{ type: 'component.setInsertAs', definitionId: p.cardDef, insertAs: null }]).state;
+    expect(Object.hasOwn(cleared.components[p.cardDef], 'insertAs')).toBe(false);
+    expect(definitionRole(cleared, p.cardDef)).toBe('element');
+    expect(inferredRole(cleared, p.bandDef)).toBe('section');
+  });
+
+  it('is the project’s own components only', () => {
+    const p = exhibitors();
+    const themeDef = home(p.state).nodes[p.intro] as InstanceNode;
+    expect(() => apply(p.state, [{ type: 'component.setInsertAs', definitionId: themeDef.definitionId, insertAs: 'element' }])).toThrow(/belongs to the theme/);
+    expect(() => apply(p.state, [{ type: 'component.setInsertAs', definitionId: 'nope', insertAs: 'element' }])).toThrow(/does not exist/);
+  });
+});
+
+describe('What the Inspector calls a placement (#661)', () => {
+  it('a component inside a layout or a slot is a component; one of the page’s sections is a section', () => {
+    const p = exhibitors();
+    expect(placementRole(p.state, p.owner, p.card)).toBe('element');
+    expect(placementRole(p.state, p.owner, p.band)).toBe('section');
+    expect(placementRole(p.state, p.owner, p.intro)).toBe('section');
+  });
+
+  it('reads where each placement sits: one definition can be a section on the page and a component in a slot', () => {
+    const p = exhibitors();
+    // The band, a section by choice, placed again inside the middle section's slot.
+    const { state, results } = apply(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.section, slot: 'content', definitionId: p.bandDef }]);
+    const nested = results[0];
+    expect(definitionRole(state, p.bandDef)).toBe('section');
+    expect(placementRole(state, p.owner, nested.nodeId as string)).toBe('element');
+    expect(placementRole(state, p.owner, p.band)).toBe('section');
+  });
+
+  it('a component set to insert inside layouts is a component even at the top of the page', () => {
+    const p = exhibitors();
+    const state = apply(p.state, [{ type: 'component.setInsertAs', definitionId: p.bandDef, insertAs: 'element' }]).state;
+    expect(placementRole(state, p.owner, p.band)).toBe('element');
+  });
+
+  it('anything placed in a component’s design is a component', () => {
+    const p = exhibitors();
+    const owner: OwnerRef = { kind: 'component', id: p.bandDef };
+    const rootId = p.state.components[p.bandDef].tree!.rootIds[0];
+    expect(placementRole(p.state, owner, rootId)).toBe('element');
   });
 });

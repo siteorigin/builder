@@ -63,6 +63,7 @@ import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetu
 import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs, shellMenu } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
 import { stateActionRuns } from '@engine/schema';
+import { inferredRole, placementRole, type InsertRole } from '@engine/insert-role';
 import { previewedState } from '../lib/studio';
 import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
@@ -1013,6 +1014,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   // An entrance lands on the design's root element, which only a design built in the editor places.
   const entrance = anchorCapable(state, def);
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
+  // Inside a column, container or slot, or made to go inside layouts, a placement is a component, not a section (#661).
+  const noun = placementRole(state, owner, node.id) === 'element' ? 'component' : 'section';
   const here = refTo(owner, node.id);
   const set = (prop: string, value: unknown, edit?: PendingEdit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], fieldLabel(state, def.properties[prop]?.label ?? prop, here), `${node.id}:${prop}`);
   const onStyle = (partId: string) => (property: string, value: StyleValue | null, expectedRevision?: number, inState?: StyleState) =>
@@ -1109,7 +1112,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const videoNote = (key: string) => (key === 'url' || key === 'title' ? video?.[key as keyof VideoFieldNotes] : undefined);
   const videoEmpty = !!video && !String(node.props.url ?? '').trim();
   // A renamed section still says what it is: the name is the author's, the kind line the component's.
-  const what = node.name && node.name !== def.name ? def.name : shell ? `Shared ${owner.id}` : 'Section';
+  const what = node.name && node.name !== def.name ? def.name : noun === 'component' ? 'Component' : shell ? `Shared ${owner.id}` : 'Section';
+  const whole = `Whole ${noun}`;
   const goToField = (prop: string, field?: string) => revealContentField('content', prop, field);
   return (
     <>
@@ -1144,7 +1148,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         )}
         {video && (video.url?.error || videoEmpty) && (
           <Problem onGo={() => goToField('url')} go={videoEmpty ? 'Add an address' : 'Go to address'}>
-            <strong>Visitors see no video yet.</strong> {videoEmpty ? 'Paste the address of a YouTube or Vimeo video.' : 'The address isn’t one this section can play.'}
+            <strong>Visitors see no video yet.</strong> {videoEmpty ? 'Paste the address of a YouTube or Vimeo video.' : `The address isn’t one this ${noun} can play.`}
           </Problem>
         )}
         {/* A button whose link this placement sets: one row each, straight to its link, a list item's row opened for it. */}
@@ -1161,13 +1165,13 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           })}
         {fixedUnlinked.map((b, i) => (
           <Problem key={`design-${i}`} onGo={def.kind === 'managed' ? editEverywhere : undefined} go="Edit everywhere…">
-            <strong>Visitors won’t see “{b.label}”.</strong> Its link is set in the section’s design: edit it everywhere and select the button to give it one.
+            <strong>Visitors won’t see “{b.label}”.</strong> Its link is set in the {noun}’s design: edit it everywhere and select the button to give it one.
           </Problem>
         ))}
       </Problems>
       <EntryFieldsSection state={state} owner={owner} node={node} />
       <Section title="Content" id="content" level={LEVEL} remember={fields.length > 0}>
-        {fields.length === 0 && <p className="faint insp-note">This section has no content of its own. Add elements inside it from Insert.</p>}
+        {fields.length === 0 && <p className="faint insp-note">This {noun} has no content of its own. Add elements inside it from Insert.</p>}
         <FieldHome root={`${owner.kind}:${owner.id}:${node.id}`} alive={nodeAlive(owner, node.id)}>
           <FieldGroups
             groups={fields}
@@ -1232,7 +1236,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         </Section>
       )}
       {def.kind === 'managed' && (
-        <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={overrides ? `Whole section · ${changes(overrides)}` : 'Whole section'}>
+        <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={overrides ? `${whole} · ${changes(overrides)}` : whole}>
           {rootCode && <CodeImportantNote name={rootCode.name} props={codeImportantProps(rootCode)} />}
           {partIds.length > 0 && (
             <div className="insp-parts" role="group" aria-label="Style one part instead">
@@ -1260,7 +1264,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         </Section>
       )}
       {codeStyled && (
-        <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={[styledPart === 'root' ? 'Whole section' : (def.parts[styledPart]?.label ?? 'Whole section'), overrides ? changes(overrides) : ''].filter(Boolean).join(' · ')}>
+        <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={[styledPart === 'root' ? whole : (def.parts[styledPart]?.label ?? whole), overrides ? changes(overrides) : ''].filter(Boolean).join(' · ')}>
           {Object.keys(def.parts).length > 1 && (
             <Field label="Part">
               <select
@@ -1325,7 +1329,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           <DraftInput value={node.name ?? ''} placeholder={def.name} onCommit={(v) => void applyOps([{ type: 'node.rename', owner, nodeId: node.id, name: v }], editLabel(state, 'Rename', here, v.trim() ? `to ${v.trim()}` : undefined))} />
         </Field>
         {def.kind === 'managed' && (
-          <Field label="Anchor ID" hint={`Lets links jump straight to this ${shell ? 'part of every page that shows it' : 'section'}, as #${node.anchor || 'pricing'}. Choose it in a link’s Section.`}>
+          <Field label="Anchor ID" hint={`Lets links jump straight to this ${shell && noun === 'section' ? 'part of every page that shows it' : noun}, as #${node.anchor || 'pricing'}. Choose it in a link’s Section.`}>
             <DraftInput value={node.anchor ?? ''} placeholder="e.g. pricing" onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'anchor', value: v.trim() }], forLabel(state, v.trim() ? 'Set anchor' : 'Clear anchor', here))} />
           </Field>
         )}
@@ -2105,6 +2109,7 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
             ))}
         </div>
       </div>
+      <PlacementRoleSection state={state} def={def} />
       {def.kind === 'managed' && def.tree && (
         <>
           <PropertiesSection def={def} level={LEVEL} />
@@ -2113,6 +2118,37 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
         </>
       )}
     </>
+  );
+}
+
+const ROLE_WORDS: Record<InsertRole, string> = { section: 'Page section', element: 'Subcomponent / inside layouts' };
+
+/**
+ * Where Insert and + put a new placement of a project component (#661): one of a page's sections, or inside a column,
+ * container or slot. Automatic leaves it to the editor, which tells from the design (inferredRole) and says which.
+ */
+function PlacementRoleSection({ state, def }: { state: ProjectState; def: ComponentDefinition }) {
+  if (def.owner !== 'project' || def.category === 'shell') return null;
+  const automatic = inferredRole(state, def.id);
+  const chosen = def.insertAs === 'section' || def.insertAs === 'element' ? def.insertAs : null;
+  const choose = (value: string) => {
+    const insertAs = value === 'section' || value === 'element' ? value : null;
+    if (insertAs === chosen) return;
+    void applyOps(
+      [{ type: 'component.setInsertAs', definitionId: def.id, insertAs }],
+      insertAs ? `Insert ${def.name} as ${insertAs === 'section' ? 'a page section' : 'a subcomponent'}` : `Let the editor choose where ${def.name} is inserted`
+    );
+  };
+  return (
+    <Section title="Placement" id="def-placement" level={LEVEL} scope={ROLE_WORDS[chosen ?? automatic]}>
+      <Field label="Placement role" hint="Where Insert and + put it: among a page’s sections, or inside a column, container or slot. Placements already made stay where they are.">
+        <select className="select" data-placement-role value={chosen ?? ''} onChange={(e) => choose(e.target.value)}>
+          <option value="">Automatic ({ROLE_WORDS[automatic].toLowerCase()})</option>
+          <option value="section">{ROLE_WORDS.section}</option>
+          <option value="element">{ROLE_WORDS.element}</option>
+        </select>
+      </Field>
+    </Section>
   );
 }
 
@@ -2551,6 +2587,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       {/* A component placed in the design: what it is given here, the same in every placement. */}
       {node.kind === 'instance' && placedDef && <NestedInputs state={state} def={def} node={node} placedDef={placedDef} />}
       <PartSection def={def} node={node} level={LEVEL} />
+      {isRoot && <PlacementRoleSection state={state} def={def} />}
       {isRoot && <PropertiesSection def={def} level={LEVEL} />}
       {isRoot && <VariantsSection def={def} level={LEVEL} onStyle={(t) => styleLook(def, t)} />}
       {isRoot && <UiStateSection def={def} level={LEVEL} />}

@@ -2095,6 +2095,9 @@ export class ProjectSession extends EventEmitter {
       // So is the order of a component's properties, set in Edit everywhere's property list.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'component.orderProperties'))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'component.orderProperties is only for the editor.', recoverable: true } };
+      // And a component's placement role, chosen in Component Studio (#661).
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'component.setInsertAs'))
+        return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'component.setInsertAs is only for the editor.', recoverable: true } };
       // The project brief is the author's own (#518): the assistant reads it as background (#519) but never changes it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'The project brief can only be changed in the editor.', recoverable: true } };

@@ -183,7 +183,7 @@ const describe = (name: ToolName) => ({ description: DESCRIPTIONS[name], ...(BRI
 
 /** Operations the assistant never sends: images and component packages are added only by the verified importer,
  *  theme updates by the user, pastes come from the editor's own Copy, and a component's properties are reordered
- *  in Edit everywhere. A post is written with upsert_collection_entry, the only way a run reaches a collection. */
+ *  in Edit everywhere, where its placement role is chosen too. A post is written with upsert_collection_entry, the only way a run reaches a collection. */
 const NEVER_OFFERED = new Set<OperationType>([
   // A whole design in one call reaches the assistant through a tool of its own, never as a raw operation.
   'component.upsert',
@@ -193,6 +193,7 @@ const NEVER_OFFERED = new Set<OperationType>([
   'theme.refresh',
   'node.paste',
   'component.orderProperties',
+  'component.setInsertAs',
   'collection.create',
   'collection.update',
   'collection.remove',

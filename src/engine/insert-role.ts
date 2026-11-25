@@ -3,8 +3,8 @@
  * a layout. Read by Insert in the editor and by the personal component library (#372), which records it when a
  * component is saved so a project that has never seen the component places it the same way.
  */
-import type { ProjectState } from '@shared/types';
-import { allTrees } from './tree';
+import type { OwnerRef, ProjectState } from '@shared/types';
+import { allTrees, findParent } from './tree';
 
 export type InsertRole = 'section' | 'element';
 
@@ -39,4 +39,34 @@ export function definitionRole(state: ProjectState, definitionId: string, seen =
   if (root.kind === 'instance') return definitionRole(state, root.definitionId, seen);
   if (root.kind === 'element' && root.tag === 'section') return 'section';
   return 'element';
+}
+
+/** The role the editor tells from the design alone, as if the author had not chosen one: what Automatic means. */
+export function inferredRole(state: ProjectState, definitionId: string): InsertRole {
+  const def = own(state.components, definitionId);
+  if (!def || def.insertAs === undefined) return definitionRole(state, definitionId);
+  const unchosen = { ...def };
+  delete unchosen.insertAs;
+  return definitionRole({ ...state, components: { ...state.components, [definitionId]: unchosen } }, definitionId);
+}
+
+/**
+ * What one placement is where it sits, for the Inspector's words (#661): a component inside a column, container,
+ * slot or another component's design, or one whose role is an element wherever it sits, is a component; one of a
+ * page's (or layout's, or shared part's) own top-level sections is a section.
+ */
+export function placementRole(state: ProjectState, owner: OwnerRef, nodeId: string): InsertRole {
+  if (owner.kind === 'component') return 'element';
+  const tree =
+    owner.kind === 'page'
+      ? own(state.pages, owner.id)
+      : owner.kind === 'shell'
+        ? owner.id === 'header' || owner.id === 'footer'
+          ? state.site.shell[owner.id]
+          : undefined
+        : own(state.collections ?? {}, owner.id)?.settings.template;
+  const parent = tree ? findParent(tree, nodeId) : null;
+  if (parent && parent.parentId !== null) return 'element';
+  const node = tree ? own(tree.nodes, nodeId) : undefined;
+  return node?.kind === 'instance' ? definitionRole(state, node.definitionId) : 'section';
 }
