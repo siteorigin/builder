@@ -261,20 +261,20 @@ step('Redirects lists, adds, changes and removes old addresses, with the host ru
   // Sent to an address instead, and a second redirect leading through it: the chain is named on its row.
   await row('/old-services/').getByRole('button', { name: 'Change where /old-services/ goes' }).click();
   await row('/old-services/').getByRole('radio', { name: 'An address' }).check();
-  await row('/old-services/').getByRole('textbox', { name: 'Address' }).fill('/about/');
+  await row('/old-services/').getByRole('textbox', { name: 'Address', exact: true }).fill('/about/');
   await row('/old-services/').getByRole('button', { name: 'Save' }).click();
   await eventually(() => assert.deepEqual(site().redirects, [{ from: '/old-services/', custom: true, to: '/about/' }]));
   await section().getByRole('button', { name: 'Add redirect' }).click();
   await section().getByRole('textbox', { name: 'Old address' }).fill('promo');
   await section().getByRole('radio', { name: 'An address' }).check();
-  await section().getByRole('textbox', { name: 'Address' }).fill('/old-services/');
+  await section().getByRole('textbox', { name: 'Address', exact: true }).fill('/old-services/');
   await section().getByRole('button', { name: 'Add redirect' }).click();
   await eventually(async () => assert.match(await row('/promo/').innerText(), /reaches \/about\/ through \/old-services\//, 'the chain is named where it is fixed'));
   await eventually(() => assert.match(rules(), /^\/studio\/promo\/ \/studio\/about\/ 301$/m, 'the website goes straight to the end of the chain'));
 
   // A loop is refused, and nothing changes.
   await row('/old-services/').getByRole('button', { name: 'Change where /old-services/ goes' }).click();
-  await row('/old-services/').getByRole('textbox', { name: 'Address' }).fill('/promo/');
+  await row('/old-services/').getByRole('textbox', { name: 'Address', exact: true }).fill('/promo/');
   await row('/old-services/').getByRole('button', { name: 'Save' }).click();
   await eventually(async () => assert.match(await win.locator('.toasts .toast.error').last().innerText(), /would make a loop of old addresses/));
   await row('/old-services/').getByRole('button', { name: 'Cancel' }).click();
