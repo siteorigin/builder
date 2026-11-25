@@ -1,0 +1,178 @@
+/**
+ * The Inspector's state switcher (issue #350) shows the selected element hovered, focused or pressed on the canvas
+ * while the pointer is in the dock. This runs the real preview bridge in a real browser frame on another origin, as
+ * the editor's preview is, and checks what the page paints: the page's own state rules apply to the selected element
+ * as they would under a real hover (keeping the cascade they have), follow a stylesheet the dev server replaces and an
+ * element the page re-renders, and stop when the editor clears the state or switches to Preview.
+ */
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { chromium, type Browser, type Frame, type Page } from 'playwright';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+
+const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
+const browserInstalled = existsSync(chromium.executablePath());
+
+const HOST = 'http://host.test';
+const SITE = 'http://bridge.test';
+const WHITE = 'rgb(255, 255, 255)';
+const RED = 'rgb(255, 0, 0)';
+const BLUE = 'rgb(0, 0, 255)';
+const GREEN = 'rgb(0, 128, 0)';
+// Rules as the generator writes them (`:where()` around the state, hover behind a hover-capable pointer), a theme's
+// own hover, and a resting rule as heavy as a state rule written after it, which beats it as it does under a real hover.
+const CSS = `body { margin: 0; font: 16px/1.4 sans-serif }
+.card { background: rgb(255, 255, 255); padding: 10px }
+@media (hover: hover) { .card:where(:hover) { background: rgb(255, 0, 0) } }
+.card:where(:focus-visible, .so-action:focus-visible > *) { background: rgb(0, 0, 255) }
+.card:where(:active, .so-action:active > *) { background: rgb(0, 128, 0) }
+.keep { background: rgb(255, 255, 255) }
+.btn { color: rgb(0, 0, 0) }
+.btn:hover::after { content: ' +' }
+.btn:hover { color: rgb(0, 0, 255) }
+.title { color: rgb(0, 0, 0) }
+.so-o-k-title:where(:hover) { color: rgb(0, 128, 0) }`;
+const FRAME = `<!doctype html><html><head><style id="site">${CSS}</style></head><body>
+<main data-so-node="s" data-so-ctx="page:p">
+  <div class="card" data-so-node="c" data-so-ctx="page:p">Card</div>
+  <div class="card" data-so-node="d" data-so-ctx="page:p">Other card</div>
+  <div class="card keep" data-so-node="e" data-so-ctx="page:p">Kept card</div>
+  <a class="so-action" href="#go"><div class="card" data-so-node="l" data-so-ctx="page:p">Linked card</div></a>
+  <a class="btn" href="#b" data-so-node="b" data-so-ctx="page:p">Button</a>
+  <div style="display: contents" data-so-node="k" data-so-ctx="page:p" data-so-code="true"><div class="fancy"><h3 class="title so-o-k-title">Title</h3></div></div>
+</main><script type="module" src="/bridge.js"></script></body></html>`;
+
+let browser: Browser;
+let page: Page;
+let frame: Frame;
+
+const desc = (node: string) => ({ ctx: 'page:p', node, items: '' });
+const post = (type: string, payload: unknown) =>
+  page.evaluate(([t, p]) => document.querySelector('iframe')!.contentWindow!.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: t, payload: p }, '*'), [type, payload] as const);
+const force = (state: string | null, node?: string, part?: string) => post('forceState', state && node ? { state, desc: desc(node), ...(part ? { part } : {}) } : { state: null });
+const paint = (sel: string, prop = 'backgroundColor', pseudo?: string) => frame.evaluate(([s, p, ps]) => getComputedStyle(document.querySelector(s)!, ps ?? null)[p as 'color'], [sel, prop, pseudo] as const);
+const at = (node: string) => `[data-so-node="${node}"]`;
+const marked = () => frame.evaluate(() => [...document.querySelectorAll('[data-so-force-state]')].map((el) => `${el.getAttribute('data-so-node') ?? el.className}=${el.getAttribute('data-so-force-state')}`));
+
+describe.skipIf(!browserInstalled)('showing the selected element in a hover, focus or pressed state', () => {
+  beforeAll(async () => {
+    browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
+    page = await browser.newPage();
+    await page.route('**/*', (route) => {
+      const url = new URL(route.request().url());
+      if (url.origin === SITE && url.pathname === '/bridge.js') return route.fulfill({ contentType: 'text/javascript', body: bridge });
+      if (url.origin === SITE && url.pathname === '/frame') return route.fulfill({ contentType: 'text/html', body: FRAME });
+      if (url.origin === HOST) return route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>host</title><body style="margin:0"><iframe name="so-test" src="${SITE}/frame" style="border:0;width:700px;height:500px"></iframe></body>` });
+      return route.abort();
+    });
+    await page.goto(`${HOST}/`);
+    frame = page.frames().find((f) => f.name() === 'so-test')!;
+    await frame.waitForSelector('html[data-so-editing]', { state: 'attached' });
+    // The pointer stays outside the frame, as it does while the author types in the Inspector.
+    await page.mouse.move(690, 495);
+    expect(await frame.evaluate(() => matchMedia('(hover: hover)').matches)).toBe(true);
+  }, 30000);
+  afterAll(async () => {
+    await browser?.close();
+  });
+  beforeEach(async () => {
+    await post('mode', { mode: 'edit' });
+    await force(null);
+    await expect.poll(marked).toEqual([]);
+  });
+
+  it('paints the selected element’s hover rules on it alone, and stops when the state is cleared', async () => {
+    expect(await paint(at('c'))).toBe(WHITE);
+    await force('hover', 'c');
+    await expect.poll(() => paint(at('c'))).toBe(RED);
+    expect(await paint(at('d'))).toBe(WHITE);
+    expect(await marked()).toEqual(['c=hover']);
+    await force(null);
+    await expect.poll(() => paint(at('c'))).toBe(WHITE);
+    expect(await marked()).toEqual([]);
+  });
+
+  it('keeps the cascade a real hover has: a resting rule written later, as heavy, still wins', async () => {
+    await force('hover', 'e');
+    await expect.poll(marked).toEqual(['e=hover']);
+    expect(await paint(at('e'))).toBe(WHITE);
+  });
+
+  it('shows focus and pressing on a card through the action link that wraps it', async () => {
+    await force('focus', 'l');
+    await expect.poll(() => paint(at('l'))).toBe(BLUE);
+    expect((await marked()).sort()).toEqual(['l=focus', 'so-action=focus']);
+    await force('active', 'l');
+    await expect.poll(() => paint(at('l'))).toBe(GREEN);
+    // Another selection moves the state to it.
+    await force('hover', 'c');
+    await expect.poll(marked).toEqual(['c=hover']);
+    expect(await paint(at('l'))).toBe(WHITE);
+  });
+
+  it('applies a theme’s own hover, pseudo-elements included', async () => {
+    await force('hover', 'b');
+    await expect.poll(() => paint(at('b'), 'color')).toBe(BLUE);
+    expect(await paint(at('b'), 'content', '::after')).toBe('" +"');
+  });
+
+  it('shows the part of a code component being styled, by the class the editor gives it', async () => {
+    await force('hover', 'k', 'title');
+    await expect.poll(() => paint('.title', 'color')).toBe(GREEN);
+    expect(await marked()).toEqual(['title so-o-k-title=hover']);
+  });
+
+  it('follows a stylesheet the dev server replaces or adds while the state is shown', async () => {
+    await force('hover', 'c');
+    await expect.poll(() => paint(at('c'))).toBe(RED);
+    // A hot update replaces the text of the page's <style>: the hover colour changes.
+    await frame.evaluate((css) => (document.getElementById('site')!.textContent = css.replace('.card:where(:hover) { background: rgb(255, 0, 0) }', '.card:where(:hover) { background: rgb(0, 0, 255) }')), CSS);
+    await expect.poll(() => paint(at('c'))).toBe(BLUE);
+    // A new stylesheet arrives with a stronger hover rule.
+    await frame.evaluate(() => {
+      const style = document.createElement('style');
+      style.id = 'added';
+      style.textContent = 'main .card:hover { background: rgb(0, 128, 0) }';
+      document.head.append(style);
+    });
+    await expect.poll(() => paint(at('c'))).toBe(GREEN);
+    await frame.evaluate((css) => {
+      document.getElementById('added')!.remove();
+      document.getElementById('site')!.textContent = css;
+    }, CSS);
+    await expect.poll(() => paint(at('c'))).toBe(RED);
+  });
+
+  it('marks the element again when the page re-renders it', async () => {
+    await force('hover', 'c');
+    await expect.poll(() => paint(at('c'))).toBe(RED);
+    await frame.evaluate(() => {
+      const old = document.querySelector('[data-so-node="c"]')!;
+      const next = old.cloneNode(true) as Element;
+      next.removeAttribute('data-so-force-state');
+      old.replaceWith(next);
+    });
+    await expect.poll(() => paint(at('c'))).toBe(RED);
+    expect(await marked()).toEqual(['c=hover']);
+  });
+
+  it('shows nothing in a state in Preview, and takes no state while it is shown', async () => {
+    await force('hover', 'c');
+    await expect.poll(() => paint(at('c'))).toBe(RED);
+    await post('mode', { mode: 'preview' });
+    await expect.poll(() => paint(at('c'))).toBe(WHITE);
+    expect(await marked()).toEqual([]);
+    await force('hover', 'c');
+    await page.waitForTimeout(100);
+    expect(await marked()).toEqual([]);
+  });
+
+  it('leaves a real hover working on every other element', async () => {
+    await force('focus', 'c');
+    const box = await (await frame.$(at('d')))!.boundingBox();
+    await page.mouse.move(box!.x + 5, box!.y + 5);
+    await expect.poll(() => paint(at('d'))).toBe(RED);
+    await page.mouse.move(690, 495);
+    await expect.poll(() => paint(at('d'))).toBe(WHITE);
+  });
+});

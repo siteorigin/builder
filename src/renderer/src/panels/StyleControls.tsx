@@ -10,8 +10,8 @@ import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
 import { DraftInput } from '../components/ui';
 import { setState, setViewport, useStore } from '../store';
-import { allSizesReach, readStyleNumber, refinementShown, stateUnder, styleReached, styleUnder } from '../lib/style-source';
-import { STATE_LABEL, StatePicker, stateChangeCount, statesWithChanges } from './StatePicker';
+import { allSizesReach, readStyleNumber, refinementShown, stateChangeCount, stateUnder, statesWithChanges, styleReached, styleUnder } from '../lib/style-source';
+import { STATE_LABEL, StatePicker } from './StatePicker';
 
 type Size = Exclude<ResponsiveScope, 'base'>;
 const SIZES: Size[] = ['phone', 'tablet', 'desktop'];
@@ -712,7 +712,7 @@ function Control({
   underText,
   underFrom,
   tokens,
-  state,
+  state: styleState,
   describedBy,
   onSet
 }: {
@@ -740,7 +740,7 @@ function Control({
   const under = linkOf(def, below);
   // A commit, a reset, an undo, another size or another state all end the draft.
   const valueKey = JSON.stringify(value ?? null);
-  useEffect(() => setDrafting(false), [scope, state, valueKey]);
+  useEffect(() => setDrafting(false), [scope, styleState, valueKey]);
   const tokOpts = tokenOptions(tokens, def.tokenGroup);
   const set = value !== undefined;
   const state = set ? ' is-set' : ' is-inherited';
@@ -935,7 +935,7 @@ function Control({
             cancelDraft();
           }}
         >
-          {def.kind === 'color' && <ColorPick key={`${scope}:${state ?? ''}`} className="md" value={literal ? String(value) : colorText} onPick={onSet} label={`${label}: pick a color`} />}
+          {def.kind === 'color' && <ColorPick key={`${scope}:${styleState ?? ''}`} className="md" value={literal ? String(value) : colorText} onPick={onSet} label={`${label}: pick a color`} />}
           <DraftInput
             className={`input sm grow style-input${def.kind === 'color' ? ' mono' : ''}${literal ? ' is-set' : ''}`}
             value={literal ? String(value) : ''}
@@ -951,7 +951,7 @@ function Control({
                 {keeps && (
                   <span className="style-custom-keeps">
                     Using {keeps} until a custom {def.kind === 'color' ? 'color' : 'value'} replaces it{scope === 'base' ? '' : ` for ${SCOPE_LABEL[scope]}`}
-                    {state ? ` ${STATE_WORDS[state]}` : ''}.
+                    {styleState ? ` ${STATE_WORDS[styleState]}` : ''}.
                   </span>
                 )}{' '}
                 {def.kind === 'color' ? 'Pick or type a color' : 'Type a value'}, then press Enter or leave the field. Esc discards it.

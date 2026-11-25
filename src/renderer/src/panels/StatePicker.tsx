@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ResponsiveStyles, StyleState } from '@shared/types';
-import { STYLE_STATES, parseStyleScopeKey } from '@shared/types';
+import { STYLE_STATES } from '@shared/types';
 import { STATE_STYLE_PROPS, STYLE_PROP_MAP } from '@shared/styles';
 import { setState } from '../store';
+import { statesWithChanges } from '../lib/style-source';
 
 export const STATE_LABEL: Record<StyleState, string> = { hover: 'Hover', focus: 'Focus', active: 'Active' };
 /** When a state's changes show, for the note under the picker. */
@@ -13,12 +14,6 @@ const STATE_WHEN: Record<StyleState, string> = {
 };
 /** What the canvas shows while a state is chosen. */
 const STATE_SHOWN: Record<StyleState, string> = { hover: 'hovered', focus: 'focused', active: 'pressed' };
-
-/** How many changes a set of styles holds in one state, at every size. */
-export const stateChangeCount = (styles: ResponsiveStyles | undefined, state: StyleState) =>
-  Object.entries(styles ?? {}).reduce((n, [k, v]) => n + (parseStyleScopeKey(k)?.state === state ? Object.keys(v ?? {}).length : 0), 0);
-/** The states a set of styles holds changes for, in the order the stylesheet writes them. */
-export const statesWithChanges = (styles: ResponsiveStyles | undefined): StyleState[] => STYLE_STATES.filter((st) => stateChangeCount(styles, st) > 0);
 
 /** The properties a state can change, as the note names them. */
 const stateProps = () => {

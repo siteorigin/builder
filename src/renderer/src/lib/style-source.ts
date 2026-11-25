@@ -1,5 +1,5 @@
 import type { ResponsiveScope, ResponsiveStyles, StyleState, StyleValue } from '@shared/types';
-import { parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { STYLE_STATES, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { cascadeStyles, columnSizesForAllSizes, cssRivals, isStateStyleProp, wideOnlyStyle, type StyleLayer } from '@shared/styles';
 
 export interface StyleSourceInput {
@@ -61,6 +61,12 @@ export function styleUnder({ prop, scope, styles, inherited, designSizesWin, wid
   const fromDesign = scope === 'base' || designSizesWin ? (designHere ?? inherited?.base?.[prop]) : designHere;
   return { value: fromDesign, from: fromDesign !== undefined ? 'design' : undefined };
 }
+
+/** How many changes a set of styles holds in one interactive state, at every size. */
+export const stateChangeCount = (styles: ResponsiveStyles | undefined, state: StyleState) =>
+  Object.entries(styles ?? {}).reduce((n, [k, v]) => n + (parseStyleScopeKey(k)?.state === state ? Object.keys(v ?? {}).length : 0), 0);
+/** The interactive states a set of styles holds changes for, in the order the stylesheet writes them. */
+export const statesWithChanges = (styles: ResponsiveStyles | undefined): StyleState[] => STYLE_STATES.filter((st) => stateChangeCount(styles, st) > 0);
 
 export interface StateSourceInput extends StyleSourceInput {
   /** The interactive state being edited. */
