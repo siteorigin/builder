@@ -101,7 +101,8 @@ function textNote(t: SeoOverviewText, field: 'title' | 'description', listed: bo
   let tone: 'warn' | 'note' | 'ok' = 'ok';
   if (t.duplicates > 0) {
     tone = 'warn';
-    parts.push(listed ? `Same as ${plural(t.duplicates, 'other page', 'other pages')}` : `Same as ${plural(t.duplicates, 'listed page', 'listed pages')}`);
+    // A document search engines don't list repeats only the ones they do: it would compete with them once listed.
+    parts.push(`Same as ${plural(t.duplicates, `${listed ? 'other' : 'listed'} page or post`, `${listed ? 'other' : 'listed'} pages and posts`)}`);
   }
   const count = plural(t.chars, 'character');
   if (t.status === 'short') parts.push(`Too short · ${count}`);
