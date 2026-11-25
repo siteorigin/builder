@@ -1,7 +1,8 @@
 /**
  * The structured data a generated page or collection entry carries: one connected Schema.org graph (seo-graph.ts)
  * with what the website itself says about the document. The Home page is about the site's publisher; an entry's page
- * says when it was last revised, and is about a blog posting with its headline, dates, author, description and image;
+ * says when it was last revised, and is about a blog posting (or another collection's article) with its headline,
+ * dates, author, description and image;
  * a page's FAQ makes it an FAQ page with its questions in order, and each contact section it shows is a part of the
  * page with the contact details it gives (who they belong to is not said, since a page can show a venue's box office
  * as well as the publisher's own); and the website says where it can be searched, once a page shows a search that
@@ -16,6 +17,7 @@ import { isArticleDate } from '@shared/articles';
 import { partsShown } from '@shared/page-shell';
 import { translationGroup } from '@shared/languages';
 import { seoText } from '@shared/seo';
+import { POSTS_COLLECTION_ID } from '@shared/collections';
 import { buildSeoGraph, graphScriptText, type GraphContribution, type GraphContributor, type JsonValue, type SeoGraph } from './seo-graph';
 import { derived } from './cache';
 import { createSeoResolver, type SeoResolver } from './seo-metadata';
@@ -45,21 +47,23 @@ const revised: GraphContributor = ({ state, meta, ids }) => {
 };
 
 /**
- * An entry's page is about the post it shows: a BlogPosting of its own, the main thing on that page, published by the
- * site's publisher. Its headline is the entry's own title (a browser title may carry the site's name); it was last
- * modified when its author says it was revised, else the day it was published; its image is the one it is shared with.
- * Each property is left out when the entry has nothing to say for it.
+ * An entry's page is about the entry it shows, the main thing on that page, published by the site's publisher: a
+ * BlogPosting for a post of the blog, an Article for an entry of another collection (a project, a case study). Its
+ * headline is the entry's own title (a browser title may carry the site's name); it was last modified when its author
+ * says it was revised, else the day it was published; its image is the one it is shared with. Each property is left
+ * out when the entry has nothing to say for it.
  */
-const blogPosting: GraphContributor = ({ state, meta, ids }) => {
+const entryArticle: GraphContributor = ({ state, meta, ids }) => {
   if (meta.subject.kind !== 'entry') return null;
   const entry = state.collections[meta.subject.collectionId]?.entries[meta.subject.entryId];
   if (!entry) return null;
+  const blog = meta.subject.collectionId === POSTS_COLLECTION_ID;
   const modified = meta.modified ?? meta.published;
   return {
     nodes: [
       {
-        '@type': 'BlogPosting',
-        '@id': ids.page('blogposting'),
+        '@type': blog ? 'BlogPosting' : 'Article',
+        '@id': ids.page(blog ? 'blogposting' : 'article'),
         mainEntityOfPage: { '@id': ids.webpage },
         ...opt('headline', seoText(entry.title) || seoText(meta.socialTitle) || undefined),
         ...opt('description', seoText(meta.description) || undefined),
@@ -149,7 +153,7 @@ const siteSearch: GraphContributor = ({ state, resolver, ids }) => {
 };
 
 /** What the generated website says about its documents, beyond the graph's own entities. */
-export const SITE_CONTRIBUTORS: readonly GraphContributor[] = [homeAbout, revised, blogPosting, pageContent, siteSearch];
+export const SITE_CONTRIBUTORS: readonly GraphContributor[] = [homeAbout, revised, entryArticle, pageContent, siteSearch];
 
 /**
  * The resolver of each project state a generator run is working from, while one is (`inGenerationRun`): every page's

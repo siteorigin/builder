@@ -929,7 +929,7 @@ function PostSearchSettings({
           label="Hide from search engines"
           hint={published ? 'Search engines are asked not to list it, and the sitemap leaves it out. Anyone with the address can still open it.' : 'Once published, search engines are asked not to list it, and the sitemap leaves it out.'}
         />
-        <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void update({ searchHidden: v }, v ? 'Hide post from site search' : 'Show post in site search')} label="Hide from site search" hint="Keeps this post out of the site’s own search results. Search engines and the RSS feed still list it." />
+        <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void update({ searchHidden: v }, v ? 'Hide post from site search' : 'Show post in site search')} label="Hide from site search" hint="Keeps this post out of the site’s own search results, whatever search engines are told." />
       </div>
     </details>
   );

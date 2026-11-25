@@ -87,8 +87,9 @@ describe('the RSS feed', () => {
     // A draft is no post of the website, in the editor's state or the one exported.
     expect(xml).not.toContain('Unannounced');
     expect(feedOf(publishedState(s)).xml).toBe(xml);
-    // RSS's <author> must be an email address: a byline is the creator.
+    // RSS's <author> must be an email address: a byline is the creator. The ID names no address.
     expect(xml).not.toContain('<author>');
+    expect(xml.match(/<guid isPermaLink="false">/g)).toHaveLength(3);
   });
 
   it('escapes what XML and HTML give a meaning to, and replaces characters XML does not allow', () => {
@@ -101,6 +102,7 @@ describe('the RSS feed', () => {
     expect(items[0].description).toBe('Glazes &lt;b&gt;bold&lt;/b&gt; &amp; bright');
     expect(xmlText('a\ud800b\udc00c🍵')).toBe('a�b�c🍵');
     expect(xmlText('tab\tline\nend')).toBe('tab\tline\nend');
+    expect(xmlText('\u0000\u000b\ufffe\uffff')).toBe('\ufffd\ufffd\ufffd\ufffd');
   });
 
   it('keeps each post’s ID through a rename, and lists posts of the same day by ID and undated ones last', () => {
@@ -116,11 +118,19 @@ describe('the RSS feed', () => {
     expect(items.map((i) => i.title)).toEqual(['Same day B', 'Spring pottery classes', 'Same day A']);
     expect(items[2].pubDate).toBeUndefined();
     expect(rssDate('2027-03-02')).toBe('Tue, 02 Mar 2027 00:00:00 GMT');
+    // Posts of every collection are one list, newest first, whatever order each collection keeps.
+    const two = run(
+      s,
+      { type: 'collection.create', collectionId: 'projects', name: 'Projects', route: '/projects/' } as EditOperation,
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_mural', title: 'Harbour mural', publishedAt: '2027-04-01', draft: false } as EditOperation,
+      { type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_spring', 'en_bbbb', 'en_aaaa'] }
+    );
+    expect(feedOf(two).items.map((i) => i.title)).toEqual(['Harbour mural', 'Same day A', 'Same day B', 'Spring pottery classes']);
   });
 
   it('lists a post hidden from search engines or from site search: subscribers still read it', () => {
     const { state } = seoSite();
-    expect(feedOf(run(state, update('en_spring', { noindex: true, searchHidden: true }))).items).toHaveLength(1);
+    for (const flags of [{ noindex: true }, { searchHidden: true }]) expect(feedOf(run(state, update('en_spring', flags))).items).toHaveLength(1);
   });
 
   it('is written to static/rss.xml and named in every page’s head, and needs a public URL and a published post', () => {
@@ -168,6 +178,9 @@ describe('the RSS feed', () => {
     out = generateProject(s, {}, cache);
     expect(out).toEqual(fresh(s));
     expect(out.get(RSS_PATH)).toContain('Bookings open now.');
+    // The layout names the feed, not what it says: a new summary leaves it alone.
+    expect(cache.made).toContain('rss.xml');
+    expect(cache.made.filter((k) => k.startsWith('layout'))).toEqual([]);
     // Unpublished, the last post takes the feed and the layout's link to it away.
     s = run(s, update('en_spring', { draft: true }));
     out = generateProject(publishedState(s), {}, cache);
@@ -190,7 +203,11 @@ describe('the website export', () => {
       const s = await ProjectSession.create(dir, withDraft);
       s.settleMs = 0;
       await s.close();
+      const draftPage = join(dir, 'src/routes/blog/secret-kiln-opening/+page.svelte');
+      // The editable project has the draft's page, for the preview; the website does not.
+      expect(readFileSync(draftPage, 'utf8')).toContain('Secret kiln opening');
       await leaveOutDrafts(dir, withDraft);
+      expect(() => readFileSync(draftPage)).toThrow();
       const feed = readFileSync(join(dir, RSS_PATH), 'utf8');
       expect(assertWellFormed(feed)).toBe('rss');
       expect(feed).toContain(`<link>${SPRING}</link>`);
@@ -264,9 +281,26 @@ describe('a post’s BlogPosting', () => {
       headline: 'Spring pottery classes',
       image: { url: `${SITE}/assets/img_bowls-1a2b3c4d.png` }
     });
+    // The publisher is whoever publishes the site, a person too; a post with no image to share has none.
+    const person = run(state, { type: 'site.update', identity: { kind: 'Person' }, socialImage: null } as EditOperation, update('en_spring', { featuredImage: null }));
+    const byPerson = postingOf(person);
+    expect(byPerson.posting!.publisher).toEqual({ '@id': byPerson.graph!['@graph'].find((n) => n['@type'] === 'Person')!['@id'] });
+    expect(byPerson.posting).not.toHaveProperty('image');
     // A headline that would close the script is kept inside it.
     const closing = postingOf(run(state, update('en_spring', { title: 'Glaze </script> notes' })));
     expect(closing.posting).toMatchObject({ headline: 'Glaze </script> notes' });
+  });
+
+  it('is an Article for an entry of another collection', () => {
+    const { state } = seoSite();
+    const s = run(
+      state,
+      { type: 'collection.create', collectionId: 'projects', name: 'Projects', route: '/projects/' } as EditOperation,
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_mural', title: 'Harbour mural', publishedAt: '2027-04-01', draft: false } as EditOperation
+    );
+    const g = documentGraph(s, { kind: 'entry', collectionId: 'projects', entryId: 'en_mural' })!['@graph'];
+    expect(g.filter((n) => n['@type'] === 'BlogPosting')).toEqual([]);
+    expect(g.find((n) => n['@type'] === 'Article')).toMatchObject({ '@id': `${SITE}/projects/harbour-mural/#article`, headline: 'Harbour mural', datePublished: '2027-04-01' });
   });
 
   it('is on post pages that carry structured data, never on pages, drafts or posts without it', () => {
@@ -298,12 +332,31 @@ describe('posts in site search', () => {
     });
     expect(generateSearchIndex(s)).toContain('Every student leaves with a set.');
     expect(generateSearchIndex(s)).not.toContain('Unannounced');
+    // Its own search description is its description; its excerpt stays among its words.
+    const described = buildSearchIndex(run(s, update('en_spring', { description: 'Six weeks at the wheel this spring.' }))).at(-1)!;
+    expect(described.description).toBe('Six weeks at the wheel this spring.');
+    expect(described.text).toMatch(/^Spring wheel classes open/);
+  });
+
+  it('finds a post only by the text its page shows: a layout without the entry’s text leaves it out', () => {
+    const { state } = seoSite();
+    const layout = state.collections.posts.settings.template!;
+    const bodyNode = Object.values(layout.nodes).find((n) => n.kind === 'text' && JSON.stringify(n.text).includes('"$entry":"body"'));
+    expect(bodyNode).toBeTruthy();
+    const noBody = run(state, { type: 'node.remove', owner: { kind: 'template', id: 'posts' }, nodeId: bodyNode!.id });
+    const post = buildSearchIndex(noBody).at(-1)!;
+    expect(post.route).toBe('/blog/spring-pottery-classes/');
+    expect(post.text).toBe('Spring wheel classes open for bookings: six weeks of throwing, trimming and glazing.');
   });
 
   it('leaves out a post hidden from site search, but not one hidden only from search engines, and follows a rename', () => {
     const { state } = seoSite();
     const routes = (s: ProjectState) => buildSearchIndex(s).map((e) => e.route);
     expect(routes(run(state, update('en_spring', { searchHidden: true })))).not.toContain('/blog/spring-pottery-classes/');
+    // A hand-edited value the switch shows as on hides it too.
+    const edited = copy(state);
+    (edited.collections.posts.entries.en_spring as { seo?: unknown }).seo = { searchHidden: 1 };
+    expect(routes(edited)).not.toContain('/blog/spring-pottery-classes/');
     expect(routes(run(state, update('en_spring', { noindex: true })))).toContain('/blog/spring-pottery-classes/');
     expect(routes(run(state, update('en_spring', { draft: true })))).not.toContain('/blog/spring-pottery-classes/');
     const renamed = routes(run(state, update('en_spring', { slug: 'spring-classes' })));

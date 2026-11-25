@@ -116,6 +116,17 @@ function buildFeed(state: ProjectState): Feed | null {
   };
 }
 
+/**
+ * What every page's link to the feed says (its address and title), or null when the website has no feed. In a cached
+ * run the layout depends on this alone, so a post's new summary makes the feed again but not the layout.
+ */
+export function feedLink(state: ProjectState): { url: string; title: string } | null {
+  return derived(state, 'rss-link', (s) => {
+    const feed = buildFeed(s);
+    return feed ? { url: feed.url, title: feed.title } : null;
+  });
+}
+
 /** The feed's file, or null when the website has no feed. */
 export function generateRssFeed(state: ProjectState): string | null {
   const feed = siteFeed(state);

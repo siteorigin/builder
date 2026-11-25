@@ -11,10 +11,10 @@
  * header and footer, which every page has), or an entry's excerpt and text. Old addresses kept for renamed pages and
  * posts only send visitors on, so they are never results; a page found always links to where it is now.
  */
-import type { ComponentDefinition, EntryDoc, NodeTree, PageDoc, ProjectState, ResponsiveStyles } from '@shared/types';
+import type { Collection, ComponentDefinition, EntryDoc, NodeTree, PageDoc, ProjectState, ResponsiveStyles } from '@shared/types';
 import { slotChildren } from '@shared/types';
 import { richTextToPlain, toRichText } from '@shared/richtext';
-import { renderedContent } from './checks';
+import { renderedContent, showsEntryText } from './checks';
 import { siteEntries } from '@shared/collections';
 import { isDraftPage, publishedState } from './index';
 
@@ -111,9 +111,12 @@ export function entrySearchHidden(entry: EntryDoc): boolean {
   return !!entry.seo?.searchHidden;
 }
 
-/** The words an entry's page shows of the entry itself: its excerpt and its text, one line per field that has any. */
-export function entryText(entry: EntryDoc): string {
-  return [oneLine(entry.excerpt), oneLine(plain(entry.body))].filter(Boolean).join('\n');
+/**
+ * The words of an entry search finds: its excerpt, and its text where its page shows it (a collection layout without
+ * the entry's text leaves it off the website, as the Markdown copies do), one line per field that has any.
+ */
+export function entryText(state: ProjectState, collection: Collection, entry: EntryDoc): string {
+  return [oneLine(entry.excerpt), showsEntryText(state, collection, entry) ? oneLine(plain(entry.body)) : ''].filter(Boolean).join('\n');
 }
 
 /**
@@ -136,11 +139,12 @@ export function buildSearchIndex(state: ProjectState): SearchEntry[] {
     out.push(entry);
   }
   // Drafts leave before addresses are shared out, so a post whose address a draft held first is found where it is.
-  for (const { entry, route } of siteEntries(publishedState(state))) {
+  const live = publishedState(state);
+  for (const { collection, entry, route } of siteEntries(live)) {
     if (entrySearchHidden(entry)) continue;
     const alias = oneLine(entry.seo?.title);
     const title = oneLine(entry.title) || alias || route;
-    const found: SearchEntry = { route, title, text: entryText(entry) };
+    const found: SearchEntry = { route, title, text: entryText(live, collection, entry) };
     if (alias && alias !== title) found.alias = alias;
     const description = oneLine(entry.seo?.description) || oneLine(entry.excerpt);
     if (description) found.description = description;

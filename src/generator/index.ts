@@ -104,7 +104,7 @@ import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { notFoundSectionRoutes } from './checks';
 import { graphScript, inGenerationRun } from './structured-data';
-import { RSS_PATH, generateRssFeed, siteFeed } from './rss';
+import { RSS_PATH, feedLink, generateRssFeed } from './rss';
 import { siteTwitterHandle } from '@shared/site-identity';
 
 export interface GenerateOptions {
@@ -3348,8 +3348,8 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   // Every page asks AI services not to train on it while the crawler policy says so (shared/crawler-policy.ts).
   const noAi = crawlerRules(state.site).noAiMeta ? `\n\t${NOAI_META}` : '';
   // Every page names the site's RSS feed, while it has one, so a feed reader finds it from any address on the site.
-  const feed = siteFeed(state);
-  const feedLink = feed ? `\n\t<link rel="alternate" type="application/rss+xml" title={${js(feed.title)}} href={${js(feed.url)}} />` : '';
+  const feed = feedLink(state);
+  const feedTag = feed ? `\n\t<link rel="alternate" type="application/rss+xml" title={${js(feed.title)}} href={${js(feed.url)}} />` : '';
   // An archive page shows both parts, even at the address of a draft made before archive pages.
   const archived = archiveRouteIds(state);
   const without = (part: ShellPart) => {
@@ -3414,7 +3414,7 @@ ${editing}</script>
 
 <svelte:head>${bootstrap}
 	<link rel="icon" href={asset(${js(iconHref)})} type=${js(iconType)} />
-	<meta property="og:site_name" content={${js(state.site.name)}} />${feedLink}${noAi}
+	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}
 </svelte:head>
 
 <a class="so-skip-link" href="#main">{text().skipLink}</a>

@@ -11,7 +11,7 @@ export function assertWellFormed(xml: string): string {
   const entity = /&(?!(?:amp|lt|gt|quot|apos|#0*[1-9]\d*|#x0*[1-9a-f][0-9a-f]*);)/i;
   // Characters XML 1.0 never allows, written or as a reference: control characters other than tab and line breaks,
   // a lone half of a surrogate pair, U+FFFE and U+FFFF.
-  const bad = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]|&#x0*(?:[1-8bcef]|1[0-9a-f]);|&#0*(?:[1-8]|1[1-9]|2\d|3[01]);/i;
+  const bad = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]|&#x0*(?:[1-8bcef]|1[0-9a-f]);|&#0*(?:[1-8]|1[124-9]|2\d|3[01]);/i;
   if (bad.test(xml)) throw new Error('A character XML does not allow.');
   let rest = xml.replace(/^<\?xml version="1\.0" encoding="UTF-8"\?>\n/, '');
   if (rest === xml) throw new Error('No XML declaration at the start.');
