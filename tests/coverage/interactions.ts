@@ -1328,6 +1328,41 @@ export const INTERACTIONS: Interaction[] = [
     ]
   },
   {
+    id: 'components.turn-into-slot',
+    area: 'components',
+    intent: 'Turn a container in my component into a slot, keeping what each placement shows',
+    start: 'Blank site, a Split component placed twice with different content in its Side column, open in Component Studio',
+    routes: ['item:turn-into-slot:<data>', 'inspector:More actions › Turn into slot…', 'panel:Layers › Turn into slot…', 'dialog:Turn into slot'],
+    outcome: 'The dialog names the slot after the container; moving the content leaves each placement its own in one change, or the slot is left empty; one Undo puts the design and the pages back; a container that holds a slot, or can’t safely hold one, is offered unavailable with the reason; on the page each placement shows the empty slot and takes a drop',
+    scenario: 'Blank starter · none',
+    proof: [
+      { test: 'tests/e2e/turn-into-slot.mjs', kind: 'e2e', step: 'the Inspector turns the Side column into a slot, each placement keeping its own hours, in one change' },
+      { test: 'tests/e2e/turn-into-slot.mjs', kind: 'e2e', step: 'one Undo puts the column’s content back in the design, and takes it off the page' },
+      { test: 'tests/e2e/turn-into-slot.mjs', kind: 'e2e', step: 'Layers turns it into an empty slot instead, and then offers it no more, saying why' },
+      { test: 'tests/e2e/turn-into-slot.mjs', kind: 'e2e', step: 'on the page, both Splits show the empty slot at once, and a Paragraph dragged onto one lands in it alone' },
+      { test: 'tests/unit/turn-into-slot.test.ts', kind: 'unit' }
+    ]
+  },
+  {
+    id: 'components.placed-slots',
+    area: 'components',
+    intent: 'See and fill the slots of a component I placed, from the Inspector',
+    start: 'Blank site, a card with Media, Actions, Body and Quiet slots placed in a Section, and a component with none',
+    routes: ['inspector:Slots', 'inspector:Slots › Add', 'inspector:Slots › content', 'inspector:Slots › Move out', 'inspector:Slots › Clear'],
+    outcome: 'The Inspector lists a placement’s slots in the order it declares them, with what each takes and holds; Add offers only what the slot takes and inserts into it alone, and is off with the reason at its limit; what a slot holds is a click away; Move out and Clear are one Undo each; a component with no slots shows no section',
+    scenario: 'Blank starter · none',
+    proof: [
+      { test: 'tests/e2e/placed-slots.mjs', kind: 'e2e', step: 'the card lists its slots in the order it declares them, with what each takes and holds' },
+      { test: 'tests/e2e/placed-slots.mjs', kind: 'e2e', step: 'Add on Actions offers only what Actions takes, and inserts into it alone, in one change' },
+      { test: 'tests/e2e/placed-slots.mjs', kind: 'e2e', step: 'at its limit, Add is off and says why' },
+      { test: 'tests/e2e/placed-slots.mjs', kind: 'e2e', step: 'what a slot holds is a click away, each named as Layers names it' },
+      { test: 'tests/e2e/placed-slots.mjs', kind: 'e2e', step: 'Move out puts what Actions holds just after the card, in one Undo' },
+      { test: 'tests/e2e/placed-slots.mjs', kind: 'e2e', step: 'Clear deletes what Actions holds, in one Undo' },
+      { test: 'tests/e2e/placed-slots.mjs', kind: 'e2e', step: 'a component with no slots shows no Slots section' },
+      { test: 'tests/unit/slot-overview.test.ts', kind: 'unit' }
+    ]
+  },
+  {
     id: 'components.conditions',
     area: 'components',
     intent: 'Show or hide part of a component depending on its content',
