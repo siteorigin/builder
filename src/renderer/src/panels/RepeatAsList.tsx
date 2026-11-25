@@ -1,12 +1,12 @@
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Box, ListPlus, Repeat, ShieldCheck } from 'lucide-react';
-import type { ElementRef } from '@shared/types';
+import type { ElementRef, ProjectState } from '@shared/types';
 import { displayName, instancesOf } from '@engine/tree';
 import { commitOps, getState, setState, useStore } from '../store';
 import { Field, Modal } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { planRepeatAsList, repeatAsListTarget, STARTER_ITEMS } from '../lib/repeat-as-list';
-import { Badge, Count, Details, FormStatus, GONE_ID, GoneClose, GoneNotice, Subject, limitSaid, useCloseOwn, useSelectedOnOpen } from './Dialogs';
+import { planRepeatAsList, repeatAsListPreflight, repeatAsListTarget, STARTER_ITEMS, type RepeatPlan } from '../lib/repeat-as-list';
+import { Badge, Count, Details, FormStatus, GONE_ID, GoneClose, GoneNotice, Subject, limitSaid, useSelectedOnOpen } from './Dialogs';
 
 /** The longest name a list property can have. */
 const LABEL_MAX = 80;
@@ -20,30 +20,50 @@ const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).jo
  */
 export function RepeatAsListModal({ target }: { target: ElementRef }) {
   const snap = useStore((s) => s.snapshot);
-  const st = snap?.state;
+  // The project opening this dialog was opened in: another one (or this project opened again) is not where it acts.
+  const [workspace] = useState(() => snap?.workspaceKey);
+  const [own] = useState(() => getState().modal);
+  const sameOpening = !!snap && snap.workspaceKey === workspace;
+  const st = sameOpening ? snap.state : undefined;
   const def = st && target.owner.kind === 'component' ? st.components[target.owner.id] : undefined;
   const node = def?.tree?.nodes[target.nodeId];
   const [busy, setBusy] = useState(false);
-  // Planned again as the project changes, so what the dialog says is what Repeat as list does; the IDs are made new
-  // when it is chosen.
+  // Why the last Repeat as list was refused before it was sent, when the project changed since the dialog said it could.
+  const [refused, setRefused] = useState<{ state: ProjectState; why: string } | null>(null);
   const [opened] = useState(() => (st && def && node ? { name: displayName(st, node, def), plan: planRepeatAsList(st, def, target.nodeId) } : null));
   const [label, setLabel] = useState(() => (opened && !('problem' in opened.plan) ? opened.plan.label : 'Items'));
-  const plan = st && def ? planRepeatAsList(st, def, target.nodeId, { label }) : null;
-  const ready = !!plan && !('problem' in plan) ? plan : null;
+  // Planned again as the project or the name changes, so what the dialog says is what Repeat as list does; the IDs are
+  // made new when it is chosen.
+  const plan = useMemo(() => (st && def ? planRepeatAsList(st, def, target.nodeId, { label }) : null), [st, def, target.nodeId, label]);
+  // Tried on a copy of the project once for each version of it (the name never decides whether it lands).
+  const preflight = useMemo(() => {
+    if (!st || !def) return null;
+    const p = planRepeatAsList(st, def, target.nodeId);
+    return 'problem' in p ? null : repeatAsListPreflight(st, p);
+  }, [st, def, target.nodeId]);
+  // While the change is saving, the summary stays as it was confirmed: the project it lands in has the list already.
+  const confirmed = useRef<RepeatPlan | null>(null);
+  const ready = plan && !('problem' in plan) ? plan : busy ? confirmed.current : null;
   // The container is still there after the change, inside its new repeat: only one that went counts as gone.
-  const gone = !busy && !!st && !node;
-  const problem = !busy && !gone && plan && 'problem' in plan ? plan.problem : null;
+  const gone = !busy && (!sameOpening || !node);
+  const problem = busy || gone ? null : snap?.readOnly ? 'This project is open read-only, so nothing can be repeated.' : plan && 'problem' in plan ? plan.problem : refused && refused.state === st ? refused.why : preflight;
   const input = useSelectedOnOpen();
-  const close = useCloseOwn();
+  const close = () => {
+    if (getState().modal === own) setState({ modal: null });
+  };
   const labelError = label.trim() ? undefined : 'Enter a name for the list.';
   const placements = st && def ? instancesOf(st, def.id).length : 0;
   const repeat = async () => {
-    if (!ready || busy || labelError) return;
+    if (!ready || busy || labelError || problem) return;
     // Checked and planned against the project as it is now, and made only if nothing changes it first.
     const now = getState().snapshot;
+    if (!now || now.workspaceKey !== workspace || now.readOnly) return;
     const at = repeatAsListTarget(now, target);
-    const fresh = now && at ? planRepeatAsList(now.state, now.state.components[target.owner.id], target.nodeId, { label }) : null;
-    if (!now || !fresh || 'problem' in fresh) return;
+    const fresh = at ? planRepeatAsList(now.state, now.state.components[target.owner.id], target.nodeId, { label }) : null;
+    if (!fresh || 'problem' in fresh) return;
+    const why = now.state === st ? preflight : repeatAsListPreflight(now.state, fresh);
+    if (why) return setRefused({ state: now.state, why });
+    confirmed.current = fresh;
     setBusy(true);
     let r: Awaited<ReturnType<typeof commitOps>> = null;
     try {
@@ -51,10 +71,8 @@ export function RepeatAsListModal({ target }: { target: ElementRef }) {
     } finally {
       if (!r?.ok) setBusy(false);
     }
-    if (r?.ok) {
-      close();
-      setState({ selection: target });
-    }
+    // Only while this dialog is still the one open, in the same opening: another view has taken over otherwise.
+    if (r?.ok && getState().modal === own && getState().snapshot?.workspaceKey === workspace) setState({ modal: null, selection: target });
   };
   const name = opened?.name ?? 'This container';
   return (
@@ -81,10 +99,16 @@ export function RepeatAsListModal({ target }: { target: ElementRef }) {
     >
       {gone ? (
         <GoneNotice>
-          <strong>{name}</strong> was removed, so nothing was repeated.
+          {sameOpening ? (
+            <>
+              <strong>{name}</strong> was removed, so nothing was repeated.
+            </>
+          ) : (
+            'The project was closed or opened again, so nothing was repeated.'
+          )}
         </GoneNotice>
       ) : problem ? (
-        <GoneNotice>{snap?.readOnly ? 'This project is open read-only, so nothing was repeated.' : problem}</GoneNotice>
+        <GoneNotice>{problem}</GoneNotice>
       ) : (
         <div className="authoring-form">
           <FormStatus text={busy ? 'Repeating as a list' : (labelError ?? limitSaid(label.length, LABEL_MAX, 'Names'))} />

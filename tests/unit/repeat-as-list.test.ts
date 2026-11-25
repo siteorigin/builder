@@ -15,7 +15,7 @@ import { defFile, generateProject } from '@generator/index';
 import { P, prop, type ComponentSpec } from '@catalogue/dsl';
 import { FOUNDATION } from '@catalogue/foundation/pack';
 import { ProjectSession } from '../../src/main/project/session';
-import { STARTER_ITEMS, planRepeatAsList, repeatAsListProblem, repeatAsListTarget, type RepeatPlan } from '../../src/renderer/src/lib/repeat-as-list';
+import { STARTER_ITEMS, planRepeatAsList, repeatAsListPreflight, repeatAsListProblem, repeatAsListTarget, type RepeatPlan } from '../../src/renderer/src/lib/repeat-as-list';
 
 const { managed } = FOUNDATION;
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -89,7 +89,8 @@ describe('Repeat as list turns a static card into a repeated list', () => {
       ['card-link', 'label', 'label'],
       ['card-link', 'link', 'link']
     ]);
-    expect(p.items).toHaveLength(STARTER_ITEMS);
+    expect(STARTER_ITEMS).toBe(3);
+    expect(p.items).toHaveLength(3);
 
     const after = applyOperations(s, p.operations).state;
     expect(errors(after)).toEqual([]);
@@ -110,22 +111,24 @@ describe('Repeat as list turns a static card into a repeated list', () => {
     expect(list).toMatchObject({ type: 'list', label: 'Cards', itemLabel: 'Card', titleField: 'title' });
     expect(Object.fromEntries(Object.entries(list.fields).map(([k, f]) => [k, f.type]))).toEqual({ icon: 'icon', title: 'string', description: 'string', label: 'string', link: 'link' });
     // Every starter item starts from the card's own content, under its own ID.
-    expect(list.default).toHaveLength(STARTER_ITEMS);
-    expect(new Set(list.default.map((it) => it.id)).size).toBe(STARTER_ITEMS);
-    for (const it of list.default) expect(it).toMatchObject({ icon: 'sparkles', title: 'Fast setup', description: 'Up and running in minutes.', label: 'Read more', link: LINK });
+    const content = { icon: 'sparkles', title: 'Fast setup', description: 'Up and running in minutes.', label: 'Read more', link: LINK };
+    expect(list.default).toHaveLength(3);
+    expect(new Set(list.default.map((it) => it.id)).size).toBe(3);
+    for (const it of list.default) expect(it).toMatchObject(content);
 
     // Each existing placement has its own copy of the items, no ID shared with the defaults or the other placement.
     const itemsOf = (n: InstanceNode) => (home(after).nodes[n.id] as InstanceNode).props.cards as ListItem[];
     const ids = [...list.default, ...itemsOf(a), ...itemsOf(b)].map((it) => it.id);
-    expect(itemsOf(a)).toHaveLength(STARTER_ITEMS);
-    expect(itemsOf(b)).toHaveLength(STARTER_ITEMS);
+    expect(itemsOf(a)).toHaveLength(3);
+    expect(itemsOf(b)).toHaveLength(3);
+    for (const it of [...itemsOf(a), ...itemsOf(b)]) expect(it).toMatchObject(content);
     expect(new Set(ids).size).toBe(ids.length);
 
     // Each placement hands its own items to the component, which renders the card once per item.
     const page = generateProject(after).get('src/routes/+page.svelte')!;
     expect(page.split('Fast setup').length - 1).toBe(2 * STARTER_ITEMS);
     const component = generateProject(after).get(defFile(d))!;
-    expect(component).toMatch(/\{#each [^}]*cards[^}]* as item \(item\.id\)\}/);
+    expect(component).toContain('{#each cards ?? [] as item (item.id)}');
   });
 
   it('lets one placement edit one item without touching the others', () => {
@@ -136,9 +139,12 @@ describe('Repeat as list turns a static card into a repeated list', () => {
     s = applyOperations(s, plan(s, def, 'card').operations).state;
     const itemsOf = (st: ProjectState, n: InstanceNode) => (home(st).nodes[n.id] as InstanceNode).props.cards as ListItem[];
     const second = itemsOf(s, a)[1];
+    const defaults = structuredClone(s.components[def.id].properties.cards.default);
     s = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'page', id: s.site.homePageId }, nodeId: a.id, prop: 'cards', itemId: second.id, field: 'title', value: 'Friendly support' }]).state;
     expect(itemsOf(s, a).map((it) => it.title)).toEqual(['Fast setup', 'Friendly support', 'Fast setup']);
     expect(itemsOf(s, b).map((it) => it.title)).toEqual(['Fast setup', 'Fast setup', 'Fast setup']);
+    // The design's starting items are not where a placement's edit goes.
+    expect(s.components[def.id].properties.cards.default).toEqual(defaults);
     expect(errors(s)).toEqual([]);
   });
 
@@ -157,8 +163,7 @@ describe('Repeat as list turns a static card into a repeated list', () => {
       expect(session.state.components[def.id].tree!.nodes[p.repeatId]?.kind).toBe('repeat');
       expect(Object.hasOwn((session.state.pages[s.site.homePageId].nodes[a.id] as InstanceNode).props, 'cards')).toBe(true);
       await session.undo();
-      expect(session.state.components[def.id]).toEqual(before.components[def.id]);
-      expect(session.state.pages[s.site.homePageId]).toEqual(before.pages[s.site.homePageId]);
+      expect(session.state).toEqual(before);
     } finally {
       await session.close();
     }
@@ -169,12 +174,12 @@ describe('Repeat as list turns a static card into a repeated list', () => {
     const def = features(s);
     place(s, def);
     const p = plan(s, def, 'card');
+    const before = structuredClone(s);
     const ops = structuredClone(p.operations);
     // The last binding names a field the list doesn't have.
     (ops[ops.length - 1] as { binding: unknown }).binding = { $item: 'nope' };
     expect(() => applyOperations(s, ops)).toThrow(/no field "nope"/);
-    expect(s.components[def.id].properties.cards).toBeUndefined();
-    expect(s.components[def.id].tree!.nodes[p.repeatId]).toBeUndefined();
+    expect(s).toEqual(before);
   });
 
   it('names fields by what they are, numbers repeats of a kind, and keeps rich text, images and card links whole', () => {
@@ -214,10 +219,14 @@ describe('Repeat as list turns a static card into a repeated list', () => {
     expect(errors(after)).toEqual([]);
     const d = after.components[def.id];
     expect(d.tree!.nodes.member).toMatchObject({ link: { $item: 'link' } });
+    expect(d.tree!.nodes.photo).toMatchObject({ image: { $item: 'image' } });
+    expect(d.tree!.nodes.name).toMatchObject({ text: { $item: 'title' } });
+    expect(d.tree!.nodes.nick).toMatchObject({ text: { $item: 'title2' } });
     // Content a property fills in stays the same in every item.
     expect(d.tree!.nodes.role).toMatchObject({ text: { $prop: 'role' } });
     const first = (d.properties.items as ListProp).default[0];
     expect(first.image).toMatchObject({ assetId: pic.id, alt: 'Ada at her desk' });
+    expect(first).toMatchObject({ title: 'Ada', title2: 'The Countess' });
     expect(d.tree!.nodes.bio).toEqual(def.tree!.nodes.bio);
     expect(first.link).toMatchObject({ type: 'url', target: 'https://example.com/ada' });
   });
@@ -239,17 +248,23 @@ describe('Repeat as list turns a static card into a repeated list', () => {
     ]);
     const after = applyOperations(s, p.operations).state;
     expect(errors(after)).toEqual([]);
+    expect(after.components[def.id].tree!.nodes['step-body']).toMatchObject({ text: { $item: 'description' } });
     const body = def.tree!.nodes['step-body'];
     expect((after.components[def.id].properties.steps as ListProp).default[0].description).toEqual(body.kind === 'text' ? body.text : null);
   });
 
   it('takes a name no property, UI state or placement value already holds, and the list name the author gives', () => {
     const s = fresh();
-    const def = features(s, { properties: { heading: P.str('Heading', 'Why us'), cards: P.str('Old cards', '') } });
+    const def = features(s, {
+      properties: { heading: P.str('Heading', 'Why us'), cards: P.str('Old cards', '') },
+      state: { cards3: { type: 'boolean', label: 'Cards open', initial: false } },
+      examples: [{ description: 'Older example', props: { cards4: 'kept' } }]
+    });
     const placed = place(s, def);
     // A value a placement kept for a property removed long ago.
     placed.props.cards2 = 'left behind';
-    expect(plan(s, def, 'card').prop).toBe('cards3');
+    // Not a property, a UI state, a placement's leftover value or an example's.
+    expect(plan(s, def, 'card').prop).toBe('cards5');
     expect(plan(s, def, 'card', { label: 'Feature cards' }).prop).toBe('featureCards');
     expect(plan(s, def, 'card', { label: 'Feature cards' }).label).toBe('Feature cards');
   });
@@ -258,8 +273,13 @@ describe('Repeat as list turns a static card into a repeated list', () => {
     const s = fresh();
     const def = features(s);
     const ids = { repeatId: 'n_fixed01', itemIds: ['i_one', 'i_two', 'i_three'] };
+    const other = { repeatId: 'n_fixed02', itemIds: ['i_four', 'i_five', 'i_six'] };
     expect(plan(s, def, 'card', ids)).toEqual(plan(s, def, 'card', ids));
     expect(plan(s, def, 'card', ids).items.map((it) => it.id)).toEqual(ids.itemIds);
+    const p = plan(s, def, 'card', other);
+    expect(p.items.map((it) => it.id)).toEqual(other.itemIds);
+    expect(p.operations[1]).toMatchObject({ type: 'node.insert', newNodeId: 'n_fixed02' });
+    expect(p.operations[2]).toMatchObject({ type: 'node.move', nodeId: 'card', parentId: 'n_fixed02', index: 0 });
   });
 });
 
@@ -276,6 +296,7 @@ describe('Repeat as list is offered only where it works', () => {
     expect(repeatAsListTarget({ state: s, readOnly: true }, ref(def, 'card'))).toBeNull();
     // A pick through a page placement is not the design's own node.
     expect(repeatAsListTarget({ state: s }, { owner: { kind: 'page', id: s.site.homePageId }, instancePath: ['x'], nodeId: 'card' })).toBeNull();
+    expect(repeatAsListTarget({ state: s }, { ...ref(def, 'card'), instancePath: ['x'] })).toBeNull();
     const theme = Object.values(s.components).find((d) => d.owner !== 'project' && d.kind === 'managed')!;
     expect(repeatAsListProblem(s, theme, theme.tree!.rootIds[0])).toMatch(/isn’t built in the editor/);
   });
@@ -331,16 +352,23 @@ describe('Repeat as list is offered only where it works', () => {
       parts: {},
       build: (b) =>
         b.el('root', 'section', {}, [
-          b.el('group', 'div', { collapseEmpty: true }, [b.el('maybe', 'div', { when: prop('show') }, [b.text('m-title', 'h3', 'Maybe')]), b.el('always', 'div', {}, [b.text('al-title', 'h3', 'Always')])])
+          b.el('group', 'div', { collapseEmpty: true }, [b.el('maybe', 'div', { when: prop('show') }, [b.text('m-title', 'h3', 'Maybe')]), b.el('always', 'div', {}, [b.text('al-title', 'h3', 'Always')])]),
+          b.el('plain', 'div', {}, [b.el('shown', 'div', { when: prop('show') }, [b.text('s-title', 'h3', 'Shown')])])
         ])
     });
     expect(repeatAsListProblem(s, def, 'maybe')).toMatch(/hides by its own conditions/);
     expect(repeatAsListProblem(s, def, 'always')).toBeNull();
+    // The same conditional card in a group that doesn't hide is repeated, keeping its condition.
+    expect(repeatAsListProblem(s, def, 'shown')).toBeNull();
     const after = applyOperations(s, plan(s, def, 'always').operations).state;
     expect(errors(after)).toEqual([]);
-    const full = structuredClone(def);
-    for (let i = 0; i < 60; i++) full.properties[`p${i}`] = P.str(`P ${i}`, '');
-    expect(repeatAsListProblem(s, full, 'always')).toMatch(/60 properties/);
+    // One property already (show): 59 leave room for the list, 60 don't.
+    const room = structuredClone(def);
+    for (let i = 0; i < 58; i++) room.properties[`p${i}`] = P.str(`P ${i}`, '');
+    expect(Object.keys(room.properties)).toHaveLength(59);
+    expect(repeatAsListProblem(s, room, 'always')).toBeNull();
+    room.properties.p58 = P.str('P 58', '');
+    expect(repeatAsListProblem(s, room, 'always')).toMatch(/60 properties/);
   });
 
   it('refuses a card in a nested component’s slot that holds a fixed number, and repeats one in an open slot', () => {
@@ -364,16 +392,119 @@ describe('Repeat as list is offered only where it works', () => {
         b.nodes.box = inner;
         const capped = b.el('capped', 'div', {}, [b.text('c-title', 'h3', 'Capped')]);
         const open = b.el('open', 'div', {}, [b.text('o-title', 'h3', 'Open')]);
-        inner.slots = { one: [capped], many: [open] };
+        inner.slots = { one: [capped], many: [b.text('lead', 'p', 'Lead'), open, b.text('tail', 'p', 'Tail')] };
         return b.el('root', 'section', {}, ['box']);
       }
     });
     expect(repeatAsListProblem(s, outer, 'capped')).toMatch(/holds at most one item/);
     expect(repeatAsListProblem(s, outer, 'open')).toBeNull();
-    const after = applyOperations(s, plan(s, outer, 'open').operations).state;
-    expect(errors(after)).toEqual([]);
     const p = plan(s, outer, 'open');
-    expect(((after.components[outer.id].tree!.nodes.box as InstanceNode).slots!.many as string[]).length).toBe(1);
-    expect(p.operations[1]).toMatchObject({ type: 'node.insert', parentId: 'box', slot: 'many', index: 0 });
+    expect(p.operations[1]).toMatchObject({ type: 'node.insert', parentId: 'box', slot: 'many', index: 1 });
+    const after = applyOperations(s, p.operations).state;
+    expect(errors(after)).toEqual([]);
+    const tree = after.components[outer.id].tree!;
+    expect((tree.nodes.box as InstanceNode).slots!.many).toEqual(['lead', p.repeatId, 'tail']);
+    expect(tree.nodes[p.repeatId]).toMatchObject({ kind: 'repeat', children: ['open'] });
+  });
+  it('refuses a dialog, tabs and panels the component’s UI state shows, which work only outside a list', () => {
+    const s = fresh();
+    const def = addDef(s, {
+      componentId: 'test.tabs',
+      name: 'Tabs',
+      properties: {},
+      parts: {},
+      state: { open: { type: 'boolean', label: 'Open', initial: false }, tab: { type: 'enum', label: 'Tab', options: [{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }], initial: 'one' } },
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.el('holds-dialog', 'div', {}, [b.text('d-title', 'h3', 'More'), b.el('dlg', 'div', { overlay: 'dialog', when: { $state: 'open' } }, [b.text('d-body', 'p', 'Details')])]),
+          b.el('tab-list', 'div', {}, [
+            b.text('t-title', 'h3', 'Pick one'),
+            b.link('tab-one', { type: 'none', target: '' }, 'One', 'secondary', { stateAction: { op: 'set', state: 'tab', value: 'one' } }),
+            b.link('tab-two', { type: 'none', target: '' }, 'Two', 'secondary', { stateAction: { op: 'set', state: 'tab', value: 'two' } })
+          ]),
+          b.el('panel', 'div', { when: { ref: { $state: 'tab' }, eq: 'one' } }, [b.text('p-title', 'h3', 'First panel')]),
+          b.el('plain', 'div', {}, [b.text('pl-title', 'h3', 'Plain')])
+        ])
+    });
+    expect(repeatAsListProblem(s, def, 'holds-dialog')).toMatch(/dialog or drawer/);
+    expect(repeatAsListProblem(s, def, 'tab-list')).toMatch(/tabs, panels or buttons/);
+    expect(repeatAsListProblem(s, def, 'panel')).toMatch(/tabs, panels or buttons/);
+    expect(repeatAsListProblem(s, def, 'plain')).toBeNull();
+  });
+
+  it('refuses the image a container around it opens full size, which it can’t find inside a list', () => {
+    const pic = { id: 'a_pic', name: 'Pic', file: 'static/assets/pic.png', mime: 'image/png', bytes: 10, hash: 'h', kind: 'image' as const, createdAt: 'now' };
+    const s = applyOperations(fresh(), [{ type: 'asset.add', asset: pic }]).state;
+    const def = addDef(s, {
+      componentId: 'test.viewer',
+      name: 'Viewer',
+      properties: {},
+      parts: {},
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.el('viewer', 'div', { name: 'Viewer', action: 'image' }, [b.el('frame', 'div', {}, [b.image('shot', { assetId: pic.id, alt: 'Shot' }), b.text('caption', 'p', 'Caption')])]),
+          b.el('gallery', 'div', {}, [b.el('tile', 'div', {}, [b.image('tile-shot', { assetId: pic.id, alt: 'Tile' })])])
+        ])
+    });
+    expect(repeatAsListProblem(s, def, 'frame')).toMatch(/holds the image that “Viewer” opens full size/);
+    expect(repeatAsListProblem(s, def, 'tile')).toBeNull();
+  });
+
+  it('refuses a card holding a component whose design has an anchor, which every item would repeat', () => {
+    const s = fresh();
+    const badge = addDef(s, { componentId: 'test.badge', name: 'Badge', properties: {}, parts: {}, build: (b) => b.el('root', 'div', {}, [b.text('b-text', 'span', 'New', { anchor: 'badge' })]) });
+    const def = addDef(s, {
+      componentId: 'test.cards',
+      name: 'Cards',
+      properties: {},
+      parts: {},
+      build: (b) => {
+        const inner = makeInstance(badge, {});
+        inner.id = 'badge';
+        b.nodes.badge = inner;
+        return b.el('root', 'section', {}, [b.el('card', 'div', {}, [b.text('c-title', 'h3', 'Card'), 'badge'])]);
+      }
+    });
+    expect(repeatAsListProblem(s, def, 'card')).toMatch(/anchor/);
+  });
+
+  it('keeps rich text in the design where a placement shows the component inside a card that links somewhere', () => {
+    const s = fresh();
+    const def = addDef(s, {
+      componentId: 'test.notes',
+      name: 'Notes',
+      properties: {},
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.el('note', 'div', {}, [b.text('n-title', 'h3', 'Note'), b.rich('n-body', ['Plain words.'])])])
+    });
+    // The page's own card links somewhere, and holds a placement of the component.
+    const inst = makeInstance(def, {});
+    const page = home(s);
+    page.nodes[inst.id] = inst;
+    page.nodes.pcard = { id: 'pcard', kind: 'element', tag: 'div', link: { type: 'url', target: 'https://example.com' }, children: [inst.id] };
+    page.rootIds.push('pcard');
+    const p = plan(s, def, 'note');
+    expect(p.fields.map((f) => f.name)).toEqual(['title']);
+    expect(p.shared).toBe(1);
+    expect(repeatAsListPreflight(s, p)).toBeNull();
+    // Bound, the rich text would be content that can hold links inside the page's card, which the project refuses.
+    const bound: RepeatPlan = structuredClone(p);
+    (bound.operations[0] as unknown as { schema: { fields: Record<string, unknown> } }).schema.fields.body = { type: 'richtext', label: 'Body', default: [] };
+    bound.operations.push({ type: 'node.setBinding', owner: { kind: 'component', id: def.id }, nodeId: 'n-body', field: 'text', binding: { $item: 'body' } });
+    expect(repeatAsListPreflight(s, bound)).toMatch(/can hold links/);
+  });
+
+  it('says before confirming why the project would refuse the change: text longer than a field holds', () => {
+    const s = fresh();
+    const def = addDef(s, {
+      componentId: 'test.long',
+      name: 'Long',
+      properties: {},
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.el('card', 'div', {}, [b.text('l-title', 'h3', 'Long'), b.text('l-body', 'p', 'x'.repeat(2001))])])
+    });
+    expect(repeatAsListProblem(s, def, 'card')).toBeNull();
+    expect(repeatAsListPreflight(s, plan(s, def, 'card'))).toMatch(/longer than 2000 characters/);
+    expect(repeatAsListPreflight(s, plan(s, features(s), 'card'))).toBeNull();
   });
 });

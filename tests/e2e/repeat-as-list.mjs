@@ -82,8 +82,11 @@ await win.locator('.mode-band').waitFor();
 const row = (nodeId) => win.locator(`[role="tree"] [data-owner="component:${defId}"][data-node="${nodeId}"]`);
 // The canvas picks what a click lands on, so the click is sent to the card itself; Layers then shows its row.
 const cardOnPage = frame.locator(`[data-so-ctx$="|${first}"] [data-so-node="${card}"]`).first();
-await cardOnPage.dispatchEvent('click');
-await eventually(async () => assert.equal(await row(card).getAttribute('aria-selected'), 'true', 'the card of the design is selected'));
+// Sent again while the card isn't selected: a click that lands while the preview bridge settles is dropped.
+await eventually(async () => {
+  if ((await row(card).getAttribute('aria-selected').catch(() => null)) !== 'true') await cardOnPage.dispatchEvent('click');
+  assert.equal(await row(card).getAttribute('aria-selected'), 'true', 'the card of the design is selected');
+}, 20000, 500);
 
 step('the inspector’s menu offers Repeat as list…, and Cancel changes nothing');
 await inspector.getByRole('button', { name: /^More actions for / }).click();
@@ -112,6 +115,8 @@ await menu.waitFor({ state: 'detached' });
 
 step('Layers repeats the card as a list, as one change');
 const applied = (await history()).length;
+assert.equal(await definition(), staticDesign, 'Cancel from the canvas leaves the design as it was');
+assert.equal(await pageDoc(), staticPage, 'and the placements');
 await row(card).click({ button: 'right' });
 await menu.getByRole('menuitem', { name: 'Repeat as list…' }).click();
 await dialog.waitFor();
@@ -125,9 +130,15 @@ await eventually(async () => {
   assert.equal(list?.type, 'list', 'a Features list property');
   assert.deepEqual(Object.keys(list.fields), ['icon', 'title', 'description', 'label', 'link']);
   assert.equal(list.default.length, 3);
+  assert.equal(def.tree.nodes[grid].children.length, 1, 'the grid holds one repeat where it held the card');
   repeatId = def.tree.nodes[grid].children[0];
-  assert.deepEqual(def.tree.nodes[repeatId], { ...def.tree.nodes[repeatId], kind: 'repeat', list: { $prop: 'features' }, children: [card] }, 'the card is the one child of a repeat where it was');
+  const repeat = def.tree.nodes[repeatId];
+  assert.equal(repeat.kind, 'repeat');
+  assert.deepEqual(repeat.list, { $prop: 'features' }, 'over the new list');
+  assert.deepEqual(repeat.children, [card], 'holding the card');
+  assert.deepEqual(def.tree.nodes[icon].icon, { $item: 'icon' });
   assert.deepEqual(def.tree.nodes[title].text, { $item: 'title' });
+  assert.deepEqual(def.tree.nodes[body].text, { $item: 'description' });
   assert.deepEqual(def.tree.nodes[button].label, { $item: 'label' });
   assert.deepEqual(def.tree.nodes[button].link, { $item: 'link' });
 });
@@ -165,9 +176,11 @@ await heads.nth(1).click();
 const field = list.locator('.list-editor-item').nth(1).getByLabel('Title', { exact: true });
 await field.fill('Friendly support');
 await field.press('Tab');
+const defaults = async () => (await snapshot()).components[defId].properties.features.default.map((it) => it.title);
 const titles = async (id) => (await snapshot()).pages[pageId].nodes[id].props.features.map((it) => it.title);
 await eventually(async () => assert.deepEqual(await titles(first), ['Fast setup', 'Friendly support', 'Fast setup'], 'the second card of this placement changed'));
 assert.deepEqual(await titles(second), ['Fast setup', 'Fast setup', 'Fast setup'], 'the other placement keeps its own cards');
+assert.deepEqual(await defaults(), ['Fast setup', 'Fast setup', 'Fast setup'], 'and the design’s starting cards stay as they were');
 await eventually(async () => assert.equal(await frame.locator(`[data-so-ctx$="|${first}"]`).getByText('Friendly support', { exact: true }).count(), 1, 'the page shows the edit'), 20000);
 assert.equal(await frame.locator(`[data-so-ctx$="|${second}"]`).getByText('Friendly support', { exact: true }).count(), 0, 'and only in that placement');
 await win.screenshot({ path: join(SHOTS, 'repeat-as-list-edited.png') });
