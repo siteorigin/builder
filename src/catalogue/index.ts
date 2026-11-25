@@ -66,10 +66,6 @@ export function themePinProblem(state: { site: { themeId: string }; themeLock?: 
   const lock = state.themeLock?.theme?.id === id ? state.themeLock.theme : undefined;
   const pack = findTheme(id);
   if (!pack) return `This project uses the theme "${id}"${lock ? ` ${lock.version}` : ''}, which is not installed. Install it (a built-in theme comes back by reinstalling SiteOrigin Builder) and restart SiteOrigin Builder to edit the project.`;
-  // Only an installed pack is pinned to a copy: a pinned project whose ID is now a built-in theme's was made with
-  // another theme altogether, which a later release of SiteOrigin Builder took the ID of.
-  if (lock?.digest && pack.source !== 'user')
-    return `This project uses the installed theme "${id}" ${lock.version}, but SiteOrigin Builder now has a built-in theme with that ID, so the installed one cannot be loaded beside it. The project is left as it is.`;
   // An installed pack is only used with the exact release the project recorded (theme.apply records it).
   if (pack.source === 'user' && !lock?.digest)
     return `This project uses the installed theme "${id}", but its theme lock does not record which copy. Switch to the theme again in a version of the project that records it, or restore siteorigin/theme-lock.json.`;

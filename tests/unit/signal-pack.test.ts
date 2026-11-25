@@ -66,7 +66,7 @@ const def = (pack: { components: ComponentDefinition[] }, componentId: string) =
 
 describe('the Signal pack', () => {
   it('ships beside Foundation, and is never the default for a new project', () => {
-    expect(shipped().map((t) => t.id)).toEqual(['foundation', 'signal']);
+    expect(shipped().map((t) => t.id)).toEqual(['foundation', 'editorial', 'signal']);
     expect(findTheme('signal')).toMatchObject({ name: 'Signal', version: '0.1.0', license: 'GPL-3.0-or-later', source: 'bundled' });
     expect(createStarterState('business', 'New', false).site.themeId).toBe('foundation');
     // Its ID is reserved, so an installed pack can never load under it.
@@ -76,7 +76,7 @@ describe('the Signal pack', () => {
   it('never stands in for an installed pack a project was pinned to under the same ID', () => {
     // A project made with an installed pack called "signal" before Signal shipped records that pack's exact copy.
     const pinned = { site: { themeId: 'signal' }, themeLock: { theme: { id: 'signal', version: '1.0.0', digest: 'd1' } } };
-    expect(themePinProblem(pinned)).toMatch(/uses the installed theme "signal" 1\.0\.0, but SiteOrigin Builder now has a built-in theme with that ID/);
+    expect(themePinProblem(pinned)).toMatch(/uses an installed theme "signal" 1\.0\.0, but SiteOrigin Builder now has a built-in theme with that ID/);
     expect(themePinProblem({ ...pinned, themeLock: { theme: { id: 'signal', version: '0.1.0', digest: 'd1' } } })).toMatch(/built-in theme with that ID/);
     // A project made with the built-in Signal records no copy, and opens.
     expect(themePinProblem({ site: { themeId: 'signal' }, themeLock: { theme: { id: 'signal', version: '0.1.0' } } })).toBeNull();

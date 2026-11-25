@@ -388,7 +388,7 @@ describe('loading every installed pack', () => {
 
   it("keeps the built-in IDs for the app even when its own releases are missing", async () => {
     const mine = tmp();
-    expect(BUNDLED_PACK_IDS).toEqual(['foundation', 'editorial', 'foundation-alt']);
+    expect(BUNDLED_PACK_IDS).toEqual(['foundation', 'editorial', 'signal', 'foundation-alt']);
     const theirs = [];
     for (const id of BUNDLED_PACK_IDS) theirs.push(await release(mine, studio(id)));
     const { packs, refused } = await loadPacks([{ dir: tmp(), source: 'bundled' }, user(mine)]);
