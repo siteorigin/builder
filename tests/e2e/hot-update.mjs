@@ -237,6 +237,50 @@ assert.equal(er.ok, true, `static export succeeds: ${er.message}`);
 const exported = content(await win.evaluate(snapshot, readFileSync(join(exportDir, 'index.html'), 'utf8')));
 assert.deepEqual(exported, hot, 'the export shows what the canvas shows');
 
+step('a click made while a save is still reaching the page selects what was clicked once it has (#755)');
+const lead3 = 'Light-filled rooms, made to last.';
+const heroHeading = frame.locator('main section').first().locator('h1');
+await heroHeading.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+// The page holds the save's update until the test lets it go (Vite waits on its beforeUpdate listeners), so the click
+// lands while the page still shows the hero as it was.
+await canvas.evaluate(async () => {
+  const { createHotContext } = await import('/@vite/client');
+  window.__soHeld = false;
+  window.__soHold = new Promise((resolve) => (window.__soRelease = resolve));
+  createHotContext('/@siteorigin-test/hold-probe').on('vite:beforeUpdate', () => {
+    if (!window.__soHold) return;
+    window.__soHeld = true;
+    return window.__soHold;
+  });
+});
+await apply([{ type: 'instance.setProp', owner, nodeId: ids.heroId, prop: 'lead', value: lead3 }], 'Hero lead again');
+await eventually(async () => assert.equal(await canvas.evaluate(() => window.__soHeld), true, 'the page has the update, held'), 30000);
+// The editor has the save by now too.
+await win.waitForTimeout(300);
+/** What the editor has selected, as the canvas names it (no selection: null). */
+const selected = async () => {
+  const raw = await win.locator('[data-opening]').first().getAttribute('data-selected-ref');
+  return raw ? JSON.parse(raw) : null;
+};
+const before = await selected();
+assert.notEqual(before?.nodeId, ids.heroId, 'the hero is not selected yet');
+let released = 0;
+try {
+  await heroHeading.click();
+  await win.waitForTimeout(500);
+  assert.deepEqual(await selected(), before, 'the click waits while the page still shows the hero before the save');
+} finally {
+  await canvas.evaluate(() => {
+    window.__soHold = null;
+    window.__soRelease();
+  });
+  released = Date.now();
+}
+// The page's acknowledgement lets the click go, well before the canvas would stop waiting for one (4 s after the save).
+await eventually(async () => assert.equal((await selected())?.nodeId, ids.heroId, 'the click selects the hero once the page shows the save, with no second click'), 15000);
+assert.ok(Date.now() - released < 2000, `the page’s acknowledgement released the click (selected ${Date.now() - released} ms after the update was let go)`);
+assert.ok((await shown()).leads.includes(lead3), 'the page shows the save');
+
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 cleanup();

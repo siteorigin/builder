@@ -106,6 +106,8 @@ interface Drag {
   /** Settles once the page has said how large its site styles are (or did not answer in time). */
   measured: Promise<void>;
   revision: number;
+  /** Begun on a page still showing the project before a save. */
+  behind: boolean;
   opening: string | undefined;
   stop: () => void;
 }
@@ -118,7 +120,7 @@ interface Drag {
  * edited when it is released: one Undo takes it back. Escape puts the page back and saves nothing. Handles show only
  * for what the inspector offers here, and only at the size the canvas is showing, so a drag always shows what it saves.
  */
-export function SpacingHandles({ state, selection, desc, box, spacing, zoom, post, measureSpace, onDragging, focusCanvas }: {
+export function SpacingHandles({ state, selection, desc, box, spacing, zoom, post, measureSpace, onDragging, focusCanvas, pageBehind }: {
   state: ProjectState;
   selection: ElementRef;
   desc: BridgeDesc;
@@ -130,6 +132,8 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
   measureSpace: (vars: string[], desc: BridgeDesc, basis: Basis) => Promise<Array<number | null> | null>;
   onDragging: (on: boolean) => void;
   focusCanvas: () => void;
+  /** The page still shows the project before a save the editor has (#755): its spacing was measured before the save. */
+  pageBehind: () => boolean;
 }) {
   const scope = useStore((s) => s.styleScope);
   const viewport = useStore((s) => s.viewport);
@@ -428,6 +432,8 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     const v = d.value;
     // A click, or a drag that ends on what is saved already, changes nothing.
     if (!d.moved || !v || v.keep || d.grip.unchanged(v.value) || getState().snapshot?.workspaceKey !== d.opening) return clear();
+    // Dragged from spacing the page measured before a save it had not shown yet: the value was read from the old page.
+    if (d.behind || pageBehind()) return clear();
     try {
       const st = getState().snapshot?.state;
       const { owner, nodeId, partId } = d.target;
@@ -526,6 +532,7 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
       measured: Promise.resolve(),
       revision: s.snapshot.revision,
       opening: s.snapshot.workspaceKey,
+      behind: pageBehind(),
       stop
     };
     drag.current = d;
