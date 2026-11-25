@@ -157,13 +157,6 @@ const CODE = `<script>
 	<span class={['badge', so_o?.badge]}>New</span>
 </div>
 `;
-/** A code component that takes no part classes. */
-const PLAIN = `<script>
-	let { title = 'Title' } = $props();
-</script>
-
-<p>{title}</p>
-`;
 
 function codePlacement(source = CODE): { s: ProjectState; def: ComponentDefinition; node: InstanceNode } {
   const s = createStarterState('business', 'Test Studio', false);
@@ -187,25 +180,20 @@ const partMap = (source: string) => {
 describe('a code component’s parts in the editor’s preview', () => {
   it('carry their class before any change of their own, so the canvas can show one in a state; the site does not', () => {
     const { s, node } = codePlacement();
-    expect(partMap(pageOf(s, true))).toEqual({ badge: overrideClass(node.id, 'badge'), title: overrideClass(node.id, 'title') });
+    expect(partMap(pageOf(s, true))).toEqual({ badge: 'so-part--badge', title: 'so-part--title' });
     // Its root has no class of its own to find: the canvas shows the code's own root.
     expect(pageOf(s, true)).not.toContain(overrideClass(node.id, 'root'));
     expect(partMap(pageOf(s, false))).toBeNull();
-    expect(pageOf(s, false)).not.toContain(overrideClass(node.id, 'title'));
+    expect(pageOf(s, false)).not.toContain('so-part--');
   });
 
   it('keep the class a part with changes has, beside the class of one without, in the editor; the site keeps only the changed one', () => {
     const { s, node } = codePlacement();
     node.overrides = { title: { 'base:hover': { color: '#00aa00' } } };
-    expect(partMap(pageOf(s, true))).toEqual({ title: overrideClass(node.id, 'title'), badge: overrideClass(node.id, 'badge') });
+    expect(partMap(pageOf(s, true))).toEqual({ title: `${overrideClass(node.id, 'title')} so-part--title`, badge: 'so-part--badge' });
     expect(partMap(pageOf(s, false))).toEqual({ title: overrideClass(node.id, 'title') });
     // The change is in the site's stylesheet for that class, in the state.
     const css = [...generateProject(s, { instrument: false }).values()].join('\n');
     expect(css).toMatch(new RegExp(`\\.${overrideClass(node.id, 'title')}:where\\(:hover\\)[^{]*\\{[^}]*color: #00aa00`));
-  });
-
-  it('are not handed to code that takes no part classes', () => {
-    const { s } = codePlacement(PLAIN);
-    expect(pageOf(s, true)).not.toContain('so_o=');
   });
 });

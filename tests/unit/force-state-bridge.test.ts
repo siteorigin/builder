@@ -46,8 +46,8 @@ const FRAME = `<!doctype html><html><head><style id="site">${CSS}</style></head>
   <div class="card keep" data-so-node="e" data-so-ctx="page:p">Kept card</div>
   <a class="so-action" href="#go"><div class="linked" data-so-node="l" data-so-ctx="page:p">Linked card</div></a>
   <a class="btn" href="#b" data-so-node="b" data-so-ctx="page:p">Button</a>
-  <div style="display: contents" data-so-node="k" data-so-ctx="page:p" data-so-code="true"><div class="fancy"><h3 class="title so-o-k-title" id="own-title">Title</h3>
-    <div style="display: contents" data-so-node="n" data-so-ctx="page:p" data-so-code="true"><h3 class="title so-o-k-title" id="nested-title">Nested</h3></div></div></div>
+  <div style="display: contents" data-so-node="k" data-so-ctx="page:p" data-so-code="true"><div class="fancy"><h3 class="title so-o-k-title so-part--title" id="own-title">Title</h3>
+    <div style="display: contents" data-so-node="n" data-so-ctx="page:p" data-so-code="true"><h3 class="title so-part--title" id="nested-title">Nested</h3></div></div></div>
   <h3 class="title" id="loose-title">Loose title</h3>
   <p class="quoted" data-so-node="q" data-so-ctx="page:p">Quoted</p>
   <p class="adopt" data-so-node="a" data-so-ctx="page:p">Adopted</p>
@@ -141,9 +141,14 @@ describe.skipIf(!browserInstalled)('showing the selected element in a hover, foc
     await force('hover', 'k', 'title');
     await expect.poll(() => paint('#own-title', 'color')).toBe(GREEN);
     // Not the same class inside a code component placed within it, nor a title outside it.
-    expect(await marked()).toEqual(['title so-o-k-title=hover']);
+    expect(await marked()).toEqual(['title so-o-k-title so-part--title=hover']);
     expect(await paint('#nested-title', 'color')).toBe('rgb(0, 0, 0)');
     expect(await paint('#loose-title', 'color')).toBe('rgb(0, 0, 0)');
+    // A part with no change of its own yet is found by the class the preview gives it all the same.
+    await force('hover', 'n', 'title');
+    await expect.poll(() => marked()).toEqual(['title so-part--title=hover']);
+    await force('hover', 'k', 'title');
+    await expect.poll(() => marked()).toEqual(['title so-o-k-title so-part--title=hover']);
     // The whole component: its own root stands in for the wrapper, which lays nothing out.
     expect(await paint('.fancy')).toBe(WHITE);
     await force('hover', 'k');

@@ -3960,23 +3960,18 @@ function forceSheets() {
   for (const sheet of document.styleSheets) forceSheet(sheet);
   for (const sheet of document.adoptedStyleSheets || []) forceSheet(sheet);
 }
-/** The class an inner part of a code component placed on a page carries, in the editor from the start (see the generator's `overrideClass`). */
-const partClass = (node, part) => `so-o-${node}-${part}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 /**
- * The elements to show in the state: the selection's own, or the part of it being styled. A code component's wrapper
- * lays nothing out, so its own root stands in for it. A card wrapped in an action's link shows focus and pressing
- * through the link, so the link is marked too.
+ * The elements to show in the state: the selection's own, or the part of it being styled. A code component's part is
+ * found as a picked one is, by its author's marker or the class the editor's preview gives it (`so-part--title`),
+ * from the start, so it shows in a state before it has any change of its own. A code component's wrapper lays
+ * nothing out, so its own root stands in for it. A card wrapped in an action's link shows focus and pressing through
+ * the link, so the link is marked too.
  */
 function forcedTargets() {
   if (!forced) return [];
   const out = [];
-  for (const el of findAll(forced.desc)) {
-    const code = el.hasAttribute('data-so-code');
-    const own = forced.part
-      ? [...el.querySelectorAll(`.${cssEscape(partClass(forced.desc.node, forced.part))}`)].filter((t) => t.parentElement && t.parentElement.closest('[data-so-code]') === el)
-      : code
-        ? [...el.children].filter((c) => c.tagName !== 'STYLE' && c.tagName !== 'SCRIPT')
-        : [el];
+  for (const el of findAll(forced.part ? { ...forced.desc, part: forced.part } : forced.desc)) {
+    const own = !forced.part && el.hasAttribute('data-so-code') ? [...el.children].filter((c) => c.tagName !== 'STYLE' && c.tagName !== 'SCRIPT') : [el];
     for (const t of own) {
       out.push(t);
       if (t.parentElement && t.parentElement.classList.contains('so-action')) out.push(t.parentElement);
