@@ -6,7 +6,7 @@
  */
 import { CHAT_EDIT_SCOPES, type ChatContext, type ChatEditScope, type ChatMessage } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
-import { inDefinition, placementsOn, refExists, refLabel, studioRef } from './model';
+import { inDefinition, placementsOn, refExists, refLabel, studioRef, withoutSlot } from './model';
 import { NEW_STUDIO, type DefinitionMode } from './studio';
 import { postAt, type PostRef } from './posts';
 
@@ -71,8 +71,10 @@ export function composerScope(state: ProjectState, view: { pageId: string | null
     const selection = view.selection && inDefinition(view.selection, def.id) && resolves(state, view.selection) ? view.selection : null;
     return { page, component: { id: def.id, name: def.name }, selection, selectionLabel: selection ? refLabel(state, selection) : null };
   }
-  // A selection that names something gone (until the editor lets it go) is never offered, nor sent.
-  const selection = view.selection && resolves(state, view.selection) ? view.selection : null;
+  // A selection that names something gone (until the editor lets it go) is never offered, nor sent. A slot picked on the
+  // canvas is about its placement, which the AI may change as a whole: it is offered and named as that placement.
+  const picked = view.selection && withoutSlot(view.selection);
+  const selection = picked && resolves(state, picked) ? picked : null;
   return { page, component: null, selection, selectionLabel: selection ? refLabel(state, selection) : null };
 }
 

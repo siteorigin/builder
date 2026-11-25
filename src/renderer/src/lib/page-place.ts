@@ -11,7 +11,7 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { refKey } from '@shared/types';
 import { isShellPart, showsPart } from '@shared/page-shell';
 import { findParent } from '@engine/tree';
-import { resolveRef, treeFor } from './model';
+import { placedSlot, resolveRef, treeFor } from './model';
 
 export type PagePlaces = Record<string, ElementRef>;
 
@@ -20,6 +20,8 @@ function onPage(state: ProjectState, pageId: string, ref: ElementRef): boolean {
   const page = Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
   if (!page) return false;
   if (ref.owner.kind === 'page' ? ref.owner.id !== pageId : ref.owner.kind !== 'shell' || !isShellPart(ref.owner.id) || !showsPart(page, ref.owner.id)) return false;
+  // A slot must still be one its placement declares.
+  if (ref.slot !== undefined && !placedSlot(state, ref)) return false;
   const r = resolveRef(state, ref);
   if (!r.node) return false;
   // A part named by the reference must still be that node of its component.
@@ -45,7 +47,9 @@ function sectionOf(state: ProjectState, ref: ElementRef): ElementRef | null {
 
 /** What to remember for an element selected on a page, or null when it is not one of the page's elements. */
 export function placeToKeep(state: ProjectState, pageId: string, ref: ElementRef): ElementRef | null {
-  const kept = ref.itemPath?.length ? sectionOf(state, ref) : { owner: { ...ref.owner }, instancePath: [...ref.instancePath], nodeId: ref.nodeId, ...(ref.partId ? { partId: ref.partId } : {}) };
+  const kept = ref.itemPath?.length
+    ? sectionOf(state, ref)
+    : { owner: { ...ref.owner }, instancePath: [...ref.instancePath], nodeId: ref.nodeId, ...(ref.partId ? { partId: ref.partId } : {}), ...(ref.slot !== undefined ? { slot: ref.slot } : {}) };
   return kept && onPage(state, pageId, kept) ? kept : null;
 }
 
@@ -119,8 +123,9 @@ function readRef(v: unknown): ElementRef | null {
   if (!owner || typeof owner !== 'object' || (owner.kind !== 'page' && owner.kind !== 'shell') || !isId(owner.id)) return null;
   if (!Array.isArray(r.instancePath) || r.instancePath.length > 20 || !r.instancePath.every(isId) || !isId(r.nodeId)) return null;
   if (r.partId !== undefined && !isId(r.partId)) return null;
+  if (r.slot !== undefined && (!isId(r.slot) || r.partId !== undefined || r.instancePath.length)) return null;
   if (r.itemPath !== undefined) return null;
-  return { owner: { kind: owner.kind, id: owner.id }, instancePath: [...r.instancePath], nodeId: r.nodeId, ...(r.partId ? { partId: r.partId } : {}) };
+  return { owner: { kind: owner.kind, id: owner.id }, instancePath: [...r.instancePath], nodeId: r.nodeId, ...(r.partId ? { partId: r.partId } : {}), ...(r.slot !== undefined ? { slot: r.slot as string } : {}) };
 }
 
 /** The places saved for a project, kept to the pages it has and the elements still on them. */

@@ -10,6 +10,7 @@ import { entryRoute } from '@shared/collections';
 import { saveOpenPost } from './lib/post-draft';
 import { activeWorkspace, canvasCovered } from './lib/workspace';
 import { waitingPreview } from './lib/posts';
+import { withoutSlot } from './lib/model';
 import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
 import { PostsPanel } from './panels/PostsPanel';
@@ -146,6 +147,8 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     // While editing a component everywhere, Escape steps to the component overview, then leaves the mode;
     // it never drops back to the placement's page-level editor.
     else if (inDef) setState({ selection: null });
+    // A slot picked by its empty box steps out to its placement.
+    else if (s.selection?.slot !== undefined) setState({ selection: withoutSlot(s.selection) });
     else if (s.selection?.instancePath.length) {
       const sel = s.selection;
       setState({ selection: { owner: sel.owner, instancePath: sel.instancePath.slice(0, -1), nodeId: sel.instancePath[sel.instancePath.length - 1] } });

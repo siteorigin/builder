@@ -128,7 +128,8 @@ function partTarget(def: ComponentDefinition, inst: InstanceNode, owner: OwnerRe
  * design (Edit everywhere styles every placement), a part of a component nested inside a section, a repeat or slot.
  */
 export function styleSelection(state: ProjectState, ref: ElementRef): StyleSelection | null {
-  if (ref.owner.kind === 'component') return null;
+  // A slot of a placement, picked by its empty box, is a place for content: it has no styles of its own.
+  if (ref.owner.kind === 'component' || ref.slot !== undefined) return null;
   // A part picked by name stays that part, as in the inspector, even on its component's root element: a component
   // made from one heading names both.
   const named = ref.instancePath.length > 0 && !!ref.partId && ref.partId !== 'root';

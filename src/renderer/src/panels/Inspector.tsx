@@ -90,7 +90,7 @@ import { platformKeys, useCopyPasteItems, type CopyPasteActions } from './CopyPa
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
-import { assetUrl, createComponentTarget, definitionView, isCodePart, ownerLabel, placedFeedRows, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
+import { assetUrl, createComponentTarget, definitionView, isCodePart, ownerLabel, placedFeedRows, placedSlot, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor, withoutSlot } from '../lib/model';
 import { enclosingGroup, partInInteractionGroup, withoutGroupStates } from '@shared/interaction-groups';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
@@ -623,6 +623,14 @@ function InspectorBody() {
         <span>The selected element no longer exists.</span>
       </div>
     );
+  // A slot picked on the canvas by its empty box: what it is for, and its placement a click away (#652).
+  const slot = placedSlot(st, selection);
+  if (slot)
+    return (
+      <div className="panel-body insp" key={JSON.stringify(selection)}>
+        <SlotInspector label={slot.label} description={slot.def.slots?.[slot.slot]?.description} placement={withoutSlot(selection)} placementName={refLabel(st, withoutSlot(selection))} />
+      </div>
+    );
   // Deeper inside the placement being edited (a component nested in it): stay in the design's own view.
   if (editingDef && throughPlacement && selection.instancePath.length > 1)
     return (
@@ -642,6 +650,31 @@ function InspectorBody() {
         <PrimitiveInspector state={st} owner={selection.owner} node={r.node} tokens={tokens} selection={selection} />
       )}
     </div>
+  );
+}
+
+/**
+ * A slot of a placement, picked by its empty box (#652). It has no settings or styles of its own: what is clicked in
+ * Insert, or dragged onto it, goes in it. Its placement's own settings are one click away.
+ */
+function SlotInspector({ label, description, placement, placementName }: { label: string; description?: string; placement: ElementRef; placementName: string }) {
+  return (
+    <>
+      <Header
+        title={label}
+        icon={<SquareDashed />}
+        kind={
+          <>
+            Place for content in{' '}
+            <button className="link-btn" onClick={() => selectAndFocus(placement)} title="Select the whole component (Esc)">
+              {placementName}
+            </button>
+          </>
+        }
+      />
+      {description?.trim() ? <p className="insp-note">{description.trim()}</p> : null}
+      <p className="insp-note muted">Click an element or component in Insert, or drag one onto this place, to put it here.</p>
+    </>
   );
 }
 

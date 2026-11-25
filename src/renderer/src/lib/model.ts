@@ -28,6 +28,11 @@ export interface BridgeDesc {
    * code placement it belongs to.
    */
   part?: string;
+  /**
+   * One slot of a placement, by the box the page shows while it is empty (#652): the rest of the descriptor names the
+   * placement, in the context it is placed in (never through its definition's root, as the placement itself is).
+   */
+  slot?: string;
 }
 
 export function treeFor(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
@@ -57,6 +62,8 @@ export function descOf(state: ProjectState, ref: ElementRef): BridgeDesc {
     return { ctx: ctxOf({ ...ref, instancePath: ref.instancePath.slice(0, -1) }), node: placement, items: '', part: ref.partId };
   }
   const items = (ref.itemPath ?? []).map(encodeItemId).join(',');
+  // A slot of a placement is found by its empty box, which names the placement where it is placed, whatever renders it.
+  if (ref.slot !== undefined) return { ctx: ctxOf(ref), node: ref.nodeId, items, slot: ref.slot };
   // A managed instance boundary is rendered by its definition root (through any component that root places), which
   // carries the items the placement sits in.
   let ctx = ctxOf(ref);
@@ -175,9 +182,34 @@ function refFromDesc(state: ProjectState, d: BridgeDesc): ElementRef | null {
   if (d.part !== undefined) return codePartRef(state, p.owner, p.path, d.node, d.part);
   const ref: ElementRef = { owner: p.owner, instancePath: p.path, nodeId: d.node };
   if (d.items) ref.itemPath = d.items.split(',').map(decodeItemId);
+  if (d.slot !== undefined) {
+    ref.slot = d.slot;
+    return placedSlot(state, ref) ? ref : null;
+  }
   const r = resolveRef(state, ref);
   if (r.def) ref.partId = partIdFor(r.def, d.node);
   return ref;
+}
+
+/**
+ * The slot a reference names (see ElementRef.slot): one its placement's component declares, on a placement in the
+ * owner's own tree, with the label the slot is shown by. Null for any other reference.
+ */
+export function placedSlot(state: ProjectState, ref: ElementRef | null | undefined): { instance: InstanceNode; def: ComponentDefinition; slot: string; label: string } | null {
+  if (!ref || ref.slot === undefined || ref.instancePath.length || ref.partId) return null;
+  const node = own(treeFor(state, ref.owner)?.nodes ?? {}, ref.nodeId);
+  const def = node?.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
+  const decl = def?.slots && Object.hasOwn(def.slots, ref.slot) ? def.slots[ref.slot] : undefined;
+  if (node?.kind !== 'instance' || !def || !decl) return null;
+  const label = typeof decl.label === 'string' && decl.label.trim() ? decl.label.trim() : ref.slot;
+  return { instance: node, def, slot: ref.slot, label };
+}
+
+/** The placement a slot reference belongs to (see ElementRef.slot); any other reference as it is. */
+export function withoutSlot(ref: ElementRef): ElementRef {
+  if (ref.slot === undefined) return ref;
+  const { slot: _slot, ...placement } = ref;
+  return placement;
 }
 
 /**
@@ -229,7 +261,7 @@ export function boundaryOf(state: ProjectState, ref: ElementRef): ElementRef {
  * command is offered on the same things everywhere.
  */
 export function createComponentTarget(snap: { state: ProjectState; readOnly?: unknown } | null | undefined, ref: ElementRef | null): ElementRef | null {
-  if (!snap || !ref || snap.readOnly || ref.instancePath.length || ref.owner.kind === 'shell') return null;
+  if (!snap || !ref || snap.readOnly || ref.instancePath.length || ref.slot !== undefined || ref.owner.kind === 'shell') return null;
   const { state } = snap;
   const tree = treeFor(state, ref.owner);
   if (!tree) return null;
@@ -393,7 +425,12 @@ function ancestry(state: ProjectState, ref: ElementRef): Set<string> {
  * placed component's design is stepped to as any part is: Insert cannot put anything there from the page.
  */
 export function selectionFromChain(state: ProjectState, chain: BridgeDesc[], current: ElementRef | null, deep: boolean): ElementRef | null {
-  // Descriptors that name nothing in the project (stale, or not the editor's) are ignored.
+  // An empty slot's box picks that slot of its placement, on the first click: Insert then fills it (#652).
+  const slot = chain[0]?.slot !== undefined ? refFromDesc(state, chain[0]) : null;
+  if (slot) return slot;
+  // Descriptors that name nothing in the project (stale, or not the editor's) are ignored; so is a slot's box that
+  // does (one of a placement inside another component's design is not the page's to fill).
+  chain = chain.filter((d) => d.slot === undefined);
   const chainRefs = chain.map((d) => refFromDesc(state, d));
   const refs = chainRefs.filter((r): r is ElementRef => !!r && (!!resolveRef(state, r).node || isCodePart(state, r)));
   if (!refs.length) return null;
@@ -428,6 +465,8 @@ export function selectionFromChain(state: ProjectState, chain: BridgeDesc[], cur
 }
 
 export function refLabel(state: ProjectState, ref: ElementRef): string {
+  const slot = placedSlot(state, ref);
+  if (slot) return slot.label;
   const r = resolveRef(state, ref);
   if (r.def && ref.partId) return r.def.parts[ref.partId]?.label ?? 'Part';
   if (!r.node) return 'Element';
@@ -503,6 +542,8 @@ function selectableItemIds(state: ProjectState, ref: ElementRef, r: ReturnType<t
  * AI or the files changing on disk can take any of them away while it stays selected.
  */
 export function refExists(state: ProjectState, ref: ElementRef): boolean {
+  // A slot holds while its placement is there and still declares it, whatever is put in it or taken out.
+  if (ref.slot !== undefined && !placedSlot(state, ref)) return false;
   const r = resolveRef(state, ref);
   // A code component has no tree: its parts are the ones its contract declares, never one item of a list.
   if (!r.node) return !!r.instance && r.def?.kind === 'code' && !!ref.partId && !ref.itemPath?.length && own(r.def.parts, ref.partId)?.nodeId === ref.nodeId;
@@ -722,6 +763,13 @@ export function breadcrumb(state: ProjectState, ref: ElementRef): Crumb[] {
       out.push(crumb({ owner: ref.owner, instancePath: ref.instancePath.slice(0, i + 1), nodeId: a.id, partId, ...(last ? itemsFor(ref.itemPath, a.outside) : {}) }));
     }
   }
+  // A slot of a placement: the placement, then the slot in it.
+  const slot = placedSlot(state, ref);
+  if (slot) {
+    out.push(crumb(withoutSlot(ref)));
+    out.push({ label: slot.label, full: `${slot.label}, a place for content in ${out[out.length - 1].label}`, ref });
+    return out;
+  }
   out.push(crumb(ref));
   return out;
 }
@@ -799,6 +847,8 @@ export function toDefinitionRef(state: ProjectState, definitionId: string, ref: 
 /** What a click on the canvas picks while editing a component everywhere: the innermost of the component's
  *  own nodes under the pointer (every node of the design can be picked), or null outside the component. */
 export function definitionPick(state: ProjectState, definitionId: string, chain: BridgeDesc[]): { ref: ElementRef; placement: ElementRef } | null {
+  // A placement's slot is filled on its page, not in the design edited everywhere.
+  chain = chain.filter((d) => d.slot === undefined);
   for (const [i, d] of chain.entries()) {
     const r = refFromDesc(state, d);
     const hit = r && toDefinitionRef(state, definitionId, r);
@@ -873,6 +923,7 @@ export function studioRef(state: ProjectState, definitionId: string, ref: Elemen
 export function studioPick(state: ProjectState, definitionId: string, chain: BridgeDesc[]): ElementRef | null {
   const def = own(state.components, definitionId);
   if (!def?.tree) return null;
+  chain = chain.filter((d) => d.slot === undefined);
   const owner: OwnerRef = { kind: 'component', id: definitionId };
   const inDesign = (d: BridgeDesc) => {
     const ctx = swapHead(d.ctx, studioCtx(definitionId), `component:${definitionId}`);

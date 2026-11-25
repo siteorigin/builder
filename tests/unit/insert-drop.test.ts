@@ -4,15 +4,17 @@ import type { ElementNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { AssetRecord, InstanceNode } from '@shared/types';
-import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertDestination, insertIndex, measuredLists, measureIds, savingProblems, type Measured } from '../../src/renderer/src/lib/insert-drop';
+import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertDestination, insertIndex, measuredLists, measureIds, savingProblems, slotKey, slotOfKey, type Measured } from '../../src/renderer/src/lib/insert-drop';
 import { imageInsertOps } from '../../src/renderer/src/lib/image-drop';
-import type { InsertAt } from '../../src/renderer/src/lib/insert-at';
+import { insertOps, type InsertAt } from '../../src/renderer/src/lib/insert-at';
 
 /**
  * Dragging an Insert tile onto the page (#52): the lists a drop can go into, and the list and gap under the pointer.
  */
 
 const box = (x: number, y: number, width: number, height: number, order = 0): Measured => ({ x, y, width, height, order });
+/** A plain box, as an empty slot's drop surface is (see measuredLists). */
+const rect = (x: number, y: number, width: number, height: number) => ({ x, y, width, height });
 
 /** Two sections; the first holds a Grid with two cards side by side and an empty Row under it. */
 function page() {
@@ -55,8 +57,9 @@ describe('the lists a drop can go into (#52)', () => {
     expect(specs).toContainEqual({ parentId: p.first, slot: 'content', childIds: [p.grid, p.row], depth: 0 });
     expect(specs).toContainEqual({ parentId: p.grid, childIds: [p.a, p.b], depth: 1 });
     expect(specs).toContainEqual({ parentId: p.row, childIds: [], depth: 1 });
-    // An empty section takes content too.
+    // An empty section takes content too, anywhere in it: its one slot is the section's whole content area.
     expect(specs).toContainEqual({ parentId: p.second, slot: 'content', childIds: [], depth: 0 });
+    expect(specs.some((l) => l.byPlaceholder)).toBe(false);
     expect(measureIds(specs).sort()).toEqual([p.first, p.second, p.grid, p.row, p.a, p.b].sort());
   });
 
@@ -400,3 +403,174 @@ describe('an Assets image dropped between content (#506)', () => {
     expect(lists && dest.aim(lists, 300, 320, 1)).toMatchObject({ at: { parentId: p.stack }, refused: null });
   });
 });
+
+/**
+ * A component that shows two slots side by side (#652): Main, which takes anything, and Sidebar, which takes only
+ * text, placed in the page's second section with both slots empty.
+ */
+const slotPhoto: AssetRecord = {
+  id: 'img_hours',
+  name: 'Hours',
+  file: 'static/assets/hours.png',
+  mime: 'image/png',
+  bytes: 1000,
+  width: 800,
+  height: 600,
+  hash: 'hours',
+  kind: 'image',
+  altSuggestion: 'Opening hours',
+  createdAt: '2026-11-25T09:00:00.000Z'
+};
+
+function withSplit() {
+  const p = page();
+  const made = applyOperations(p.state, [
+    { type: 'asset.add', asset: slotPhoto },
+    {
+      type: 'component.upsert',
+      name: 'Split',
+      insertAs: 'element',
+      properties: {},
+      nodes: [
+        { kind: 'element', id: 'root', children: ['mainCol', 'sideCol'], styles: { base: { layout: 'grid', columns: 2 } } },
+        { kind: 'element', id: 'mainCol', children: ['main'] },
+        { kind: 'slot', id: 'main', slot: 'main' },
+        { kind: 'element', id: 'sideCol', children: ['side'] },
+        { kind: 'slot', id: 'side', slot: 'sidebar' }
+      ],
+      slots: { main: { label: 'Main' }, sidebar: { label: 'Sidebar', primitives: ['text'] } }
+    }
+  ]);
+  const definitionId = made.results[1].definitionId as string;
+  const placed = applyOperations(made.state, [{ type: 'node.insert', owner: p.owner, parentId: p.second, slot: 'content', definitionId }]);
+  const split = placed.results[0].nodeId as string;
+  // Laid out in the second section: the split under its top, each slot's placeholder 72px tall in its column.
+  const measured = new Map(p.measured)
+    .set(split, box(100, 450, 800, 150))
+    .set(slotKey(split, 'main'), box(100, 450, 390, 72))
+    .set(slotKey(split, 'sidebar'), box(510, 450, 390, 72));
+  return { ...p, state: placed.state, definitionId, split, measured };
+}
+
+describe('the slots of a component that shows several (#652)', () => {
+  it('are each a list of their own, found by their placeholder while empty, with the rest of the component naming none', () => {
+    const p = withSplit();
+    const specs = dropListSpecs(p.state, p.owner);
+    expect(specs).toContainEqual({ parentId: p.split, slot: 'main', childIds: [], byPlaceholder: true, depth: 1.5 });
+    expect(specs).toContainEqual({ parentId: p.split, slot: 'sidebar', childIds: [], byPlaceholder: true, depth: 1.5 });
+    expect(specs).toContainEqual({ parentId: p.split, childIds: [], refused: 'It has more than one place for content. Drop it onto one of them, or select one and click the tile.', depth: 1 });
+    // Each placeholder is measured by its slot key, beside the node IDs.
+    expect(measureIds(specs)).toEqual(expect.arrayContaining([p.split, slotKey(p.split, 'main'), slotKey(p.split, 'sidebar')]));
+    expect(slotOfKey(slotKey(p.split, 'sidebar'))).toEqual({ parentId: p.split, slot: 'sidebar' });
+    expect(slotOfKey(p.split)).toBeNull();
+  });
+
+  it('take a drop on their placeholder, edge to edge, and refuse one beside them in the component', () => {
+    const p = withSplit();
+    const lists = measuredLists(dropListSpecs(p.state, p.owner), p.measured);
+    expect(dropTarget(lists, 'element', 300, 486, 10, 0)).toMatchObject({ index: 0, line: null, list: { parentId: p.split, slot: 'main' } });
+    expect(dropTarget(lists, 'element', 700, 486, 10, 0)).toMatchObject({ index: 0, line: null, list: { parentId: p.split, slot: 'sidebar' } });
+    // Right at a placeholder's edge: still that slot, not beside it.
+    expect(dropTarget(lists, 'element', 700, 451, 10, 0)!.list).toMatchObject({ slot: 'sidebar' });
+    expect(dropTarget(lists, 'element', 510, 486, 10, 0)!.list).toMatchObject({ slot: 'sidebar' });
+    // Below both placeholders, in the component: no one slot.
+    expect(dropTarget(lists, 'element', 500, 570, 10, 0)).toMatchObject({ index: null, refused: expect.stringMatching(/more than one place/) });
+  });
+
+  it('measure at least 72px tall however collapsed their column is, and two collapsed in one place are laid out apart', () => {
+    const p = withSplit();
+    const specs = dropListSpecs(p.state, p.owner);
+    const slotBox = (m: Map<string, Measured | null>, slot: string) => measuredLists(specs, m).find((l) => l.slot === slot)!.box;
+    // A column with no height: the surface is 72px tall from where it starts.
+    expect(slotBox(new Map(p.measured).set(slotKey(p.split, 'sidebar'), box(510, 450, 390, 0)), 'sidebar')).toEqual(rect(510, 450, 390, 72));
+    // Its width is the placeholder's own: a wider surface would reach into the next column.
+    expect(slotBox(new Map(p.measured).set(slotKey(p.split, 'sidebar'), box(700, 450, 30, 72)), 'sidebar')).toEqual(rect(700, 450, 30, 72));
+    // Both columns collapsed onto one line: Sidebar goes below Main, and a drop finds each.
+    const flat = new Map(p.measured).set(slotKey(p.split, 'main'), box(100, 450, 800, 0)).set(slotKey(p.split, 'sidebar'), box(100, 450, 800, 0));
+    const lists = measuredLists(specs, flat);
+    expect(lists.find((l) => l.slot === 'main')!.box).toEqual(rect(100, 450, 800, 72));
+    expect(lists.find((l) => l.slot === 'sidebar')!.box).toEqual(rect(100, 522, 800, 72));
+    expect(dropTarget(lists, 'element', 500, 480, 10, 0)!.list).toMatchObject({ slot: 'main' });
+    expect(dropTarget(lists, 'element', 500, 560, 10, 0)!.list).toMatchObject({ slot: 'sidebar' });
+  });
+
+  it('leave out a slot the component does not show, and refuse one it shows more than once', () => {
+    const p = withSplit();
+    const specs = dropListSpecs(p.state, p.owner);
+    const hidden = measuredLists(specs, new Map(p.measured).set(slotKey(p.split, 'sidebar'), null));
+    expect(hidden.some((l) => l.slot === 'sidebar')).toBe(false);
+    const many = measuredLists(specs, new Map(p.measured).set(slotKey(p.split, 'sidebar'), { ...box(510, 450, 390, 72), many: true }));
+    expect(dropTarget(many, 'element', 700, 486, 10, 0)).toMatchObject({ index: null, refused: expect.stringMatching(/more than once/) });
+    // Nor is one shown more than once drawn as a place to drop.
+    const para = insertDestination(p.state, p.owner, 'element', 0, (at) => insertOps(at, { primitive: 'paragraph' }, 'element'));
+    expect(para.surfaces(para.lists(new Map(p.measured).set(slotKey(p.split, 'sidebar'), { ...box(510, 450, 390, 72), many: true }))).map((s) => s.label)).toEqual(['Main']);
+  });
+
+  it('give way where a surface is bigger than its placeholder to what the page shows beside it, never to what holds it', () => {
+    const p = withSplit();
+    // A Stack after the Split in the section, and a Sidebar placeholder only 30px tall: its surface reaches the Stack.
+    const after = applyOperations(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.second, slot: 'content', primitive: 'stack' }]);
+    const stack = after.results[0].nodeId as string;
+    const specs = dropListSpecs(after.state, p.owner);
+    const short = new Map(p.measured).set(p.split, box(100, 450, 800, 30)).set(slotKey(p.split, 'sidebar'), box(510, 450, 390, 30)).set(stack, box(100, 500, 800, 60));
+    const lists = measuredLists(specs, short);
+    expect(lists.find((l) => l.slot === 'sidebar')!.box).toEqual(rect(510, 450, 390, 72));
+    // Over the Stack, the Stack; on the placeholder, Sidebar; below it where only the section shows, Sidebar's surface.
+    expect(dropTarget(lists, 'element', 700, 510, 10, 0)!.list).toMatchObject({ parentId: stack });
+    expect(dropTarget(lists, 'element', 700, 465, 10, 0)!.list).toMatchObject({ slot: 'sidebar' });
+    expect(dropTarget(lists, 'element', 700, 490, 10, 0)!.list).toMatchObject({ slot: 'sidebar' });
+  });
+
+  it('count a placeholder by what its component shows of it, and never reach sideways out of the component', () => {
+    const p = withSplit();
+    const inStack = applyOperations(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.second, slot: 'content', primitive: 'stack' }]);
+    const stack = inStack.results[0].nodeId as string;
+    const moved = applyOperations(inStack.state, [{ type: 'node.move', owner: p.owner, nodeId: p.split, parentId: stack, index: 0 }]).state;
+    const specs = dropListSpecs(moved, p.owner);
+    // A Split 30px tall in a Stack 40px tall, clipping its 72px placeholders: on what shows of Sidebar, Sidebar, not the
+    // Stack around it (which is smaller than Sidebar's whole surface, though not than what shows of it).
+    const clipped = new Map(p.measured)
+      .set(stack, box(100, 450, 400, 40))
+      .set(p.split, box(100, 450, 400, 30))
+      .set(slotKey(p.split, 'main'), null)
+      .set(slotKey(p.split, 'sidebar'), box(110, 450, 380, 72));
+    expect(dropTarget(measuredLists(specs, clipped), 'element', 300, 465, 10, 0)!.list).toMatchObject({ slot: 'sidebar' });
+    // Below the Split, in a taller Stack, where the clipped part of Sidebar's surface reaches: the Stack.
+    const tall = new Map(clipped).set(stack, box(100, 450, 400, 60)).set(p.split, box(100, 450, 400, 24));
+    expect(dropTarget(measuredLists(specs, tall), 'element', 300, 490, 10, 0)!.list).toMatchObject({ parentId: stack });
+    // A Split 20px wide whose Main placeholder spills 16px to its right: the spill is not Main's.
+    const narrow = new Map(p.measured).set(p.split, box(100, 450, 20, 150)).set(slotKey(p.split, 'main'), box(100, 450, 36, 72)).set(slotKey(p.split, 'sidebar'), box(100, 522, 20, 72));
+    const lists = measuredLists(dropListSpecs(p.state, p.owner), narrow);
+    expect(lists.find((l) => l.slot === 'main')!.box).toEqual(rect(100, 450, 20, 72));
+    expect(dropTarget(lists, 'element', 130, 480, 10, 0)!.list).not.toMatchObject({ slot: 'main' });
+  });
+
+  it('lay out apart only the placeholders of one component', () => {
+    const p = withSplit();
+    const two = applyOperations(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.second, slot: 'content', definitionId: p.definitionId }]);
+    const other = two.results[0].nodeId as string;
+    // A second Split whose placeholders sit where the first one's surfaces reach: each stays where its page shows it.
+    const measured = new Map(p.measured).set(other, box(100, 480, 800, 150)).set(slotKey(other, 'main'), box(100, 480, 390, 72)).set(slotKey(other, 'sidebar'), box(510, 480, 390, 72));
+    const lists = measuredLists(dropListSpecs(two.state, p.owner), measured);
+    expect(lists.find((l) => l.parentId === other && l.slot === 'main')!.box).toEqual(rect(100, 480, 390, 72));
+  });
+
+  it('take a drop anywhere on a placeholder, before the component around it names no one slot', () => {
+    const p = withSplit();
+    // A component as small as its placeholders: its own box is smaller than Main's surface.
+    const tiny = new Map(p.measured).set(p.split, box(100, 450, 60, 24)).set(slotKey(p.split, 'main'), box(100, 450, 30, 72)).set(slotKey(p.split, 'sidebar'), box(130, 450, 30, 72));
+    const lists = measuredLists(dropListSpecs(p.state, p.owner), tiny);
+    expect(dropTarget(lists, 'element', 110, 460, 10, 0)!.list).toMatchObject({ slot: 'main' });
+  });
+
+  it('find a filled slot whose content all hides here by its placeholder', () => {
+    const p = withSplit();
+    const filled = applyOperations(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.split, slot: 'sidebar', primitive: 'paragraph', text: 'Closed Mondays' }]);
+    const para = filled.results[0].nodeId as string;
+    const specs = dropListSpecs(filled.state, p.owner);
+    expect(measureIds(specs)).toContain(slotKey(p.split, 'sidebar'));
+    const lists = measuredLists(specs, new Map(p.measured).set(para, null));
+    expect(dropTarget(lists, 'element', 700, 486, 10, 0)).toMatchObject({ index: 1, list: { slot: 'sidebar', byPlaceholder: true } });
+  });
+});
+

@@ -21,7 +21,7 @@ import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
 import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, slotInsertAt, whereFor, whereText, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { SLOT_NO_PLACE } from './slot-contract';
-import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
+import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refExists, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { sampleEntries } from './template-view';
@@ -43,7 +43,8 @@ export function currentOwner(): OwnerRef | null {
 /** Only nodes in the owner tree itself (not inside component definitions) can be moved, duplicated or removed.
  *  While a component is edited everywhere its own nodes can, except its root, which is the component itself. */
 export function structuralTarget(ref: ElementRef | null, { state }: { state?: ProjectState } = {}): ElementRef | null {
-  if (!ref) return null;
+  // A slot of a placement is a place to put content, never the placement to move, duplicate or remove.
+  if (!ref || ref.slot !== undefined) return null;
   const st = state ?? getState().snapshot!.state;
   const b = boundaryOf(st, ref);
   if (b.instancePath.length) return null;
@@ -90,7 +91,7 @@ export async function duplicateSelection() {
  * or a component inside its design is not), so the action acts on exactly what the menu names.
  */
 export function detachable(st: ProjectState, ref: ElementRef | null): ElementRef | null {
-  if (!ref || ref.instancePath.length || ref.partId || ref.owner.kind !== 'page') return null;
+  if (!ref || ref.instancePath.length || ref.partId || ref.slot !== undefined || ref.owner.kind !== 'page') return null;
   const n = resolveRef(st, ref).node;
   if (n?.kind !== 'instance') return null;
   const def = st.components[n.definitionId];
@@ -750,7 +751,7 @@ export async function placeAsset(assetId: string, shown: string): Promise<boolea
         markArrival(ref);
         setState({ selection: ref, ...(now.rightTab === start.rightTab && now.dockOpen === start.dockOpen ? { rightTab: 'inspect' as const, dockOpen: true } : {}) });
       }
-      toast(`Placed “${name}” ${p.where.lead} ${p.where.target}${p.where.node ? ` on ${p.page}` : ''}.`, 'info', undoAction(r));
+      toast(`Placed “${name}” ${whereText(p.where)}${p.where.node ? ` on ${p.page}` : ''}.`, 'info', undoAction(r));
       return true;
     }
     // The project closed or was opened again before the image could be placed in it.
@@ -1035,7 +1036,7 @@ export function setMode(mode: 'edit' | 'preview') {
   const ref =
     !s.selection && !s.slotTarget && back && st && back.pageId === s.pageId && back.definitionId === editing
       ? layoutBack
-        ? resolveRef(st, back.ref).node
+        ? resolveRef(st, back.ref).node && (back.ref.slot === undefined || refExists(st, back.ref))
           ? back.ref
           : null
         : selectionBack(st, back.pageId, back.ref, back.revision === s.snapshot?.revision)
