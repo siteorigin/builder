@@ -3316,6 +3316,8 @@ const CONTROLS = 'a[href], button, input[type="submit"], input[type="button"], [
 /** A level with more boxes than this is a list, not a layout of columns; the walk visits at most this many levels. */
 const MAX_LEVEL_BOXES = 60;
 const MAX_LAYOUT_VISITS = 40;
+/** The longest report that keeps its rhythm notes, well inside the longest message the editor accepts (200,000). */
+const MAX_REPORT_CHARS = 190_000;
 
 /**
  * The page's top-level sections in the order the page lists them: the outermost elements rendered for each of
@@ -3329,7 +3331,14 @@ function pageSections(pageId, rootIds, deadline) {
   const wanted = new Map(rootIds.map((id, i) => [id, i]));
   const found = rootIds.map(() => []);
   const strays = [];
-  for (const el of document.querySelectorAll('[data-so-ctx^="page:"]')) {
+  // Each element counts once, under the outermost element of its section: document order puts that one first.
+  const outer = new Map();
+  const within = (el, key) => {
+    for (let e = parentOf(el); e; e = parentOf(e)) if (outer.get(e) === key) return true;
+    return false;
+  };
+  for (const [i, el] of [...document.querySelectorAll('[data-so-ctx^="page:"]')].entries()) {
+    if (i % 200 === 0 && Date.now() > deadline) return null;
     const ctx = el.getAttribute('data-so-ctx');
     const key = ctx === own ? el.getAttribute('data-so-node') : ctx.startsWith(own + '|') ? ctx.slice(own.length + 1).split('|')[0] : null;
     if (!key) continue;
@@ -3337,21 +3346,24 @@ function pageSections(pageId, rootIds, deadline) {
       strays.push(el);
       continue;
     }
-    const list = found[wanted.get(key)];
-    // Document order puts a section's outer element before everything inside it.
-    if (!list.some((o) => o.contains(el))) list.push(el);
+    if (within(el, key)) continue;
+    outer.set(el, key);
+    found[wanted.get(key)].push(el);
   }
   // At most one box more than a layout of columns has: a section of more (a long list a code component renders
   // directly) is not measured, and the first boxes still place it on the page.
   const boxesOf = (els) => {
     const boxes = [];
-    for (const el of els) {
-      const all = getComputedStyle(el).display === 'contents' ? (childrenOf(el).length > MAX_LEVEL_BOXES ? [...childrenOf(el)].slice(0, MAX_LEVEL_BOXES + 1) : boxChildren(el)) : [el];
-      for (const b of all) {
-        if (boxes.length > MAX_LEVEL_BOXES) return boxes;
-        if (getComputedStyle(b).display !== 'contents' && drawn(b) && boxRect(b).height >= 1) boxes.push(b);
+    let seen = 0;
+    const visit = (el) => {
+      if (boxes.length > MAX_LEVEL_BOXES || (++seen % 200 === 0 && Date.now() > deadline)) return;
+      if (getComputedStyle(el).display !== 'contents') {
+        if (drawn(el) && boxRect(el).height >= 1) boxes.push(el);
+        return;
       }
-    }
+      for (const c of childrenOf(el)) visit(c);
+    };
+    els.forEach(visit);
     return boxes;
   };
   const areaOf = (boxes) => {
@@ -3529,9 +3541,9 @@ function describeColumns({ lanes, span, peers }) {
   const shares = lanes.map((l) => Math.round((Math.max(...l.boxes.map((b) => b.r.width)) / span) * 20) * 5);
   const media = (b) => pictureShare(b.el, b.r) >= MEDIA_SHARE;
   // Two columns, one of them a picture: a split, and which side its picture is on. Where the two are wrapped alike, the
-  // picture's column holds no text of its own (two cards, one with a photo, are still two cards).
+  // picture's column holds no text at all (two cards, one with a photo, are still two cards).
   const alikePeers = alike(peers);
-  const picture = (b) => media(b) && (!alikePeers || !b.el.querySelector(TEXT_BLOCKS));
+  const picture = (b) => media(b) && (!alikePeers || !b.el.textContent.trim());
   const side = n === 2 ? lanes.findIndex((l) => l.boxes.every(picture)) : -1;
   const pictured = side >= 0 && !lanes[1 - side].boxes.every(media);
   if (n === 2 && (pictured || !alikePeers)) {
@@ -3555,8 +3567,11 @@ function inView(el, r, vw, stop) {
     const clipsX = s.overflowX !== 'visible';
     const clipsY = s.overflowY !== 'visible';
     if (!clipsX && !clipsY) continue;
+    // Its padding box where it is drawn: a scaled box draws its own sizes scaled.
     const b = boxRect(e);
-    const pad = { x: b.left + e.clientLeft, y: b.top + e.clientTop, width: e.clientWidth, height: e.clientHeight };
+    const sx = e.offsetWidth ? b.width / e.offsetWidth : 1;
+    const sy = e.offsetHeight ? b.height / e.offsetHeight : 1;
+    const pad = { x: b.left + e.clientLeft * sx, y: b.top + e.clientTop * sy, width: e.clientWidth * sx, height: e.clientHeight * sy };
     const c = crossing(boxOf(r), pad);
     if ((clipsX && c.w <= 1) || (clipsY && c.h <= 1)) return false;
   }
@@ -3669,12 +3684,16 @@ function rhythm(vw, page, deadline) {
         message: `Sections ${crowded[0].n}–${crowded[crowded.length - 1].n} each have a filled button (${total} in all), ${countWord(crowded.length)} sections in a row. Keep filled buttons for the page's main actions and give the others a secondary or text style.`
       });
     }
-    // Headings: inner headings as large as the page's one h1. A page with more than one inspection measures is left
-    // alone: an h1 or a heading past the cap could change the answer.
+    // Headings: inner headings as large as the page's one h1, which must be in a section it lists (any other h1 shown
+    // anywhere makes two). A page with more headings than one inspection measures is left alone.
+    if (Date.now() > deadline) return null;
+    const seen = (h) => h.textContent.trim() && drawn(h) && !visuallyHidden(h);
+    const allH1 = [...document.querySelectorAll('h1')];
     const heads = [];
-    for (const s of [...sections, ...others]) for (const b of s.boxes) for (const h of [b, ...b.querySelectorAll(HEADINGS)]) if (h.matches(HEADINGS)) heads.push(h);
-    const shown = heads.length <= MAX_RHYTHM_HEADINGS ? heads.filter((h) => h.textContent.trim() && drawn(h) && !visuallyHidden(h)) : [];
-    const h1s = shown.filter((h) => h.tagName === 'H1');
+    for (const s of sections) for (const b of s.boxes) for (const h of [b, ...b.querySelectorAll(HEADINGS)]) if (h.matches(HEADINGS) && heads.length <= MAX_RHYTHM_HEADINGS) heads.push(h);
+    const listed = heads.length <= MAX_RHYTHM_HEADINGS && allH1.length <= MAX_RHYTHM_HEADINGS;
+    const shown = listed ? heads.filter(seen) : [];
+    const h1s = listed && allH1.filter(seen).length === 1 ? shown.filter((h) => h.tagName === 'H1') : [];
     if (h1s.length === 1) {
       const top = parseFloat(getComputedStyle(h1s[0]).fontSize);
       const big = shown.filter((h) => h.tagName !== 'H1').map((h) => ({ h, size: parseFloat(getComputedStyle(h).fontSize) })).filter((x) => x.size >= top - 0.01);
@@ -3774,7 +3793,7 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
     const ctx = el.getAttribute('data-so-ctx');
     sections.add(ctx.includes('|') ? ctx.split('|').slice(0, 2).join('|') : `${ctx}|${el.getAttribute('data-so-node')}`);
   }
-  return {
+  const report = {
     path: shownPath(),
     sections: [...sections].slice(0, 500),
     viewportWidth: vw,
@@ -3788,6 +3807,9 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
     ...(preview ? { preview } : {}),
     ...(opts.gaps ? stackReport(readableBy + 500) : {})
   };
+  // Advice never costs the report: the editor drops a message longer than it accepts (see the editor's bridge).
+  if (report.rhythm && JSON.stringify(report).length > MAX_REPORT_CHARS) delete report.rhythm;
+  return report;
 }
 
 /** The stacked gaps for a report, and whether they stop short. */

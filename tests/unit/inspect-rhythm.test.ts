@@ -317,6 +317,31 @@ describe.skipIf(!browserInstalled)('rhythm notes on a page', () => {
     expect(note(await inspect(doc(banner('s1', '#14213d') + banner('s2', '#14213d') + banner('s3', '#14213d')), PAGE(ids(3))), 'repeated-layout')).toBeDefined();
   }, 30000);
 
+  it('keeps cards with linked titles as cards, finds a second h1 past hidden boxes, and counts a button in a scaled box', async () => {
+    const split = (id: string) => `<section ${at(id, 'root')}><div class="split"><div class="col"><img class="pic" alt="" src="${PHOTO}"></div><div class="col"><h2>Story ${id}</h2><p>What happened.</p></div></div></section>`;
+    const linkedCards = (id: string) => `<section ${at(id, 'root')}><div class="split"><div class="col"><img class="pic" alt="" src="${PHOTO}"><a href="/a/">Ada</a></div><div class="col"><a href="/g/">Grace</a></div></div></section>`;
+    expect((await inspect(doc(split('s1') + linkedCards('s2') + split('s3')), PAGE(ids(3)))).rhythm).toEqual([]);
+    // A placement whose second h1 comes after more hidden boxes than a section is measured by.
+    const hidden = Array.from({ length: 70 }, () => '<p hidden>Old</p>').join('');
+    const second = `<div style="display:contents" data-so-ctx="page:p" data-so-node="s2">${hidden}<div><h1>Another title</h1></div></div>`;
+    expect(note(await inspect(doc(hero() + second + cards('s3', { headingStyle: 'font-size:52px', button: 'none' })), PAGE(ids(3))), 'heading-scale')).toBeUndefined();
+    // A box drawn at twice its size: the button inside it shows, though past its unscaled width.
+    const scaled = (id: string) => `<section ${at(id, 'root')}><div style="width:160px;height:40px;overflow:hidden;transform:scale(2);transform-origin:0 0;margin-bottom:48px"><a class="btn" href="/go/" style="position:relative;left:90px;padding:4px 8px;font-size:10px">Go</a></div></section>`;
+    expect(note(await inspect(doc(scaled('s1') + scaled('s2') + scaled('s3')), PAGE(ids(3))), 'crowded-actions')).toMatchObject({ buttons: 3 });
+  }, 30000);
+
+  it('leaves the notes out of a report too long for the editor to accept, and keeps the report', async () => {
+    const throwing = (n: number, length: number) => Array.from({ length: n }, (_, i) => `<script type="module">throw new Error('${String(i)}'.repeat(${length}))</script>`).join('');
+    const page = (scripts: string) => doc(hero() + cards('s2') + cards('s3') + cards('s4')).replace('</body>', `${scripts}</body>`);
+    const long = await inspect(page(throwing(10, 19_500)), PAGE(ids(4)));
+    expect(long).not.toHaveProperty('error');
+    expect((long as unknown as { runtimeErrors: string[] }).runtimeErrors.length).toBeGreaterThan(0);
+    expect(JSON.stringify(long).length).toBeLessThanOrEqual(200_000);
+    expect(long.rhythm).toBeUndefined();
+    const short = await inspect(page(throwing(10, 100)), PAGE(ids(4)));
+    expect(note(short, 'repeated-layout')).toBeDefined();
+  }, 30000);
+
   it('counts a button that a box clips only on the other axis', async () => {
     const sideways = (id: string) => `<section ${at(id, 'root')}><h2>Visit ${id}</h2><div style="width:60px;overflow-x:visible;overflow-y:clip"><a class="btn" href="/book/" style="transform:translateX(80px);white-space:nowrap">Book a table</a></div></section>`;
     expect(note(await inspect(doc(sideways('s1') + sideways('s2') + sideways('s3')), PAGE(ids(3))), 'crowded-actions')).toMatchObject({ buttons: 3 });
