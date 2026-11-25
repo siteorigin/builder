@@ -27,6 +27,8 @@ import { NOT_FOUND_LIMITS, clipText, notFoundDefaults } from '@shared/not-found'
 import { VisitorTextFields } from './VisitorText';
 import { AgentDiscoveryFields } from './AgentDiscovery';
 import { CrawlerPolicyFields } from './CrawlerPolicy';
+import { RedirectsFields } from './RedirectsManager';
+import { redirectRecords } from '@shared/redirects';
 import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl, publicUrl } from '@shared/public-url';
 import { LANGUAGE_CODE_ERROR, languageDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
@@ -1224,6 +1226,7 @@ export function SiteStyles() {
     { id: 'tok-custom', label: 'Yours' },
     { id: 'site-settings', label: 'Site' }
   ];
+  const redirectCount = redirectRecords(st).length;
   const reviewId = `${uid}-review`;
 
   return (
@@ -1581,6 +1584,11 @@ export function SiteStyles() {
       <Section title="Crawlers" id="site-crawlers" defaultOpen={false} keepMounted>
         {/* Keyed by the project's opening: lines typed in one project are never previewed in the next. */}
         <CrawlerPolicyFields key={`crawlers-${snap?.workspaceKey}`} state={st} onChange={updSite} />
+      </Section>
+
+      <Section title="Redirects" id="site-redirects" defaultOpen={false} keepMounted scope={redirectCount ? plural(redirectCount, 'redirect', 'redirects') : undefined}>
+        {/* Keyed by the project's opening: a redirect half typed in one project is never offered in the next. */}
+        <RedirectsFields key={`redirects-${snap?.workspaceKey}`} state={st} problems={snap?.diagnostics ?? []} revision={snap?.revision} />
       </Section>
 
       <Section title="Visitor text" id="site-visitor-text" defaultOpen={false}>

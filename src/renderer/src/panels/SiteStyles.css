@@ -272,4 +272,19 @@
   .ss-new-title { font-size: 12px; font-weight: 600; color: var(--text); }
   .ss-new-value { display: flex; align-items: center; gap: 6px; }
   .ss-new-value .input { flex: 1; min-width: 0; }
+
+  /* ---------- Redirects (RedirectsManager.tsx) ---------- */
+  .so-redirects { list-style: none; margin: 4px 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .so-redirect { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); }
+  .so-redirect.has-problem { box-shadow: inset 2px 0 0 var(--red); }
+  .so-redirect-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .so-redirect-route { font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+  .so-redirect-route code { font-size: 12px; }
+  .so-redirect-meta { font-size: 12px; }
+  .so-redirect-buttons { display: flex; gap: 6px; }
+  .so-redirect-form { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: var(--r-md); background: var(--panel-2); }
+  .so-redirect .so-redirect-form { padding: 6px 0 0; }
+  .so-redirect-kinds { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; }
+  .so-redirect-kind { display: inline-flex; align-items: center; gap: 6px; }
+  .so-redirect-actions { display: flex; justify-content: flex-end; gap: 6px; }
 }
