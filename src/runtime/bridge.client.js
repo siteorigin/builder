@@ -3078,8 +3078,9 @@ function drawn(el) {
     const host = boxed(el);
     return host !== el && getComputedStyle(el).visibility === 'visible' && drawn(host);
   }
-  if (!el.getClientRects().length) return false;
-  if (el.checkVisibility) return el.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true });
+  // Through the prototype: a form's control named like either method would hide the form's own.
+  if (!Element.prototype.getClientRects.call(el).length) return false;
+  if (Element.prototype.checkVisibility) return Element.prototype.checkVisibility.call(el, { opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true });
   for (let e = el; e && e.nodeType === 1; e = parentOf(e)) {
     const s = getComputedStyle(e);
     if (s.display === 'none' || Number(s.opacity) === 0) return false;
@@ -3545,7 +3546,9 @@ function readability(vw, deadline, within = null) {
         let cut = null;
         let n = 0;
         // Around the elements asked for, only the text inside them is read: the rest is never walked.
-        const sources = inside ? [el] : within.roots.filter((r) => Node.prototype.contains.call(el, r));
+        // Only the outermost of them, so text inside two nested ones is read once.
+        const under = inside ? [] : within.roots.filter((r) => Node.prototype.contains.call(el, r));
+        const sources = inside ? [el] : under.filter((r) => !under.some((o) => o !== r && Node.prototype.contains.call(o, r)));
         for (const t of textsUnder(sources)) {
           if (cut) break;
           const holder = parentOf(t);
