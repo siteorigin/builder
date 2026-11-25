@@ -20,6 +20,7 @@ import { clip, contentText, everySizeEdits, eyeAction, hiddenAncestor, hideHereE
 import { besideOf, cannotGroup, extendTo, inGroup, layerRef, NOT_SIBLINGS, toggle, type Group } from '../lib/layer-set';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
+import { turnIntoSlotItem, turnIntoSlotTarget } from '../lib/turn-into-slot';
 import { placeWords } from '../lib/edit-label';
 import { describeConditions } from '../lib/conditions';
 import { OutlinePanel } from './OutlinePanel';
@@ -606,6 +607,9 @@ export function LayersPanel() {
     const create = createComponentTarget(getState().snapshot, ref);
     // A container of the design edited everywhere: the same as the canvas and the inspector.
     const repeat = repeatAsListTarget(getState().snapshot, ref);
+    // A container of the design (its root too) becomes a slot each placement fills, or says why it can't.
+    const slot = turnIntoSlotTarget(getState().snapshot, ref);
+    const slotItems = slot ? [{ ...turnIntoSlotItem(slot, (ref) => setState({ modal: { kind: 'turn-into-slot' as const, ref, workspaceKey: getState().snapshot?.workspaceKey } })), icon: <SquareDashed /> }] : [];
     const kept = definitionMode ? undefined : placedDefinition(st, ref, !!getState().settings?.developerMode);
     const items = [
       { heading: name },
@@ -630,6 +634,7 @@ export function LayersPanel() {
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: create } }) }] : []),
             ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: () => setState({ modal: { kind: 'repeat-as-list' as const, ref: repeat, workspaceKey: getState().snapshot?.workspaceKey } }) }] : []),
+            ...slotItems,
             ...(!definitionMode && detachable(st, ref) ? [{ label: 'Detach component', icon: <Unlink />, onSelect: () => void detachPlacement(ref) }] : []),
             // Kept for every project, or sent as a file (#372).
             ...(kept ? [{ label: 'Save to personal library', icon: <BookmarkPlus />, onSelect: () => void saveToLibrary(kept) }, { label: 'Export component…', icon: <Download />, onSelect: () => void exportComponentFile(kept) }] : []),
@@ -638,7 +643,7 @@ export function LayersPanel() {
           ]
         : // The component being edited everywhere takes a paste inside itself, though it is not copied or removed here.
           isDefRoot
-          ? [{ separator: true }, ...copyPasteItems({ copy: null, paste: pasteAfter })]
+          ? [{ separator: true }, ...copyPasteItems({ copy: null, paste: pasteAfter }), ...slotItems]
           : [])
     ];
     // A row (treeitem) is not a menu button: open at the row and return focus to it, without marking it expanded.

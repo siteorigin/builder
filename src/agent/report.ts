@@ -413,6 +413,10 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const how = op.type === 'component.removeSlot' ? 'Removed' : had ? 'Changed' : 'Added';
         return plain(op, `${how} the content area ${quoted(label)} ${how === 'Removed' ? 'from' : 'of'} the ${quoted(componentName(op.definitionId))} component`);
       }
+      case 'component.containerToSlot': {
+        const kept = op.keep === 'placements' ? ', moving what it held into each placement' : '';
+        return plain(op, `Turned ${name({ kind: 'component', id: op.definitionId }, op.nodeId)} into the content area ${quoted(op.label)} of the ${quoted(componentName(op.definitionId))} component${kept}`);
+      }
       case 'theme.apply': {
         let theme = op.themeId;
         try {

@@ -90,6 +90,7 @@ import { platformKeys, useCopyPasteItems, type CopyPasteActions } from './CopyPa
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
+import { turnIntoSlotItem, turnIntoSlotTarget } from '../lib/turn-into-slot';
 import { assetUrl, createComponentTarget, definitionView, isCodePart, ownerLabel, placedFeedRows, placedSlot, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor, withoutSlot } from '../lib/model';
 import { enclosingGroup, partInInteractionGroup, withoutGroupStates } from '@shared/interaction-groups';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
@@ -2500,6 +2501,8 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   // A container of the design becomes the item of a new list: the same as the canvas and Layers.
   // Worked out once for each version of the project, not on every render: it reads the design (and, for rich text, every placement).
   const repeat = useMemo(() => (several ? null : repeatAsListTarget({ state, readOnly }, { owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: node.id })), [several, state, readOnly, def.id, node.id]);
+  // A container of the design becomes a slot each placement fills, or says why it can't: the same as the canvas and Layers.
+  const slot = useMemo(() => (several ? null : turnIntoSlotTarget({ state, readOnly }, { owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: node.id })), [several, state, readOnly, def.id, node.id]);
   // Wrap and Ungroup act on the design's own node, also when it was reached through a placement on the page, or on the
   // layers selected with it in Layers: followed, so the menu is rebuilt when they change.
   useStore((s) => {
@@ -2512,7 +2515,8 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const designItems: MenuItem[] = [
     ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
     ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: () => setState({ modal: { kind: 'repeat-as-list', ref: repeat, workspaceKey: getState().snapshot?.workspaceKey } }) }] : []),
-    ...((create || repeat) && designWraps.length ? [{ separator: true }] : []),
+    ...(slot ? [{ ...turnIntoSlotItem(slot, (ref) => setState({ modal: { kind: 'turn-into-slot' as const, ref, workspaceKey: getState().snapshot?.workspaceKey } })), icon: <SquareDashed /> }] : []),
+    ...((create || repeat || slot) && designWraps.length ? [{ separator: true }] : []),
     ...designWraps
   ];
   const title = partId && partId !== 'root' ? def.parts[partId].label : isRoot ? def.name : refLabel(state, { owner, instancePath: [], nodeId: node.id });

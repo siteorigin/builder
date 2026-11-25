@@ -7,9 +7,9 @@
 import type { ComponentDefinition, ElementRef, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { Diagnostic } from '@engine/validate';
 import { childLists } from '@engine/tree';
-import { slotDecl } from '@engine/slots';
+import { shownOnceSlots, slotDecl } from '@engine/slots';
 import { catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
-import { catalogueRole, definitionRole, heldSlots, insertOps, shownOnceSlots, slotRefuses, type InsertAt, type InsertRole } from './insert-at';
+import { catalogueRole, definitionRole, heldSlots, insertOps, slotRefuses, type InsertAt, type InsertRole } from './insert-at';
 import { dropRefusal, savingProblems } from './insert-drop';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, type InsertSpec } from './insert-search';
 import { refLabel, treeFor } from './model';

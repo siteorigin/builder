@@ -878,6 +878,18 @@ export const OPERATION_SCHEMAS = {
     max: z.number().int().min(0).max(1000).nullable().optional().describe('The most children the slot holds; 0 closes it. Left out keeps it; null removes the limit.')
   }),
   'component.removeSlot': z.object({ type: z.literal('component.removeSlot'), definitionId: z.string(), slot: z.string() }),
+  'component.containerToSlot': z
+    .object({
+      type: z.literal('component.containerToSlot'),
+      definitionId: z.string(),
+      nodeId: z.string().describe('A container (element) of the design. It stays, with its tag and styles; its children give way to the new slot.'),
+      slot: z.string().describe('The new slot\'s name: a camelCase identifier no slot, property or placement of the component uses yet.'),
+      label: z.string().min(1).max(60),
+      keep: z
+        .enum(['placements', 'none'])
+        .describe('placements: each placement gets its own copy of the children, as it shows them now, in its new slot. none: the children are removed, and the slot starts empty everywhere.')
+    })
+    .describe('Turn a container of a project component into a slot that takes anything, in one change: its children become each placement\'s content there, or go.'),
 
   'theme.apply': z.object({ type: z.literal('theme.apply'), themeId: z.string() }),
   'theme.refresh': z
