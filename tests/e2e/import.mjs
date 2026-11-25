@@ -308,7 +308,8 @@ await copyButton.click();
 await eventually(async () => assert.equal(await win.locator('.asset-detail h4').innerText(), 'camera (web-sized)'), 60000);
 now = await win.evaluate(() => window.builder.project.snapshot());
 const copy = Object.values(now.state.assets.assets).find((a) => a.name === 'camera (web-sized)');
-assert.deepEqual([copy.mime, copy.width, copy.height, copy.variants.map((v) => v.width)], ['image/jpeg', 2560, 1920, [160, 480, 960, 1440]], 'the copy is web-sized with its responsive copies');
+assert.deepEqual([copy.mime, copy.width, copy.height], ['image/jpeg', 2560, 1920], 'the copy is web-sized');
+assertCopies(copy, 'jpg', [160, 480, 960, 1440], 2560, 'the web-sized copy has its responsive copies');
 assert.ok(copy.bytes < original.bytes, 'the copy is lighter than the original');
 assert.ok(now.state.assets.assets[original.id], 'the original stays in Assets');
 
