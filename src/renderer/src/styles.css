@@ -2850,7 +2850,9 @@ iframe { color-scheme: light dark; }
 .cmdk-foot { display: flex; align-items: center; gap: 16px; min-height: 38px; padding: 0 20px; border-top: 1px solid var(--border); background: var(--panel-2); font-size: 12px; color: var(--text-3); }
 .cmdk-foot > span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .cmdk-foot-enter { min-width: 0; color: var(--text); font-weight: 500; }
-.cmdk-foot > .cmdk-foot-keys { margin-left: auto; gap: 14px; }
+/* An insert names where it lands, which can be long: it gives way, never the keys beside it. */
+.cmdk-foot-action { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cmdk-foot > .cmdk-foot-keys { flex: none; margin-left: auto; gap: 14px; }
 .cmdk-foot-keys > span { display: inline-flex; align-items: center; gap: 4px; }
 .cmdk-foot-keys > span .kbd + .kbd { margin-left: -1px; }
 .cmdk-foot .kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; background: var(--raised); color: var(--text-2); font-size: 11px; line-height: 1; font-weight: 500; }

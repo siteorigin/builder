@@ -1,12 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookmarkPlus, SquareDashed, ChevronDown, ClipboardCopy, ClipboardPaste, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, Monitor, NotebookPen, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree } from 'lucide-react';
+import { BookmarkPlus, SquareDashed, ChevronDown, ClipboardCopy, ClipboardPaste, Code, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, Monitor, NotebookPen, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree, PanelLeft } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
-import { catalogueEntries } from '@catalogue/index';
 import { api, projectHistory, setState, setViewport, toast, useStore } from '../store';
 import { pageShowing, partName } from '@shared/page-shell';
-import { insert, pageOutOfSight, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers } from '../lib/actions';
+import { insert, pageOutOfSight, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers, currentOwner } from '../lib/actions';
 import { copiedHere, copySelection, pasteFromMenu } from '../lib/clipboard';
 import { postWorkspace } from '../lib/posts';
 import { platformKeys } from './CopyPaste';
@@ -15,6 +14,8 @@ import { VIEWPORT_PRESETS } from '@shared/styles';
 import { LucideIcon } from './InsertPanel';
 import { openContentMatch } from './FindReplace';
 import { contentFields, findContent, placedSections, sectionMatches } from '../lib/find-content';
+import { insertChoices, insertLanding } from '../lib/command-inserts';
+import { LEFT_TABS } from './LeftTabs';
 
 interface Cmd {
   id: string;
@@ -44,6 +45,12 @@ interface Cmd {
   keywords?: string;
   /** Runs without closing the menu. */
   stay?: boolean;
+  /** Puts something on the page (or the component or template being edited), where `action` says. */
+  inserts?: boolean;
+  /** What it adds ("Element", "Section"), shown beside it, so a component and an element of one name are told apart. */
+  kind?: string;
+  /** Why it cannot be inserted where things go now, worked out with the place (see insertLanding). */
+  refused?: string;
   run: () => void;
 }
 
@@ -107,6 +114,23 @@ function Marked({ text, query }: { text: string; query: string }) {
   return <>{text.split(new RegExp(`(${words.join('|')})`, 'giu')).map((part, i) => (i % 2 ? <mark key={i}>{part}</mark> : part))}</>;
 }
 
+/**
+ * Shows or hides the sidebar, as the sidebar shortcut does. Hidden from the menu, with the menu opened from inside the sidebar, focus has
+ * nowhere left to return to: it goes to the hidden view's rail button, as the shortcut leaves it (see Editor). That waits
+ * until the menu has handed focus back, so a place it could return to keeps it.
+ */
+function toggleSidebar() {
+  const was = useStore.getState().leftTab;
+  setState({ leftTab: was ? null : 'pages' });
+  if (!was) return;
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body) document.querySelector<HTMLElement>(`.rail [data-rail="${was}"]`)?.focus();
+    })
+  );
+}
+
 function TrailText({ trail, query, className }: { trail: Trail; query: string; className: string }) {
   return (
     <span className={className} title={`${trail.head}${trail.address ? ` (${trail.address})` : ''}${trail.tail}`}>
@@ -131,6 +155,12 @@ export function CommandMenu() {
   const pageId = useStore((s) => s.pageId);
   const mode = useStore((s) => s.mode);
   const dockOpen = useStore((s) => s.dockOpen);
+  const leftTab = useStore((s) => s.leftTab);
+  const dev = useStore((s) => !!s.settings?.developerMode);
+  // Where an insert lands follows the selection and what is being edited (see currentOwner).
+  const selection = useStore((s) => s.selection);
+  const definitionId = useStore((s) => s.definitionMode?.definitionId);
+  const templateId = useStore((s) => s.templateMode?.collectionId);
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
   const [sectionLimit, setSectionLimit] = useState(6);
@@ -140,14 +170,31 @@ export function CommandMenu() {
   const cmds = useMemo<Cmd[]>(() => {
     if (!snap) return [];
     const st = snap.state;
+    const owner = currentOwner();
     return [
       ...pageChoices(st).map((p) => ({ id: `page:${p.id}`, verb: 'Go to ', label: `Go to ${p.title}`, detail: p.address, group: 'Page', icon: p.home ? <House /> : <FileText />, run: () => selectPage(p.id) })),
-      ...catalogueEntries(st.site.themeId).map((e) => ({ id: `ins:${e.componentId}`, verb: 'Insert ', label: `Insert ${e.name}`, group: 'Insert', icon: <LucideIcon name={e.icon} />, run: () => void insert({ componentId: e.componentId }, e.name) })),
+      // What the Insert panel offers, each saying where it would go (#174). Enter places it there again, as it is then.
+      ...insertChoices(st, dev).map((e): Cmd => {
+        const at = insertLanding(st, owner, selection, e.spec);
+        return {
+          id: e.id,
+          verb: 'Insert ',
+          label: `Insert ${e.name}`,
+          kind: e.kind,
+          keywords: e.keywords,
+          group: 'Insert',
+          icon: e.icon ? <LucideIcon name={e.icon} /> : e.kind === 'Code component' ? <Code /> : <Component />,
+          inserts: true,
+          ...('where' in at ? { action: `Insert ${at.where}` } : { refused: at.refused }),
+          run: () => void insert(e.spec, e.name)
+        };
+      }),
       { id: 'newpage', label: 'Add page…', keywords: 'new create', action: 'Add a page', group: 'Page', icon: <Plus />, run: () => (setState({ leftTab: 'pages' }), setTimeout(() => window.dispatchEvent(new Event('builder-add-page')), 0)) },
-      // Every component of the project's own, placed or not, opens in Component Studio (issue #367).
+      // Every component of the project's own, placed or not, opens in Component Studio (issue #367): its own copy of the
+      // header or footer too, and code only in Developer mode, as Insert lists it.
       ...Object.values(st.components)
-        .filter((d) => d.owner === 'project')
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .filter((d) => d.owner === 'project' && (dev || d.kind !== 'code'))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
         .map((d) => ({ id: `studio:${d.id}`, label: `Open ${d.name} in Component Studio`, keywords: 'component studio design variants edit everywhere', action: 'Open in Component Studio', group: 'Your components', icon: <SquareDashed />, run: () => void openComponentStudio(d.id) })),
       { id: 'newcomponent', label: 'Create component…', keywords: 'new component reusable design build ai', action: 'Start a new component, blank or built by AI', group: 'Insert', icon: <Component />, run: () => setState({ modal: { kind: 'new-component' } }) },
       { id: 'ai', kbd: '⌘J', label: 'Ask AI…', action: 'Open the AI chat', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
@@ -170,10 +217,14 @@ export function CommandMenu() {
       { id: 'save-version', label: 'Save a version of the site…', action: 'Open Versions', group: 'Project', icon: <BookmarkPlus />, run: () => setState({ modal: { kind: 'history', tab: 'versions' } }) },
       { id: 'health', label: 'Project health…', action: 'Open Project health', group: 'Project', icon: <Stethoscope />, run: () => setState({ modal: { kind: 'health' } }) },
       { id: 'outline', label: 'Show the page outline', keywords: 'headings', action: 'Show the outline', group: 'View', icon: <ListTree />, run: () => openOutline() },
+      // The sidebar's views, as the rail opens them.
+      ...LEFT_TABS.map((t) => ({ id: `panel:${t.id}`, label: `Show the ${t.label} panel`, keywords: 'left sidebar panel view', group: 'View', icon: t.icon, run: () => setState({ leftTab: t.id }) })),
+      // Found by what it will do now, so "hide the sidebar" never offers to show it.
+      { id: 'sidebar', kbd: '⌘\\', label: leftTab ? 'Hide the sidebar' : 'Show the sidebar', keywords: leftTab ? 'hide close left sidebar panels' : 'show open left sidebar panels', group: 'View', icon: <PanelLeft />, run: toggleSidebar },
       { id: 'dock', kbd: '⇧⌘\\', label: dockOpen ? 'Hide the right panel' : 'Show the right panel', keywords: 'show hide right panel inspector', group: 'View', icon: <PanelRight />, run: () => setState({ dockOpen: !useStore.getState().dockOpen }) },
       { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void closeProject() }
     ];
-  }, [snap, mode, dockOpen]);
+  }, [snap, mode, dockOpen, leftTab, dev, selection, pageId, definitionId, templateId]);
   // What is already on the site comes before what can be added: the sections placed on each page, and a few of the
   // words and destinations the search finds (the full list is in Find and replace).
   const sections = useMemo(() => (snap ? placedSections(snap.state) : []), [snap]);
@@ -271,7 +322,9 @@ export function CommandMenu() {
   const unavailable = (c: Cmd) => {
     if (c.id === 'undo') return history?.canUndo ? undefined : 'Nothing to undo';
     if (c.id === 'redo') return history?.canRedo ? undefined : 'Nothing to redo';
-    if (posting && (c.id === 'copy' || c.id === 'paste' || c.id.startsWith('ins:'))) return posting === 'write' ? 'Not while writing a post' : 'Not while previewing a post';
+    if (posting && (c.id === 'copy' || c.id === 'paste' || c.inserts)) return posting === 'write' ? 'Not while writing a post' : 'Not while previewing a post';
+    if (c.inserts) return readOnly ? 'Read-only' : c.refused;
+    if (c.id === `panel:${leftTab}`) return 'Already open';
     if (c.id === 'copy') return !editing ? 'Edit mode only' : copyable ? undefined : 'Nothing to copy';
     if (c.id === 'paste') return !editing ? 'Edit mode only' : !pasteable ? 'Nothing copied' : readOnly ? 'Read-only' : undefined;
     return undefined;
@@ -508,7 +561,7 @@ export function CommandMenu() {
                     aria-selected={i === cur}
                     aria-disabled={reason ? true : undefined}
                     // The footer is hidden from assistive technology, so what it says about Enter is said here when the label does not.
-                    aria-description={c.id === 'find:all' ? (c.label.includes('Find and replace') ? undefined : 'Opens Find and replace') : c.onSite && !c.stay ? 'Show in editor' : current ? 'Current page' : c.action && c.action !== c.label.replace(/…$/, '') ? c.action : undefined}
+                    aria-description={c.id === 'find:all' ? (c.label.includes('Find and replace') ? undefined : 'Opens Find and replace') : c.onSite && !c.stay ? 'Show in editor' : current ? 'Current page' : !reason && c.action && c.action !== c.label.replace(/…$/, '') ? c.action : undefined}
                     className={`menu-item${i === cur ? ' focused' : ''}${c.place || stacked ? ' cmdk-two' : ''}${c.stay ? ' cmdk-more-row' : ''}`}
                     // Only a pointer that really moved takes the highlight, not a list scrolling under a still one. A row
                     // it lands on is brought fully into view, so Enter never runs one that is half hidden.
@@ -536,7 +589,7 @@ export function CommandMenu() {
                     {!stacked && address}
                     {/* Drawn, not written: the option's text stays "Go to {title} {address}" and the description says it. */}
                     {current && <span className="hint cmdk-current" aria-hidden="true" />}
-                    {reason ? <span className="hint">{reason}</span> : c.kbd && <kbd className="kbd">{platformKeys(c.kbd)}</kbd>}
+                    {reason ? <span className="hint">{reason}</span> : c.kbd ? <kbd className="kbd">{platformKeys(c.kbd)}</kbd> : c.kind && <span className="hint">{c.kind}</span>}
                   </div>
                 );
               })}
@@ -553,7 +606,8 @@ export function CommandMenu() {
           {activeCmd && !unavailable(activeCmd) && (
             <span className="cmdk-foot-enter">
               <kbd className="kbd">{platformKeys('↵')}</kbd>
-              {actionOf(activeCmd)}
+              {/* A long place gives way before the keys beside it; the whole of it shows on hover. */}
+              <span className="cmdk-foot-action" title={actionOf(activeCmd)}>{actionOf(activeCmd)}</span>
             </span>
           )}
           <span className="cmdk-foot-keys">
