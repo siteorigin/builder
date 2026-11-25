@@ -4,7 +4,9 @@
 // the slot it is dropped on, even a Sidebar whose column is collapsed to no height and clips it, at a point the page
 // shows nothing of it (the surface is drawn over the page; the floor for a placeholder itself made shorter than 72px is
 // covered by tests/unit/insert-drop.test.ts). An Image the Sidebar does not take says why on the Sidebar itself. Each
-// drag leaves the page as it found it, and Preview shows no slot placeholder at all.
+// drag leaves the page as it found it, and Preview shows no slot placeholder at all. A Paragraph in Main drags by the
+// selection's grip into Sidebar as one change that keeps the node (#658); a Button, which Sidebar does not take, is
+// refused there live and released there changes nothing; Escape, or letting go back on the grip, changes nothing.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -138,6 +140,120 @@ step('a Paragraph dragged from Insert draws a surface for each empty slot, at le
   await eventually(async () => assert.deepEqual(await slotOf('main'), []));
   await marker('main').waitFor();
   assert.deepEqual({ main: await pageBox(marker('main')), sidebar: await pageBox(marker('sidebar')) }, resting, 'the page lays out as it did before the drag');
+}
+
+step('a Paragraph in Main drags by its grip into Sidebar as one change, keeping itself; Undo puts it back (#658)');
+const grip = win.locator('.ov-chip [aria-label="Drag to move"]');
+/** Select what the chip calls `name` by clicking `locator` in the page: each click steps one level in. */
+const selectIn = async (locator, name) => {
+  for (let i = 0; i < 5; i++) {
+    const at = await pointAt(locator, 0.5, 4);
+    await win.mouse.click(at.x, at.y);
+    try {
+      return await eventually(async () => assert.match(await chip(), name), 1500);
+    } catch {
+      await win.waitForTimeout(400);
+    }
+  }
+  assert.fail(`${name} is selected; the chip says ${await chip()}`);
+};
+/** Press the selection's grip and move off it a little, so the selection is dragged; returns where it was pressed. */
+const pickUpSelection = async () => {
+  // The chip moves to a new selection once the page has measured it: pressed where it has settled.
+  const g = await eventually(async () => {
+    const a = await grip.boundingBox();
+    await win.waitForTimeout(250);
+    const b = await grip.boundingBox();
+    assert.ok(a && b && a.x === b.x && a.y === b.y, 'the chip shows its grip, settled where it is');
+    return b;
+  });
+  const from = { x: g.x + g.width / 2, y: g.y + g.height / 2 };
+  await win.mouse.move(from.x, from.y);
+  await win.mouse.down();
+  await win.mouse.move(from.x + 12, from.y + 6, { steps: 3 });
+  return from;
+};
+const [{ nodeId: para }, { nodeId: button }] = await apply(
+  [
+    { type: 'node.insert', owner, parentId: split, slot: 'main', primitive: 'paragraph', text: 'Open daily from eight' },
+    { type: 'node.insert', owner, parentId: split, slot: 'main', primitive: 'button', text: 'Book a table' }
+  ],
+  'Fill Main'
+);
+const paraEl = frame.locator('p', { hasText: 'Open daily from eight' }).first();
+await paraEl.waitFor({ timeout: 30000 });
+await marker('sidebar').waitFor();
+{
+  const before = (await home()).nodes[para];
+  const changes = await newest();
+  await selectIn(paraEl, /^Text/);
+  await pickUpSelection();
+  const at = await pointAt(marker('sidebar'), 0.5, 30);
+  await win.mouse.move(at.x, at.y, { steps: 12 });
+  await eventually(async () => assert.match(await dropLabel.innerText(), /Text inside Sidebar in Split/, 'the label names the slot before release'));
+  assert.ok(await dropTarget.isVisible(), 'Sidebar is outlined');
+  await win.screenshot({ path: join(SHOTS, 'slot-targets-move.png') });
+  await win.mouse.up();
+  await eventually(async () => assert.deepEqual(await slotOf('sidebar'), [para], 'the Paragraph is in Sidebar'));
+  assert.deepEqual(await slotOf('main'), [button], 'and only the Button is left in Main');
+  assert.deepEqual((await home()).nodes[para], before, 'the same node, with its text and styles');
+  const moved = await newest();
+  assert.notEqual(moved.id, changes?.id, 'as a change');
+  assert.match(moved.label, /^Move Text/, 'named as a move');
+  await undo();
+  await eventually(async () => assert.deepEqual(await slotOf('main'), [para, button], 'one Undo puts it back where it was'));
+  assert.deepEqual(await slotOf('sidebar'), []);
+  assert.equal((await newest()).id, changes?.id, 'Undo took back exactly that one change');
+}
+
+step('the Button dragged over Sidebar, which takes only text, is refused there and says why; released there, nothing changes (#658)');
+{
+  await marker('sidebar').waitFor();
+  const changes = await newest();
+  await selectIn(frame.getByText('Book a table', { exact: true }).first(), /^(Button|Link)/);
+  await pickUpSelection();
+  const at = await pointAt(marker('sidebar'), 0.5, 30);
+  await win.mouse.move(at.x, at.y, { steps: 12 });
+  await eventually(async () => assert.match(await dropReason.innerText(), /“Sidebar” slot of “Split” takes text/, 'the reason shows on the slot'));
+  assert.match(await dropLabel.innerText(), /Can’t move (Button|Link) here/);
+  assert.equal(await surface('Sidebar').count(), 0, 'Sidebar is not drawn as a place for it');
+  await win.screenshot({ path: join(SHOTS, 'slot-targets-move-refused.png') });
+  await win.mouse.up();
+  await eventually(async () => assert.equal(await dropLabel.count(), 0, 'the drag is over'));
+  await win.waitForTimeout(300);
+  assert.equal((await newest()).id, changes?.id, 'nothing changed');
+  assert.deepEqual([await slotOf('main'), await slotOf('sidebar')], [[para, button], []]);
+}
+
+step('a move dragged to Sidebar and cancelled with Escape, or let go back on its grip, changes nothing (#658)');
+{
+  const changes = await newest();
+  // The Button's chip sits over the Paragraph above it: Escape steps out to Main first, so a click finds the Paragraph.
+  await win.keyboard.press('Escape');
+  await eventually(async () => assert.doesNotMatch(await chip(), /^(Button|Link)/));
+  await selectIn(paraEl, /^Text/);
+  await pickUpSelection();
+  const at = await pointAt(marker('sidebar'), 0.5, 30);
+  await win.mouse.move(at.x, at.y, { steps: 12 });
+  await eventually(async () => assert.match(await dropLabel.innerText(), /Text inside Sidebar in Split/));
+  await win.keyboard.press('Escape');
+  await eventually(async () => assert.equal(await dropLabel.count(), 0, 'Escape ends the drag'));
+  await win.mouse.up();
+  await eventually(async () => assert.match(await chip(), /^Text/, 'the Paragraph is still selected'));
+  const from = await pickUpSelection();
+  await win.mouse.move(at.x, at.y, { steps: 12 });
+  await eventually(async () => assert.match(await dropLabel.innerText(), /Text inside Sidebar in Split/));
+  await win.mouse.move(from.x, from.y, { steps: 12 });
+  await eventually(async () => assert.doesNotMatch(await dropLabel.innerText(), /inside Sidebar/, 'back on the grip, it goes nowhere'));
+  await win.mouse.up();
+  await eventually(async () => assert.equal(await dropLabel.count(), 0));
+  await win.waitForTimeout(300);
+  assert.equal((await newest()).id, changes?.id, 'nothing changed');
+  assert.deepEqual([await slotOf('main'), await slotOf('sidebar')], [[para, button], []]);
+  await win.keyboard.press('Escape');
+  await undo();
+  await eventually(async () => assert.deepEqual(await slotOf('main'), [], 'the fill is taken away for the steps after'));
+  await marker('main').waitFor();
 }
 
 step('with Sidebar’s column collapsed to no height, a drop below where the column shows still goes into Sidebar');
