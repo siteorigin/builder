@@ -23,6 +23,7 @@ import type { ForegroundSuggestion } from '@shared/contrast';
 import { NOT_FOUND_LIMITS, clipText, notFoundDefaults } from '@shared/not-found';
 import { VisitorTextFields } from './VisitorText';
 import { AgentDiscoveryFields } from './AgentDiscovery';
+import { CrawlerPolicyFields } from './CrawlerPolicy';
 import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl, publicUrl } from '@shared/public-url';
 import { LANGUAGE_CODE_ERROR, languageDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
@@ -1514,6 +1515,11 @@ export function SiteStyles() {
       <Section title="AI agents" id="site-agents" defaultOpen={false}>
         {/* Keyed by the project's opening: a summary typed in one project is never previewed in the next. */}
         <AgentDiscoveryFields key={`agents-${snap?.workspaceKey}`} state={st} onChange={updSite} />
+      </Section>
+
+      <Section title="Crawlers" id="site-crawlers" defaultOpen={false} keepMounted>
+        {/* Keyed by the project's opening: lines typed in one project are never previewed in the next. */}
+        <CrawlerPolicyFields key={`crawlers-${snap?.workspaceKey}`} state={st} onChange={updSite} />
       </Section>
 
       <Section title="Visitor text" id="site-visitor-text" defaultOpen={false}>

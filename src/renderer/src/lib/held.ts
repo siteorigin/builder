@@ -11,6 +11,7 @@ import { normalizeRoute, readablePath } from '@shared/routes';
 import { itemStylesOf, placementItems, repeatedPartList } from '@shared/item-styles';
 import { ownVisitorTextFor } from '@shared/visitor-text';
 import { coordinatesText } from '@shared/site-identity';
+import { knownCrawler } from '@shared/crawler-policy';
 
 /**
  * A typed edit made while the AI is working is held, not dropped. Each operation it is made of names one
@@ -83,6 +84,17 @@ function identityRead(state: ProjectState, patch: Record<string, unknown> | null
   const own = (k: string) => (stored && typeof stored === 'object' && Object.hasOwn(stored, k) ? (stored as Record<string, unknown>)[k] : undefined);
   const keys = identityKeys(patch);
   return keys.length === 1 ? own(keys[0]) : Object.fromEntries(keys.map((k) => [k, own(k)]));
+}
+
+/**
+ * The parts of the crawler policy an edit writes, as stored, with the preset they belong to (leaving Custom drops its
+ * rules); the whole policy when the edit resets it.
+ */
+function crawlerPolicyRead(state: ProjectState, patch: Record<string, unknown> | null): unknown {
+  const stored: unknown = state.site.crawlerPolicy;
+  if (!patch) return stored;
+  const own = (k: string) => (stored && typeof stored === 'object' && Object.hasOwn(stored, k) ? (stored as Record<string, unknown>)[k] : undefined);
+  return { preset: own('preset'), ...Object.fromEntries(identityKeys(patch).map((k) => [k, own(k)])) };
 }
 
 /** The kind of publisher the site has chosen; null when none is chosen (or the identity is cleared). */
@@ -164,6 +176,8 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
         fields.identity = identityRead(state, op.identity);
         if (op.identity) fields.publisher = publisherRead(state);
       }
+      // The crawler policy part by part: paths typed during an AI turn never wait on, or replace, crawlers named meanwhile.
+      if (op.crawlerPolicy !== undefined) fields.crawlerPolicy = crawlerPolicyRead(state, op.crawlerPolicy);
       return found(fields);
     }
     case 'node.rename': {
@@ -369,6 +383,8 @@ export function fieldKey(operations: EditOperation[]): string {
           if (op.type === 'site.update' && k === 'visitorText' && op.visitorText) return [k, op.visitorText.language.toLowerCase(), Object.keys(op.visitorText.text).sort()];
           // Who publishes the site is set field by field: each is its own; clearing it all writes every one.
           if (op.type === 'site.update' && k === 'identity') return [k, op.identity ? identityKeys(op.identity) : null];
+          // So is the crawler policy, part by part: its paths and the crawlers it names are separate fields.
+          if (op.type === 'site.update' && k === 'crawlerPolicy') return [k, op.crawlerPolicy ? identityKeys(op.crawlerPolicy) : null];
           return [k];
         })
         .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
@@ -382,6 +398,28 @@ const listText = (v: unknown) => {
   const geo = v && typeof v === 'object' ? (v as { latitude?: unknown; longitude?: unknown }) : null;
   return geo && typeof geo.latitude === 'number' && typeof geo.longitude === 'number' ? coordinatesText(geo as { latitude: number; longitude: number }) : v;
 };
+
+/**
+ * A part of the crawler policy as the field it is typed in shows it: the paths, or the crawlers kept out that no list
+ * names, one per line.
+ */
+function crawlerPartText(key: string, v: unknown): string | null {
+  if (key === 'disallowPaths') return Array.isArray(v) ? v.filter((x) => typeof x === 'string').join('\n') : '';
+  if (key === 'overrides')
+    return v && typeof v === 'object'
+      ? Object.entries(v)
+          .filter(([token, action]) => action === 'disallow' && !knownCrawler(token))
+          .map(([token]) => token)
+          .join('\n')
+      : '';
+  return shownValue(v);
+}
+
+/** The one part of the crawler policy an edit writes, as text; null when it writes more than one. */
+function crawlerPolicyText(patch: unknown, read: (key: string) => unknown): string | null {
+  const keys = patch && typeof patch === 'object' ? identityKeys(patch as Record<string, unknown>) : [];
+  return keys.length === 1 ? crawlerPartText(keys[0], read(keys[0])) : null;
+}
 
 /** Text for a value a field holds or will hold, to show the author; null for structured values. */
 export function shownValue(v: unknown): string | null {
@@ -404,6 +442,7 @@ export function typedText(op: EditOperation): string | null {
       const given = Object.values((o.identity ?? {}) as Record<string, unknown>).filter((v) => v !== undefined);
       return given.length === 1 ? shownValue(listText(given[0])) : null;
     }
+    if (key === 'crawlerPolicy') return crawlerPolicyText(o.crawlerPolicy, (k) => (o.crawlerPolicy as Record<string, unknown>)[k]);
     return key ? shownValue(o[key]) : null;
   }
   if (op.type === 'node.rename' || op.type === 'component.rename') return shownValue(op.name);
@@ -417,7 +456,10 @@ export function shownField(op: EditOperation, read: unknown): string | null {
   const o = (read && typeof read === 'object' ? read : {}) as Record<string, unknown>;
   let v: unknown = read;
   if (op.type === 'entry.update') v = Object.values(o)[0];
-  else if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'component.rename') v = listText(Object.values(o)[0]);
+  else if (op.type === 'site.update' && op.crawlerPolicy) {
+    const part = (o.crawlerPolicy && typeof o.crawlerPolicy === 'object' ? o.crawlerPolicy : {}) as Record<string, unknown>;
+    return crawlerPolicyText(op.crawlerPolicy, (k) => part[k]);
+  } else if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'component.rename') v = listText(Object.values(o)[0]);
   else if (op.type === 'asset.update') {
     const asset = (o.asset ?? {}) as Record<string, unknown>;
     const key = Object.keys(op).find((k) => k !== 'type' && k !== 'assetId');

@@ -16,7 +16,8 @@ const SITE_FIELDS: Record<Extract<EditorDestination, { kind: 'site' }>['field'],
   identity: { section: 'site-settings', focus: '#site-identity-kind' },
   logo: { section: 'site-settings', focus: '#site-identity-logo button' },
   sameAs: { section: 'site-settings', focus: '#site-identity-profiles' },
-  llmsTxt: { section: 'site-agents', focus: '#site-llms-txt' }
+  llmsTxt: { section: 'site-agents', focus: '#site-llms-txt' },
+  crawlerPolicy: { section: 'site-crawlers', focus: '#site-crawler-preset' }
 };
 
 /** The control each Search & sharing field of a page is reached by (see the page Inspector). */

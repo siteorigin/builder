@@ -39,7 +39,7 @@ function expectValidDestination(s: ProjectState, f: SeoFinding) {
       expect(Object.hasOwn(treeFor(s, d.owner)?.nodes ?? {}, d.nodeId), f.code).toBe(true);
       break;
     case 'site':
-      expect(['baseUrl', 'favicon', 'socialImage', 'identity', 'logo', 'sameAs', 'llmsTxt']).toContain(d.field);
+      expect(['baseUrl', 'favicon', 'socialImage', 'identity', 'logo', 'sameAs', 'llmsTxt', 'crawlerPolicy']).toContain(d.field);
       break;
     default:
       throw new Error(`Unexpected destination ${d.kind}`);

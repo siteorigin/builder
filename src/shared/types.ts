@@ -6,6 +6,7 @@
  */
 import { LATEST_SCHEMA_VERSION } from './migrations';
 import type { RichListType, RichText } from './richtext';
+import type { CrawlerPolicy } from './crawler-policy';
 
 export type { RichBlock, RichImageBlock, RichListBlock, RichListType, RichSpan, RichText, RichTextBlock } from './richtext';
 
@@ -837,6 +838,11 @@ export interface SiteDoc {
   llmsFull?: boolean;
   markdownMirrors?: boolean;
   llmsSummary?: string;
+  /**
+   * Which crawlers the website's robots.txt asks to stay away, and whether its pages ask AI services not to train on
+   * them (src/shared/crawler-policy.ts). Absent: every crawler is let in, as the website always did.
+   */
+  crawlerPolicy?: CrawlerPolicy;
   /**
    * Who publishes the site, as search engines and AI answer engines are told it in the pages' structured data
    * (src/shared/site-identity.ts). Absent: the site's name, as an organization, with nothing else said of it.

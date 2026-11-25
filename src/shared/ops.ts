@@ -7,6 +7,7 @@ import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
 import { IDENTITY_LIMITS } from './site-identity';
+import { checkCrawlerPath, checkCrawlerToken, CRAWLER_LIMITS, CRAWLER_PRESETS, FIXED_CRAWLER_PRESETS } from './crawler-policy';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -477,6 +478,34 @@ export const OPERATION_SCHEMAS = {
     llmsFull: z.boolean().optional().describe('llms-full.txt, every listed page in one file. Default false.'),
     markdownMirrors: z.boolean().optional().describe('A Markdown copy beside each listed page. Default false.'),
     llmsSummary: limited(TEXT_LIMITS.siteDescription).optional().describe('llms.txt summary; "" uses the description.'),
+    crawlerPolicy: z
+      .object({
+        preset: z
+          .enum(CRAWLER_PRESETS)
+          .optional()
+          .describe('"allow-all" (default): every crawler. "block-ai-training": AI training crawlers kept out. "search-engines-only": AI search, assistant and training crawlers kept out. "custom": a base preset changed by the fields below. Leaving custom drops its rules.'),
+        base: z.enum(FIXED_CRAWLER_PRESETS).nullable().optional().describe('Custom only: the preset it starts from. Defaults to the preset it was switched from; null is allow-all.'),
+        overrides: z
+          .record(z.string().max(CRAWLER_LIMITS.token), z.enum(['allow', 'disallow']).nullable())
+          .optional()
+          .describe('Custom only: crawlers by robots.txt product token (e.g. "GPTBot"), let in or kept out of the whole site whatever the base does; null drops one. Only the tokens given change.'),
+        disallowPaths: z.array(z.string().max(CRAWLER_LIMITS.path)).max(CRAWLER_LIMITS.paths).optional().describe('Custom only: paths no crawler may fetch, from the site root ("/private/", "/*.pdf$"). Replaces the list.'),
+        noAiMeta: z.boolean().nullable().optional().describe('Pages carry <meta name="robots" content="noai, noimageai">. Defaults on while the (base) preset blocks AI training; null restores that.')
+      })
+      .strict()
+      .superRefine((policy, ctx) => {
+        for (const token of Object.keys(policy.overrides ?? {})) {
+          const c = checkCrawlerToken(token);
+          if (!c.ok) ctx.addIssue({ code: 'custom', path: ['overrides', token], message: c.message });
+        }
+        (policy.disallowPaths ?? []).forEach((path, i) => {
+          const c = checkCrawlerPath(path);
+          if (!c.ok) ctx.addIssue({ code: 'custom', path: ['disallowPaths', i], message: c.message });
+        });
+      })
+      .nullable()
+      .optional()
+      .describe('robots.txt crawler policy (projectSummary.site.crawlerPolicy shows it once set). Only the fields given change; null restores the default.'),
     visitorText: z
       .object({
         language: z.string().max(20).describe('Language code, e.g. "ar": pages in it use this wording.'),

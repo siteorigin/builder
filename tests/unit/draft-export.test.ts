@@ -280,3 +280,44 @@ describe('exporting a project with a draft', () => {
     expect(env.builds).toBe(0);
   });
 });
+
+describe('exporting a project with a crawler policy', () => {
+  it('publishes the robots.txt the policy writes, and hands over the policy, the file and the noai meta', async () => {
+    const dir = temp('project');
+    const state = createStarterState('business', 'Bookshop', false);
+    state.site.baseUrl = 'https://books.example';
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    const set = await c.apply({ operations: [{ type: 'site.update', crawlerPolicy: { preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow' }, disallowPaths: ['/private/'] } }] });
+    expect(set.ok).toBe(true);
+    const expected = [
+      'User-agent: *',
+      'Disallow: /private/',
+      '',
+      ...['Applebot-Extended', 'Bytespider', 'CCBot', 'ClaudeBot', 'Google-Extended', 'Meta-ExternalAgent'].map((t) => `User-agent: ${t}`),
+      'Disallow: /',
+      '',
+      'Sitemap: https://books.example/sitemap.xml',
+      ''
+    ].join('\n');
+    const out = temp('out');
+    env.pick = async () => out;
+    const shown = Object.keys(c.snapshot()!.state.pages);
+    const r = await c.exportStatic('folder', shown);
+    expect(r.ok).toBe(true);
+    expect(readFileSync(join(r.path!, 'robots.txt'), 'utf8')).toBe(expected);
+    const handoff = join(temp('out'), 'handoff');
+    expect((await c.exportSourceTo(handoff)).ok).toBe(true);
+    expect(readFileSync(join(handoff, 'static/robots.txt'), 'utf8')).toBe(expected);
+    expect(readFileSync(join(handoff, 'src/routes/+layout.svelte'), 'utf8')).toContain('<meta name="robots" content="noai, noimageai" />');
+    expect(JSON.parse(readFileSync(join(handoff, 'siteorigin/site.json'), 'utf8')).crawlerPolicy).toEqual({ preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow' }, disallowPaths: ['/private/'] });
+    expect(await editedGeneratedFile(handoff)).toBeNull();
+    // Put back, the next export has the robots.txt every website had, and no noai meta.
+    expect((await c.apply({ operations: [{ type: 'site.update', crawlerPolicy: null }] })).ok).toBe(true);
+    const plain = join(temp('out'), 'handoff');
+    expect((await c.exportSourceTo(plain)).ok).toBe(true);
+    expect(readFileSync(join(plain, 'static/robots.txt'), 'utf8')).toBe('User-agent: *\nAllow: /\n\nSitemap: https://books.example/sitemap.xml\n');
+    expect(readFileSync(join(plain, 'src/routes/+layout.svelte'), 'utf8')).not.toContain('noai');
+    expect(JSON.parse(readFileSync(join(plain, 'siteorigin/site.json'), 'utf8'))).not.toHaveProperty('crawlerPolicy');
+  });
+});

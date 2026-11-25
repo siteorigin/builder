@@ -38,6 +38,7 @@ import { newId } from '@shared/ids';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { checkPublicUrl } from '@shared/public-url';
 import { patchIdentity } from '@shared/site-identity';
+import { patchCrawlerPolicy } from '@shared/crawler-policy';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { feedRowFields } from '@shared/entry-feed';
@@ -2499,6 +2500,13 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     else delete s.llmsSummary;
   }
   if (op.visitorText) setVisitorText(s, op.visitorText.language, op.visitorText.text);
+  // The crawler policy (shared/crawler-policy.ts) is kept only while it differs from the default.
+  if (op.crawlerPolicy !== undefined) {
+    const next = patchCrawlerPolicy(s.crawlerPolicy, op.crawlerPolicy);
+    if (!next.ok) fail(next.message);
+    if (next.value) s.crawlerPolicy = next.value;
+    else delete s.crawlerPolicy;
+  }
   if (op.identity !== undefined) {
     const next = patchIdentity(s.identity, op.identity, (id) => own(state.assets.assets, id)?.kind === 'image');
     if (!next.ok) fail(next.message);

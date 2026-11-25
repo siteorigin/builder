@@ -90,6 +90,7 @@ import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
 import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
+import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
 import { derived, isTracked, type GenerationCache } from './cache';
 import { createSeoResolver, entryMetadata, pageMetadata, type SeoMetadata } from './seo-metadata';
 import { ogLocale, twitterHandle } from '@shared/seo';
@@ -3058,6 +3059,8 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   // An old address only sends visitors on: it shows no header or footer while it does. Worked out once per state in a
   // cached run, so the layout follows the list of old addresses, not every entry's details that decide it.
   const redirects = derived(state, 'redirectRouteIds', (s) => liveRedirects(s).map((r) => routeId(r.from)));
+  // Every page asks AI services not to train on it while the crawler policy says so (shared/crawler-policy.ts).
+  const noAi = crawlerRules(state.site).noAiMeta ? `\n\t${NOAI_META}` : '';
   // An archive page shows both parts, even at the address of a draft made before archive pages.
   const archived = archiveRouteIds(state);
   const without = (part: ShellPart) => {
@@ -3114,7 +3117,7 @@ ${editing}</script>
 
 <svelte:head>
 	<link rel="icon" href={asset(${js(iconHref)})} type=${js(iconType)} />
-	<meta property="og:site_name" content={${js(state.site.name)}} />
+	<meta property="og:site_name" content={${js(state.site.name)}} />${noAi}
 </svelte:head>
 
 <a class="so-skip-link" href="#main">{text().skipLink}</a>
@@ -3514,15 +3517,12 @@ export function routeId(route: string): string {
 }
 
 /**
- * Crawlers may fetch every page: hidden pages carry a noindex meta tag and are left out of the sitemap. Drafts are
- * not pages of the website at all.
- * Disallowing them here would stop crawlers from ever reading that tag.
+ * The site's robots.txt, from its crawler policy (shared/crawler-policy.ts): the crawlers it keeps out and the paths
+ * the author closed. Hidden pages are never disallowed here: they carry a noindex meta tag and are left out of the
+ * sitemap, and disallowing them would stop crawlers from ever reading that tag. Drafts are not pages of the website at all.
  */
 export function generateRobots(state: ProjectState): string {
-  const lines = ['User-agent: *', 'Allow: /'];
-  const base = publicUrl(state.site);
-  if (base) lines.push('', `Sitemap: ${base}/sitemap.xml`);
-  return lines.join('\n') + '\n';
+  return siteRobotsTxt(state.site);
 }
 
 export function generateSitemap(state: ProjectState): string | null {
@@ -3732,8 +3732,7 @@ export function generateFaviconSvg(state: ProjectState): string {
 /** Sub-path the site is published under, from the public URL ("https://example.com/my-site" -> "/my-site"). */
 export function basePath(state: ProjectState): string {
   // A public URL is only used once checked, and its path then has segments SvelteKit takes as they are.
-  const url = publicUrl(state.site);
-  return url ? new URL(url).pathname.replace(/\/+$/, '') : '';
+  return siteMount(state.site);
 }
 
 /** Read by vite.config.js: SvelteKit's paths.base for production builds. */
