@@ -1083,7 +1083,9 @@ const openInView = inspSearch.getByRole('button', { name: 'Open in SEO view' });
 const inspectKitchens = async () => {
   if ((await rail('pages').getAttribute('aria-pressed')) !== 'true') await rail('pages').click();
   await eventually(async () => assert.equal(await holder.isVisible(), false, 'the view is put away'));
-  await win.locator('.pages-list [role="option"]', { hasText: 'Kitchens' }).first().click();
+  // Enter opens the page at once: a click waits to see whether it is a double click, and could open it after the view.
+  await win.locator('.pages-list [role="option"]', { hasText: 'Kitchens' }).first().focus();
+  await win.keyboard.press('Enter');
   await openInspector(win);
   await eventually(async () => assert.equal(await inspected.innerText(), 'Kitchens', 'the Inspector shows Kitchens'));
 };
@@ -1165,7 +1167,7 @@ assert.equal((await kitchensSeo()).canonical, undefined, 'nothing is saved while
 await canonical.press('Escape');
 await eventually(async () => assert.equal(await status('canonical').innerText(), 'https://riverside.example/kitchens/', 'Escape puts the page’s own address back'));
 // Text that is no address is never previewed as one: the status keeps the saved address.
-await canonical.fill('riverside.example/kitchens');
+await canonical.fill('journal.example/kitchens');
 await win.waitForTimeout(500);
 assert.equal(await status('canonical').innerText(), 'https://riverside.example/kitchens/', 'an unusable address leaves the status as saved');
 await canonical.press('Escape');
@@ -1200,7 +1202,8 @@ await eventually(async () => assert.equal(await result('desktop').locator('.serp
 await allSaved();
 await inspectKitchens();
 await inspField('title').fill(refusedTitle);
-await openInView.click();
+// Pressed without taking focus from the field (as a click that takes none would): the button leaves it itself.
+await openInView.dispatchEvent('click');
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Kitchens'));
 await eventually(async () => assert.equal(await title.inputValue(), refusedTitle, 'text too long to save goes with the field to the view'));
 assert.match(await countOf(title).innerText(), /^Not saved: 121 \/ 120/, 'still refused');

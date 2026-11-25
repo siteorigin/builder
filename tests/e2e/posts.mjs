@@ -466,7 +466,9 @@ await postTitleBox.press('Escape');
 await eventually(async () => assert.match(await postMeter('title').innerText(), /^Default title:/, 'Escape puts the default back'));
 // An address that is not one stays in the writer, with its note: the view, which would show the saved address, waits.
 await postCanonical.fill('journal.example/raku');
-await openInView.click();
+// Pressed without taking focus from the field (as a click that takes none would): the button leaves it itself, and
+// sees the refusal at once.
+await openInView.dispatchEvent('click');
 await eventually(async () => assert.equal(await postCanonical.getAttribute('aria-invalid'), 'true', 'the address is refused, and kept'));
 await eventually(async () => assert.match((await win.locator('.toast').allInnerTexts()).join('\n'), /What is typed in Canonical URL is not saved yet\./, 'and the button says why the view does not open'));
 assert.equal(await seoView.count(), 0, 'the SEO view stays closed');
