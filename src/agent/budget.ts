@@ -9,6 +9,7 @@
 import { estimateTokens } from '@shared/tokens';
 import type { CanonicalItem, ContextOverflow, ModelCapabilities, ToolDefinition } from './types';
 import { envelopeInstructions } from './constrained';
+import { layoutScope } from './layout-targets';
 
 export { estimateTokens };
 
@@ -68,6 +69,8 @@ interface ReadInfo {
   /** read_collection_entry and list_collection_entries: the collection, and the entry, it read. */
   collectionId?: string;
   entryId?: string;
+  /** inspect_layout: the elements it was narrowed to (see layoutScope), absent for a check of the whole page. */
+  scope?: string;
 }
 
 const PROJECT_EXTRAS = ['tokens', 'catalogue', 'components'];
@@ -117,7 +120,9 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
   if (item.name === 'inspect_layout') {
     const pageId = body?.pageId ?? args.pageId;
     const viewport = body?.viewport ?? args.viewport;
-    return pageId && viewport ? { ...base, target: `layout:${pageId}:${viewport}`, pageId: String(pageId) } : null;
+    // A check of chosen elements stays its own read: only a whole-page check, or one of the same elements, replaces it.
+    const scope = layoutScope(args.refs);
+    return pageId && viewport ? { ...base, target: `layout:${pageId}:${viewport}`, pageId: String(pageId), ...(scope !== undefined ? { scope } : {}) } : null;
   }
   if (item.name === 'inspect_component') {
     // A component measured with its default content or a placement's, and which window of its cases: a theme
@@ -156,6 +161,8 @@ function componentSample(body: Record<string, any> | null, args: Record<string, 
 function replaces(newer: ReadInfo, older: ReadInfo): boolean {
   if (newer.index <= older.index || newer.target !== older.target || (newer.partial && !older.partial)) return false;
   if (newer.name === 'read_project') return older.extras!.every((s) => newer.extras!.includes(s));
+  // A check of some elements never stands in for one of the page, nor of other elements.
+  if (newer.name === 'inspect_layout' && newer.scope !== undefined) return newer.scope === older.scope;
   // Only a complete read is known to show every line it covers.
   if (newer.name === 'read_source') return !newer.partial && newer.lines![0] <= older.lines![0] && newer.lines![1] >= older.lines![1];
   return true;
@@ -183,7 +190,10 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
     const owner = args.owner ?? body?.owner;
     return `${TOMBSTONE}inspect_element ${args.nodeId} on ${owner?.kind} ${owner?.id}${rev}. Inspect it again before relying on it.]`;
   }
-  if (read.name === 'inspect_layout') return `${TOMBSTONE}inspect_layout ${body?.pageId ?? args.pageId} ${body?.viewport ?? args.viewport}. Measure it again if you need it.]`;
+  if (read.name === 'inspect_layout') {
+    const n = Array.isArray(args.refs) ? args.refs.length : 0;
+    return `${TOMBSTONE}inspect_layout ${body?.pageId ?? args.pageId} ${body?.viewport ?? args.viewport}${n ? `, ${n} element${n === 1 ? '' : 's'} only` : ''}. Measure it again if you need it.]`;
+  }
   if (read.name === 'inspect_component') {
     const sample = componentSample(body, args);
     const offset = Number(body?.offset ?? args.offset ?? 0);

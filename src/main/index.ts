@@ -35,7 +35,7 @@ import { installAiJournal } from './ai-journal';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 import { declareCodeNames } from '@engine/definitions';
-import type { ComponentDefinition } from '@shared/types';
+import type { ComponentDefinition, ElementRef } from '@shared/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Tests and side-by-side development can isolate settings, credentials and caches.
@@ -87,7 +87,7 @@ const pendingInspections = new Map<string, (report: unknown) => void>();
 const pendingComponentPreviews = new Map<string, (results: unknown) => void>();
 
 /** Measure a page in the editor's hidden preview frame at `width` CSS px (see the renderer's runInspection). */
-function inspectLayout(pageId: string, width: number): Promise<unknown> {
+function inspectLayout(pageId: string, width: number, targets?: ElementRef[]): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const requestId = Math.random().toString(36).slice(2);
     const timer = setTimeout(() => {
@@ -98,7 +98,7 @@ function inspectLayout(pageId: string, width: number): Promise<unknown> {
       clearTimeout(timer);
       resolve(r);
     });
-    controller.send('inspect:request', { requestId, pageId, width });
+    controller.send('inspect:request', { requestId, pageId, width, ...(targets ? { targets } : {}) });
   });
 }
 
