@@ -96,4 +96,4 @@ Editor components (React) and website components (Svelte, generated from the the
 
 ## Licence
 
-SiteOrigin Builder is licensed under Apache-2.0. The Foundation and Editorial themes, whose components are copied into every exported website, are licensed under MIT-0, so a site owner needs no attribution or licence file for the theme code. Icons are from Lucide (ISC). The Inter and Fraunces fonts are under the SIL Open Font License. The starter sample images are original and free to reuse (see `resources/starter-assets/NOTICE.md`).
+SiteOrigin Builder is licensed under Apache-2.0. The Foundation, Editorial and Signal themes, whose components are copied into every exported website, are licensed under MIT-0, so a site owner needs no attribution or licence file for the theme code. Icons are from Lucide (ISC). The Inter and Fraunces fonts are under the SIL Open Font License. The starter sample images are original and free to reuse (see `resources/starter-assets/NOTICE.md`).

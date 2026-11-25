@@ -67,7 +67,7 @@ const def = (pack: { components: ComponentDefinition[] }, componentId: string) =
 describe('the Signal pack', () => {
   it('ships beside Foundation, and is never the default for a new project', () => {
     expect(shipped().map((t) => t.id)).toEqual(['foundation', 'editorial', 'signal']);
-    expect(findTheme('signal')).toMatchObject({ name: 'Signal', version: '0.1.0', license: 'GPL-3.0-or-later', source: 'bundled' });
+    expect(findTheme('signal')).toMatchObject({ name: 'Signal', version: '0.1.0', license: 'MIT-0', source: 'bundled' });
     expect(createStarterState('business', 'New', false).site.themeId).toBe('foundation');
     // Its ID is reserved, so an installed pack can never load under it.
     expect(BUNDLED_PACK_IDS).toContain('signal');
@@ -95,7 +95,7 @@ describe('the Signal pack', () => {
         for (const c of a.components) expect(contract(def(b, c.componentId!)), `${a.id} → ${b.id}: ${c.componentId}`).toEqual(contract(c));
       }
     for (const c of SIGNAL_PACK.components) {
-      expect([c.id, c.provenance, c.license]).toEqual([`signal.${c.componentId}`, { pack: 'signal', packVersion: '0.1.0', componentId: c.componentId }, 'GPL-3.0-or-later']);
+      expect([c.id, c.provenance, c.license]).toEqual([`signal.${c.componentId}`, { pack: 'signal', packVersion: '0.1.0', componentId: c.componentId }, 'MIT-0']);
       // Whatever a definition needs comes from Signal itself.
       for (const dep of c.dependencies ?? []) expect(SIGNAL_PACK.components.some((x) => x.id === dep), `${c.id} needs ${dep}`).toBe(true);
     }
@@ -346,19 +346,19 @@ describe('a Signal site as it is exported', () => {
     const dest = tmp();
     await finishExportedSource(dest, applyOperations(createStarterState('blank', 'Northwind', false), [{ type: 'theme.apply', themeId: 'signal' }]).state, join(dest, 'missing.md'));
     expect(readFileSync(join(dest, 'README.md'), 'utf8')).toBe(projectReadme('Northwind', false, themeNotice(findTheme('signal')!)));
-    expect(readFileSync(join(dest, 'README.md'), 'utf8')).toContain('The Signal theme is licensed under GPL-3.0-or-later.');
+    expect(readFileSync(join(dest, 'README.md'), 'utf8')).toContain('The Signal theme is licensed under MIT-0.');
   });
 
   it('names its own theme in the README, which the app still knows as its own', () => {
     const notice = themeNotice(findTheme('signal')!);
-    expect(notice).toMatch(/^The Signal theme is licensed under GPL-3\.0-or-later\./);
+    expect(notice).toMatch(/^The Signal theme is licensed under MIT-0\./);
     const readme = projectReadme('Northwind', false, notice);
     expect(isGeneratedReadme(readme)).toBe(true);
     expect(isGeneratedReadme(projectReadme('Northwind', true, notice, true))).toBe(true);
     // Foundation's README is the one it always was.
     expect(themeNotice(findTheme('foundation')!)).toBe(projectReadme('x').split('## Notices\n\n')[1].trim());
     // A notice the owner changed is theirs: another licence, or a theme name of their own.
-    expect(isGeneratedReadme(readme.replace('GPL-3.0-or-later', 'LicenseRef-Owner'))).toBe(false);
+    expect(isGeneratedReadme(readme.replace('MIT-0', 'LicenseRef-Owner'))).toBe(false);
     expect(isGeneratedReadme(readme.replace('Signal theme', 'Signal theme, customised,'))).toBe(false);
   });
 });

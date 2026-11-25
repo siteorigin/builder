@@ -116,4 +116,4 @@ While the repository is private, work lands directly on `develop`. Once it is op
 
 ## Licence
 
-SiteOrigin Builder is licensed under Apache-2.0, and the Foundation and Editorial themes (`src/catalogue/`) under MIT-0, because their components are copied into exported websites. By contributing, you agree that your contributions are licensed under the same terms as the code they change. Don't add assets or dependencies whose licences are incompatible, and keep the notices of anything redistributed (see `resources/starter-assets/NOTICE.md`).
+SiteOrigin Builder is licensed under Apache-2.0, and the Foundation, Editorial and Signal themes (`src/catalogue/`) under MIT-0, because their components are copied into exported websites. By contributing, you agree that your contributions are licensed under the same terms as the code they change. Don't add assets or dependencies whose licences are incompatible, and keep the notices of anything redistributed (see `resources/starter-assets/NOTICE.md`).
