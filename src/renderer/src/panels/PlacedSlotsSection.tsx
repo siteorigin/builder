@@ -7,6 +7,8 @@ import { getState, useStore, type State } from '../store';
 import { emptySlot, insertHere } from '../lib/actions';
 import { slotItems, type QuickItem } from '../lib/inline-insert';
 import { insertOps, nodeLabel, type InsertAt } from '../lib/insert-at';
+import { layerLabel } from '../lib/layers';
+import { treeFor } from '../lib/model';
 import { dropRefusal, savingProblems } from '../lib/insert-drop';
 import { moveOutRefusal, slotCountWords, slotOverviews, type SlotOverview } from '../lib/slot-overview';
 import { QuickInsert } from './QuickInsert';
@@ -145,11 +147,12 @@ function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props,
               <>
                 <ul className="slot-content" aria-label={`In ${row.label}`}>
                   {row.children.map((child) => {
-                    const name = nodeLabel(state, owner, child);
+                    // As Layers names it, so two pieces of text are told apart by their words.
+                    const { label, full } = layerLabel(state, treeFor(state, owner)!.nodes[child]);
                     return (
                       <li key={child}>
-                        <button type="button" className="insp-mini" aria-label={`Select ${name}`} title={`Select ${name}`} onClick={() => onSelect({ owner, instancePath: [], nodeId: child })}>
-                          <span>{name}</span>
+                        <button type="button" className="insp-mini" aria-label={`Select ${label}`} title={`Select ${full}`} onClick={() => onSelect({ owner, instancePath: [], nodeId: child })}>
+                          <span>{label}</span>
                           <ArrowRight aria-hidden="true" />
                         </button>
                       </li>
