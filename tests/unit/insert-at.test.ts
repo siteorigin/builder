@@ -553,6 +553,8 @@ describe('What the Inspector calls a placement (#661)', () => {
     const owner: OwnerRef = { kind: 'component', id: p.bandDef };
     const rootId = p.state.components[p.bandDef].tree!.rootIds[0];
     expect(placementRole(p.state, owner, rootId)).toBe('element');
+  });
+});
 
 describe('the uneven layout starters come with their empty cells, in one change (#665)', () => {
   /** A blank page with `starter` inserted at its top level, the Grid it made and its cells, and the site's CSS. */
