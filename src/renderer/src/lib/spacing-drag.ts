@@ -3,7 +3,7 @@
  * zoom, and the site spacing style it snaps to. Pure, for the canvas overlay to drive.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ElementRef, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleValue } from '@shared/types';
+import type { ElementRef, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleValue, TokenGroup } from '@shared/types';
 import { MEDIA_QUERIES, STYLE_PROP_MAP, tokenVar } from '@shared/styles';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveTokens } from '@generator/index';
@@ -54,6 +54,8 @@ export interface DragValue {
   value: StyleValue;
   px: number;
   stop?: SpaceStop;
+  /** Leave the box as it is: the drag went past where any value could change what the page shows. */
+  keep?: boolean;
 }
 
 const finite = (n: number) => typeof n === 'number' && Number.isFinite(n);
@@ -109,15 +111,21 @@ export function dragLabel(v: DragValue): string {
   return v.stop ? `${v.stop.label} · ${px}` : px;
 }
 
-/** The spacing site styles a drag snaps to, with the CSS variable the page holds each one's size in. */
-export function spaceTokens(state: ProjectState): Array<{ token: string; label: string; cssVar: string }> {
+/** The site styles of one group a drag snaps to, with the CSS variable the page holds each one's size in. */
+export function groupTokens(state: ProjectState, group: TokenGroup): Array<{ token: string; label: string; cssVar: string }> {
   return effectiveTokens(state)
-    .filter((t) => t.group === 'space')
+    .filter((t) => t.group === group)
     .map((t) => ({ token: t.id, label: t.label, cssVar: tokenVar(t.id) }));
 }
 
+/** What a group's scale is made of: a scale measured for one value of this is stale once it changes. */
+export const groupSignature = (state: ProjectState, group: TokenGroup) => JSON.stringify(effectiveTokens(state).filter((t) => t.group === group).map((t) => [t.id, t.value]));
+
+/** The spacing site styles a drag snaps to, with the CSS variable the page holds each one's size in. */
+export const spaceTokens = (state: ProjectState) => groupTokens(state, 'space');
+
 /** What the spacing scale is made of: a scale measured for one value of this is stale once it changes. */
-export const spaceSignature = (state: ProjectState) => JSON.stringify(effectiveTokens(state).filter((t) => t.group === 'space').map((t) => [t.id, t.value]));
+export const spaceSignature = (state: ProjectState) => groupSignature(state, 'space');
 
 /** Where a selection's spacing is written: one set of styles, and the properties the inspector offers there. */
 export interface SpacingTarget {
@@ -174,7 +182,9 @@ export interface HandlePlan {
   sides: SpacingSide[];
 }
 
-const at = (styles: ResponsiveStyles | undefined, scope: ResponsiveScope) => (styles && Object.hasOwn(styles, scope) ? styles[scope] : undefined) ?? {};
+/** One scope's rules in a set of styles (none when it has none). */
+export const rulesAt = (styles: ResponsiveStyles | undefined, scope: ResponsiveScope): Record<string, StyleValue> => (styles && Object.hasOwn(styles, scope) ? styles[scope] : undefined) ?? {};
+const at = rulesAt;
 
 /** The CSS properties Custom CSS can set one side's padding or margin with: the shorthand, its axis, and the side's
  *  logical name (physical names such as padding-top are not written there). */
@@ -185,17 +195,17 @@ function cssNames(box: SpacingBox, side: SpacingSide, rtl: boolean): string[] {
 }
 
 /** Whether Custom CSS sets one of these properties: it is written after the named styles, so it wins. */
-const customSets = (css: StyleValue | undefined, names: string[]) => typeof css === 'string' && css.split(';').some((d) => names.includes(d.split(':')[0].trim().toLowerCase()));
+export const customSets = (css: StyleValue | undefined, names: string[]) => typeof css === 'string' && css.split(';').some((d) => names.includes(d.split(':')[0].trim().toLowerCase()));
 
 /** Whether one set of rules gives a side a value of its own: by its edge, its pair or Custom CSS. */
-const setsSide = (rules: Record<string, StyleValue>, edge: string, pair: string | null, names: string[]) => rules[edge] !== undefined || (!!pair && rules[pair] !== undefined) || customSets(rules.customCss, names);
+export const setsSide = (rules: Record<string, StyleValue>, edge: string, pair: string | null, names: string[]) => rules[edge] !== undefined || (!!pair && rules[pair] !== undefined) || customSets(rules.customCss, names);
 
 /**
  * Whether a value written at `scope` would be beaten on one side at the previewed size: by that size's own value
  * for the side, by Custom CSS in the same rule, or within one scope by the side's own value over a pair being
  * written.
  */
-function beaten(styles: ResponsiveStyles | undefined, scope: ResponsiveScope, shown: Size, edge: string, pair: string | null, writes: string, names: string[]): boolean {
+export function beaten(styles: ResponsiveStyles | undefined, scope: ResponsiveScope, shown: Size, edge: string, pair: string | null, writes: string, names: string[]): boolean {
   if (scope === 'base' && setsSide(at(styles, shown), edge, pair, names)) return true;
   const here = at(styles, scope);
   return (writes !== edge && here[edge] !== undefined) || customSets(here.customCss, names);

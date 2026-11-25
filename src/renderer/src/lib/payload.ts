@@ -45,6 +45,71 @@ export interface FrameSpacing {
   margin: FrameSides;
   rtl: boolean;
   desc: BridgeDesc;
+  /** How the box lays out what it holds and sits in its container, for its gap, width and column handles. */
+  layout: FrameLayout | null;
+}
+
+/** The most children a stack's gap handles are placed between, and the most rows a grid's are. */
+export const MAX_LAYOUT_ITEMS = 50;
+const MAX_COLUMNS = 12;
+
+/**
+ * The selected box's layout, in frame pixels, as its gap, max width and column handles need it. `box` is its
+ * border box, measured with the rest, so the other boxes can be placed against the outline the editor draws.
+ */
+export interface FrameLayout {
+  box: FrameRect;
+  kind: 'flex' | 'grid' | 'block';
+  /** The gaps the page uses now (0 for `normal`). */
+  rowGap: number;
+  columnGap: number;
+  /** A stack: its items run top to bottom, and may wrap onto more lines. */
+  column: boolean;
+  wrap: boolean;
+  /** A stack spreads its spare room between its items (space between, around or evenly), so a gap may not show. */
+  spread: boolean;
+  /** A stack's items in the page's order, each one's border box. */
+  items: FrameRect[];
+  /** A grid's columns and rows as the page sizes them, in order (the first column is on the right of a right-to-left page). */
+  cols: number[];
+  rows: number[];
+  /** A grid's columns and rows start at its start edge: its spare room, if any, is after them. */
+  packedCols: boolean;
+  packedRows: boolean;
+  /**
+   * How wide it may be: centred in its container by margins on both sides (`auto`), its max width (null for none),
+   * whether that width leaves out its padding and border, and the width its container gives it.
+   */
+  width: { centered: boolean; max: number | null; content: boolean; basis: number } | null;
+}
+
+const size = (n: unknown): n is number => finite(n) && n >= 0 && n < 100000;
+const sizes = (v: unknown, max: number): number[] | null => (Array.isArray(v) && v.length <= max && v.every(size) ? [...v] : null);
+
+/** The layout the frame reports for the selection; null for anything malformed. A malformed list is dropped whole:
+ *  one column left out would put every handle after it on the wrong gap. */
+export function layoutOf(v: unknown): FrameLayout | null {
+  if (!v || typeof v !== 'object') return null;
+  const r = v as Record<string, unknown>;
+  if (!isRect(r.box) || (r.kind !== 'flex' && r.kind !== 'grid' && r.kind !== 'block') || !size(r.rowGap) || !size(r.columnGap)) return null;
+  const items = Array.isArray(r.items) && r.items.length <= MAX_LAYOUT_ITEMS && r.items.every(isRect) ? r.items.map((i: FrameRect) => ({ x: i.x, y: i.y, width: i.width, height: i.height })) : [];
+  const w = r.width && typeof r.width === 'object' ? (r.width as Record<string, unknown>) : null;
+  const width = w && size(w.basis) && (w.max === null || size(w.max)) ? { centered: w.centered === true, max: w.max as number | null, content: w.content === true, basis: w.basis } : null;
+  return {
+    box: { x: r.box.x, y: r.box.y, width: r.box.width, height: r.box.height },
+    kind: r.kind,
+    rowGap: r.rowGap,
+    columnGap: r.columnGap,
+    column: r.column === true,
+    wrap: r.wrap === true,
+    spread: r.spread === true,
+    items: r.kind === 'flex' ? items : [],
+    cols: (r.kind === 'grid' && sizes(r.cols, MAX_COLUMNS)) || [],
+    rows: (r.kind === 'grid' && sizes(r.rows, MAX_LAYOUT_ITEMS)) || [],
+    packedCols: r.packedCols === true,
+    packedRows: r.packedRows === true,
+    width
+  };
 }
 
 function sidesOf(v: unknown, signed: boolean): FrameSides | null {
@@ -62,7 +127,7 @@ export function spacingOf(v: unknown): FrameSpacing | null {
   const border = sidesOf(r.border, false);
   const margin = sidesOf(r.margin, true);
   if (!padding || !border || !margin || !str(r.ctx) || !str(r.node) || !str(r.items)) return null;
-  return { padding, border, margin, rtl: r.rtl === true, desc: { ctx: r.ctx, node: r.node, items: r.items } };
+  return { padding, border, margin, rtl: r.rtl === true, desc: { ctx: r.ctx, node: r.node, items: r.items }, layout: layoutOf(r.layout) };
 }
 
 /** Spacing site style sizes in request order, null where one has none; null for a malformed list. */

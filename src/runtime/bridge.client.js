@@ -201,7 +201,8 @@ function sendRects() {
   const first = selBoxes.findIndex(Boolean);
   // A code component's marked part has no spacing handles: its author's code lays it out.
   const box = mode === 'edit' && first >= 0 && !selected.part ? spacingOf(selEls[first]) : null;
-  const spacing = box && { ...box, ctx: selected.ctx, node: selected.node, items: selected.items || '' };
+  // Read in the same pass, after the boxes above have brought the page's layout up to date: no further reflow.
+  const spacing = box && { ...box, layout: layoutReport(selEls[first]), ctx: selected.ctx, node: selected.node, items: selected.items || '' };
   send('rects', { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, viewport: { width: innerWidth, height: innerHeight, scrollY } });
 }
 
@@ -237,22 +238,101 @@ function spacingOf(el) {
   return { padding: sides('padding'), border: sides('border', 'Width'), margin: sides('margin'), rtl: s.direction === 'rtl' };
 }
 
+const LAYOUT_ITEMS = 50;
+const pxOf = (v) => {
+  const x = Number.parseFloat(v);
+  return Number.isFinite(x) ? x : 0;
+};
+/** The element that lays a box out, past any laid out as its children. */
+function layoutParent(el) {
+  let p = el.parentElement;
+  while (p && getComputedStyle(p).display === 'contents') p = p.parentElement;
+  return p;
+}
+/** A box's content width: inside its padding, border and scrollbar. */
+const contentWidth = (el, s = getComputedStyle(el)) => Math.max(0, el.clientWidth - pxOf(s.paddingLeft) - pxOf(s.paddingRight));
+/** A grid's resolved track sizes, in order; null for anything but a plain list of pixel sizes (line names left out). */
+function trackSizes(text) {
+  const out = [];
+  for (const t of String(text).replace(/\[[^\]]*\]/g, ' ').trim().split(/\s+/)) {
+    if (!t) continue;
+    if (!/^\d+(\.\d+)?px$/.test(t)) return null;
+    out.push(Number.parseFloat(t));
+  }
+  return out;
+}
+/** Whether a computed margin is `auto`, as authored, rather than the length the page worked out for it. */
+function autoMargin(el, prop) {
+  try {
+    const v = el.computedStyleMap && el.computedStyleMap().get(prop);
+    return !!v && String(v) === 'auto';
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Each spacing site style's size as padding on the dragged box, in CSS pixels, or null where it has none. Measured
- * on a probe outside the page's body (so its layout and observers never see it), in the box's font, so lengths in
- * em, ch or lh come out as they would on the box. A percentage is taken of the page's width.
+ * What the gap, max width and column handles need of the selected box, in CSS pixels: how it lays out what it holds
+ * (a stack's items, a grid's tracks, its gaps) and how wide it may be in its container. Only the selected box and its
+ * own children are read, in the pass that has just measured it.
  */
-function measureSpace(vars, desc) {
+function layoutReport(el) {
+  const s = getComputedStyle(el);
+  const box = rectOf(el);
+  if (!box) return null;
+  const flex = /(^|\s|-)flex$/.test(s.display);
+  const grid = /(^|\s|-)grid$/.test(s.display);
+  const out = { box, kind: flex ? 'flex' : grid ? 'grid' : 'block', rowGap: pxOf(s.rowGap), columnGap: pxOf(s.columnGap) };
+  if (flex) {
+    out.column = s.flexDirection.startsWith('column');
+    out.wrap = s.flexWrap !== 'nowrap';
+    out.spread = /^space-/.test(s.justifyContent);
+    // In the order the page holds them; laid out as their children, theirs; one taken out of the flow takes no gap.
+    const kids = boxChildren(el).filter((c) => !/^(absolute|fixed)$/.test(getComputedStyle(c).position));
+    out.items = kids.length > LAYOUT_ITEMS ? [] : kids.map(rectOf).filter(Boolean);
+  } else if (grid) {
+    const cols = trackSizes(s.gridTemplateColumns);
+    const rows = trackSizes(s.gridTemplateRows);
+    out.cols = cols && cols.length <= 12 ? cols : [];
+    out.rows = rows && rows.length <= LAYOUT_ITEMS ? rows : [];
+    const packed = (v) => /^(normal|stretch|start|flex-start)$/.test(v) || (v === 'left' && s.direction !== 'rtl') || (v === 'right' && s.direction === 'rtl');
+    out.packedCols = packed(s.justifyContent);
+    out.packedRows = packed(s.alignContent);
+  }
+  const parent = layoutParent(el);
+  if (parent) {
+    const max = /^\d+(\.\d+)?px$/.test(s.maxWidth) ? pxOf(s.maxWidth) : null;
+    out.width = { centered: autoMargin(el, 'margin-left') && autoMargin(el, 'margin-right'), max, content: s.boxSizing === 'content-box', basis: contentWidth(parent) };
+  }
+  return out;
+}
+
+/**
+ * Each site style's size as padding on the dragged box, in CSS pixels, or null where it has none. Measured on a probe
+ * outside the page's body (so its layout and observers never see it), in the box's font, so lengths in em, ch or lh
+ * come out as they would on the box. A percentage is taken of the page's width; or, with `basis` 'box' (a gap), of
+ * the box's own content width, or with 'parent' (a max width), of the width its container gives it.
+ */
+function measureSpace(vars, desc, basis) {
   // The box the editor outlines: the first copy that shows, as the spacing report takes it.
   const el = desc && typeof desc.ctx === 'string' && typeof desc.node === 'string' ? findAll(desc).find((e) => rectOf(e)) : null;
   const probe = document.createElement('div');
   probe.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;margin:0;border:0;visibility:hidden;pointer-events:none;';
+  let host = probe;
   if (el) {
     const s = getComputedStyle(el);
     probe.style.font = s.font;
     probe.style.lineHeight = s.lineHeight;
+    const from = basis === 'box' ? el : basis === 'parent' ? layoutParent(el) : null;
+    if (from) {
+      // A box as wide as the one a percentage is taken of, holding the probe.
+      host = document.createElement('div');
+      host.style.cssText = `position:absolute;left:0;top:0;width:${contentWidth(from)}px;height:0;margin:0;padding:0;border:0;visibility:hidden;pointer-events:none;`;
+      probe.style.position = 'static';
+      host.appendChild(probe);
+    }
   }
-  document.documentElement.appendChild(probe);
+  document.documentElement.appendChild(host);
   try {
     return vars.map((v) => {
       if (typeof v !== 'string' || !/^--so-[a-zA-Z0-9-]+$/.test(v)) return null;
@@ -261,7 +341,7 @@ function measureSpace(vars, desc) {
       return Number.isFinite(px) ? px : null;
     });
   } finally {
-    probe.remove();
+    host.remove();
   }
 }
 
@@ -270,9 +350,29 @@ function measureSpace(vars, desc) {
  * own stylesheet shows the saved change. { el (a <style>), desc, props, text, still, until, deadline, raf }
  */
 const spacingShown = new Map();
-const SPACING_PROPS = new Set(['padding-block-start', 'padding-block-end', 'padding-inline-start', 'padding-inline-end', 'margin-block-start', 'margin-block-end']);
-const SPACING_VALUE = /^(var\(--so-[a-zA-Z0-9-]+\)|-?\d+(\.\d+)?px|0)$/;
+/** What a drag can show, by property: margins may pull in (below zero), padding, gaps and widths may not, and
+ *  column sizes are only the fr shares a column drag writes, as the stylesheet writes them. */
+const LENGTH_VALUE = /^(var\(--so-[a-zA-Z0-9-]+\)|\d+(\.\d+)?px|0)$/;
+const SIGNED_VALUE = /^(var\(--so-[a-zA-Z0-9-]+\)|-?\d+(\.\d+)?px|0)$/;
+const TRACKS_VALUE = /^minmax\(0, \d+(\.\d+)?fr\)( minmax\(0, \d+(\.\d+)?fr\)){1,11}$/;
+const SPACING_PROPS = new Map([
+  ...['padding-block-start', 'padding-block-end', 'padding-inline-start', 'padding-inline-end', 'row-gap', 'column-gap', 'max-width'].map((p) => [p, LENGTH_VALUE]),
+  ['margin-block-start', SIGNED_VALUE],
+  ['margin-block-end', SIGNED_VALUE],
+  ['grid-template-columns', TRACKS_VALUE]
+]);
 const SPACING_MEDIA = /^\((min|max)-width: \d+(\.\d+)?px\)( and \((min|max)-width: \d+(\.\d+)?px\))?$/;
+/**
+ * Whether two computed values show the same: the same words, and each number within half a pixel. Every number counts,
+ * so a column list whose first column matches but whose second does not differs, and `none` never matches a length.
+ */
+function sameShown(a, b) {
+  const nums = (v) => (v.match(/-?\d*\.?\d+(e[+-]?\d+)?/gi) || []).map(Number);
+  const words = (v) => v.replace(/-?\d*\.?\d+(e[+-]?\d+)?/gi, '#').replace(/\s+/g, ' ').trim();
+  const x = nums(a);
+  const y = nums(b);
+  return words(a) === words(b) && x.length === y.length && x.every((n, i) => Math.abs(n - y[i]) < 0.5);
+}
 
 function selectorOf(desc) {
   const items = desc.items ? `[data-so-items="${cssEscape(desc.items)}"]` : '';
@@ -291,7 +391,7 @@ function clearSpacing(drag) {
 }
 
 function showSpacing(drag, desc, decls, media) {
-  const list = Array.isArray(decls) ? decls.filter((d) => Array.isArray(d) && SPACING_PROPS.has(d[0]) && typeof d[1] === 'string' && SPACING_VALUE.test(d[1])) : [];
+  const list = Array.isArray(decls) ? decls.filter((d) => Array.isArray(d) && SPACING_PROPS.has(d[0]) && typeof d[1] === 'string' && SPACING_PROPS.get(d[0]).test(d[1])) : [];
   if (!desc || typeof desc.ctx !== 'string' || typeof desc.node !== 'string' || !list.length || (media !== null && media !== undefined && !(typeof media === 'string' && SPACING_MEDIA.test(media)))) return clearSpacing(drag);
   let p = spacingShown.get(drag);
   if (p?.raf) cancelAnimationFrame(p.raf);
@@ -334,12 +434,12 @@ function settleSpacing(drag) {
     const els = findAll(p.desc);
     const read = () => els.flatMap((el) => {
       const s = getComputedStyle(el);
-      return p.props.map((k) => Number.parseFloat(s.getPropertyValue(k)) || 0);
+      return p.props.map((k) => s.getPropertyValue(k));
     });
     const shown = read();
     p.el.textContent = p.still;
     const own = read();
-    if (own.every((v, i) => Math.abs(v - shown[i]) < 0.5)) return clearSpacing(drag);
+    if (own.every((v, i) => sameShown(v, shown[i]))) return clearSpacing(drag);
     p.el.textContent = p.text;
   }
   p.raf = requestAnimationFrame(() => settleSpacing(drag));
@@ -4269,7 +4369,7 @@ window.addEventListener('message', async (e) => {
     }
     case 'measureSpace': {
       const vars = Array.isArray(m.payload.vars) ? m.payload.vars.slice(0, 500) : [];
-      send('spaceMeasured', { requestId: m.payload.requestId, px: measureSpace(vars, m.payload.desc) });
+      send('spaceMeasured', { requestId: m.payload.requestId, px: measureSpace(vars, m.payload.desc, m.payload.basis) });
       break;
     }
     // A spacing drag: shown while it moves, handed to the saved change after it, or put back.

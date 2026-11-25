@@ -1552,13 +1552,13 @@ export function Canvas() {
     window.addEventListener('keydown', key, true);
   }
 
-  /** Each spacing site style's size as padding on the box `desc` finds (null where it has none); null when the page
-   *  doesn't answer. */
-  const measureSpace = (vars: string[], desc: BridgeDesc) =>
+  /** Each site style's size as padding on the box `desc` finds (null where it has none), a percentage taken of the
+   *  page, the box or its container (`basis`); null when the page doesn't answer. */
+  const measureSpace = (vars: string[], desc: BridgeDesc, basis: 'page' | 'box' | 'parent' = 'page') =>
     new Promise<Array<number | null> | null>((resolve) => {
       const requestId = Math.random().toString(36).slice(2);
       measureWaiters.current.set(requestId, (raw) => resolve(spaceSizes(raw, vars.length)));
-      post('measureSpace', { requestId, vars, desc });
+      post('measureSpace', { requestId, vars, desc, basis });
       setTimeout(() => {
         measureWaiters.current.delete(requestId);
         resolve(null);
