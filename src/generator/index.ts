@@ -92,7 +92,7 @@ import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { derived, isTracked, type GenerationCache } from './cache';
 import { createSeoResolver, entryMetadata, pageMetadata, type SeoMetadata } from './seo-metadata';
-import { ogLocale, twitterHandle } from '@shared/seo';
+import { ogLocale, twitterHandle, type EffectiveSeo } from '@shared/seo';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
 import { elementKind, isEmptyLayout } from '@engine/tree';
@@ -3530,16 +3530,49 @@ export function generateSitemap(state: ProjectState): string | null {
   if (!base) return null;
   // The pages and entries the sitemap lists by the shared visibility rule: published, not hidden from search engines,
   // and their own canonical address. Pages come first in site order, then entries. Each says the day it last changed when that is known: its
-  // revision date, or else an entry's publication date.
+  // revision date, or else the day it was published (an entry's, or a dated article's).
+  const listed = createSeoResolver(state)
+    .published()
+    .filter((meta): meta is EffectiveSeo & { url: string } => meta.visibility.sitemap && !!meta.url);
+  const alternates = sitemapAlternates(state, listed);
   const urls: string[] = [];
-  for (const meta of createSeoResolver(state).published()) {
-    if (!meta.visibility.sitemap || !meta.url) continue;
-    const changed = meta.modified ?? (meta.subject.kind === 'entry' ? meta.published : null);
-    urls.push(`\t<url><loc>${escapeHtmlAttr(meta.url)}</loc>${changed ? `<lastmod>${changed}</lastmod>` : ''}</url>`);
+  for (const meta of listed) {
+    const changed = meta.modified ?? meta.published;
+    const links = (meta.subject.kind === 'page' && alternates.get(meta.subject.pageId)) || [];
+    const inner = [`<loc>${escapeHtmlAttr(meta.url)}</loc>`, changed ? `<lastmod>${changed}</lastmod>` : '', ...links.map((l) => `\n\t\t<xhtml:link rel="alternate" hreflang="${escapeHtmlAttr(l.language)}" href="${escapeHtmlAttr(l.url)}"/>`)];
+    urls.push(`\t<url>${inner.join('')}${links.length ? '\n\t' : ''}</url>`);
   }
   // Then each collection's index and category archives, every page of each.
   for (const { route } of siteArchives(state)) urls.push(`\t<url><loc>${escapeHtmlAttr(base + routeUrl(route))}</loc></url>`);
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
+  const xhtml = alternates.size ? ' xmlns:xhtml="http://www.w3.org/1999/xhtml"' : '';
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"${xhtml}>\n${urls.join('\n')}\n</urlset>\n`;
+}
+
+/**
+ * The alternate-language links each listed page carries in the sitemap, by page ID: every version of a translation
+ * set that the sitemap lists itself, each naming the same set (its own address among them, as search engines ask),
+ * then `x-default` naming the version in the site's language when that one is listed. A version the sitemap leaves out
+ * (a draft, one hidden from search engines, a copy of another address) is named by none, so a set left with one
+ * version has no links, and a set whose listed versions clash on language has none either.
+ */
+function sitemapAlternates(state: ProjectState, listed: Array<EffectiveSeo & { url: string }>): Map<string, Array<{ language: string; url: string }>> {
+  const groups = new Map<string, Array<{ pageId: string; language: string; url: string }>>();
+  for (const meta of listed) {
+    if (meta.subject.kind !== 'page') continue;
+    const group = translationGroup(state.pages[meta.subject.pageId]);
+    if (!group) continue;
+    if (!groups.has(group)) groups.set(group, []);
+    groups.get(group)!.push({ pageId: meta.subject.pageId, language: meta.language, url: meta.url });
+  }
+  const out = new Map<string, Array<{ language: string; url: string }>>();
+  for (const members of groups.values()) {
+    const languages = new Set(members.map((m) => m.language.toLowerCase()));
+    if (members.length < 2 || languages.size < members.length) continue;
+    const fallback = members.find((m) => sameLanguage(m.language, siteLanguage(state.site)));
+    const links = [...members.map(({ language, url }) => ({ language, url })), ...(fallback ? [{ language: 'x-default', url: fallback.url }] : [])];
+    for (const m of members) out.set(m.pageId, links);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
