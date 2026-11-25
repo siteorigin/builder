@@ -7,6 +7,7 @@
 import type { ElementRef, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { Diagnostic } from '@engine/validate';
 import { childLists } from '@engine/tree';
+import { slotDecl } from '@engine/slots';
 import { catalogueEntries, CATEGORY_LABELS } from '@catalogue/index';
 import { definitionRole, heldSlots, insertOps, shownOnceSlots, type InsertAt, type InsertRole } from './insert-at';
 import { dropRefusal, savingProblems } from './insert-drop';
@@ -136,18 +137,34 @@ export function quickItems(state: ProjectState, role: InsertRole, dev = false): 
     .map((d) => ({ key: `c:${d.id}`, kind: 'component', name: d.name, hay: `${d.name} ${d.description ?? ''} ${d.kind === 'code' ? 'code ' : ''}component`.toLowerCase(), group: 'Your components', spec: { definitionId: d.id } }));
   if (role === 'element')
     return [...BASICS.map((b): QuickItem => ({ key: `e:${b.id}`, kind: 'element', name: b.name, hay: basicHay(b), group: 'Basic elements', spec: basicSpec(b), icon: b.icon })), ...mine];
-  const sections = catalogueEntries(state.site.themeId).map(
-    (e): QuickItem => ({
-      key: `s:${e.componentId}`,
-      kind: 'section',
-      name: e.name,
-      hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} section`.toLowerCase(),
-      group: 'Sections',
-      spec: { componentId: e.componentId },
-      icon: e.icon
-    })
-  );
-  return [...sections, ...mine];
+  return [...themeItems(state), ...mine];
+}
+
+/** The theme's sections as + items, or only those `only` names. */
+function themeItems(state: ProjectState, only?: readonly string[]): QuickItem[] {
+  return catalogueEntries(state.site.themeId)
+    .filter((e) => !only || only.includes(e.componentId))
+    .map(
+      (e): QuickItem => ({
+        key: `s:${e.componentId}`,
+        kind: 'section',
+        name: e.name,
+        hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} section`.toLowerCase(),
+        group: 'Sections',
+        spec: { componentId: e.componentId },
+        icon: e.icon
+      })
+    );
+}
+
+/**
+ * The theme's components a slot at `at` names by contract (a Bento grid's cards): offered inside it too, where only the
+ * project's own components are offered otherwise, so a slot that takes only those never offers nothing.
+ */
+function namedThemeItems(state: ProjectState, at: InsertAt): QuickItem[] {
+  const parent = at.parentId ? treeFor(state, at.owner)?.nodes[at.parentId] : undefined;
+  const ids = parent?.kind === 'instance' && at.slot !== undefined ? (slotDecl(state, parent, at.slot)?.componentIds ?? []) : [];
+  return ids.length ? themeItems(state, ids) : [];
 }
 
 /**
@@ -157,7 +174,7 @@ export function quickItems(state: ProjectState, role: InsertRole, dev = false): 
  * there (a list item). Whatever is chosen is tried again as it is added.
  */
 export function offeredAt(state: ProjectState, at: InsertAt, role: InsertRole, dev = false): QuickItem[] {
-  const items = quickItems(state, role, dev);
+  const items = [...quickItems(state, role, dev), ...(role === 'element' ? namedThemeItems(state, at) : [])];
   const tried = new Set(fitting(state, at, role, items.filter((it) => role === 'element' || it.kind === 'component')).map((it) => it.key));
   return items.filter((it) => (role === 'section' && it.kind !== 'component') || tried.has(it.key));
 }

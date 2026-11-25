@@ -399,13 +399,14 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
       )
     });
   // Structure: new elements go inside a container here; any node but the design's own root can go.
-  const containers = nodes.filter((id) => tree.nodes[id]?.kind === 'element');
+  // A slot outlet holds its fallback: what the design shows there while a placement leaves the slot empty.
+  const containers = nodes.filter((id) => tree.nodes[id]?.kind === 'element' || tree.nodes[id]?.kind === 'slot');
   if (containers.length)
     tools.push({
       ...describe('insert_definition_node'),
       parameters: closed(
         {
-          parentId: idSchema(containers, 'The container to add it to.'),
+          parentId: idSchema(containers, 'The container to add it to, or a slot to add it to its fallback content.'),
           primitive: { type: 'string', enum: [...INSERTED] },
           text: { type: 'string', maxLength: 2000, description: 'Its text, for a heading, paragraph, button or badge, or a figure\'s caption ("" leaves the caption out).' },
           shape: { type: 'string', enum: [...DIVIDER_SHAPES], description: 'A divider only: "line" (default), "angle", "wave" or "icon".' },
@@ -591,7 +592,7 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
 
   if (name === 'insert_definition_node') {
     const a = args as z.infer<(typeof DEFINITION_ARGS)['insert_definition_node']>;
-    const parent = namedNode(s, a.parentId, s.nodes.filter((id) => tree.nodes[id]?.kind === 'element'), issues, 'parentId', 'holds no children: name a container');
+    const parent = namedNode(s, a.parentId, s.nodes.filter((id) => tree.nodes[id]?.kind === 'element' || tree.nodes[id]?.kind === 'slot'), issues, 'parentId', 'holds no children: name a container or a slot');
     if (!parent) return fieldError(issues, NOTHING_APPLIED);
     const op: EditOperation = {
       type: 'node.insert',

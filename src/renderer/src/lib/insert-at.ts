@@ -3,12 +3,14 @@
  * saying where it goes, and a drop on the canvas all read it from here, so they agree on the place.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ElementNode, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, StyleValue } from '@shared/types';
+import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, SlotPrimitive, StyleValue } from '@shared/types';
 import { newId } from '@shared/ids';
 import { STICKY_BELOW_HEADER } from '@shared/styles';
 import { childLists, findParent } from '@engine/tree';
+import { restrictsKinds, slotDecl, takesComponent } from '@engine/slots';
+import { getTheme } from '@catalogue/index';
 import { ownerLabel, refLabel, treeFor } from './model';
-import type { InsertSpec, LayoutStarter } from './insert-search';
+import type { InsertSpec, LayoutStarter, Primitive } from './insert-search';
 import { definitionRole, type InsertRole } from '@engine/insert-role';
 import { insertsInline } from '@engine/semantic-tags';
 
@@ -19,6 +21,44 @@ export { definitionRole, type InsertRole };
 export type InsertAt = { owner: OwnerRef; parentId: string | null; slot?: string; index?: number };
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
+
+/** The kind of element each basic element is, as a slot's contract names the kinds it takes. */
+const PRIMITIVE_KINDS: Record<Primitive, SlotPrimitive> = {
+  container: 'element',
+  stack: 'element',
+  row: 'element',
+  grid: 'element',
+  badge: 'element',
+  figure: 'element',
+  heading: 'text',
+  paragraph: 'text',
+  richtext: 'text',
+  image: 'image',
+  button: 'link',
+  icon: 'icon',
+  divider: 'divider'
+};
+
+/**
+ * Whether the slot `at` puts something into refuses `spec` by its contract alone: a component it neither names nor takes
+ * by category, or an element of a kind it does not list. Cheap enough for a whole list of tiles; the insert itself
+ * checks the rest (how many the slot holds, what saving needs).
+ */
+export function slotRefuses(state: ProjectState, at: InsertAt | null, spec: InsertSpec): boolean {
+  const parent = at?.parentId ? own(treeFor(state, at.owner)?.nodes, at.parentId) : undefined;
+  if (parent?.kind !== 'instance') return false;
+  const slot = at!.slot ?? slotFor(state, parent.definitionId);
+  const decl = slot === undefined ? undefined : slotDecl(state, parent, slot);
+  if (!decl || !restrictsKinds(decl)) return false;
+  if (spec.primitive) return !(decl.primitives ?? []).includes(PRIMITIVE_KINDS[spec.primitive]);
+  // A theme component goes in as the project's copy of it, or the theme's own when the project has none yet.
+  const def: ComponentDefinition | undefined = spec.definitionId
+    ? own(state.components, spec.definitionId)
+    : spec.componentId
+      ? (Object.values(state.components).find((d) => d.owner === 'theme' && d.componentId === spec.componentId) ?? getTheme(state.site.themeId).components.find((d) => d.componentId === spec.componentId))
+      : undefined;
+  return !!def && !takesComponent(decl, def);
+}
 
 /** The slot an element put inside a component goes in: the first one its design shows (a declared slot can be left out
  *  of the design, and what is put in it is then never seen), else the first declared. None when it has no slots. */
@@ -163,6 +203,8 @@ export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole,
     const same = node?.kind === 'instance' && !!definitionId && node.definitionId === definitionId;
     if (role === 'element' && node && !same) {
       if (node.kind === 'element') return { owner, parentId: node.id, ...beforeCaption(tree, node) };
+      // A design's slot outlet: into its fallback, shown while a placement leaves the slot empty.
+      if (node.kind === 'slot' && owner.kind === 'component') return { owner, parentId: node.id };
       const slot = node.kind === 'instance' ? (held ?? slotFor(state, node.definitionId)) : undefined;
       if (slot) return { owner, parentId: node.id, slot };
     }

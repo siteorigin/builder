@@ -202,7 +202,14 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
         .describe('Category pills above the items: field, a text or choice item field; when, the yes/no property turning them on.')
     })
     .strict(),
-  z.object({ kind: z.literal('slot'), ...DESIGN_NODE_BASE, slot: z.string().describe('The declared slot whose content shows here.') }).strict()
+  z
+    .object({
+      kind: z.literal('slot'),
+      ...DESIGN_NODE_BASE,
+      slot: z.string().describe('The declared slot whose content shows here.'),
+      children: DESIGN_CHILDREN.describe('IDs of the nodes shown here instead while a placement leaves the slot empty, in order.')
+    })
+    .strict()
 ]);
 
 /** Only files written by the importer, inside static/assets/. */
@@ -692,6 +699,7 @@ export const OPERATION_SCHEMAS = {
               label: z.string().min(1).max(60),
               description: z.string().max(300).optional(),
               categories: z.array(z.enum(COMPONENT_CATEGORIES as unknown as [string, ...string[]])).max(20).optional(),
+              componentIds: z.array(z.string().min(1).max(120)).max(50).optional(),
               primitives: z.array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]])).max(6).optional(),
               max: z.number().int().min(0).max(1000).optional()
             })

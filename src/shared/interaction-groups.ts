@@ -25,7 +25,7 @@ function parentsOf(tree: NodeTree): Map<string, string> {
   const out = new Map<string, string>();
   for (const n of Object.values(tree.nodes ?? {})) {
     if (!n || typeof n !== 'object') continue;
-    const lists = n.kind === 'element' || n.kind === 'repeat' ? [n.children] : n.kind === 'instance' ? Object.values(n.slots ?? {}) : [];
+    const lists = n.kind === 'element' || n.kind === 'repeat' || n.kind === 'slot' ? [n.children] : n.kind === 'instance' ? Object.values(n.slots ?? {}) : [];
     for (const list of lists) if (Array.isArray(list)) for (const c of list) if (typeof c === 'string' && !out.has(c)) out.set(c, n.id);
   }
   return out;

@@ -456,7 +456,7 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
         ...(s.filter ? { filter: { field: s.filter.field, ...(s.filter.when !== undefined ? { when: { $prop: s.filter.when } } : {}) } } : {})
       } as GraphNode;
     case 'slot':
-      return { ...base, kind: 'slot', slot: s.slot } as GraphNode;
+      return { ...base, kind: 'slot', slot: s.slot, ...(s.children?.length ? { children: [...s.children] } : {}) } as GraphNode;
   }
 }
 
@@ -509,6 +509,7 @@ function designSlots(op: UpsertOp, tree: NodeTree): Record<string, SlotDef> | un
       label: d.label.trim(),
       ...(description ? { description } : {}),
       ...(d.categories ? { categories: [...new Set(d.categories)] as SlotDef['categories'] } : {}),
+      ...(d.componentIds ? { componentIds: [...new Set(d.componentIds.map((c) => c.trim()))] } : {}),
       ...(d.primitives ? { primitives: [...new Set(d.primitives)] as SlotDef['primitives'] } : {}),
       ...(d.max !== undefined ? { max: d.max } : {})
     };

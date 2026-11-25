@@ -149,8 +149,9 @@ export class TreeBuilder {
   repeat(id: string, list: string, children: string[], opts: NodeOpts & { filter?: RepeatFilter } = {}): string {
     return this.add({ id, kind: 'repeat', list: { $prop: list }, children, ...(opts.filter ? { filter: opts.filter } : {}) }, opts);
   }
-  slot(id: string, slot: string, opts: NodeOpts = {}): string {
-    return this.add({ id, kind: 'slot', slot }, opts);
+  /** Where a placement's content for `slot` shows; `fallback` shows there instead while a placement leaves it empty. */
+  slot(id: string, slot: string, opts: NodeOpts & { fallback?: string[] } = {}): string {
+    return this.add({ id, kind: 'slot', slot, ...(opts.fallback?.length ? { children: opts.fallback } : {}) }, opts);
   }
 }
 

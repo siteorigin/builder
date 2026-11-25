@@ -12,7 +12,7 @@
  * is certainly inline may go.
  */
 import type { ComponentDefinition, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { ELEMENT_TAGS, TEXT_TAGS, isBinding, slotChildren } from '@shared/types';
+import { ELEMENT_TAGS, TEXT_TAGS, isBinding, slotChildren, slotFallback } from '@shared/types';
 import { brokenCardKeys, cardKey, isCardLink } from '@generator/card-links';
 import { boundSchema } from './schema';
 import { allTrees, getNode, getTree, instancesOf } from './tree';
@@ -86,6 +86,7 @@ class Structure {
       const parentOf = new Map<string, string>();
       for (const n of Object.values(tree.nodes)) {
         if (n.kind === 'element' || n.kind === 'repeat') for (const ch of n.children ?? []) parentOf.set(ch, n.id);
+        else if (n.kind === 'slot') for (const ch of slotFallback(n)) parentOf.set(ch, n.id);
         else if (n.kind === 'instance') for (const slot of Object.keys(n.slots ?? {})) for (const ch of slotChildren(n, slot)) parentOf.set(ch, n.id);
       }
       const def = owner.kind === 'component' && Object.hasOwn(this.state.components, owner.id) ? this.state.components[owner.id] : undefined;
@@ -144,7 +145,8 @@ class Structure {
     }
     const p = Object.hasOwn(ctx.tree.nodes, at) ? ctx.tree.nodes[at] : undefined;
     if (!p) return OPEN;
-    if (p.kind === 'repeat') return this.up(ctx, p.id);
+    // A repeat, and a slot's fallback, render no element of their own around what they hold.
+    if (p.kind === 'repeat' || p.kind === 'slot') return this.up(ctx, p.id);
     if (p.kind === 'element') return { parents: [{ ctx, id: p.id }], open: false };
     if (p.kind !== 'instance') return OPEN;
     const slot = Object.keys(p.slots ?? {}).find((k) => slotChildren(p, k).includes(id));
@@ -316,6 +318,7 @@ function treeProblems(reader: Reader, owner: OwnerRef, tree: NodeTree): NestingP
     reachable.add(id);
     const n = nodes[id];
     if (n.kind === 'element' || n.kind === 'repeat') (n.children ?? []).forEach(visit);
+    else if (n.kind === 'slot') slotFallback(n).forEach(visit);
     else if (n.kind === 'instance') Object.keys(n.slots ?? {}).forEach((slot) => slotChildren(n, slot).forEach(visit));
   };
   tree.rootIds.forEach(visit);
@@ -493,7 +496,7 @@ export function insertsInline(state: ProjectState, owner: OwnerRef, parentId: st
   if (!node) return false;
   let around: Around[] = [];
   if (node.kind === 'element') around = [{ ctx, id: parentId }, ...structure.ancestors(ctx, parentId)];
-  else if (node.kind === 'repeat') around = structure.ancestors(ctx, parentId);
+  else if (node.kind === 'repeat' || node.kind === 'slot') around = structure.ancestors(ctx, parentId);
   else if (node.kind === 'instance' && slot !== undefined) {
     const inner = structure.defCtx(node.definitionId);
     for (const outlet of Object.values(inner?.tree.nodes ?? {})) if (inner && outlet.kind === 'slot' && outlet.slot === slot) around.push(...structure.ancestors(inner, outlet.id));

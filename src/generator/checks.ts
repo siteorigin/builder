@@ -3,7 +3,7 @@
  */
 import type { Binding, Collection, ComponentDefinition, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
-import { CONTAINER_SCOPES, TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
+import { CONTAINER_SCOPES, TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isStateRef, slotChildren, slotFallback, stateInitial, type Condition } from '@shared/types';
 import { isImageBlock, isListBlock, isRichBlock, richTextToPlain, spanRuns, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
@@ -181,6 +181,19 @@ export interface Visit {
 }
 
 /** Where the walk is: the tree being read and, inside a component, the placement that put it there. */
+/**
+ * Whether a placement gives a slot nothing (as the generator hands it on): no content, or only the supplying design's
+ * own slot handed on as it is, given nothing in turn.
+ */
+function suppliesNothing(from: Frame['slots'], slot: string, depth = 0): boolean {
+  if (!from) return true;
+  const ids = slotChildren({ slots: from.content }, slot);
+  if (!ids.length) return true;
+  const n = ids.length === 1 && from.frame.def ? from.frame.tree.nodes[ids[0]] : undefined;
+  if (n?.kind !== 'slot' || slotFallback(n).length || n.when || n.unless || depth > 16 || !Object.hasOwn(from.frame.def!.slots ?? {}, n.slot)) return false;
+  return suppliesNothing(from.frame.slots, n.slot, depth + 1);
+}
+
 interface Frame {
   tree: NodeTree;
   /** The definition being walked; none for a page or shell tree. */
@@ -410,6 +423,11 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
       }
       case 'slot': {
         const from = frame.slots;
+        // Left empty by the placement, the slot shows the design's own fallback for it, as part of the design.
+        if (suppliesNothing(from, n.slot)) {
+          for (const c of slotFallback(n)) walk(frame, c, inner);
+          break;
+        }
         if (!from) break;
         const k = `${from.owner}:${n.slot}`;
         const supplier = from.frame.origin ?? from.frame;

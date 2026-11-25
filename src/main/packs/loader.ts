@@ -115,6 +115,7 @@ const component = z
           label: z.string(),
           description: text(300).optional(),
           categories: z.array(z.enum(COMPONENT_CATEGORIES as unknown as [string, ...string[]])).max(20).optional(),
+          componentIds: z.array(text(120).min(1)).max(50).optional(),
           primitives: z.array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]])).max(6).optional(),
           max: z.number().int().min(0).max(1000).optional()
         })
@@ -194,7 +195,10 @@ function checkTree(def: ComponentDefinition) {
     if (slot !== undefined && (typeof slot !== 'string' || !SAFE_ID.test(slot))) refuse(`${where}: node "${id}" has an unusable slot name.`);
     const divider = dividerProblem(n as GraphNode);
     if (divider) refuse(`${where}: node "${id}" ${divider}`);
-    for (const child of (n as GraphNode & { children?: string[] }).children ?? []) if (!nodes[child]) refuse(`${where}: node "${id}" lists a child "${child}" that does not exist.`);
+    // A slot's fallback content is listed as its children, as an element's are.
+    const kids = (n as { children?: unknown }).children;
+    if (kids !== undefined && (!Array.isArray(kids) || kids.some((c) => typeof c !== 'string'))) refuse(`${where}: node "${id}" lists its children in something other than a list of element IDs.`);
+    for (const child of (kids as string[] | undefined) ?? []) if (!nodes[child]) refuse(`${where}: node "${id}" lists a child "${child}" that does not exist.`);
     // Bindings sit in a node's own fields, in its conditions, and in the properties it gives a nested component.
     const inst = (n as GraphNode).kind === 'instance' ? (n as GraphNode & { props?: Record<string, unknown>; variants?: Record<string, unknown>; slots?: Record<string, unknown> }) : undefined;
     const values = [...Object.values(n), conditionRef((n as GraphNode).when), conditionRef((n as GraphNode).unless), ...Object.values(inst?.props ?? {}), ...Object.values(inst?.variants ?? {})];
@@ -246,7 +250,10 @@ function checkTree(def: ComponentDefinition) {
     if (seen.has(id)) refuse(`${where}: element "${id}" is placed twice.`);
     seen.add(id);
     const inner = new Set(path).add(id);
-    for (const child of (nodes[id] as GraphNode & { children?: string[] }).children ?? []) walk(child, inner);
+    const n = nodes[id] as GraphNode & { children?: string[] };
+    // Content a design puts in a nested component's slot is inside that placement.
+    const slotted = n.kind === 'instance' ? Object.values(n.slots ?? {}).flatMap((ids) => (Array.isArray(ids) ? ids : [])) : [];
+    for (const child of [...(n.children ?? []), ...slotted]) walk(child, inner);
   };
   for (const id of def.tree!.rootIds) walk(id, new Set());
   for (const [pid, part] of Object.entries(def.parts)) if (!nodes[part.nodeId]) refuse(`${where}: part "${pid}" refers to an element that does not exist.`);

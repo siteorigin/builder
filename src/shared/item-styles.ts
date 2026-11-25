@@ -5,14 +5,14 @@
  */
 import type { ComponentDefinition, GraphNode, InstanceNode, ItemStyles, ListItem, ResponsiveStyles } from './types';
 import { sha256Hex } from './sha256';
-import { slotChildren } from './types';
+import { slotChildren, slotFallback } from './types';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 
-/** Each node's parent within a definition's tree (children of elements and repeats). */
+/** Each node's parent within a definition's tree (children of elements and repeats, and a slot's fallback). */
 function parentsOf(def: ComponentDefinition): Map<string, string> {
   const out = new Map<string, string>();
-  for (const n of Object.values(def.tree?.nodes ?? {})) if (n.kind === 'element' || n.kind === 'repeat') for (const c of n.children) if (!out.has(c)) out.set(c, n.id);
+  for (const n of Object.values(def.tree?.nodes ?? {})) if (n.kind === 'element' || n.kind === 'repeat' || n.kind === 'slot') for (const c of n.kind === 'slot' ? slotFallback(n) : n.children) if (!out.has(c)) out.set(c, n.id);
   return out;
 }
 

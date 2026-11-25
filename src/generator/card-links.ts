@@ -4,7 +4,7 @@
  * Validation reports each card that breaks this, and the generator renders those cards as their plain container.
  */
 import type { ComponentDefinition, ElementNode, GraphNode, LinkValue, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { isBinding, slotChildren } from '@shared/types';
+import { isBinding, slotChildren, slotFallback } from '@shared/types';
 import { spanRuns, toRichText, type RichSpan } from '@shared/richtext';
 import { allTrees } from '@engine/tree';
 import { boundSchema } from '@engine/schema';
@@ -144,8 +144,10 @@ function renderedSlots(pass: Pass, def: ComponentDefinition): Set<string> {
         const n = tree.nodes[id];
         if (!n || seen.has(id)) continue;
         seen.add(id);
-        if (n.kind === 'slot') out.add(n.slot);
-        else if (n.kind === 'element' || n.kind === 'repeat') walk(n.children);
+        if (n.kind === 'slot') {
+          out.add(n.slot);
+          walk(slotFallback(n));
+        } else if (n.kind === 'element' || n.kind === 'repeat') walk(n.children);
         else if (n.kind === 'instance') {
           const nested = pass.state.components[n.definitionId];
           if (!nested) continue;
@@ -189,6 +191,10 @@ function firstInteractive(pass: Pass, def: ComponentDefinition | undefined, tree
           break;
         case 'repeat':
           inner = firstInteractive(pass, def, tree, n.children, path);
+          break;
+        case 'slot':
+          // What the design shows there while a placement leaves the slot empty.
+          inner = firstInteractive(pass, def, tree, slotFallback(n), path);
           break;
         case 'text':
           // Bound rich text takes whatever its placement writes, links included.
@@ -237,6 +243,7 @@ function cardSlots(pass: Pass, def: ComponentDefinition): Map<string, CardRef[]>
         if (!n || seen.has(id)) continue;
         seen.add(id);
         if (n.kind === 'slot' && cards.length) add(n.slot, cards);
+        if (n.kind === 'slot') walk(slotFallback(n), cards);
         if (n.kind === 'element' || n.kind === 'repeat') walk(n.children, isCardLink(n) ? mergeCards(cards, [{ owner: { kind: 'component', id: def.id }, cardId: n.id }]) : cards);
         if (n.kind === 'instance') {
           const nested = pass.state.components[n.definitionId];

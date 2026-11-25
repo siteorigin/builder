@@ -177,7 +177,15 @@ const NODE = z.discriminatedUnion('kind', [
       ...CONDITIONS
     })
     .strict(),
-  z.object({ kind: z.literal('slot'), ...NODE_HEAD, slot: z.string().describe('The declared slot whose content shows here.'), ...CONDITIONS }).strict()
+  z
+    .object({
+      kind: z.literal('slot'),
+      ...NODE_HEAD,
+      slot: z.string().describe('The declared slot whose content shows here.'),
+      children: CHILDREN.describe('Fallback: nodes shown here instead while a placement leaves the slot empty, such as a default badge.'),
+      ...CONDITIONS
+    })
+    .strict()
 ]);
 
 const PROP_HEAD = { name: NAME.describe('camelCase, such as "heading".'), label: z.string().min(1).max(80), description: z.string().max(300).optional() };
@@ -670,7 +678,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   });
   const parentOf = new Map<string, string>();
   nodes.forEach((n, i) => {
-    if (n.kind !== 'element' && n.kind !== 'repeat') return;
+    if (n.kind !== 'element' && n.kind !== 'repeat' && n.kind !== 'slot') return;
     (n.children ?? []).forEach((c, j) => {
       const at = `nodes[${i}].children[${j}]`;
       if (!byId.has(c)) issues.push({ field: at, message: `"${c}" is not the id of any node` });
