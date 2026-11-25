@@ -242,7 +242,7 @@ describe('UI state a component declares', () => {
     expect(set('tab', { type: 'enum', options: ['one', 'two'], initial: 'three' })).toThrow(/starts as "three", which is not one of its options \("one", "two"\)/);
     expect(set('open', { type: 'boolean', initial: 'false' })).toThrow(/true or false/);
     expect(set('open', { type: 'boolean', options: ['a', 'b'] })).toThrow(/no options/);
-    expect(set('count', { type: 'number' })).toThrow(/boolean or enum/);
+    expect(set('count', { type: 'number' })).toThrow(/boolean, enum or item/);
     // A property may not take a state's name either: both become names in the component's code.
     const withOpen = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'open', schema: { type: 'boolean' } }]);
     expect(() => apply(withOpen, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'open', schema: { type: 'boolean', label: 'Open' } }])).toThrow(/already has UI state "open"/);

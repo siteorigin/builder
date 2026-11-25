@@ -2043,7 +2043,7 @@ describe('tone and layout in one call (#132)', () => {
     const schema = upsertToolSchema(session.state) as { properties: { sections: { items: { oneOf: Array<{ properties: Record<string, { properties?: Record<string, { enum?: string[] }>; additionalProperties?: boolean }> }> } } } };
     const grid = schema.properties.sections.items.oneOf.find((o) => JSON.stringify(o.properties.componentId).includes('"features.grid"'))!;
     expect(grid.properties.variants.additionalProperties).toBe(false);
-    expect(grid.properties.variants.properties!.layout.enum).toEqual(['default', 'two-columns', 'four-columns']);
+    expect(grid.properties.variants.properties!.layout.enum).toEqual(['default', 'two-columns', 'four-columns', 'sticky-split']);
     expect(grid.properties.variants.properties!.tone.enum).toContain('muted');
   });
 
