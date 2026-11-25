@@ -498,11 +498,12 @@ assert.equal(await seoBox.locator('[data-status="search"] dd').innerText(), 'May
 assert.equal(await seoBox.locator('[data-status="siteSearch"] dd').innerText(), 'May find it', 'Site search finds a published post');
 const setUrl = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'site.update', baseUrl: 'https://studio.example' }] }, { label: 'Set public URL' }));
 assert.ok(setUrl.ok, JSON.stringify(setUrl));
-const postGraph = async () => JSON.parse(await seoBox.getByTestId('seo-graph').innerText());
+const postGraph = async () => JSON.parse(await seoBox.getByTestId('seo-graph').textContent());
 await eventually(async () => {
   const node = (await postGraph())['@graph'].find((n) => n['@type'] === 'WebPage');
   assert.deepEqual({ url: node.url, name: node.name }, { url: `https://studio.example${path}`, name: 'Raku firing notes from the weekend' }, 'the post’s structured data names it by its address and its title');
 }, 20000);
+assert.equal(await seoBox.getByRole('region', { name: 'Blog post', exact: true }).isVisible(), true, 'the writer says it in words');
 const postNode = async () => (await postGraph())['@graph'].find((n) => n['@type'] === 'WebPage');
 await postTitleBox.fill('Raku notes from the kiln');
 await eventually(async () => assert.equal((await postNode()).name, 'Raku notes from the kiln', 'the graph follows the title as it is typed'));

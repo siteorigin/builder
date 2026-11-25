@@ -3073,23 +3073,26 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         )}
       </Header>
       <Section title="Page" id="page-basic" level={LEVEL}>
-        <Field label="Title" error={titleError}>
-          <DraftInput
-            value={page.title}
-            limit={TEXT_LIMITS.pageTitle}
-            keep={`page:${page.id}:title`}
-            keepWhile={pageAlive(page.id)}
-            onCommit={(v) => {
-              if (!v.trim()) {
-                setTitleError(`A page needs a title. Kept “${page.title}”.`);
-                return false;
-              }
-              setTitleError(null);
-              // The labels that still say the old title are offered alongside once the rename is saved.
-              void renamePage(page.id, page.title, v.trim());
-            }}
-          />
-        </Field>
+        {/* Reached by name from a finding about the title (openEditorDestination). */}
+        <div data-seo-field="pageTitle">
+          <Field label="Title" error={titleError}>
+            <DraftInput
+              value={page.title}
+              limit={TEXT_LIMITS.pageTitle}
+              keep={`page:${page.id}:title`}
+              keepWhile={pageAlive(page.id)}
+              onCommit={(v) => {
+                if (!v.trim()) {
+                  setTitleError(`A page needs a title. Kept “${page.title}”.`);
+                  return false;
+                }
+                setTitleError(null);
+                // The labels that still say the old title are offered alongside once the rename is saved.
+                void renamePage(page.id, page.title, v.trim());
+              }}
+            />
+          </Field>
+        </div>
         <Field label="Address" hint={isHome ? 'The home page is always at /.' : `Links to this page update automatically when you change it, and its old address keeps working.${inside.length ? ` The ${inside.length === 1 ? 'page' : `${inside.length} pages`} inside it move${inside.length === 1 ? 's' : ''} with it.` : ''}`}>
           {isHome ? <input className="input" value="/" readOnly aria-label="Page address" /> : <DraftInput value={page.route} onCommit={(v) => upd({ route: v }, 'Change page address')} ariaLabel="Page address" />}
         </Field>

@@ -457,11 +457,12 @@ for (const d of documents) {
   await win.screenshot({ path: join(SHOTS, `seo-view-cards-${d.title.split(' ')[0].toLowerCase()}-end.png`) });
   await surface('Structured data').click();
   await eventually(async () => {
-    const node = JSON.parse(await graphShown.innerText())['@graph'].find((n) => n['@type'] === 'WebPage' || n['@type'] === 'AboutPage');
+    const node = JSON.parse(await graphShown.textContent())['@graph'].find((n) => n['@type'] === 'WebPage' || n['@type'] === 'AboutPage');
     assert.equal(node?.url, d.url, `${d.title}’s structured data names its address`);
   }, 20000);
 }
 await win.screenshot({ path: join(SHOTS, 'seo-view-structured-data.png') });
+
 // Back to the page: its search result, never the post's preview or surface.
 await row('About').click();
 await eventually(async () => assert.equal(await surfaceShown('Search result'), true, 'About opens on its search result again'));
@@ -1098,6 +1099,68 @@ await panel.locator('.seo-open', { hasText: 'About' }).first().click();
 await eventually(async () => assert.equal(await screen('Computer').getAttribute('aria-checked'), 'true', 'the computer is chosen again'));
 assert.equal(await darkResults.getAttribute('aria-checked'), 'false', 'and the light results');
 assert.equal((await drawn()).background, LIGHT);
+
+step('the structured data in words: a typed page and a post, what is missing with its fix, and the exact JSON-LD a click away (#706)');
+await apply([{ type: 'page.update', pageId: about.id, structuredData: { type: 'Product', price: '12' } }], 'Type the page');
+const entity = (name) => view.getByRole('region', { name, exact: true });
+const problem = view.locator('.seo-data-problem');
+const jsonBlock = view.locator('details.seo-json');
+const jsonOpen = () => jsonBlock.evaluate((el) => el.open);
+await row('About').click();
+await surface('Structured data').click();
+await eventually(async () => assert.equal(await problem.getAttribute('data-code'), 'SEO_PAGE_STRUCTURED_DATA_INCOMPLETE'), 20000);
+assert.match(await problem.innerText(), /marked as a Product.*Add the currency\./s, 'it says what the product still needs');
+assert.match(await problem.innerText(), /compare services, products, events and guides/, 'and why it matters');
+assert.equal(await entity('Product').count(), 0, 'and the product is not described until then');
+assert.match(await entity('This page').innerText(), /This is a web page\./);
+assert.match(await entity('Publisher').innerText(), /Riverside Studio, an organization, publishes the site\./);
+assert.match(await entity('Breadcrumb trail').innerText(), /About/);
+assert.equal(await jsonOpen(), false, 'the JSON-LD starts closed');
+assert.equal(await graphShown.isVisible(), false);
+// Where the page is published stays at the top, above what is missing and what the data says.
+const topOf = async (locator) => (await locator.boundingBox()).y;
+assert.ok((await topOf(view.locator('.seo-status'))) < (await topOf(problem)), 'the publishing status is first');
+assert.ok((await topOf(problem)) < (await topOf(entity('This page'))), 'then what is missing');
+await problem.getByRole('button', { name: 'Go to Structured data' }).click();
+await eventually(async () => assert.equal(await holder.isVisible(), false, 'the link leaves the view'));
+await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.id), 'page-structured-type', 'for the page’s Structured data setting'), 20000);
+assert.equal(await inspected.innerText(), 'About', 'of the page the view was on');
+assert.equal(await win.locator('#page-structured-type').inputValue(), 'Product');
+await rail('seo').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'About'));
+await apply([{ type: 'page.update', pageId: about.id, structuredData: { currency: 'ZAR' } }], 'Complete the facts');
+await surface('Structured data').click();
+await eventually(async () => assert.match(await entity('Product').innerText(), /The page is about the product “About”\..*12 ZAR/s), 20000);
+assert.equal(await problem.count(), 0, 'nothing is missing');
+await jsonBlock.locator('summary').click();
+assert.equal(await graphShown.isVisible(), true, 'the JSON-LD is one click away');
+const shownJson = await graphShown.textContent();
+assert.equal(shownJson, JSON.stringify(JSON.parse(shownJson)).replace(/</g, '\\u003c'), 'as the text of the exported page’s script');
+assert.ok(await graphShown.evaluate((el) => el.scrollWidth <= el.clientWidth), 'wrapped, so it never scrolls sideways');
+assert.deepEqual(await entity('Breadcrumb trail').getByRole('listitem').allInnerTexts().then((all) => all.map((t) => t.split('\n')[0])), ['Home', 'About'], 'the trail in order');
+await apply([{ type: 'page.update', pageId: about.id, structuredData: { price: '14' } }], 'Change the price');
+await eventually(async () => assert.match(await entity('Product').innerText(), /14 ZAR/), 20000);
+assert.equal(await jsonOpen(), true, 'an edit leaves the open JSON-LD open');
+assert.equal(JSON.parse(await graphShown.textContent())['@graph'].find((n) => n['@type'] === 'Product')?.offers.price, '14');
+const wide = await view.evaluate((el) => [el.querySelector('.seo-scroll')].map((n) => ({ scroll: n.scrollWidth, client: n.clientWidth }))[0]);
+assert.ok(wide.scroll <= wide.client, `the structured data: nothing scrolls sideways (${JSON.stringify(wide)})`);
+await win.screenshot({ path: join(SHOTS, 'seo-view-structured-data-words.png') });
+// A page title left blank (only an edit made outside its field can) names no product, and the link goes to the title.
+await apply([{ type: 'page.update', pageId: about.id, title: '   ' }], 'Blank the title');
+await eventually(async () => assert.match(await problem.innerText(), /until the page has a title/), 20000);
+assert.equal(await entity('Product').count(), 0);
+await problem.getByRole('button', { name: 'Go to page title' }).click();
+await eventually(async () => assert.equal(await win.evaluate(() => !!document.activeElement?.closest('[data-seo-field="pageTitle"]') && document.activeElement.tagName), 'INPUT', 'the page’s Title has the cursor'), 20000);
+await apply([{ type: 'page.update', pageId: about.id, title: 'About' }], 'Name the page again');
+await rail('seo').click();
+await row('Spring open studio').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Spring open studio'));
+await surface('Structured data').click();
+await eventually(async () => assert.match(await entity('Blog post').innerText(), /“Spring open studio”.*Published\s+2 March 2027/s), 20000);
+assert.match(await entity('Blog post').innerText(), /Publisher\s+Riverside Studio/);
+assert.match(await entity('Breadcrumb trail').innerText(), /Spring open studio/);
+assert.equal(await jsonOpen(), false, 'another document’s JSON-LD starts closed');
+await apply([{ type: 'page.update', pageId: about.id, structuredData: { type: 'WebPage' } }], 'A web page again');
 await noWindowShown('the end of the run');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');

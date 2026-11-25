@@ -109,7 +109,7 @@ export function destinationLabel(dest: EditorDestination): string {
     case 'site':
       return { baseUrl: 'Go to Public URL', favicon: 'Go to site icon', socialImage: 'Go to sharing image', identity: 'Go to Published by', logo: 'Go to logo', sameAs: 'Go to profiles', llmsTxt: 'Go to AI agents', webmcp: 'Go to WebMCP', crawlerPolicy: 'Go to Crawlers', redirects: 'Go to Redirects' }[dest.field];
     case 'pageSeo':
-      return dest.field === 'structuredData' ? 'Go to Structured data' : 'Go to Search & sharing';
+      return dest.field === 'structuredData' ? 'Go to Structured data' : dest.field === 'pageTitle' ? 'Go to page title' : 'Go to Search & sharing';
     case 'entry':
       return dest.field === 'body' && dest.picture ? 'Go to picture' : 'Open post';
     case 'element':
