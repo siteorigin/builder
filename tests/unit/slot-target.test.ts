@@ -198,7 +198,7 @@ interface EditorState {
 const load = (path: string) => import(/* @vite-ignore */ path);
 const store = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void; selectSlot: (t: SlotTarget) => void };
 const actions = (await load('../../src/renderer/src/lib/actions')) as { insert: (spec: object, label: string) => Promise<string | undefined>; deleteSelection: () => Promise<void> };
-const clipboard = (await load('../../src/renderer/src/lib/clipboard')) as { copySelection: () => boolean; pasteCopy: () => boolean; forgetCopy: () => void };
+const clipboard = (await load('../../src/renderer/src/lib/clipboard')) as { copySelection: () => boolean; pasteCopy: (follow?: boolean) => boolean; forgetCopy: () => void };
 
 function refresh<T>(r: T): T {
   store.setState({ snapshot: { state: session.state, revision: session.revision, history: session.historyInfo(), workspaceKey: opening, aiBusy: false, dir: 'project' } as unknown as ProjectSnapshot });
@@ -269,6 +269,19 @@ describe('picking a slot in the editor (#653)', () => {
     const [copy] = splitOf(session.state).slots!.main;
     expect(nodes(session.state)[copy]).toMatchObject({ kind: 'text', text: (nodes(session.state).n_two as { text: unknown }).text });
     expect(splitOf(session.state).slots?.sidebar ?? []).toEqual([]);
+  });
+
+  it('a paste that lands after another slot was picked leaves that pick alone', async () => {
+    store.setState({ mode: 'edit', selection: { owner: home(), instancePath: [], nodeId: 'n_two' } });
+    expect(clipboard.copySelection()).toBe(true);
+    store.selectSlot({ owner: home(), parentId: 'n_split', slot: 'main' });
+    await vi.waitFor(() => expect(clipboard.pasteCopy(false)).toBe(true));
+    // Picked while the paste is on its way: it still lands where ⌘V was pressed for, and Sidebar stays picked.
+    store.selectSlot(sidebar(home()));
+    await vi.waitFor(() => expect(splitOf(session.state).slots?.main ?? []).toHaveLength(1));
+    // The paste's own ending (where it selects what it pasted) comes a moment after the project has it.
+    await new Promise((r) => setTimeout(r, 1000));
+    expect(store.getState()).toMatchObject({ selection: null, slotTarget: sidebar(home()) });
   });
 
   it('Delete with a slot picked removes nothing: a slot is not its component', async () => {

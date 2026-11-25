@@ -176,9 +176,10 @@ async function pasteCopied(latest: Copied, opening: string, follow: boolean) {
   const id = r?.[0]?.nodeId as string | undefined;
   const ids = Array.isArray(r?.[0]?.nodeIds) ? (r[0].nodeIds as string[]) : id ? [id] : [];
   const here = getState();
-  // Selected only while the author is still where they pressed it: the same page, or the same component edited everywhere.
+  // Selected only while the author is still where they pressed it: the same page, or the same component edited everywhere,
+  // with nothing else selected or picked (another slot for Insert, say) meanwhile.
   const now = currentOwner();
-  if (!ids.length || here.snapshot?.workspaceKey !== opening || now?.kind !== at.owner.kind || now.id !== at.owner.id || here.mode !== 'edit' || here.selection !== s.selection || here.layerSet !== s.layerSet) return;
+  if (!ids.length || here.snapshot?.workspaceKey !== opening || now?.kind !== at.owner.kind || now.id !== at.owner.id || here.mode !== 'edit' || here.selection !== s.selection || here.layerSet !== s.layerSet || here.slotTarget !== s.slotTarget) return;
   const pick = (i: number) => ids[Math.min(i, ids.length - 1)];
   // Several pasted together stay selected together, as they were when copied.
   setState({ selection: layerRef(at.owner, pick(entry.primary)), layerSet: ids.length > 1 ? { owner: at.owner, ids, anchor: pick(entry.anchor) } : null, rightTab: 'inspect' });

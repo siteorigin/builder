@@ -138,8 +138,11 @@ assert.equal(await row(one).getAttribute('aria-description'), 'In Sidebar.', 'a 
 
 step('a second paragraph dropped onto the full Sidebar is refused by its contract, changing nothing');
 const before = JSON.stringify((await snapshot()).pages[pageId]);
+// The refusal said earlier has gone first, so the one awaited below is this drop's own.
+const refusal = win.locator('.toast', { hasText: 'holds at most one item' });
+await eventually(async () => assert.equal(await refusal.count(), 0, 'the earlier refusal has gone'), 15000);
 await row(two).dragTo(slotRow('sidebar'));
-await eventually(async () => assert.ok((await win.locator('.toast', { hasText: 'holds at most one item' }).count()) >= 1));
+await refusal.waitFor();
 assert.equal(JSON.stringify((await snapshot()).pages[pageId]), before, 'the page is as it was');
 
 step('two paragraphs dragged together onto a Main that already holds one go after it, in their order, as one change');
