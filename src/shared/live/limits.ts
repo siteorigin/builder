@@ -37,6 +37,11 @@ export const MAX_GUESTS = 8;
  * 1 MiB so it fits any WebSocket message limit Cloudflare applies, and the relay never has to split or drop a frame.
  */
 export const MAX_FRAME_BYTES = 768 * KiB;
+/**
+ * Room the relay keeps when it passes a guest's frame on to the host: it adds the guest's ID, so a guest's frame may
+ * be at most this much smaller than the limit.
+ */
+export const GUEST_FRAME_HEADROOM_BYTES = 256;
 /** Preview response bodies travel in chunks of at most this many bytes, base64 encoded in their frame. */
 export const PREVIEW_CHUNK_BYTES = 256 * KiB;
 /** The most a single tunnelled preview response may carry in all; the host stops a larger one and aborts it. */

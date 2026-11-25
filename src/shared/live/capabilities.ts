@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import type { BuilderApi } from '../api';
-import { validateOperation, type EditOperation, type OperationType } from '../ops';
+import type { ElementRef } from '../types';
+import { validateOperation, type EditOperation, type OperationType, type ToolErrorCode } from '../ops';
 import type { GuestRole } from './limits';
-import type { RpcError } from './messages';
+import type { Presence, RpcError, RpcErrorCode } from './messages';
 
 /**
  * What each guest role may do, checked by the host before anything runs: deny by default. Only the methods and
@@ -92,6 +93,14 @@ export interface LiveEditBatch {
 // A guest's batch is always one the local pipeline accepts as it is.
 const _liveBatchIsEditBatch: Parameters<BuilderApi['project']['apply']>[0] = {} as LiveEditBatch;
 void _liveBatchIsEditBatch;
+// Every refusal the engine gives can be passed on to a guest as it is.
+const _everyEngineCode: Exclude<ToolErrorCode, RpcErrorCode> extends never ? true : never = true;
+void _everyEngineCode;
+// Presence selections are the editor's own element references. messages.ts keeps its own copy so the relay never
+// reads the app's types; this keeps the two the same.
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const _selectionIsElementRef: Same<NonNullable<Presence['selection']>, ElementRef> = true;
+void _selectionIsElementRef;
 
 const BATCH = z
   .object({

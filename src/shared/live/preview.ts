@@ -12,10 +12,13 @@ export type PreviewMethod = (typeof PREVIEW_METHODS)[number];
 
 /** The request headers passed on to the host's preview. Cookies, credentials and the relay's own headers never are. */
 export const PREVIEW_REQUEST_HEADERS = ['accept', 'accept-language', 'cache-control', 'if-modified-since', 'if-none-match', 'if-range', 'range'] as const;
-/** The response headers passed back to the guest. Cookies, hop-by-hop headers and anything naming the host's machine never are. */
+/**
+ * The response headers passed back to the guest. Cookies, hop-by-hop headers and anything naming the host's machine
+ * never are, and neither is the preview's own caching policy: the relay answers every preview request with
+ * PREVIEW_CACHE_CONTROL, so no shared cache keeps a page that only admitted guests may see.
+ */
 export const PREVIEW_RESPONSE_HEADERS = [
   'accept-ranges',
-  'cache-control',
   'content-disposition',
   'content-language',
   'content-length',
@@ -28,13 +31,17 @@ export const PREVIEW_RESPONSE_HEADERS = [
   'x-content-type-options'
 ] as const;
 
+/** The Cache-Control the relay gives every preview response: kept by the guest's own browser only, and checked each time. */
+export const PREVIEW_CACHE_CONTROL = 'private, no-cache';
+
 /** Why a preview stream was stopped, by either end. */
 export const PREVIEW_ABORT_CODES = ['CANCELLED', 'TIMEOUT', 'TOO_LARGE', 'UNAVAILABLE', 'INVALID_RESPONSE'] as const;
 export type PreviewAbortCode = (typeof PREVIEW_ABORT_CODES)[number];
 
 const HEADER_NAME_RE = /^[a-z0-9!#$%&'*+.^_`|~-]+$/;
-// A header value holds no line breaks or NUL: nothing can start another header or end the head early.
-const HEADER_VALUE_RE = /^[^\r\n\0]*$/;
+// An HTTP field value: tabs, visible ASCII, spaces and Latin-1 bytes only. No line break, NUL or other control can
+// start another header or end the head early, and nothing is sent that Fetch or Node would refuse to send.
+const HEADER_VALUE_RE = /^[\t\x20-\x7e\x80-\xff]*$/;
 
 /** Whether `name` is a lowercase HTTP header name that may travel in the given direction. */
 export function isPreviewHeaderName(name: string, direction: 'request' | 'response'): boolean {
@@ -47,17 +54,27 @@ export function isPreviewHeaderValue(value: string): boolean {
 }
 
 /**
- * Whether `target` is a path within the preview, with an optional query, as a request (or a redirect's `location`)
- * names it: one leading slash and no authority, no fragment, no spaces or controls, no backslash, and no segment
- * that is, or decodes to, `.` or `..` or holds an encoded slash. Checked as written, so nothing a URL parser would
- * normalize away is accepted for what it becomes.
+ * The development server's own routes, which the preview never needs and a guest must never reach: they act on the
+ * host's computer (`/__open-in-editor` opens a file in the host's editor). A first path segment starting with `__`
+ * is one of them, except SvelteKit's `__data.json`, which a page's data is fetched from.
+ */
+function isDevServerRoute(firstSegment: string): boolean {
+  return firstSegment.startsWith('__') && firstSegment !== '__data.json';
+}
+
+/**
+ * Whether `target` is a path within the preview, with an optional query, as a request names it: one leading slash
+ * and no authority, no fragment, no spaces or controls, no backslash, no empty segment, no segment that is or
+ * decodes to `.` or `..` or holds an encoded slash, and none of the development server's own routes. Checked as
+ * written, so nothing a URL parser or the preview server would normalize away is accepted for what it becomes.
  */
 export function isPreviewTarget(target: unknown): target is string {
   if (typeof target !== 'string' || target.length === 0 || target.length > MAX_PREVIEW_PATH_LENGTH) return false;
-  if (!target.startsWith('/') || target.startsWith('//')) return false;
-  if (/[\s\u0000-\u001f\u007f\\#]/.test(target)) return false;
-  const path = target.split('?', 1)[0];
-  for (const segment of path.split('/').slice(1)) {
+  if (!target.startsWith('/') || /[\s\u0000-\u001f\u007f\\#]/.test(target)) return false;
+  const segments = target.split('?', 1)[0].split('/').slice(1);
+  for (const [i, segment] of segments.entries()) {
+    // Only the last segment may be empty: the trailing slash of a page's address.
+    if (segment === '' && i < segments.length - 1) return false;
     let decoded: string;
     try {
       decoded = decodeURIComponent(segment);
@@ -65,8 +82,26 @@ export function isPreviewTarget(target: unknown): target is string {
       return false;
     }
     if (decoded === '.' || decoded === '..' || /[/\\\u0000]/.test(decoded)) return false;
+    if (i === 0 && isDevServerRoute(decoded)) return false;
   }
   return true;
+}
+
+/** Whether a redirect's `location` stays within the preview: a target as above, which may also name a fragment. */
+export function isPreviewLocation(location: unknown): location is string {
+  if (typeof location !== 'string') return false;
+  const at = location.indexOf('#');
+  if (at < 0) return isPreviewTarget(location);
+  return isPreviewTarget(location.slice(0, at)) && !/[\s\u0000-\u001f\u007f\\#]/.test(location.slice(at + 1));
+}
+
+/**
+ * The address a guest's browser is sent to for a redirect within the preview: the same place under the room's
+ * preview path. The host's preview answers as if it were the whole site, so its `/about/` is the room's
+ * `<previewPath>/about/`, never the relay's own `/about/`. Null when the location leaves the preview.
+ */
+export function previewBrowserLocation(previewPath: string, location: string): string | null {
+  return isPreviewLocation(location) ? `${previewPath.replace(/\/+$/, '')}${location}` : null;
 }
 
 /** The number of bytes unpadded base64url text of this length holds. */
@@ -114,13 +149,15 @@ export class PreviewStream {
     }
     if (frame.type === 'preview:response-head') {
       if (this.state !== 'head') return this.fail('INVALID_RESPONSE', 'A response has one head.');
-      const length = frame.headers.find(([name]) => name === 'content-length')?.[1];
-      if (length !== undefined) {
-        if (!/^\d{1,10}$/.test(length)) return this.fail('INVALID_RESPONSE', 'The response’s length is not a number.');
-        this.declared = Number(length);
-        if (this.declared > MAX_PREVIEW_RESPONSE_BYTES && this.method !== 'HEAD') return this.fail('TOO_LARGE', 'The response is too large to show.');
-      }
+      const lengths = frame.headers.filter(([name]) => name === 'content-length').map(([, value]) => value);
+      if (lengths.length > 1) return this.fail('INVALID_RESPONSE', 'The response gives its length more than once.');
+      if (lengths.length && !/^\d{1,10}$/.test(lengths[0])) return this.fail('INVALID_RESPONSE', 'The response’s length is not a number.');
+      // A HEAD answer, a 204 or 205, and a 304 carry no body, whatever length they describe.
       this.bodyless = this.method === 'HEAD' || BODYLESS.has(frame.status);
+      if (lengths.length && !this.bodyless) {
+        this.declared = Number(lengths[0]);
+        if (this.declared > MAX_PREVIEW_RESPONSE_BYTES) return this.fail('TOO_LARGE', 'The response is too large to show.');
+      }
       this.state = 'body';
       return { ok: true, done: false };
     }
@@ -135,7 +172,7 @@ export class PreviewStream {
       return { ok: true, done: false };
     }
     if (frame.totalBytes !== this.bytes) return this.fail('INVALID_RESPONSE', `The response ended after ${this.bytes} bytes, not ${frame.totalBytes}.`);
-    if (this.declared !== null && !this.bodyless && this.declared !== this.bytes) return this.fail('INVALID_RESPONSE', 'The response is shorter than its head said.');
+    if (this.declared !== null && this.declared !== this.bytes) return this.fail('INVALID_RESPONSE', 'The response is shorter than its head said.');
     this.state = 'done';
     return { ok: true, done: true };
   }

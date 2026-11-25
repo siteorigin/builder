@@ -24,9 +24,9 @@ export const roomPreviewPath = (roomId: string) => `${roomPath(roomId)}/preview`
 /** Characters no relay address or invite link may hold: spaces and controls (which the URL parser drops or mends) and backslashes (which it reads as slashes). */
 const UNSAFE = /[\s\u0000-\u001f\u007f\\]/;
 /** An http(s) origin, with nothing but slashes after it. The authority holds no credentials or percent-escapes. */
-const ORIGIN_SYNTAX = /^(https?:\/\/[^/?#@%]+)\/*$/i;
-/** An invite link: an origin, then exactly `/s/<roomId>`, with at most one slash after it. */
-const INVITE_SYNTAX = /^(https?:\/\/[^/?#@%]+)\/s\/([^/?#]+)\/?$/i;
+const ORIGIN_SYNTAX = /^([hH][tT][tT][pP][sS]?:\/\/[^/?#@%]+)\/*$/;
+/** An invite link: an origin, then exactly `/s/<roomId>` (its path as written, in lowercase), with at most one slash after it. */
+const INVITE_SYNTAX = /^([hH][tT][tT][pP][sS]?:\/\/[^/?#@%]+)\/s\/([^/?#]+)\/?$/;
 
 export type RelayUrlCheck = { ok: true; url: string } | { ok: false; message: string };
 
@@ -73,10 +73,15 @@ export function resolveRelayUrl(sources: { env?: string | null; setting?: string
   return { ok: true, url: DEFAULT_RELAY_URL, source: 'default' };
 }
 
-/** The WebSocket address of a route on a relay: wss:// on an https relay, ws:// on an http one. */
+/**
+ * The WebSocket address of one of the relay's sockets (HOST_SOCKET_PATH, or a room's roomSocketPath): wss:// on an
+ * https relay, ws:// on an http one. Throws on a relay or a path that is not one of them.
+ */
 export function relaySocketUrl(relayUrl: string, path: string): string {
   const relay = checkRelayUrl(relayUrl);
   if (!relay.ok) throw new Error(relay.message);
+  const room = /^\/s\/([^/]+)\/ws$/.exec(path)?.[1];
+  if (path !== HOST_SOCKET_PATH && !(room && ROOM_ID_RE.test(room))) throw new Error('Not one of the relay’s sockets.');
   return `${relay.url.replace(/^http/, 'ws')}${path}`;
 }
 

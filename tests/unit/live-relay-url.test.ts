@@ -105,6 +105,7 @@ describe('invite links', () => {
       `https://live.siteorigin.com\\s\\${ROOM}`,
       `https://live.siteorigin.com/s/%61${ROOM.slice(1)}`,
       `https://live.siteorigin.com/%73/${ROOM}`,
+      `https://live.siteorigin.com/S/${ROOM}`,
       ''
     ])
       expect(parseInviteLink(bad)).toBeNull();
@@ -118,5 +119,7 @@ describe('relay routes', () => {
     expect(relaySocketUrl('http://127.0.0.1:8787/', roomSocketPath(ROOM))).toBe(`ws://127.0.0.1:8787/s/${ROOM}/ws`);
     expect(roomPreviewPath(ROOM)).toBe(`/s/${ROOM}/preview`);
     expect(() => relaySocketUrl('ftp://x', HOST_SOCKET_PATH)).toThrow();
+    // Only the relay's own sockets: never a path glued onto the host name, or a room that is not one.
+    for (const bad of ['ws/host', '', '/ws/host/', `/s/${ROOM}/ws/x`, '/s/BAD/ws', `/s/${ROOM}`]) expect(() => relaySocketUrl('https://relay.example', bad), bad).toThrow();
   });
 });

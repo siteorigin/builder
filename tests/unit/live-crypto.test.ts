@@ -5,6 +5,7 @@ import {
   generateHostKeyPair,
   hostChallengeBytes,
   importHostPublicKey,
+  isHostPublicKey,
   newNonce,
   newRoomId,
   signHostChallenge,
@@ -118,6 +119,19 @@ describe('host challenge-response', () => {
   it('signs one canonical payload, bound to its context, room and nonce', () => {
     const c = { roomId: 'abcdefghijkmnpqrstuvwxyz', nonce: 'A'.repeat(43) };
     expect(new TextDecoder().decode(hostChallengeBytes(c)!)).toBe(`siteorigin-live/host-challenge/v1\nabcdefghijkmnpqrstuvwxyz\n${'A'.repeat(43)}`);
+  });
+
+  it('refuses small-order public keys, in every spelling', async () => {
+    const hex = (h: string) => toBase64Url(new Uint8Array(h.match(/../g)!.map((b) => parseInt(b, 16))));
+    const identity = hex('01' + '00'.repeat(31));
+    const orderEight = hex('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05');
+    const orderEightNegated = hex('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85');
+    const pPlusOne = hex('ee' + 'ff'.repeat(30) + '7f');
+    for (const key of [identity, orderEight, orderEightNegated, pPlusOne, hex('00'.repeat(32))]) {
+      expect(isHostPublicKey(key)).toBe(false);
+      expect(await importHostPublicKey(key)).toBeNull();
+    }
+    expect(isHostPublicKey((await generateHostKeyPair()).publicKey)).toBe(true);
   });
 
   it('imports only a 32-byte public key', async () => {

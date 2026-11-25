@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { base64UrlByteLength, isPreviewHeaderName, isPreviewTarget, PreviewStream, type PreviewStreamFrame } from '@shared/live/preview';
+import { base64UrlByteLength, isPreviewHeaderName, isPreviewHeaderValue, isPreviewLocation, isPreviewTarget, previewBrowserLocation, PreviewStream, PREVIEW_CACHE_CONTROL, type PreviewStreamFrame } from '@shared/live/preview';
 import { toBase64Url } from '@shared/live/crypto';
 import { MAX_PREVIEW_RESPONSE_BYTES, PREVIEW_CHUNK_BYTES } from '@shared/live/limits';
 
@@ -51,14 +51,27 @@ describe('preview response streams', () => {
     expect(stream.accept({ type: 'preview:response-chunk', seq: limit, data: toBase64Url(new Uint8Array(1)) })).toMatchObject({ ok: false, code: 'TOO_LARGE' });
   });
 
+  it('refuse a head that gives its length twice', () => {
+    expect(new PreviewStream('GET').accept(head([['content-length', '0'], ['content-length', '1']]))).toMatchObject({ ok: false, code: 'INVALID_RESPONSE' });
+    expect(new PreviewStream('GET').accept(head([['content-length', '1'], ['content-length', '1']]))).toMatchObject({ ok: false, code: 'INVALID_RESPONSE' });
+  });
+
+  it('hold a range response to the length of the range sent', () => {
+    expect(run(new PreviewStream('GET'), [head([['content-range', 'bytes 0-99/5000'], ['content-length', '100']], 206), chunkOf(100, 0), end(100)]).at(-1)).toEqual({ ok: true, done: true });
+    expect(run(new PreviewStream('GET'), [head([['content-range', 'bytes 0-99/5000'], ['content-length', '100']], 206), chunkOf(99, 0), end(99)]).at(-1)).toMatchObject({ ok: false });
+  });
+
   it('refuse a declared length too large to show', () => {
     expect(new PreviewStream('GET').accept(head([['content-length', String(MAX_PREVIEW_RESPONSE_BYTES + 1)]]))).toMatchObject({ ok: false, code: 'TOO_LARGE' });
     // A HEAD answer only describes the body; nothing is sent.
     expect(new PreviewStream('HEAD').accept(head([['content-length', String(MAX_PREVIEW_RESPONSE_BYTES + 1)]]))).toEqual({ ok: true, done: false });
   });
 
-  it('carry no body for HEAD or bodyless statuses', () => {
+  it('carry no body for HEAD or bodyless statuses, whatever length they describe', () => {
     expect(run(new PreviewStream('HEAD'), [head([['content-length', '5000']]), end(0)]).at(-1)).toEqual({ ok: true, done: true });
+    // A 304 describes the cached body, which may be larger than any response could carry.
+    expect(run(new PreviewStream('GET'), [head([['content-length', String(MAX_PREVIEW_RESPONSE_BYTES + 1)]], 304), end(0)]).at(-1)).toEqual({ ok: true, done: true });
+    expect(run(new PreviewStream('GET'), [head([['content-length', '123']], 204), end(0)]).at(-1)).toEqual({ ok: true, done: true });
     expect(run(new PreviewStream('HEAD'), [head(), chunkOf(1, 0)]).at(-1)).toMatchObject({ ok: false, code: 'INVALID_RESPONSE' });
     expect(run(new PreviewStream('GET'), [head([], 304), end(0)]).at(-1)).toEqual({ ok: true, done: true });
     expect(run(new PreviewStream('GET'), [head([], 204), chunkOf(1, 0)]).at(-1)).toMatchObject({ ok: false });
@@ -75,6 +88,33 @@ describe('preview targets and headers', () => {
   it('keeps requests within the preview', () => {
     for (const ok of ['/', '/about/', '/a/b.css?x=1&y=/z', '/%E2%82%AC/']) expect(isPreviewTarget(ok), ok).toBe(true);
     for (const bad of ['', 'a', '//x', '/..', '/a/../b', '/a/%2E%2e/b', '/./a', '/a%2Fb', '/a%5cb', '/a\\b', '/a#b', '/a\tb', '/%zz', 42]) expect(isPreviewTarget(bad), String(bad)).toBe(false);
+  });
+
+  it('keeps clear of the development server’s own routes', () => {
+    for (const bad of ['/__open-in-editor', '/__open-in-editor?file=src/app.html', '/%5f%5fopen-in-editor', '/__vite_ping', '/__inspect/']) expect(isPreviewTarget(bad), bad).toBe(false);
+    // SvelteKit's page data stays reachable, and so does a page that merely contains underscores.
+    for (const ok of ['/__data.json', '/about/__data.json', '/a/__open-in-editor', '/_app/version.json']) expect(isPreviewTarget(ok), ok).toBe(true);
+  });
+
+  it('sends a redirect to the same place under the room’s preview, fragment and all', () => {
+    expect(isPreviewLocation('/about/#team')).toBe(true);
+    expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview', '/about/#team')).toBe('/s/abcdefghijkmnpqrstuvwxyz/preview/about/#team');
+    expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview/', '/')).toBe('/s/abcdefghijkmnpqrstuvwxyz/preview/');
+    for (const bad of ['//evil.example/', 'https://evil.example/', '/a#b#c', '/a#b c', '/__open-in-editor#x']) {
+      expect(isPreviewLocation(bad), bad).toBe(false);
+      expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview', bad)).toBeNull();
+    }
+  });
+
+  it('keeps preview responses out of shared caches', () => {
+    expect(PREVIEW_CACHE_CONTROL).toBe('private, no-cache');
+    expect(isPreviewHeaderName('cache-control', 'response')).toBe(false);
+  });
+
+  it('passes on only values HTTP can carry', () => {
+    expect(isPreviewHeaderValue('text/html,\tapplication/xhtml+xml;q=0.9')).toBe(true);
+    expect(isPreviewHeaderValue('caf\u00e9')).toBe(true);
+    for (const bad of ['a\r\nb', 'a\u0000', 'a\u0001', 'a\u007f', '\u2603', 'x'.repeat(4097)]) expect(isPreviewHeaderValue(bad), JSON.stringify(bad.slice(0, 8))).toBe(false);
   });
 
   it('allows only lowercase, listed header names', () => {

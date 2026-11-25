@@ -1,8 +1,7 @@
 import { z } from 'zod';
-import type { ElementRef, OwnerKind } from '../types';
-import type { ToolErrorCode } from '../ops';
 import {
   DISPLAY_NAME_MAX,
+  GUEST_FRAME_HEADROOM_BYTES,
   GUEST_ID_RE,
   GUEST_ROLES,
   LIVE_PROTOCOL_VERSION,
@@ -20,9 +19,9 @@ import {
   REQUEST_ID_RE,
   ROOM_ID_RE
 } from './limits';
-import { fromBase64Url, NONCE_BYTES, NONCE_RE, PUBLIC_KEY_BYTES, PUBLIC_KEY_RE, SIGNATURE_BYTES, SIGNATURE_RE } from './crypto';
+import { fromBase64Url, isHostPublicKey, NONCE_BYTES, NONCE_RE, SIGNATURE_BYTES, SIGNATURE_RE } from './crypto';
 import { SESSION_DURATION_IDS } from './expiry';
-import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewTarget, PREVIEW_ABORT_CODES, PREVIEW_METHODS } from './preview';
+import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewLocation, isPreviewTarget, PREVIEW_ABORT_CODES, PREVIEW_METHODS } from './preview';
 
 /**
  * Every frame of a live session, as JSON text over WebSocket, in four directions: host to relay, relay to host, guest
@@ -33,6 +32,8 @@ import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewTarget, PREVIEW_ABO
  *
  * Times are integer milliseconds since the epoch on the relay's clock, which owns every deadline; `now` on the
  * frames that carry deadlines lets the other side show them without trusting its own clock.
+ *
+ * This module imports nothing of the app at all, not even its types, so the relay builds it on its own.
  */
 
 // ---------------------------------------------------------------------------
@@ -42,16 +43,19 @@ import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewTarget, PREVIEW_ABO
  * Characters a name may never hold: controls, the marks that reorder text, and invisible spaces, any of which could
  * make one name look like another in the waiting room. Joiners stay: emoji and some scripts need them.
  */
-const UNSAFE_NAME_CHARS = /[\p{Cc}\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/u;
+const UNSAFE_NAME_CHARS = /[\p{Cc}\p{Bidi_Control}​⁠﻿]/u;
+/** A name must show something: a letter, number, symbol or punctuation mark, not joiners or marks alone. */
+const VISIBLE_NAME_CHAR = /[\p{L}\p{N}\p{S}\p{P}]/u;
 
 /**
  * A display name as it travels: in Unicode normal form C, every run of spaces or line breaks made one space, trimmed,
- * 1 to `max` characters long, and holding none of the characters above. Null when nothing usable is left.
+ * 1 to `max` characters long, showing something, and holding none of the characters above. Null when nothing usable
+ * is left.
  */
 export function normalizeDisplayName(raw: unknown, max = DISPLAY_NAME_MAX): string | null {
   if (typeof raw !== 'string') return null;
   const name = raw.normalize('NFC').replace(/\s+/gu, ' ').trim();
-  if (!name || UNSAFE_NAME_CHARS.test(name) || [...name].length > max) return null;
+  if (!name || UNSAFE_NAME_CHARS.test(name) || !VISIBLE_NAME_CHAR.test(name) || [...name].length > max) return null;
   return name;
 }
 
@@ -68,7 +72,7 @@ const time = z.number().int().nonnegative();
 const version = z.literal(LIVE_PROTOCOL_VERSION);
 const role = z.enum(GUEST_ROLES);
 const message = z.string().max(MAX_MESSAGE_LENGTH);
-const publicKey = b64(PUBLIC_KEY_RE, PUBLIC_KEY_BYTES);
+const publicKey = z.string().refine(isHostPublicKey, { message: 'Must be a usable Ed25519 public key, 32 bytes as unpadded base64url.' });
 const signature = b64(SIGNATURE_RE, SIGNATURE_BYTES);
 const nonce = b64(NONCE_RE, NONCE_BYTES);
 const displayName = label(DISPLAY_NAME_MAX);
@@ -96,7 +100,13 @@ const hostReconnect = msg('host:reconnect', { version, roomId });
 const hostChallenge = msg('host:challenge', { roomId, nonce });
 const hostProof = msg('host:proof', { roomId, nonce, signature });
 
-const guestJoin = msg('guest:join', { version, displayName });
+/**
+ * The relay's proof that a socket is the guest it gave this token to, while it waits or after it is admitted, so a
+ * guest whose connection drops takes its own place back (and nobody else's). Never shown to anyone but that guest.
+ */
+const resumeToken = z.string().regex(/^[A-Za-z0-9_-]{22,128}$/);
+/** A guest asks to join, or with its resume token rejoins as the guest it was. */
+const guestJoin = msg('guest:join', { version, displayName, resumeToken: resumeToken.optional() });
 const guestAdmit = msg('guest:admit', { guestId, role, guestExpiresAt: time.nullable() });
 const guestDecline = msg('guest:decline', { guestId });
 const guestKick = msg('guest:kick', { guestId });
@@ -116,7 +126,7 @@ const roomState = msg('room:state', { startedAt: time, expiresAt: time, locked: 
  */
 const previewTicket = z.string().regex(/^[A-Za-z0-9_-]{16,256}$/);
 const guestStatus = z.discriminatedUnion('status', [
-  msg('guest:status', { status: z.literal('pending'), guestId }),
+  msg('guest:status', { status: z.literal('pending'), guestId, resumeToken }),
   msg('guest:status', { status: z.literal('admitted'), guestId, role, guestExpiresAt: time.nullable(), sessionExpiresAt: time, projectName, previewTicket: previewTicket.optional(), now: time }),
   msg('guest:status', { status: z.literal('declined') }),
   msg('guest:status', { status: z.literal('kicked') }),
@@ -125,12 +135,12 @@ const guestStatus = z.discriminatedUnion('status', [
   msg('guest:status', { status: z.literal('ended') })
 ]);
 
-const participant = z.discriminatedUnion('status', [
-  z.object({ guestId, displayName, status: z.literal('pending') }).strict(),
-  z.object({ guestId, displayName, status: z.literal('admitted'), role, guestExpiresAt: time.nullable() }).strict()
-]);
-/** Everyone in the room. The host sees those waiting too (its join requests); guests see the admitted only. */
-const roomRoster = msg('room:roster', { participants: z.array(participant).max(MAX_GUESTS) });
+const admittedParticipant = z.object({ guestId, displayName, status: z.literal('admitted'), role, guestExpiresAt: time.nullable() }).strict();
+const participant = z.discriminatedUnion('status', [z.object({ guestId, displayName, status: z.literal('pending') }).strict(), admittedParticipant]);
+/** Everyone in the room, as the host sees it: those waiting too (its join requests). */
+const hostRoster = msg('room:roster', { participants: z.array(participant).max(MAX_GUESTS) });
+/** The room as guests see it: the admitted only. Nobody waiting is ever shown to a guest. */
+const guestRoster = msg('room:roster', { participants: z.array(admittedParticipant).max(MAX_GUESTS) });
 
 export const PROTOCOL_ERROR_CODES = [
   'INVALID_FRAME',
@@ -161,7 +171,9 @@ const previewRequest = msg('preview:request', { requestId, guestId, method: z.en
 const previewResponseHead = msg('preview:response-head', {
   requestId,
   status: z.number().int().min(200).max(599),
-  headers: headers('response').refine((list) => list.every(([name, value]) => name !== 'location' || isPreviewTarget(value)), { message: 'A redirect must stay within the preview.' })
+  // A redirect names a place in the preview as the host's preview sees it; the relay sends the browser to it under
+  // the room's preview path (previewBrowserLocation).
+  headers: headers('response').refine((list) => list.every(([name, value]) => name !== 'location' || isPreviewLocation(value)), { message: 'A redirect must stay within the preview.' })
 });
 /** Chunks are numbered from zero with no gaps; each holds 1 to 256 KiB of the body. */
 const previewResponseChunk = msg('preview:response-chunk', {
@@ -192,13 +204,27 @@ const method = z.string().regex(/^[a-z][A-Za-z]{0,31}\.[a-z][A-Za-z]{0,63}$/);
 /** Arguments travel as given; the host checks them against the method before anything runs. */
 const args = z.array(z.unknown()).max(8);
 
-/** The engine's own refusals, and what a live session adds: no permission, access ended, read-only, too large, and so on. */
-const ENGINE_ERROR_CODES = ['INVALID_ARGUMENT', 'STALE_REVISION', 'SCOPE_MISMATCH', 'PATH_DENIED', 'VALIDATION_FAILED', 'CONFLICT', 'CANCELLED', 'BUSY'] as const satisfies readonly ToolErrorCode[];
-export const RPC_ERROR_CODES = [...ENGINE_ERROR_CODES, 'PERMISSION_DENIED', 'EXPIRED', 'READ_ONLY', 'TOO_LARGE', 'UNAVAILABLE', 'INTERNAL'] as const;
+/**
+ * The engine's own refusals (every ToolErrorCode, which capabilities.ts checks), and what a live session adds: no
+ * permission, access ended, read-only, too large, and so on.
+ */
+export const RPC_ERROR_CODES = [
+  'INVALID_ARGUMENT',
+  'STALE_REVISION',
+  'SCOPE_MISMATCH',
+  'PATH_DENIED',
+  'VALIDATION_FAILED',
+  'CONFLICT',
+  'CANCELLED',
+  'BUSY',
+  'PERMISSION_DENIED',
+  'EXPIRED',
+  'READ_ONLY',
+  'TOO_LARGE',
+  'UNAVAILABLE',
+  'INTERNAL'
+] as const;
 export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
-// Every engine refusal can be passed on as it is.
-const _everyEngineCode: Exclude<ToolErrorCode, RpcErrorCode> extends never ? true : never = true;
-void _everyEngineCode;
 
 const rpcError = z.object({ code: z.enum(RPC_ERROR_CODES), message, recoverable: z.boolean(), operationIndex: z.number().int().nonnegative().optional() }).strict();
 export type RpcError = z.infer<typeof rpcError>;
@@ -218,7 +244,8 @@ const rpcEvent = <E extends z.ZodRawShape>(extra: E) => msg('rpc:event', { ...ex
 // Presence
 
 const shortId = z.string().min(1).max(MAX_ID_LENGTH);
-const OWNER_KINDS = ['page', 'shell', 'component', 'template'] as const satisfies readonly OwnerKind[];
+/** The editor's ElementRef, as presence carries it (capabilities.ts checks the two stay the same). */
+const OWNER_KINDS = ['page', 'shell', 'component', 'template'] as const;
 const elementRef = z
   .object({
     owner: z.object({ kind: z.enum(OWNER_KINDS), id: shortId }).strict(),
@@ -234,10 +261,6 @@ const presence = z.object({ pageId: shortId.nullable(), viewportWidth: z.number(
 const presenceUpdate = msg('presence:update', { presence });
 const presenceChanged = msg('presence:changed', { participant: z.discriminatedUnion('kind', [z.object({ kind: z.literal('host') }).strict(), z.object({ kind: z.literal('guest'), guestId }).strict()]), presence });
 
-// Presence selections are the editor's own element references.
-type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
-const _selectionIsElementRef: Same<z.infer<typeof elementRef>, ElementRef> = true;
-void _selectionIsElementRef;
 
 // ---------------------------------------------------------------------------
 // The four directions
@@ -269,7 +292,7 @@ const RELAY_TO_HOST = z.discriminatedUnion('type', [
   roomReady,
   hostChallenge,
   roomState,
-  roomRoster,
+  hostRoster,
   previewRequest,
   previewAbort,
   // The relay names the guest a request came from; the host never takes a guest's word for it.
@@ -280,7 +303,7 @@ const RELAY_TO_HOST = z.discriminatedUnion('type', [
 
 const GUEST_TO_RELAY = z.discriminatedUnion('type', [guestJoin, msg('rpc:request', { requestId, method, args }), presenceUpdate]);
 
-const RELAY_TO_GUEST = z.discriminatedUnion('type', [guestStatus, roomState, roomRoster, previewReload, rpcResponse({}), rpcEvent({}), presenceChanged, protocolError]);
+const RELAY_TO_GUEST = z.discriminatedUnion('type', [guestStatus, roomState, guestRoster, previewReload, rpcResponse({}), rpcEvent({}), presenceChanged, protocolError]);
 
 export const FRAME_SCHEMAS = { 'host-to-relay': HOST_TO_RELAY, 'relay-to-host': RELAY_TO_HOST, 'guest-to-relay': GUEST_TO_RELAY, 'relay-to-guest': RELAY_TO_GUEST } as const;
 export type Direction = keyof typeof FRAME_SCHEMAS;
@@ -339,10 +362,19 @@ const fail = (code: FrameErrorCode, message: string, path?: string): { ok: false
  * Read one frame arriving in `direction`. The size is checked before anything is parsed; then the JSON, the frame's
  * type against what this direction carries, and its every field. Nothing here throws.
  */
+/**
+ * The most a frame sent in `direction` may hold, in UTF-8 bytes. A guest's frames leave room for the guest ID the
+ * relay adds when it passes them on, so what reaches the host is never over the limit.
+ */
+export function frameLimit(direction: Direction): number {
+  return direction === 'guest-to-relay' ? MAX_FRAME_BYTES - GUEST_FRAME_HEADROOM_BYTES : MAX_FRAME_BYTES;
+}
+
 export function parseFrame<D extends Direction>(direction: D, input: unknown): FrameResult<FrameOf<D>> {
   if (typeof input !== 'string') return fail('NOT_TEXT', 'Frames are JSON text.');
+  const limit = frameLimit(direction);
   // Every UTF-16 unit is at least one byte, so a string longer than the limit is too large without counting.
-  if (input.length > MAX_FRAME_BYTES || utf8Length(input) > MAX_FRAME_BYTES) return fail('TOO_LARGE', `Frames are at most ${MAX_FRAME_BYTES} bytes.`);
+  if (input.length > limit || utf8Length(input) > limit) return fail('TOO_LARGE', `Frames are at most ${limit} bytes.`);
   let value: unknown;
   try {
     value = JSON.parse(input);
@@ -364,11 +396,19 @@ export function checkFrame<D extends Direction>(direction: D, value: unknown): F
   return fail('INVALID', `${path || 'frame'}: ${issue.message}`.slice(0, MAX_MESSAGE_LENGTH), path || undefined);
 }
 
-/** A frame as the text to send in `direction`, checked as its reader will check it, so nothing is sent that would be refused. */
+/**
+ * A frame as the text to send in `direction`, read back exactly as its reader will read it, so nothing is sent that
+ * would be refused: a result JSON cannot hold (undefined, a BigInt, a cycle) fails here, not at the other end.
+ */
 export function encodeFrame<D extends Direction>(direction: D, frame: FrameOf<D>): FrameResult<string> {
   const checked = checkFrame(direction, frame);
   if (!checked.ok) return checked;
-  const text = JSON.stringify(checked.frame);
-  if (utf8Length(text) > MAX_FRAME_BYTES) return fail('TOO_LARGE', `Frames are at most ${MAX_FRAME_BYTES} bytes.`);
-  return { ok: true, frame: text };
+  let text: string;
+  try {
+    text = JSON.stringify(checked.frame);
+  } catch {
+    return fail('INVALID', 'The frame cannot be written as JSON.');
+  }
+  const read = parseFrame(direction, text);
+  return read.ok ? { ok: true, frame: text } : read;
 }

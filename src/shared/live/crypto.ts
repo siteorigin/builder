@@ -7,8 +7,10 @@ import { ROOM_ID_ALPHABET, ROOM_ID_LENGTH, ROOM_ID_RE } from './limits';
  * the Cloudflare Worker run the same code. Keys are never written anywhere.
  */
 
-// CryptoKey is a global type in the DOM library but only a value in Node's types; both name it through `crypto`.
-export type LiveCryptoKey = Parameters<typeof globalThis.crypto.subtle.sign>[1];
+// CryptoKey is a global type in the DOM library but only a value in Node's types; all of them name it through
+// `crypto`. The bare global, never `globalThis.crypto`: Cloudflare's Worker types declare it as a constant, which
+// is not a property of globalThis.
+export type LiveCryptoKey = Parameters<typeof crypto.subtle.sign>[1];
 
 // The name alone: an object holding only `name` also matches one of Node's symmetric-key overloads.
 const ED25519 = 'Ed25519';
@@ -65,7 +67,7 @@ export const NONCE_RE = new RegExp(`^[A-Za-z0-9_-]{${encodedLength(NONCE_BYTES)}
 
 function randomBytes(length: number): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(length);
-  globalThis.crypto.getRandomValues(bytes);
+  crypto.getRandomValues(bytes);
   return bytes;
 }
 
@@ -91,10 +93,12 @@ export interface HostKeyPair {
 
 /** A new Ed25519 key pair for one live session, held in memory only. */
 export async function generateHostKeyPair(): Promise<HostKeyPair> {
-  const pair = await globalThis.crypto.subtle.generateKey(ED25519, false, ['sign', 'verify']);
+  const pair = await crypto.subtle.generateKey(ED25519, false, ['sign', 'verify']);
   if (!('privateKey' in pair) || !('publicKey' in pair)) throw new Error('Ed25519 key generation did not make a key pair.');
-  const raw = new Uint8Array(await globalThis.crypto.subtle.exportKey('raw', pair.publicKey));
-  return { privateKey: pair.privateKey, publicKey: toBase64Url(raw) };
+  // Worker types say exportKey may give a JWK; a raw export never does.
+  const raw = await crypto.subtle.exportKey('raw', pair.publicKey);
+  if (!(raw instanceof ArrayBuffer)) throw new Error('Ed25519 public key export did not give raw bytes.');
+  return { privateKey: pair.privateKey, publicKey: toBase64Url(new Uint8Array(raw)) };
 }
 
 export interface HostChallenge {
@@ -120,16 +124,44 @@ export function hostChallengeBytes(challenge: HostChallenge): Uint8Array<ArrayBu
 export async function signHostChallenge(privateKey: LiveCryptoKey, challenge: HostChallenge): Promise<string> {
   const bytes = hostChallengeBytes(challenge);
   if (!bytes) throw new Error('Not a valid host challenge.');
-  return toBase64Url(new Uint8Array(await globalThis.crypto.subtle.sign(ED25519, privateKey, bytes)));
+  return toBase64Url(new Uint8Array(await crypto.subtle.sign(ED25519, privateKey, bytes)));
 }
 
-/** A registered public key ready to verify with, or null when it is not a 32-byte Ed25519 key. */
-export async function importHostPublicKey(publicKey: string): Promise<LiveCryptoKey | null> {
+/**
+ * The encodings of Ed25519's small-order points (with the sign bit cleared), including the non-canonical spellings
+ * of 0 and 1. A key that is one of them can make signatures that verify for many messages on some implementations,
+ * so none is ever accepted as a host's key, whatever the platform's own checks.
+ */
+const SMALL_ORDER_KEYS = [
+  '0000000000000000000000000000000000000000000000000000000000000000',
+  '0100000000000000000000000000000000000000000000000000000000000000',
+  '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+  'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+  'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+  'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
+  'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f'
+];
+
+/** A host public key's raw bytes, or null unless it is canonical base64url of 32 bytes that are not a small-order point. */
+function hostKeyBytes(publicKey: unknown): Uint8Array<ArrayBuffer> | null {
   if (typeof publicKey !== 'string' || !PUBLIC_KEY_RE.test(publicKey)) return null;
   const raw = fromBase64Url(publicKey);
   if (!raw || raw.length !== PUBLIC_KEY_BYTES) return null;
+  const hex = Array.from(raw, (b, i) => (i === PUBLIC_KEY_BYTES - 1 ? b & 0x7f : b).toString(16).padStart(2, '0')).join('');
+  return SMALL_ORDER_KEYS.includes(hex) ? null : raw;
+}
+
+/** Whether `publicKey` can be registered as a host's key: see hostKeyBytes. */
+export function isHostPublicKey(publicKey: unknown): publicKey is string {
+  return hostKeyBytes(publicKey) !== null;
+}
+
+/** A registered public key ready to verify with, or null when it is not a usable 32-byte Ed25519 key. */
+export async function importHostPublicKey(publicKey: string): Promise<LiveCryptoKey | null> {
+  const raw = hostKeyBytes(publicKey);
+  if (!raw) return null;
   try {
-    return await globalThis.crypto.subtle.importKey('raw', raw, ED25519, false, ['verify']);
+    return await crypto.subtle.importKey('raw', raw, ED25519, false, ['verify']);
   } catch {
     return null;
   }
@@ -147,7 +179,7 @@ export async function verifyHostChallenge(publicKey: string, challenge: HostChal
   const key = await importHostPublicKey(publicKey);
   if (!key) return false;
   try {
-    return await globalThis.crypto.subtle.verify(ED25519, key, sig, bytes);
+    return await crypto.subtle.verify(ED25519, key, sig, bytes);
   } catch {
     return false;
   }

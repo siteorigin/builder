@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { checkFrame, encodeFrame, FRAME_TYPES, normalizeDisplayName, parseFrame, utf8Length, type Direction, type Frame, type FrameOf, type Presence } from '@shared/live/messages';
+import { checkFrame, encodeFrame, FRAME_TYPES, frameLimit, normalizeDisplayName, parseFrame, utf8Length, type Direction, type Frame, type FrameOf, type Presence } from '@shared/live/messages';
 import { toBase64Url } from '@shared/live/crypto';
-import { MAX_FRAME_BYTES, PREVIEW_CHUNK_BYTES } from '@shared/live/limits';
+import { GUEST_FRAME_HEADROOM_BYTES, MAX_FRAME_BYTES, PREVIEW_CHUNK_BYTES } from '@shared/live/limits';
 
 const T = Date.UTC(2026, 10, 25, 9, 0, 0);
 const HOUR = 3_600_000;
@@ -29,8 +29,8 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
     { type: 'room:set-expiry', expiresAt: T + 8 * HOUR },
     { type: 'room:set-locked', locked: true },
     { type: 'room:end' },
-    { type: 'preview:response-head', requestId, status: 200, headers: [['content-type', 'text/html; charset=utf-8'], ['cache-control', 'no-cache']] },
-    { type: 'preview:response-head', requestId, status: 302, headers: [['location', '/about/']] },
+    { type: 'preview:response-head', requestId, status: 200, headers: [['content-type', 'text/html; charset=utf-8'], ['etag', 'W/"1f"']] },
+    { type: 'preview:response-head', requestId, status: 302, headers: [['location', '/about/#team']] },
     { type: 'preview:response-chunk', requestId, seq: 0, data: toBase64Url(new TextEncoder().encode('<h1>Hi</h1>')) },
     { type: 'preview:response-end', requestId, totalBytes: 11 },
     { type: 'preview:abort', requestId, code: 'TOO_LARGE' },
@@ -62,11 +62,12 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
   ],
   'guest-to-relay': [
     { type: 'guest:join', version: 1, displayName: 'Sam Lee' },
+    { type: 'guest:join', version: 1, displayName: 'Sam Lee', resumeToken: 'rsm_0123456789abcdefghijk' },
     { type: 'rpc:request', requestId, method: 'project.snapshot', args: [] },
     { type: 'presence:update', presence }
   ],
   'relay-to-guest': [
-    { type: 'guest:status', status: 'pending', guestId },
+    { type: 'guest:status', status: 'pending', guestId, resumeToken: 'rsm_0123456789abcdefghijk' },
     { type: 'guest:status', status: 'admitted', guestId, role: 'viewer', guestExpiresAt: null, sessionExpiresAt: T + 2 * HOUR, projectName: 'Acme Bakery', previewTicket: 'tkt_0123456789abcdef', now: T },
     { type: 'guest:status', status: 'admitted', guestId, role: 'collaborator', guestExpiresAt: T + HOUR, sessionExpiresAt: T + 2 * HOUR, projectName: 'Acme Bakery', now: T },
     { type: 'guest:status', status: 'declined' },
@@ -159,6 +160,17 @@ describe('refused frames', () => {
     expect(refused('host-to-relay', { type: 'rpc:response', requestId, method: 'project.snapshot', ok: true, result: 1 })).toMatchObject({ code: 'INVALID', path: 'guestId' });
   });
 
+  it('never show a guest anyone still waiting', () => {
+    const waiting = { type: 'room:roster', participants: [{ guestId: 'g_1', displayName: 'Sam Lee', status: 'pending' }] };
+    expect(parseFrame('relay-to-host', json(waiting))).toMatchObject({ ok: true });
+    expect(refused('relay-to-guest', waiting)).toMatchObject({ code: 'INVALID', path: 'participants.0.status' });
+  });
+
+  it('take a usable Ed25519 key only', () => {
+    const identity = toBase64Url(new Uint8Array(32).map((_, i) => (i === 0 ? 1 : 0)));
+    expect(refused('host-to-relay', { type: 'room:create', version: 1, publicKey: identity, duration: '2h', projectName: 'Acme' })).toMatchObject({ path: 'publicKey' });
+  });
+
   it('use the current protocol version, valid IDs and real times', () => {
     expect(refused('guest-to-relay', { type: 'guest:join', version: 2, displayName: 'Sam' })).toMatchObject({ code: 'INVALID', path: 'version' });
     expect(refused('host-to-relay', { type: 'host:reconnect', version: 1, roomId: roomId.toUpperCase() })).toMatchObject({ path: 'roomId' });
@@ -180,7 +192,7 @@ describe('refused frames', () => {
   });
 
   it('refuse names that are blank, too long, untrimmed or disguised', () => {
-    for (const displayName of ['', ' Sam', 'Sam ', 'Sam  Lee', 'x'.repeat(41), 'Sam\u202eeL', 'Sa\u200bm', 'Sam\nLee', 'Sam\u0007'])
+    for (const displayName of ['', ' Sam', 'Sam ', 'Sam  Lee', 'x'.repeat(41), 'Sam\u202eeL', 'Sa\u200bm', 'Sam\nLee', 'Sam\u0007', 'Sam\u061c', '\u200d', '\u0301'])
       expect(refused('guest-to-relay', { type: 'guest:join', version: 1, displayName })).toMatchObject({ code: 'INVALID', path: 'displayName' });
   });
 
@@ -189,15 +201,42 @@ describe('refused frames', () => {
     const euros = json({ type: 'guest:join', version: 1, displayName: '€'.repeat(300_000) });
     expect(euros.length).toBeLessThan(MAX_FRAME_BYTES);
     expect(refused('guest-to-relay', euros)).toMatchObject({ code: 'TOO_LARGE' });
-    expect(refused('guest-to-relay', `{${' '.repeat(MAX_FRAME_BYTES)}`)).toMatchObject({ code: 'TOO_LARGE' });
+    expect(refused('host-to-relay', `{${' '.repeat(MAX_FRAME_BYTES)}`)).toMatchObject({ code: 'TOO_LARGE' });
     // Something within the limit is read as usual (and refused for what it is).
-    expect(refused('guest-to-relay', `{${' '.repeat(MAX_FRAME_BYTES - 10)}`)).toMatchObject({ code: 'INVALID_JSON' });
+    expect(refused('host-to-relay', `{${' '.repeat(MAX_FRAME_BYTES - 10)}`)).toMatchObject({ code: 'INVALID_JSON' });
+    expect(refused('guest-to-relay', `{${' '.repeat(frameLimit('guest-to-relay') - 10)}`)).toMatchObject({ code: 'INVALID_JSON' });
   });
 
   it('are never encoded: an invalid frame, or one too large to send', () => {
     expect(encodeFrame('guest-to-relay', { type: 'guest:join', version: 1, displayName: ' x ' })).toMatchObject({ ok: false, error: { code: 'INVALID' } });
     const huge = { type: 'rpc:response', guestId, requestId, method: 'project.snapshot', ok: true, result: 'x'.repeat(MAX_FRAME_BYTES) } as const;
     expect(encodeFrame('host-to-relay', huge)).toMatchObject({ ok: false, error: { code: 'TOO_LARGE' } });
+  });
+
+  it('are never encoded when JSON cannot carry them as the reader needs them', () => {
+    const answer = (result: unknown) => ({ type: 'rpc:response', guestId, requestId, method: 'project.snapshot', ok: true, result }) as const;
+    // JSON drops an undefined result, which the reader then misses.
+    expect(encodeFrame('host-to-relay', answer(undefined))).toMatchObject({ ok: false, error: { code: 'INVALID', path: 'result' } });
+    expect(encodeFrame('host-to-relay', answer(10n))).toMatchObject({ ok: false, error: { code: 'INVALID' } });
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    expect(encodeFrame('host-to-relay', answer(cycle))).toMatchObject({ ok: false, error: { code: 'INVALID' } });
+  });
+
+  it('from a guest leave room for the guest ID the relay adds', () => {
+    expect(frameLimit('guest-to-relay')).toBe(MAX_FRAME_BYTES - GUEST_FRAME_HEADROOM_BYTES);
+    const request = (size: number) => {
+      const base = json({ type: 'rpc:request', requestId, method: 'project.apply', args: [''] });
+      return json({ type: 'rpc:request', requestId, method: 'project.apply', args: ['x'.repeat(size - base.length)] });
+    };
+    const atGuestLimit = request(frameLimit('guest-to-relay'));
+    expect(utf8Length(atGuestLimit)).toBe(frameLimit('guest-to-relay'));
+    const fromGuest = parseFrame('guest-to-relay', atGuestLimit);
+    expect(fromGuest).toMatchObject({ ok: true });
+    // Passed on with the longest guest ID, it still fits.
+    const forwarded = { ...(fromGuest as { frame: Frame<'guest-to-relay', 'rpc:request'> }).frame, guestId: 'g'.repeat(64) };
+    expect(encodeFrame('relay-to-host', forwarded)).toMatchObject({ ok: true });
+    expect(parseFrame('guest-to-relay', request(frameLimit('guest-to-relay') + 1))).toMatchObject({ ok: false, error: { code: 'TOO_LARGE' } });
   });
 });
 
@@ -216,16 +255,16 @@ describe('preview frames', () => {
   it('ask only for paths within the preview', () => {
     for (const target of ['/', '/about/', '/_app/immutable/entry.js?v=2', '/search/?q=a/b', '/caf%C3%A9/'])
       expect(parseFrame('relay-to-host', json(request(target))), target).toMatchObject({ ok: true });
-    for (const target of ['', 'about', '//evil.example/x', 'http://127.0.0.1:5173/', '/../secrets', '/a/./b', '/a/%2e%2E/b', '/a%2fb', '/a%5Cb', '/a\\b', '/a#frag', '/a b', '/a%00', '/%E0%A4%A', `/${'a'.repeat(2048)}`])
+    for (const target of ['', 'about', '//evil.example/x', 'http://127.0.0.1:5173/', '/../secrets', '/a/./b', '/a/%2e%2E/b', '/a%2fb', '/a%5Cb', '/a\\b', '/a#frag', '/a b', '/a%00', '/%E0%A4%A', `/${'a'.repeat(2048)}`, '/__open-in-editor?file=/etc/hosts', '/%5F_open-in-editor', '/a//b'])
       expect(parseFrame('relay-to-host', json(request(target))), target).toMatchObject({ ok: false, error: { path: 'target' } });
     expect(parseFrame('relay-to-host', json({ ...request('/'), method: 'POST' }))).toMatchObject({ ok: false, error: { path: 'method' } });
   });
 
   it('pass on only the headers a read-only preview needs', () => {
     expect(parseFrame('relay-to-host', json(request('/', [['range', 'bytes=0-99']])))).toMatchObject({ ok: true });
-    for (const header of [['cookie', 'a=b'], ['authorization', 'Bearer x'], ['host', '127.0.0.1'], ['Accept', 'text/html'], ['accept', 'a\r\nset-cookie: x']] as Array<[string, string]>)
+    for (const header of [['cookie', 'a=b'], ['authorization', 'Bearer x'], ['host', '127.0.0.1'], ['Accept', 'text/html'], ['accept', 'a\r\nset-cookie: x'], ['accept', 'a\u0001b'], ['accept', 'snow \u2603'], ['accept', 'a\u007fb']] as Array<[string, string]>)
       expect(parseFrame('relay-to-host', json(request('/', [header]))), header[0]).toMatchObject({ ok: false });
-    for (const header of [['set-cookie', 'a=b'], ['connection', 'close'], ['transfer-encoding', 'chunked'], ['location', '//evil.example/'], ['location', 'http://127.0.0.1:5173/']] as Array<[string, string]>)
+    for (const header of [['set-cookie', 'a=b'], ['connection', 'close'], ['transfer-encoding', 'chunked'], ['cache-control', 'public, max-age=3600'], ['location', '//evil.example/'], ['location', 'http://127.0.0.1:5173/'], ['location', '/__open-in-editor']] as Array<[string, string]>)
       expect(parseFrame('host-to-relay', json(head([header]))), header.join(': ')).toMatchObject({ ok: false });
     expect(parseFrame('host-to-relay', json(head([], 101)))).toMatchObject({ ok: false, error: { path: 'status' } });
   });
