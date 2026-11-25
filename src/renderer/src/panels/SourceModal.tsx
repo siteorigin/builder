@@ -1,3 +1,4 @@
+import './SourceModal.css';
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 import { CircleAlert, CircleCheck, Code, FileCode2, Lock, Sparkles } from 'lucide-react';
 import { applyOps, api, markDraft, setState, toast, useStore, confirmDialog } from '../store';

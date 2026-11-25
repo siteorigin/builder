@@ -1,3 +1,4 @@
+import './StylePaste.css';
 import { useId, useMemo, useState } from 'react';
 import { ArrowRight, ClipboardPaste, Paintbrush, Palette } from 'lucide-react';
 import type { ProjectSnapshot } from '@shared/api';

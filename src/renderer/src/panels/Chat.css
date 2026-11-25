@@ -364,4 +364,6 @@
   .chip.add { border: 1px dashed var(--border-control); background: none; color: var(--text-2); padding: 0 8px 0 4px; }
   .chip.add:hover { border-color: var(--accent); color: var(--accent-text); }
   .chip:not(:has(button)) { padding-right: 8px; }
+  .composer textarea:focus-visible { box-shadow: none; }
+  .md code { font-family: var(--mono); font-size: 12px; padding: 1px 4px; border-radius: var(--r-xs); background: var(--active); }
 }

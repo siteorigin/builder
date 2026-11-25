@@ -1,3 +1,4 @@
+import './Conversations.css';
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { MessagesSquare, Pencil, Search, Trash2 } from 'lucide-react';
 import type { Conversation, ConversationSummary } from '@shared/api';

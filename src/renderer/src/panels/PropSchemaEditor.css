@@ -105,10 +105,12 @@
   .schema-empty-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
   .schema-empty-text { max-width: 380px; margin: 0 0 8px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
   .schema-empty .btn svg { width: 15px; height: 15px; }
+  /* A schema row's error reads in body ink; its glyph keeps the danger red. */
+  .schema-row .field-error::before { background: var(--red); }
+  .schema-row .field-error { color: var(--text); }
   @media (forced-colors: active) {
-    :is(.authoring-form, .schema-row) .field-error::before { forced-color-adjust: none; background: CanvasText; }
+    .schema-row .field-error::before { forced-color-adjust: none; background: CanvasText; }
     .schema-row-toggle { border-color: ButtonText; }
     .schema-row.invalid { border-left: 3px solid CanvasText; }
-    .authoring-gone { border-color: CanvasText; }
   }
 }

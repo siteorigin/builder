@@ -1,3 +1,4 @@
+import './SeoPreview.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Globe } from 'lucide-react';
 import type { ProjectState } from '@shared/types';

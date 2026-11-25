@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 const css =
   readFileSync("src/renderer/src/styles/primitives.css", "utf8") +
   "\n" +
-  readFileSync("src/renderer/src/styles.css", "utf8");
+  readFileSync("src/renderer/src/panels/Canvas.css", "utf8");
 const rule = (sel: string) =>
   css
     .split("\n")

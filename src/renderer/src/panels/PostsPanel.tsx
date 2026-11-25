@@ -1,3 +1,4 @@
+import './PostsPanel.css';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Copy, FileDown, Newspaper, Plus, Search, Tags, Trash2, X } from 'lucide-react';
 import { formatArticleDate } from '@shared/articles';

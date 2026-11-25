@@ -1,3 +1,4 @@
+import '../panels/SourceModal.css';
 import { useEffect, useId, useRef, useState, type MutableRefObject } from 'react';
 import { Annotation, Compartment, EditorState, RangeSetBuilder } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, closeHoverTooltips, hasHoverTooltips, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, type DecorationSet, type ViewUpdate } from '@codemirror/view';

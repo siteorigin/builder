@@ -13,7 +13,7 @@
   .table-editor-heading .table-jump svg { width: 13px; height: 13px; }
   .table-editor-heading .table-jump + .insp-add { margin-left: 0; }
   .table-editor :is(.btn, .icon-btn)[aria-disabled='true'] { cursor: not-allowed; }
-  .table-editor-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .table-editor .table-editor-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
   .table-move { display: inline-flex; align-items: center; gap: 2px; }
   /* Remove stands apart and warns on hover, as in the other list editors. */
   .table-editor .icon-btn.table-remove:hover:not(:disabled, [aria-disabled='true']) { background: var(--red-soft); color: var(--red); }
@@ -89,7 +89,7 @@
   .table-row-move { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
   /* An open row's fields stay in view however far the table is scrolled sideways. */
   .table-grid .table-grid-span { max-width: 0; }
-  .table-grid .table-grid-form { position: sticky; left: 0; width: var(--table-view, 100%); gap: 10px; border-top: 0; padding: 12px 10px 10px; }
+  .table-editor .table-grid .table-grid-form { position: sticky; left: 0; width: var(--table-view, 100%); gap: 10px; border-top: 0; padding: 12px 10px 10px; }
   /* In dark, the fields lift off a tray darker than the rows, as they do off the panel above. */
   :where(:root[data-appearance='dark']) { .table-grid .table-grid-form { background: var(--panel); } }
   /* The empty table's note starts where its first column does. */

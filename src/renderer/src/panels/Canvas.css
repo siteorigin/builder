@@ -1,0 +1,315 @@
+@layer components {
+  /* ---------- Canvas ---------- */
+  .canvas { flex: 1; min-width: 0; position: relative; overflow: hidden; background-color: var(--canvas); background-image: radial-gradient(var(--canvas-dots) 1px, transparent 1px); background-size: 16px 16px; }
+  /* The canvas takes focus when the chip control that had it goes away; a keyboard user sees where it went. */
+  .canvas:focus { outline: none; }
+  .canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
+  .canvas-scroll { position: absolute; inset: 0; overflow: auto; display: flex; justify-content: safe center; padding: 28px 28px 28px; scrollbar-width: thin; }
+  .frame-wrap { position: relative; flex: none; }
+  .frame-box { position: absolute; top: 0; left: 0; transform-origin: 0 0; border-radius: 6px; overflow: hidden; background: white; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), var(--shadow-md); }
+  /* On the dark pasteboard a dark page section would lose the page's edge: a faint light ring keeps it. */
+  :where(:root[data-appearance='dark']) { .frame-box { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.14), var(--shadow-md); } }
+  .frame-box iframe { display: block; border: 0; width: 100%; height: 100%; background: white; }
+  /* A 24px-wide target (WCAG 2.5.8) around a 4px bar, centred in the gutter beside the page. */
+  .frame-handle { position: absolute; top: 50%; width: 24px; height: 54px; margin-top: -27px; border-radius: var(--r-sm); cursor: ew-resize; display: grid; place-items: center; z-index: 4; }
+  .frame-handle::after { content: ''; width: 4px; height: 34px; border-radius: var(--r-xs); background: var(--text-3); transition: background 120ms; }
+  .frame-handle:hover::after, .frame-handle.dragging::after, .frame-handle:focus-visible::after { background: var(--accent); }
+  .frame-handle.right { right: -25px; }
+  .frame-handle.left { left: -25px; }
+  /* The strip above the page: the same 28px row a parked chip uses, so the two sit on one line. The width label is
+     on the right (size, screen size, zoom); the page's own status, while another page opens, on the left. */
+  .frame-width-label { position: absolute; top: -34px; right: 0; height: 28px; display: flex; align-items: center; justify-content: flex-end; font-size: 12px; color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .frame-width-label b { color: var(--text); font-weight: 600; }
+  .frame-width-label .sep { margin: 0 5px; color: var(--text-3); }
+  /* While the frame is resized, the readout is the feedback (at Fit the page edge may not move): it takes the accent. */
+  .frame-width-label.live, .frame-width-label.live b { color: var(--accent-text); }
+  .frame-width-label.measure { visibility: hidden; pointer-events: none; }
+  .frame-width-label.measure > span { position: absolute; right: 0; display: inline-flex; align-items: center; }
+  .frame-status { position: absolute; top: -34px; left: 0; height: 28px; display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+  .frame-status { overflow: hidden; }
+  .frame-status .spinner { width: 13px; height: 13px; }
+  .frame-status > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .frame-status.empty { gap: 10px; color: var(--text); }
+  /* The words go first, then the actions shrink, clipped with an ellipsis: an action is never cut off unseen. */
+  .frame-status.empty > span { flex-shrink: 1000; }
+  .frame-status.empty .link-btn { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 4px; min-height: 24px; }
+  .frame-status.empty .link-btn span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .frame-status.empty .link-btn svg { flex: none; width: 13px; height: 13px; }
+  .overlay-layer { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+  /* Outlines are clipped to the page so they never spill onto the pasteboard. */
+  .overlay-clip { position: absolute; inset: 0; overflow: hidden; border-radius: 6px; }
+  .ov-box { position: absolute; pointer-events: none; border-radius: 2px; }
+  /* One selection colour (--select), drawn between opaque keylines (ink outside, white inside) so the outline
+     holds at 3:1 on any page, including one that uses the same blue. All of it is drawn inside the box, so a
+     full-width section keeps its ink edge where the page clips it. Hover is thinner than selection; related
+     repeated items get a dashed outline. */
+  /* Hover is a 2px hairline pair: white outside, a deep shade of the hover colour inside. On any page colour one of
+     the two holds 3:1, it stays lighter than the 4px selection, and the white outer edge keeps it a separate ring
+     where it meets a selection (whose ink is outside). */
+  .ov-hover { --hover-c: #1766c0; box-shadow: inset 0 0 0 1px #fff, inset 0 0 0 2px color-mix(in srgb, var(--hover-c) 55%, #101828); }
+  .editor.defining .ov-hover { --hover-c: var(--select); }
+  .ov-selected { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 3px var(--select), inset 0 0 0 4px #fff; }
+  .ov-selected.dim { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 1.5px dashed var(--select); outline-offset: -2.5px; }
+  /* Text being edited on the page: the selection gains a second, outer ring (white, its colour, ink), so "typing
+     here" reads apart from "selected" on any page, without covering the words. */
+  .ov-selected.editing { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 3px var(--select), inset 0 0 0 4px #fff, 0 0 0 1px #fff, 0 0 0 3px var(--select), 0 0 0 4px #101828; }
+  /* An element just inserted (issue #509): its outline arrives with a wash and a thicker ring that settle into the
+     ordinary one, so the insertion is seen to land wherever it went on the page. Without motion, the same, held still. */
+  .ov-selected.arriving { animation: ov-arrive 1.2s ease-out 1; }
+  @keyframes ov-arrive {
+    0%, 30% { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 6px var(--select), inset 0 0 0 7px #fff; background: color-mix(in srgb, var(--select) 16%, transparent); }
+    100% { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 3px var(--select), inset 0 0 0 4px #fff; background: transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ov-selected.arriving { animation: none; box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 6px var(--select), inset 0 0 0 7px #fff; background: color-mix(in srgb, var(--select) 12%, transparent); }
+  }
+  /* What a drag is moving stays marked in place: dashed, on a faint tint of the selection colour. */
+  .ov-selected.moving { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 8%, transparent); }
+  /* Spacing handles: a short bar on the inner edge of each padding band (selection colour) and on the outer edge of
+     the margin above and below (amber), each between white and ink keylines so it holds on any page. The band being
+     dragged or pointed at is tinted; the HUD beside the handle names the value. */
+  .ov-space-handle { --space-c: var(--select); position: absolute; display: grid; place-items: center; width: 24px; height: 12px; transform: translate(-50%, -50%); pointer-events: auto; cursor: ns-resize; z-index: 1; touch-action: none; }
+  .ov-space-handle.x { width: 12px; height: 24px; cursor: ew-resize; }
+  .ov-space-handle.margin { --space-c: #b45309; }
+  .ov-space-handle::before { content: ''; width: 16px; height: 4px; border-radius: 2px; background: var(--space-c); box-shadow: 0 0 0 1px #fff, 0 0 0 2px rgb(16 24 40 / 0.55); opacity: 0.85; transition: width 80ms, height 80ms, opacity 80ms; }
+  .ov-space-handle.x::before { width: 4px; height: 16px; }
+  .ov-space-handle:hover::before, .ov-space-handle.active::before { opacity: 1; width: 22px; height: 5px; }
+  .ov-space-handle.x:hover::before, .ov-space-handle.x.active::before { width: 5px; height: 22px; }
+  /* Gaps in pink, as a layout's own measure; a column divider is a dark bar on the grid's top edge. */
+  .ov-space-handle.gap { --space-c: #c026d3; }
+  .ov-space-handle.split { --space-c: #101828; }
+  .ov-space-handle.split::before { height: 10px; }
+  .ov-space-handle.split:hover::before, .ov-space-handle.split.active::before { height: 14px; }
+  .ov-space-band { position: absolute; pointer-events: none; background: color-mix(in srgb, var(--select) 16%, transparent); }
+  .ov-space-band.margin { background: rgb(180 83 9 / 0.16); }
+  .ov-space-band.gap { background: rgb(192 38 211 / 0.16); }
+  .ov-space-band.split { background: rgb(16 24 40 / 0.08); outline: 1px dashed rgb(16 24 40 / 0.35); outline-offset: -1px; }
+  .ov-space-hud { position: absolute; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 11px; background: #101828; color: #fff; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; z-index: 2; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85), 0 4px 12px -4px rgb(16 24 40 / 0.45); transform: translate(18px, -50%); }
+  .ov-space-hud.x { transform: translate(-50%, 18px); }
+  .ov-space-hud .what { font-weight: 400; opacity: 0.75; }
+  /* The list item open in the inspector: a dashed outline on a faint tint, so it reads as "being edited" inside the
+     selected section without competing with the selection itself. */
+  .ov-revealed { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 7%, transparent); }
+  /* The hover label names what a click would select. It sits inside the hovered element's top-left corner, so
+     the pointer can rest on it without leaving that element, and it is a light tag (solid fill is the
+     selection's). It is the editor's blue (plum while defining), never the selection's scope colour. */
+  .ov-label { position: absolute; top: 4px; left: 4px; display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--r-xs); font-size: 12px; font-weight: 600; color: var(--hover-c); background: #fff; box-shadow: inset 0 0 0 1px var(--hover-c), 0 1px 3px rgb(16 24 40 / 0.18); white-space: nowrap; pointer-events: none; }
+  /* A short element's name sits just outside it, above (or below, at the top of the page), so it covers nothing. */
+  .ov-label.outside { left: 0; pointer-events: auto; cursor: default; }
+  /* A bridge over the gap to its element, so the pointer reaches the name without crossing other parts of the page. */
+  .ov-label.outside::after { content: ''; position: absolute; left: 0; right: 0; top: 100%; height: 8px; }
+  .ov-label.outside.below::after { top: auto; bottom: 100%; }
+  /* The canvas's Add buttons (#387): a small round + on a section's top or bottom edge, or inset in a container's lower
+     trailing corner, opening a short list of what fits there. The edge it adds at shows while it is pointed at. */
+  .ov-add { position: absolute; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; margin: -11px 0 0 -11px; padding: 0; border: 0; border-radius: 50%; background: var(--select); color: #fff; box-shadow: 0 0 0 1.5px #fff, 0 2px 6px rgb(16 24 40 / 0.32); pointer-events: auto; cursor: pointer; opacity: 0.9; transition: transform 90ms ease-out, opacity 90ms ease-out; }
+  .ov-add::after { content: ''; position: absolute; inset: -5px; border-radius: 50%; }
+  .ov-add svg { width: 14px; height: 14px; stroke-width: 2.6; }
+  .ov-add:is(:hover, :focus-visible, [aria-expanded='true']) { opacity: 1; transform: scale(1.14); }
+  .ov-add:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .ov-add-line { position: absolute; height: 2px; margin-top: -1px; background: var(--select); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85); pointer-events: none; opacity: 0; transition: opacity 90ms ease-out; }
+  .ov-add:is(:hover, :focus-visible, [aria-expanded='true']) + .ov-add-line { opacity: 1; }
+  .quick-insert-veil { position: fixed; inset: 0; z-index: 999; }
+  .quick-insert { position: fixed; z-index: 1000; display: flex; flex-direction: column; width: 288px; max-width: calc(100vw - 16px); padding: 6px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); animation: pop-in 120ms ease-out; }
+  .quick-insert .qi-title { padding: 3px 6px 7px; overflow: hidden; font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; text-overflow: ellipsis; }
+  .quick-insert .qi-search { position: relative; }
+  .quick-insert .qi-search > svg { position: absolute; left: 9px; top: 50%; translate: 0 -50%; width: 14px; height: 14px; color: var(--text-3); pointer-events: none; }
+  .quick-insert input { width: 100%; height: 30px; padding: 0 8px 0 29px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--panel); color: var(--text); font-size: 13px; user-select: text; }
+  .quick-insert input:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
+  .quick-insert .qi-list { margin: 6px 0 0; padding: 0; max-height: 264px; overflow-y: auto; list-style: none; }
+  .quick-insert .qi-list:empty { display: none; }
+  .quick-insert .qi-item { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: var(--r-sm); color: var(--text); font-size: 13px; cursor: default; user-select: none; }
+  .quick-insert .qi-item.active { background: var(--hover); }
+  .quick-insert .qi-icon { display: inline-flex; flex: none; color: var(--text-3); }
+  .quick-insert .qi-item.active .qi-icon { color: var(--accent-text); }
+  .quick-insert .qi-name { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .quick-insert .qi-group { flex: none; color: var(--text-3); font-size: 11px; }
+  .quick-insert .qi-note { margin: 6px 6px 2px; color: var(--text-2); font-size: 12px; }
+  .quick-insert .qi-note:empty { display: none; }
+  .quick-insert .qi-note.refused { color: var(--red-ink); }
+  /* The selection chip: name, then grouped actions, as one toolbar. It is app chrome on the user's page, so
+     it carries a complete white rim that separates it from any page colour, and its own shadow. Inner
+     buttons are 24px targets with --r-xs corners, concentric with the chip's --r-sm. */
+  .ov-chip { position: absolute; display: flex; align-items: center; gap: 1px; height: 28px; padding: 2px; border-radius: var(--r-sm); background: var(--select); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.9), 0 4px 14px -4px rgb(16 24 40 / 0.45), 0 1px 3px rgb(16 24 40 / 0.25); pointer-events: auto; white-space: nowrap; z-index: 1; }
+  .ov-chip.strip { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 2px 6px -2px rgb(16 24 40 / 0.35); }
+  /* Parked on the dark pasteboard the rim is quieter, but still a 3:1 edge (the green shared chip needs it). */
+  :where(:root[data-appearance='dark']) { .ov-chip.strip { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.45), 0 2px 8px -2px rgb(0 0 0 / 0.5); } }
+  .ov-chip .name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; overflow: hidden; height: 24px; padding: 0 6px 0 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.005em; }
+  .ov-chip .grip + .name { padding-left: 0; }
+  .ov-chip .name > svg { width: 14px; height: 14px; flex: none; opacity: 0.9; }
+  .ov-chip .name .label { max-width: 220px; min-width: 24px; overflow: hidden; text-overflow: ellipsis; }
+  .ov-chip .name .ellipsis { overflow: hidden; text-overflow: ellipsis; }
+  .ov-chip .name .of { flex: 0 1 auto; min-width: 0; font-weight: 400; opacity: 0.88; }
+  .ov-chip .name .of.link { display: inline-flex; align-items: center; height: 24px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; margin-left: -2px; padding: 0 4px; border: 0; border-radius: var(--r-xs); background: none; color: inherit; font: inherit; font-weight: 400; opacity: 0.9; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgb(255 255 255 / 0.6); }
+  .ov-chip .name .of.link:hover { opacity: 1; background: rgb(16 24 40 / 0.22); text-decoration-color: #fff; }
+  .ov-chip .chip-sep { width: 1px; height: 14px; margin: 0 3px; flex: none; background: rgb(255 255 255 / 0.3); }
+  .ov-chip .icon-btn { width: 24px; height: 24px; flex: none; color: #fff; border-radius: var(--r-xs); }
+  .ov-chip .icon-btn svg { width: 15px; height: 15px; }
+  .ov-chip .icon-btn:hover:not([aria-disabled='true']) { background: rgb(255 255 255 / 0.18); color: #fff; }
+  /* A disabled move dims its glyph only, so its keyboard focus ring keeps full strength. */
+  .ov-chip .icon-btn[aria-disabled='true'] { cursor: default; }
+  .ov-chip .icon-btn[aria-disabled='true'] svg { opacity: 0.45; }
+  .ov-chip .icon-btn.grip { width: 24px; cursor: grab; }
+  .ov-chip .icon-btn.grip svg { opacity: 0.85; }
+  .ov-chip .icon-btn.grip:active { cursor: grabbing; }
+  /* The open state of More actions: a dark well with a full white ring while its menu is showing. */
+  .ov-chip .icon-btn[aria-expanded='true'] { background: rgb(16 24 40 / 0.32); box-shadow: inset 0 0 0 1.5px #fff; }
+  .ov-chip .chip-text { display: inline-flex; flex: none; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 7px; border: 0; border-radius: var(--r-xs); background: rgb(16 24 40 / 0.24); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.72); color: #fff; font-size: 12px; font-weight: 600; }
+  .ov-chip .chip-text svg { width: 14px; height: 14px; }
+  .ov-chip .chip-text:hover { background: rgb(16 24 40 / 0.36); }
+  /* Focus on the filled chip: a white ring inside each control. */
+  .ov-chip button:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
+  /* Editing text: the chip names the edit and its way out, and keeps its colour and place. */
+  .ov-chip.editing .name > svg { opacity: 1; }
+  .ov-chip.editing .chip-text { margin-left: 4px; }
+  /* The way out never shrinks: the name gives way first. */
+  .ov-chip.editing .name .of { flex: none; }
+  /* At narrow widths the parent link keeps a 24px target and "2 of 3" never clips: the part's name gives way. */
+  .ov-chip .name .of.link { min-width: 24px; }
+  .ov-chip .name .of:not(.link) { flex: none; }
+  /* Previous and Next item sit tight around "2 of 3", so the three read as one control. It never shrinks: the name
+     beside it gives way first. */
+  .ov-chip .chip-step { display: inline-flex; flex: none; align-items: center; gap: 6px; height: 24px; padding-right: 4px; font-size: 12px; }
+  .ov-chip .chip-step .sep, .ov-chip .chip-step .of { font-weight: 400; opacity: 0.88; }
+  .ov-chip .chip-step .icon-btn.step { width: 20px; margin: 0 -3px; }
+  .ov-chip .chip-step .icon-btn.step svg { width: 14px; height: 14px; }
+  .ov-chip .chip-text + .chip-text, .ov-chip .icon-btn + .chip-text { margin-left: 3px; }
+  /* A text button's focus ring steps outside its resting rim, so focus is as plain a change as on the icon buttons. */
+  .ov-chip .chip-text:focus-visible { outline-offset: 1px; background: rgb(16 24 40 / 0.42); }
+  .ov-chip .chip-text kbd { margin-left: 2px; font: inherit; font-weight: 400; opacity: 0.8; }
+  /* While a section is dragged, the strip above the page names what is moving and how to back out. */
+  .ov-moving { position: absolute; top: -34px; left: 0; overflow: hidden; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 2px 6px -2px rgb(16 24 40 / 0.35); pointer-events: none; z-index: 1; }
+  .ov-moving svg { width: 14px; height: 14px; opacity: 0.85; }
+  .ov-moving svg { flex: none; }
+  .ov-moving .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .ov-moving .hint { flex: none; font-weight: 400; opacity: 0.88; }
+  .ov-moving .sep, .ov-chip.editing .sep { flex: none; margin: 0 -1px; font-weight: 400; opacity: 0.7; }
+  :where(:root[data-appearance='dark']) { .ov-moving { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.45), 0 2px 8px -2px rgb(0 0 0 / 0.5); } }
+  /* While dragging a section or a frame edge, the pointer keeps the gesture's cursor wherever it goes. */
+  .canvas.reordering, .canvas.reordering * { cursor: grabbing !important; }
+  .canvas.resizing, .canvas.resizing * { cursor: ew-resize !important; }
+  /* A page the editor has not confirmed (one leaving, or one that never arrived) takes no picks and, if the wait is
+     noticeable, steps back; the wait cursor shows only while something is actually on its way. */
+  .frame-wrap.waiting { cursor: progress; }
+  .frame-wrap.stale .frame-box { opacity: 0.7; transition: opacity 160ms ease 300ms; }
+  /* A page with nothing on it: the first step, in the open space under the shared header and footer. App chrome
+     on the page, so it is clickable while the page around it stays the user's. */
+  .canvas-empty { position: absolute; left: 0; right: 0; display: flex; justify-content: center; padding: 0 16px; pointer-events: none; }
+  .canvas-empty .empty-card { pointer-events: auto; max-width: 340px; padding: 22px 24px; gap: 8px; border-color: var(--border-strong); }
+  :where(:root[data-appearance='dark']) { .canvas-empty .empty-card { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.1), var(--shadow-md); } }
+  .canvas-empty .empty-card .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
+  .canvas-state { position: absolute; inset: 0; display: grid; place-items: center; z-index: 6; }
+  .canvas-card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 420px; padding: 28px; text-align: center; border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
+  .canvas-card h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  .canvas-card p { margin: 0; color: var(--text-2); text-wrap: balance; }
+  .canvas-card pre { max-width: 100%; max-height: 140px; overflow: auto; margin: 0; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); font-family: var(--mono); font-size: 11px; text-align: left; white-space: pre-wrap; color: var(--text-2); user-select: text; }
+  .preview-pill { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: calc(100% - 24px); white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 5px 0 14px; border-radius: 99px; background: var(--ink); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), var(--shadow-lg); font-size: 13px; font-weight: 500; }
+  .preview-pill svg { width: 15px; height: 15px; }
+  .preview-pill button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px; border: 0; border-radius: 99px; background: var(--sky-2); color: var(--ink); font-size: 12px; font-weight: 600; }
+  .preview-pill button:hover { background: var(--sky-1); }
+  /* Forms in Preview: what a send does, the practice reply, and a confirmed live test. Above the other bottom bars. */
+  .form-practice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: min(560px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 10px 14px; border-radius: 12px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; color: var(--text-2); }
+  .form-practice p { margin: 0; }
+  .form-practice-title { color: var(--text); font-size: 13px; }
+  .form-practice-title svg { display: inline; width: 14px; height: 14px; margin-right: 2px; vertical-align: -2px; color: var(--accent-text); }
+  .form-practice-title strong { font-weight: 600; }
+  .form-practice-where { overflow-wrap: anywhere; }
+  .form-practice-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+  .form-practice-label { color: var(--text); font-weight: 500; }
+  .form-practice-live { margin-left: auto; }
+  /* A real send is the one consequential act here, so its confirmation is amber rather than the calm accent. */
+  .form-practice-confirm { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px; border-radius: 8px; background: color-mix(in srgb, var(--amber) 8%, var(--raised)); border: 1px solid color-mix(in srgb, var(--amber) 50%, var(--border)); color: var(--text); overflow-wrap: anywhere; }
+  .form-practice-confirm .form-practice-row > .select { flex: 1 1 0; width: auto; min-width: 0; }
+  .form-practice-confirm .btn[aria-disabled='true'] { cursor: not-allowed; }
+  .form-practice-dest { font-weight: 600; }
+  .form-practice .segmented button[aria-pressed='true'] { box-shadow: inset 0 0 0 1.5px var(--text-2), var(--shadow-sm); }
+  .form-practice .segmented button svg { width: 12px; height: 12px; }
+  /* On a short canvas the panel scrolls inside itself rather than running off the top. */
+  .form-practice { overflow-y: auto; }
+  .form-practice-forms summary { width: fit-content; min-height: 24px; padding: 4px 6px 4px 0; border-radius: 4px; cursor: pointer; color: var(--accent-text); font-weight: 500; }
+  .form-practice-forms summary:hover { color: var(--text); }
+  .form-practice-forms ul { display: flex; flex-direction: column; gap: 3px; max-height: 120px; margin: 4px 0 0; padding: 0 0 0 16px; overflow-y: auto; overflow-wrap: anywhere; }
+  .form-practice-live[aria-disabled='true'] { opacity: 0.55; cursor: not-allowed; }
+  .form-practice-outcome { display: flex; flex-direction: column; gap: 2px; padding-top: 7px; border-top: 1px solid var(--border); }
+  .form-practice-outcome:has(.form-practice-result:empty) { margin-top: -6px; padding-top: 0; border-top: 0; }
+  .form-practice-lead { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--text-2); }
+  .form-practice-lead svg { width: 13px; height: 13px; flex: none; }
+  .form-practice-lead .spinner { width: 12px; height: 12px; }
+  .form-practice-outcome[data-tone='ok'] .form-practice-lead { color: var(--green); }
+  .form-practice-outcome[data-tone='warn'] .form-practice-lead { color: var(--amber); }
+  .form-practice-outcome[data-tone='bad'] .form-practice-lead { color: var(--red); }
+  /* A real send's outcome sits in a tinted box, so it never reads as a practice run. */
+  .form-practice-outcome[data-kind='live'] { --tone: var(--accent); padding: 6px 9px; border: 1px solid color-mix(in srgb, var(--tone) 40%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--tone) 7%, var(--raised)); }
+  .form-practice-outcome[data-kind='live'][data-tone='busy'] .form-practice-lead { color: var(--accent-text); }
+  .form-practice-outcome[data-kind='live'][data-tone='ok'] { --tone: var(--green); }
+  .form-practice-outcome[data-kind='live'][data-tone='warn'] { --tone: var(--amber); }
+  .form-practice-outcome[data-kind='live'][data-tone='bad'] { --tone: var(--red); }
+  .form-practice-result { color: var(--text); overflow-wrap: anywhere; }
+  /* Back, Forward and the address of the visitor's journey: quiet controls on the pill itself. */
+  .preview-pill .pill-note { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+  .preview-pill .pill-step { width: 26px; padding: 0; justify-content: center; background: transparent; color: #fff; }
+  .preview-pill .pill-step + .pill-step { margin-left: -8px; }
+  .preview-pill .pill-step:hover:not([aria-disabled='true']) { background: rgb(255 255 255 / 0.16); }
+  .preview-pill .pill-step[aria-disabled='true'] { color: rgb(255 255 255 / 0.38); background: transparent; cursor: default; }
+  .preview-pill .pill-step:focus-visible { outline-color: #fff; outline-offset: -2px; }
+  /* The address has a slot of its own, so Back to editing stays put from page to page. */
+  .preview-pill .pill-address { flex: 0 1 236px; width: 236px; min-width: 56px; padding: 3px 9px; border-radius: 99px; background: rgb(255 255 255 / 0.1); overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12px; color: var(--sky-1); user-select: text; }
+  .preview-pill .pill-address:empty { background: transparent; }
+  .preview-pill .pill-address:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+  .pill-address-full { display: none; position: absolute; left: 12px; right: 12px; bottom: calc(100% + 6px); padding: 6px 10px; border-radius: 8px; background: var(--ink); color: #fff; box-shadow: var(--shadow-md); font-family: var(--mono); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+  .pill-address:focus-visible + .pill-address-full { display: block; }
+  /* Above the bars stacked over the pill while the full address is showing. */
+  .preview-pill:has(.pill-address:focus-visible) { z-index: 7; }
+  .ai-veil { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; gap: 10px; padding: 6px 6px 6px 14px; border-radius: 99px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; }
+  .ai-veil .spark { color: var(--accent-text); }
+
+
+  .starting-mark { position: relative; display: grid; place-items: center; width: 64px; height: 64px; }
+  .starting-mark > svg { position: absolute; }
+  .starting-mark .spinner.lg { width: 64px; height: 64px; border-width: 2px; border-color: color-mix(in srgb, var(--accent) 18%, transparent); border-top-color: var(--accent); }
+  .ai-veil.issue { width: min(560px, calc(100% - 24px)); border-radius: 18px; background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+  /* While editing, the bar sits below the page as a status card: a card's corners and a 3:1 edge. Preview's is its own. */
+  .canvas.edit-mode .ai-veil.issue:not(.retrying) { border-radius: var(--r-md); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); }
+  .canvas.edit-mode .ai-veil.issue.retrying { border-radius: var(--r-md); }
+  .ai-veil.issue > span:not(.spinner) { flex: 1; min-width: 0; }
+  .ai-veil.issue > .spinner { flex: none; }
+  /* Restarting is progress, not a fresh failure. */
+  .ai-veil.issue.retrying { background: var(--raised); border-color: var(--border-strong); }
+  .ai-veil.issue > svg { flex: none; color: var(--red); }
+  .ai-veil.issue .btn { flex: none; }
+  .ai-veil.issue .btn[aria-disabled='true'] { cursor: not-allowed; }
+  /* Focus on filled dark surfaces (selection chip, preview pill): a white ring that reads on the fill. */
+  /* Shared header and footer: the canvas selection and selected layer turn green, matching the shared scope note. */
+  .canvas.sel-shared { --select: #0b6b45; }
+  /* Round 5 polish */
+  /* Outside the filled exit button, in white, so the ring stands clear of both the fill and the pill. */
+  .preview-pill button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  .frame-width-label.gone { visibility: hidden; }
+
+
+  /* A tile dragged from Insert onto the page (#52): the container it goes into, outlined, and what it carries beside the pointer. */
+  .ov-drop-target { outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 6%, transparent); }
+  .ov-drop-target.refused { outline-color: var(--red); background: var(--red-soft); }
+  .ov-moving.ov-placing.refused { background: var(--red); }
+  /* The image a drop from Assets would change: filled in, so it stands out from the outlines around it. */
+  .ov-image-drop { outline: 3px solid var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 22%, transparent); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.7) inset; }
+  /* Over the page with nothing there to take the image: the strip says so, quieter. */
+  .ov-moving.ov-placing.idle { background: #4a5670; }
+  .insert-ghost { position: fixed; z-index: 1000; display: inline-flex; align-items: center; gap: 6px; max-width: 240px; height: 26px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; pointer-events: none; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 4px 10px -2px rgb(16 24 40 / 0.35); }
+  .insert-ghost span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .insert-ghost svg { flex: none; width: 14px; height: 14px; }
+  .insert-ghost.refused { background: var(--red); }
+  html.insert-dragging, html.insert-dragging * { cursor: grabbing !important; user-select: none; }
+  /* A collection's layout being edited: whose layout, the entry it is shown on, and Done, in the strip above the page. */
+  .frame-status.template-strip { gap: 6px; color: var(--text); overflow: visible; }
+  .frame-status.template-strip svg { flex: none; width: 14px; height: 14px; color: var(--accent-text); }
+  .template-strip-name { font-weight: 600; flex: none; }
+  .template-strip-sample { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-2); }
+  .template-strip-sample .select { height: 24px; max-width: 220px; padding-block: 0; font-size: 12px; }
+  .frame-status.template-strip .link-btn { flex: none; min-height: 24px; }
+  .template-no-entries { position: absolute; inset: 0; z-index: 4; display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; background: color-mix(in srgb, var(--canvas-bg, #eef0f3) 88%, transparent); }
+  /* The drop line: 2px of the selection colour between opaque keylines (white, then ink), so it holds at 3:1 on any
+     page, with a ring at its start (inside the page, so the page edge never clips it). */
+  .ov-drop { position: absolute; background: var(--select); border-radius: 1px; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828; pointer-events: none; }
+  .ov-drop::before { content: ''; position: absolute; top: 50%; left: -5px; width: 6px; height: 6px; margin-top: -5px; border: 2px solid var(--select); border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828; }
+  .ov-drop.vertical::before { top: -5px; left: 50%; margin: 0 0 0 -5px; }
+}

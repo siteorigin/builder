@@ -1,3 +1,4 @@
+import './Inspector.css';
 import { axesOf, designLayers, designStyles, selectedVariants, selectedVariantStyles, startingVariants } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
 import { Children, Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
