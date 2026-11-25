@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, constants as fsConstants, existsSync, type BigIntStats, type Dirent } from 'node:fs';
+import { promises as fs, constants as fsConstants, existsSync, statSync, type BigIntStats, type Dirent } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -19,14 +19,14 @@ import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
-import { codeNeeds, filledSlots } from '@engine/definitions';
+import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE } from '@generator/index';
+import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile } from '@generator/index';
 import { sendsFormMessages, type ComponentImport } from '@engine/component-package';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
@@ -1166,16 +1166,16 @@ export class ProjectSession extends EventEmitter {
   /**
    * A design's file edited outside the app made a project code component (#737): the edited file, as it reads from the
    * custom folder, is the component's code, and every placement of the design places it instead. Checked as any code is
-   * before anything changes; then the edited file is kept under Saved copies, the design's file is written again, and the
-   * project saved as one step of history. A save that fails with nothing of it written puts the edited file back, still
-   * in conflict, so the choice can be made again.
+   * before anything changes. Then the edited file is kept under Saved copies and claimed as the app's, so the save itself
+   * (one step of history) writes the design's file again, once its journal is down: a save stopped at any point leaves
+   * the edited file there, still listed, never lost, and one that did not start leaves the conflict as it was.
    */
   private async convertEditedLocked(conflict: Conflict, opts: ConvertOptions): Promise<{ ok: boolean; message?: string; definitionId?: string }> {
     const path = conflict.path;
     const refuse = (message: string) => ({ ok: false, message });
     if (conflict.kind !== 'generated' || !conflict.convert) return refuse('Only a component’s own file, edited outside SiteOrigin Builder, can become a code component.');
-    // Asked here, as every way of making code is, whoever asks.
-    if (opts.codeAllowed === false) return refuse('Custom code needs Developer mode. Turn on Developer mode in Settings to convert this file into a code component.');
+    // Asked here, as every way of making code is, whoever asks: only a plain yes allows it.
+    if (opts.codeAllowed !== true) return refuse('Custom code needs Developer mode. Turn on Developer mode in Settings to convert this file into a code component.');
     // The project's own files are written by the conversion: a conflict on one of them is settled first.
     if (this.pending.size) return refuse('Settle the conflicts of the project’s own files first.');
     const design = designAt(this.state, path);
@@ -1186,10 +1186,16 @@ export class ProjectSession extends EventEmitter {
     if (disk === 'missing') return refuse(`${path} is no longer there, so there is nothing to convert.`);
     if (disk === 'failed' || disk === 'changed') return refuse(`${path} could not be read, so it was not converted. Check that it is a file you can open, then try again.`);
     if (opts.expect !== undefined && sha(disk.bytes) !== opts.expect) return refuse(CHANGED_SINCE_COMPARED);
-    const text = textOfBytes(disk.bytes);
-    if (text === null) return refuse(`${path} is not text, so it can’t become a code component.`);
     const builder = await this.generatedContent(path);
     if (builder === undefined) return refuse('That file is no longer generated.');
+    // Put back as SiteOrigin Builder's version meanwhile: nothing of anyone's to convert, and no conflict once looked at.
+    if (disk.bytes.equals(typeof builder === 'string' ? Buffer.from(builder) : builder) || sha(disk.bytes) === this.generated.files[path]) {
+      const changedFiles = await this.publishGenerated(false);
+      this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles, label: 'Resolve conflict', source: 'user' } satisfies SessionEvent);
+      return refuse('The file is SiteOrigin Builder’s version again, so there is nothing to convert.');
+    }
+    const text = textOfBytes(disk.bytes);
+    if (text === null) return refuse(`${path} is not text, so it can’t become a code component.`);
     const next = clone(this.state);
     let made: { definitionId: string; sourcePath: string };
     try {
@@ -1198,7 +1204,12 @@ export class ProjectSession extends EventEmitter {
       return refuse((e as Error).message);
     }
     const def = next.components[made.definitionId];
-    def.source = await relocateSource(text, path, made.sourcePath);
+    // A contact form's copy for AI agents is written only while the site declares tools: the code imports the form.
+    const adapters = new Map(Object.values(next.components).flatMap((d) => (d.kind === 'code' ? [[webMcpFormFile(d), defFile(d)] as const] : [])));
+    def.source = await relocateSource(text, path, made.sourcePath, (target) => adapters.get(target));
+    // The parts and slots the edited code shows for itself are declared too, as for any code saved.
+    const names = await codeContractNames(def.source);
+    if (names) declareCodeNames(def, names);
     const pin = themePinProblem(next);
     if (pin) return refuse(pin);
     // Held to what any code component is, with every import it makes found in the project as it will be.
@@ -1209,68 +1220,46 @@ export class ProjectSession extends EventEmitter {
       return refuse(`The project could not be generated with the code component: ${(e as Error).message}`);
     }
     const resolve = componentSources(next.components);
+    /** A file the project has there: one the app writes, a component's code, or the project's own (never a folder). */
     const exists = (p: string) => {
+      const file = p.replace(/[?#].*$/, '');
+      if (files.has(file) || resolve(file) !== undefined) return true;
       try {
-        return existsSync(safeJoin(this.dir, p));
+        return statSync(safeJoin(this.dir, file)).isFile();
       } catch {
         return false;
       }
     };
     const problems = (
-      await checkSvelteSource(def.source!, {
+      await checkSvelteSource(def.source, {
         filename: def.sourcePath,
         contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def) },
         resolve,
-        modules: (p) => files.has(p) || resolve(p) !== undefined || exists(p)
+        modules: exists
       })
     ).filter((p) => p.severity === 'error');
     if (problems.length) return refuse(`The edited file can’t become a code component: ${problems.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')} Fix the file and try again, or use SiteOrigin Builder’s version.`);
     const introduced = introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
     if (introduced.length) return refuse(`The edited file can’t become a code component: ${introduced.map((d) => d.message).join(' ')}`);
-    // Kept byte for byte, and listed under Saved copies, before the design's file is written again.
+    // Kept byte for byte, and listed under Saved copies, before anything is replaced.
     await this.saveCopy(path, 'generated', 'external', disk.bytes);
     const claimed = this.generated.files[path];
-    this.seenOnDisk.delete(abs);
-    try {
-      await atomicWrite(abs, builder, {
-        beforeReplace: async () => {
-          if ((await handleStamp(abs)) === disk.stamp) return true;
-          throw new Error(`${path} changed while it was being converted, so nothing was converted. ${CHANGED_SINCE_COMPARED}`);
-        }
-      });
-    } catch (e) {
-      return refuse((e as Error).message);
-    }
-    this.landing?.add(path);
-    this.generated.files[path] = sha(builder);
+    this.generated.files[path] = sha(disk.bytes);
+    const before = this.state;
     try {
       await this.persist(next, { label: `Convert “${design.name}” to code`, source: 'user', wholeProject: true });
     } catch (e) {
-      // Nothing of the project was written (a file saved outside the app meanwhile, no room on the disk): the edited
-      // file goes back, still the design's file and still in conflict. Past that, reopening finishes the save.
-      if (!this.unsettled) await this.putBackEdited(path, builder, disk.bytes, claimed);
-      return refuse(e instanceof DiskConflictError ? `${e.message} Nothing was converted.` : `The conversion could not be saved, so nothing was converted: ${(e as Error).message}`);
+      const why = (e as Error).message;
+      // Saved as far as the project's own files: reopening finishes the rest.
+      if (this.state !== before) return refuse(`The code component was saved, but the save could not be finished: ${why} Close and reopen the project to finish it.`);
+      // Nothing of it installed: the edited file is someone else's again, still in conflict, to choose for again.
+      if (claimed === undefined) delete this.generated.files[path];
+      else this.generated.files[path] = claimed;
+      return refuse(e instanceof DiskConflictError ? `${why} Nothing was converted.` : `The conversion could not be saved, so nothing was converted: ${why}`);
     }
+    // Saved again outside the app while it was being converted: that newer version stays, listed again.
+    if (this.conflicts.some((c) => c.path === path)) return { ok: true, definitionId: made.definitionId, message: `${path} was saved again while it was being converted. The version read is now the code component; the newer one is listed again.` };
     return { ok: true, definitionId: made.definitionId };
-  }
-
-  /** The edited file put back over the design's file written for a conversion that could not be saved (see above). */
-  private async putBackEdited(path: string, written: string | Buffer, edited: Buffer, claimed: string | undefined) {
-    const abs = safeJoin(this.dir, path);
-    try {
-      const now = await readFileAt(abs);
-      // Only over the file the conversion wrote: anything saved there since is someone's, and stays.
-      if (typeof now === 'object' && now.bytes.equals(typeof written === 'string' ? Buffer.from(written) : written)) {
-        this.seenOnDisk.delete(abs);
-        await atomicWrite(abs, edited, { beforeReplace: async () => (await handleStamp(abs)) === now.stamp });
-        this.landing?.add(path);
-      }
-    } catch (e) {
-      console.warn(`The edited file could not be put back: ${(e as Error).message}`);
-    }
-    if (claimed === undefined) delete this.generated.files[path];
-    else this.generated.files[path] = claimed;
-    await this.publishGenerated(false).catch((e) => console.warn(`Generation after a failed conversion: ${(e as Error).message}`));
   }
 
   // -------------------------------------------------------------------------

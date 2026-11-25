@@ -3648,6 +3648,9 @@ function insideRepeat(def: ComponentDefinition, parents: Map<string, string>, no
  * outside lists. A code component that declares the property itself owns it and is never handed the flag.
  */
 function takesEager(state: ProjectState, def: ComponentDefinition, memo: Map<string, boolean> = new Map()): boolean {
+  // A design's file converted to code takes the flag as the design's file did (a property of that name went by another).
+  const design = designCalled(state, def);
+  if (design) return takesEager(state, design, memo);
   // A plain token test: linear in the source, and blind to how the author writes the destructuring.
   if (def.kind === 'code') return !Object.hasOwn(def.properties, 'so_eager') && /\bso_eager\b/.test(def.source ?? '');
   return treeTakesEager(state, def, memo, new Set());
@@ -3693,6 +3696,9 @@ interface RowNeeds {
  * decides; entry feeds are chosen by a placement's properties, which code does not have, so it gets none.
  */
 function pageRowNeeds(state: ProjectState, def: ComponentDefinition, memo: Map<string, RowNeeds | null> = new Map(), path: Set<string> = new Set()): RowNeeds | null {
+  // A design's file converted to code needs the rows the design's file needed, given as the design's were.
+  const design = designCalled(state, def);
+  if (design) return pageRowNeeds(state, design, memo, path);
   if (def.kind === 'code') {
     const source = def.source ?? '';
     if (Object.hasOwn(def.properties, 'so_pages') || !/\bso_pages\b/.test(source) || path.has(def.id)) return null;

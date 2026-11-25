@@ -8,10 +8,13 @@ import { defFile } from '@generator/index';
 
 type Node = { type: string; start?: number; end?: number; [k: string]: unknown };
 
-/** The design whose generated file `path` is, or undefined: only a design's own file, never a copy or any other file. */
+/**
+ * The design whose generated file `path` is, or undefined: only a design's own file, never a copy or any other file,
+ * and only one no other definition's file shares (two IDs can make one file name).
+ */
 export function designAt(state: ProjectState, path: string): ComponentDefinition | undefined {
-  for (const def of Object.values(state.components)) if (def.kind === 'managed' && def.tree && defFile(def) === path) return def;
-  return undefined;
+  const made = Object.values(state.components).filter((def) => defFile(def) === path);
+  return made.length === 1 && made[0].kind === 'managed' && made[0].tree ? made[0] : undefined;
 }
 
 /** The file's bytes as text, or null when they are not text that reads back byte for byte (a binary file, say). */
@@ -28,24 +31,39 @@ export function textOfBytes(bytes: Buffer): string | null {
  * changes; every other byte, the header note included, stays as the developer left it. Code that does not parse is
  * returned as it is, for the code check to name what is wrong with it.
  */
-export async function relocateSource(source: string, from: string, to: string): Promise<string> {
+export async function relocateSource(source: string, from: string, to: string, redirect?: (target: string) => string | undefined): Promise<string> {
   const fromDir = posix.dirname(from);
   const toDir = posix.dirname(to);
-  if (fromDir === toDir) return source;
+  /** The reference as it reads from the new folder, or null when it reads the same there (or is not module-relative). */
   const moved = (spec: string): string | null => {
     if (!spec.startsWith('./') && !spec.startsWith('../')) return null;
-    const target = posix.join(fromDir, spec);
+    // A query or fragment (`?url`, `#icon`) stays as it was written after the path.
+    const cut = spec.search(/[?#]/);
+    const path = cut < 0 ? spec : spec.slice(0, cut);
+    const suffix = cut < 0 ? '' : spec.slice(cut);
+    const was = posix.join(fromDir, path);
+    // A file the generator writes only now and then (a contact form's copy for AI agents) is read as the file it copies.
+    const target = redirect?.(was) ?? was;
     // Written as it was wherever it still leads to the same file (the runtime helpers, another custom component).
-    if (posix.join(toDir, spec) === target) return null;
+    if (target === was && posix.join(toDir, path) === target) return null;
     const rel = posix.relative(toDir, target);
     const next = rel.startsWith('.') ? rel : `./${rel}`;
     // A trailing slash (a folder's index) is kept as it was written.
-    const out = spec.endsWith('/') && !next.endsWith('/') ? `${next}/` : next;
+    const out = (path.endsWith('/') && !next.endsWith('/') ? `${next}/` : next) + suffix;
     return out === spec ? null : out;
   };
+  /** A URL in styles or `new URL()`, which is relative to the file even when it does not start with a dot. */
+  const movedUrl = (url: string): string | null => {
+    if (!url || /^(?:[a-z][a-z0-9+.-]*:|\/|#|\$|~|%)/i.test(url)) return null;
+    return moved(url.startsWith('.') ? url : `./${url}`);
+  };
+  if (fromDir === toDir && !redirect) return source;
   const edits: Array<{ start: number; end: number; text: string }> = [];
-  /** A string literal written as plain quotes around exactly its value: anything with escapes in it is left alone. */
-  const literal = (n: Node | undefined) => {
+  /**
+   * A string literal: only the path inside its quotes changes when it is written plainly; one written with escapes is
+   * written again whole, plainly, in the same quotes.
+   */
+  const literal = (n: Node | undefined, move: (spec: string) => string | null = moved) => {
     if (!n || typeof n.start !== 'number' || typeof n.end !== 'number') return;
     const start = n.start + 1;
     const end = n.end - 1;
@@ -55,9 +73,13 @@ export async function relocateSource(source: string, from: string, to: string): 
       const q = (n.quasis as Node[])[0];
       value = (q?.value as { cooked?: string } | undefined)?.cooked;
     } else return;
-    if (typeof value !== 'string' || source.slice(start, end) !== value) return;
-    const next = moved(value);
-    if (next !== null) edits.push({ start, end, text: next });
+    if (typeof value !== 'string') return;
+    const next = move(value);
+    if (next === null) return;
+    if (source.slice(start, end) === value) return void edits.push({ start, end, text: next });
+    const quote = source[n.start];
+    const escaped = next.replace(/\\/g, '\\\\').replaceAll(quote, `\\${quote}`).replace(/\$\{/g, '\\${');
+    edits.push({ start: n.start, end: n.end, text: `${quote}${escaped}${quote}` });
   };
   let ast: Node;
   try {
@@ -76,28 +98,41 @@ export async function relocateSource(source: string, from: string, to: string): 
     if (n.type === 'NewExpression' && (n.callee as Node | undefined)?.type === 'Identifier' && (n.callee as Node).name === 'URL') {
       const [spec, base] = (n.arguments as Node[]) ?? [];
       const meta = base?.type === 'MemberExpression' && (base.object as Node)?.type === 'MetaProperty' && (base.property as Node)?.name === 'url';
-      if (meta) literal(spec);
+      if (meta) literal(spec, movedUrl);
     }
     for (const [k, child] of Object.entries(n)) if (k !== 'parent' && k !== 'metadata') walk(child);
   };
   walk(ast.instance);
   walk(ast.module);
   walk(ast.fragment);
-  // Styles: a relative stylesheet or picture is found from the file's folder too.
-  const css = ast.css as { content?: { start?: number; styles?: string } } | null;
-  const styles = css?.content?.styles;
-  const at = css?.content?.start;
-  if (typeof styles === 'string' && typeof at === 'number' && source.slice(at, at + styles.length) === styles) {
-    for (const re of [/url\(\s*(['"]?)(\.{1,2}\/[^'")\s]*)\1\s*\)/g, /@import\s+(['"])(\.{1,2}\/[^'"]*)\1/g]) {
-      for (const m of styles.matchAll(re)) {
-        const next = moved(m[2]);
-        if (next === null) continue;
-        // The path is the match's last part: only a quote or the bracket follows it.
-        const start = at + m.index! + m[0].lastIndexOf(m[2]);
-        edits.push({ start, end: start + m[2].length, text: next });
-      }
+  // Styles: a relative stylesheet or picture is found from the file's folder too. Only real declarations and imports
+  // are read (never a comment, nor the words a `content` shows), each URL quoted or not.
+  const urls = (from: number, to: number, imports: boolean) => {
+    const text = source.slice(from, to);
+    const found = [...text.matchAll(/url\(\s*(?:(["'])((?:(?!\1)[^\\\n])*)\1|([^"'()\s\\]+))\s*\)/gi)].map((m) => ({ m, url: m[2] ?? m[3] }));
+    if (imports) for (const m of text.matchAll(/@import\s+(["'])((?:(?!\1)[^\\\n])*)\1/gi)) found.push({ m, url: m[2] });
+    for (const { m, url } of found) {
+      const next = movedUrl(url);
+      if (next === null) continue;
+      // The URL is the match's last part: only a quote or the bracket follows it.
+      const start = from + m.index! + m[0].lastIndexOf(url);
+      edits.push({ start, end: start + url.length, text: next });
     }
-  }
+  };
+  const styles = (v: unknown) => {
+    if (!v || typeof v !== 'object') return;
+    if (Array.isArray(v)) return v.forEach(styles);
+    const n = v as Node;
+    if (typeof n.start === 'number' && typeof n.end === 'number') {
+      if (n.type === 'Declaration' && String(n.property).toLowerCase() !== 'content') return urls(n.start, n.end, false);
+      if (n.type === 'Atrule' && String(n.name).toLowerCase() === 'import') return urls(n.start, n.end, true);
+    }
+    if (n.type === 'StyleSheet' || n.type === 'Rule' || n.type === 'Atrule' || n.type === 'Block') {
+      styles(n.children);
+      styles(n.block);
+    }
+  };
+  styles(ast.css);
   if (!edits.length) return source;
   // Applied from the end, so each one's offsets still hold.
   edits.sort((a, b) => b.start - a.start);

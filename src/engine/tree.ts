@@ -353,17 +353,8 @@ export function anchorsInUse(state: ProjectState, owner: OwnerRef, exceptNodeId?
   return out;
 }
 
-/**
- * Code that is a design's generated file, edited outside the app and converted (`generatedFrom`): it renders that
- * design's root, which takes an anchor and an entrance from its placement as the design's file always did.
- */
-function calledAsDesign(state: Pick<ProjectState, 'components'>, def: ComponentDefinition | undefined): boolean {
-  return def?.kind === 'code' && !!def.generatedFrom && Object.hasOwn(state.components, def.generatedFrom) && state.components[def.generatedFrom].kind === 'managed';
-}
-
 /** A managed definition places a placement's anchor on its root, unless that root is a code component. */
 export function anchorCapable(state: ProjectState, def: ComponentDefinition | undefined, depth = 0): boolean {
-  if (depth <= 10 && calledAsDesign(state, def)) return anchorCapable(state, state.components[def!.generatedFrom!], depth + 1);
   if (!def || def.kind !== 'managed' || !def.tree || depth > 10) return false;
   const root = def.tree.nodes[def.tree.rootIds[0]];
   return root?.kind !== 'instance' || anchorCapable(state, state.components[root.definitionId], depth + 1);
@@ -374,7 +365,6 @@ export function anchorCapable(state: ProjectState, def: ComponentDefinition | un
  * container's, or, for a root that places another design, that placement's choice or else its design's.
  */
 export function designAppear(state: ProjectState, def: ComponentDefinition | undefined, depth = 0): AppearPreset | undefined {
-  if (depth <= 10 && calledAsDesign(state, def)) return designAppear(state, state.components[def!.generatedFrom!], depth + 1);
   if (!def || def.kind !== 'managed' || !def.tree || depth > 10) return undefined;
   const root = def.tree.nodes[def.tree.rootIds[0]];
   if (root?.kind === 'element') return isAppearPreset(root.appear) ? root.appear : undefined;

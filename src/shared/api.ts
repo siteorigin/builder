@@ -1091,9 +1091,10 @@ export interface BuilderApi {
     restoreGenerated(path: string): Promise<void>;
     /**
      * Settle a file conflict. `convert` (a design's own file, `conflicts[].convert`) makes the edited file a code
-     * component in the design's place; `expect` is the SHA-256 of the file's bytes as the author compared them.
+     * component in the design's place; `expect` is the SHA-256 of the file's bytes as the author compared them, and
+     * `opening` the snapshot's `workspaceKey` it was chosen in.
      */
-    resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: string }): Promise<{ ok: boolean; message?: string; definitionId?: string }>;
+    resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: string; opening?: string }): Promise<{ ok: boolean; message?: string; definitionId?: string }>;
     /**
      * The versions of a file in conflict, to compare before choosing: SiteOrigin Builder's and the one on disk, and
      * for a conflict an AI request's rollback left (`aiRun`), the version that request tried to save.

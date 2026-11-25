@@ -1202,7 +1202,7 @@ describe('converting a design’s edited file to a code component (#737)', () =>
     expect(r).toEqual({ ok: true, definitionId: expect.any(String) });
     const code = s.state.components[r.definitionId!];
     const hero = s.state.components[HERO];
-    expect(code).toMatchObject({ kind: 'code', owner: 'project', generatedFrom: HERO, provenance: expect.objectContaining({ forkedFrom: HERO }) });
+    expect(code).toMatchObject({ kind: 'code', owner: 'project', generatedFrom: HERO, componentId: hero.componentId, provenance: expect.objectContaining({ forkedFrom: HERO }) });
     expect(code.sourcePath).toMatch(/^src\/lib\/siteorigin\/custom\/[A-Za-z0-9_-]+\.svelte$/);
     // The edited file byte for byte, but for the one import the new folder needs.
     expect(code.source).toBe(edited.replace('"./foundation-cta-banner.svelte"', '"../generated/foundation-cta-banner.svelte"'));
@@ -1233,7 +1233,7 @@ describe('converting a design’s edited file to a code component (#737)', () =>
   });
 
   it('undoes the whole conversion in one step without bringing the conflict back, and keeps it across a reopen', async () => {
-    const { dir, s, before } = await editedHero();
+    const { dir, s, before, edited, generated } = await editedHero();
     const r = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });
     expect(r.ok).toBe(true);
     const code = s.state.components[r.definitionId!];
@@ -1242,17 +1242,21 @@ describe('converting a design’s edited file to a code component (#737)', () =>
     expect(Object.hasOwn(s.state.components, r.definitionId!)).toBe(false);
     expect(existsSync(join(dir, code.sourcePath!))).toBe(false);
     expect(s.conflicts).toEqual([]);
+    expect(readFileSync(join(dir, HERO_FILE), 'utf8')).toBe(generated);
     // The edited file stays under Saved copies whatever is undone.
     expect(s.savedCopies).toHaveLength(1);
     expect((await s.redo()).ok).toBe(true);
     expect(placements(s.state, r.definitionId!)).toEqual(before);
     expect(readFileSync(join(dir, code.sourcePath!), 'utf8')).toBe(code.source);
 
+    const [copy] = s.savedCopies;
     await s.close();
     const again = await reopen(dir);
     expect(again.state.components[r.definitionId!]).toMatchObject({ kind: 'code', source: code.source, generatedFrom: HERO });
     expect(placements(again.state, r.definitionId!)).toEqual(before);
     expect(again.conflicts).toEqual([]);
+    expect(again.savedCopies).toEqual([copy]);
+    expect(await again.readSavedCopy(copy.id)).toEqual({ ok: true, content: { state: 'text', text: edited } });
   });
 
   it('never offers it for a page, a stylesheet or a file that is not text, and refuses it there', async () => {
@@ -1308,7 +1312,21 @@ describe('converting a design’s edited file to a code component (#737)', () =>
     expect(s.savedCopies).toEqual([]);
   });
 
-  it('puts the edited file back, still in conflict, when the conversion cannot be saved', async () => {
+  it('converts nothing once the file is SiteOrigin Builder’s version again, and lets the conflict go', async () => {
+    const { dir, s, generated } = await editedHero();
+    writeFileSync(join(dir, HERO_FILE), generated);
+    const r = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });
+    expect(r).toEqual({ ok: false, message: 'The file is SiteOrigin Builder’s version again, so there is nothing to convert.' });
+    expect(s.conflicts).toEqual([]);
+    expect(Object.values(s.state.components).some((d) => d.kind === 'code' && d.owner === 'project')).toBe(false);
+    expect(s.savedCopies).toEqual([]);
+    // Without a plain yes for Developer mode, nothing is converted either.
+    writeFileSync(join(dir, HERO_FILE), `${generated}<p>again</p>\n`);
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Again' }] }, { label: 'Touch' })).ok).toBe(true);
+    expect((await s.resolveConflict(HERO_FILE, 'convert')).message).toMatch(/Custom code needs Developer mode/);
+  });
+
+  it('leaves the edited file in place, still in conflict, when the conversion cannot be saved', async () => {
     const { dir, s, edited } = await editedHero();
     const persist = vi.spyOn(s as unknown as { persist: () => Promise<unknown> }, 'persist').mockRejectedValueOnce(Object.assign(new Error('no space left on device'), { code: 'ENOSPC' }));
     const r = await s.resolveConflict(HERO_FILE, 'convert', { codeAllowed: true });

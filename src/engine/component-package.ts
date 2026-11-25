@@ -247,10 +247,13 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
   const defs = packageClosure(state, rootId).map(clone);
   for (const def of defs) {
     if (def.category === 'shell') fail(`${quoted(def.name)} is part of the shared header or footer, which stays with its site.`);
+    // A design's own file converted to code names the classes the design's ID makes, which take new names where the
+    // package lands: its styles would not follow it.
+    if (def.kind === 'code' && def.generatedFrom)
+      fail(`${quoted(def.name)} is a design's file edited outside SiteOrigin Builder, which still relies on that design's styles. Convert the design to code from the Inspector, then export that.`);
     // Code converted by an early version still leans on the original design's stylesheet, which a package can't carry.
-    // A design's own file converted to code names its design as a dependency, so the design (and its styles) go too.
     const from = def.provenance?.forkedFrom;
-    if (def.kind === 'code' && from && def.generatedFrom !== from && def.source?.includes(`so-${defKey(from)}__`))
+    if (def.kind === 'code' && from && def.source?.includes(`so-${defKey(from)}__`))
       fail(`${quoted(def.name)} was converted to code by an earlier version and still relies on the original design's styles. Convert the design to code again, then export that.`);
   }
   // Code that writes a library file's address shows a file the other site won't have, wherever it lands.

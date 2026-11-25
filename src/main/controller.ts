@@ -824,7 +824,7 @@ export class Controller {
    * Settle a file conflict: keep the version changed outside the app, restore SiteOrigin Builder's version, or (a
    * design's own file) convert the edited file into a code component, which needs Developer mode as all code does.
    */
-  async resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: unknown }): Promise<{ ok: boolean; message?: string; definitionId?: string }> {
+  async resolveConflict(path: string, choice: ConflictChoice, opts?: { expect?: unknown; opening?: unknown }): Promise<{ ok: boolean; message?: string; definitionId?: string }> {
     const s = this.session;
     if (!s) return { ok: false, message: 'No project is open.' };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish first.' };
@@ -833,9 +833,11 @@ export class Controller {
     if (choice !== 'convert') return s.resolveConflict(path, choice);
     const expect = opts?.expect;
     if (expect !== undefined && (typeof expect !== 'string' || !/^[0-9a-f]{64}$/.test(expect))) return { ok: false, message: 'Choose which version to keep.' };
-    const codeAllowed = (await loadSettings()).settings.developerMode;
-    // Settled in the project it was asked in.
-    if (this.session !== s || this.closing) return { ok: false, message: 'The project was closed before this could be settled.' };
+    // Made in the opening of the project it was asked in, never another one opened at the same folder since.
+    const closed = { ok: false, message: 'The project was closed before this could be settled.' };
+    if (opts?.opening !== undefined && opts.opening !== this.workspaceKey) return closed;
+    const codeAllowed = (await loadSettings()).settings.developerMode === true;
+    if (this.session !== s || this.closing || (opts?.opening !== undefined && opts.opening !== this.workspaceKey)) return closed;
     return s.resolveConflict(path, 'convert', { expect, codeAllowed });
   }
 

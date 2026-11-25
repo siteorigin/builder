@@ -677,13 +677,14 @@ export function HealthModal() {
       if (!checked) return;
       settling.current = { path, before: snap.conflicts.map((c) => c.path) };
       const subject = conflictSubject(st, path);
-      const r = await api.project.resolveConflict(path, choice, choice === 'convert' && checked.expect ? { expect: checked.expect } : undefined);
+      // A conversion names the opening it was chosen in, and the bytes it was compared as.
+      const r = await api.project.resolveConflict(path, choice, choice === 'convert' ? { opening: snap.workspaceKey, ...(checked.expect ? { expect: checked.expect } : {}) } : undefined);
       if (!r.ok) {
         settling.current = null;
         const message = r.message ?? (choice === 'convert' ? 'The file could not be converted.' : undefined);
         if (message && choice === 'convert' && onRefused) onRefused(message);
         else if (message) toast(message, 'error');
-      } else if (choice === 'convert') setStatus(`${subject} is now a code component, used everywhere the component was. The edited file is also under Saved copies.`);
+      } else if (choice === 'convert') setStatus(r.message ?? `${subject} is now a code component, which the component’s placements use. The edited file is also under Saved copies.`);
       else setStatus(`${subject} settled. The version you replaced is under Saved copies.`);
     } catch (e) {
       settling.current = null;
@@ -1256,7 +1257,7 @@ function ConflictRow({
                   <button className="btn btn-sm" aria-disabled={held || !codeEnabled || undefined} aria-describedby={`${ids}-convert`} onClick={() => codeEnabled && choose('convert')}>
                     Convert to code component
                   </button>
-                  <span id={`${ids}-convert`}>{codeEnabled ? 'Makes the edited file a code component, used everywhere this component is.' : 'Custom code needs Developer mode. Turn it on in Settings to make the edited file a code component.'}</span>
+                  <span id={`${ids}-convert`}>{codeEnabled ? 'Makes the edited file a code component that this component’s placements use.' : 'Custom code needs Developer mode. Turn it on in Settings to make the edited file a code component.'}</span>
                   {refused && (
                     <p className="health-hint health-refused" role="alert">
                       {refused}

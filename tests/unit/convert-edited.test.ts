@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { convertEditedDesign } from '@engine/apply';
-import { anchorCapable, instancesOf } from '@engine/tree';
+import { instancesOf } from '@engine/tree';
+import { takesComponent } from '@engine/slots';
 import { defFile, generateProject } from '@generator/index';
 import { repeatedPartList } from '@shared/item-styles';
 import type { InstanceNode, ProjectState } from '@shared/types';
-import { relocateSource } from '../../src/main/project/edited-design';
+import { relocateSource, textOfBytes } from '../../src/main/project/edited-design';
 
 const FROM = 'src/lib/siteorigin/generated/hero.svelte';
 const TO = 'src/lib/siteorigin/custom/HeroCode-ab12c.svelte';
@@ -52,6 +53,42 @@ describe('a design’s file moved to the custom folder (#737)', () => {
     expect(out).toContain('\r\n');
     expect(out).toContain("const text = './not-a-module.svelte';");
     expect(out).toContain('<a href="./about">');
+  });
+
+  it('follows escaped paths, queries, bare style URLs and a form’s copy for AI agents, and leaves words alone', async () => {
+    const source = [
+      '<script>',
+      '\timport A from ".\\x2fa.js";',
+      "\timport icon from './icon.svg?url';",
+      "\timport Form from './contact-form.webmcp.svelte';",
+      "\tconst pic = new URL('pic.png', import.meta.url);",
+      '</script>',
+      '',
+      '<style>',
+      '\t/* url(./comment.png) */',
+      '\t.a::after { content: "url(./literal.png)"; }',
+      '\t.b { background: URL("./has space.png"); }',
+      '\t.c { background: url(bare.png); }',
+      '\t.d { background: url(/root.png), url(data:image/png;base64,AA==); }',
+      '</style>',
+      ''
+    ].join('\n');
+    const redirect = (target: string) => (target === 'src/lib/siteorigin/generated/contact-form.webmcp.svelte' ? 'src/lib/siteorigin/generated/contact-form.svelte' : undefined);
+    expect(await relocateSource(source, FROM, TO, redirect)).toBe(
+      source
+        .replace('".\\x2fa.js"', '"../generated/a.js"')
+        .replace("'./icon.svg?url'", "'../generated/icon.svg?url'")
+        .replace("'./contact-form.webmcp.svelte'", "'../generated/contact-form.svelte'")
+        .replace("'pic.png'", "'../generated/pic.png'")
+        .replace('URL("./has space.png")', 'URL("../generated/has space.png")')
+        .replace('url(bare.png)', 'url(../generated/bare.png)')
+    );
+  });
+
+  it('reads a file as code only when its bytes are text that reads back exactly', () => {
+    expect(textOfBytes(Buffer.from('\uFEFF<p>a</p>\r\n'))).toBe('\uFEFF<p>a</p>\r\n');
+    expect(textOfBytes(Buffer.from([0x3c, 0x70, 0x00, 0x3e]))).toBeNull();
+    expect(textOfBytes(Buffer.from([0x3c, 0x70, 0xff, 0x3e]))).toBeNull();
   });
 
   it('leaves code that does not parse, or that needs no change, exactly as it is', async () => {
@@ -125,8 +162,8 @@ describe('placements of a converted design file (#737)', () => {
       expect(asDesigns(now.get(path) ?? '', after, ids), path).toBe(asDesigns(text, after, ids));
     }
     // The converted placement keeps its anchor and its entrance as the design's file took them.
-    expect(anchorCapable(after, after.components[ids[hero]])).toBe(true);
     const home = now.get('src/routes/+page.svelte')!;
+    expect(home).toContain('"welcome"');
     expect(home).toMatch(/so_appear=\{?"lift"\}?/);
     expect(home).not.toMatch(/\bvariant=/);
   });
@@ -136,6 +173,26 @@ describe('placements of a converted design file (#737)', () => {
     const now = generateProject(after, { instrument: false });
     // Without the link it is called as any code component is: the first axis as `variant`, no entrance passed.
     expect(now.get('src/routes/+page.svelte')).toMatch(/\bvariant=/);
+    expect(now.get('src/routes/+page.svelte')).not.toMatch(/so_appear=\{?"lift"/);
     expect(asDesigns(now.get('src/routes/+page.svelte')!, after, ids)).not.toBe(asDesigns(before.get('src/routes/+page.svelte')!, after, ids));
+  });
+});
+
+describe('the code a design’s file becomes (#737)', () => {
+  it('keeps the design’s contract, so a slot that takes the design takes it too', () => {
+    const state = createStarterState('business', 'Convert', false);
+    const hero = state.components['foundation.hero.split'];
+    const made = convertEditedDesign(state, hero.id, '<p>edited</p>\n');
+    const code = state.components[made.definitionId];
+    expect(code).toMatchObject({ kind: 'code', owner: 'project', componentId: hero.componentId, category: hero.category, generatedFrom: hero.id });
+    expect(takesComponent({ label: 'Hero', componentIds: [hero.id] }, code)).toBe(true);
+    expect(takesComponent({ label: 'Hero', componentIds: [hero.componentId] }, code)).toBe(true);
+    expect(takesComponent({ label: 'Other', componentIds: ['foundation.cta.banner'] }, code)).toBe(false);
+    // The variant names, and what each option says of itself, are kept; their styles stay the design's.
+    for (const [axis, a] of Object.entries(hero.variantAxes ?? {}))
+      for (const [option, o] of Object.entries(a.options)) {
+        const { styles: _styles, ...rest } = o;
+        expect(code.variantAxes?.[axis]?.options[option]).toEqual(rest);
+      }
   });
 });

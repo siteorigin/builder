@@ -3604,14 +3604,16 @@ export function convertEditedDesign(state: ProjectState, definitionId: string, s
   if (!def || def.kind !== 'managed' || !def.tree) return fail('That file is not a component design SiteOrigin Builder makes.');
   const name = `${def.name} (code)`;
   let id = projectDefId(name, 'code');
-  const paths = new Set(Object.values(state.components).flatMap((d) => (d.sourcePath ? [d.sourcePath] : [])));
+  // Compared case-folded: on a case-insensitive disk two such names are one file.
+  const paths = new Set(Object.values(state.components).flatMap((d) => (d.sourcePath ? [d.sourcePath.toLowerCase()] : [])));
   const pathOf = (i: string) => `${CUSTOM_DIR}/${pascal(name)}-${i.slice(-5).replace(/[^A-Za-z0-9]/g, '')}.svelte`;
   // A random suffix can repeat one already in use: never put the new code in place of existing code.
-  while (Object.hasOwn(state.components, id) || paths.has(pathOf(id))) id = projectDefId(name, 'code');
+  while (Object.hasOwn(state.components, id) || paths.has(pathOf(id).toLowerCase())) id = projectDefId(name, 'code');
   const copy: ComponentDefinition = {
     ...clone(def),
     id,
-    componentId: `project.${slugify(name) || 'component'}`,
+    // The design's contract: a slot that takes the design by it takes the code too, as for Edit everywhere's copy.
+    componentId: def.componentId,
     kind: 'code',
     owner: 'project',
     name,
@@ -3629,8 +3631,23 @@ export function convertEditedDesign(state: ProjectState, definitionId: string, s
     if (schema.type === 'richtext') schema.codeForm = 'blocks';
     if (schema.type === 'list' || schema.type === 'object') for (const f of Object.values(schema.fields)) if (f.type === 'richtext') f.codeForm = 'blocks';
   }
-  // Variant styles are the design's, in the shared stylesheet; the variant names remain the component's contract.
-  if (copy.variantAxes) copy.variantAxes = Object.fromEntries(Object.entries(copy.variantAxes).map(([axis, a]) => [axis, { ...a, options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, { label: v.label }])) }]));
+  // Variant styles are the design's, in the shared stylesheet; the variant names (and what else an option says of
+  // itself) remain the component's contract.
+  if (copy.variantAxes)
+    copy.variantAxes = Object.fromEntries(
+      Object.entries(copy.variantAxes).map(([axis, a]) => [
+        axis,
+        {
+          ...a,
+          options: Object.fromEntries(
+            Object.entries(a.options).map(([k, v]) => {
+              const { styles: _styles, ...rest } = v;
+              return [k, rest];
+            })
+          )
+        }
+      ])
+    );
   state.components[id] = copy;
   for (const { node, owner } of instancesOf(state, def.id)) {
     if (owner.kind === 'component' && state.components[owner.id]?.owner !== 'project') continue;

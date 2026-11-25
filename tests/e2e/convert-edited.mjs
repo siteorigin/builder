@@ -74,7 +74,7 @@ await setDeveloperMode(true);
 writeFileSync(join(dir, HERO), edited.replace('<script>\n', '<script>\n\tlet broken = ;\n'));
 health = await openHealth();
 await eventually(async () => assert.equal(await convert.getAttribute('aria-disabled'), null, 'offered with Developer mode'));
-assert.match(await heroRow.innerText(), /Makes the edited file a code component, used everywhere this component is\./);
+assert.match(await heroRow.innerText(), /Makes the edited file a code component that this component’s placements use\./);
 await convert.click();
 const refusal = heroRow.getByRole('alert');
 await refusal.waitFor();
