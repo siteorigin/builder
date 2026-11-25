@@ -352,19 +352,20 @@ export function introducedProblems(before: Findings | null, after: Findings): st
   const out: string[] = [];
   if (after.wide && !before?.wide)
     out.push(after.documentWidth !== undefined && after.viewportWidth !== undefined ? `The page is ${after.documentWidth}px wide on a ${after.viewportWidth}px screen.` : 'The page is wider than the screen.');
-  // A full list can leave out a finding the page already had, so only a kind it had none of counts as new then.
-  for (const [key, { line, n }] of after.overflow) {
-    if (after.wide && key.startsWith('horizontal-overflow|')) continue;
-    const kind = key.slice(0, key.indexOf('|'));
-    if (before?.saturated ? !before.kinds.has(kind) : n > (before?.overflow.get(key)?.n ?? 0)) out.push(line);
-  }
+  // Script errors and images before element overflow, so a long list of overflow never hides them.
+  for (const [e, n] of after.errors) if (n > (before?.errors.get(e) ?? 0)) out.push(`A script failed: ${e.length > ERROR_CHARS ? `${e.slice(0, ERROR_CHARS - 1)}…` : e}`);
   if (after.complete && (!before || before.complete)) {
     for (const [file, n] of after.files) if (n > (before?.files.get(file) ?? 0)) out.push(`The image ${file} failed to load.`);
   } else if (after.failed > (before?.failed ?? 0)) {
     const more = after.failed - (before?.failed ?? 0);
     out.push(more === 1 ? 'Another image failed to load.' : `${more} more images failed to load.`);
   }
-  for (const [e, n] of after.errors) if (n > (before?.errors.get(e) ?? 0)) out.push(`A script failed: ${e.length > ERROR_CHARS ? `${e.slice(0, ERROR_CHARS - 1)}…` : e}`);
+  // A full list can leave out a finding the page already had, so only a kind it had none of counts as new then.
+  for (const [key, { line, n }] of after.overflow) {
+    if (after.wide && key.startsWith('horizontal-overflow|')) continue;
+    const kind = key.slice(0, key.indexOf('|'));
+    if (before?.saturated ? !before.kinds.has(kind) : n > (before?.overflow.get(key)?.n ?? 0)) out.push(line);
+  }
   return out;
 }
 
@@ -389,8 +390,9 @@ export function pagesShowing(state: ProjectState, definitionIds: Iterable<string
       }
     }
   }
-  if (everywhere) pages.add(state.site.homePageId);
-  return state.site.pageOrder.filter((id) => pages.has(id));
+  // Pages that place a component come first; Home stands for the header and footer only after them.
+  const home = state.site.homePageId;
+  return [...state.site.pageOrder.filter((id) => pages.has(id)), ...(everywhere && !pages.has(home) ? [home] : [])];
 }
 
 /** A page as it was before the run reached it: measured, empty (the run created it), or not known. */
