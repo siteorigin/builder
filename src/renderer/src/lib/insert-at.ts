@@ -8,7 +8,7 @@ import { slotChildren } from '@shared/types';
 import { newId } from '@shared/ids';
 import { STICKY_BELOW_HEADER } from '@shared/styles';
 import { childLists, findParent } from '@engine/tree';
-import { restrictsKinds, slotAccepts, slotDecl, slotFill, takesComponent } from '@engine/slots';
+import { restrictsKinds, shownOnceIn, shownOnceSlots, slotAccepts, slotDecl, slotFill, takesComponent } from '@engine/slots';
 import { getTheme } from '@catalogue/index';
 import { ownerLabel, refLabel, treeFor } from './model';
 import type { InsertSpec, LayoutStarter, Primitive } from './insert-search';
@@ -131,60 +131,6 @@ export function heldSlots(state: ProjectState, ref: ElementRef | null): string[]
   return Object.keys(def.slots ?? {}).filter((name) => held.has(name));
 }
 
-/** How often what is put in a slot shows: not at all, once, or MANY (more than once, or a number no one can tell). */
-const MANY = 2;
-
-/**
- * The slots a component's design shows exactly once, so what is put in one shows once: through its own elements, or
- * handed to a component placed in it that shows it once itself; not inside a repeat (once per item, or never), nor from
- * two places. In the order it declares them. A code component renders its slots as its code likes, so none counts.
- */
-export function shownOnceSlots(state: ProjectState, definitionId: string): string[] {
-  const counts = slotCounts(state, definitionId, new Map(), new Set());
-  return Object.keys(own(state.components, definitionId)?.slots ?? {}).filter((name) => counts.get(name) === 1);
-}
-
-/**
- * How often `definitionId`'s design shows each of its slots (0, 1 or MANY). Each definition is worked out once per
- * question (`done`), so a design that places another twice, which places another twice, costs no more than its parts;
- * one placed inside itself (`path`) shows its slots MANY times.
- */
-function slotCounts(state: ProjectState, definitionId: string, done: Map<string, Map<string, number>>, path: ReadonlySet<string>): Map<string, number> {
-  const known = done.get(definitionId);
-  if (known) return known;
-  const def = own(state.components, definitionId);
-  const counts = new Map<string, number>();
-  if (!def) return counts;
-  if (def.kind !== 'managed' || !def.tree || path.has(def.id)) {
-    for (const name of Object.keys(def.slots ?? {})) counts.set(name, MANY);
-    return counts;
-  }
-  const tree = def.tree;
-  const within = new Set(path).add(def.id);
-  const seen = new Set<string>();
-  const walk = (id: string, times: number) => {
-    const n = own(tree.nodes, id);
-    if (!n || !times || seen.has(id)) return;
-    seen.add(id);
-    // An outlet for a slot it no longer declares is given nothing (the generator passes declared slots only).
-    if (n.kind === 'slot') {
-      if (Object.hasOwn(def.slots ?? {}, n.slot)) counts.set(n.slot, Math.min(MANY, (counts.get(n.slot) ?? 0) + times));
-    }
-    else if (n.kind === 'element') n.children.forEach((c) => walk(c, times));
-    else if (n.kind === 'repeat') n.children.forEach((c) => walk(c, MANY));
-    else if (n.kind === 'instance') {
-      // What the design hands a component placed in it shows as often as that component shows the slot it fills.
-      const fills = Object.entries(n.slots ?? {}).filter(([, ids]) => Array.isArray(ids) && ids.length);
-      if (!fills.length) return;
-      const inner = slotCounts(state, n.definitionId, done, within);
-      for (const [slot, ids] of fills) ids.forEach((c) => walk(c, Math.min(MANY, times * (inner.get(slot) ?? 0))));
-    }
-  };
-  tree.rootIds.forEach((id) => walk(id, 1));
-  done.set(def.id, counts);
-  return counts;
-}
-
 /**
  * Inside a figure whose caption ends it, new content goes before the caption, which must stay its first or last child.
  * Anywhere else, at the end (no index).
@@ -299,26 +245,6 @@ export function slotInsertAt(state: ProjectState, definitionId: string, sel: Ele
   };
   const picked = sel && sel.owner.kind === 'component' && sel.owner.id === def.id && !sel.instancePath.length ? own(tree.nodes, sel.nodeId) : undefined;
   return holder(picked) ?? (tree.rootIds.length === 1 ? holder(own(tree.nodes, tree.rootIds[0])) : null);
-}
-
-/**
- * Whether a node of a design shows once wherever the design does: it hangs from the design's root, no repeat holds it,
- * and every component it sits in shows the slot it sits in once.
- */
-function shownOnceIn(state: ProjectState, tree: NodeTree, nodeId: string): boolean {
-  const seen = new Set<string>();
-  for (let id = nodeId; ; ) {
-    const at = findParent(tree, id);
-    // Nothing holds it: left over in the design, never shown.
-    if (!at) return false;
-    if (at.parentId === null) return true;
-    if (seen.has(at.parentId)) return false;
-    seen.add(at.parentId);
-    const parent = own(tree.nodes, at.parentId);
-    if (!parent || parent.kind === 'repeat') return false;
-    if (parent.kind === 'instance' && !(at.slot && shownOnceSlots(state, parent.definitionId).includes(at.slot))) return false;
-    id = at.parentId;
-  }
 }
 
 /**

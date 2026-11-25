@@ -41,11 +41,12 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
 export const declaredSlot = (def: ComponentDefinition, slot: string): SlotDef | undefined => own(def.slots, slot);
 
 /**
- * Names a new slot must not take: the component's slots and properties, and every name a placement still keeps
- * content under, which a new slot by that name would show.
+ * Names a new slot must not take: the component's slots and properties, an outlet the design already has, and every
+ * name a placement still keeps content under, which a new slot by that name would show.
  */
 export function takenSlotNames(state: ProjectState, def: ComponentDefinition): Set<string> {
   const out = new Set<string>([...Object.keys(def.slots ?? {}), ...Object.keys(def.properties)]);
+  for (const n of Object.values(def.tree?.nodes ?? {})) if (n.kind === 'slot') out.add(n.slot);
   for (const { node } of instancesOf(state, def.id)) for (const k of Object.keys(node.slots ?? {})) out.add(k);
   return out;
 }

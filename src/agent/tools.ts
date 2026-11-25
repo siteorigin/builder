@@ -229,6 +229,7 @@ const DEFINITION_OPERATIONS = new Set<OperationType>([
   'component.removeVariant',
   'component.setSlot',
   'component.removeSlot',
+  'component.containerToSlot',
   'component.setState',
   'component.removeState',
   'node.setStateAction'

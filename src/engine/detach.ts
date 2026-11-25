@@ -5,7 +5,7 @@
  * set of styles per element that cascades the same. Slot content moves into place. Components placed inside the
  * design stay placements, given the values and styles they were shown with.
  */
-import type { ComponentDefinition, DetachedFrom, GraphNode, InstanceNode, NodeTree, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
+import type { ComponentDefinition, DetachedFrom, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, slotFallback, stateInitial } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
 import type { Op } from '@shared/ops';
@@ -45,7 +45,7 @@ function withObjectFields(def: ComponentDefinition, props: Record<string, unknow
 }
 
 /** Where the walk is inside the design: the values in scope, the item of each list it is inside, and those lists. */
-interface At {
+export interface At {
   scope: Scope;
   items: Record<string, string>;
   repeats: Array<{ id: string; item: string }>;
@@ -78,6 +78,94 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   if (!settledRoot(design)) fail(`“${label}” has no single element at the top of its design, so it cannot be detached. Fix its design first.`);
   const parent = findParent(tree, op.nodeId) ?? fail('This placement is not on the page.');
   const rootId = design.rootIds[0];
+  const anchors = anchorsInUse(state, op.owner, op.nodeId);
+  // The placement's anchor goes to what replaces it, as the design's root anchor did where it had none.
+  const designAnchor = design.nodes[rootId].anchor;
+  const rootAnchor = inst.anchor ?? (designAnchor && !anchors.has(designAnchor) ? designAnchor : undefined);
+  if (rootAnchor) anchors.add(rootAnchor);
+  const render = placementRenderer(state, { owner: op.owner, tree, inst, def: def as RenderedDesign, label, anchors, pageId: op.owner.id }, copy);
+  const { emit, added, slotUses } = render;
+  {
+    const before = groupLookup(tree);
+    for (const slot of Object.keys(inst.slots ?? {}))
+      for (const c of slotChildren(inst, slot))
+        for (const id of subtreeIds(tree, c)) {
+          const n = own(tree.nodes, id);
+          if (n) render.keepShownGroups(n, before(id) !== null);
+        }
+  }
+
+  // An object shows its defaults for fields the placement stores none for, in what it renders and what it decides.
+  const props = withObjectFields(def, effectiveProps(state, def, inst, { props: {} }, op.owner.id));
+  const roots = emit(rootId, { scope: { props }, items: {}, repeats: [] });
+  if (!roots.length) fail(`“${label}” shows nothing with its current settings, so there is nothing to detach. Delete it instead, or change its settings first.`);
+  for (const slot of Object.keys(inst.slots ?? {})) {
+    if (slotChildren(inst, slot).length && !slotUses.has(slot))
+      fail(`“${label}” has content in its ${def.slots?.[slot]?.label ?? slot} that its current settings do not show. Move or remove that content first, so detaching keeps everything on the page.`);
+  }
+  const top = added.find((n) => n.id === roots[0])!;
+  if (rootAnchor) top.anchor = rootAnchor;
+  // The placement's entrance lands on what replaces it, as it did on the design's root: `none` turned the root's own off.
+  const appear = inst.appear === 'none' || isAppearPreset(inst.appear) ? inst.appear : undefined;
+  if (appear && top.kind === 'element') {
+    if (appear === 'none') delete top.appear;
+    else top.appear = appear;
+  } else if (appear && top.kind === 'instance' && anchorCapable(state, own(state.components, top.definitionId))) top.appear = appear;
+  // Named as the placement was in Layers: its own name, or the component's.
+  top.name = inst.name ?? def.name;
+  for (const n of added) tree.nodes[n.id] = n;
+  delete tree.nodes[op.nodeId];
+  parent.list.splice(parent.index, 1, ...roots);
+  // In another placement's slot, the elements must be what that slot takes.
+  const holder = parent.slot !== undefined && parent.parentId ? tree.nodes[parent.parentId] : undefined;
+  if (holder?.kind === 'instance') {
+    const problem = slotLandingProblem(state, tree, holder, parent.slot!, roots, slotChildren(holder, parent.slot!).length - roots.length + 1);
+    if (problem) fail(`${problem} Detaching “${label}” there would leave elements of its own. Move it out of that slot first.`);
+  }
+  return { nodeId: top.id, label };
+}
+
+/**
+ * Where rendering a placement's design starts: its values, an object's fields filled as the generator fills them,
+ * outside every list.
+ */
+export function placementStart(state: ProjectState, def: ComponentDefinition, inst: InstanceNode, pageId?: string): At {
+  return { scope: { props: withObjectFields(def, effectiveProps(state, def, inst, { props: {} }, pageId)) }, items: {}, repeats: [] };
+}
+
+/** A managed design with its tree, as a placement renders it. */
+export type RenderedDesign = ComponentDefinition & { tree: NodeTree };
+
+/** One placement of a managed design, as `placementRenderer` renders it into the tree the placement is in. */
+export interface RenderedPlacement {
+  owner: OwnerRef;
+  /** The tree the placement is in, which the rendered nodes are for. */
+  tree: NodeTree;
+  inst: InstanceNode;
+  def: RenderedDesign;
+  /** What refusals call the placement. */
+  label: string;
+  /** The anchors the tree (and those shown with it) already uses; each anchor a rendered node keeps is added. */
+  anchors: Set<string>;
+  /** The page the placement shows on, for values that follow the page; none for the shared header and footer. */
+  pageId?: string;
+  /**
+   * A design node's anchor that `anchors` already holds: without it, the rendered node goes without the anchor (an
+   * earlier node on the page keeps it); it can refuse instead.
+   */
+  anchorTaken?: (anchor: string, src: GraphNode) => void;
+}
+
+/**
+ * What renders one placement's managed design as plain nodes of the tree the placement is in, as it renders now:
+ * `emit` turns one of the design's nodes into none, one, or one per list item, and collects every node it makes in
+ * `added`, for the caller to put in the tree. `copy` copies a subtree of that tree under fresh IDs (for slot content the
+ * design shows more than once).
+ */
+export function placementRenderer(state: ProjectState, place: RenderedPlacement, copy: (tree: NodeTree, nodeId: string) => string) {
+  const { tree, inst, def, label, anchors } = place;
+  const design = def.tree;
+  const rootId = design.rootIds[0];
   const key = defKey(def.id);
   const chosen = selectedVariants(def, inst.variants);
   const option = (axis: string) => {
@@ -87,11 +175,6 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   const partNode = (pid: string) => own(def.parts, pid)?.nodeId ?? (pid === 'root' ? rootId : undefined);
   const overrideParts = Object.keys(inst.overrides ?? {}).sort();
   const itemParts = Object.keys(inst.itemOverrides ?? {}).sort();
-  const anchors = anchorsInUse(state, op.owner, op.nodeId);
-  // The placement's anchor goes to what replaces it, as the design's root anchor did where it had none.
-  const designAnchor = design.nodes[rootId].anchor;
-  const rootAnchor = inst.anchor ?? (designAnchor && !anchors.has(designAnchor) ? designAnchor : undefined);
-  if (rootAnchor) anchors.add(rootAnchor);
   const slotUses = new Map<string, number>();
   const tooMuch = (): never => fail(`“${label}” has more custom CSS on one element, across its design, options and placement, than one element can hold. Shorten some of it first.`);
   // State rules one element's own cannot reproduce: refused rather than detached into something that looks different.
@@ -115,7 +198,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   // Group states no interaction group could show here stay unshown: on the page, a group around the placement would
   // reach them as the design's own rules never did.
   const designGroup = groupLookup(design);
-  const placedInGroup = groupLookup(tree)(op.nodeId) !== null;
+  const placedInGroup = groupLookup(tree)(inst.id) !== null;
   const groupLookups = new Map<string, (nodeId: string) => string | null>();
   const shownHere = (styles: ResponsiveStyles | undefined, live: boolean) => (live ? styles : withoutGroupStates(styles));
   const partLive = (pid: string) => partInInteractionGroup(def, pid, placedInGroup, groupLookups);
@@ -142,15 +225,6 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       if (entry && typeof entry === 'object' && entry.items && typeof entry.items === 'object' && !partInInteractionGroup(d, pid, placed, groupLookups))
         for (const item of Object.keys(entry.items)) entry.items[item] = withoutGroupStates(entry.items[item])!;
   };
-  {
-    const before = groupLookup(tree);
-    for (const slot of Object.keys(inst.slots ?? {}))
-      for (const c of slotChildren(inst, slot))
-        for (const id of subtreeIds(tree, c)) {
-          const n = own(tree.nodes, id);
-          if (n) keepShownGroups(n, before(id) !== null);
-        }
-  }
 
   /** The layers of rules on one of the design's nodes for this placement, weakest first, as the stylesheets cascade them. */
   const layersFor = (nodeId: string, at: At, boost: number): StyleLayer[] => {
@@ -357,7 +431,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       if (next?.kind === 'instance' && next.overrides?.root)
         level.push({ styles: shownHere(next.overrides.root, partInInteractionGroup(own(state.components, next.definitionId), 'root', rootGrouped, groupLookups)), strength: 3 + tie(d.id), wideColumns: true, unhides: [] });
       // An option bound to the design's UI state shows the one it starts at, as the generated site does.
-      scope = { props: withObjectFields(d, effectiveProps(state, d, placed, scope, op.owner.id)), ...(d.state ? { ui: Object.fromEntries(Object.keys(d.state).map((k) => [k, stateInitial(d, k)])) } : {}) };
+      scope = { props: withObjectFields(d, effectiveProps(state, d, placed, scope, place.pageId)), ...(d.state ? { ui: Object.fromEntries(Object.keys(d.state).map((k) => [k, stateInitial(d, k)])) } : {}) };
       node = next;
     }
     // The deepest design first: its layers are what each design above it shows again.
@@ -440,7 +514,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
 
   /** A design node's anchor, while the page has no other element with it. */
   const keepAnchor = (n: GraphNode, src: GraphNode) => {
-    if (src.id === rootId || !src.anchor || anchors.has(src.anchor)) return;
+    if (src.id === rootId || !src.anchor) return;
+    if (anchors.has(src.anchor)) return void place.anchorTaken?.(src.anchor, src);
     n.anchor = src.anchor;
     anchors.add(src.anchor);
   };
@@ -509,32 +584,5 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     }
   };
 
-  // An object shows its defaults for fields the placement stores none for, in what it renders and what it decides.
-  const props = withObjectFields(def, effectiveProps(state, def, inst, { props: {} }, op.owner.id));
-  const roots = emit(rootId, { scope: { props }, items: {}, repeats: [] });
-  if (!roots.length) fail(`“${label}” shows nothing with its current settings, so there is nothing to detach. Delete it instead, or change its settings first.`);
-  for (const slot of Object.keys(inst.slots ?? {})) {
-    if (slotChildren(inst, slot).length && !slotUses.has(slot))
-      fail(`“${label}” has content in its ${def.slots?.[slot]?.label ?? slot} that its current settings do not show. Move or remove that content first, so detaching keeps everything on the page.`);
-  }
-  const top = added.find((n) => n.id === roots[0])!;
-  if (rootAnchor) top.anchor = rootAnchor;
-  // The placement's entrance lands on what replaces it, as it did on the design's root: `none` turned the root's own off.
-  const appear = inst.appear === 'none' || isAppearPreset(inst.appear) ? inst.appear : undefined;
-  if (appear && top.kind === 'element') {
-    if (appear === 'none') delete top.appear;
-    else top.appear = appear;
-  } else if (appear && top.kind === 'instance' && anchorCapable(state, own(state.components, top.definitionId))) top.appear = appear;
-  // Named as the placement was in Layers: its own name, or the component's.
-  top.name = inst.name ?? def.name;
-  for (const n of added) tree.nodes[n.id] = n;
-  delete tree.nodes[op.nodeId];
-  parent.list.splice(parent.index, 1, ...roots);
-  // In another placement's slot, the elements must be what that slot takes.
-  const holder = parent.slot !== undefined && parent.parentId ? tree.nodes[parent.parentId] : undefined;
-  if (holder?.kind === 'instance') {
-    const problem = slotLandingProblem(state, tree, holder, parent.slot!, roots, slotChildren(holder, parent.slot!).length - roots.length + 1);
-    if (problem) fail(`${problem} Detaching “${label}” there would leave elements of its own. Move it out of that slot first.`);
-  }
-  return { nodeId: top.id, label };
+  return { emit, added, slotUses, keepShownGroups };
 }

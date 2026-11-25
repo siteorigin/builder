@@ -32,6 +32,7 @@ import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/So
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal, SwapComponentModal } from './panels/Dialogs';
 import { RemovalReviewModal } from './panels/RemovalReview';
 import { RepeatAsListModal } from './panels/RepeatAsList';
+import { TurnIntoSlotModal } from './panels/TurnIntoSlot';
 import { ImportReviewModal } from './panels/ImportReview';
 import { PostImportReviewModal } from './panels/PostImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
@@ -751,6 +752,7 @@ export function Editor() {
       {modal?.kind === 'new-component' && <NewComponentModal />}
       {modal?.kind === 'create-component' && <CreateComponentModal target={modal.ref} />}
       {modal?.kind === 'repeat-as-list' && <RepeatAsListModal target={modal.ref} workspaceKey={modal.workspaceKey} />}
+      {modal?.kind === 'turn-into-slot' && <TurnIntoSlotModal target={modal.ref} workspaceKey={modal.workspaceKey} />}
       {modal?.kind === 'make-unique' && <MakeUniqueModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
       {modal?.kind === 'swap-component' && <SwapComponentModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
       {modal?.kind === 'rename-component' && <RenameComponentModal definitionId={modal.definitionId} />}

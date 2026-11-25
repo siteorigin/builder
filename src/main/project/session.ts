@@ -405,6 +405,8 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     // added in another file it does not write would be left naming what has gone.
     case 'component.remove':
     case 'component.removeSlot':
+    // So is a container turned into a slot: what it held moves into placements in other files, and must nest there.
+    case 'component.containerToSlot':
       return true;
     case 'entry.update':
       return o.slug !== undefined;

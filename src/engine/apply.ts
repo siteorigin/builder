@@ -108,6 +108,7 @@ import {
 } from './definitions';
 import { contractConflicts, hiddenSlotContent, themeRefresh } from './theme-updates';
 import { detachInstance } from './detach';
+import { containerToSlot } from './container-to-slot';
 import { importComponentPackage, type ComponentImport } from './component-package';
 import { componentUpsert } from './upsert';
 import { planSwap, swapTarget } from './swap';
@@ -388,6 +389,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return setSlot(state, op);
     case 'component.removeSlot':
       return removeSlot(state, op);
+    case 'component.containerToSlot':
+      return containerToSlot(state, op, (tree, id) => copySubtree(tree, tree, id, state));
     case 'component.setState':
       return setState(state, op);
     case 'component.removeState':
@@ -4006,7 +4009,10 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
         ? [{ owner: { kind: 'component', id: String(results[i].definitionId) }, i, type: op.type }]
         : op.type === 'node.wrap' || op.type === 'node.unwrap' || op.type === 'node.removeKeepContent' || op.type === 'instance.swapComponent'
           ? [{ owner: op.owner, i, type: op.type }]
-          : []
+          : // What a container held now renders as each placement's own content, through the design's new slot.
+            op.type === 'component.containerToSlot'
+            ? [{ owner: { kind: 'component', id: op.definitionId }, i, type: op.type }]
+            : []
   );
   if (retagged.length) {
     const problem = batchTagProblem(state, draft, retagged.map(({ owner }) => owner));

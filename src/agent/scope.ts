@@ -369,6 +369,8 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'component.removeVariant': 'wider',
   'component.setSlot': 'definition',
   'component.removeSlot': 'wider',
+  // Its content can move into every placement.
+  'component.containerToSlot': 'wider',
   'component.setState': 'definition',
   'component.removeState': 'wider',
   'theme.apply': 'wider',
@@ -439,6 +441,7 @@ const CONTRACT_EDITS = new Set<OperationType>([
   'component.removeVariant',
   'component.setSlot',
   'component.removeSlot',
+  'component.containerToSlot',
   'component.setState',
   'component.removeState'
 ]);
