@@ -463,9 +463,9 @@ function revealInGrid(grid: HTMLElement | null) {
 
 /**
  * A site-level image that carries no description: the browser tab icon (shown square) or the picture shown when
- * the site is shared (shown at the 1.91:1 shape link previews crop it to).
+ * the site is shared (shown at the 1.91:1 shape link previews crop it to), and a post's featured image.
  */
-export type PlainImage = 'favicon' | 'social' | 'logo';
+export type PlainImage = 'favicon' | 'social' | 'logo' | 'featured';
 
 /** The picker for a site image: the image editor's thumbnail, search, import and keyboard grid, with None as Remove. */
 export function SiteImageField({ value, onChange, state, title, plain }: { value: string | null | undefined; onChange: (assetId: string | null) => void; state: ProjectState; title: string; plain: PlainImage }) {
@@ -584,8 +584,9 @@ export function ImageEditor({ value, onChange, state, title, plain, picture }: {
       const r = await importAndPlace({
         paths,
         base: snapshot,
-        // On screen: mounted, and not in a dock tab that is hidden (AI, Site styles).
-        shown: () => alive.current && !!chooseBtn.current?.isConnected && chooseBtn.current.offsetParent !== null,
+        // On screen: mounted, and not in a dock tab that is hidden (AI, Site styles) or a closed disclosure (a post's
+        // details), which can still give an offset parent.
+        shown: () => alive.current && !!chooseBtn.current?.isConnected && chooseBtn.current.offsetParent !== null && chooseBtn.current.checkVisibility(),
         holds: (a) => a.id === start.assetId,
         place: (a) => {
           // The same picture again: the field is checked, not written.

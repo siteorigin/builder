@@ -4746,6 +4746,8 @@ html.insert-dragging, html.insert-dragging * { cursor: grabbing !important; user
 .post-details { margin: 6px 0 18px; font-size: 13px; color: var(--text-2); }
 .post-details > summary { cursor: pointer; color: var(--text-3); padding: 4px 0; }
 .post-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; padding: 10px 0 4px; }
+/* The featured image's picker takes the whole row, so its library grid has room. */
+.post-fields > .insp-image { grid-column: 1 / -1; margin-top: 4px; }
 .post-tools { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 4px; margin: 0 -8px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
 .post-tools .icon-btn.gap { margin-left: 8px; }
 .post-block-name { margin-left: auto; font-size: 11px; color: var(--text-3); padding-right: 6px; }

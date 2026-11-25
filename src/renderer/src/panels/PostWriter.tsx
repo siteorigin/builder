@@ -17,6 +17,7 @@ import { seoSummary } from '../lib/sharing';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
 import { AssetImage } from '../components/AssetImage';
+import { SiteImageField } from './PropEditors';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isImeComposing } from '../lib/ime';
 import { appliesLanded, registerFlush, trackApply } from '../lib/pending';
@@ -107,7 +108,6 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   if (live) last.current = { entry: live, collection: state.collections[post.collectionId], snap };
   const { entry, collection } = last.current;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
-  const uid = useId();
   const root = useRef<HTMLDivElement>(null);
   /** The editable element, kept after React lets go of it: a writer going away still saves what it held. */
   const rootEl = useRef<HTMLDivElement | null>(null);
@@ -280,10 +280,15 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     return () => document.removeEventListener('selectionchange', onSel);
   }, []);
 
-  /** Change fields of the post, followed so Publish and Save draft know whether it was saved. */
-  const update = (fields: Record<string, unknown>, label: string) => {
+  /**
+   * Change fields of the post, followed so Publish and Save draft know whether it was saved. `held`: the change asks
+   * for what the post had when it began (only an image imported again, which is checked and never written), so
+   * having nothing to write is no refusal. The check writes nothing either way: when it fails (the field edited
+   * meanwhile, the post or project gone, the AI busy) the post keeps what it has, and the import says itself why.
+   */
+  const update = (fields: Record<string, unknown>, label: string, held = false) => {
     const p = applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label).then((r) => {
-      if (!r) fieldRefusedAt.current = performance.now();
+      if (!r && !held) fieldRefusedAt.current = performance.now();
       return r;
     });
     fieldCommits.current.add(p);
@@ -588,16 +593,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
                   <DraftInput multiline rows={3} value={entry.excerpt ?? ''} limit={MAX_EXCERPT} onCommit={(v) => (v.trim() !== (entry.excerpt ?? '') ? update({ excerpt: v.trim() || null }, 'Change post excerpt') : undefined)} />
                 </Field>
               </div>
-              <Field label="Featured image" controlId={`${uid}-featured`}>
-                <select id={`${uid}-featured`} className="select" value={entry.featuredImage ?? ''} onChange={(e) => void update({ featuredImage: e.target.value || null }, 'Change featured image')}>
-                  <option value="">None</option>
-                  {images.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {labels.get(a.id)?.label ?? a.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
+              {/* The image editor's picker: a thumbnail of the one chosen, the library to browse, import or drop, and Remove. */}
+              <SiteImageField title="Featured image" plain="featured" state={state} value={entry.featuredImage} onChange={(id) => void update({ featuredImage: id }, 'Change featured image', id === (entry.featuredImage ?? null))} />
             </div>
           </details>
           <PostSearchSettings state={state} post={post} entry={entry} route={route} published={published} hidden={hidden} images={images} labels={labels} update={update} />
