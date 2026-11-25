@@ -478,4 +478,20 @@ describe('layout inspection of chosen elements (#743)', () => {
     expect(of(r, 'clipped-text')).toEqual([expect.objectContaining({ desc: { ctx: 'page:p', node: 'clip', items: '' }, targets: [1] })]);
     expect(of(r, 'overlap')).toEqual([expect.objectContaining({ targets: [2], with: expect.objectContaining({ desc: { ctx: 'page:p', node: 'next', items: '' } }) })]);
   }, 30000);
+
+  it.skipIf(!browserInstalled)('names every element a finding is about, and is not led round by a form control named like a DOM property', async () => {
+    const body = `
+      <form ${so('form')}><input name="parentNode"><input name="parentElement"><p ${so('formText')}>A form</p></form>
+      <ul ${so('cards')}>${['a', 'b'].map((i) => `<li ${so('card', i)} style="width:600px">Card ${i}</li>`).join('')}</ul>
+      <div ${so('grid')} style="display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:10px"><div ${so('wide')} style="width:300px;background:#eee">Wide card</div><div ${so('next')} style="background:#eee">Next card</div></div>`;
+    const r = await inspect(body, 390, [at('card', 'a'), at('card', 'b'), at('wide'), at('next'), at('formText')]);
+    expect(r.targets).toHaveLength(5);
+    // Two items of one list asked for are two findings, each on its own item.
+    expect(of(r, 'element-overflow').map((i) => [i.desc?.items, i.targets])).toEqual([
+      ['a', [0]],
+      ['b', [1]]
+    ]);
+    // An overlap between two elements asked for is about both.
+    expect(of(r, 'overlap')).toEqual([expect.objectContaining({ targets: [2, 3] })]);
+  }, 30000);
 });

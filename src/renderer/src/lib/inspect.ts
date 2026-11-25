@@ -26,8 +26,12 @@ export async function runInspection(req: InspectRequest) {
   const unfound = (r: unknown) => Array.isArray((r as { targets?: unknown } | null)?.targets) && ((r as { targets: Array<{ elements?: unknown[] } | null> }).targets.some((t) => !t?.elements?.length));
   const behind = (r: unknown) => missingSections(state(), req.pageId, r).length || missingImages(state(), req.pageId, r).length || staleImages(state(), req.pageId, r).length || unfound(r);
   if (behind(report) || failedImages(report)) {
+    const first = report;
+    const absentOnly = !failedImages(report) && missingSections(state(), req.pageId, report).length === 0 && missingImages(state(), req.pageId, report).length === 0 && staleImages(state(), req.pageId, report).length === 0;
     await new Promise((r) => setTimeout(r, 1500));
     report = await measure(req);
+    // Asked again only because an element rendered nowhere: a second load that fails leaves the first one's answer.
+    if (absentOnly && (!report || typeof report !== 'object' || (report as { error?: unknown }).error)) report = first;
   }
   const missing = missingSections(state(), req.pageId, report);
   const page = state()?.pages[req.pageId];

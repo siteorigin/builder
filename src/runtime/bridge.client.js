@@ -3176,11 +3176,11 @@ function findingList(kind, worse, within = null) {
   const byKey = new Map();
   return {
     kind,
-    /** `about`: the element the finding is about when that is not `el` (text a box around it cuts off). */
+    /** `about`: the element the finding is about when that is not `el` (text a box around it cuts off), or both boxes of an overlap. */
     add(el, measured, message, extra, about = el) {
       const desc = findingDesc(el);
       // Narrowed, the elements asked for that it is inside are part of what it is: one per element asked for.
-      const targets = scopeTag(about, within);
+      const targets = Array.isArray(about) ? scopeTag(about[0], within, about[1]) : scopeTag(about, within);
       const key = desc ? `${desc.ctx}\u0000${desc.node}\u0000${desc.inside ? 1 : 0}\u0000${targets.targets || ''}` : `?${byKey.size}`;
       const found = byKey.get(key);
       if (found) {
@@ -3526,7 +3526,7 @@ function readability(vw, deadline, within = null) {
     // (the next slide of a carousel); text shortened on purpose (an ellipsis, a line clamp) and the visually hidden
     // pattern are left alone.
     // Narrowed, a box around an element asked for can cut its text off too: only the text inside the elements counts there.
-    const around = within ? (el) => within.roots.some((r) => r !== el && Node.prototype.contains.call(el, r)) : null;
+    const around = within ? (el) => within.ancestors.has(el) : null;
     for (const el of document.querySelectorAll('body *')) {
       const inside = !within || within(el);
       if (!inside && !around(el)) continue;
@@ -3544,12 +3544,14 @@ function readability(vw, deadline, within = null) {
         let n = 0;
         const tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
         for (let t = tw.nextNode(); t && !cut; t = tw.nextNode()) {
+          const holder = parentOf(t);
+          // Text outside the elements asked for neither counts nor uses up the budget.
+          if (!inside && (!holder || !within(holder))) continue;
           if (++n > MAX_CLIP_TEXT_NODES) {
             checks.clippedText.incomplete = true;
             break;
           }
-          const holder = parentOf(t);
-          if (!t.textContent.trim() || !holder || (!inside && !within(holder)) || !drawn(holder)) continue;
+          if (!t.textContent.trim() || !holder || !drawn(holder)) continue;
           const hs = holder === el ? s : getComputedStyle(holder);
           // An ellipsis shortens a line on purpose; a line clamp, the lines after it.
           const ellipsis = hs.textOverflow === 'ellipsis' || s.textOverflow === 'ellipsis';
@@ -3636,7 +3638,7 @@ function readability(vw, deadline, within = null) {
           if (c.w <= 2 || c.h <= 2) continue;
           const going = each(checks.overlaps, () => {
             const other = findingDesc(b.el);
-            overlaps.add(one.el, { overlap: { width: Math.round(c.w), height: Math.round(c.h) } }, `Overlaps a neighbouring box by ${Math.round(c.w)}×${Math.round(c.h)}px.`, { with: { ...(other ? { desc: other } : {}), text: textPreview(b.el) } });
+            overlaps.add(one.el, { overlap: { width: Math.round(c.w), height: Math.round(c.h) } }, `Overlaps a neighbouring box by ${Math.round(c.w)}×${Math.round(c.h)}px.`, { with: { ...(other ? { desc: other } : {}), text: textPreview(b.el) } }, [one.el, b.el]);
             checks.overlaps.failed++;
           });
           if (!going) {
@@ -4250,9 +4252,10 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
   // finds on the page, and only findings inside those. What belongs to the page as a whole (its width, its h1s, its
   // runtime errors) is still reported.
   const found = Array.isArray(opts.targets) ? opts.targets.map((d) => (d && typeof d === 'object' ? safeFindAll(d) : [])) : null;
-  const within = found ? scopeOf(found) : null;
   // Images first: one that arrives while they are requested again can still change the layout measured below.
-  const images = await imageReport(deadline, within);
+  const images = await imageReport(deadline, found ? scopeOf(found) : null);
+  // What is inside the elements is worked out again: the page could change while its images loaded.
+  const within = found ? scopeOf(found) : null;
   const vw = document.documentElement.clientWidth;
   const issues = [];
   const docWidth = document.documentElement.scrollWidth;
@@ -4265,8 +4268,10 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
       if (!r) continue;
       if (r.x + r.width > vw + 2 || r.x < -2) {
         const d = descOf(el);
-        if (!issues.some((i) => i.desc && i.desc.ctx === d.ctx && i.desc.node === d.node))
-          issues.push({ kind: 'element-overflow', desc: d, ...scopeTag(el, within), text: textPreview(el), message: `Extends beyond the viewport (${Math.round(r.x)}–${Math.round(r.x + r.width)}px of ${vw}px).` });
+        // Narrowed, once for each element asked for (two items of one list asked for are two findings).
+        const tag = scopeTag(el, within);
+        if (!issues.some((i) => i.desc && i.desc.ctx === d.ctx && i.desc.node === d.node && String(i.targets) === String(tag.targets)))
+          issues.push({ kind: 'element-overflow', desc: d, ...tag, text: textPreview(el), message: `Extends beyond the viewport (${Math.round(r.x)}–${Math.round(r.x + r.width)}px of ${vw}px).` });
       }
       if (el.scrollWidth > el.clientWidth + 2 && getComputedStyle(el).overflowX === 'visible' && el.clientWidth > 0 && el.children.length === 0)
         issues.push({ kind: 'text-overflow', desc: descOf(el), ...scopeTag(el, within), text: textPreview(el), message: 'Text is wider than its box.' });
@@ -4338,6 +4343,7 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
  * Whether a node is one of the elements found or inside one, answered once per node: a page's every element is asked
  * several times, and walking up from it stops at the first node already answered. `roots`: every element found.
  */
+const PARENT_NODE = Object.getOwnPropertyDescriptor(Node.prototype, 'parentNode').get;
 function scopeOf(found) {
   const roots = found.flat();
   const set = new Set(roots);
@@ -4345,7 +4351,8 @@ function scopeOf(found) {
   const within = (el) => {
     const path = [];
     let inside = false;
-    for (let e = el; e; e = e.parentNode) {
+    // Through the prototype: a form's control named "parentNode" would lead back into the form, round and round.
+    for (let e = el; e; e = PARENT_NODE.call(e)) {
       if (memo.has(e)) {
         inside = memo.get(e);
         break;
@@ -4361,6 +4368,9 @@ function scopeOf(found) {
   };
   within.roots = roots;
   within.found = found;
+  // The elements around those found (not themselves found), whose boxes can cut off what is inside them.
+  within.ancestors = new Set();
+  for (const r of roots) for (let e = PARENT_NODE.call(r); e && e.nodeType === 1 && !within.ancestors.has(e); e = PARENT_NODE.call(e)) within.ancestors.add(e);
   return within;
 }
 
@@ -4368,11 +4378,12 @@ function scopeOf(found) {
  * Narrowed (`within`, see scopeOf), which of the elements asked for (by their place in the request) `el` is in:
  * `{ targets: [i, …] }`, or nothing.
  */
-function scopeTag(el, within) {
+function scopeTag(el, within, also = null) {
   if (!within || !el) return {};
   const targets = [];
+  const of = also ? [el, also] : [el];
   within.found.forEach((els, i) => {
-    if (els.some((r) => r === el || Node.prototype.contains.call(r, el))) targets.push(i);
+    if (els.some((r) => of.some((e) => r === e || Node.prototype.contains.call(r, e)))) targets.push(i);
   });
   return targets.length ? { targets } : {};
 }
@@ -4395,13 +4406,14 @@ const MAX_TARGET_ELEMENTS = 10;
  * scrollHeight) and whether it shows at this width. One that rendered nowhere has no elements and does not show.
  */
 function targetReport(els) {
+  // Whether it shows: a box with area, drawn (a wrapper that makes no box of its own, a code component's, through what it holds).
+  const shows = (el, r) => !!r && r.width > 0 && r.height > 0 && (getComputedStyle(el).display === 'contents' ? [...el.children].some((c) => drawn(c)) : drawn(el));
   const elements = els.slice(0, MAX_TARGET_ELEMENTS).map((el) => {
     try {
       const r = rectOf(el);
       const box = r ? { x: Math.round(r.x + window.scrollX), y: Math.round(r.y + window.scrollY), width: Math.round(r.width), height: Math.round(r.height) } : null;
-      // A wrapper that makes no box of its own (a code component's) shows through what it holds.
       const contents = getComputedStyle(el).display === 'contents';
-      const visible = !!box && box.width > 0 && box.height > 0 && (contents ? [...el.children].some((c) => drawn(c)) : drawn(el));
+      const visible = shows(el, r);
       return { box, scrollWidth: contents ? (box ? box.width : 0) : el.scrollWidth, scrollHeight: contents ? (box ? box.height : 0) : el.scrollHeight, visible };
     } catch {
       // An element whose own properties are hidden (a form's named controls) is reported as not measured.
@@ -4409,15 +4421,14 @@ function targetReport(els) {
     }
   });
   // Whether it shows anywhere, the occurrences not listed included.
-  const shows = (el) => {
+  const showsAt = (el) => {
     try {
-      const contents = getComputedStyle(el).display === 'contents';
-      return !!rectOf(el) && (contents ? [...el.children].some((c) => drawn(c)) : drawn(el));
+      return shows(el, rectOf(el));
     } catch {
       return false;
     }
   };
-  const visible = elements.some((e) => e.visible) || els.slice(MAX_TARGET_ELEMENTS).some(shows);
+  const visible = elements.some((e) => e.visible) || els.slice(MAX_TARGET_ELEMENTS).some(showsAt);
   return { visible, elements, ...(els.length > MAX_TARGET_ELEMENTS ? { omittedElements: els.length - MAX_TARGET_ELEMENTS } : {}) };
 }
 
