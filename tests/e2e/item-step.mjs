@@ -24,18 +24,18 @@ const cards = () =>
     return { items: grid.props.items, revision: s.revision };
   });
 
-/** The selection's outline sits on card `i`'s title: the same part, in that card. */
-async function selectedIs(i) {
+/** The selection's outline sits on card `i`'s title (or `part(i)`): the same part, in that card. */
+async function selectedIs(i, { part = title, inspector = true } = {}) {
   await eventually(async () => {
     const box = await win.locator('.ov-selected').first().boundingBox();
-    const want = await title(i).boundingBox();
-    assert.ok(box && want, 'the selection and the title are both on screen');
+    const want = await part(i).boundingBox();
+    assert.ok(box && want, 'the selection and the part are both on screen');
     const mid = (b) => [b.x + b.width / 2, b.y + b.height / 2];
     const [[bx, by], [wx, wy]] = [mid(box), mid(want)];
     assert.ok(Math.abs(bx - wx) < 12 && Math.abs(by - wy) < 12, `the outline is on ${TITLES[i]} (outline at ${bx},${by}; title at ${wx},${wy})`);
   });
   await eventually(async () => assert.equal(await position(), `${i + 1} of 3`, 'the chip says which card'));
-  await eventually(async () => assert.match(await inspectorPos(), new RegExp(`${i + 1} of 3`), 'and so does the Inspector'));
+  if (inspector) await eventually(async () => assert.match(await inspectorPos(), new RegExp(`${i + 1} of 3`), 'and so does the Inspector'));
 }
 
 step('pick the first card’s title on the page');
@@ -75,7 +75,10 @@ await eventually(async () => assert.equal(await prev.evaluate((el) => el === doc
 await win.keyboard.press('Enter');
 await selectedIs(1);
 
-step('Previous scrolls a card out of sight back into view');
+step('Previous scrolls a card out of sight back into view, with the Inspector closed');
+// The Inspector reveals its item on the page too: closed, only the selection's own scroll can bring the card back.
+await win.getByRole('button', { name: 'Right panel', exact: true }).click();
+await eventually(async () => assert.equal(await win.locator('#dock-panel-inspect').count(), 0, 'the Inspector is closed'));
 await frame.locator('html').evaluate(() => window.scrollTo(0, 0));
 await eventually(async () => {
   const r = await title(0).evaluate((el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom, h: innerHeight }));
@@ -86,12 +89,46 @@ await eventually(async () => {
   const r = await title(0).evaluate((el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom, h: innerHeight }));
   assert.ok(r.top >= 0 && r.bottom <= r.h, `the first card is scrolled into view (${JSON.stringify(r)})`);
 });
-await selectedIs(0);
+await selectedIs(0, { inspector: false });
+assert.match((await win.locator('[role="status"]').allInnerTexts()).join(' '), /1 of 3/, 'the new position is announced');
+await win.getByRole('button', { name: 'Right panel', exact: true }).click();
 
 step('stepping only moved the selection');
 const after = await cards();
 assert.deepEqual(after.items, before.items, 'the cards are as they were');
 assert.equal(after.revision, before.revision, 'nothing was edited');
+
+step('a part some cards hide is stepped over');
+// A card's link shows only when it has a label: give the first and last cards one, so the middle card hides it.
+const where = await win.evaluate(async () => {
+  const s = await window.builder.project.snapshot();
+  const page = s.state.pages[s.state.site.homePageId];
+  return { pageId: page.id, gridId: page.rootIds.find((id) => s.state.components[page.nodes[id].definitionId]?.componentId === 'features.grid') };
+});
+const label = async (i, value) => {
+  const operations = [{ type: 'instance.setProp', owner: { kind: 'page', id: where.pageId }, nodeId: where.gridId, prop: 'items', itemId: before.items[i].id, field: 'linkLabel', value }];
+  const r = await win.evaluate((operations) => window.builder.project.apply({ operations, label: 'Link label' }), operations);
+  assert.equal(r.ok, true, r.error?.message);
+};
+await label(0, 'Plan with us');
+await label(2, 'Start a project');
+const link = (i) => frame.getByText(['Plan with us', null, 'Start a project'][i], { exact: true }).first();
+await eventually(async () => assert.equal(await link(2).count(), 1, 'the last card shows its link'));
+await link(0).scrollIntoViewIfNeeded();
+await link(0).click({ modifiers: ['Alt'] });
+await eventually(async () => assert.match(await chip.locator('.label').innerText(), /link/i, 'the first card’s link is selected'));
+await selectedIs(0, { part: link });
+await next.click();
+await selectedIs(2, { part: link });
+await prev.click();
+await selectedIs(0, { part: link });
+
+step('Next is marked unavailable once no later card shows the part');
+await label(2, '');
+await eventually(async () => assert.equal(await link(2).count(), 0, 'the last card hides its link'));
+await next.click();
+await eventually(async () => assert.equal(await next.getAttribute('aria-disabled'), 'true', 'nothing to step to'));
+assert.equal(await position(), '1 of 3', 'the selection stayed on the first card');
 
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();
