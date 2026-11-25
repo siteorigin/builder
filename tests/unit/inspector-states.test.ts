@@ -62,6 +62,18 @@ describe('what a state shows through', () => {
     expect(under({ styles: look, layers: layers.slice(0, 2) })).toEqual({ value: 'blue', from: 'default' });
   });
 
+  it('lets a later definition’s whole stylesheet beat an earlier one’s state, as strong', () => {
+    // A placed component's look has a hover; the design around it, written later, sets the resting value in its look.
+    const outer: ResponsiveStyles = { base: { background: 'blue' } };
+    const layers = [
+      { styles: { 'base:hover': { background: 'red' } }, strength: 2, block: 0 },
+      { styles: outer, strength: 2, block: 1 }
+    ];
+    expect(under({ styles: outer, layers })).toEqual({ value: 'blue', from: 'default' });
+    // Written the other way round, the placed component's hover wins.
+    expect(under({ styles: outer, layers: [{ ...layers[1], block: 0 }, { ...layers[0], block: 1 }] })).toEqual({ value: 'red', from: 'design' });
+  });
+
   it('finds a look’s hover through the design layers of a real placement', () => {
     const s = createStarterState('business', 'Test Studio', false);
     const page = s.pages[s.site.homePageId];
@@ -189,7 +201,7 @@ describe('a code component’s parts in the editor’s preview', () => {
     expect(partMap(pageOf(s, false))).toEqual({ title: overrideClass(node.id, 'title') });
     // The change is in the site's stylesheet for that class, in the state.
     const css = [...generateProject(s, { instrument: false }).values()].join('\n');
-    expect(css).toMatch(new RegExp(`\\.${overrideClass(node.id, 'title')}:where\\(:hover\\)`));
+    expect(css).toMatch(new RegExp(`\\.${overrideClass(node.id, 'title')}:where\\(:hover\\)[^{]*\\{[^}]*color: #00aa00`));
   });
 
   it('are not handed to code that takes no part classes', () => {

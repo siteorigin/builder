@@ -77,9 +77,10 @@ export interface StateSourceInput extends StyleSourceInput {
    * The rules under `styles` as they are stored, weakest first (a design's own node styles, then its selected looks),
    * so a look's own hover, focus or pressed value is found. Without them, `inherited` stands for the design's resting
    * values. A layer that is `styles` itself (a look being edited) keeps its own weight and place among them; otherwise
-   * `styles` is stronger than all of them.
+   * `styles` is stronger than all of them. `block`: layers from different definitions' stylesheets, each written whole
+   * before the next (resting and state rules alike), so between two as strong the later block wins whatever the state.
    */
-  layers?: StyleLayer[];
+  layers?: Array<StyleLayer & { block?: number }>;
 }
 
 /**
@@ -93,7 +94,7 @@ export interface StateSourceInput extends StyleSourceInput {
  */
 export function stateUnder({ prop, scope, state, preview, styles, inherited, designSizesWin, layers }: StateSourceInput): { value: StyleValue | undefined; from: 'all-sizes' | 'default' | 'design' | undefined } {
   const size = scope === 'base' ? preview : scope;
-  type Source = { styles: ResponsiveStyles | undefined; strength: number; own: boolean };
+  type Source = { styles: ResponsiveStyles | undefined; strength: number; own: boolean; block?: number };
   // Editing a design everywhere, its changes replace its original values in the same rules: one layer, where a
   // value taken away brings back the original.
   const ownAt = styles && layers ? layers.findIndex((l) => l.styles === styles) : -1;
@@ -103,8 +104,8 @@ export function stateUnder({ prop, scope, state, preview, styles, inherited, des
         { styles, strength: 1, own: true }
       ]
     : ownAt >= 0
-      ? layers!.map((l, i) => ({ styles: l.styles, strength: l.strength, own: i === ownAt }))
-      : [...(layers ?? (inherited ? [{ styles: inherited, strength: 1 }] : [])).map((l) => ({ styles: l.styles, strength: l.strength, own: false })), { styles, strength: Infinity, own: true }];
+      ? layers!.map((l, i) => ({ styles: l.styles, strength: l.strength, own: i === ownAt, block: l.block }))
+      : [...(layers ?? (inherited ? [{ styles: inherited, strength: 1 }] : [])).map((l) => ({ styles: l.styles, strength: l.strength, own: false, block: 'block' in l ? l.block : undefined })), { styles, strength: Infinity, own: true }];
   const edited = new Set<string>([styleScopeKey(scope, state), ...(scope === 'base' ? [styleScopeKey(size, state)] : [])]);
   let best: { value: StyleValue; rank: number[]; from: 'all-sizes' | 'default' | 'design' } | undefined;
   sources.forEach((src, index) => {
@@ -119,7 +120,7 @@ export function stateUnder({ prop, scope, state, preview, styles, inherited, des
       // Editing a design everywhere, a change replaces the original value in the same place; taking the edited one
       // away brings its original back.
       if (designSizesWin && !src.own && key !== styleScopeKey(scope, state) && styles?.[key as keyof ResponsiveStyles]?.[prop] !== undefined) continue;
-      const rank = [src.strength, at.state ? 1 : 0, at.scope === 'base' ? 0 : 1, index];
+      const rank = [src.strength, src.block ?? 0, at.state ? 1 : 0, at.scope === 'base' ? 0 : 1, index];
       if (best && !rankAfter(rank, best.rank)) continue;
       best = { value, rank, from: !src.own ? 'design' : at.state ? 'all-sizes' : 'default' };
     }

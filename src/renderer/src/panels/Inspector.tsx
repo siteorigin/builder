@@ -904,6 +904,14 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const styleItems = useStyleCopyItems(selection);
   const clipboard = useCopyPasteItems(clipboardActions(owner, plan));
   const def = state.components[node.definitionId];
+  // The part the Style section styles (see styledPart below).
+  const partStyled = def?.kind === 'code' && def.parts[codePart] ? codePart : 'root';
+  // Another part styled (chosen, or the one styled is gone: an Undo, the AI) is styled at rest until a state is chosen
+  // for it, and the canvas lets go of the part it showed in a state.
+  useEffect(() => {
+    const s = getState();
+    if (s.styleState && s.styleStatePart !== (partStyled === 'root' ? null : partStyled)) setState({ styleState: null, styleStatePart: null });
+  }, [partStyled]);
   if (!def) return null;
   const title = node.name ?? def.name;
   const shell = owner.kind === 'shell';
@@ -919,7 +927,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const codeImportant = codeStyled ? codeImportantProps(def) : [];
   // A design whose root is a placed code component: its whole-section styles land on that code's root.
   const rootCode = def.kind === 'managed' ? renderedCode(state, node) : undefined;
-  const styledPart = def.kind === 'code' && def.parts[codePart] ? codePart : 'root';
+  const styledPart = partStyled;
   // Making a code component unique copies its source into the project, which is only editable in developer mode.
   const canMakeUnique = def.kind === 'managed' || dev;
   // An entrance lands on the design's root element, which only a design built in the editor places.
@@ -1172,11 +1180,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               <select
                 className="select"
                 value={styledPart}
-                onChange={(e) => {
-                  setCodePart(e.target.value);
-                  // Another part is styled at rest until a state is chosen for it: the canvas lets go of this one.
-                  setState({ styleState: null, styleStatePart: null });
-                }}
+                onChange={(e) => setCodePart(e.target.value)}
               >
                 {Object.entries(def.parts).map(([id, p]) => (
                   <option key={id} value={id}>
@@ -2234,8 +2238,13 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           const inner = placed?.kind === 'managed' && rootId ? designLayers(placed, rootId, startChoices) : [];
           // The other choices of this design style the placed component too, as their defaults. Their rules and the
           // placed design's own are equally specific, so the stylesheet's order decides: definitions by ID.
-          const outer = designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles);
-          const layers = def.id.localeCompare(node.definitionId) < 0 ? [...outer, ...inner] : [...inner, ...outer];
+          // Each definition's stylesheet is written whole, its states included, before the next: its block.
+          const outerFirst = def.id.localeCompare(node.definitionId) < 0;
+          const outer = designLayers(def, node.id, { [look.axis]: look.variant })
+            .filter((l) => l.styles)
+            .map((l) => ({ ...l, block: outerFirst ? 0 : 1 }));
+          const innerBlocks = inner.map((l) => ({ ...l, block: outerFirst ? 1 : 0 }));
+          const layers = outerFirst ? [...outer, ...innerBlocks] : [...innerBlocks, ...outer];
           return [...layers, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }];
         })()
       : designLayers(def, node.id, { [look.axis]: look.variant })

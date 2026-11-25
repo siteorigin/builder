@@ -154,6 +154,9 @@ describe.skipIf(!browserInstalled)('showing the selected element in a hover, foc
   it('leaves a quoted state in an attribute value alone, and rewrites the rule around it', async () => {
     await force('hover', 'q');
     await expect.poll(() => paint(at('q'), 'color')).toBe(RED);
+    const sel = await frame.evaluate<string>(`[...document.getElementById('site').sheet.cssRules].find((r) => r.selectorText && r.selectorText.includes('title=')).selectorText`);
+    expect(sel).toContain('[title=":hover"]');
+    expect(sel).toContain('.quoted:is(:hover, [data-so-force-state="hover"])');
   });
 
   it('rewrites each rule once, however often the state is shown again', async () => {
