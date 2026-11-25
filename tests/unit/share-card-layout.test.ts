@@ -61,12 +61,12 @@ describe('shareCardLayout', () => {
     expect(slot('messages', 900, 99)).toBeNull();
   });
 
-  it('doubts a message’s large picture beyond 4:1 either way, or over 600 KB', () => {
+  it('doubts a message’s large picture wider than 4:1, or over 600 KB', () => {
     expect(slot('messages', 1200, 300)).toMatchObject({ at: 'top' });
-    for (const [w, h] of [[1201, 300], [300, 1201]]) {
-      expect(slot('messages', w, h), `${w} × ${h}`).toMatchObject({ at: 'side' });
-      expect(shareCardLayout('messages', size(w, h)).note).toMatch(/Beyond 4:1/);
-    }
+    expect(slot('messages', 1201, 300)).toMatchObject({ at: 'side', width: 64, height: 64 });
+    expect(shareCardLayout('messages', size(1201, 300)).note).toMatch(/four times as wide/);
+    // The limit is on width alone: a tall picture is cropped like any other.
+    expect(slot('messages', 300, 1500)).toMatchObject({ at: 'top' });
     expect(shareCardLayout('messages', { ...size(1200, 630), bytes: 600_000 }).note).toBeNull();
     expect(shareCardLayout('messages', { ...size(1200, 630), bytes: 600_001 })).toMatchObject({ image: { at: 'top' }, note: expect.stringMatching(/Over 600 KB/) });
   });

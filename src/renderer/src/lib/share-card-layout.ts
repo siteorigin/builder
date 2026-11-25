@@ -106,7 +106,7 @@ export function shareCardLayout(platform: SharePlatform, picture: ShareImageSize
       const base = { width: 280, titleLines: 2, descriptionLines: 2, host: 'below', overlay: false } as const;
       if (!picture) return { ...base, image: null, note: null };
       if (under(w, 100) || under(h, 100)) return { ...base, image: null, note: 'Under 100 × 100 pixels, WhatsApp leaves the picture out.' };
-      if (sized && Math.max(w / h, h / w) > 4) return { ...base, image: side(64), note: 'Beyond 4:1, WhatsApp may show the picture as a small thumbnail, or not at all.' };
+      if (sized && w / h > 4) return { ...base, image: side(64), note: 'WhatsApp may show a picture over four times as wide as it is tall as a thumbnail, or not at all.' };
       if (measured(w) && w >= 300) return { ...base, image: top(280, 1.91), note: (picture.bytes ?? 0) > 600_000 ? 'Over 600 KB, WhatsApp may show the picture smaller, or not at all.' : null };
       return {
         ...base,
