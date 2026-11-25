@@ -10,7 +10,7 @@ import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import type { AssetRecord, ComponentDefinition, ElementNode, InstanceNode, ProjectState } from '@shared/types';
 import { CONTAINER_SCOPES, STYLE_SCOPES, parseStyleScopeKey, styleScopeKey } from '@shared/types';
-import { CONTAINER_QUERIES, MEDIA_QUERIES, flattenContainers, styleSetFor, styleToCss } from '@shared/styles';
+import { CONTAINER_QUERIES, MEDIA_QUERIES, containerVisibilityKept, flattenContainers, styleSetFor, styleToCss } from '@shared/styles';
 import { applyOperations } from '@engine/apply';
 import { EngineError } from '@engine/tree';
 import { validateState } from '@engine/validate';
@@ -20,6 +20,7 @@ import { SPACING_HANDLES, beaten, planHandle } from '../../src/renderer/src/lib/
 import { captureStyle, planStylePaste } from '../../src/renderer/src/lib/style-copy';
 import { insertOps } from '../../src/renderer/src/lib/insert-at';
 import { checkSvelteSource } from '../../src/main/codecheck';
+import { documentMarkdown } from '@generator/llms';
 import { containerSite, mediaCard } from './container-queries';
 
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -287,6 +288,34 @@ describe('the stylesheet', () => {
     expect(narrow).not.toMatch(new RegExp(`\\.${cls}\\.${cls} \\{\\s*display: flex;`));
   });
 
+  it('restores no container layout for an option’s show, whose block other options share', () => {
+    const site = containerSite();
+    const def = site.s.components[site.card.id];
+    def.tree!.nodes.card.styles = { base: { hidden: true }, 'cq-narrow': { layout: 'grid' } };
+    def.variantAxes = { look: { label: 'Look', default: 'plain', options: { plain: { label: 'Plain' }, open: { label: 'Open', styles: { card: { base: { hidden: false } } } } } } };
+    const css = definitionCss(site.s, def);
+    const narrow = rangeBlocks(css, 'cq-narrow').join('\n');
+    expect(narrow).toContain(`.${nodeClass(def, 'card')} {`);
+    expect(narrow).not.toContain('--look-open');
+  });
+
+  it('keeps in the Markdown copy what a stronger container layout may show', () => {
+    const site = containerSite();
+    site.s.components[site.card.id].tree!.nodes.title.styles = { base: { hidden: true } };
+    site.s.components[site.card.id].parts.title = { nodeId: 'title', label: 'Title', styleControls: ['layout'] };
+    const markdown = (st: ProjectState) => documentMarkdown(st, { kind: 'page', pageId: st.site.homePageId }, '/');
+    expect(markdown(site.s)).toContain('URL:');
+    expect(markdown(site.s)).not.toContain('Sidebar column');
+    const s = apply(site.s, [{ type: 'node.setStyle', owner: owner(site.s), nodeId: site.columns.sideCard.id, partId: 'title', scope: 'cq-narrow', property: 'customCss', value: 'display: block' }]);
+    expect(markdown(s)).toContain('Sidebar column');
+    // Where the same rules hide it at every size, the container display is followed by that hide: still left out.
+    const t = apply(site.s, [
+      { type: 'node.setStyle', owner: owner(site.s), nodeId: site.columns.sideCard.id, partId: 'title', scope: 'base', property: 'hidden', value: true },
+      { type: 'node.setStyle', owner: owner(site.s), nodeId: site.columns.sideCard.id, partId: 'title', scope: 'cq-narrow', property: 'customCss', value: 'display: block' }
+    ]);
+    expect(markdown(t)).not.toContain('Sidebar column');
+  });
+
   it('leaves an item that sets no display of its own to a shared container layout', () => {
     const site = containerSite();
     const def = site.s.components[site.card.id];
@@ -358,9 +387,6 @@ describe('detaching, copying and dropping', () => {
   it('refuses what one element’s rules cannot show exactly', () => {
     // A placement's desktop value beat the design's narrow one; folded, the narrow one would win on desktop.
     expect(flattenContainers(layers([{ 'cq-narrow': { layout: 'stack' } }, 1], [{ desktop: { layout: 'row' } }, 3]))).toBeNull();
-    // A weaker hide folded in with a container layout that showed over it: folded, the layout's own hide would follow it.
-    expect(flattenContainers(layers([{ base: { hidden: true } }, 1], [{ 'cq-narrow': { layout: 'stack' } }, 3]))).toBeNull();
-    expect(flattenContainers(layers([{ base: { customCss: 'display: none' } }, 1], [{ 'cq-narrow': { layout: 'grid' } }, 3]))).toBeNull();
     // The longhand from the weaker layer: one rule would write it after the shorthand that beat it.
     expect(flattenContainers(layers([{ 'cq-narrow': { rowGap: '24px' } }, 2], [{ 'cq-narrow': { gap: '8px' } }, 3]))).toBeNull();
     // Custom CSS written together that would be more than one element's custom CSS can hold.
@@ -388,6 +414,26 @@ describe('detaching, copying and dropping', () => {
     expect(flattenContainers(layers([{ 'cq-narrow': { customCss: 'color: red' } }, 1], [{ 'cq-narrow': { customCss: 'color: blue' } }, 3]))).toEqual({ 'cq-narrow': { customCss: 'color: blue' } });
     expect(flattenContainers(layers([{ 'cq-narrow': { customCss: 'color: red; margin: 0' } }, 1], [{ 'cq-narrow': { customCss: 'color: blue' } }, 3]))).toBeNull();
     expect(flattenContainers(layers([{ 'cq-narrow': { customCss: 'color: red; margin: 0' } }, 1], [{ base: { customCss: 'color: blue' } }, 3]))).toBeNull();
+  });
+
+  it('folds only where one element shows and hides in every container as the layers did', () => {
+    // A weaker hide folded in with a container layout that showed over it: the folded layout's own hide would follow it.
+    const over = layers([{ base: { hidden: true } }, 1], [{ 'cq-narrow': { layout: 'stack' } }, 3]);
+    expect(containerVisibilityKept(over, { base: { hidden: true }, 'cq-narrow': { layout: 'stack' } })).toBe(false);
+    const css = layers([{ base: { customCss: 'display: none' } }, 1], [{ 'cq-narrow': { layout: 'grid' } }, 3]);
+    expect(containerVisibilityKept(css, { base: { customCss: 'display: none' }, 'cq-narrow': { layout: 'grid' } })).toBe(false);
+    // The placement already shows it at every size: the hide is gone from the fold, and nothing changes.
+    const shown = layers([{ base: { hidden: true } }, 1], [{ base: { layout: 'row' }, 'cq-narrow': { layout: 'stack' } }, 3]);
+    expect(flattenContainers(shown)).toEqual({ 'cq-narrow': { layout: 'stack' } });
+    expect(containerVisibilityKept(shown, { base: { layout: 'row' }, 'cq-narrow': { layout: 'stack' } })).toBe(true);
+    // Two options: the first hides it and stacks it in a narrow container (where its own hide follows), the second
+    // shows it as a row. Folded, the row wins outside and the stack would show inside, where it was hidden.
+    const options = layers([{ base: { hidden: true }, 'cq-narrow': { layout: 'stack' } }, 2], [{ base: { layout: 'row' } }, 2]);
+    expect(containerVisibilityKept(options, { base: { layout: 'row' }, 'cq-narrow': { layout: 'stack' } })).toBe(false);
+    // A layer beneath keeps its hide where it is, under the result.
+    expect(containerVisibilityKept(over, { 'cq-narrow': { layout: 'stack' } }, 1)).toBe(true);
+    // No container display anywhere: nothing to check.
+    expect(containerVisibilityKept(layers([{ base: { hidden: true } }, 1]), { base: { hidden: true } })).toBe(true);
   });
 
   it('carries container rules through a detach, and refuses one that cannot be shown exactly', () => {

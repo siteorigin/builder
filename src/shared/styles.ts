@@ -1780,6 +1780,32 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
   return out;
 }
 
+/** The display a custom CSS value sets last: `none`, another (shown), or undefined when it sets none. */
+export function customDisplay(css: unknown): 'none' | 'shown' | undefined {
+  if (typeof css !== 'string') return undefined;
+  const last = parseCustomCss(css).decls.filter((d) => /^display\s*:/i.test(d)).pop();
+  return last === undefined ? undefined : /:\s*none\b/i.test(last) ? 'none' : 'shown';
+}
+
+/**
+ * Whether the element is hidden (`none`) or shown at a screen size by the resting rules of these layers, weakest first,
+ * as the stylesheet settles its display there: a later layer's display wins; in one layer the size's own rule beats the
+ * rule for all sizes, and within a rule a hide beats custom CSS, which beats a layout. A show (`hidden: false`) writes
+ * a display of its own. Undefined when none of them sets a display there.
+ */
+export function displayWinner(layers: Array<ResponsiveStyles | undefined>, size: 'phone' | 'tablet' | 'desktop'): 'none' | 'shown' | undefined {
+  let out: 'none' | 'shown' | undefined;
+  const ruleDisplay = (folded: StyleProps | undefined, raw: StyleProps | undefined) =>
+    folded?.hidden === true ? 'none' : (customDisplay(folded?.customCss) ?? (folded?.layout !== undefined || raw?.hidden === false ? 'shown' : undefined));
+  for (const raw of layers) {
+    if (!raw || typeof raw !== 'object') continue;
+    const folded = resolveVisibility(raw);
+    const d = ruleDisplay(folded[size], raw[size]) ?? ruleDisplay(folded.base, raw.base);
+    if (d) out = d;
+  }
+  return out;
+}
+
 /**
  * The rules for container width ranges (resting and in each state) that the layers above `beneath` give one element,
  * folded into one set of styles beside what `flattenStyles` and `flattenStates` make of the rest: or null when one
@@ -1828,11 +1854,7 @@ export function flattenContainers(layers: StyleLayer[], opts: Pick<FlattenOption
       if (r.index === c.index || !touch(c, r)) continue;
       if (isContainerScope(r.scope) && r.scope !== c.scope) continue;
       if (!own(c) && !own(r)) continue;
-      // A hide is settled by the stylesheet, not by rank: a container display is followed by the hide at each size where
-      // its own layer's display is one (see the generator's addContainerRules). Folded, a weaker layer's hide becomes
-      // the element's own, which would hide what the container display showed over it.
-      const hides = (r.prop === 'hidden' && r.value === true) || (r.prop === 'customCss' && /(^|;)\s*display\s*:\s*none\b/i.test(String(r.value)));
-      if (hides && own(r) && !before(r, c) && c.names.includes('display')) return null;
+      // Whether the element shows at all is settled by containerVisibilityKept, which follows the stylesheet's hides.
       if (r.prop === 'hidden') continue;
       const sameRule = r.scope === c.scope && (r.state ?? null) === (c.state ?? null);
       // One rule of the result holds both: the one that won is kept, for the same property; anything else would be
@@ -1873,6 +1895,49 @@ export function flattenContainers(layers: StyleLayer[], opts: Pick<FlattenOption
   // Custom CSS written together must still be one element's custom CSS, or none of it would be written.
   if (Object.values(out).some((r) => typeof r?.customCss === 'string' && parseCustomCss(r.customCss).error)) return null;
   return out;
+}
+
+/**
+ * Whether one element with `result` as its own styles (written over the layers beneath `beneath`, which stay) is shown
+ * or hidden in every container width range at every screen size as the layers were. Only display decides it: in each
+ * layer a hide or a show for the size or for all sizes, a container range's own display, and the hide the stylesheet
+ * writes after that display where the same layer hides the element at that size (the generator's addContainerRules).
+ * The stronger layer wins; as strong, the later block (every container range after every size), then the later layer.
+ */
+export function containerVisibilityKept(layers: StyleLayer[], result: ResponsiveStyles, beneath = 0): boolean {
+  const ranged = (rs: ResponsiveStyles | undefined) => CONTAINER_SCOPES_LIST.some((c) => rangeDisplay(rs?.[c]) !== undefined);
+  if (!layers.some((l) => ranged(l.styles)) && !ranged(result)) return true;
+  const top = Math.max(0, ...layers.map((l) => l.strength)) + 1;
+  const after: StyleLayer[] = [...layers.slice(0, beneath), { styles: result, strength: top }];
+  for (const size of CASCADE_SIZES) for (const range of CONTAINER_SCOPES_LIST) if (shownIn(layers, size, range) !== shownIn(after, size, range)) return false;
+  return true;
+}
+const CONTAINER_SCOPES_LIST = ['cq-narrow', 'cq-medium', 'cq-wide'] as const;
+/** The display one rule for a container range writes: its custom CSS's, else its layout's (a show). */
+const rangeDisplay = (r: StyleProps | undefined): 'none' | 'shown' | undefined => (r && typeof r === 'object' ? (customDisplay(r.customCss) ?? (r.layout !== undefined ? 'shown' : undefined)) : undefined);
+/** Whether layers, weakest first, show the element at `size` inside a container of width `range`. */
+function shownIn(layers: StyleLayer[], size: Size, range: ContainerScope): boolean {
+  let best: { shown: boolean; rank: number[] } | undefined;
+  const offer = (shown: boolean, rank: number[]) => {
+    if (!best || later(rank, best.rank)) best = { shown, rank };
+  };
+  const ruleDisplay = (folded: StyleProps | undefined, raw: StyleProps | undefined) =>
+    folded?.hidden === true ? 'none' : (customDisplay(folded?.customCss) ?? (folded?.layout !== undefined || raw?.hidden === false ? 'shown' : undefined));
+  layers.forEach((layer, index) => {
+    const raw = layer.styles;
+    if (!raw || typeof raw !== 'object') return;
+    const folded = resolveVisibility(raw);
+    const all = ruleDisplay(folded.base, raw.base);
+    if (all) offer(all === 'shown', [layer.strength, BUCKET_ORDER.base, index, 0]);
+    const here = ruleDisplay(folded[size], raw[size]);
+    if (here) offer(here === 'shown', [layer.strength, BUCKET_ORDER[size], index, 0]);
+    const inRange = rangeDisplay(raw[range]);
+    if (inRange) {
+      offer(inRange === 'shown', [layer.strength, 5, index, 0]);
+      if (displayWinner([raw], size) === 'none') offer(false, [layer.strength, 5, index, 1]);
+    }
+  });
+  return best ? best.shown : true;
 }
 
 /** Whether rank `a` comes after rank `b` in the cascade, so `a` wins. */

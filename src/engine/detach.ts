@@ -12,7 +12,7 @@ import type { Op } from '@shared/ops';
 import { newId } from '@shared/ids';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { isArticleDate } from '@shared/articles';
-import { flattenContainers, flattenStates, flattenStyles, type StyleLayer } from '@shared/styles';
+import { containerVisibilityKept, flattenContainers, flattenStates, flattenStyles, type StyleLayer } from '@shared/styles';
 import { groupLookup, partInInteractionGroup, withoutGroupStates } from '@shared/interaction-groups';
 import { designLayers, selectedVariants } from '@shared/variants';
 import { liveItemStyles } from '@shared/item-styles';
@@ -98,9 +98,12 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   const states = (layers: StyleLayer[], link: boolean, beneath = 0): ResponsiveStyles =>
     flattenStates(layers, { beneath, link }) ??
     fail(`“${label}” has hover, focus or pressed styles that its design, options and placement combine in a way one element’s styles cannot show exactly. Set each in one place (its design or this placement), as a whole property, first.`);
-  const containers = (layers: StyleLayer[], beneath = 0): ResponsiveStyles =>
-    flattenContainers(layers, { beneath }) ??
+  /** The container ranges' rules the layers fold into, beside `rest` (what the other folds made): only where one element shows them as the layers did. */
+  const containers = (layers: StyleLayer[], rest: ResponsiveStyles, beneath = 0): ResponsiveStyles => {
+    const folded = flattenContainers(layers, { beneath });
+    if (folded && containerVisibilityKept(layers, { ...rest, ...folded }, beneath)) return folded;
     fail(`“${label}” has styles for the width of the container around it that its design, options and placement combine with other styles in a way one element’s styles cannot show exactly. Set each property in one place (its design or this placement) first.`);
+  };
   const added: GraphNode[] = [];
   // Names the galleries this detach makes, so each stays its own viewer group, apart from any other on the page.
   const groups = newId('g');
@@ -294,7 +297,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
         break;
     }
     const layers = layersFor(src.id, at, 0);
-    const styles = { ...flattenStyles(layers, { link: src.kind === 'link', shownDisplay: () => naturalDisplay(src), tooMuch }), ...states(layers, src.kind === 'link'), ...containers(layers) };
+    const flat = { ...flattenStyles(layers, { link: src.kind === 'link', shownDisplay: () => naturalDisplay(src), tooMuch }), ...states(layers, src.kind === 'link') };
+    const styles = { ...flat, ...containers(layers, flat) };
     // Values of their own, never the layers' objects: a later change to one (a picture replaced here) leaves the design alone.
     if (Object.keys(styles).length) n.styles = structuredClone(styles);
     const from = provenance(src);
@@ -407,7 +411,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       // What the stylesheet shows a placed component's root with: its own kind in this design (an instance: the browser's).
       shownDisplay: () => naturalDisplay(src)
     });
-    Object.assign(root, states(layers, !!innerRoot && inner?.tree?.nodes[innerRoot]?.kind === 'link', beneath.length), containers(layers, beneath.length));
+    Object.assign(root, states(layers, !!innerRoot && inner?.tree?.nodes[innerRoot]?.kind === 'link', beneath.length));
+    Object.assign(root, containers(layers, root, beneath.length));
     const overrides = Object.fromEntries(Object.entries(src.overrides ?? {}).map(([pid, o]) => [pid, shownPart(pid, o)!]));
     delete overrides.root;
     if (Object.keys(root).length) overrides.root = root;

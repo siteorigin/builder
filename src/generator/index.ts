@@ -55,8 +55,9 @@ import {
   isStateStyleProp,
   isValidGradient,
   backgroundImageLayers,
+  customDisplay,
+  displayWinner,
   linkOf,
-  parseCustomCss,
   resolveVisibility,
   styleDeclOrder,
   styleFallbackCss,
@@ -939,31 +940,6 @@ function restoreContainerLayouts(rules: RuleSet, selector: string, styles: Respo
   }
 }
 
-/** The display a custom CSS value sets last: `none`, another (shown), or undefined when it sets none. */
-function customDisplay(css: unknown): 'none' | 'shown' | undefined {
-  if (typeof css !== 'string') return undefined;
-  const last = parseCustomCss(css).decls.filter((d) => /^display\s*:/i.test(d)).pop();
-  return last === undefined ? undefined : /:\s*none\b/i.test(last) ? 'none' : 'shown';
-}
-
-/**
- * Whether the element is hidden (`none`) or shown at a screen size by the resting rules of these layers, weakest first,
- * as the stylesheet settles its display there: a later layer's display wins; in one layer the size's own rule beats the
- * rule for all sizes, and within a rule a hide beats custom CSS, which beats a layout. A show (`hidden: false`) writes
- * a display of its own. Undefined when none of them sets a display there.
- */
-export function displayWinner(layers: Array<ResponsiveStyles | undefined>, size: 'phone' | 'tablet' | 'desktop'): 'none' | 'shown' | undefined {
-  let out: 'none' | 'shown' | undefined;
-  const ruleDisplay = (folded: StyleProps | undefined, raw: StyleProps | undefined) =>
-    folded?.hidden === true ? 'none' : (customDisplay(folded?.customCss) ?? (folded?.layout !== undefined || raw?.hidden === false ? 'shown' : undefined));
-  for (const raw of layers) {
-    if (!raw || typeof raw !== 'object') continue;
-    const folded = resolveVisibility(raw);
-    const d = ruleDisplay(folded[size], raw[size]) ?? ruleDisplay(folded.base, raw.base);
-    if (d) out = d;
-  }
-  return out;
-}
 
 /**
  * The rules for each interactive state at each size, on the element itself. Only appearance properties are written
@@ -1181,7 +1157,9 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
         const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `.${variantClass(def, axis, vid)}.${nodeClass(def, nid)}`;
         // An axis earlier in the cascade may be what hides this node, so showing it again has to undo that too.
         const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).flatMap((o) => (o.styles?.[nid] ? [o.styles[nid]] : [])));
-        const opts = { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), under: [def.tree!.nodes[nid]?.styles, ...earlier].filter(Boolean) as ResponsiveStyles[], wrap, gateHides: standalone ? shownMark(def) : undefined, media: mediaFor(state, designMedia(state, def, nid), files), grouped: group(nid) !== null };
+        // No container layout is restored for an option's show (see restoreContainerLayouts): its options and the other
+        // axes' share one stylesheet block, where it would come after another option's hide.
+        const opts = { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone ? shownMark(def) : undefined, media: mediaFor(state, designMedia(state, def, nid), files), grouped: group(nid) !== null };
         addRules(rules, sel, v.styles![nid], opts);
         // First-format converted code marks only its root with the option, so its nodes are still matched through
         // the root, except a node that carries option classes of its own: one of a placement inside it.
