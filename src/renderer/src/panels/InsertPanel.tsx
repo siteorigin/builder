@@ -11,7 +11,7 @@ import { api, commitOps, getState, setState, toast, undoAction, useStore } from 
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
 import { elementWhere, nodeLabel, sectionWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
-import { BASICS, basicHay, basicSpec, searchItems } from '../lib/insert-search';
+import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } from '../lib/insert-search';
 import { exportComponentFile, insertSaved, removeFromLibrary, saveToLibrary } from '../lib/saved-components';
 import { beginInsertDrag } from '../lib/insert-drag';
 import { placementMap } from '../lib/placement-map';
@@ -1117,7 +1117,7 @@ export function InsertPanel() {
   const elements: Item[] = BASICS.map((b) => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: basicHay(b), group: b.layout ? COLUMN_LAYOUTS : 'Basic elements', spec: basicSpec(b), icon: b.icon }));
   // Code components show only in Developer mode, as its setting promises. The library reads by name, and a separate
   // copy (Make unique) sits under the component it was copied from, so a family stays together.
-  const defs = Object.values(st.components).filter((d) => d.owner === 'project' && d.category !== 'shell' && (dev || d.kind !== 'code'));
+  const defs = projectInsertDefinitions(st, dev);
   const listed = new Set(defs.map((d) => d.id));
   const byName = (a: ComponentDefinition, b: ComponentDefinition) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
   // The nearest listed component a copy was made from, through copies of copies.

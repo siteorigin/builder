@@ -10,7 +10,7 @@ import { childLists } from '@engine/tree';
 import { catalogueEntries, CATEGORY_LABELS } from '@catalogue/index';
 import { definitionRole, heldSlots, insertOps, shownOnceSlots, type InsertAt, type InsertRole } from './insert-at';
 import { dropRefusal, savingProblems } from './insert-drop';
-import { BASICS, basicHay, basicSpec, type InsertSpec } from './insert-search';
+import { BASICS, basicHay, basicSpec, projectInsertDefinitions, type InsertSpec } from './insert-search';
 import { refLabel, treeFor } from './model';
 
 /** Which side of its node a + sits on: above or below a section of the page, or inside a container. */
@@ -131,9 +131,8 @@ export interface QuickItem {
  * offered, nor code components outside Developer mode, as in the Insert panel.
  */
 export function quickItems(state: ProjectState, role: InsertRole, dev = false): QuickItem[] {
-  const mine: QuickItem[] = Object.values(state.components)
-    .filter((d) => d.owner === 'project' && d.category !== 'shell' && (dev || d.kind !== 'code') && definitionRole(state, d.id) === role)
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
+  const mine: QuickItem[] = projectInsertDefinitions(state, dev)
+    .filter((d) => definitionRole(state, d.id) === role)
     .map((d) => ({ key: `c:${d.id}`, kind: 'component', name: d.name, hay: `${d.name} ${d.description ?? ''} ${d.kind === 'code' ? 'code ' : ''}component`.toLowerCase(), group: 'Your components', spec: { definitionId: d.id } }));
   if (role === 'element')
     return [...BASICS.map((b): QuickItem => ({ key: `e:${b.id}`, kind: 'element', name: b.name, hay: basicHay(b), group: 'Basic elements', spec: basicSpec(b), icon: b.icon })), ...mine];

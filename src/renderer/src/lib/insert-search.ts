@@ -1,6 +1,8 @@
 /**
  * The Insert panel's basic elements, and how its search finds and orders what it offers.
  */
+import type { ComponentDefinition, ProjectState } from '@shared/types';
+
 /** A basic element Insert adds. */
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'richtext' | 'image' | 'button' | 'icon' | 'divider';
 
@@ -50,6 +52,16 @@ export const basicSpec = (b: Basic): InsertSpec => ({ primitive: b.primitive, ..
 
 /** How search reads a basic element: its name, its tags, and what it is. */
 export const basicHay = (b: Basic) => `${b.name} ${b.tags} element`.toLowerCase();
+
+/**
+ * The project's own components that can be inserted, by name: the Insert panel, a + on the canvas and the command menu
+ * all offer these. Not the shared header and footer, and code components only in Developer mode, as its setting says.
+ */
+export function projectInsertDefinitions(state: ProjectState, developerMode: boolean): ComponentDefinition[] {
+  return Object.values(state.components)
+    .filter((d) => d.owner === 'project' && d.category !== 'shell' && (developerMode || d.kind !== 'code'))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+}
 
 /**
  * Search: every word must match; exact names first, then names that start with the query, then names that contain

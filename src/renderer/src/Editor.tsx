@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Check, Component, FileText, Images, Layers, Newspaper, NotebookPen, Plus, Sparkles, SlidersHorizontal, Palette, SquareDashed } from 'lucide-react';
+import { Check, Component, NotebookPen, Sparkles, SlidersHorizontal, Palette, SquareDashed } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
 import { api, applyOps, errorText, getState, projectHistory, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
@@ -22,6 +22,7 @@ import { Chat } from './panels/Chat';
 import { SettingsModal } from './panels/SettingsModal';
 import { ExportModal } from './panels/ExportModal';
 import { CommandMenu } from './panels/CommandMenu';
+import { LEFT_TABS } from './panels/LeftTabs';
 import { FindReplaceModal } from './panels/FindReplace';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal, SwapComponentModal } from './panels/Dialogs';
@@ -40,14 +41,6 @@ import { runPhase } from './lib/savestate';
 import { PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, fitPanels, panelMax, resizePanel, type PanelPrefs, type PanelSide } from './lib/layout';
 import { closeProject, endEditingHold, saveNow } from './lib/leave';
 import { shortcutLabel } from './lib/shortcut-keys';
-
-const LEFT_TABS = [
-  { id: 'pages', label: 'Pages', icon: <FileText /> },
-  { id: 'posts', label: 'Posts', icon: <Newspaper /> },
-  { id: 'layers', label: 'Layers', icon: <Layers /> },
-  { id: 'insert', label: 'Insert', icon: <Plus /> },
-  { id: 'assets', label: 'Assets', icon: <Images /> }
-] as const;
 
 /** Leave "editing everywhere" for the page it was entered from. However it is left (Done editing, Esc), focus
  *  lands on the page switcher, where the page now being edited is named. */

@@ -1379,7 +1379,9 @@ function structuralNode(state: ProjectState, owner: OwnerRef, kind: 'slot' | 're
   return { id: newId('n'), kind: 'repeat', list: { $prop: bind }, children: [], styles: { base: { layout: 'stack', gap: { token: 'space.md' } } } };
 }
 
-function dependsOn(state: ProjectState, defId: string, targetId: string, seen = new Set<string>()): boolean {
+/** Whether component `defId` renders `targetId` somewhere inside it, directly or through the components it holds, so
+ *  `defId` cannot be inserted into `targetId`. */
+export function dependsOn(state: ProjectState, defId: string, targetId: string, seen = new Set<string>()): boolean {
   if (seen.has(defId)) return false;
   seen.add(defId);
   const def = state.components[defId];
