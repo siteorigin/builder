@@ -3,10 +3,11 @@
  */
 import type { Binding, Collection, ComponentDefinition, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
-import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
+import { CONTAINER_SCOPES, TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
 import { isImageBlock, isListBlock, isRichBlock, richTextToPlain, spanRuns, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
+import { displayWinner, rangeDisplay } from '@shared/styles';
 import { publicUrl } from '@shared/public-url';
 import { entryRoute, findEntry, type SiteEntry } from '@shared/collections';
 import { archivePages } from '@shared/archives';
@@ -523,6 +524,9 @@ function hiddenSizes(layers: Array<ResponsiveStyles | undefined>): Set<Size> {
       if (at && typeof at === 'object' && at.hidden === true) hidden.set(z, true);
       else if (showsAt(at)) hidden.set(z, false);
     }
+    // A display for a container width shows it there, at every size where this layer does not hide it itself (the
+    // stylesheet hides it again after that display where it does): it may be shown, so it is kept.
+    if (CONTAINER_SCOPES.some((c) => rangeDisplay(l[c]) === 'shown')) for (const z of SIZES) if (displayWinner([l], z) !== 'none') hidden.set(z, false);
   }
   return new Set(SIZES.filter((z) => hidden.get(z)));
 }

@@ -1,5 +1,5 @@
 import type { AppearPreset, ComponentDefinition, ElementNode, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { RESPONSIVE_SCOPES, isAppearPreset, isBinding } from '@shared/types';
+import { STYLE_SCOPES, isAppearPreset, isBinding } from '@shared/types';
 import { pageParents } from '@shared/page-tree';
 
 export class EngineError extends Error {
@@ -321,7 +321,7 @@ const LAYOUTS = new Set(['block', 'stack', 'row', 'grid']);
  */
 export function isEmptyLayout(node: GraphNode | undefined): node is ElementNode {
   if (node?.kind !== 'element' || !Array.isArray(node.children) || node.children.length) return false;
-  return RESPONSIVE_SCOPES.some((scope) => {
+  return STYLE_SCOPES.some((scope) => {
     const layout: unknown = node.styles?.[scope]?.layout;
     return typeof layout === 'string' && LAYOUTS.has(layout);
   });

@@ -1,7 +1,7 @@
 import { isFocusValue } from './focus';
 import { backgroundImageError, canonicalBackgroundImage, isBackgroundImageValue } from './background-image';
-import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleState, StyleTokenRef, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
-import { parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
+import type { ComponentDefinition, ContainerScope, ResponsiveScope, ResponsiveStyles, StyleScope, StyleProps, StyleState, StyleTokenRef, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import { isContainerScope, parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
 
 /**
  * The finite set of visual style properties the editor and AI can set.
@@ -78,6 +78,9 @@ export const STYLE_PROPS: StylePropDef[] = [
     { value: '1fr 1fr', label: 'Equal halves' }, { value: '1fr 2fr', label: 'Narrow, wide' }, { value: '2fr 1fr', label: 'Wide, narrow' },
     { value: '1fr 1.5fr', label: 'Slightly wider second' }, { value: '1.5fr 1fr', label: 'Slightly wider first' },
     { value: 'auto-fit-sm', label: 'As many as fit (small)' }, { value: 'auto-fit-md', label: 'As many as fit (medium)' }
+  ] },
+  { id: 'containerType', label: 'Query container', group: 'layout', kind: 'enum', advanced: true, description: 'Makes this box the width its contents\' container rules (narrow, medium, wide) read, so a card in a narrow column can stack while the same card in a wide one stays side by side. Use it on a box its parent sizes, such as a grid column or a stretched stack: inside one sized to its content (a horizontal stack without grow, Fit content) it shrinks to nothing.', options: [
+    { value: 'inline-size', label: 'Its width' }, { value: 'normal', label: 'None' }
   ] },
   { id: 'gap', label: 'Gap', group: 'layout', kind: 'length', tokenGroup: 'space', placeholder: '24px' },
   { id: 'rowGap', label: 'Row gap', group: 'layout', kind: 'length', tokenGroup: 'space', placeholder: '24px', advanced: true },
@@ -248,7 +251,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
     case 'icon':
       return ['color', 'fontSize', 'background', 'radius', ...margins, ...child, ...placed, ...end];
     case 'element':
-      return ['layout', 'columns', 'gridTemplate', 'align', 'justify', 'wrap', 'gap', 'rowGap', 'columnGap', ...child, ...spacing, 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'maxHeight', 'marginInline', 'overflow', 'textAlign', ...boxAppearance, ...placed, ...end];
+      return ['layout', 'columns', 'gridTemplate', 'containerType', 'align', 'justify', 'wrap', 'gap', 'rowGap', 'columnGap', ...child, ...spacing, 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'maxHeight', 'marginInline', 'overflow', 'textAlign', ...boxAppearance, ...placed, ...end];
     default:
       return undefined;
   }
@@ -1056,7 +1059,7 @@ function cssValue(v: StyleValue): string {
 
 /** Fixed-grammar properties: a hand-edited document that breaks the grammar writes nothing. */
 const CHECKED_AT_OUTPUT = new Set([
-  'gridTemplate', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
+  'containerType', 'gridTemplate', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
   'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing', 'backdropBlur'
 ]);
 
@@ -1080,6 +1083,8 @@ export function styleToCss(propId: string, raw: StyleValue): string[] {
       return ['display: block'];
     case 'columns':
       return [`grid-template-columns: repeat(${Number(value)}, minmax(0, 1fr))`];
+    case 'containerType':
+      return [`container-type: ${v}`];
     case 'align':
       return [`align-items: ${v}`];
     case 'justify':
@@ -1274,6 +1279,33 @@ export const MEDIA_QUERIES: Record<'phone' | 'tablet' | 'desktop', string> = {
   tablet: '(min-width: 768px) and (max-width: 1023.98px)',
   desktop: '(min-width: 1024px)'
 };
+
+/**
+ * The width ranges container rules apply in, of the nearest query container around the element (see
+ * `CONTAINER_SCOPES`). Exclusive, with no gap at fractional widths (a column's width rarely is a whole number, so
+ * each upper bound is strict rather than .98px short): a sidebar column of a 1280px desktop page is narrow, its main
+ * column wide.
+ */
+export const CONTAINER_QUERIES: Record<ContainerScope, string> = {
+  'cq-narrow': '(width < 480px)',
+  'cq-medium': '(min-width: 480px) and (width < 720px)',
+  'cq-wide': '(min-width: 720px)'
+};
+/** The container width ranges as the editor and the assistant name them. */
+export const CONTAINER_SCOPE_LABEL: Record<ContainerScope, string> = { 'cq-narrow': 'Narrow container', 'cq-medium': 'Medium container', 'cq-wide': 'Wide container' };
+export const CONTAINER_SCOPE_RANGE: Record<ContainerScope, string> = { 'cq-narrow': 'under 480px wide', 'cq-medium': '480px to under 720px wide', 'cq-wide': '720px wide and over' };
+/** How the container width ranges work, for the assistant's tools and the operation schema. */
+export const CONTAINER_SCOPE_HELP =
+  'Scope "cq-narrow" (under 480px), "cq-medium" (480px to under 720px) or "cq-wide" (720px and over) styles by the width of the nearest query container around it instead of the screen: set containerType "inline-size" (base) on a box its parent sizes, such as a column, and one card inside can stack in a narrow column and sit side by side in a wide one at the same screen size. They beat the screen sizes, apply nowhere without a query container around it, and cannot set hidden.';
+
+/**
+ * Why a container width range cannot hold `prop`, or null when it can. Visibility stays with the screen sizes: folding
+ * a hide that holds in some containers into the sizes' own shows and hides would show or hide the wrong thing where a
+ * screen size and a container range both apply.
+ */
+export function containerStyleError(prop: string): string | null {
+  return prop === 'hidden' ? 'Hidden cannot change with the width of the container around it: show or hide it for screen sizes instead.' : null;
+}
 
 export const VIEWPORT_PRESETS = {
   desktop: 1280,
@@ -1678,11 +1710,12 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
   layers.forEach((layer, index) => {
     for (const [key, props] of Object.entries(layer.styles ?? {})) {
       const at = parseStyleScopeKey(key);
-      if (!at || !props || typeof props !== 'object') continue;
+      // Container width ranges are folded on their own (see flattenContainers).
+      if (!at || isContainerScope(at.scope) || !props || typeof props !== 'object') continue;
       for (const [prop, value] of Object.entries(props)) {
         // A state value no state can hold reaches no stylesheet.
         if (value === undefined || (at.state && !isStateStyleProp(prop, at.state))) continue;
-        decls.push({ prop, value, index, strength: layer.strength, scope: at.scope, state: at.state, names: cssNames(prop, value) });
+        decls.push({ prop, value, index, strength: layer.strength, scope: at.scope as ResponsiveScope, state: at.state, names: cssNames(prop, value) });
       }
     }
   });
@@ -1745,6 +1778,166 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
     for (const scope of ['base', ...CASCADE_SIZES] as const) if (packed[scope]) out[styleScopeKey(scope, state)] = packed[scope];
   }
   return out;
+}
+
+/** The display a custom CSS value sets last: `none`, another (shown), or undefined when it sets none. */
+export function customDisplay(css: unknown): 'none' | 'shown' | undefined {
+  if (typeof css !== 'string') return undefined;
+  const last = parseCustomCss(css).decls.filter((d) => /^display\s*:/i.test(d)).pop();
+  return last === undefined ? undefined : /:\s*none\b/i.test(last) ? 'none' : 'shown';
+}
+
+/**
+ * Whether the element is hidden (`none`) or shown at a screen size by the resting rules of these layers, weakest first,
+ * as the stylesheet settles its display there: a later layer's display wins; in one layer the size's own rule beats the
+ * rule for all sizes, and within a rule a hide beats custom CSS, which beats a layout. A show (`hidden: false`) writes
+ * a display of its own. Undefined when none of them sets a display there.
+ */
+export function displayWinner(layers: Array<ResponsiveStyles | undefined>, size: 'phone' | 'tablet' | 'desktop'): 'none' | 'shown' | undefined {
+  let out: 'none' | 'shown' | undefined;
+  const ruleDisplay = (folded: StyleProps | undefined, raw: StyleProps | undefined) =>
+    folded?.hidden === true ? 'none' : (customDisplay(folded?.customCss) ?? (folded?.layout !== undefined || raw?.hidden === false ? 'shown' : undefined));
+  for (const raw of layers) {
+    if (!raw || typeof raw !== 'object') continue;
+    const folded = resolveVisibility(raw);
+    const d = ruleDisplay(folded[size], raw[size]) ?? ruleDisplay(folded.base, raw.base);
+    if (d) out = d;
+  }
+  return out;
+}
+
+/**
+ * The rules for container width ranges (resting and in each state) that the layers above `beneath` give one element,
+ * folded into one set of styles beside what `flattenStyles` and `flattenStates` make of the rest: or null when one
+ * element's rules cannot show exactly what the layers do. Two rules that set a CSS property in common keep their
+ * winner, or the fold is refused. Before the fold the stronger layer wins; as strong (one stylesheet block), the later
+ * state, then the later block (each container range after every screen size), then the later layer. Folded, every
+ * rule is as strong as every other, so only state and block order are left; a layer beneath stays where it is, under
+ * the result. A container rule that a stronger rule for every size (not kept off phones) of the same property always
+ * beat never showed, and is left out. Ranges never overlap, so rules for different ranges never meet. Two values in
+ * one range and state: the winner is kept, and custom CSS that sets nothing in common is written together.
+ */
+export function flattenContainers(layers: StyleLayer[], opts: Pick<FlattenOptions, 'beneath'> = {}): ResponsiveStyles | null {
+  const beneath = opts.beneath ?? 0;
+  type Decl = { prop: string; value: StyleValue; index: number; strength: number; scope: StyleScope; state?: StyleState; names: string[]; bucket: number };
+  const decls: Decl[] = [];
+  layers.forEach((layer, index) => {
+    for (const [key, props] of Object.entries(layer.styles ?? {})) {
+      const at = parseStyleScopeKey(key);
+      if (!at || !props || typeof props !== 'object') continue;
+      for (const [prop, value] of Object.entries(props)) {
+        if (value === undefined || (at.state && !isStateStyleProp(prop, at.state))) continue;
+        const ranged = isContainerScope(at.scope);
+        if (ranged && containerStyleError(prop)) continue;
+        // Where its rule sits in one stylesheet block: for all sizes, tablet and up (a value kept off phones), a size's
+        // own block, then the container ranges'.
+        const bucket = ranged ? 5 : at.scope === 'base' ? (!at.state && wideOnlyStyle(prop, value, layer.wideColumns) ? BUCKET_ORDER.wide : BUCKET_ORDER.base) : BUCKET_ORDER[at.scope as Size];
+        decls.push({ prop, value, index, strength: layer.strength, scope: at.scope, state: at.state, names: cssNames(prop, value), bucket });
+      }
+    }
+  });
+  const ranged = decls.filter((d) => isContainerScope(d.scope));
+  if (!ranged.length) return {};
+  const family = (n: string) => (n.includes('radius') ? 'radius' : n.startsWith('border') ? 'border' : n);
+  const axes = (a: Decl, b: Decl) => (a.prop === 'translateX' && b.prop === 'translateY') || (a.prop === 'translateY' && b.prop === 'translateX');
+  // Custom CSS is compared by the declarations it writes, not by its name: two that set nothing in common both apply.
+  const touch = (a: Decl, b: Decl) => (a.prop === b.prop && a.prop !== 'customCss') || (!axes(a, b) && !paintedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y)))));
+  const stateRank = (d: Decl) => (d.state ? 1 + STYLE_STATES.indexOf(d.state) : 0);
+  const own = (d: Decl) => d.index >= beneath;
+  const order = (a: number[], b: number[]) => later(a, b);
+  // Whether `a` beats `b` where both apply, before the fold and after it.
+  const before = (a: Decl, b: Decl) => order([a.strength, stateRank(a), a.bucket, a.index], [b.strength, stateRank(b), b.bucket, b.index]);
+  const after = (a: Decl, b: Decl) => (own(a) !== own(b) ? own(a) : order([stateRank(a), a.bucket, a.strength, a.index], [stateRank(b), b.bucket, b.strength, b.index]));
+  const left = new Set<Decl>();
+  for (const c of ranged) {
+    for (const r of decls) {
+      if (r.index === c.index || !touch(c, r)) continue;
+      if (isContainerScope(r.scope) && r.scope !== c.scope) continue;
+      if (!own(c) && !own(r)) continue;
+      // Whether the element shows at all is settled by containerVisibilityKept, which follows the stylesheet's hides.
+      if (r.prop === 'hidden') continue;
+      const sameRule = r.scope === c.scope && (r.state ?? null) === (c.state ?? null);
+      // One rule of the result holds both: the one that won is kept, for the same property; anything else would be
+      // written in the order one rule writes its properties.
+      // Custom CSS is left out only where the winner sets everything it does.
+      const covered = c.prop !== 'customCss' || c.names.every((n) => r.names.includes(n));
+      if (sameRule && own(r) && own(c)) {
+        // Two properties in one rule are written in a fixed order (a shorthand before its own longhands): the one written
+        // later wins there, which must be the one that won.
+        if (r.prop !== c.prop) {
+          const laterInRule = styleDeclOrder(r.prop) - styleDeclOrder(c.prop) || r.prop.localeCompare(c.prop);
+          if (before(r, c) !== laterInRule > 0) return null;
+          continue;
+        }
+        if (before(r, c)) {
+          if (!covered) return null;
+          left.add(c);
+        }
+        continue;
+      }
+      const won = before(r, c);
+      if (won === after(r, c)) continue;
+      // A stronger value for every size of the same property, in the same state, decided it everywhere: this never showed.
+      if (won && own(c) && covered && r.prop === c.prop && r.bucket === BUCKET_ORDER.base && (r.state ?? null) === (c.state ?? null)) {
+        left.add(c);
+        continue;
+      }
+      return null;
+    }
+  }
+  const out: ResponsiveStyles = {};
+  // Weaker first, so the value that won in one range and state is the one kept.
+  for (const c of ranged.filter((d) => own(d) && !left.has(d)).sort((a, b) => (before(a, b) ? 1 : before(b, a) ? -1 : 0))) {
+    const rules = (out[styleScopeKey(c.scope, c.state)] ??= {});
+    // Custom CSS from two layers that sets nothing in common: both apply, the stronger written later.
+    rules[c.prop] = c.prop === 'customCss' && typeof rules.customCss === 'string' && typeof c.value === 'string' ? `${rules.customCss.replace(/;\s*$/, '')}; ${c.value}` : c.value;
+  }
+  // Custom CSS written together must still be one element's custom CSS, or none of it would be written.
+  if (Object.values(out).some((r) => typeof r?.customCss === 'string' && parseCustomCss(r.customCss).error)) return null;
+  return out;
+}
+
+/**
+ * Whether one element with `result` as its own styles (written over the layers beneath `beneath`, which stay) is shown
+ * or hidden in every container width range at every screen size as the layers were. Only display decides it: in each
+ * layer a hide or a show for the size or for all sizes, a container range's own display, and the hide the stylesheet
+ * writes after that display where the same layer hides the element at that size (the generator's addContainerRules).
+ * The stronger layer wins; as strong, the later block (every container range after every size), then the later layer.
+ */
+export function containerVisibilityKept(layers: StyleLayer[], result: ResponsiveStyles, beneath = 0): boolean {
+  const ranged = (rs: ResponsiveStyles | undefined) => CONTAINER_SCOPES_LIST.some((c) => rangeDisplay(rs?.[c]) !== undefined);
+  if (!layers.some((l) => ranged(l.styles)) && !ranged(result)) return true;
+  const top = Math.max(0, ...layers.map((l) => l.strength)) + 1;
+  const after: StyleLayer[] = [...layers.slice(0, beneath), { styles: result, strength: top }];
+  for (const size of CASCADE_SIZES) for (const range of CONTAINER_SCOPES_LIST) if (shownIn(layers, size, range) !== shownIn(after, size, range)) return false;
+  return true;
+}
+const CONTAINER_SCOPES_LIST = ['cq-narrow', 'cq-medium', 'cq-wide'] as const;
+/** The display one rule for a container range writes: its custom CSS's, else its layout's (a show). */
+export const rangeDisplay = (r: StyleProps | undefined): 'none' | 'shown' | undefined => (r && typeof r === 'object' ? (customDisplay(r.customCss) ?? (r.layout !== undefined ? 'shown' : undefined)) : undefined);
+/** Whether layers, weakest first, show the element at `size` inside a container of width `range`. */
+function shownIn(layers: StyleLayer[], size: Size, range: ContainerScope): boolean {
+  let best: { shown: boolean; rank: number[] } | undefined;
+  const offer = (shown: boolean, rank: number[]) => {
+    if (!best || later(rank, best.rank)) best = { shown, rank };
+  };
+  const ruleDisplay = (folded: StyleProps | undefined, raw: StyleProps | undefined) =>
+    folded?.hidden === true ? 'none' : (customDisplay(folded?.customCss) ?? (folded?.layout !== undefined || raw?.hidden === false ? 'shown' : undefined));
+  layers.forEach((layer, index) => {
+    const raw = layer.styles;
+    if (!raw || typeof raw !== 'object') return;
+    const folded = resolveVisibility(raw);
+    const all = ruleDisplay(folded.base, raw.base);
+    if (all) offer(all === 'shown', [layer.strength, BUCKET_ORDER.base, index, 0]);
+    const here = ruleDisplay(folded[size], raw[size]);
+    if (here) offer(here === 'shown', [layer.strength, BUCKET_ORDER[size], index, 0]);
+    const inRange = rangeDisplay(raw[range]);
+    if (inRange) {
+      offer(inRange === 'shown', [layer.strength, 5, index, 0]);
+      if (displayWinner([raw], size) === 'none') offer(false, [layer.strength, 5, index, 1]);
+    }
+  });
+  return best ? best.shown : true;
 }
 
 /** Whether rank `a` comes after rank `b` in the cascade, so `a` wins. */

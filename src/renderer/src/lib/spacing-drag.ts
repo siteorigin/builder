@@ -4,6 +4,7 @@
  */
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleValue, TokenGroup } from '@shared/types';
+import { CONTAINER_SCOPES } from '@shared/types';
 import { MEDIA_QUERIES, STYLE_PROP_MAP, tokenVar } from '@shared/styles';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveTokens } from '@generator/index';
@@ -207,6 +208,8 @@ export const setsSide = (rules: Record<string, StyleValue>, edge: string, pair: 
  */
 export function beaten(styles: ResponsiveStyles | undefined, scope: ResponsiveScope, shown: Size, edge: string, pair: string | null, writes: string, names: string[]): boolean {
   if (scope === 'base' && setsSide(at(styles, shown), edge, pair, names)) return true;
+  // A container width's value beats every screen size wherever that width holds, which the canvas cannot tell here.
+  if (CONTAINER_SCOPES.some((c) => setsSide(styles?.[c] ?? {}, edge, pair, names))) return true;
   const here = at(styles, scope);
   return (writes !== edge && here[edge] !== undefined) || customSets(here.customCss, names);
 }
@@ -228,7 +231,7 @@ export function planHandle(h: SpacingHandle, target: SpacingTarget, scope: Respo
     if (!beaten(target.styles, scope, shown, edgeOf(other, rtl), h.pair, property, cssNames(h.box, other.side, rtl))) sides.push(other.side);
   }
   const cardKeeps = (own: ResponsiveStyles) =>
-    sides.some((side) => [at(own, 'base'), at(own, shown)].some((r) => setsSide(r, edgeOf(handleAt(h.box, side), rtl), h.pair, cssNames(h.box, side, rtl))));
+    sides.some((side) => [at(own, 'base'), at(own, shown), ...CONTAINER_SCOPES.map((c) => own?.[c] ?? {})].some((r) => setsSide(r, edgeOf(handleAt(h.box, side), rtl), h.pair, cssNames(h.box, side, rtl))));
   if (target.everyItem && target.items && Object.values(target.items).some(cardKeeps)) return null;
   return { handle: h, property, label: STYLE_PROP_MAP[property]?.label ?? property, sides };
 }

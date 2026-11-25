@@ -264,7 +264,7 @@ describe('grid tracks and row spans (#352)', () => {
 describe('style registry', () => {
   it('emits a declaration for every property it offers', () => {
     const sample: Record<string, unknown> = {
-      layout: 'grid', columns: 2, align: 'center', justify: 'center', order: 1, wrap: true, gridTemplate: '1fr 2fr', columnSpan: 2, rowSpan: 2, alignSelf: 'center',
+      layout: 'grid', columns: 2, containerType: 'inline-size', align: 'center', justify: 'center', order: 1, wrap: true, gridTemplate: '1fr 2fr', columnSpan: 2, rowSpan: 2, alignSelf: 'center',
       flexGrow: 1, flexShrink: 0, textStyle: 'text.h2', fontFamily: 'serif', fontWeight: '600', fontStyle: 'italic', textTransform: 'uppercase',
       textAlign: 'center', color: '#000', background: '#fff', shadow: '0 1px 2px #000', opacity: 0.5, marginInline: 'auto', aspectRatio: '16/9',
       objectFit: 'cover', objectPosition: 'top', overflow: 'clip', position: 'sticky', inset: '0', zIndex: 2, hidden: true, customCss: 'filter: blur(2px)',

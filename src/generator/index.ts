@@ -29,6 +29,7 @@ import type {
   PropSchema,
   RepeatNode,
   ResponsiveScope,
+  StyleProps,
   StyleState,
   ResponsiveStyles,
   SiteRedirect,
@@ -40,10 +41,12 @@ import type {
   TokenValue,
   UiStateSchema
 } from '@shared/types';
-import { DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, RESPONSIVE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isGroupStyleState, isStateRef, slotChildren, stateInitial, styleScopeKey, type Condition, type GroupStyleState } from '@shared/types';
+import { CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, parseStyleScopeKey, slotChildren, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
 import { INTERACTION_GROUP_CLASS, groupLookup, isInteractionGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import {
+  CONTAINER_QUERIES,
   MEDIA_QUERIES,
+  containerStyleError,
   REDUCED_MOTION_QUERY,
   TRANSLATE_DECL,
   gridTemplateShares,
@@ -52,6 +55,8 @@ import {
   isStateStyleProp,
   isValidGradient,
   backgroundImageLayers,
+  customDisplay,
+  displayWinner,
   linkOf,
   resolveVisibility,
   styleDeclOrder,
@@ -594,8 +599,10 @@ type RuleSet = {
   phone: string[];
   tablet: string[];
   desktop: string[];
+  /** Rules for each width range of the query container around the element, written after every screen size's. */
+  container: Record<ContainerScope, string[]>;
   reduced: string[];
-  states: Record<StyleState, Record<ResponsiveScope, string[]>>;
+  states: Record<StyleState, Record<StyleScope, string[]>>;
   /**
    * The copy of a picture a phone's or tablet's screen takes, for a rule written for every size (see
    * addBackgroundImage): first in that size's block, so it beats every rule for all sizes, as later layers' own copies
@@ -603,9 +610,10 @@ type RuleSet = {
    */
   copies: Record<StyleState | 'rest', { phone: string[]; tablet: string[] }>;
 };
-const sizeLists = (): Record<ResponsiveScope, string[]> => ({ base: [], phone: [], tablet: [], desktop: [] });
+const containerLists = (): Record<ContainerScope, string[]> => ({ 'cq-narrow': [], 'cq-medium': [], 'cq-wide': [] });
+const sizeLists = (): Record<StyleScope, string[]> => ({ base: [], phone: [], tablet: [], desktop: [], ...containerLists() });
 const copyLists = () => ({ phone: [] as string[], tablet: [] as string[] });
-const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], reduced: [], states: { groupHover: sizeLists(), groupFocus: sizeLists(), hover: sizeLists(), focus: sizeLists(), active: sizeLists() }, copies: { rest: copyLists(), groupHover: copyLists(), groupFocus: copyLists(), hover: copyLists(), focus: copyLists(), active: copyLists() } });
+const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], container: containerLists(), reduced: [], states: { groupHover: sizeLists(), groupFocus: sizeLists(), hover: sizeLists(), focus: sizeLists(), active: sizeLists() }, copies: { rest: copyLists(), groupHover: copyLists(), groupFocus: copyLists(), hover: copyLists(), focus: copyLists(), active: copyLists() } });
 const WIDE_QUERY = '(min-width: 768px)';
 /**
  * Where each interactive state applies. `:where()` adds no weight, so a state rule is exactly as strong as the rule it
@@ -659,6 +667,11 @@ interface RuleOpts {
   unhide?: (scope: ResponsiveScope) => string | null;
   /** Finishes each selector written (a component's own <style> block makes them `:global()`). */
   wrap?: (sel: string) => string;
+  /**
+   * The weaker rules on the same element, weakest first (a design's node rules and options under a placement's): the
+   * container layout a show here keeps (see restoreContainerLayouts).
+   */
+  under?: ResponsiveStyles[];
   /** Converted code's own stylesheet: the marker each hide is gated on (see `shownGate`). */
   gateHides?: string;
   /**
@@ -762,7 +775,7 @@ interface MediaOpts {
  * and a tablet's screen need, in those sizes' own rules. Written by the generator from the library, never through
  * safeDecl, which refuses url() everywhere else.
  */
-function addBackgroundImage(rules: RuleSet, selector: string, value: StyleValue, scope: ResponsiveScope, state: StyleState | null, media: MediaOpts, decls: string[], strong?: boolean) {
+function addBackgroundImage(rules: RuleSet, selector: string, value: StyleValue, scope: StyleScope, state: StyleState | null, media: MediaOpts, decls: string[], strong?: boolean) {
   const span = scope === 'phone' ? RANGE_WIDTHS.phone : scope === 'tablet' ? RANGE_WIDTHS.tablet : undefined;
   const own = backgroundImageDecls(value, media.assets, span, media.files);
   if (!own.length) return;
@@ -844,8 +857,89 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
     if (wide.length && props.customCss !== undefined) wide.push(...styleToCss('customCss', props.customCss).filter(safeDecl));
     if (wide.length) rules.wide.push(rule(wide));
   }
+  addContainerRules(rules, raw, styles, input, opts);
   addStateRules(rules, raw, input, opts);
 }
+
+/**
+ * The resting rules for each width range of the query container around the element, in their own blocks after every
+ * screen size's, so they win over a screen size's value of the same layer. They never show what the same layer hides
+ * at a screen size: a layout (or custom CSS) setting a display is followed, in the same block, by the hide at each
+ * screen size where the display that wins there among this layer's resting rules is a hide. `styles` is `input`
+ * folded, as the stylesheet writes its hides.
+ */
+function addContainerRules(rules: RuleSet, raw: string, styles: ResponsiveStyles, input: ResponsiveStyles, opts: RuleOpts) {
+  const wrap = opts.wrap ?? ((sel: string) => sel);
+  const selector = wrap(raw);
+  const quiet = wrap(`:where(${raw})`);
+  const media = opts.link ? undefined : opts.media;
+  const mark = (d: string) => (opts.important ? important(d) : d);
+  for (const scope of CONTAINER_SCOPES) {
+    const props = styles[scope];
+    if (!props || typeof props !== 'object') continue;
+    const decls: string[] = [];
+    const fallback: string[] = [];
+    const reduced: string[] = [];
+    for (const k of Object.keys(props).sort((a, b) => ORDER(a) - ORDER(b) || a.localeCompare(b))) {
+      // Validation reports what a container range cannot hold (visibility); nothing is written for it.
+      if (containerStyleError(k)) continue;
+      if (k === 'backgroundImage') {
+        if (media) addBackgroundImage(rules, selector, props[k], scope, null, media, decls, opts.important);
+        continue;
+      }
+      const out = styleToCss(k, props[k]);
+      if (opts.link && k === 'background' && out.length) {
+        const v = props[k];
+        out.splice(0, out.length, ...out.map((d) => d.replace(/^background:/, '--so-btn-bg:')), `--so-btn-bg-hover: ${typeof v === 'string' && isValidGradient(v) ? v.trim() : 'initial'}`);
+      }
+      if (opts.link && k === 'color') out.push(...out.map((d) => d.replace(/^color:/, '--so-btn-fg:')));
+      const safe = out.filter(safeDecl);
+      decls.push(...safe);
+      if (media && k === 'background' && safe.length) decls.push(...paintDecls(backgroundImageLayers(props[k])));
+      fallback.push(...styleFallbackCss(k, props[k]).filter(safeDecl));
+      reduced.push(...styleReducedMotionCss(k, props[k]).filter(safeDecl));
+    }
+    const list = rules.container[scope];
+    if (fallback.length) list.push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
+    if (decls.length) list.push(`${selector} {\n${oneTranslate(decls).map((d) => `\t${mark(d)};`).join('\n')}\n}`);
+    if (reduced.length) rules.reduced.push(`${opts.important ? selector : quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
+    if (decls.some((d) => /^display\s*:/i.test(d))) {
+      // Hidden at a screen size by this layer's own rules there: hidden in every container too. A stronger layer's
+      // display shows what a weaker one hides, at a container width as at a screen size.
+      const hidden = (['phone', 'tablet', 'desktop'] as const).filter((size) => displayWinner([input], size) === 'none');
+      const hide = (size: 'phone' | 'tablet' | 'desktop') => (opts.gateHides ? wrap(shownGate(raw, size, opts.gateHides)) : selector);
+      if (hidden.length === 3 && !opts.gateHides) list.push(`${selector} {\n\t${mark('display: none')};\n}`);
+      else for (const size of hidden) list.push(`@media ${MEDIA_QUERIES[size]} {\n\t${hide(size)} {\n\t\t${mark('display: none')};\n\t}\n}`);
+    }
+  }
+  restoreContainerLayouts(rules, selector, input, opts);
+}
+
+/**
+ * Where this layer shows the element again (`hidden: false`), the display it writes beats a weaker layer's container
+ * layout too: in each container range a weaker layer lays it out in (and this one does not), the display that layout
+ * writes is written again over it, at the sizes this layer shows it.
+ */
+function restoreContainerLayouts(rules: RuleSet, selector: string, styles: ResponsiveStyles, opts: RuleOpts) {
+  const unhide = opts.unhide;
+  if (!unhide || !opts.under?.length) return;
+  const sizes = ['phone', 'tablet', 'desktop'] as const;
+  const shown = sizes.filter((size) => (styles[size]?.hidden === false || (styles.base?.hidden === false && styles[size]?.hidden === undefined)) && unhide(size) !== null);
+  if (!shown.length) return;
+  const mark = (d: string) => (opts.important ? important(d) : d);
+  for (const scope of CONTAINER_SCOPES) {
+    // A display of this layer's own for the range keeps its place.
+    if (styles[scope]?.layout !== undefined || customDisplay(styles[scope]?.customCss) !== undefined) continue;
+    let layout: unknown;
+    for (const l of opts.under) if (l?.[scope]?.layout !== undefined) layout = l[scope]!.layout;
+    const display = nodeDisplay(layout);
+    if (!display) continue;
+    const rule = `${selector} {\n\t${mark(`display: ${display}`)};\n}`;
+    if (shown.length === 3) rules.container[scope].push(rule);
+    else for (const size of shown) rules.container[scope].push(`@media ${MEDIA_QUERIES[size]} {\n${rule.replace(/^/gm, '\t')}\n}`);
+  }
+}
+
 
 /**
  * The rules for each interactive state at each size, on the element itself. Only appearance properties are written
@@ -860,7 +954,7 @@ function addStateRules(rules: RuleSet, raw: string, input: ResponsiveStyles, opt
   for (const state of STYLE_STATES) {
     const group = isGroupStyleState(state);
     if (group && !opts.grouped) continue;
-    for (const scope of RESPONSIVE_SCOPES) {
+    for (const scope of STYLE_SCOPES) {
       const props = input[styleScopeKey(scope, state)];
       if (!props || typeof props !== 'object') continue;
       const decls: string[] = [];
@@ -892,6 +986,8 @@ function addStateRules(rules: RuleSet, raw: string, input: ResponsiveStyles, opt
   if (fallback.length) rules.base.push(`${wrap(`:where(${base})`)} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
 }
 
+const containerBlock = (query: string, list: string[]) => `@container ${query} {\n${list.map((r) => r.replace(/^/gm, '\t')).join('\n')}\n}`;
+
 function emitRules(rules: RuleSet): string {
   const out: string[] = [...rules.base];
   const block = (query: string, list: string[]) => `@media ${query} {\n${list.map((r) => r.replace(/^/gm, '\t')).join('\n')}\n}`;
@@ -901,16 +997,21 @@ function emitRules(rules: RuleSet): string {
     if (!list.length) continue;
     out.push(block(MEDIA_QUERIES[scope], list));
   }
+  // Each container width range after every screen size, so it wins over a screen size's value in the same layer.
+  for (const scope of CONTAINER_SCOPES) if (rules.container[scope].length) out.push(containerBlock(CONTAINER_QUERIES[scope], rules.container[scope]));
   // Every state after every resting rule, so a state beats the resting style at every size, as hand-written `:hover`
   // does; within a state, a size's own rule after the rule for all sizes; and the element's own states after its
   // group's, active after focus after hover, so the state a visitor is in last, and nearest, wins while several hold.
   for (const state of STYLE_STATES)
-    for (const scope of RESPONSIVE_SCOPES) {
+    for (const scope of STYLE_SCOPES) {
       const list = scope === 'phone' || scope === 'tablet' ? [...rules.copies[state][scope], ...rules.states[state][scope]] : rules.states[state][scope];
       if (!list.length) continue;
-      const query = [scope === 'base' ? null : MEDIA_QUERIES[scope], state === 'hover' || state === 'groupHover' ? HOVER_QUERY : null].filter(Boolean).join(' and ');
-      if (query) out.push(block(query, list));
-      else out.push(...list);
+      const cq = isContainerScope(scope);
+      const query = [scope === 'base' || cq ? null : MEDIA_QUERIES[scope], state === 'hover' || state === 'groupHover' ? HOVER_QUERY : null].filter(Boolean).join(' and ');
+      // A container range's state rules sit in its container block, inside the hover query where there is one.
+      const body = cq ? [containerBlock(CONTAINER_QUERIES[scope], list)] : list;
+      if (query) out.push(block(query, body));
+      else out.push(...body);
     }
   // Last, and with !important as the theme's own rule has, so no duration set for any size outlasts it.
   if (rules.reduced.length) out.push(block(REDUCED_MOTION_QUERY, [...new Set(rules.reduced)]));
@@ -1056,6 +1157,8 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
         const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `.${variantClass(def, axis, vid)}.${nodeClass(def, nid)}`;
         // An axis earlier in the cascade may be what hides this node, so showing it again has to undo that too.
         const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).flatMap((o) => (o.styles?.[nid] ? [o.styles[nid]] : [])));
+        // No container layout is restored for an option's show (see restoreContainerLayouts): its options and the other
+        // axes' share one stylesheet block, where it would come after another option's hide.
         const opts = { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier), wrap, gateHides: standalone ? shownMark(def) : undefined, media: mediaFor(state, designMedia(state, def, nid), files), grouped: group(nid) !== null };
         addRules(rules, sel, v.styles![nid], opts);
         // First-format converted code marks only its root with the option, so its nodes are still matched through
@@ -1244,6 +1347,7 @@ function overrideOpts(state: ProjectState, def: ComponentDefinition, inst: Insta
     link: def.tree?.nodes[nodeId]?.kind === 'link',
     wideColumns: true,
     unhide: unhider(def, nodeId, inst.variants, inst.overrides?.[partId] ?? {}),
+    under: [def.tree?.nodes[nodeId]?.styles, ...selectedVariantStyles(def, inst.variants, nodeId)].filter(Boolean) as ResponsiveStyles[],
     important: stylesCode(state, def, partId),
     media: mediaFor(state, designMedia(state, def, nodeId) || hasBackgroundImage(inst.overrides?.[partId]), files)
   };
@@ -1271,6 +1375,10 @@ export function keepWeakerHides(def: ComponentDefinition, inst: InstanceNode, pa
     }
     return hidden;
   };
+  // An item that sets no display of its own shows wherever the weaker rules show the part. Where they lay it out by the
+  // container's width, a hide for a whole screen size would hide it where the rest are shown: it is left to them.
+  const writesDisplay = (rs: ResponsiveStyles | undefined) => Object.entries(rs ?? {}).some(([k, r]) => !parseStyleScopeKey(k)?.state && !!r && typeof r === 'object' && (r.layout !== undefined || r.hidden === false || customDisplay(r.customCss) !== undefined));
+  if (!writesDisplay(own) && layers.some((l) => CONTAINER_SCOPES.some((c) => l[c]?.layout !== undefined || customDisplay(l[c]?.customCss) !== undefined))) return own;
   let out = own;
   for (const range of ['phone', 'tablet', 'desktop'] as const) {
     if (!hiddenAt(range) || own.base?.hidden !== undefined || own[range]?.hidden !== undefined) continue;
@@ -1290,6 +1398,7 @@ function itemOverrideOpts(state: ProjectState, def: ComponentDefinition, inst: I
     link: def.tree?.nodes[nodeId]?.kind === 'link',
     wideColumns: true,
     unhide: unhider(def, nodeId, inst.variants, own, [], inst.overrides?.[partId] ? [inst.overrides[partId]] : []),
+    under: [def.tree?.nodes[nodeId]?.styles, ...selectedVariantStyles(def, inst.variants, nodeId), inst.overrides?.[partId]].filter(Boolean) as ResponsiveStyles[],
     important: stylesCode(state, def, partId),
     media: mediaFor(state, designMedia(state, def, nodeId) || hasBackgroundImage(inst.overrides?.[partId]) || hasBackgroundImage(own))
   };
@@ -2682,6 +2791,8 @@ function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRan
 
 /** Custom CSS properties that only paint: they never change how wide anything is laid out. */
 const PAINT_ONLY_CSS = /^(filter|backdrop-filter|opacity|color|background(-[a-z]+)*|border(-[a-z]+)*|box-shadow|outline(-[a-z]+)*|mix-blend-mode|isolation|transition(-[a-z]+)*|cursor|text-[a-z-]+|font(-[a-z]+)*|letter-spacing|word-spacing|line-height|object-position|image-rendering|pointer-events|user-select|visibility|z-index|caret-color|accent-color|clip-path)$/;
+/** The styles of an image that decide how much of its picture a crop needs. */
+const CROP_PROPS = ['height', 'minHeight', 'maxHeight', 'aspectRatio', 'objectFit'];
 /** The styles that decide how wide an element, or the elements inside it, can be. */
 const SIZING_PROPS = ['layout', 'columns', 'gridTemplate', 'columnSpan', 'width', 'minWidth', 'maxWidth', 'flexGrow', 'position', 'inset', 'marginInlineStart', 'marginInlineEnd', 'customCss'];
 
@@ -2708,6 +2819,10 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
   const boxes: SizingBox[] = [[{ styles: node.styles ?? {}, tier: 0 }]];
   sizingBoxes(walk, ctx.tree, node.id, null, '', boxes);
   if (walk.unknown) return null;
+  // A container width range can change how wide a box on the way is, or how much of the picture a crop needs, at a
+  // width no screen size tells: the default holds.
+  const inContainer = (box: SizingBox, props: string[]) => box.some(({ styles }) => CONTAINER_SCOPES.some((scope) => props.some((prop) => styles[scope]?.[prop] !== undefined)));
+  if (boxes.some((box) => inContainer(box, SIZING_PROPS)) || inContainer(boxes[0], CROP_PROPS)) return null;
   // A cropped picture (cover) fills its box both ways, so it can need more width than the box has.
   const asset = node.kind === 'image' && !isBinding(node.image) && node.image?.assetId ? ctx.state.assets.assets[node.image.assetId] : undefined;
   const aspect = asset?.width && asset.height ? asset.width / asset.height : null;

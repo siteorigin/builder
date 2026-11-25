@@ -72,10 +72,10 @@ describe('composer headroom for a local model', () => {
     expect(messageRoom(20_000, 'native')).toBe(20_000 - 10_752 - 1024);
     expect(messageRoom(20_000, 'auto')).toBe(10_000);
     // A request without the page tools (a selection, a component, a question) is charged its small tools only.
-    expect(messageRoom(8192, 'native', false)).toBe(4096);
-    expect(messageRoom(8193, 'native', false)).toBe(4096);
+    expect(messageRoom(8192, 'native', false)).toBe(8192 - 3584 - 1024);
+    expect(messageRoom(10_241, 'native', false)).toBe(5120);
     expect(messageRoom(12_288, 'native', false)).toBe(6144);
-    expect(messageRoom(6144, 'auto', false)).toBe(6144 - 3072 - 1024);
+    expect(messageRoom(6144, 'auto', false)).toBe(6144 - 3584 - 1024);
     expect(messageRoom(1024, 'native', false)).toBe(0);
   });
 

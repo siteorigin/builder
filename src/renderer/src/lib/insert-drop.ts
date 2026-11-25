@@ -6,6 +6,7 @@
  */
 import type { EditOperation } from '@shared/ops';
 import type { OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles } from '@shared/types';
+import { CONTAINER_SCOPES } from '@shared/types';
 import { applyOperations } from '@engine/apply';
 import { childLists } from '@engine/tree';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
@@ -227,6 +228,8 @@ export function incomingOrder(state: ProjectState, spec: InsertSpec): number | n
   // At each screen size, the last source that sets it there wins (a variant's over the design's own); a size that sets
   // none takes the base one, and no Order at all is 0.
   const at = (scope: ResponsiveScope): unknown => sources.reduce<unknown>((v, styles) => (styles[scope] && Object.hasOwn(styles[scope]!, 'order') ? styles[scope]!.order : v), undefined);
+  // An Order for a width of the container around it changes with where it lands: not known either.
+  if (sources.some((styles) => CONTAINER_SCOPES.some((scope) => styles[scope] && Object.hasOwn(styles[scope]!, 'order')))) return null;
   const base = at('base') ?? 0;
   const sizes = (['base', 'phone', 'tablet', 'desktop'] as const).map((scope) => Number(at(scope) ?? base));
   // One Order at every size is that Order; one that changes with the size is not known.

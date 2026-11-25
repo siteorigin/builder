@@ -18,6 +18,20 @@ export type ResponsiveScope = 'base' | 'phone' | 'tablet' | 'desktop';
 export const RESPONSIVE_SCOPES: ResponsiveScope[] = ['base', 'phone', 'tablet', 'desktop'];
 
 /**
+ * Width ranges of the nearest query container around an element (an ancestor whose `containerType` is `inline-size`,
+ * such as a column), rather than of the screen: a card in a narrow sidebar column stacks while the same card in the wide
+ * main column beside it stays side by side, at one screen size. They never overlap (see shared/styles
+ * `CONTAINER_QUERIES`), and without a query container around the element none of them applies. Written after every
+ * screen-size rule of the same layer, so a container range wins over a screen size there.
+ */
+export const CONTAINER_SCOPES = ['cq-narrow', 'cq-medium', 'cq-wide'] as const;
+export type ContainerScope = (typeof CONTAINER_SCOPES)[number];
+export const isContainerScope = (scope: unknown): scope is ContainerScope => (CONTAINER_SCOPES as readonly unknown[]).includes(scope);
+/** Where a bucket of styles applies: every size (`base`), one screen size, or one width range of the query container. */
+export type StyleScope = ResponsiveScope | ContainerScope;
+export const STYLE_SCOPES = ['base', 'phone', 'tablet', 'desktop', 'cq-narrow', 'cq-medium', 'cq-wide'] as const satisfies readonly StyleScope[];
+
+/**
  * Interactive states a style rule can be limited to: `groupHover` (the pointer anywhere over the nearest interaction
  * group around it, on devices that hover) and `groupFocus` (focus anywhere inside that group, `:focus-within`), then
  * the element's own `hover` (pointer over it), `focus` (keyboard focus, as `:focus-visible` shows it) and `active`
@@ -30,18 +44,21 @@ export type StyleState = (typeof STYLE_STATES)[number];
 export const GROUP_STYLE_STATES = ['groupHover', 'groupFocus'] as const;
 export type GroupStyleState = (typeof GROUP_STYLE_STATES)[number];
 export const isGroupStyleState = (state: StyleState | undefined | null): state is GroupStyleState => state === 'groupHover' || state === 'groupFocus';
-/** Where one bucket of styles applies: a size range, or a size range in one interactive state (`phone:hover`). */
-export type StyleScopeKey = ResponsiveScope | `${ResponsiveScope}:${StyleState}`;
+/**
+ * Where one bucket of styles applies: a size range or container width range, or one of those in one interactive state
+ * (`phone:hover`, `cq-narrow:hover`).
+ */
+export type StyleScopeKey = StyleScope | `${StyleScope}:${StyleState}`;
 
 /** The key a size range's rules in one state (or, without one, its resting rules) are stored under. */
-export const styleScopeKey = (scope: ResponsiveScope, state?: StyleState): StyleScopeKey => (state ? `${scope}:${state}` : scope);
+export const styleScopeKey = (scope: StyleScope, state?: StyleState): StyleScopeKey => (state ? `${scope}:${state}` : scope);
 
 /** The size range and state a stored key names, or null for a key that names none (a hand-edited document). */
-export function parseStyleScopeKey(key: string): { scope: ResponsiveScope; state?: StyleState } | null {
+export function parseStyleScopeKey(key: string): { scope: StyleScope; state?: StyleState } | null {
   const [scope, state, ...rest] = key.split(':');
-  if (rest.length || !(RESPONSIVE_SCOPES as string[]).includes(scope)) return null;
-  if (state === undefined) return { scope: scope as ResponsiveScope };
-  return (STYLE_STATES as readonly string[]).includes(state) ? { scope: scope as ResponsiveScope, state: state as StyleState } : null;
+  if (rest.length || !(STYLE_SCOPES as readonly string[]).includes(scope)) return null;
+  if (state === undefined) return { scope: scope as StyleScope };
+  return (STYLE_STATES as readonly string[]).includes(state) ? { scope: scope as StyleScope, state: state as StyleState } : null;
 }
 
 /**
