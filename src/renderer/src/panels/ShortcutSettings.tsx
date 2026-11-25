@@ -1,7 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import { DEFAULT_SHORTCUTS, MAC_SYSTEM_HINT, shortcutHint } from '@shared/shortcuts';
 import { recordedPress } from '../lib/shortcut-keys';
-import { api } from '../store';
+import { api, setState } from '../store';
 import { InlineRow } from './LocalModelSettings';
 import { platformKeys } from './CopyPaste';
 
@@ -29,6 +29,8 @@ export function AskAiShortcut({ binding, save }: { binding: string; save: (askAi
       setProblem(null);
     } catch (e) {
       setProblem(errorText(e));
+      // Another setting saved meanwhile may have shown the binding that has now failed: show the one in use again.
+      void api.app.getSettings().then((settings) => setState({ settings }), () => undefined);
     } finally {
       setBusy(false);
     }

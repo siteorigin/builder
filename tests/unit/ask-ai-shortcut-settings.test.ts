@@ -35,9 +35,11 @@ describe('the Ask AI shortcut in Settings', () => {
     expect((await m.loadSettings()).settings.shortcuts.askAi).toBe('Mod+J');
   });
 
-  it('goes back to the binding on disk when saving a new one fails, even with two failing at once', async () => {
+  // A folder without write permission stops the save only where POSIX permissions apply.
+  it.skipIf(process.platform === 'win32')('goes back to the binding on disk when saving a new one fails, even with two failing at once', async () => {
+    writeFileSync(settingsFile, JSON.stringify({ settings: { shortcuts: { askAi: 'Mod+L' } } }));
+    // The binding to go back to is the one read at start, with no save made since.
     const m = await restart();
-    await m.updateSettings({ shortcuts: { askAi: 'Mod+L' } });
     chmodSync(userData, 0o500);
     try {
       const results = await Promise.allSettled([m.updateSettings({ shortcuts: { askAi: 'Mod+P' } }), m.updateSettings({ shortcuts: { askAi: 'Mod+T' } })]);

@@ -51,18 +51,18 @@ export function normalShortcut(value: unknown): string | null {
 
 /**
  * The letter or digit a key press is on: by what it types; a number-row key with Shift held by its place, since Shift
- * types a symbol there; and on a layout whose letters are not Latin, by the key's place. A dead key or an unknown one
- * is none, and so is punctuation a layout puts on the number row unshifted (Programmer Dvorak's `[`).
+ * types a symbol there; and a letter outside ASCII (Cyrillic, Greek, AZERTY's é on the 2 key) by its key's place. A
+ * dead key or an unknown one is none, and so is punctuation a layout puts on the number row unshifted (Programmer
+ * Dvorak's `[`, which is Back in Preview).
  */
 function chordKey(k: Pick<ShortcutChord, 'key' | 'code' | 'shift'>): string | null {
   if (k.key.length !== 1) return null;
   const typed = k.key.toUpperCase();
   if (KEY.test(typed)) return typed;
-  const digit = k.shift ? /^Digit([0-9])$/.exec(k.code ?? '') : null;
-  if (digit) return digit[1];
-  // Only a letter outside ASCII (Cyrillic, Greek...) borrows its key's Latin name: punctuation never does.
-  const letter = /^Key([A-Z])$/.exec(k.code ?? '');
-  return letter && /\p{L}/u.test(k.key) && !/[\x00-\x7f]/.test(k.key) ? letter[1] : null;
+  const place = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(k.code ?? '');
+  if (!place) return null;
+  if (place[2] && k.shift) return place[2];
+  return /\p{L}/u.test(k.key) && !/[\x00-\x7f]/.test(k.key) ? (place[1] ?? place[2]) : null;
 }
 
 /** Whether exactly the platform's primary modifier is held: Command on a Mac, Ctrl elsewhere, never both. */
@@ -86,6 +86,7 @@ const OTHER_KEYS: Record<string, string> = {
   '⇧ArrowUp': 'It’s already the shortcut for Move up.',
   '⇧ArrowDown': 'It’s already the shortcut for Move down.',
   Enter: 'It’s already the shortcut for Done.',
+  '⇧Enter': 'It’s already the shortcut for Done.',
   '-': 'The app menu uses it for Zoom Out.',
   '=': 'The app menu uses it for Zoom In.',
   '⇧+': 'The app menu uses it for Zoom In.'
@@ -102,7 +103,7 @@ export function recordShortcut(k: ShortcutChord, mac: boolean): { binding: strin
   const key = chordKey(k);
   if (key) return { binding: write({ shift: k.shift, key }) };
   // With Shift held, macOS reports the backslash key as "|".
-  const named = OTHER_KEYS[`${k.shift ? '⇧' : ''}${k.key === '|' ? '\\' : k.key}`];
+  const named = OTHER_KEYS[`${k.shift ? '⇧' : ''}${k.key === '|' ? '\\' : k.key}`] ?? (mac && !k.shift && (k.key === '[' || k.key === ']') ? `It’s already the shortcut for ${k.key === '[' ? 'Back' : 'Forward'} in Preview.` : undefined);
   return { problem: named ? `${named} ${usage}` : usage };
 }
 
@@ -142,7 +143,6 @@ const EDITOR: Record<string, string> = {
   'Mod+B': 'Bold',
   'Mod+I': 'Italic',
   'Mod+U': 'Underline',
-  'Mod+Shift+U': 'Redo Selection in the code editor',
   'Mod+O': 'Open Project',
   'Mod+Shift+N': 'New Project',
   'Mod+Shift+W': 'Close Project'
@@ -162,8 +162,14 @@ const MAC_SYSTEM: Record<string, string> = { 'Mod+Shift+Q': 'Log Out', 'Mod+Shif
 /** What Chromium's text editing takes for itself off macOS: Ctrl+Shift+V pastes plain text into any field. */
 const TEXT_KEYS: Record<string, string> = { 'Mod+Shift+V': 'Paste as Plain Text' };
 
+/** What typing in a field takes on one platform: the code editor's Redo Selection on a Mac, IBus's Unicode entry on Linux. */
+const PLATFORM_TEXT_KEYS: Record<string, Record<string, string>> = {
+  darwin: { 'Mod+Shift+U': 'Redo Selection in the code editor' },
+  linux: { 'Mod+Shift+U': 'typing a Unicode character' }
+};
+
 /** The shortcuts macOS keeps that never reach the app, to show beside the recorder (they cannot be refused on press). */
-export const MAC_SYSTEM_HINT = '⇧⌘3, ⇧⌘4 and ⇧⌘5 are macOS’s screenshot shortcuts, and ⇧⌘Q logs out.';
+export const MAC_SYSTEM_HINT = '⇧⌘3, ⇧⌘4, ⇧⌘5 and ⇧⌘6 are macOS’s screenshot shortcuts, and ⇧⌘Q logs out.';
 
 /**
  * Why a binding cannot be Ask AI's, naming what already has it, or null when it is free. `platform` as Node names it
@@ -172,7 +178,7 @@ export const MAC_SYSTEM_HINT = '⇧⌘3, ⇧⌘4 and ⇧⌘5 are macOS’s scree
 export function shortcutConflict(binding: string, platform: string): string | null {
   const b = normalShortcut(binding);
   if (!b) return 'That is not a shortcut SiteOrigin Builder can use.';
-  const editor = EDITOR[b] ?? (platform === 'darwin' ? undefined : TEXT_KEYS[b]);
+  const editor = EDITOR[b] ?? (platform === 'darwin' ? undefined : TEXT_KEYS[b]) ?? PLATFORM_TEXT_KEYS[platform]?.[b];
   if (editor) return `It’s already the shortcut for ${editor}.`;
   const menu = menuKeys(platform)[b];
   if (menu) return `The app menu uses it for ${menu}.`;

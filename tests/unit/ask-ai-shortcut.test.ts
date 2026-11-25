@@ -49,7 +49,11 @@ describe('Ask AI shortcut binding (#750)', () => {
     // Punctuation a layout puts on the number row unshifted (Programmer Dvorak's [ on 2) is not that digit: Cmd+[ is
     // Back in Preview.
     expect(matchesShortcut(press('[', { meta: true, code: 'Digit2' }), 'Mod+2', true)).toBe(false);
-    expect(recordShortcut(press('[', { meta: true, code: 'Digit2' }), true)).toEqual({ problem: expect.any(String) });
+    expect(recordShortcut(press('[', { meta: true, code: 'Digit2' }), true)).toEqual({ problem: expect.stringContaining('Back in Preview') });
+    // AZERTY types é on the 2 key without Shift: a letter, so the key's place names it.
+    expect(recordShortcut(press('é', { ctrl: true, code: 'Digit2' }), false)).toEqual({ binding: 'Mod+2' });
+    expect(matchesShortcut(press('é', { ctrl: true, code: 'Digit2' }), 'Mod+2', false)).toBe(true);
+    expect(matchesShortcut(press('λ', { ctrl: true, code: 'KeyL' }), 'Mod+L', false)).toBe(true);
     expect(matchesShortcut(press('о', { ctrl: true, code: 'KeyJ' }), 'Mod+J', false)).toBe(true);
     // A dead key, an unknown one, or punctuation on a letter's place is never that letter.
     expect(matchesShortcut(press('Dead', { meta: true, code: 'KeyL' }), 'Mod+L', true)).toBe(false);
@@ -83,6 +87,7 @@ describe('Ask AI shortcut binding (#750)', () => {
     expect(recordShortcut(press('ArrowUp', { ctrl: true }), false)).toEqual({ problem: expect.not.stringContaining('Move up') });
     expect(recordShortcut(press('|', { meta: true, shift: true }), true)).toEqual({ problem: expect.stringContaining('right panel') });
     expect(recordShortcut(press('-', { meta: true }), true)).toEqual({ problem: expect.stringContaining('Zoom Out') });
+    expect(recordShortcut(press('Enter', { ctrl: true, shift: true }), false)).toEqual({ problem: expect.stringContaining('Done') });
   });
 
   it('refuses a binding another editor shortcut has, and says which', () => {
@@ -99,6 +104,9 @@ describe('Ask AI shortcut binding (#750)', () => {
     expect(shortcutConflict('Mod+A', 'darwin')).toMatch(/Select all/);
     expect(shortcutConflict('Mod+Shift+E', 'win32')).toMatch(/Export/);
     expect(shortcutConflict('Mod+Shift+U', 'darwin')).toMatch(/Redo Selection/);
+    expect(shortcutConflict('Mod+Shift+U', 'linux')).toMatch(/Unicode/);
+    expect(shortcutConflict('Mod+Shift+U', 'win32')).toBeNull();
+    expect(shortcutConflict('Mod+Shift+Y', 'darwin')).toMatch(/Redo/);
     // Chromium pastes plain text on Ctrl+Shift+V into any field, the preview's too, off macOS.
     expect(shortcutConflict('Mod+Shift+V', 'win32')).toMatch(/Paste as Plain Text/);
     expect(shortcutConflict('Mod+Shift+V', 'linux')).toMatch(/Paste as Plain Text/);
@@ -112,7 +120,7 @@ describe('Ask AI shortcut binding (#750)', () => {
     expect(shortcutConflict('Mod+R', 'darwin')).toMatch(/Reload/);
     expect(shortcutConflict('Mod+H', 'darwin')).toMatch(/Hide/);
     expect(shortcutConflict('Mod+H', 'win32')).toBeNull();
-    for (const d of ['3', '4', '5']) expect(shortcutConflict(`Mod+Shift+${d}`, 'darwin')).toMatch(/macOS.*screenshots/);
+    for (const d of ['3', '4', '5', '6']) expect(shortcutConflict(`Mod+Shift+${d}`, 'darwin')).toMatch(/macOS.*screenshots/);
     expect(shortcutConflict('Mod+Shift+4', 'win32')).toBeNull();
     expect(shortcutConflict('Mod+Shift+I', 'linux')).toMatch(/Developer Tools/);
     // Paste and Match Style is Option+Shift+Command+V, which no binding can be.
@@ -172,5 +180,6 @@ describe('the main process passing Ask AI on from the preview (#750)', () => {
     for (const k of ['k', 's', 'z', '\\']) expect(forwardsKey(press(k, { meta: true }), 'Mod+Shift+L', true)).toBe(true);
     expect(forwardsKey(press('Escape'), 'Mod+L', true)).toBe(true);
     expect(forwardsKey(press('a'), 'Mod+L', true)).toBe(false);
+    expect(forwardsKey(press('[', { meta: true }), 'Mod+L', true)).toBe(true);
   });
 });
