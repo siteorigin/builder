@@ -633,8 +633,8 @@ export const EVAL_CASES: EvalCase[] = [
       return [
         () => [call('read_source', { definitionId: id() })],
         (req) => {
-          const read = JSON.parse((req.items.at(-1) as { content: string }).content) as { hash: string };
-          return [call('apply_source_patch', { definitionId: id(), expectedHash: read.hash, edits: [{ find: '{quote<', replace: '{quote}<' }] })];
+          const read = JSON.parse((req.items.at(-1) as { content: string }).content) as { hash: string; revision: number };
+          return [call('apply_source_patch', { definitionId: id(), expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'site' }, edits: [{ find: '{quote<', replace: '{quote}<' }] })];
         },
         finish('Closed the unterminated expression in Quote Card.')
       ];

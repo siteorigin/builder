@@ -10,7 +10,9 @@ import type { ChatContext } from '@shared/api';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { EditOperation, OperationType } from '@shared/ops';
-import { enclosingRepeatProp, findParent, getTree, instancesOf, itemLinkPairs, settledRoot, subtreeIds } from '@engine/tree';
+import { allTrees, displayName, enclosingRepeatProp, findParent, getTree, instancesOf, itemLinkPairs, settledRoot, subtreeIds } from '@engine/tree';
+import { dependentsOf } from '@engine/definitions';
+import { normalizeRoute } from '@shared/routes';
 import { repeatedPartList } from '@shared/item-styles';
 import { bindingSites } from '@engine/schema';
 import { walkOperations } from '@engine/apply';
@@ -449,6 +451,8 @@ const CONTRACT_EDITS = new Set<OperationType>([
 /** Returns null when every operation stays within one component's own design, otherwise a reason. */
 function checkComponentAuthority(state: ProjectState, ops: EditOperation[], authority: Extract<Authority, { kind: 'component' }>): string | null {
   const def = state.components[authority.definitionId];
+  // A code component's design is its source: a patch to it is a change to that component alone.
+  if (def?.kind === 'code' && ops.every((op) => op.type === 'component.updateSource' && op.definitionId === def.id)) return null;
   if (!def?.tree) return `${authority.label} is no longer in the site.`;
   const nodes = def.tree.nodes;
   // The first top-level node is the component's own root: placements' classes and variants style it, so it stays
@@ -614,6 +618,7 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
   if (op.type === 'theme.refresh') return authority.part ? `theme.refresh changes the design of the component the selected part is in, which is more than the part.` : themeRefreshWithin(state, op, grants, authority.label, (o, id) => sameOwner(o) && allowed.has(id));
   // Inside a component's design, a placement made unique or turned into code adds a new component to the site.
   if (authority.owner.kind === 'component' && (op.type === 'component.makeUnique' || op.type === 'component.convertToCode')) return `${op.type} adds a new component to the site, which changes more than ${authority.label}.`;
+  if (op.type === 'component.updateSource') return sourceWithin(state, op.definitionId, authority, allowed, sameOwner);
   // Siblings wrapped or ungrouped where they are: every one inside the selection, never the selected element itself (a
   // new container around it, or what it held put beside it, would be outside it), and inside the selected part.
   if (op.type === 'node.wrap' || op.type === 'node.unwrap') {
@@ -664,6 +669,108 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
     default:
       return `${op.type} changes more than ${authority.label}.`;
   }
+}
+
+/**
+ * Whether a source change stays inside a selection (spec 13.4). A component's code shows wherever it is placed, so it is
+ * the selection's only when every placement is inside the selected element and no other code renders it: the copy
+ * component.convertToCode makes of the selected placement, say. A selected part never reaches its component's code,
+ * and neither does a selection inside a component's design, where the code would show wherever that design is placed.
+ */
+function sourceWithin(state: ProjectState, definitionId: string, authority: Extract<Authority, { kind: 'selection' }>, allowed: Set<string>, sameOwner: (o: OwnerRef) => boolean): string | null {
+  if (authority.part) return `component.updateSource changes the code of the component the selected part is in, which is more than the part.`;
+  if (authority.owner.kind === 'component') return `component.updateSource changes code that shows wherever this design is placed: more than ${authority.label}.`;
+  const def = Object.hasOwn(state.components, definitionId) ? state.components[definitionId] : undefined;
+  if (!def || def.kind !== 'code' || def.owner !== 'project') return `component.updateSource changes more than ${authority.label}.`;
+  const inside = (id: string) => {
+    const placed = instancesOf(state, id);
+    return placed.length > 0 && placed.every((p) => sameOwner(p.owner) && allowed.has(p.node.id)) && !dependentsOf(state, id).length;
+  };
+  // Code that loads components by pattern or at run time can render this one without naming its file: when such code
+  // shows anywhere outside the selection, who shows this one cannot be told, so it is not the selection's alone.
+  const loaders = Object.values(state.components).filter((d) => d.id !== def.id && d.kind === 'code' && DYNAMIC_IMPORT.test(d.source ?? ''));
+  const unknown = loaders.some((d) => (instancesOf(state, d.id).length || dependentsOf(state, d.id).length) && !inside(d.id));
+  if (inside(def.id) && !unknown) return null;
+  return `Changing the source of "${def.name}" changes every placement of it, and it is used outside ${authority.label}. Give the selected placement a component of its own first (component.convertToCode for a managed component, component.makeUnique for code), then patch that copy.`;
+}
+
+/** An import whose target is chosen by a pattern or at run time (developer code may use them; the assistant's may not). */
+const DYNAMIC_IMPORT = /import\.meta\.glob|\bimport\s*\(/;
+
+/** What a mutating call asks to change (spec 13.3): the whole site, or one page, component design or element by its ID. */
+export interface RequestedScope {
+  kind: 'site' | 'page' | 'component' | 'selection';
+  targetIds?: string[];
+}
+
+/** How an authority is named where a call asks for more than it, or is limited to it. */
+export function authorityLabel(authority: Authority): string {
+  if (authority.kind === 'site') return 'the whole site';
+  if (authority.kind === 'component') return `the ${authority.label} component`;
+  return authority.label;
+}
+
+/**
+ * The authority a call's requested scope names, which must lie within the run's: a scope that reaches further is
+ * refused, never narrowed, and the model cannot widen a run by asking. The call is then checked against both, so a
+ * narrower scope limits it and never grants what the run's own authority refuses (a page run naming an element of the
+ * page still may not convert it to code). A selected part is named by its placement's ID and stays that part.
+ */
+export function requestedAuthority(state: ProjectState, requested: RequestedScope, run: Authority): { authority: Authority } | { code: 'INVALID_ARGUMENT' | 'SCOPE_MISMATCH'; message: string; reread?: true } {
+  const wider = (what: string) => ({ code: 'SCOPE_MISMATCH' as const, message: `This call asks to change ${what}, which is more than ${authorityLabel(run)}.` });
+  if (requested.kind === 'site') return run.kind === 'site' ? { authority: run } : wider('the whole site');
+  const ids = requested.targetIds ?? [];
+  if (ids.length !== 1 || typeof ids[0] !== 'string' || !ids[0].trim()) return { code: 'INVALID_ARGUMENT', message: `scope.targetIds: a ${requested.kind} scope names exactly one ${requested.kind === 'page' ? 'page ID' : requested.kind === 'component' ? 'definitionId' : 'node ID'}.` };
+  const id = ids[0];
+  if (requested.kind === 'page') {
+    const route = normalizeRoute(id.trim());
+    const pageId = Object.hasOwn(state.pages, id) ? id : Object.values(state.pages).find((p) => p?.route === route)?.id;
+    if (!pageId) return { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the page "${id}", which is not in the site.` };
+    const label = pageLabel(state.pages[pageId].title);
+    if (run.kind === 'site') return { authority: { kind: 'page', pageId, label } };
+    return run.kind === 'page' && run.pageId === pageId ? { authority: run } : wider(label);
+  }
+  if (requested.kind === 'component') {
+    if (!Object.hasOwn(state.components, id)) return { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the component "${id}", which is not in the site.` };
+    const label = state.components[id].name;
+    if (run.kind === 'site') return { authority: { kind: 'component', definitionId: id, label } };
+    return run.kind === 'component' && run.definitionId === id ? { authority: run } : wider(`the ${label} component`);
+  }
+  // An element: found in the tree the run is limited to, or anywhere in the site for a run that may change it all.
+  if (run.kind === 'selection' && run.nodeId === id) return { authority: run };
+  const owners: OwnerRef[] =
+    run.kind === 'site'
+      ? allTrees(state).flatMap((t) => (Object.hasOwn(t.tree.nodes, id) ? [t.owner] : []))
+      : run.kind === 'selection'
+        ? [run.owner]
+        : run.kind === 'page'
+          ? [{ kind: 'page', id: run.pageId }]
+          : run.kind === 'component'
+            ? [{ kind: 'component', id: run.definitionId }]
+            : [];
+  const found = owners.filter((o) => {
+    try {
+      return Object.hasOwn(getTree(state, o).nodes, id);
+    } catch {
+      return false;
+    }
+  });
+  if (found.length > 1) return { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the element "${id}", which is in more than one place in the site. Name the page or component instead.` };
+  if (!found.length) {
+    // Not where the run may change things: elsewhere in the site, or a wrong ID.
+    const anywhere = run.kind !== 'site' && allTrees(state).some((t) => Object.hasOwn(t.tree.nodes, id));
+    return anywhere ? wider(`the element "${id}"`) : { code: 'SCOPE_MISMATCH', reread: true, message: `scope names the element "${id}", which is not in the site.` };
+  }
+  const owner = found[0];
+  const node = getTree(state, owner).nodes[id];
+  const label = `the ${displayName(state, node)} element`;
+  // Inside a selection: an element in it. A part is named by its placement, or by content placed in a slot it renders.
+  if (run.kind === 'selection') {
+    const part = run.part ? selectedPart(state, run) : null;
+    const inside = run.part ? !!part && slotContent(state, run.owner, part).has(id) : subtreeIds(getTree(state, run.owner), run.nodeId).includes(id);
+    if (!inside) return wider(label);
+  }
+  return { authority: { kind: 'selection', owner, nodeId: id, label } };
 }
 
 /**

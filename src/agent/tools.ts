@@ -28,12 +28,19 @@ import { locateField } from '@engine/locate';
 import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
 import { changedComponents, componentWarnings, introducedReusability } from './reusability';
 import { isReusabilityWarning } from '@engine/reusability';
-import { OP_REACH, type AuthorityGrants } from './scope';
+import { OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { runUpdateThemeComponent, themeUpdateNote, UPDATE_THEME_COMPONENT_ARGS, UPDATE_THEME_COMPONENT_BRIEF, UPDATE_THEME_COMPONENT_DESCRIPTION, updateThemeComponentTool, wholeSelection, type UpdateReach } from './theme-update';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component', 'template']), id: z.string() });
+
+/** What a mutating call asks to change (spec 13.3), checked against what the request may change. */
+const REQUESTED_SCOPE = z.object({
+  kind: z.enum(['selection', 'page', 'component', 'site']),
+  targetIds: z.array(z.string()).optional().describe('One pageId, definitionId or node ID; none for site.')
+});
+const SCOPE_NOTE = 'What this call changes. Wider than the request may change is refused; narrower limits the call.';
 
 export const TOOL_ARGS = {
   read_project: z.object({ sections: z.array(z.enum(['pages', 'tokens', 'catalogue', 'components', 'shell'])).optional() }),
@@ -56,16 +63,15 @@ export const TOOL_ARGS = {
   search_assets: z.object({ query: z.string().optional(), limit: z.number().int().min(1).max(50).optional() }),
   apply_operations: z.object({
     expectedRevision: z.number().int().describe('The revision you last read. Mismatches are rejected; read again and retry.'),
-    scope: z
-      .object({ kind: z.enum(['selection', 'page', 'component', 'site']), targetIds: z.array(z.string()).optional() })
-      .optional()
-      .describe('Optional note of what this batch is meant to change. The app decides what may change.'),
+    scope: REQUESTED_SCOPE.optional().describe(SCOPE_NOTE),
     operations: z.array(EditOperationSchema).min(1).max(30)
   }),
   read_source: z.object({ definitionId: z.string(), startLine: z.number().int().min(1).optional(), endLine: z.number().int().optional() }),
   apply_source_patch: z.object({
     definitionId: z.string(),
+    expectedRevision: z.number().int().describe('The revision read_source returned. On a mismatch, read it again.'),
     expectedHash: z.string().describe('Hash returned by read_source.'),
+    scope: REQUESTED_SCOPE.describe(`${SCOPE_NOTE} From a selection, only code placed nowhere else: component.convertToCode the selected placement, then patch the copy.`),
     edits: z.array(z.object({ find: z.string(), replace: z.string() })).optional().describe('Exact text replacements applied in order. Each find must match exactly once.'),
     source: z.string().optional().describe('Full replacement source, instead of edits.')
   }),
@@ -124,7 +130,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   apply_operations:
     'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
-  apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
+  apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the revision and hash read_source returned with it.',
   inspect_layout:
     'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text only pixels could judge (over an image). On a page of two or more sections, report.rhythm is advice on composition (never an error): three or more sections in a row with one layout on one background (at phone width, only sections that keep columns side by side) or each with a filled button, and an inner heading as large as the h1, each with the refs of the sections or headings to vary. No screenshots.',
   inspect_component:
@@ -161,7 +167,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   read_component: "A component's property schema, parts, variants, slots and examples. Read it before using an unfamiliar component.",
   search_assets: 'Images by name and description, each with its assetId (names can repeat). You cannot see images.',
   read_source: "A component's Svelte source. Only project code components can be patched.",
-  apply_source_patch: 'Change a project code component (never generated files, config or dependencies), with the hash from read_source.',
+  apply_source_patch: 'Change a project code component (never generated files, config or dependencies), with the revision and hash from read_source.',
   inspect_layout: 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.',
   inspect_component: 'Measure a component on its own at phone and desktop width, in every variant option and with long, empty and repeated content: overflow, cut-off text, contrast, overlaps and collapsed spacing, each with where it is in the design. Changes nothing.',
   validate_project: '"schema" checks references, routes and structure; "component" also compiles every component.',
@@ -191,6 +197,8 @@ const describe = (name: ToolName) => ({ description: DESCRIPTIONS[name], ...(BRI
 const NEVER_OFFERED = new Set<OperationType>([
   // A whole design in one call reaches the assistant through a tool of its own, never as a raw operation.
   'component.upsert',
+  // So does a code component's source: apply_source_patch, bound to the revision and hash read_source returned.
+  'component.updateSource',
   'asset.add',
   'asset.relink',
   'component.import',
@@ -253,7 +261,6 @@ export const FOCUSED_PAGE_OPERATIONS = new Set<OperationType>(['node.remove', 'n
 const COMPONENT_BUILD_OPERATIONS = new Set<OperationType>([
   'component.create',
   'component.createCode',
-  'component.updateSource',
   'component.rename',
   'component.setPropSchema',
   'component.removePropSchema',
@@ -627,8 +634,11 @@ export interface ToolHost {
   state(): ProjectState;
   revision(): number;
   diagnostics(): Diagnostic[];
-  /** `grants`: what the calling tool may also change for a run limited to one page (see scope.ts), never set by the model. */
-  apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string, grants?: AuthorityGrants): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
+  /**
+   * `grants`: what the calling tool may also change for a run limited to one page (see scope.ts), never set by the model.
+   * `requested`: the scope the model asked for; one wider than the run's is refused, and a narrower one limits the call.
+   */
+  apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string, grants?: AuthorityGrants, requested?: RequestedScope): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
   compileAll(): Promise<Diagnostic[]>;
   inspectLayout(pageId: string, width: number): Promise<unknown>;
   /** Show and measure a component in isolated previews, step by step (see inspect_component). */
@@ -913,6 +923,9 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       // A whole design is built through a tool of its own; the raw operation is never offered.
       if (ops.some((o) => o.type === 'component.upsert'))
         return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'component.upsert is not available here. Build or rebuild a whole component with upsert_managed_component where it is offered, or with component.create and the node and component operations.' } };
+      // Source is patched through its own tool, against the revision and hash it was read at.
+      if (ops.some((o) => o.type === 'component.updateSource'))
+        return { ok: false, content: { error: 'INVALID_ARGUMENT', message: "component.updateSource is not available here. Change a code component's source with apply_source_patch, with the revision and hash read_source returns." } };
       // A theme update is one component the request needs, through its own tool: never every outdated one at once.
       if (ops.some((o) => o.type === 'theme.refresh'))
         return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'theme.refresh is not available here. Update one installed theme component the request needs with update_theme_component, then make the change.' } };
@@ -926,7 +939,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       if (ops.some((o) => o.type === 'instance.swapComponent' && o.allowDrops !== undefined))
         return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'instance.swapComponent does not take allowDrops. Pick a design with a place for the content, or, if the user asked for that content to go, clear it with instance.setProp first and then swap.' } };
       const before = host.diagnostics();
-      const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId);
+      const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId, undefined, a.scope);
       if (!res.ok) {
         // A batch that creates a page and refers to it in the same call cannot work: the page has no ID yet.
         const dependent = refersToNewPage(ops, res.error?.message ?? '');
@@ -944,18 +957,22 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const a = args as z.infer<(typeof TOOL_ARGS)['read_source']>;
       const def = state.components[a.definitionId];
       if (!def) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Unknown component.' } };
-      if (def.kind !== 'code') return { ok: true, content: { definitionId: def.id, editable: false, note: 'This is a managed component. Its source is generated: read_component with structure shows its design, and operations edit it. A copy can be converted to code with component.convertToCode.' } };
+      if (def.kind !== 'code') return { ok: true, content: { definitionId: def.id, revision: host.revision(), editable: false, note: 'This is a managed component. Its source is generated: read_component with structure shows its design, and operations edit it. A copy can be converted to code with component.convertToCode.' } };
       const lines = (def.source ?? '').split('\n');
       const start = (a.startLine ?? 1) - 1;
       const end = Math.min(lines.length, a.endLine ?? start + 400);
-      return { ok: true, content: { definitionId: def.id, editable: def.owner === 'project', hash: sourceHash(def.source ?? ''), totalLines: lines.length, startLine: start + 1, endLine: end, source: lines.slice(start, end).join('\n') } };
+      return { ok: true, content: { definitionId: def.id, revision: host.revision(), editable: def.owner === 'project', hash: sourceHash(def.source ?? ''), totalLines: lines.length, startLine: start + 1, endLine: end, source: lines.slice(start, end).join('\n') } };
     }
     case 'apply_source_patch': {
       const a = args as z.infer<(typeof TOOL_ARGS)['apply_source_patch']>;
       const def = state.components[a.definitionId];
       if (!def || def.kind !== 'code' || def.owner !== 'project') return { ok: false, content: { error: 'PATH_DENIED', message: 'Only project code components can be patched.' } };
       let src = def.source ?? '';
-      if (sourceHash(src) !== a.expectedHash) return { ok: false, content: { error: 'STALE_REVISION', message: 'The source changed. Call read_source again.' } };
+      // Bound to the project as it was read, like any other change: an edit in between (to this component's contract,
+      // say) can make a patch written against the old one wrong even when the source itself did not change.
+      if (a.expectedRevision !== host.revision())
+        return { ok: false, content: { error: 'STALE_REVISION', revision: host.revision(), message: `This patch was written against revision ${a.expectedRevision}, but the project is at ${host.revision()}. Call read_source again and write the patch against what it returns.` } };
+      if (sourceHash(src) !== a.expectedHash) return { ok: false, content: { error: 'STALE_REVISION', revision: host.revision(), message: 'The source changed. Call read_source again.' } };
       if (a.source !== undefined) src = a.source;
       else for (const e of a.edits ?? []) {
         const count = src.split(e.find).length - 1;
@@ -963,7 +980,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         src = src.replace(e.find, e.replace);
       }
       const ops: EditOperation[] = [{ type: 'component.updateSource', definitionId: def.id, source: src, expectedHash: a.expectedHash }];
-      const res = await host.apply(ops, host.revision(), `Edit ${def.name} source`, callId);
+      const res = await host.apply(ops, a.expectedRevision, `Edit ${def.name} source`, callId, undefined, a.scope);
       if (!res.ok) return { ok: false, content: { ok: false, error: res.error } };
       const compile = (await host.compileAll()).filter((d) => d.severity === 'error');
       return { ok: true, mutated: true, ops, content: { ok: true, revision: res.revision, hash: sourceHash(src), compileErrors: compile.map((d) => d.message) } };
