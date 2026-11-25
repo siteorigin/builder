@@ -154,6 +154,13 @@ describe('the palette follows the brand (#357)', () => {
     expect(h.adjusted).toBe(false);
     expect(h.results.filter((r) => r.status !== 'pass').map((r) => r.pair.id)).toEqual(['self']);
   });
+  it('leaves a pair on a colour it cannot measure unknown, never counted as readable', () => {
+    const tokens = [...(getTheme('foundation').tokens as TokenDef[]), { id: 'color.custom-ink', label: 'Ink', group: 'color', value: 'var(--ink)' } as TokenDef];
+    const pair: ContrastPair = { id: 'ink-page', use: 'Ink on the page', fg: 'color.custom-ink', bg: 'color.background', state: 'rest', group: 'ink' };
+    const h = harmonizePalette({ brand: '#1f5a4c', mood: 'tinted', tokens, pairs: [...(getTheme('foundation').contrastPairs ?? []), pair] });
+    expect(h.results.filter((r) => r.status !== 'pass').map((r) => [r.pair.id, r.status])).toEqual([['ink-page', 'unknown']]);
+    expect(h.values['color.background']).toBe(make('#1f5a4c', 'tinted').values['color.background']);
+  });
 });
 
 describe('colors the palette is made from and into', () => {

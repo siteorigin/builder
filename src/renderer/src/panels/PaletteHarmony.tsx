@@ -51,6 +51,8 @@ export function PaletteHarmony({ tokens, pairs, revision, say }: { tokens: Token
   }
   const v = palette.values;
   const unreadable = palette.results.filter(isFailing);
+  // A pair on a colour no one can measure here (a `var()` in a theme of its own) is said, never counted as readable.
+  const unknown = palette.results.filter((r) => r.status === 'unknown').length;
   const ops: EditOperation[] = Object.entries(v)
     .filter(([id, value]) => tokens.find((t) => t.id === id)?.value !== value)
     .map(([tokenId, value]) => ({ type: 'token.set', tokenId, value }));
@@ -105,7 +107,7 @@ export function PaletteHarmony({ tokens, pairs, revision, say }: { tokens: Token
         <p className="ss-harmony-verdict pass">
           <CircleCheck aria-hidden="true" />
           <span>
-            Every color pair is readable.
+            {unknown ? `Every color pair that can be checked is readable; ${unknown === 1 ? 'one can’t' : `${unknown} can’t`} be checked.` : 'Every color pair is readable.'}
             {palette.page === 'dark' && ' Your brand reads as text only on dark backgrounds, so this palette is dark.'}
             {palette.adjusted && ` Brand is made ${luminance(palette.brand) > luminance(palette.requested) ? 'lighter' : 'darker'}, ${palette.brand}, so links stay readable; no background can carry ${palette.requested}.`}
           </span>

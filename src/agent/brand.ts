@@ -207,6 +207,8 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
       else {
         for (const [id, v] of Object.entries(palette.values)) setToken(id, v);
         if (palette.adjusted) warnings.push(`${seed} was made ${relativeLuminance(asRgb(parseHex(palette.brand)!)) > relativeLuminance(asRgb(parseHex(seed)!)) ? 'lighter' : 'darker'} (${palette.brand}) so brand-colored links stay readable on the page, cards and sections; no page color can carry it as it was.`);
+        const unknown = palette.results.filter((r) => r.status === 'unknown');
+        if (unknown.length) warnings.push(`${unknown.length === 1 ? 'One color pair' : `${unknown.length} color pairs`} could not be checked (${unknown.map((r) => r.pair.use.toLowerCase()).join(', ')}).`);
         if (palette.page === 'dark') warnings.push(`${palette.brand} only reads as text on dark backgrounds, so the site's backgrounds are now dark.`);
         if (hasDarkPalette(state.tokens)) {
           // The dark palette keeps its own colors; say when the new light ones leave pairs there hard to read.
