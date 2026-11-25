@@ -13,8 +13,7 @@ export type SeoSubject = { kind: 'page'; pageId: string } | { kind: 'entry'; col
 
 /**
  * Which of the website's outputs a document belongs in: the rule each output follows, so features that add to an
- * output read one answer. Two outputs carry less than this says until the features that fill them land: site search
- * lists pages alone until it indexes entries (#398), and the connected graph is written into pages from #586.
+ * output read one answer.
  */
 export interface SeoVisibility {
   /** The website has a page for it: not a draft, and its address is its own. */

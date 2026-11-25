@@ -1,10 +1,11 @@
 /**
  * The structured data a generated page or collection entry carries: one connected Schema.org graph (seo-graph.ts)
- * with what the website itself says about the document. The Home page is about the site's publisher; an entry says
- * when it was last revised; a page's FAQ makes it an FAQ page with its questions in order, and each contact section
- * it shows is a part of the page with the contact details it gives (who they belong to is not said, since a page can
- * show a venue's box office as well as the publisher's own); and the website says where it can be searched, once a
- * page shows a search that reads the words it is sent in its address.
+ * with what the website itself says about the document. The Home page is about the site's publisher; an entry's page
+ * says when it was last revised, and is about a blog posting with its headline, dates, author, description and image;
+ * a page's FAQ makes it an FAQ page with its questions in order, and each contact section it shows is a part of the
+ * page with the contact details it gives (who they belong to is not said, since a page can show a venue's box office
+ * as well as the publisher's own); and the website says where it can be searched, once a page shows a search that
+ * reads the words it is sent in its address.
  *
  * Only what visitors are shown or the author set for the public is written: nothing from the project's private brief
  * or notes.
@@ -14,6 +15,7 @@ import type { SeoSubject } from '@shared/seo';
 import { isArticleDate } from '@shared/articles';
 import { partsShown } from '@shared/page-shell';
 import { translationGroup } from '@shared/languages';
+import { seoText } from '@shared/seo';
 import { buildSeoGraph, graphScriptText, type GraphContribution, type GraphContributor, type JsonValue, type SeoGraph } from './seo-graph';
 import { derived } from './cache';
 import { createSeoResolver, type SeoResolver } from './seo-metadata';
@@ -40,6 +42,35 @@ const revised: GraphContributor = ({ state, meta, ids }) => {
   const { collectionId, entryId } = meta.subject;
   const updatedAt = state.collections[collectionId]?.entries[entryId]?.updatedAt;
   return isArticleDate(updatedAt) ? { extend: [{ id: ids.webpage, set: { dateModified: updatedAt } }] } : null;
+};
+
+/**
+ * An entry's page is about the post it shows: a BlogPosting of its own, the main thing on that page, published by the
+ * site's publisher. Its headline is the entry's own title (a browser title may carry the site's name); it was last
+ * modified when its author says it was revised, else the day it was published; its image is the one it is shared with.
+ * Each property is left out when the entry has nothing to say for it.
+ */
+const blogPosting: GraphContributor = ({ state, meta, ids }) => {
+  if (meta.subject.kind !== 'entry') return null;
+  const entry = state.collections[meta.subject.collectionId]?.entries[meta.subject.entryId];
+  if (!entry) return null;
+  const modified = meta.modified ?? meta.published;
+  return {
+    nodes: [
+      {
+        '@type': 'BlogPosting',
+        '@id': ids.page('blogposting'),
+        mainEntityOfPage: { '@id': ids.webpage },
+        ...opt('headline', seoText(entry.title) || seoText(meta.socialTitle) || undefined),
+        ...opt('description', seoText(meta.description) || undefined),
+        ...opt('datePublished', meta.published ?? undefined),
+        ...opt('dateModified', modified ?? undefined),
+        ...opt('author', meta.author ? { '@type': 'Person', name: meta.author } : undefined),
+        ...opt('image', meta.imageUrl ? { '@type': 'ImageObject', url: meta.imageUrl } : undefined),
+        publisher: { '@id': ids.publisher }
+      }
+    ]
+  };
 };
 
 /**
@@ -118,7 +149,7 @@ const siteSearch: GraphContributor = ({ state, resolver, ids }) => {
 };
 
 /** What the generated website says about its documents, beyond the graph's own entities. */
-export const SITE_CONTRIBUTORS: readonly GraphContributor[] = [homeAbout, revised, pageContent, siteSearch];
+export const SITE_CONTRIBUTORS: readonly GraphContributor[] = [homeAbout, revised, blogPosting, pageContent, siteSearch];
 
 /**
  * The resolver of each project state a generator run is working from, while one is (`inGenerationRun`): every page's

@@ -18,6 +18,7 @@ import { describeDraftLink, draftTarget, netlifyFormClashes, publicationIds, pub
 import { archivePages } from '@shared/archives';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
+import { hasFeedEntries } from '@generator/rss';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { withoutPartMarkers } from './codecheck';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
@@ -844,17 +845,21 @@ export async function rivalHookStop(dir: string, state: ProjectState): Promise<s
 }
 
 /**
- * Why the exported site has no canonical links, social image URLs or sitemap: no public URL is set, or the one saved
- * can't be used (saved by hand or by an earlier version). Null when the site has a public URL it was built from.
+ * Why the exported site has no canonical links, social image URLs or sitemap (nor an RSS feed, when it publishes
+ * posts): no public URL is set, or the one saved can't be used (saved by hand or by an earlier version). Null when the
+ * site has a public URL it was built from.
  */
 export function publicUrlWarning(state: ProjectState): string | null {
   // A value of another kind (a number written by hand) is a URL that can't be used, not a missing one.
   const raw: unknown = state.site.baseUrl;
   const saved = typeof raw === 'string' ? raw.trim() : raw == null ? '' : JSON.stringify(raw);
   const check = checkPublicUrl(saved);
-  if (!check.ok) return `The public site URL “${saved}” can’t be used, so canonical links, social image URLs and the sitemap were omitted. ${check.message} Correct the Public URL in Site styles › Site details.`;
+  if (check.ok && check.url) return null;
+  // A feed reader needs each post's full address, so a site that publishes posts loses its feed too.
+  const omitted = hasFeedEntries(state) ? 'canonical links, social image URLs, the sitemap and the RSS feed' : 'canonical links, social image URLs and the sitemap';
+  if (!check.ok) return `The public site URL “${saved}” can’t be used, so ${omitted} were omitted. ${check.message} Correct the Public URL in Site styles › Site details.`;
   // Optional: a site handed over without a domain of its own is still a whole website.
-  return check.url ? null : 'No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. If the site will have its own address, add it as the Public URL in Site styles › Site details.';
+  return `No public site URL is set, so ${omitted} were omitted. If the site will have its own address, add it as the Public URL in Site styles › Site details.`;
 }
 
 /** The public URL warning as an export note, leading to the Public URL field. */

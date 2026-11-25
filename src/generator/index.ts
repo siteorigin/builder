@@ -104,6 +104,7 @@ import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { notFoundSectionRoutes } from './checks';
 import { graphScript, inGenerationRun } from './structured-data';
+import { RSS_PATH, generateRssFeed, siteFeed } from './rss';
 import { siteTwitterHandle } from '@shared/site-identity';
 
 export interface GenerateOptions {
@@ -3346,6 +3347,9 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const redirects = derived(state, 'redirectRouteIds', (s) => liveRedirects(s).map((r) => routeId(r.from)));
   // Every page asks AI services not to train on it while the crawler policy says so (shared/crawler-policy.ts).
   const noAi = crawlerRules(state.site).noAiMeta ? `\n\t${NOAI_META}` : '';
+  // Every page names the site's RSS feed, while it has one, so a feed reader finds it from any address on the site.
+  const feed = siteFeed(state);
+  const feedLink = feed ? `\n\t<link rel="alternate" type="application/rss+xml" title={${js(feed.title)}} href={${js(feed.url)}} />` : '';
   // An archive page shows both parts, even at the address of a draft made before archive pages.
   const archived = archiveRouteIds(state);
   const without = (part: ShellPart) => {
@@ -3410,7 +3414,7 @@ ${editing}</script>
 
 <svelte:head>${bootstrap}
 	<link rel="icon" href={asset(${js(iconHref)})} type=${js(iconType)} />
-	<meta property="og:site_name" content={${js(state.site.name)}} />${noAi}
+	<meta property="og:site_name" content={${js(state.site.name)}} />${feedLink}${noAi}
 </svelte:head>
 
 <a class="so-skip-link" href="#main">{text().skipLink}</a>
@@ -4188,6 +4192,9 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   files.set('static/robots.txt', file('robots.txt', generateRobots));
   const sitemap = file('sitemap.xml', (s) => generateSitemap(s) ?? '');
   if (sitemap) files.set('static/sitemap.xml', sitemap);
+  // The RSS feed of the published posts, once the site has a public URL to give their full addresses (see ./rss).
+  const rss = file('rss.xml', (s) => generateRssFeed(s) ?? '');
+  if (rss) files.set(RSS_PATH, rss);
   // What the site tells AI agents: llms.txt, and the Markdown of its pages and entries when the author asks for it.
   addDiscoveryFiles(state, files, file);
   run?.finish();
