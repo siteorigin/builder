@@ -263,6 +263,50 @@ await eventually(async () => {
 await section('Text styles').locator('[data-token-id="text.custom-callout"]').getByLabel('Weight of Callout').selectOption('700');
 await eventually(async () => assert.equal((await customValue('text.custom-callout'))?.weight, 700, 'its editor changes the custom text style'));
 
+step('a palette made from the brand previews without saving, applies in one step, and one undo puts every color back');
+const colorsHead = section('Colors').locator('button.section-head');
+if ((await colorsHead.getAttribute('aria-expanded')) !== 'true') await colorsHead.click();
+const harmony = section('Colors').locator('.ss-harmony');
+await harmony.waitFor();
+const overrides = () => win.evaluate(async () => (await window.builder.project.snapshot()).state.tokens.overrides);
+const pageBackground = () => frame.locator('body').evaluate((el) => getComputedStyle(el).backgroundColor);
+const rgbOf = (hex) => `rgb(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(', ')})`;
+const beforePalette = await overrides();
+const beforeBackground = await pageBackground();
+const atRest = await settled();
+const chips = async () => Object.fromEntries(await harmony.locator('.ss-harmony-chips li').evaluateAll((els) => els.map((el) => [el.dataset.role, el.dataset.value])));
+const drawnPage = () => harmony.locator('.ss-harmony-preview').evaluate((el) => getComputedStyle(el).backgroundColor);
+assert.equal(await harmony.getByRole('button', { name: 'Neutral', exact: true }).getAttribute('aria-pressed'), 'true', 'Neutral is offered first');
+const neutral = await chips();
+const neutralPage = await drawnPage();
+const tinted = harmony.getByRole('button', { name: 'Tinted', exact: true });
+await tinted.click();
+await eventually(async () => assert.equal(await tinted.getAttribute('aria-pressed'), 'true', 'the mood is chosen'));
+const proposed = await chips();
+assert.notEqual(proposed['color.background'], neutral['color.background'], 'each mood proposes its own colors');
+assert.notEqual(await drawnPage(), neutralPage, 'and the preview is drawn in them');
+assert.equal(await drawnPage(), rgbOf(proposed['color.background']), 'its page in the proposed background');
+for (const id of ['color.background', 'color.surface', 'color.surface-alt', 'color.border', 'color.muted', 'color.brand-strong', 'color.inverse', 'color.accent']) assert.match(proposed[id] ?? '', /^#[0-9a-f]{6}$/, `the preview names ${id}`);
+assert.match(await harmony.locator('.ss-harmony-verdict').textContent(), /Every color pair is readable/, 'and says the proposal is readable');
+assert.equal(await settled(), atRest, 'choosing a mood only previews it');
+assert.deepEqual(await overrides(), beforePalette, 'and saves nothing');
+assert.equal(await pageBackground(), beforeBackground, 'nor changes the page');
+await harmony.getByRole('button', { name: 'Generate harmonious palette from brand' }).click();
+// What the site shows: a color the palette shares with the theme needs no saved value of its own.
+const siteColor = (id) => frame.locator('html').evaluate((el, name) => getComputedStyle(el).getPropertyValue(name).trim().toLowerCase(), `--so-${id.replace(/[^a-zA-Z0-9]+/g, '-')}`);
+await eventually(async () => {
+  for (const [id, value] of Object.entries(proposed)) assert.equal(await siteColor(id), value, `${id} is the previewed color`);
+});
+assert.equal((await overrides())['color.background'], proposed['color.background'], 'saved as the site background');
+assert.equal(await settled(), atRest + 1, 'in one step');
+await eventually(async () => assert.equal(await pageBackground(), rgbOf(proposed['color.background']), 'the page shows the new background'));
+await eventually(async () => assert.match(await win.locator('#dock-panel-styles [aria-live="polite"][aria-atomic="true"]').textContent(), /Tinted palette made from your brand color\. You can undo this\./, 'and says it can be undone'));
+await eventually(async () => assert.equal(await harmony.getByRole('button', { name: 'Generate harmonious palette from brand' }).isDisabled(), true, 'the palette in use is not offered again'));
+await undo();
+await eventually(async () => assert.deepEqual(await overrides(), beforePalette, 'one undo puts every color back, links included'));
+await eventually(async () => assert.equal(await pageBackground(), beforeBackground, 'and the page with them'));
+await eventually(async () => assert.equal(await harmony.getByRole('button', { name: 'Generate harmonious palette from brand' }).isDisabled(), false, 'and offers the palette again'));
+
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 cleanup();

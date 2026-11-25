@@ -6,7 +6,9 @@ import { z } from 'zod';
 import type { InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { importedFontStack, projectFontFamilies } from '@shared/fonts';
-import { READABLE_TEXT_COLORS, contrastBetween } from '@shared/contrast';
+import { contrastBetween, evaluatePairs, isFailing, pairsOf, relativeLuminance } from '@shared/contrast';
+import { hasDarkPalette } from '@shared/color-scheme';
+import { PALETTE_MOODS, PALETTE_MOOD_INFO, darkPins, darkSection, harmonizePalette, onBrandFor, paletteChanges, paletteSeed, strongShade } from '@shared/palette';
 import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
@@ -31,6 +33,7 @@ export const BRAND_ARGS = z.object({
   headingFont: z.string().max(60).optional(),
   bodyFont: z.string().max(60).optional(),
   typeScale: z.enum(TYPE_SCALE_CHOICES).optional(),
+  paletteMood: z.enum(PALETTE_MOODS).optional(),
   contactEmail: z.string().max(120).optional(),
   contactPhone: z.string().max(30).optional(),
   copyright: z.string().max(200).optional(),
@@ -41,9 +44,9 @@ export const BRAND_ARGS = z.object({
 export type BrandArgs = z.infer<typeof BRAND_ARGS>;
 
 export const BRAND_DESCRIPTION =
-  'Update the site brand in one call: the theme (the whole design; content is kept), the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once), and the site\'s public address, language and link preview image. Send only what changes. Fonts must be installed; an error lists the choices.';
+  'Update the site brand in one call: the theme (the whole design; content is kept), the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors (paletteMood re-colors the whole site from it), fonts, and the type scale (the size of every heading and text style at once), and the site\'s public address, language and link preview image. Send only what changes. Fonts must be installed; an error lists the choices.';
 
-export const BRAND_BRIEF = 'Switch the theme (the whole design; content stays), set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors, installed fonts, the type scale (every heading and text size at once), and the site address, language and link preview image. Send only what changes.';
+export const BRAND_BRIEF = 'Switch the theme (the whole design; content stays), set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors (paletteMood re-colors the whole site from it, or from the current brand; an accentColor sent stays), installed fonts, the type scale (every heading and text size at once), and the site address, language and link preview image. Send only what changes.';
 
 /** The themes a site can switch to: every installed pack but its own theme and development fixtures. */
 export function brandThemes(state: Pick<ProjectState, 'site'>) {
@@ -66,6 +69,11 @@ export function brandToolSchema(state: ProjectState): JsonSchema {
       accentColor: color('Accent color as hex.'),
       headingFont: font('Font for headings.'),
       bodyFont: font('Font for body text.'),
+      paletteMood: {
+        type: 'string',
+        enum: [...PALETTE_MOODS],
+        description: `Re-color the whole site from the brand color, every pair readable. ${PALETTE_MOODS.map((m) => `${m}: ${PALETTE_MOOD_INFO[m].brief}`).join('; ')}. Without brandColor, uses the site's brand; an accentColor sent stays.`
+      },
       typeScale: {
         type: 'string',
         enum: [...TYPE_SCALE_CHOICES],
@@ -115,7 +123,6 @@ function parseHex(v: string): RGB | null {
 }
 
 const toHex = (c: RGB) => `#${c.map((x) => Math.round(x).toString(16).padStart(2, '0')).join('')}`;
-const mix = (a: RGB, b: RGB, amount: number): RGB => [a[0] + (b[0] - a[0]) * amount, a[1] + (b[1] - a[1]) * amount, a[2] + (b[2] - a[2]) * amount];
 
 const asRgb = (c: RGB) => ({ r: c[0], g: c[1], b: c[2] });
 
@@ -123,22 +130,16 @@ export function contrastRatio(a: RGB, b: RGB): number {
   return contrastBetween(asRgb(a), asRgb(b));
 }
 
-// The choices Site styles offers for unreadable text (src/shared/contrast.ts): white, the site's ink, black.
-const [WHITE, INK, BLACK] = READABLE_TEXT_COLORS.map((h) => parseHex(h)!) as [RGB, RGB, RGB];
-
 /**
- * The tokens that follow the brand color. Text on the brand takes whichever of white or ink reads better, and
- * the strong shade moves away from that text color, so filled and inverted buttons both stay legible.
+ * The tokens that follow the brand color, in OKLCH so a shade stays the brand's hue (src/shared/palette.ts). Text on
+ * the brand takes white, the site's ink or black, the first that reads; the strong shade moves a perceptual step
+ * away from that text, so filled and inverted buttons both stay legible; dark sections take the brand's hue, dark
+ * enough for their text to read at 7:1.
  */
 export function derivedBrandTokens(brand: string, onInverse: string): Record<string, string> {
-  const base = parseHex(brand)!;
-  // Mid-tones can miss 4.5:1 with both white and ink; pure black always reaches it where white does not.
-  const onBrand = contrastRatio(WHITE, base) >= 4.5 ? WHITE : contrastRatio(INK, base) >= 4.5 ? INK : BLACK;
-  const strong = mix(base, onBrand === WHITE ? BLACK : WHITE, 0.24);
-  const light = parseHex(onInverse) ?? WHITE;
-  let inverse = mix(base, INK, 0.82);
-  for (let i = 0; i < 8 && contrastRatio(inverse, light) < 7; i++) inverse = mix(inverse, BLACK, 0.25);
-  return { 'color.brand': toHex(base), 'color.brand-strong': toHex(strong), 'color.on-brand': toHex(onBrand), 'color.inverse': toHex(inverse) };
+  const base = toHex(parseHex(brand)!);
+  const onBrand = onBrandFor(base);
+  return { 'color.brand': base, 'color.brand-strong': strongShade(base, onBrand), 'color.on-brand': onBrand, 'color.inverse': darkSection(base, onInverse) };
 }
 
 // ---------------------------------------------------------------------------
@@ -189,19 +190,59 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   const setToken = (tokenId: string, value: string) => {
     if (tokens.has(tokenId) && tokens.get(tokenId)!.value !== value) ops.push({ type: 'token.set', tokenId, value });
   };
-  if (args.brandColor !== undefined) {
-    const base = parseHex(args.brandColor);
-    if (!base) issues.push({ field: 'brandColor', message: `"${args.brandColor}" is not a hex color such as #1f5a4c` });
-    else {
-      for (const [id, v] of Object.entries(derivedBrandTokens(args.brandColor, resolvedColor(tokens, 'color.on-inverse') || '#ffffff'))) setToken(id, v);
+  const base = args.brandColor === undefined ? null : parseHex(args.brandColor);
+  if (args.brandColor !== undefined && !base) issues.push({ field: 'brandColor', message: `"${args.brandColor}" is not a hex color such as #1f5a4c` });
+  const accent = args.accentColor === undefined ? null : parseHex(args.accentColor);
+  if (args.accentColor !== undefined && !accent) issues.push({ field: 'accentColor', message: `"${args.accentColor}" is not a hex color such as #d98f48` });
+  if (args.paletteMood !== undefined) {
+    // The whole palette from the brand, checked against every pair the theme sets: it replaces the four derived colors.
+    const list = [...tokens.values()];
+    const seed = base ? toHex(base) : args.brandColor === undefined ? paletteSeed(list) : null;
+    if (args.brandColor === undefined && !seed) issues.push({ field: 'brandColor', message: "this site's brand color cannot be read; send brandColor with the palette mood" });
+    if (seed && (args.accentColor === undefined || accent)) {
+      const pairs = getTheme(state.site.themeId).contrastPairs ?? [];
+      const palette = harmonizePalette({ brand: seed, mood: args.paletteMood, tokens: list, pairs, accent: accent ? toHex(accent) : undefined });
+      const unreadable = palette.unreadable;
+      // The accent is named only when it is what every unreadable pair hangs on, colors that follow it in the palette included.
+      const proposed = list.map((t) => (Object.hasOwn(palette.values, t.id) && t.id !== 'color.accent' ? { ...t, value: palette.values[t.id as keyof typeof palette.values]! } : t));
+      const accentPairs = new Set(pairsOf(pairs, 'color.accent', proposed).map((p) => p.id));
+      const byAccent = !!accent && unreadable.every((r) => accentPairs.has(r.pair.id));
+      const named = unreadable.map((r) => `${r.pair.use.toLowerCase()}${r.status === 'unknown' ? ' (cannot be checked)' : ''}`).join(', ');
+      if (unreadable.length) issues.push({ field: byAccent ? 'accentColor' : 'paletteMood', message: `no ${args.paletteMood} palette keeps ${named} readable in this theme${byAccent ? ' with this accent color; send a lighter accentColor, or leave it out and one is made' : ''}` });
+      else {
+        // Only what the site does not show already: a link that still lands on the palette's color keeps following.
+        const changes = paletteChanges(list, palette.values);
+        for (const [id, v] of changes) setToken(id, v);
+        // A dark palette visitors see keeps showing what it does: the colors it took from the light ones keep their present values.
+        if (hasDarkPalette(state.tokens)) {
+          for (const [tokenId, value] of darkPins(list, state.tokens.darkOverrides, changes.map(([id]) => id))) ops.push({ type: 'token.set', tokenId, value, scheme: 'dark' });
+        }
+        if (palette.adjusted) warnings.push(`${seed} was made ${relativeLuminance(asRgb(parseHex(palette.brand)!)) > relativeLuminance(asRgb(parseHex(seed)!)) ? 'lighter' : 'darker'} (${palette.brand}) so brand-colored links stay readable on the page, cards and sections; no page color can carry it as it was.`);
+        if (palette.page === 'dark') warnings.push(`With ${palette.brand}, this theme's colors read only on dark backgrounds, so the site's backgrounds are now dark.`);
+        if (hasDarkPalette(state.tokens)) {
+          // Measured on the dark palette as the batch leaves it, against the theme now in use, beside how it read before the call.
+          const before = host.state();
+          // Only pairs that read before and do not now: one that could not be measured before has no change to report.
+          const was = new Set(evaluatePairs(effectiveTokens(before, 'dark'), getTheme(before.site.themeId).contrastPairs ?? []).filter((r) => r.status !== 'pass').map((r) => r.pair.id));
+          let fresh: string[] = [];
+          try {
+            const after = applyOperations(state, ops.filter((o) => o.type === 'token.set')).state;
+            fresh = evaluatePairs(effectiveTokens(after, 'dark'), pairs).filter((r) => isFailing(r) && !was.has(r.pair.id)).map((r) => r.pair.use.toLowerCase());
+          } catch {
+            // The batch is checked as a whole when it is applied; a refusal there says why.
+          }
+          const remake = 'token.setColorScheme with regenerate: true makes the dark colors again from the new palette.';
+          warnings.push(fresh.length ? `The dark palette kept its colors, and ${fresh.length === 1 ? 'one pair there is' : `${fresh.length} pairs there are`} now hard to read (${fresh.join(', ')}). ${remake}` : `The dark palette kept its colors. ${remake}`);
+        }
+      }
+    }
+  } else {
+    if (base) {
+      for (const [id, v] of Object.entries(derivedBrandTokens(args.brandColor!, resolvedColor(tokens, 'color.on-inverse') || '#ffffff'))) setToken(id, v);
       const bg = parseHex(resolvedColor(tokens, 'color.background'));
       if (bg && contrastRatio(base, bg) < 3) warnings.push(`${args.brandColor} has low contrast on the page background (${contrastRatio(base, bg).toFixed(1)}:1), so brand-colored text and icons may be hard to read.`);
     }
-  }
-  if (args.accentColor !== undefined) {
-    const c = parseHex(args.accentColor);
-    if (!c) issues.push({ field: 'accentColor', message: `"${args.accentColor}" is not a hex color such as #d98f48` });
-    else setToken('color.accent', toHex(c));
+    if (accent) setToken('color.accent', toHex(accent));
   }
   for (const [field, tokenId] of [['headingFont', 'font.display'], ['bodyFont', 'font.body']] as const) {
     const name = args[field];
