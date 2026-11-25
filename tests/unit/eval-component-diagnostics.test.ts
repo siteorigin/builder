@@ -9,7 +9,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { digestComponentInspection, inspectionSteps, planComponentInspection, resolveInspectTarget } from '@agent/component-inspection';
-import { measureComponent, staticInspector, type StaticMeasurement } from '../../scripts/eval/component-diagnostics';
+import { cssPx, measureComponent, staticInspector, type StaticMeasurement } from '../../scripts/eval/component-diagnostics';
 
 type Styles = Record<string, Record<string, unknown>>;
 
@@ -104,6 +104,9 @@ describe('static component measurement for the benchmark', () => {
     expect(width({ base: { width: 'calc((100% - 30px) / 2)' } })).toMatchObject({ box: 180 });
     expect(width({ base: { width: 'calc(100% + 400px)' } })).toMatchObject({ box: 790, findings: ['element-overflow@panel'] });
     expect(width({ base: { width: '720px', maxWidth: 'calc(100% - 2em)' } }, 1280)).toEqual({ box: undefined, checked: 2, unmeasured: [], findings: [] });
+    // Without spaces around its minus a browser drops the declaration; nested past the stack, nothing is known.
+    expect(width({ base: { width: '720px', maxWidth: 'calc(100%-2rem)' } })).toMatchObject({ box: undefined, unmeasured: ['panel'] });
+    expect(cssPx(`calc(${'('.repeat(20000)}1px${')'.repeat(20000)})`, 390, 390)).toBeNull();
   });
 
   it('works out a percentage from the container and a vw from the screen', () => {
@@ -126,6 +129,8 @@ describe('static component measurement for the benchmark', () => {
     // An item of a row shrinks to fit, down to its minimum width.
     expect(kinds(measure(panel({ base: { layout: 'row' } }, { base: { width: '120vw' } }), 390))).toEqual([]);
     expect(kinds(measure(panel({ base: { layout: 'row' } }, { base: { width: '120vw', minWidth: '420px' } }), 390))).toEqual(['element-overflow@panel', 'element-overflow@line']);
+    // Unless it is set not to shrink.
+    expect(kinds(measure(panel({ base: { layout: 'row' } }, { base: { width: '500px', flexShrink: 0 } }), 390))).toEqual(['element-overflow@line']);
   });
 
   it('counts each item of a repeated list in a row, and the gaps between them, against a row narrower than the screen', () => {

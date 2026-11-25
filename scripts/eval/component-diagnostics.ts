@@ -67,6 +67,15 @@ function cssOf(tokens: TokenDef[], v: unknown): string | null {
  * the preview does not fix. A rem is the root's 16px; a % is of the container, a vw of the screen.
  */
 export function cssPx(css: string, room: number, screen: number): number | null {
+  try {
+    return evalPx(css, room, screen);
+  } catch {
+    // Nested past the stack: not a length this can know.
+    return null;
+  }
+}
+
+function evalPx(css: string, room: number, screen: number): number | null {
   const s = css.trim().toLowerCase();
   let i = 0;
   const skip = () => {
@@ -130,6 +139,8 @@ export function cssPx(css: string, room: number, screen: number): number | null 
       skip();
       const op = s[i];
       if (!a || (op !== '+' && op !== '-')) return a;
+      // CSS needs space on both sides of + and -: without it the declaration is dropped.
+      if (!/\s/.test(s[i - 1] ?? '') || !/\s/.test(s[i + 1] ?? '')) return null;
       i++;
       const b = product();
       if (!b || a.length !== b.length) return null;
@@ -290,7 +301,7 @@ export function measureComponent(state: ProjectState, spec: ComponentPreviewSpec
     if (n.kind !== 'repeat' && n.kind !== 'slot') {
       let box = custom ? 'unknown' : boxWidth(tokens, st, room, width);
       // An item of a row shrinks to the room it has, down to its minimum width.
-      if (item && box !== 'unknown') {
+      if (item && box !== 'unknown' && Number(st.flexShrink) !== 0) {
         const floor = minWidthOf(tokens, st, room, width);
         box = floor === 'unknown' ? 'unknown' : typeof box === 'number' ? Math.max(Math.min(box, room), floor) : floor > room ? floor : box;
       }

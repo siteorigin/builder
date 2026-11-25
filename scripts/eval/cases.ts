@@ -501,7 +501,7 @@ const phoneRepairChecks = (after: ProjectState, def: ComponentDefinition | undef
     check('fits-on-phone', fits(phone), JSON.stringify(phone ? { findings: phone.findings, unmeasured: phone.widths.unmeasured } : 'not measured')),
     check('readable-on-phone', readable(phone), JSON.stringify(phone?.texts)),
     // The panel still renders 720px wide on its desktop background, with its text readable.
-    check('desktop-kept', fits(desktop) && readable(desktop) && desktop?.boxes[root] === 720 && !!def && !!line && tokenOf(nearestStyle(def, line, 'desktop', 'background')) === 'color.surface', String(desktop?.boxes[root])),
+    check('desktop-kept', fits(desktop) && readable(desktop) && desktop?.boxes[root] === 720 && !!def && desktop.texts.some((t) => lines.has(t.nodeId) && tokenOf(nearestStyle(def, t.nodeId, 'desktop', 'background')) === 'color.surface'), String(desktop?.boxes[root])),
     // The panel itself on the site's panel color, at every size: not its text alone.
     check('panel-background', !!def && SIZES.every((size) => tokenOf(styleAt(def, root, size, 'background')) === 'color.surface'))
   ];
