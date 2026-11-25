@@ -78,6 +78,8 @@ function host(start: ProjectState, authority: Authority = { kind: 'site' }) {
 }
 
 const tool = (h: ToolHost, name: string, args: unknown) => executeTool(name, JSON.stringify(args), h, `call_${name}`);
+/** The definitionIds an offered update tool takes, or null when it is not offered. */
+const enumOf = (t: { parameters: unknown } | undefined) => (t ? (t.parameters as { properties: { definitionId: { enum: string[] } } }).properties.definitionId.enum : null);
 const names = (tools: Array<{ name: string }>) => tools.map((t) => t.name);
 
 describe('what a newer theme version adds', () => {
@@ -97,11 +99,31 @@ describe('what a newer theme version adds', () => {
     next.parts = { ...next.parts, badge: { nodeId: next.tree!.rootIds[0], label: 'Badge' } };
     next.slots = { ...next.slots, aside: { label: 'Aside' } };
     next.variantAxes = { ...next.variantAxes, density: { label: 'Density', default: 'roomy', options: { roomy: { label: 'Roomy' }, tight: { label: 'Tight' } } } } as never;
+    // A property whose type changed is offered as new, and so is a new field of a list's items, with its choices.
+    const [text] = Object.entries(next.properties).find(([, p]) => p.type === 'string')!;
+    next.properties[text] = { type: 'boolean', label: 'Now a switch', default: false } as never;
+    const [list, listSchema] = Object.entries(next.properties).find(([, p]) => p.type === 'list' && !p.feed) ?? [];
+    if (list) (listSchema as { fields: Record<string, unknown> }).fields.tone = { type: 'enum', label: 'Tone', default: 'calm', options: [{ value: 'calm', label: 'Calm' }, { value: 'loud', label: 'Loud' }] };
     const adds = themeUpdateChanges(was, next);
+    expect(adds.properties?.[text]).toEqual({ label: 'Now a switch', type: 'boolean' });
+    if (list) expect(adds.fields?.[`${list}.tone`]).toEqual({ type: 'enum', label: 'Tone', options: { calm: 'Calm', loud: 'Loud' } });
     expect(adds.options).toEqual({ [prop]: { extra: 'Extra choice' } });
     expect(adds.parts).toEqual({ badge: 'Badge' });
     expect(adds.slots).toEqual({ aside: 'Aside' });
     expect(adds.variants).toEqual({ density: { roomy: 'Roomy', tight: 'Tight' } });
+  });
+
+  it('counts a style control as new only where the installed part had a list that lacked it', () => {
+    const next = current(HERO);
+    const [partId, part] = Object.entries(next.parts).find(([, p]) => (p.styleControls?.length ?? 0) > 1)!;
+    const dropped = part.styleControls!.find((c) => c !== 'background' && c !== 'aspectRatio')!;
+    const older = structuredClone(next);
+    older.parts[partId].styleControls = part.styleControls!.filter((c) => c !== dropped);
+    expect(themeUpdateChanges(older, next).styleControls).toEqual({ [partId]: [dropped] });
+    // A part that offered every control gains none from a list of its own.
+    const open = structuredClone(next);
+    delete open.parts[partId].styleControls;
+    expect(themeUpdateChanges(open, next).styleControls).toBeUndefined();
   });
 });
 
@@ -119,7 +141,7 @@ describe('where the assistant reads it', () => {
     expect(content.themeUpdate?.status).toBe('available');
     expect(content.themeUpdate?.newVersionAdds.properties.ctaStyle).toMatchObject({ options: { secondary: 'Outlined button' } });
     const inspected = await tool(h, 'inspect_element', { owner: { kind: 'shell', id: 'header' }, nodeId: headerNode(s).id });
-    expect((inspected.content as { themeUpdate?: { status: string } }).themeUpdate?.status).toBe('available');
+    expect((inspected.content as { themeUpdate?: unknown }).themeUpdate).toMatchObject({ status: 'available', newVersionAdds: { properties: { ctaStyle: { options: { secondary: 'Outlined button' } } } } });
     for (const ref of [
       { owner: { kind: 'shell', id: 'header' }, nodeId: headerNode(s).id, instancePath: [] },
       { owner: { kind: 'shell', id: 'header' }, nodeId: 'root', instancePath: [headerNode(s).id], partId: 'root' }
@@ -129,7 +151,7 @@ describe('where the assistant reads it', () => {
 
   it('keeps the summary short: nothing to add is not listed as an addition, and a long list says how many more', () => {
     const s = beforeActionStyle({ hero: true });
-    const summary = projectSummary(s, 1) as { themeUpdates: { available: Array<{ definitionId: string; adds?: string[] }> } };
+    const summary = projectSummary(s, 1) as unknown as { themeUpdates: { available: Array<{ definitionId: string; adds?: string[] }> } };
     // The hero's newer version changes only its description: nothing a request could ask for.
     expect(summary.themeUpdates.available.find((a) => a.definitionId === HERO)).toEqual({ definitionId: HERO, name: s.components[HERO].name });
     // Every theme component a version behind, as in a project made a while ago.
@@ -141,7 +163,7 @@ describe('where the assistant reads it', () => {
     }
     const all = themeUpdates(old).available.length;
     expect(all).toBeGreaterThan(12);
-    const long = projectSummary(old, 1) as { themeUpdates: { available: unknown[]; moreAvailable?: number } };
+    const long = projectSummary(old, 1) as unknown as { themeUpdates: { available: unknown[]; moreAvailable?: number } };
     expect(long.themeUpdates.available).toHaveLength(12);
     expect(long.themeUpdates.moreAvailable).toBe(all - 12);
   });
@@ -157,7 +179,7 @@ describe('where the assistant reads it', () => {
   it('describes a held update with its reason and what it would add, and offers no update of it', async () => {
     const s = beforeActionStyle({ held: true });
     expect(themeUpdates(s).kept.find((k) => k.id === HEADER)?.reason).toMatch(/changed outside the theme/);
-    const summary = projectSummary(s, 1) as { themeUpdates?: { held?: Array<{ definitionId: string; reason: string; adds: string[] }> } };
+    const summary = projectSummary(s, 1) as unknown as { themeUpdates?: { held?: Array<{ definitionId: string; reason: string; adds: string[] }> } };
     const held = summary.themeUpdates?.held?.find((k) => k.definitionId === HEADER);
     expect(held?.reason).toMatch(/changed outside the theme/);
     expect(held?.adds.join(' ')).toContain('Outlined button');
@@ -168,6 +190,25 @@ describe('where the assistant reads it', () => {
     expect(note?.note).toMatch(/tell the user/);
     const run = toolsForRun({ state: s, selection: null, capabilities: { toolCalling: 'native', contextWindowTokens: 200000 }, codeEnabled: false, definitionOps: false });
     expect(names(run.tools)).not.toContain('update_theme_component');
+    // Beside an update that can be taken, the held one is still never offered.
+    const both = beforeActionStyle({ held: true, hero: true });
+    const t = toolsForRun({ state: both, selection: null, capabilities: { toolCalling: 'native', contextWindowTokens: 200000 }, codeEnabled: false, definitionOps: false }).tools.find((x) => x.name === 'update_theme_component');
+    expect(enumOf(t)).toEqual([HERO]);
+  });
+
+  it('names the updates of components inside a selected element, besides its own', () => {
+    const s = beforeActionStyle({ hero: true });
+    const home = s.site.homePageId;
+    const hero = s.pages[home].rootIds.find((id) => (s.pages[home].nodes[id] as InstanceNode).definitionId === HERO)!;
+    // The hero moved into a container of its own: selecting the container says the hero inside it has an update.
+    const ins = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, index: 0, primitive: 'container' } as EditOperation]);
+    const box = (ins.results[0] as { nodeId: string }).nodeId;
+    const moved = applyOperations(ins.state, [{ type: 'node.move', owner: { kind: 'page', id: home }, nodeId: hero, parentId: box, index: 0 }]).state;
+    const sel = describeSelection(moved, { owner: { kind: 'page', id: home }, nodeId: box, instancePath: [] } as ElementRef) as { themeUpdatesInside?: { available?: Array<{ definitionId: string }> } };
+    expect(sel.themeUpdatesInside?.available?.map((a) => a.definitionId)).toEqual([HERO]);
+    // The header's own note is told apart, never twice.
+    const header = describeSelection(moved, { owner: { kind: 'shell', id: 'header' }, nodeId: headerNode(moved).id, instancePath: [] } as ElementRef);
+    expect(header).not.toHaveProperty('themeUpdatesInside');
   });
 });
 
@@ -191,7 +232,7 @@ describe('update_theme_component', () => {
     const { h, applied } = host(s);
     const out = await tool(h, 'update_theme_component', { definitionId: HEADER });
     expect(out.ok).toBe(false);
-    expect(out.content).toMatchObject({ error: 'UPDATE_HELD', message: expect.stringMatching(/changed outside the theme/), newVersionAdds: { properties: { ctaStyle: expect.anything() } } });
+    expect(out.content).toMatchObject({ error: 'UPDATE_HELD', message: expect.stringMatching(/changed outside the theme/), newVersionAdds: { properties: { ctaStyle: expect.anything() } }, note: expect.stringMatching(/tell the user/) });
     expect(applied).toEqual([]);
   });
 
@@ -199,25 +240,36 @@ describe('update_theme_component', () => {
     const s = createStarterState('business', 'Test', false);
     const { h, applied } = host(s);
     expect((await tool(h, 'update_theme_component', { definitionId: HEADER })).content).toMatchObject({ message: expect.stringMatching(/no newer theme version/) });
-    const raw = await tool(h, 'apply_operations', { expectedRevision: 1, operations: [{ type: 'theme.refresh' }] });
-    expect(raw.content).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringMatching(/update_theme_component/) });
+    for (const op of [{ type: 'theme.refresh' }, { type: 'theme.refresh', definitionIds: [HEADER] }]) {
+      const raw = await tool(h, 'apply_operations', { expectedRevision: 1, operations: [op] });
+      expect(raw.content).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringMatching(/update_theme_component/) });
+    }
     expect(applied).toEqual([]);
   });
 
-  it('is offered with the components a run can update, to small models and large, in edit runs only', () => {
+  it('is offered with the components each run may update and then change, to small models and large, in edit runs only', () => {
     const s = beforeActionStyle({ hero: true });
     const big = { toolCalling: 'native' as const, contextWindowTokens: 200000 };
     const small = { toolCalling: 'constrained-json' as const, contextWindowTokens: 8000 };
-    const selection = { owner: { kind: 'shell' as const, id: 'header' }, nodeId: headerNode(s).id };
-    const page = { route: '/' };
-    for (const capabilities of [big, small])
-      for (const extra of [{ selection: null }, { selection }, { selection: null, page }]) {
-        const run = toolsForRun({ state: s, capabilities, codeEnabled: false, definitionOps: false, ...extra });
-        const t = run.tools.find((x) => x.name === 'update_theme_component');
-        expect(t, `${run.mode} ${capabilities.toolCalling}`).toBeTruthy();
-        expect((t!.parameters as { properties: { definitionId: { enum: string[] } } }).properties.definitionId.enum).toEqual(expect.arrayContaining([HEADER, HERO]));
-      }
-    expect(names(toolsForRun({ state: s, selection: null, capabilities: big, codeEnabled: false, definitionOps: false, ask: true }).tools)).not.toContain('update_theme_component');
+    const offered = (capabilities: typeof big | typeof small, extra: Partial<Parameters<typeof toolsForRun>[0]> = {}) =>
+      enumOf(toolsForRun({ state: s, selection: null, capabilities, codeEnabled: false, definitionOps: false, ...extra }).tools.find((x) => x.name === 'update_theme_component'))?.sort() ?? null;
+    const header = { owner: { kind: 'shell' as const, id: 'header' }, nodeId: headerNode(s).id };
+    // A whole-site run can change any placement; a small one's page tool changes a page's top-level sections, not the header.
+    expect(offered(big)).toEqual([HEADER, HERO].sort());
+    expect(offered(small)).toEqual([HERO]);
+    // A selected header updates itself, never the hero elsewhere.
+    expect(offered(big, { selection: header })).toEqual([HEADER]);
+    expect(offered(small, { selection: header })).toEqual([HEADER]);
+    // The home page holds the only hero; the header shows on every page.
+    expect(offered(big, { page: { route: '/' } })).toEqual([HERO]);
+    expect(offered(small, { page: { route: '/' } })).toEqual([HERO]);
+    const about = s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.id !== s.site.homePageId)!;
+    expect(offered(big, { page: { route: about.route } })).toBeNull();
+    // A component's own design changes no placement, until the user lets the run change more.
+    const target = { definitionId: HERO };
+    expect(offered(big, { definition: true, definitionTarget: target })).toBeNull();
+    expect(offered(big, { definition: true, definitionTarget: null })).toEqual([HEADER, HERO].sort());
+    expect(offered(big, { ask: true })).toBeNull();
   });
 
   it('gives a small selection run the new property to set once the header is updated', async () => {
@@ -232,6 +284,7 @@ describe('update_theme_component', () => {
     const { h, now } = host(s, { kind: 'selection', owner: selection.owner, nodeId: selection.nodeId, label: 'the header' });
     expect((await tool(h, 'update_theme_component', { definitionId: HEADER })).ok).toBe(true);
     expect(props(now())).toContain('ctaStyle');
+    expect(props(now())).toContain('secondary');
   });
 });
 
@@ -244,6 +297,8 @@ describe('scope of an update', () => {
     expect(checkAuthority(s, refresh(HEADER), sel, { themeRefresh: HEADER })).toBeNull();
     expect(checkAuthority(s, refresh(HEADER), sel)).toMatch(/more than the header/);
     expect(checkAuthority(s, [{ type: 'theme.refresh' }], sel, { themeRefresh: HEADER })).toMatch(/more than the header/);
+    // Two at once is never one update the tool asked for, even with one of them granted.
+    expect(checkAuthority(s, [{ type: 'theme.refresh', definitionIds: [HEADER, HERO] }], sel, { themeRefresh: HEADER })).toMatch(/more than the header/);
     expect(checkAuthority(s, refresh(HERO), sel, { themeRefresh: HERO })).toMatch(/outside the header/);
     // A part of a placement never reaches its component's design.
     const part: Authority = { ...sel, part: { regionNodeId: 'root', partId: 'root' } };
@@ -261,6 +316,10 @@ describe('scope of an update', () => {
     const other = s.site.pageOrder.find((id) => id !== home)!;
     const copy = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: other }, parentId: null, index: 0, componentId: 'hero.split' } as EditOperation]).state;
     expect(checkAuthority(copy, refresh(HERO), page, { themeRefresh: HERO })).toMatch(/approve a wider change/);
+    // A component placed nowhere is no page's to update.
+    const heroNode = s.pages[home].rootIds.find((id) => (s.pages[home].nodes[id] as InstanceNode).definitionId === HERO)!;
+    const gone = applyOperations(s, [{ type: 'node.remove', owner: { kind: 'page', id: home }, nodeId: heroNode }]).state;
+    expect(checkAuthority(gone, refresh(HERO), page, { themeRefresh: HERO })).toMatch(/approve a wider change/);
   });
 });
 
@@ -270,6 +329,9 @@ describe('the turn report', () => {
     const ops: EditOperation[] = [{ type: 'theme.refresh', definitionIds: [HEADER] }];
     const { state, results } = applyOperations(s, ops);
     expect(describeOps(ops, s, state, results).map((c) => c.label)).toEqual(["Updated the “Header” component to the theme's newer version"]);
+    const both: EditOperation[] = [{ type: 'theme.refresh', definitionIds: [HEADER, HERO] }];
+    const two = applyOperations(s, both);
+    expect(describeOps(both, s, two.state, two.results).map((c) => c.label)).toEqual([`Updated the “Header” and “${s.components[HERO].name}” components to the theme's newer version`]);
   });
 });
 
@@ -366,6 +428,7 @@ describe('asking for an outlined header button on a header that predates it', ()
     expect(definitionHash(session.state.components[HEADER])).toBe(definitionHash(current(HEADER)));
     expect(headerNode(session.state).props).toMatchObject({ ctaStyle: 'secondary', ctaLabel: 'Book a call', ctaLink: before.props.ctaLink, links: before.props.links });
     expect(themeUpdates(session.state).available.map((u) => u.id)).toContain(HERO);
+    expect(session.state.themeLock.components[HEADER].hash).toBe(definitionHash(current(HEADER)));
     const labels = result!.changes.map((c) => c.label);
     expect(labels).toContain("Updated the “Header” component to the theme's newer version");
     expect(labels.some((l) => /action style/i.test(l)), labels.join(" | ")).toBe(true);
@@ -395,5 +458,35 @@ describe('asking for an outlined header button on a header that predates it', ()
     const { result } = await s.run("Make the header's Book a call button outlined");
     expect(result?.changes ?? []).toEqual([]);
     expect(JSON.stringify(session.state.components[HEADER])).toBe(before);
+  });
+});
+
+describe('a notice for every page on a header that predates it', () => {
+  /** A header installed before it had a notice: still the theme's own (the lock agrees) unless `held`. */
+  const beforeNotice = (held: boolean) => {
+    const s = structuredClone(createStarterState('business', 'Test', false));
+    const header = s.components[HEADER];
+    for (const key of ['notice', 'noticeLabel', 'noticeLink']) {
+      delete (header.properties as Record<string, unknown>)[key];
+      delete headerNode(s).props[key];
+    }
+    if (!held) s.themeLock.components[HEADER].hash = definitionHash(header);
+    return s;
+  };
+
+  it('is added by updating the header, never by sending the user to update every component', async () => {
+    const { adapter, run } = await setup(beforeNotice(false), [() => finish('Done.')]);
+    await run('Tell visitors on every page that the studio is closed on Friday');
+    const system = adapter.requests[0].system;
+    expect(system).toContain(`update the header with update_theme_component (definitionId "${HEADER}")`);
+    expect(system).not.toContain('status bar');
+  });
+
+  it('is explained when the header cannot take the update', async () => {
+    const { adapter, run } = await setup(beforeNotice(true), [() => finish('Done.')]);
+    await run('Tell visitors on every page that the studio is closed on Friday');
+    const system = adapter.requests[0].system;
+    expect(system).toContain("This project's header has no notice field. The theme's newer header has one, but this project cannot take it: Its stored definition was changed outside the theme.");
+    expect(system).not.toContain('update_theme_component (definitionId');
   });
 });

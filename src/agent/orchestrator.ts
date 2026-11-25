@@ -15,6 +15,7 @@ import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, Too
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
+import { themeUpdateNote } from './theme-update';
 import { canEditContracts, checkAuthority, liveEntry, requestAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { developerModeRefusal } from '@engine/developer-mode';
@@ -376,6 +377,12 @@ function headerNoticeGuidance(state: ProjectState): string {
   const never = 'Never add a page section for it, which shows on that page only.';
   if (def && Object.hasOwn(def.properties, 'notice'))
     return `A notice for every page (a closure, holiday hours, an announcement) is the header's "notice" text, with an optional "noticeLabel" and "noticeLink"; set "notice" to "" to remove it. ${never}`;
+  // The theme's newer header has one: taken here when this project can, explained when it cannot.
+  const update = themeUpdateNote(state, def);
+  if (update?.newVersionAdds?.properties && Object.hasOwn(update.newVersionAdds.properties, 'notice'))
+    return update.status === 'available'
+      ? `This project's header was installed before the header had a notice field, which the theme's newer header has. When the user wants a notice on every page (a closure, an announcement), update the header with update_theme_component (definitionId "${def!.id}"), then set its "notice" text. ${never}`
+      : `This project's header has no notice field. The theme's newer header has one, but this project cannot take it: ${update.heldBecause} When the user wants a notice on every page, say so. ${never}`;
   return `This project's header has no notice field. When the user wants a notice on every page (a closure, an announcement), say that updating the theme's components (Update, in the status bar's problems panel) adds one to the header, unless the header was customised. ${never}`;
 }
 

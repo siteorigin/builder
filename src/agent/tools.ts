@@ -31,7 +31,7 @@ import { isReusabilityWarning } from '@engine/reusability';
 import { OP_REACH, type AuthorityGrants } from './scope';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
-import { runUpdateThemeComponent, themeUpdateNote, UPDATE_THEME_COMPONENT_ARGS, UPDATE_THEME_COMPONENT_BRIEF, UPDATE_THEME_COMPONENT_DESCRIPTION, updateThemeComponentTool } from './theme-update';
+import { runUpdateThemeComponent, themeUpdateNote, UPDATE_THEME_COMPONENT_ARGS, UPDATE_THEME_COMPONENT_BRIEF, UPDATE_THEME_COMPONENT_DESCRIPTION, updateThemeComponentTool, type UpdateReach } from './theme-update';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component', 'template']), id: z.string() });
 
@@ -478,19 +478,22 @@ export function toolsForRun(opts: {
     return { tools: [...micro, definitionRead(opts.definitionTarget.definitionId), ...reads, plainTool('search_assets'), plainTool('request_clarification')], mode: 'definition', focused };
   }
   const general = toolDefinitions({ codeEnabled, definitionOps });
-  // An installed theme component the run needs a newer version of is updated first: offered while there is one to take.
-  const update = themeUpdateTools(state);
+  // An installed theme component the run needs a newer version of is updated first: offered while there is one this run
+  // may update and then change with the tools it has.
+  const update = (reach: UpdateReach) => themeUpdateTools(state, reach);
   if (selection) {
     const micro = selectionTools(state, selection);
-    if (!micro) return { tools: [...update, ...general], mode: 'general', focused: false };
+    const mine = update({ kind: 'selection', owner: selection.owner, nodeId: selection.nodeId });
+    if (!micro) return { tools: [...mine, ...general], mode: 'general', focused: false };
     // An image can only be chosen by its asset ID, so a selection with one (a background image included), or a request that attached images, can
     // also look them up and ask the user to choose between them by sight.
     const assets = usesImage(micro) || selectionTakesBackground(state, selection) || opts.attachedImages ? general.filter((t) => t.name === 'search_assets' || t.name === 'request_clarification') : [];
     // Content too long to show whole in the selection can still be read whole, a part at a time, before it is changed.
     const reads = selectionAbridged(state, selection) ? general.filter((t) => t.name === 'inspect_element') : [];
-    return { tools: focused ? [...micro, ...update, ...reads, ...assets] : [...micro, ...update, ...general], mode: 'selection', focused };
+    return { tools: focused ? [...micro, ...mine, ...reads, ...assets] : [...micro, ...mine, ...general], mode: 'selection', focused };
   }
-  if (opts.definition) return { tools: general, mode: 'general', focused: false };
+  // A component's own design changes no placement; once the user lets the run change more, it may update one.
+  if (opts.definition) return { tools: opts.definitionTarget ? general : [...update({ kind: 'site' }), ...general], mode: 'general', focused: false };
   if (opts.page) {
     // Operations only for the page's own sections and settings, and no code edits: a component's source shows on every
     // page. A small model gets the few that address one section by its ID, which the page tool cannot.
@@ -500,7 +503,8 @@ export function toolsForRun(opts: {
     const pageId = pageIdFor(state, opts.page.route);
     const seo: ToolDefinition[] = pageId ? [{ name: 'update_page_seo', ...describe('update_page_seo'), parameters: pageSeoToolSchema(pageId) }] : [];
     // A feed of posts is placed with the page tool; the posts themselves can be read, and are changed once widened.
-    return { tools: [upsert, ...seo, ...own, ...update, ...entryReads(state)], mode: 'page', focused };
+    const updates = pageId ? update({ kind: 'page', pageId, sectionsOnly: focused }) : [];
+    return { tools: [upsert, ...seo, ...own, ...updates, ...entryReads(state)], mode: 'page', focused };
   }
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, undefined, focused) },
@@ -516,7 +520,8 @@ export function toolsForRun(opts: {
   const kept = focused && opts.widened ? (selectionTools(state, opts.widened, { widened: true }) ?? []).filter((t) => t.name === 'style_selected_element') : [];
   // A small run asked for a component reads a design whole, which a rebuild has to describe again in full.
   const reads = (t: ToolDefinition) => (opts.componentRequest && t.name === 'read_component' ? t : contractRead(t));
-  return { tools: [...macros, ...kept, ...update, ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
+  // A small model's page tool changes top-level sections alone: it may update only what it can then change.
+  return { tools: [...macros, ...kept, ...update(focused ? { kind: 'sections' } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
 }
 
 /**
@@ -528,9 +533,9 @@ export const asksForComponent = (text: string): boolean => /\b(?:components?|reu
 
 const managedComponentTool = (): ToolDefinition => ({ name: 'upsert_managed_component', ...describe('upsert_managed_component'), parameters: managedComponentSchema() });
 
-/** The theme update tool, while the project has an installed theme component it can update. */
-const themeUpdateTools = (state: ProjectState): ToolDefinition[] => {
-  const t = updateThemeComponentTool(state, describe('update_theme_component'));
+/** The theme update tool, while the project has an installed theme component this run can update. */
+const themeUpdateTools = (state: ProjectState, reach: UpdateReach): ToolDefinition[] => {
+  const t = updateThemeComponentTool(state, describe('update_theme_component'), reach);
   return t ? [t] : [];
 };
 

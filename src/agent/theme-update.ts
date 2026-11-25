@@ -9,12 +9,13 @@
  * its undo, and limited by the run's scope (see scope.ts).
  */
 import { z } from 'zod';
-import type { ComponentDefinition, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { partStyleControls } from '@shared/styles';
 import { axesOf } from '@shared/variants';
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
+import { getTree, instancesOf, subtreeIds } from '@engine/tree';
 import { componentDetail } from './context';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -100,7 +101,10 @@ export function themeUpdateChanges(def: ComponentDefinition, next: ComponentDefi
       out.parts[k] = part.label;
       continue;
     }
-    const had = new Set(partStyleControls(def, k) ?? []);
+    // A part without a list of its own already offers every control: a list adds none.
+    const was = partStyleControls(def, k);
+    if (!was) continue;
+    const had = new Set(was);
     const added = (partStyleControls(next, k) ?? []).filter((c) => !had.has(c));
     if (added.length) out.styleControls[k] = added;
   }
@@ -120,7 +124,7 @@ function changeLines(c: ThemeUpdateChanges): string[] {
   return [
     ...Object.entries(c.properties ?? {}).map(([p, s]) => `property ${p} (${(s as { label: string }).label})${options((s as { options?: unknown }).options)}`),
     ...Object.entries(c.options ?? {}).map(([p, o]) => `${p} options${options(o)}`),
-    ...Object.entries(c.fields ?? {}).map(([f, s]) => `field ${f} (${(s as { label: string }).label})`),
+    ...Object.entries(c.fields ?? {}).map(([f, s]) => `field ${f} (${(s as { label: string }).label})${options((s as { options?: unknown }).options)}`),
     ...Object.entries(c.parts ?? {}).map(([k, label]) => `part ${k} (${label})`),
     ...Object.entries(c.styleControls ?? {}).map(([k, list]) => `${k} part styles: ${list.join(', ')}`),
     ...Object.entries(c.variants ?? {}).map(([axis, o]) => `${axis} variants${options(o)}`),
@@ -129,16 +133,25 @@ function changeLines(c: ThemeUpdateChanges): string[] {
 }
 
 const AVAILABLE_NOTE =
-  'The theme has a newer version of this component than the project has installed. What is described here is the installed version; newVersionAdds is what the newer one adds. When the request needs any of it, call update_theme_component with this definitionId, then make the change the user asked for. Never say the component cannot do it.';
+  'The theme has a newer version of this component than the project has installed. What is described here is the installed version; newVersionAdds is what the newer one adds. When the request needs any of it, call update_theme_component with this definitionId, then make the change the user asked for. If that tool does not offer this component, this request cannot update it: tell the user what the newer version adds, and that selecting the component (or allowing a wider change) lets you update it. Never say the component cannot do it.';
 const CONTRACT_SAME = 'The newer version changes only its design or code: it adds nothing to set.';
 const heldNote = (reason: string) =>
   `The theme has a newer version of this component (newVersionAdds), but this project cannot take it: ${reason} If the request needs what it adds, tell the user the newer version has it and why it cannot be applied here, and offer another way to get close with what the installed version has. Never say the feature does not exist.`;
+
+export interface ThemeUpdateNote {
+  status: 'available' | 'held';
+  heldBecause?: string;
+  /** What the newer version adds, or null when it changes only its design or code. */
+  newVersionAdds: ThemeUpdateChanges | null;
+  contract?: string;
+  note: string;
+}
 
 /**
  * What the assistant reads beside an installed theme definition the theme has a newer version of: whether this project
  * can take it, why not when it cannot, and what it adds. Undefined for a current definition or a project's own.
  */
-export function themeUpdateNote(state: ProjectState, def: ComponentDefinition | undefined): Record<string, unknown> | undefined {
+export function themeUpdateNote(state: ProjectState, def: ComponentDefinition | undefined): ThemeUpdateNote | undefined {
   if (!def) return undefined;
   const next = newerVersion(state, def);
   if (!next) return undefined;
@@ -147,6 +160,10 @@ export function themeUpdateNote(state: ProjectState, def: ComponentDefinition | 
   const changes = Object.keys(adds).length ? { newVersionAdds: adds } : { newVersionAdds: null, contract: CONTRACT_SAME };
   return held ? { status: 'held', heldBecause: held.reason, ...changes, note: heldNote(held.reason) } : { status: 'available', ...changes, note: AVAILABLE_NOTE };
 }
+
+/** Characters of a held reason the list of every update shows: read_component shows it whole. */
+const REASON_CHARS = 300;
+const clip = (s: string) => (s.length > REASON_CHARS ? `${s.slice(0, REASON_CHARS - 1)}…` : s);
 
 /** Most changes one entry of the list of every update names; read_component shows them all. */
 const LINES = 6;
@@ -176,10 +193,10 @@ export function themeUpdatesSummary(state: ProjectState, only?: (definitionId: s
   const a = cut(available);
   const h = cut(held);
   return {
-    note: 'Installed theme components the theme has a newer version of. available: update_theme_component brings one up to date when a request needs what it adds. held: this project cannot take it, for the reason given.',
+    note: 'Installed theme components the theme has a newer version of. available: update_theme_component brings one up to date when a request needs what it adds (a component it does not offer is outside what this request may update: say so, and that selecting it or allowing a wider change lets you). held: this project cannot take it, for the reason given.',
     ...(a.list.length ? { available: a.list.map((u) => ({ definitionId: u.id, name: u.name, ...adds(u.id) })) } : {}),
     ...(a.more ? { moreAvailable: a.more } : {}),
-    ...(h.list.length ? { held: h.list.map((k) => ({ definitionId: k.id, name: k.name, reason: k.reason, ...adds(k.id) })) } : {}),
+    ...(h.list.length ? { held: h.list.map((k) => ({ definitionId: k.id, name: k.name, reason: clip(k.reason), ...adds(k.id) })) } : {}),
     ...(h.more ? { moreHeld: h.more } : {})
   };
 }
@@ -189,12 +206,44 @@ export const UPDATE_THEME_COMPONENT_ARGS = z.object({
 });
 
 export const UPDATE_THEME_COMPONENT_DESCRIPTION =
-  'Update one installed theme component to the theme\'s newer version, when the request needs something only that version has (a property, an option, a part, a variant or a slot: see newVersionAdds in read_component, inspect_element, the selection, or themeUpdates in the project summary). Every placement keeps its content and styles and gets the newer design; the update is in the turn\'s report and undone with the rest of it. Update only the components the request needs, never every one. The result is the updated contract: then make the change the user asked for in your next step. When a component\'s update is held, this explains why: tell the user, and offer another way.';
+  'Update one installed theme component to the theme\'s newer version, when the request needs something only that version has (a property, an option, a part, a variant or a slot: see newVersionAdds in read_component, inspect_element, the selection, or themeUpdates in the project summary). Every placement keeps its content and styles and gets the newer design; the update is in the turn\'s report and undone with the rest of it. Update only the components the request needs, never every one. It offers only the components this request may change everywhere they are placed. The result is the updated contract: then make the change the user asked for in your next step. When a component\'s update is held, this explains why: tell the user, and offer another way.';
 export const UPDATE_THEME_COMPONENT_BRIEF = 'Update one installed theme component to the newer theme version, when the request needs what it adds (newVersionAdds). Then make the change asked for. Update only what the request needs.';
 
-/** The tool, offered while the project has a theme update it can take; its definitionId is one of those. */
-export function updateThemeComponentTool(state: ProjectState, describe: { description: string; brief?: string }): ToolDefinition | null {
-  const ids = themeUpdatesOf(state).available.map((a) => a.id).filter((id) => Object.hasOwn(state.components, id));
+/**
+ * What a run may update, and change afterwards with the tools it has:
+ * - site: anything (a whole-site run has the operations to change any placement);
+ * - sections: a small whole-site run, whose page tool changes a page's top-level sections and nothing else;
+ * - page: a page's run, every placement on that page (only its top-level sections for a small model's page tool);
+ * - selection: every placement inside the selected element.
+ * An update changes every placement, so each must be one the run may change (scope.ts checks the same).
+ */
+export type UpdateReach =
+  | { kind: 'site' }
+  | { kind: 'sections' }
+  | { kind: 'page'; pageId: string; sectionsOnly: boolean }
+  | { kind: 'selection'; owner: OwnerRef; nodeId: string };
+
+function withinReach(state: ProjectState, id: string, reach: UpdateReach): boolean {
+  if (reach.kind === 'site') return true;
+  const placed = instancesOf(state, id);
+  const section = (o: OwnerRef, nodeId: string) => o.kind === 'page' && Object.hasOwn(state.pages, o.id) && state.pages[o.id].rootIds.includes(nodeId);
+  // Placed nowhere yet: a whole-site run may update it before placing it.
+  if (reach.kind === 'sections') return placed.every((p) => section(p.owner, p.node.id));
+  if (reach.kind === 'page') return placed.length > 0 && placed.every((p) => p.owner.kind === 'page' && p.owner.id === reach.pageId && (!reach.sectionsOnly || section(p.owner, p.node.id)));
+  let inside: Set<string>;
+  try {
+    inside = new Set(subtreeIds(getTree(state, reach.owner), reach.nodeId));
+  } catch {
+    return false;
+  }
+  return placed.length > 0 && placed.every((p) => p.owner.kind === reach.owner.kind && p.owner.id === reach.owner.id && inside.has(p.node.id));
+}
+
+/** The tool, offered while the project has a theme update this run can take; its definitionId is one of those. */
+export function updateThemeComponentTool(state: ProjectState, describe: { description: string; brief?: string }, reach: UpdateReach): ToolDefinition | null {
+  const ids = themeUpdatesOf(state)
+    .available.map((a) => a.id)
+    .filter((id) => Object.hasOwn(state.components, id) && withinReach(state, id, reach));
   if (!ids.length) return null;
   return {
     name: 'update_theme_component',

@@ -6,7 +6,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree
 import { isBinding, slotChildren } from '@shared/types';
 import { partStyleControls } from '@shared/styles';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
-import { childLists, displayName, enclosingRepeatProp, getTree } from '@engine/tree';
+import { childLists, displayName, enclosingRepeatProp, getTree, subtreeIds } from '@engine/tree';
 import { slotDecl } from '@engine/slots';
 import { shownSlots } from '@engine/theme-updates';
 import { TABLE_LIMITS } from '@engine/table';
@@ -229,6 +229,19 @@ export function projectSummary(state: ProjectState, revision: number) {
     ...(hasCollections(state) ? { collections: collectionsSummary(state) } : {}),
     assets: Object.keys(state.assets.assets).length
   };
+}
+
+/**
+ * The theme updates of the components placed inside a selected node, other than its own (which it is told about apart),
+ * under themeUpdatesInside: a selected wrapper's update note says nothing of the section it holds.
+ */
+function updatesInside(state: ProjectState, tree: NodeTree, nodeId: string, own: string | undefined): { themeUpdatesInside?: Record<string, unknown> } {
+  if (!Object.hasOwn(tree.nodes, nodeId)) return {};
+  const placed = new Set(subtreeIds(tree, nodeId).flatMap((id) => (tree.nodes[id]?.kind === 'instance' ? [(tree.nodes[id] as { definitionId: string }).definitionId] : [])));
+  placed.delete(own ?? '');
+  if (!placed.size) return {};
+  const u = themeUpdatesSummary(state, (id) => placed.has(id));
+  return u ? { themeUpdatesInside: u } : {};
 }
 
 /** The project's theme updates, under themeUpdates, while it has any; `only` narrows them to some definitions. */
@@ -918,7 +931,7 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null, o
     const selected = tree.nodes[ref.nodeId];
     if (selected?.kind === 'instance') node.props = selectedProps(state.components[selected.definitionId], selected.props, state.pages);
     const update = selected?.kind === 'instance' ? themeUpdateNote(state, state.components[selected.definitionId]) : undefined;
-    return { owner: ref.owner, nodeId: ref.nodeId, node, ...(update ? { themeUpdate: update } : {}) };
+    return { owner: ref.owner, nodeId: ref.nodeId, node, ...(update ? { themeUpdate: update } : {}), ...updatesInside(state, tree, ref.nodeId, selected?.kind === 'instance' ? selected.definitionId : undefined) };
   }
   const instId = ref.instancePath[0];
   const inst = tree.nodes[instId];
@@ -958,6 +971,7 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null, o
     component: def?.name,
     definitionId: def?.id,
     ...(update ? { themeUpdate: update } : {}),
+    ...updatesInside(state, tree, instId, def?.id),
     partId: ref.partId ?? null,
     innerNodeId: ref.nodeId,
     itemId: ref.itemPath?.[ref.itemPath.length - 1] ?? null,
