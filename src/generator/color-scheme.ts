@@ -56,9 +56,10 @@ export function themeToggleJs(key: string, instrument = false): string {
   const apply = instrument
     ? `
 		// In the editor, the canvas decides which palette the page previews: the press asks it for the other one, and
-		// the page follows once the canvas has switched (the device setting the page reads is the canvas's).
-		if (window.__siteoriginBridge) return void window.dispatchEvent(new CustomEvent('siteorigin:color-scheme', { detail: next }));
-		root.dataset.soTheme = next;`
+		// the page follows once the canvas has switched (the device setting the page reads is the canvas's). Before the
+		// editor's bridge is running, a press does nothing, so the page never holds a palette of its own.
+		if (window.__siteoriginBridge) window.dispatchEvent(new CustomEvent('siteorigin:color-scheme', { detail: next }));
+		return;`
     : `
 		root.dataset.soTheme = next;
 		try {

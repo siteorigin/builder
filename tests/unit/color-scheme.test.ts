@@ -67,6 +67,12 @@ describe('the dark palette made from the light one', () => {
     // A color of the site's own keeps its light value.
     const own: TokenDef = { id: 'color.custom-x', label: 'X', group: 'color', value: '#123456' };
     expect(deriveDarkPalette([...theme, own], theme, pairs)).not.toHaveProperty('color.custom-x');
+    // A site's value that cannot be read takes its lightness from the theme's; a translucent overlay is left as it is.
+    const site = theme.map((t) => (t.id === 'color.paper' ? { ...t, value: 'color-mix(in srgb, white 50%, white)' } : t));
+    const scrim: TokenDef = { id: 'color.scrim', label: 'Scrim', group: 'color', value: 'rgb(0 0 0 / 0.5)' };
+    const made = deriveDarkPalette([...site, scrim], [...theme, scrim], pairs);
+    expect(rgbToOklab(parseColor(String(made['color.paper']))!)[0]).toBeLessThan(0.3);
+    expect(made).not.toHaveProperty('color.scrim');
   });
 
   it('keeps a role that follows another following it, within the dark palette', () => {
@@ -148,6 +154,8 @@ describe('choosing the palettes', () => {
     // Named in a dark color's CSS, it cannot be removed at all until that changes.
     const mixed = run(s, { type: 'token.set', tokenId: 'color.muted', value: `color-mix(in srgb, var(--so-${sea.replace('.', '-')}) 50%, white)`, scheme: 'dark' });
     expect(() => run(mixed, { type: 'token.remove', tokenId: sea, detach: true })).toThrow(/dark palette's "color\.muted"/);
+    const shouted = run(s, { type: 'token.set', tokenId: 'color.muted', value: `color-mix(in srgb, VAR(--so-${sea.replace('.', '-')}) 50%, white)`, scheme: 'dark' });
+    expect(() => run(shouted, { type: 'token.remove', tokenId: sea, replacementTokenId: 'color.brand' })).toThrow(/dark palette's "color\.muted"/);
     // Replaced: the dark palette's link moves with every other use.
     const replaced = run(s, { type: 'token.remove', tokenId: sea, replacementTokenId: 'color.accent' });
     expect(replaced.tokens.darkOverrides?.['color.focus']).toEqual({ token: 'color.accent' });
@@ -230,8 +238,9 @@ describe('what the site gets in each mode', () => {
     const dev = files(s, true);
     expect(dev.get('src/routes/+layout.svelte')).not.toContain('localStorage');
     expect(dev.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).not.toContain('localStorage');
-    // Its presses ask the canvas for the other palette, which the bridge passes on.
+    // Its presses ask the canvas for the other palette, which the bridge passes on, and never set one of its own.
     expect(dev.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).toContain("new CustomEvent('siteorigin:color-scheme'");
+    expect(dev.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).not.toContain('root.dataset.soTheme =');
     expect(themeToggleJs('k', true)).toEqual(dev.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)!.replace(JSON.stringify(themeStorageKey(s)), '"k"'));
     expect(dev.get('src/routes/+layout.svelte')).toContain('startThemeToggle');
     for (const [path, source] of [...clean, ...dev])
@@ -249,6 +258,8 @@ describe('what the site gets in each mode', () => {
     expect(css).not.toContain('--so-color-nope');
     expect(css).not.toContain('color-gone');
     expect(css).not.toContain('--so-color-accent: 12px');
+    // Everything that reads the dark palette leaves it out alike: the color shows its light value.
+    expect(effectiveTokens(s, 'dark').find((t) => t.id === 'color.accent')?.value).toEqual(effectiveTokens(s).find((t) => t.id === 'color.accent')?.value);
     // Each one left out is said.
     const said = validateState(s).filter((d) => d.message.includes('dark palette'));
     expect(said.filter((d) => d.severity === 'warning')).toHaveLength(5);

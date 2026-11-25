@@ -7,6 +7,7 @@
 import { COLOR_SCHEME_MODES, type ColorSchemeMode, type DarkColorValue, type TokenDef, type TokensDoc } from './types';
 import { evaluatePairs, type ContrastPair } from './contrast';
 import { oklabToRgb, parseColor, rgbToOklab, toHex6 } from './color';
+import { validateStyleValue } from './styles';
 
 /** The palette an editor shows or edits: the site's own (light), or the dark one beside it. */
 export type PaletteScheme = 'light' | 'dark';
@@ -23,11 +24,15 @@ export const hasDarkPalette = (tokens: Pick<TokensDoc, 'colorSchemeMode'> | unde
 const refOf = (v: unknown): string | null =>
   v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { token?: unknown }).token === 'string' && Object.keys(v).length === 1 ? (v as { token: string }).token : null;
 
-/** A stored dark colour the palette can use: a non-empty colour, or a link. Anything else (a hand edit) is left out. */
+/**
+ * A stored dark colour the palette can use: a colour editing accepts, or a link. Anything else (a hand edit) is left
+ * out everywhere alike (the stylesheet, Site styles, the contrast check, the engine), and the colour shows its light
+ * value.
+ */
 export function darkValue(v: unknown): DarkColorValue | null {
   const ref = refOf(v);
   if (ref) return { token: ref };
-  return typeof v === 'string' && v.trim() ? v : null;
+  return typeof v === 'string' && v.trim() && !validateStyleValue('color', v) ? v : null;
 }
 
 /**
@@ -111,11 +116,14 @@ const mirrored = (L: number) => Math.min(0.96, Math.max(0.12, 1.1 - L));
 export function deriveDarkPalette(light: readonly TokenDef[], themeDefaults: readonly TokenDef[], pairs: readonly ContrastPair[] = []): Record<string, DarkColorValue> {
   const themeIds = new Set(themeDefaults.filter((t) => t.group === 'color').map((t) => t.id));
   const colors = light.filter((t) => t.group === 'color' && themeIds.has(t.id));
-  /** The lightness a theme colour gets: its role's, or its own mirrored; none for one that cannot be read. */
+  /**
+   * The lightness a theme colour gets: its role's, or its own (the theme's, when the site's cannot be read) mirrored.
+   * None for one that cannot be read, or a translucent one (a scrim, an overlay), which keeps its light value.
+   */
   const lightness = (id: string): number | undefined => {
     if (Object.hasOwn(ROLE_LIGHTNESS, id)) return ROLE_LIGHTNESS[id];
-    const rgb = parseColor(resolvedCss(light, id) ?? resolvedCss(themeDefaults, id) ?? '');
-    return rgb ? mirrored(rgbToOklab(rgb)[0]) : undefined;
+    const rgb = parseColor(resolvedCss(light, id) ?? '') ?? parseColor(resolvedCss(themeDefaults, id) ?? '');
+    return rgb && rgb.a >= 1 ? mirrored(rgbToOklab(rgb)[0]) : undefined;
   };
   const attempt = (keepLinks: boolean, chroma: number): Record<string, DarkColorValue> => {
     const out: Record<string, DarkColorValue> = {};

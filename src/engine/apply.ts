@@ -2439,7 +2439,8 @@ function tokenCreate(state: ProjectState, op: Op<'token.create'>): OpResult {
 /** A token's value with references followed, for turning its uses into explicit values. */
 /** Places CSS text names a token's variable: code component sources and literal style or token values. */
 function literalTokenUses(state: ProjectState, tokenId: string): string[] {
-  const re = new RegExp(`var\\(\\s*${tokenVar(tokenId).replace(/[-]/g, '\\-')}\\s*[,)]`);
+  // CSS reads the function's name in any case (VAR() too); the variable's own name is case-sensitive.
+  const re = new RegExp(`[vV][aA][rR]\\(\\s*${tokenVar(tokenId).replace(/[-]/g, '\\-')}\\s*[,)]`);
   const out = new Set<string>();
   for (const d of Object.values(state.components)) if (d.owner === 'project' && d.kind === 'code' && d.source && re.test(d.source)) out.add(`the source of "${d.name}"`);
   for (const t of allTrees(state)) {
