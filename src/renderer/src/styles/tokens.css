@@ -1,0 +1,150 @@
+/*
+ * SiteOrigin Builder editor design system. Light and dark are both first-class.
+ *
+ * Identity: ink and sky, taken from the elephant mark (AppMark.tsx). Text and icons are the mark's ink
+ * navy; neutrals are faintly ink-tinted; one blue (deep sky in light, the tile's own sky in dark) is the
+ * only accent: selection, focus, the selected row and the primary action. Other hues carry meaning only,
+ * always with an icon and words: green = shared header/footer, amber = site-wide, plum = component
+ * definition, red = danger. AI has no hue of its own (it uses the accent and the Sparkles icon).
+ * The canvas stays neutral so the user's website keeps its own colours.
+ *
+ * Contrast floors (WCAG 2.2): every text token is at least 4.5:1 on --panel, --panel-2 and --raised in its
+ * theme; --border-control and --focus are at least 3:1. Use --text-3 for the quietest readable text;
+ * --border and --border-strong are decorative dividers only, never a control's only edge.
+ * Shape: --r-sm 6px (controls, rows, chips and badges), --r-md 10px (cards, menus, popovers, toasts),
+ * --r-lg 14px (dialogs). Only things that are round by nature stay round: switches, dots, avatars, spinners.
+ * States are drawn, never faded: an unavailable control takes the neutral --disabled-fill, a --border-strong
+ * edge (none on ghost and icon buttons) and --disabled-ink, whatever its variant, so it never keeps an action's
+ * colour; a selected option takes the raised face; an invalid field takes a red edge plus an error line that
+ * starts with the alert glyph.
+ * --disabled-ink is the one text token under 4.5:1, by design: inactive controls are exempt (WCAG 1.4.3), so it
+ * holds 3:1 on its surface and fill and stays visibly quieter than --text-3. Nested options (a segmented
+ * control's) take --r-xs so their corners stay concentric with the --r-sm tray.
+ * Focus is one 2px --focus outline, 2px out, on every control, text fields included; rows inside a clipping
+ * container (menus, lists) draw it 2px in. Inverse surfaces (toasts) redefine --focus to a blue that holds 3:1
+ * on their fill, so the outline stays blue everywhere.
+ * Cards (Welcome actions, recent projects, Insert tiles, Export choices) are identified by their content and
+ * take a soft hairline and a lift; form controls take the 3:1 --border-control edge.
+ *
+ * No partial borders on rounded shapes. A rounded element has a complete border or ring, or none: never a
+ * single-edge bar (left, right, top or bottom) or edge shadow, which bends into a crescent at the corners.
+ * Mark state with a fill, a full 1px ring, a dot or an icon instead. Straight dividers between unrounded
+ * regions (panel edges, list rows, dialog footers) are fine, and so is a spinner's coloured arc.
+ */
+@layer tokens {
+  :root {
+    color-scheme: light;
+    --selection: rgb(23 102 192 / 0.22);
+    --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+    --mono: 'SF Mono', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
+
+    /* Brand constants (the mark's colours); never theme-dependent. */
+    --sky-1: #cdebff;
+    --sky-2: #86c5ff;
+    --ink: #23304f;
+
+    --bg: #f2f4f7;
+    --canvas: #e4e8ed;
+    --canvas-dots: rgb(28 39 66 / 0.07);
+    --panel: #f9fafb;
+    --panel-2: #eff2f6;
+    --raised: #ffffff;
+    --hover: rgb(28 39 66 / 0.05);
+    --active: rgb(28 39 66 / 0.08);
+    --border: rgb(28 39 66 / 0.1);
+    --border-strong: rgb(28 39 66 / 0.17);
+    --border-control: #7a859a;
+    --text: #1c2742;
+    --text-2: #4a5670;
+    --text-3: #5c677d;
+    --accent: #1766c0;
+    --accent-hover: #11559f;
+    --accent-soft: rgb(23 102 192 / 0.1);
+    --accent-text: #11559f;
+    --on-accent: #ffffff;
+    --accent-fill: #1766c0;
+    --accent-fill-hover: #11559f;
+    --focus: #1766c0;
+    /* The canvas selection colour is the same in both themes: it sits on the user's website, not the app. */
+    --select: #1766c0;
+    --green: #0b6b45;
+    --green-soft: rgb(11 107 69 / 0.1);
+    --amber: #925600;
+    --amber-soft: rgb(196 122 12 / 0.12);
+    --red: #c2352e;
+    --red-soft: rgb(194 53 46 / 0.09);
+    /* Red text on a --red-soft fill (badges), which needs a step darker than --red to hold 4.5:1. */
+    --red-ink: #b02e28;
+    /* Labels and icons of unavailable controls: quieter than --text-3, 3:1 or better on their surface and fill. */
+    --disabled-ink: #76819a;
+    --disabled-fill: rgb(28 39 66 / 0.06);
+    /* The tray behind a segmented control's options. */
+    --track: rgb(28 39 66 / 0.08);
+    --plum: #6a45c8;
+    --plum-soft: rgb(106 69 200 / 0.1);
+    --shadow-sm: 0 1px 2px rgb(28 39 66 / 0.07);
+    --shadow-md: 0 8px 24px -8px rgb(28 39 66 / 0.18), 0 2px 6px rgb(28 39 66 / 0.06);
+    --shadow-lg: 0 24px 56px -16px rgb(28 39 66 / 0.3), 0 6px 16px rgb(28 39 66 / 0.08);
+    --ring: 0 0 0 3px rgb(23 102 192 / 0.18);
+    --scrim: rgb(20 28 48 / 0.3);
+    /* Shared card and surface hairlines that step up in dark mode without per-component overrides. */
+    --card-ring: 0 0 0 1px var(--border), 0 1px 2px rgb(28 39 66 / 0.06);
+    --card-ring-hover: 0 0 0 1px var(--border-strong), 0 8px 20px -10px rgb(28 39 66 / 0.25);
+    --surface-ring: 0 0 0 1px var(--border);
+    --r-xs: 4px;
+    --r-sm: 6px;
+    --r-md: 10px;
+    --r-lg: 14px;
+    --toolbar-h: 52px;
+  }
+
+  :root:where([data-appearance='dark']) {
+    color-scheme: dark;
+    --selection: rgb(124 190 255 / 0.3);
+    --bg: #11151c;
+    --canvas: #0e1217;
+    --canvas-dots: rgb(255 255 255 / 0.05);
+    --panel: #171c25;
+    --panel-2: #1d232e;
+    --raised: #242b37;
+    --hover: rgb(231 236 244 / 0.06);
+    --active: rgb(231 236 244 / 0.1);
+    --border: rgb(231 236 244 / 0.09);
+    --border-strong: rgb(231 236 244 / 0.16);
+    --border-control: #717d96;
+    --text: #e7ecf4;
+    --text-2: #a8b2c3;
+    --text-3: #8b96a9;
+    --accent: #7cbeff;
+    --accent-hover: #a2d1ff;
+    --accent-soft: rgb(124 190 255 / 0.15);
+    --accent-text: #9fd0ff;
+    /* The dark primary is the mark's own sky tile with ink lettering. */
+    --on-accent: #10203f;
+    --accent-fill: #86c5ff;
+    --accent-fill-hover: #a2d3ff;
+    --focus: #7cbeff;
+    --green: #5ccf9c;
+    --green-soft: rgb(92 207 156 / 0.13);
+    --amber: #f0b45e;
+    --amber-soft: rgb(240 180 94 / 0.13);
+    --red: #ff8a82;
+    --red-soft: rgb(255 138 130 / 0.13);
+    --red-ink: #ff8a82;
+    --disabled-ink: #758096;
+    /* Sunken, like the track: an unavailable control sits back rather than lifting off the panel. */
+    --disabled-fill: rgb(0 0 0 / 0.22);
+    /* Darker than the panel, so the raised selected option stands up out of it rather than sinking in. */
+    --track: rgb(0 0 0 / 0.28);
+    --plum: #b59bff;
+    --plum-soft: rgb(181 155 255 / 0.14);
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-md: 0 10px 30px -8px rgb(0 0 0 / 0.6), 0 2px 6px rgb(0 0 0 / 0.3);
+    --shadow-lg: 0 30px 70px -16px rgb(0 0 0 / 0.7), 0 6px 18px rgb(0 0 0 / 0.4);
+    --ring: 0 0 0 3px rgb(124 190 255 / 0.22);
+    --scrim: rgb(0 0 0 / 0.5);
+    --card-ring: 0 0 0 1px var(--border-strong);
+    --card-ring-hover: 0 0 0 1px var(--border-control), 0 8px 20px -10px rgb(0 0 0 / 0.65);
+    --surface-ring: 0 0 0 1px var(--border-strong);
+  }
+}

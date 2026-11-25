@@ -1,0 +1,49 @@
+@layer reset {
+  * { box-sizing: border-box; }
+  html, body, #root { height: 100%; margin: 0; }
+  body {
+    font-family: var(--font);
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--text);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    user-select: none;
+  }
+  input, textarea, select, button { font: inherit; color: inherit; }
+  button { cursor: default; background: none; }
+  /* A solid 2px outline (3:1 or better in both themes), 2px out, is the one focus indicator; it survives
+     clipping containers and elements that set their own box-shadow. Text fields show the same outline whenever
+     they hold the caret (pointer or keyboard), and keep their own edge, so a red invalid edge stays visible. */
+  :focus-visible, :is(.input, .select, .textarea):focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+  ::selection { background: var(--selection); }
+  h1, h2, h3 { text-wrap: balance; }
+  p { text-wrap: pretty; }
+  /* Every frame in the editor shows the website. Chromium gives a frame's page the color scheme of its <iframe>
+     element, which would otherwise inherit the editor's Appearance: this one lets the page follow this computer's
+     setting, as a visitor's browser does. */
+  iframe { color-scheme: light dark; }
+  /* Tabs renders every panel; an inactive one stays hidden whatever its class sets display to. */
+  [role="tabpanel"][hidden] { display: none; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
+}
+
+@layer base {
+  .scroll { overflow: auto; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+  .muted { color: var(--text-2); }
+  .faint { color: var(--text-3); }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .col { display: flex; flex-direction: column; gap: 8px; }
+  .grow { flex: 1; min-width: 0; }
+  .spacer { flex: 1; }
+  .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drag { -webkit-app-region: drag; }
+  .no-drag { -webkit-app-region: no-drag; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  /* Shown instead of the editor when no theme pack could be loaded. */
+  .fatal { max-width: 560px; margin: 15vh auto; padding: 0 16px; font-size: 14px; line-height: 1.5; color: var(--text); }
+  .fatal ul { margin: 12px 0 0; padding-left: 18px; color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
+}

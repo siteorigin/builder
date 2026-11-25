@@ -1,4 +1,5 @@
 import { createRoot } from 'react-dom/client';
+import './styles/index.css';
 import './styles.css';
 import { App } from './App';
 import { registerPacks } from '@catalogue/index';

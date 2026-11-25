@@ -32,7 +32,10 @@ describe("placement map", () => {
   it("gives neighbour rows no border or box background, so they do not look like buttons", () => {
     const css = readFileSync("src/renderer/src/styles.css", "utf8");
     const rule = (sel: string) =>
-      css.split("\n").find((l) => l.startsWith(sel + " {")) ?? "";
+      css
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l.startsWith(sel + " {")) ?? "";
     const ctx = rule(".insert-peek-map .ctx");
     expect(ctx).not.toBe("");
     expect(ctx).not.toMatch(/box-shadow|border|background/);

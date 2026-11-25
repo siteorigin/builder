@@ -847,7 +847,7 @@ export function ExportModal() {
                   </fieldset>
                 </div>
               </div>
-              <button ref={(el) => void (buttons.current.static = el)} className={`welcome-action export-card${cardState('static')}`} aria-disabled={!!busy || blocked || draftLinks.length > 0 || undefined} aria-describedby={websiteBlockedBy.join(' ') || undefined} onClick={() => void run('static')}>
+              <button ref={(el) => void (buttons.current.static = el)} className={`action-card export-card${cardState('static')}`} aria-disabled={!!busy || blocked || draftLinks.length > 0 || undefined} aria-describedby={websiteBlockedBy.join(' ') || undefined} onClick={() => void run('static')}>
                 <span className="ico"><Globe size={18} /></span>
                 <span className="grow">
                   <span className="export-card-title">
@@ -860,7 +860,7 @@ export function ExportModal() {
                   </span>
                 </span>
               </button>
-              <button ref={(el) => void (buttons.current.source = el)} className={`welcome-action export-card secondary${cardState('source')}`} aria-disabled={!!busy || blocked || undefined} aria-describedby={blockedBy.join(' ') || undefined} onClick={() => void run('source')}>
+              <button ref={(el) => void (buttons.current.source = el)} className={`action-card export-card secondary${cardState('source')}`} aria-disabled={!!busy || blocked || undefined} aria-describedby={blockedBy.join(' ') || undefined} onClick={() => void run('source')}>
                 <span className="ico"><FolderCode size={18} /></span>
                 <span className="grow">
                   <span className="export-card-title">

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import { Ban, Bookmark, CircleMinus, Code, Globe, Info, KeyRound, LockOpen, LogOut, Mail, Phone, RotateCcw, ShieldCheck, SquarePen, TextCursorInput, Trash2, TriangleAlert, Undo2 } from 'lucide-react';
 import { getConfirm, onConfirmChange, type ConfirmDetail, type ConfirmIcon, type ConfirmRequest } from '../store';
 import { Modal, openDialogs, openMenus } from './ui';
+import './ConfirmDialog.css';
 
 const ICONS: Record<ConfirmIcon, ReactNode> = {
   delete: <Trash2 />,

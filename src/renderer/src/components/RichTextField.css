@@ -1,0 +1,13 @@
+@layer components {
+  /* A rich text field: its text, then the buttons that add links and lists without typed syntax. */
+  .rich-field { display: flex; flex-direction: column; gap: 4px; }
+  .rich-tools { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+  .rich-tools .icon-btn[aria-disabled='true'] { cursor: default; }
+  .rich-tools .icon-btn[aria-disabled='true']:not(:focus-visible) { opacity: 0.4; }
+  .rich-tools .icon-btn[aria-disabled='true']:hover { background: transparent; color: var(--text-2); }
+  .rich-tools-gap { width: 1px; height: 16px; margin: 0 4px; background: var(--border); }
+  .rich-link { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .rich-link .input { flex: 1 1 140px; min-width: 0; }
+  .rich-link .field-error { flex-basis: 100%; }
+  .rich-link .link-rels { flex-basis: 100%; margin-top: 2px; }
+}

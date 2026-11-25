@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Pencil } from 'lucide-react';
 import { applyOps, getState, setState, useStore } from '../store';
 import { renameLabels } from '../lib/page-navigation';
+import './RenameOffer.css';
 
 /**
  * After the author renames a page: the labels visitors read that still say its old name (its heading, its menu
