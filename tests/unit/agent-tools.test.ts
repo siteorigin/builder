@@ -2143,6 +2143,11 @@ describe('ai-profile examples', () => {
     }
   });
 
+  it('are page sections: a block, which goes inside one, is refused as an example (#664)', () => {
+    const state = createStarterState('business', 'Test', false);
+    expect(checkExample(state, { id: 'x', componentId: 'block.feature', keywords: [], description: '', props: { title: 'Planning' } })).toEqual([{ field: 'componentId', message: '"block.feature" is a block, not a section' }]);
+  });
+
   it('notices an example that has gone stale', () => {
     const state = createStarterState('business', 'Test', false);
     const issues = checkExample(state, { id: 'x', componentId: 'cta.banner', keywords: [], description: '', variant: 'gone', props: { headline: 'Old prop' } });
@@ -2963,6 +2968,24 @@ describe('a run limited to one page (#513)', () => {
     };
     return { host, state: () => state, applied };
   };
+
+  it('keeps the theme’s blocks out of a page’s sections, and says where they go instead (#664)', async () => {
+    const state = createStarterState('business', 'Test', false);
+    const listed = ((upsertToolSchema(state) as { properties: { sections: { items: { oneOf: Array<{ properties: { componentId: { enum: string[] } } }> } } } }).properties.sections.items.oneOf).map((o) => o.properties.componentId.enum[0]);
+    expect(listed).toContain('features.grid');
+    expect(listed.filter((id) => id.startsWith('block.'))).toEqual([]);
+    const { host, state: now } = hostFor(state, { kind: 'site' });
+    const out = await runUpsert({ slug: 'services', sections: [{ componentId: 'intro.page', props: { heading: 'Services' } }, { componentId: 'block.feature', props: { title: 'Planning' } }] }, host, 'c1', newMacroMemory());
+    expect(out.ok).toBe(false);
+    expect(JSON.stringify(out.content)).toContain('\\"block.feature\\" is a block, not a section');
+    expect(pageAt(now(), '/services/')).toBeUndefined();
+    // The catalogue and a search say which components are blocks.
+    const catalogue = (await executeTool('read_project', JSON.stringify({ sections: ['catalogue'] }), host, 'r1')).content as { catalogue: Array<{ componentId: string; block?: boolean }> };
+    expect(catalogue.catalogue.filter((c) => c.block).map((c) => c.componentId)).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video']);
+    const found = (await executeTool('search_components', JSON.stringify({ query: 'stat card' }), host, 's1')).content as { results: Array<{ componentId?: string; block?: boolean }> };
+    expect(found.results.find((r) => r.componentId === 'block.stat')).toMatchObject({ block: true });
+    expect(found.results.find((r) => r.componentId === 'stats.row')?.block).toBeUndefined();
+  });
 
   it('leaves a link waiting on another page for a run that may change that page', async () => {
     let state = createStarterState('business', 'Test', false);

@@ -97,6 +97,10 @@ describe('authoring a pack', () => {
       // The fixture keeps Foundation's contracts; only the split hero's layout differs.
       if (c.componentId !== 'hero.split') expect(JSON.stringify({ ...c, id: '', provenance: {} })).toBe(JSON.stringify({ ...FOUNDATION_PACK.components[i], id: '', provenance: {} }));
     }
+    // The blocks (#664) insert as elements in every theme, so a theme switch keeps where Insert puts them.
+    for (const pack of BUILTIN_PACKS)
+      expect(pack.components.filter((c) => c.insertAs === 'element').map((c) => c.componentId), pack.id).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video']);
+    expect(FOUNDATION_PACK.components.filter((c) => c.insertAs !== undefined && c.insertAs !== 'element')).toEqual([]);
     expect(BUILTIN_PACKS.map((p) => [p.id, !!p.devOnly])).toEqual([
       ['foundation', false],
       ['editorial', false],

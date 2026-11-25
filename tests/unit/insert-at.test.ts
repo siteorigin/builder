@@ -4,7 +4,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
-import { inferredRole, placementRole } from '@engine/insert-role';
+import { catalogueRole, inferredRole, placementRole } from '@engine/insert-role';
 import { findParent } from '@engine/tree';
 import { quickItems } from '../../src/renderer/src/lib/inline-insert';
 import { generateProject, STYLES_DIR } from '@generator/index';
@@ -662,5 +662,100 @@ describe('the uneven layout starters come with their empty cells, in one change 
     expect(insertOps(at, { primitive: 'grid', starter: 'toString' as LayoutStarter }, 'element')).toEqual([{ type: 'node.insert', owner: p.owner, parentId: p.intro, slot: 'content', index: undefined, primitive: 'grid' }]);
     // A starter on something that is no Grid is no layout.
     expect(insertOps(at, { primitive: 'stack', starter: 'bento' }, 'element')).toEqual([{ type: 'node.insert', owner: p.owner, parentId: p.intro, slot: 'content', index: undefined, primitive: 'stack' }]);
+  });
+});
+
+describe('the theme’s blocks go inside a layout (#664)', () => {
+  const BLOCKS = ['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video'];
+
+  /** The exhibitors page with two empty columns in its intro Section, and the first column's ID. */
+  function columns() {
+    const p = exhibitors();
+    const at = insertAt(p.state, p.owner, 'element', ref(p.owner, p.intro))!;
+    const ops = insertOps(at, { primitive: 'grid', columns: 2 }, 'element', 'n_columns');
+    const state = apply(p.state, ops).state;
+    return { ...p, state, column: (home(state).nodes.n_columns as ElementNode).children[0] };
+  }
+
+  it('reads a block as an element before and after it is installed; a theme section stays a section', () => {
+    const p = exhibitors();
+    for (const componentId of BLOCKS) {
+      expect(Object.values(p.state.components).some((d) => d.componentId === componentId)).toBe(false);
+      expect(insertRole(p.state, { componentId })).toBe('element');
+      expect(catalogueRole(p.state, componentId)).toBe('element');
+    }
+    expect(insertRole(p.state, { componentId: 'features.grid' })).toBe('section');
+    expect(insertRole(p.state, { componentId: 'contact.form' })).toBe('section');
+    // A component the theme does not have has nothing to go on.
+    expect(insertRole(p.state, { componentId: 'no.such' })).toBe('section');
+    const { state } = apply(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.intro, slot: 'content', componentId: 'block.stat' }]);
+    expect(state.components['foundation.block.stat'].insertAs).toBe('element');
+    expect(insertRole(state, { componentId: 'block.stat' })).toBe('element');
+    expect(definitionRole(state, 'foundation.block.stat')).toBe('element');
+  });
+
+  it('goes into a selected column, installing the theme’s block, and leaves the page’s sections as they were', () => {
+    const c = columns();
+    const spec = { componentId: 'block.feature' };
+    const role = insertRole(c.state, spec);
+    const at = insertAt(c.state, c.owner, role, ref(c.owner, c.column))!;
+    expect(at).toEqual({ owner: c.owner, parentId: c.column });
+    const ops = insertOps(at, spec, role, 'n_feature');
+    expect(ops).toEqual([{ type: 'node.insert', newNodeId: 'n_feature', owner: c.owner, parentId: c.column, slot: undefined, index: undefined, componentId: 'block.feature' }]);
+    const before = [...home(c.state).rootIds];
+    const { state } = apply(c.state, ops);
+    expect(home(state).rootIds).toEqual(before);
+    expect((home(state).nodes[c.column] as ElementNode).children).toEqual(['n_feature']);
+    expect(home(state).nodes.n_feature).toMatchObject({ kind: 'instance', definitionId: 'foundation.block.feature' });
+    expect(elementWhere(state, insertAt(state, c.owner, role, ref(c.owner, 'n_feature')))).toMatchObject({ lead: 'after', within: 'Column 1' });
+    expect(validateState(state).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('beside a selected block goes after it in its column, never inside it', () => {
+    const c = columns();
+    const state = apply(c.state, [{ type: 'node.insert', newNodeId: 'n_stat', owner: c.owner, parentId: c.column, componentId: 'block.stat' }]).state;
+    expect(insertAt(state, c.owner, 'element', ref(c.owner, 'n_stat'))).toEqual({ owner: c.owner, parentId: c.column, slot: undefined, index: 1 });
+  });
+
+  it('goes into a Section’s content slot, and on a page with no section into a new Section of its own', () => {
+    const p = exhibitors();
+    const at = insertAt(p.state, p.owner, 'element', ref(p.owner, p.intro))!;
+    expect(at).toEqual({ owner: p.owner, parentId: p.intro, slot: 'content' });
+    const inSlot = apply(p.state, insertOps(at, { componentId: 'block.testimonial' }, 'element', 'n_quote')).state;
+    expect((home(inSlot).nodes[p.intro] as InstanceNode).slots?.content).toEqual(['n_quote']);
+
+    let blank = createStarterState('blank', 'Plain', false);
+    const owner: OwnerRef = { kind: 'page', id: blank.site.homePageId };
+    const role = insertRole(blank, { componentId: 'block.callout' });
+    const where = insertAt(blank, owner, role, null)!;
+    expect(where.parentId).toBeNull();
+    const ops = insertOps(where, { componentId: 'block.callout' }, role, 'n_callout');
+    expect(ops.map((op) => (op.type === 'node.insert' ? [op.componentId, op.slot] : op.type))).toEqual([
+      ['layout.section', undefined],
+      ['block.callout', 'content']
+    ]);
+    blank = apply(blank, ops).state;
+    const section = home(blank).nodes[home(blank).rootIds[0]] as InstanceNode;
+    expect(section.slots?.content).toEqual(['n_callout']);
+  });
+
+  it('exports as plain Svelte styled from the site’s tokens, with no section shell around it', () => {
+    const c = columns();
+    const state = apply(c.state, BLOCKS.map((componentId): EditOperation => ({ type: 'node.insert', owner: c.owner, parentId: c.column, componentId }))).state;
+    const files = generateProject(state);
+    const feature = files.get('src/lib/siteorigin/generated/foundation-block-feature.svelte')!;
+    expect(feature).toMatch(/^<!-- Generated by SiteOrigin Builder/);
+    expect(feature).toContain('<div class={["so-foundation-block-feature__root"');
+    expect(feature).not.toContain('<section');
+    const css = files.get(`${STYLES_DIR}/components.css`)!;
+    const root = css.slice(css.indexOf('.so-foundation-block-feature__root {'), css.indexOf('}', css.indexOf('.so-foundation-block-feature__root {')));
+    expect(root).toContain('var(--so-color-surface)');
+    expect(root).toContain('var(--so-radius-lg)');
+    expect(root).not.toMatch(/padding-block: var\(--so-space-section\)|max-width: var\(--so-container/);
+    // The code blocks keep their own markup and styles: the compact video's player, and the signup card's form.
+    expect(files.get('src/lib/siteorigin/generated/foundation-block-video.svelte')).toContain("import VideoPlayer from '../runtime/VideoPlayer.svelte';");
+    const signup = files.get('src/lib/siteorigin/generated/foundation-block-signup.svelte')!;
+    expect(signup).toContain("<div class={['so-form', 'so-form--block'");
+    expect(signup).toContain('padding-block: var(--so-space-lg);');
   });
 });

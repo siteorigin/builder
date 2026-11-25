@@ -115,6 +115,16 @@ describe('where an insert from the command menu lands', () => {
     expect(insertLanding(state, owner, null, { componentId: 'layout.section' })).toEqual({ where: 'at the end of Home' });
   });
 
+  it('names a theme’s block as a block, and puts it where an element goes (#664)', () => {
+    const { state, owner, intro } = site();
+    const feature = insertChoices(state, false).find((c) => c.id === 'ins:block.feature');
+    expect(feature).toMatchObject({ name: 'Feature card', kind: 'Block', spec: { componentId: 'block.feature' } });
+    expect(insertChoices(state, false).find((c) => c.id === 'ins:features.grid')?.kind).toBe('Section');
+    const selected: ElementRef = { owner, instancePath: [], nodeId: intro };
+    expect(insertLanding(state, owner, selected, { componentId: 'block.feature' })).toEqual({ where: 'inside Intro' });
+    expect(insertLanding(state, owner, null, { componentId: 'block.feature' })).toEqual({ where: 'inside Outro' });
+  });
+
   it('refuses a component inside itself, or inside one that holds it however deep, while it is edited everywhere', () => {
     const { state, owner, headingDef, step } = site();
     const editing: OwnerRef = { kind: 'component', id: headingDef };

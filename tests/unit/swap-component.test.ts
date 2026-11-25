@@ -332,6 +332,18 @@ describe('instance.swapComponent', () => {
     expect(swapChoices(copy.state, hero).find((c) => c.def.id === defId)).toMatchObject({ group: 'Your components', spec: { definitionId: defId } });
   });
 
+  it('offers a block the theme’s other blocks, similar ones first, and never a section (#664)', () => {
+    const { s } = project();
+    const page = owner(s);
+    const next = applyOperations(s, [{ type: 'node.insert', newNodeId: 'n_stat', owner: page, parentId: null, index: 2, componentId: 'layout.section' }, { type: 'node.insert', newNodeId: 'n_card', owner: page, parentId: 'n_stat', slot: 'content', componentId: 'block.stat' }]).state;
+    const choices = swapChoices(next, inst(next, 'n_card'));
+    expect(choices.filter((c) => c.group === 'Similar blocks').map((c) => c.def.componentId)).toEqual(['block.testimonial']);
+    expect(choices.filter((c) => c.group === 'Other blocks').map((c) => c.def.componentId)).toEqual(['block.feature', 'block.callout', 'block.signup', 'block.video']);
+    expect(choices.some((c) => !c.group.endsWith('blocks') && c.group !== 'Your components')).toBe(false);
+    // A section is offered sections, as before.
+    expect(swapChoices(next, inst(next, home(next).rootIds[0])).some((c) => c.group.endsWith('blocks'))).toBe(false);
+  });
+
   it('keeps the keys of form fields a placement inherits from its design', () => {
     const { s } = project();
     const copy = applyOperations(s, [

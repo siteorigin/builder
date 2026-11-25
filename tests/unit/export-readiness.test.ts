@@ -158,6 +158,23 @@ describe('the public URL note', () => {
   });
 });
 
+describe('the signup form block (#664)', () => {
+  it('is checked as a form: it cannot send until connected, and its finding leads to its settings', () => {
+    const s = fresh();
+    const owner: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const next = apply(s, [
+      { type: 'node.insert', newNodeId: 'n_signsec', owner, parentId: null, componentId: 'layout.section' },
+      { type: 'node.insert', newNodeId: 'n_signup', owner, parentId: 'n_signsec', slot: 'content', componentId: 'block.signup' }
+    ]);
+    const found = healthForms(next).filter((d) => d.nodeId === 'n_signup');
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toMatch(/the signup form is not connected to a form service, so visitors cannot send it\. /);
+    expect(destinationForDiagnostic(next, found[0])).toEqual({ kind: 'form', owner, nodeId: 'n_signup', setting: 'connection' });
+    const connected = apply(next, [{ type: 'instance.setProp', owner, nodeId: 'n_signup', prop: 'endpoint', value: 'https://formspree.io/f/abc123' }]);
+    expect(healthForms(connected).filter((d) => d.nodeId === 'n_signup')).toEqual([]);
+  });
+});
+
 describe('where a Project health finding leads', () => {
   it('opens a form’s settings for its form findings, and Site details for a site image', () => {
     const { s, node } = lookbook();

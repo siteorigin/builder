@@ -249,6 +249,42 @@ describe('the Insert panel and the canvas’s Add list inside a slot that names 
   });
 });
 
+describe('the theme’s blocks in a slot with a contract (#664)', () => {
+  it('are offered and taken by their category, refused by another, and named by their contract', () => {
+    const { s: base, page, section, grid } = bento();
+    const s = applyOperations(base, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Proof', categories: ['social-proof'] }]).state;
+    const at = { owner: page, parentId: grid, slot: 'content' };
+    // Before any is installed, each is known by the theme's own design of it.
+    expect(slotRefuses(s, at, { componentId: 'block.stat' })).toBe(false);
+    expect(slotRefuses(s, at, { componentId: 'block.testimonial' })).toBe(false);
+    expect(slotRefusal(s, at, { componentId: 'block.feature' })).toBe('The “Proof” slot of “Section” takes social-proof components.');
+    const blocks = offeredAt(s, at, 'element').filter((it) => it.kind === 'block');
+    expect(blocks.map((it) => [it.key, it.group])).toEqual([
+      ['s:block.stat', 'Blocks'],
+      ['s:block.testimonial', 'Blocks']
+    ]);
+    // The engine takes what the slot offered, and refuses the rest.
+    const next = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: grid, slot: 'content', componentId: 'block.testimonial' }]).state;
+    expect((next.pages[page.id].nodes[grid] as InstanceNode).slots?.content).toHaveLength(1);
+    expect(() => applyOperations(s, [{ type: 'node.insert', owner: page, parentId: grid, slot: 'content', componentId: 'block.feature' }])).toThrow();
+    // A slot that names one block by its contract offers that block alone.
+    const named = applyOperations(base, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: ['block.feature'] }]).state;
+    expect(offeredAt(named, at, 'element').filter((it) => it.key.startsWith('s:')).map((it) => it.key)).toEqual(['s:block.feature']);
+  });
+
+  it('are offered once, and no longer once the slot is full', () => {
+    const { s: base, page, section, grid } = bento();
+    const s = applyOperations(base, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Highlight', categories: ['content'], max: 1 }]).state;
+    const at = { owner: page, parentId: grid, slot: 'content' };
+    const offered = offeredAt(s, at, 'element').map((it) => it.key);
+    expect(offered.filter((k) => k === 's:block.feature')).toHaveLength(1);
+    expect(offered).not.toContain('s:block.video');
+    const full = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: grid, slot: 'content', componentId: 'block.feature' }]).state;
+    expect(offeredAt(full, at, 'element').filter((it) => it.kind === 'block')).toEqual([]);
+    expect(slotRefusal(full, at, { componentId: 'block.feature' })).toBe('The “Highlight” slot of “Section” holds at most one item.');
+  });
+});
+
 /** The bento Section with an Aside slot (text only, at most one) whose design shows a Default badge heading while it is empty. */
 function badged() {
   const b = bento();
