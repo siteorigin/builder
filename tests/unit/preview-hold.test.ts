@@ -90,10 +90,10 @@ describe('holding the preview while a save lands (#735)', () => {
     const { dir, s } = await make();
     const about = s.state.site.pageOrder[1];
     const { steps, released } = record(dir, s);
-    const rename = fsp.rename as unknown as ReturnType<typeof vi.fn>;
+    const rename = vi.mocked(fsp.rename);
     const real = rename.getMockImplementation()!;
     let n = 0;
-    rename.mockImplementation(async (from: string, to: string) => {
+    rename.mockImplementation(async (from, to) => {
       // The second file the save replaces that the preview watches (not a document or an editor variant).
       if (watched(relative(dir, String(to)).split(sep).join('/')) && ++n === 2) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
       return real(from, to);
