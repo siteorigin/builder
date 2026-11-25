@@ -231,6 +231,12 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
     const { page, site } = await open('clean', 1280);
     try {
       await site.locator('[class*="steps-media__steps-layout"]').first().getByRole('button', { name: 'Design the details' }).click();
+      // On screen the second placement shows its picture first, beside its steps.
+      const pictureFirst = (await site.evaluate(`(() => {
+        const layout = document.querySelectorAll('[class*="steps-media__steps-layout"]')[1];
+        return layout.querySelector('[class*="__media-stage"]').getBoundingClientRect().left < layout.querySelector('ol').getBoundingClientRect().left;
+      })()`)) as boolean;
+      expect(pictureFirst).toBe(true);
       await page.emulateMedia({ media: 'print' });
       const printed = (await site.evaluate(`(() => {
         const shown = (sel) => [...document.querySelectorAll(sel)].filter((e) => getComputedStyle(e).display !== 'none').length;

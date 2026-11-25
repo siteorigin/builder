@@ -478,7 +478,9 @@ describe('the Foundation layouts', () => {
   it('prints pinned columns in their place, one after the other', () => {
     const print = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media print'));
     expect(print).toContain(":is([class$='--layout-sticky-split'], [class*='--layout-sticky-split ']):is([class$='__intro'], [class*='__intro ']):not(#so-print) { position: static !important; inset: auto !important; }");
-    expect(print).toContain(":is([class$='__steps-layout'], [class*='__steps-layout ']):has(> :is([class$='__media-stage'], [class*='__media-stage '])) > :is([class$='__steps-stage'], [class*='__steps-stage ']):not(#so-print) { order: 0 !important; }");
+    expect(print).toContain(":is([class$='__steps-layout'], [class*='__steps-layout ']) > :is([class$='__steps-stage'], [class*='__steps-stage ']):not(#so-print) { order: 0 !important; }");
+    // Every browser that prints a site applies them: none of the print resets needs :has().
+    expect(print.slice(print.indexOf('What stays in view'), print.indexOf('Where the sheet has room'))).not.toContain(':has(');
     expect(print).toContain("{ position: static !important; inset: auto !important; }");
     expect(print).toContain("{ grid-template-columns: minmax(0, 1fr) !important; }");
   });
