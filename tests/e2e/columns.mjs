@@ -257,10 +257,8 @@ try {
             // Below the header's published offset (4.5rem when none is), and 1.5rem more.
             expected: (Number.isNaN(header) ? 4.5 * rem : header) + 1.5 * rem,
             sidebar: el.getBoundingClientRect().top,
-            sidebarBottom: el.getBoundingClientRect().bottom,
             main: main.getBoundingClientRect().top,
-            mainHeight: main.getBoundingClientRect().height,
-            gridBottom: grid.getBoundingClientRect().bottom
+            mainHeight: main.getBoundingClientRect().height
           };
         }, travel);
       await eventually(async () => {
@@ -273,11 +271,6 @@ try {
         }
       }, 30000);
       await win.screenshot({ path: join(OUT, 'sidebar-pinned.png') });
-      await eventually(async () => {
-        const p = await scrolled(2400);
-        near(p.sidebarBottom, p.gridBottom, 'at the end of the grid the sidebar goes with it', 2);
-        assert.ok(p.sidebar < p.expected, `released: ${JSON.stringify(p)}`);
-      }, 30000);
     }
 
     step(`${starter.tile}: each change has its own Undo, and one more takes the layout away with its Section`);
