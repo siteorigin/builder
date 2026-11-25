@@ -10,7 +10,7 @@ import { normalizePropSchema } from '@engine/schema';
 import { requiredProblems } from '@engine/required';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
 import { guaranteesValue, isEmptyPropValue, requiredGap } from '@shared/required';
-import { checkProps, type FieldIssue } from '../../src/agent/macros';
+import { checkProps, upsertToolSchema, type FieldIssue } from '../../src/agent/macros';
 import { planComponentPackage } from '@engine/component-package';
 import { compactPropsSchema, propsJsonSchema } from '../../src/agent/propschema';
 import { catalogueIndex, propSchemaSummary } from '../../src/agent/context';
@@ -369,6 +369,9 @@ describe('required properties: what the AI reads', () => {
     expect(full.properties.cards).toMatchObject({ minItems: 1, items: { properties: { title: { minLength: 1 } } } });
     const compact = compactPropsSchema(def) as { properties: Record<string, Record<string, unknown>> };
     expect(compact.properties.photo).toEqual({ $ref: '#/$defs/requiredImage' });
+    // The page tool defines the required image only where one refers to it: it is sent with every constrained request.
+    expect((upsertToolSchema(state) as { $defs: Record<string, unknown> }).$defs).toHaveProperty('requiredImage');
+    expect((upsertToolSchema(s) as { $defs: Record<string, unknown> }).$defs).not.toHaveProperty('requiredImage');
     expect(compact.properties.title).toEqual({ type: 'string', minLength: 1 });
     const summary = propSchemaSummary(def.properties) as Record<string, Record<string, unknown>>;
     expect(summary.title).toMatchObject({ required: true, requires: 'it needs some text' });

@@ -1059,9 +1059,11 @@ export function upsertToolSchema(state: ProjectState, only?: string, focused = f
       };
     })
   };
+  // Defined only where a required image refers to it: every byte here is sent with each constrained request.
+  const requiredImage = JSON.stringify(section).includes('"#/$defs/requiredImage"');
   return {
     type: 'object',
-    $defs: { image: IMAGE_SCHEMA, requiredImage: REQUIRED_IMAGE_SCHEMA },
+    $defs: { image: IMAGE_SCHEMA, ...(requiredImage ? { requiredImage: REQUIRED_IMAGE_SCHEMA } : {}) },
     properties: {
       slug: { type: 'string', maxLength: SLUG_CHARS, description: only ? `This request may build only the page at ${only}: use "${only}".` : 'Page path such as "services". "home" is the home page.' },
       title: { type: 'string', maxLength: 80 },
