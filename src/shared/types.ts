@@ -982,11 +982,18 @@ export interface SiteDoc {
   /** Shared header and footer instances. */
   shell: { header: NodeTree; footer: NodeTree };
   /**
-   * Addresses a page or a published collection entry used to have, kept working for old links and bookmarks: each
-   * sends visitors to that one's current address. Nothing else uses one of these routes; a page given one takes it
+   * Addresses kept working for old links and bookmarks: each sends visitors on to a page's or a collection entry's
+   * current address, or to another address of the site (src/shared/redirects.ts). Moves record them for a page or an
+   * entry; the author adds the rest in Site settings. Nothing else uses one of these routes; a page given one takes it
    * over, and an entry can take back its own.
    */
   redirects?: SiteRedirect[];
+  /**
+   * The host the website is published on, for the HTTP 301 rules written beside each old address's page
+   * (src/generator/host-redirects.ts): `netlify` forces its `_redirects` rules past those pages, `vercel` adds a
+   * `vercel.json`. Absent: `_redirects` as Cloudflare Pages reads it.
+   */
+  redirectHost?: RedirectHost;
   /** The not-found page's heading, message and Home link label; the defaults are used while these are unset. */
   notFoundHeading?: string;
   notFoundMessage?: string;
@@ -1056,10 +1063,18 @@ export interface SiteIdentity {
 }
 
 /**
- * An old address that sends visitors on to a page or a collection entry, by ID, so it follows that one's later moves.
- * It names exactly one of them.
+ * An old address that sends visitors on: to a page or a collection entry, by ID, so it follows that one's later moves,
+ * or to another address of the site (`to`, a route), whatever has it then. It names exactly one of them. `custom` marks
+ * one the author added, rather than one a move recorded.
  */
-export type SiteRedirect = { from: string; pageId: string; entryId?: never } | { from: string; entryId: string; pageId?: never };
+export type SiteRedirect = { from: string; custom?: true } & (
+  | { pageId: string; entryId?: never; to?: never }
+  | { entryId: string; pageId?: never; to?: never }
+  | { to: string; pageId?: never; entryId?: never }
+);
+
+/** Where the website is published, as its redirect rules are written for it (see SiteDoc.redirectHost). */
+export type RedirectHost = 'cloudflare' | 'netlify' | 'vercel';
 
 export interface AssetRecord {
   id: string;

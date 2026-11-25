@@ -65,6 +65,8 @@ export function archivePages(state: ProjectState): ArchivePage[] {
     // Only an old address the website keeps: one leading to a published page or entry (not a draft, nor one that is gone).
     const page = typeof r.pageId === 'string' && Object.hasOwn(state.pages ?? {}, r.pageId) && !draftPage(r.pageId);
     const entry = typeof r.entryId === 'string' ? findEntry(state, r.entryId) : undefined;
+    // One leading to another address holds nothing here: where it ends can be an archive page, and an archive page
+    // takes its address instead (see shared/redirects.ts), so the series is the same with drafts or without.
     if (page || (entry && !isDraftEntry(entry.entry))) held.add(r.from.toLowerCase());
   }
   // Each collection's own address is its index's, whichever collection's series comes first.

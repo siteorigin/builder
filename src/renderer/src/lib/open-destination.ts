@@ -18,7 +18,9 @@ const SITE_FIELDS: Record<Extract<EditorDestination, { kind: 'site' }>['field'],
   sameAs: { section: 'site-settings', focus: '#site-identity-profiles' },
   llmsTxt: { section: 'site-agents', focus: '#site-llms-txt' },
   webmcp: { section: 'site-agents', focus: '#site-webmcp' },
-  crawlerPolicy: { section: 'site-crawlers', focus: '#site-crawler-preset' }
+  crawlerPolicy: { section: 'site-crawlers', focus: '#site-crawler-preset' },
+  // The first redirect with a problem, by its Edit button.
+  redirects: { section: 'site-redirects', focus: '.so-redirect.has-problem .so-redirect-edit' }
 };
 
 /** The control each Search & sharing field of a page is reached by (see the page Inspector). */

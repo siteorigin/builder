@@ -27,7 +27,7 @@ import type {
   RichText,
   VariantAxis
 } from '@shared/types';
-import type { BackgroundImageValue, Binding, EntryDoc } from '@shared/types';
+import type { BackgroundImageValue, Binding, EntryDoc, SiteRedirect } from '@shared/types';
 import { withAuthoredRel } from '@shared/link-rel';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isContainerScope, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
@@ -47,7 +47,8 @@ import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
 import { feedRowFields } from '@shared/entry-feed';
-import { archiveRouteOwner, collectionRouteOwner } from '@shared/collections';
+import { archiveRouteOwner, collectionRouteOwner, findEntry, siteEntries } from '@shared/collections';
+import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
@@ -292,6 +293,12 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return tokenReplace(state, op.tokenId, op.withTokenId);
     case 'site.update':
       return siteUpdate(state, op);
+    case 'redirect.add':
+      return redirectAdd(state, op);
+    case 'redirect.update':
+      return redirectUpdate(state, op);
+    case 'redirect.remove':
+      return redirectRemove(state, op.from);
     case 'brief.update':
       return briefUpdate(state, op);
     case 'component.create':
@@ -802,6 +809,94 @@ function claimRoute(state: ProjectState, route: string) {
   if (i < 0) return;
   state.site.redirects!.splice(i, 1);
   if (!state.site.redirects!.length) delete state.site.redirects;
+}
+
+// ---------------------------------------------------------------------------
+// Redirects the author keeps (Site settings, under Redirects)
+// ---------------------------------------------------------------------------
+
+/**
+ * An address the author typed for a redirect, as routes are kept ("/Old Services" is "/old-services/"). Only an
+ * address of this site: never another site's ("//host/", "https://"), a query, a section or a backslash, which
+ * would name somewhere else once written as a route.
+ */
+function typedSitePath(input: string, what: string): string {
+  const text = input.trim();
+  if (!text.startsWith('/') || text.startsWith('//') || /[?#\\]|%2f|%5c/i.test(text)) fail(`${what} must be an address of this site starting with "/", such as /old-services/.`);
+  return normalizeRoute(text);
+}
+
+/** Where a redirect from `from` sends visitors, as `op` names it: exactly one page, collection entry or address. */
+function redirectTarget(state: ProjectState, op: Op<'redirect.add'> | Op<'redirect.update'>, from: string): Pick<SiteRedirect, 'pageId' | 'entryId' | 'to'> {
+  const given = [op.pageId, op.entryId, op.to].filter((v) => v !== undefined);
+  if (given.length !== 1) fail('Choose where the old address sends visitors: a page, a post, or another address of the site.');
+  if (op.pageId !== undefined) {
+    own(state.pages, op.pageId) ?? fail('The page to send visitors to does not exist.');
+    return { pageId: op.pageId };
+  }
+  if (op.entryId !== undefined) {
+    if (!siteEntries(state).some((e) => e.entry.id === op.entryId)) fail(findEntry(state, op.entryId) ? 'That post has no page on the website, so nothing can be sent to it.' : 'The post to send visitors to does not exist.');
+    return { entryId: op.entryId };
+  }
+  const to = typedSitePath(op.to!, 'Where it goes');
+  const err = redirectTargetProblem(to);
+  if (err) fail(`${to}: ${err}`);
+  if (to.toLowerCase() === from.toLowerCase()) fail(`${from} cannot send visitors to itself. Choose another address.`);
+  return { to };
+}
+
+/** Refuses a redirect that would never arrive anywhere: one leading to itself, or round a loop of old addresses. */
+function refuseRedirectLoop(state: ProjectState, from: string) {
+  const problem = resolveRedirects(state).problems.find((p) => p.from.toLowerCase() === from.toLowerCase());
+  if (problem?.kind === 'loop') fail(`Sending ${from} there would make a loop of old addresses (${loopText(problem.cycle, from)}) that never arrives anywhere. Choose another address.`);
+  if (problem?.kind === 'self') fail(`${from} would only lead back to itself. Choose another address.`);
+}
+
+/** Keep an old address working: an author's own redirect, refused at an address the site already has. */
+function redirectAdd(state: ProjectState, op: Op<'redirect.add'>): OpResult {
+  const from = typedSitePath(op.from, 'The old address');
+  if (from === '/') fail('The Home page address cannot send visitors elsewhere.');
+  const err = validateRoute(from);
+  if (err) fail(`${from}: ${err}`);
+  const page = Object.values(state.pages).find((p) => p.route.toLowerCase() === from.toLowerCase());
+  if (page) fail(`${from} is the address of the page “${page.title}”. Move the page first, or choose another address.`);
+  const owner = collectionRouteOwner(state, from);
+  if (owner) fail(`${from} is the address of ${owner.label}. Choose another address.`);
+  if (redirectIndex(state, from) >= 0) fail(`${from} already sends visitors on. Change where it goes instead.`);
+  const target = redirectTarget(state, op, from);
+  state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from, custom: true, ...target } as SiteRedirect];
+  refuseRedirectLoop(state, from);
+  return { from, ...target };
+}
+
+/**
+ * Where the redirect the author named is kept: the one written exactly so first (a hand-written one may not be spelled
+ * as routes are, beside one that is), else the one at that address as routes spell it.
+ */
+function namedRedirect(state: ProjectState, input: string): number {
+  const list: unknown = state.site.redirects;
+  const exact = Array.isArray(list) ? list.findIndex((r) => r?.from === input.trim()) : -1;
+  const i = exact >= 0 ? exact : redirectIndex(state, typedSitePath(input, 'The old address'));
+  if (i < 0) fail(`${input.trim()} is not an old address the site keeps.`);
+  return i;
+}
+
+/** Send an old address somewhere else; it stays the author's own, or recorded by a move, as it was. */
+function redirectUpdate(state: ProjectState, op: Op<'redirect.update'>): OpResult {
+  const i = namedRedirect(state, op.from);
+  const was = state.site.redirects![i];
+  const target = redirectTarget(state, op, was.from);
+  state.site.redirects![i] = { from: was.from, ...(was.custom ? { custom: true } : {}), ...target } as SiteRedirect;
+  refuseRedirectLoop(state, was.from);
+  return { from: was.from, ...target };
+}
+
+/** Stop keeping an old address working. */
+function redirectRemove(state: ProjectState, input: string): OpResult {
+  const i = namedRedirect(state, input);
+  const [gone] = state.site.redirects!.splice(i, 1);
+  if (!state.site.redirects!.length) delete state.site.redirects;
+  return { from: gone.from };
 }
 
 // ---------------------------------------------------------------------------
@@ -2963,6 +3058,11 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   if (op.webmcp !== undefined) {
     if (op.webmcp) s.webmcp = true;
     else delete s.webmcp;
+  }
+  // The host redirect rules are written for (generator/host-redirects.ts), stored only while it is not the default.
+  if (op.redirectHost !== undefined) {
+    if (op.redirectHost === 'cloudflare') delete s.redirectHost;
+    else s.redirectHost = op.redirectHost;
   }
   if (op.visitorText) setVisitorText(s, op.visitorText.language, op.visitorText.text);
   // The crawler policy (shared/crawler-policy.ts) is kept only while it differs from the default.

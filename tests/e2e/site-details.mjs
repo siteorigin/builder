@@ -4,7 +4,7 @@
 // a closed section keeps the draft, and leaving the project with one asks first and Keep editing returns to it.
 // The favicon and the social sharing image use the library's visual picker: thumbnails, search, import and None (#34).
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { answerChoosers, createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -237,6 +237,72 @@ await input('Language').fill('en-AU');
 await input('Language').press('Tab');
 await eventually(() => assert.equal(site().language, 'en-AU'));
 assert.equal(await error('Language').count(), 0);
+
+step('Redirects lists, adds, changes and removes old addresses, with the host rules written beside the website (#581)');
+{
+  const section = () => win.locator('#dock-panel-styles .section').filter({ has: win.locator('button.section-head', { hasText: /^Redirects/ }) });
+  const rules = () => readFileSync(join(dir, 'static/_redirects'), 'utf8');
+  const hasRules = () => existsSync(join(dir, 'static/_redirects'));
+  const row = (from) => section().locator('.so-redirect').filter({ has: win.locator('code', { hasText: from }) });
+  const contact = site().pageOrder.find((id) => JSON.parse(readFileSync(join(dir, `siteorigin/pages/${id}.json`), 'utf8')).route === '/contact/');
+  await section().locator('button.section-head').click();
+  assert.match(await section().innerText(), /No redirects yet/, 'a new site keeps no old address');
+  assert.equal(await section().locator('#site-redirect-host').inputValue(), 'cloudflare', 'rules are written for Cloudflare Pages by default');
+  await section().getByRole('button', { name: 'Add redirect' }).click();
+  await section().getByRole('textbox', { name: 'Old address' }).fill('/old-services/');
+  await section().getByRole('radio', { name: 'A page' }).check();
+  await section().getByRole('combobox', { name: 'Page' }).selectOption({ label: 'Contact (/contact/)' });
+  await section().getByRole('button', { name: 'Add redirect' }).click();
+  await eventually(() => assert.deepEqual(site().redirects, [{ from: '/old-services/', custom: true, pageId: contact }]));
+  // The site is published under /studio, so the rules are too.
+  await eventually(() => assert.match(rules(), /^\/studio\/old-services\/ \/studio\/contact\/ 301$/m, 'the 301 rule is written beside the website'));
+  assert.match(await row('/old-services/').innerText(), /Contact \(\/contact\/\)[\s\S]*Added by you/);
+
+  // Sent to an address instead, and a second redirect leading through it: the chain is named on its row.
+  await row('/old-services/').getByRole('button', { name: 'Edit the redirect from /old-services/' }).click();
+  await row('/old-services/').getByRole('radio', { name: 'An address' }).check();
+  await row('/old-services/').getByRole('textbox', { name: 'Address', exact: true }).fill('/about/');
+  await row('/old-services/').getByRole('button', { name: 'Save' }).click();
+  await eventually(() => assert.deepEqual(site().redirects, [{ from: '/old-services/', custom: true, to: '/about/' }]));
+  await section().getByRole('button', { name: 'Add redirect' }).click();
+  await section().getByRole('textbox', { name: 'Old address' }).fill('promo');
+  await section().getByRole('radio', { name: 'An address' }).check();
+  await section().getByRole('textbox', { name: 'Address', exact: true }).fill('/old-services/');
+  await section().getByRole('button', { name: 'Add redirect' }).click();
+  await eventually(async () => assert.match(await row('/promo/').innerText(), /reaches \/about\/ through \/old-services\//, 'the chain is named where it is fixed'));
+  await eventually(() => assert.match(rules(), /^\/studio\/promo\/ \/studio\/about\/ 301$/m, 'the website goes straight to the end of the chain'));
+
+  // A loop is refused, and nothing changes.
+  await row('/old-services/').getByRole('button', { name: 'Edit the redirect from /old-services/' }).click();
+  await row('/old-services/').getByRole('textbox', { name: 'Address', exact: true }).fill('/promo/');
+  await row('/old-services/').getByRole('button', { name: 'Save' }).click();
+  await eventually(async () => assert.match(await win.locator('.toasts .toast.error').last().innerText(), /would make a loop of old addresses/));
+  // An empty address is never taken for Home: the form says what it needs, and nothing is saved.
+  await row('/old-services/').getByRole('textbox', { name: 'Address', exact: true }).fill('');
+  await row('/old-services/').getByRole('button', { name: 'Save' }).click();
+  assert.match(await row('/old-services/').locator('.field-error').innerText(), /Type the address it sends visitors to/);
+  await row('/old-services/').getByRole('button', { name: 'Cancel' }).click();
+  await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Edit the redirect from /old-services/', 'focus returns to the row it was editing'));
+  assert.deepEqual(site().redirects.map((r) => r.to), ['/about/', '/old-services/'], 'the refused loop and the empty address changed nothing');
+
+  step('the host choice writes Netlify’s forced rules, and removing a redirect undoes and redoes');
+  await section().locator('#site-redirect-host').selectOption('netlify');
+  await eventually(() => assert.match(rules(), /^\/studio\/old-services\/ \/studio\/about\/ 301!$/m, 'Netlify’s rules are forced past the old address’s page'));
+  await row('/promo/').getByRole('button', { name: 'Remove the redirect from /promo/' }).click();
+  await eventually(() => assert.equal(site().redirects.length, 1));
+  await eventually(async () => assert.equal(await row('/promo/').count(), 0, 'its row goes'));
+  assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true, 'Undo takes the removal back');
+  await eventually(() => assert.equal(site().redirects.length, 2));
+  await eventually(async () => assert.equal(await row('/promo/').count(), 1, 'its row is back'));
+  assert.equal((await win.evaluate(() => window.builder.project.redo())).ok, true);
+  await eventually(() => assert.equal(site().redirects.length, 1));
+  await row('/old-services/').getByRole('button', { name: 'Remove the redirect from /old-services/' }).click();
+  await eventually(() => assert.equal(site().redirects, undefined));
+  await eventually(() => assert.equal(hasRules(), false, 'with no redirect left, no rules are written'));
+  await section().locator('#site-redirect-host').selectOption('cloudflare');
+  await eventually(() => assert.equal(site().redirectHost, undefined));
+  await section().locator('button.section-head').click();
+}
 
 step('leaving the project with a refused draft asks first, and Keep editing shows Site details and returns to it');
 await input('Language').fill('English');

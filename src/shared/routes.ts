@@ -5,9 +5,10 @@ import { SITE_ICON_FILES } from './site-icons';
  * First parts of an address the website keeps for files of its own. Names with a dot are refused before they are looked
  * for here (see validateSegment), so those are kept for completeness, as are the RSS feed and the agentic discovery
  * files (shared/llms.ts), whose Markdown copies (`index.html.md`) no part of an address can hold either, and the
- * generated favicon, web app manifest and home-screen icons (shared/site-icons.ts).
+ * generated favicon, web app manifest and home-screen icons (shared/site-icons.ts), and the hosts' redirect rules
+ * (generator/host-redirects.ts).
  */
-const RESERVED = new Set(['_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.ico', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', ...SITE_ICON_FILES]);
+const RESERVED = new Set(['_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.ico', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', '_redirects', 'vercel.json', ...SITE_ICON_FILES]);
 
 /** Combining marks NFKD splits off accented letters ("é" is "e" and an accent). */
 const ACCENTS = /[\u0300-\u036f]/g;

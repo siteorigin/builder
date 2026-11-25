@@ -67,7 +67,7 @@ const PAGE_FIELDS: Record<string, string[]> = {
   // Turning an article back into a page clears all of it: any change to the article meanwhile is a conflict.
   article: ['article']
 };
-const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel', 'llmsTxt', 'llmsFull', 'markdownMirrors', 'llmsSummary', 'webmcp'];
+const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel', 'llmsTxt', 'llmsFull', 'markdownMirrors', 'llmsSummary', 'webmcp', 'redirectHost'];
 
 /** The author's wording for these pieces of visitor text in a language: the one piece's text, or each piece's. */
 function visitorTextRead(state: ProjectState, language: string, keys: string[]): unknown {
@@ -196,8 +196,8 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
         read.inside = Object.fromEntries(pagesWithin(state.pages, page.id).map((id) => [id, state.pages[id].route]));
         const to = normalizeRoute(op.route).toLowerCase();
         const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
-        const holder = kept.find((r) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === to) as { pageId?: unknown; entryId?: unknown } | undefined;
-        read.keptFor = holder?.pageId ?? (holder?.entryId !== undefined ? { entryId: holder.entryId } : null);
+        const holder = kept.find((r) => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === to) as { pageId?: unknown; entryId?: unknown; to?: unknown } | undefined;
+        read.keptFor = holder?.pageId ?? (holder?.entryId !== undefined ? { entryId: holder.entryId } : holder?.to !== undefined ? { to: holder.to } : null);
       }
       // What the page is, fact by fact: a held price waits on no change to the currency. A fact belongs to the type it
       // was typed for, though: a page made another type meanwhile is a conflict, never turned back by the fact.

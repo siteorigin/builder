@@ -11,6 +11,7 @@ import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isContainerScope, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
 import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldSchema } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
+import { loopText, redirectRecord, redirectTargetProblem, resolveRedirects, type RedirectProblem } from '@shared/redirects';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
 import { variantIdsValid, variantOptions } from '@shared/variants';
 import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds, templateTrees } from './tree';
@@ -93,6 +94,37 @@ const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).jo
 const sortedJson = (v: unknown): string =>
   JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 
+/** Where a finding about an old address is fixed: that address's row in Site settings, under Redirects. */
+export const redirectPlace = (from: string) => `redirect:${from}`;
+
+/** What keeps an old address from sending visitors straight on, said as Project health and the Redirects list say it. */
+export function redirectDiagnostic(p: Exclude<RedirectProblem, { kind: 'invalid' }>): Diagnostic {
+  const site = redirectPlace(p.from);
+  switch (p.kind) {
+    case 'self':
+      return { severity: 'error', code: 'REDIRECT_SELF', message: `The old address ${p.from} sends visitors to itself, so the website leaves it out. Send it somewhere else, or remove it, in Site settings under Redirects.`, site };
+    case 'loop': {
+      const round = loopText(p.cycle, p.from);
+      const inLoop = p.cycle.some((f) => f.toLowerCase() === p.from.toLowerCase());
+      return {
+        severity: 'error',
+        code: 'REDIRECT_LOOP',
+        message: `${inLoop ? `The old address ${p.from} is part of a loop` : `The old address ${p.from} leads into a loop`} (${round}) that never arrives anywhere, so the website leaves it out. Send one of them to a page in Site settings, under Redirects.`,
+        site
+      };
+    }
+    case 'missing':
+      return { severity: 'warning', code: 'REDIRECT_PATH_MISSING', message: `The old address ${p.from} sends visitors to ${p.to}, which the site does not have, so the website leaves it out until something is there.`, site };
+    case 'chain':
+      return {
+        severity: 'warning',
+        code: 'REDIRECT_CHAIN',
+        message: `The old address ${p.from} reaches ${p.to} through ${listed(p.hops > p.via.length ? [...p.via, `${p.hops - p.via.length} more`] : p.via)}. The website sends visitors straight to ${p.to}; send ${p.from} there in Site settings, under Redirects, so it keeps arriving if ${p.hops === 1 ? 'that address changes' : 'one of those addresses changes'}.`,
+        site
+      };
+  }
+}
+
 /**
  * Schema and reference validation: IDs, references, nesting and routes, links to sections that do not exist, each
  * page's heading outline, layout styles that quietly undo each other (engine/layout-guardrails), and how reusable each
@@ -135,24 +167,30 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     const effect = live ? 'Until then, the website lists none of their translations.' : 'Publishing the draft as it is would stop the website listing their translations.';
     out.push({ severity: 'warning', code: 'TRANSLATION_LANGUAGE', message: `${translationClashMessage(clash)} ${effect}`, owner: { kind: 'page', id: clash.b.id } });
   }
-  // Old addresses kept working: each is a route of its own, so nothing else may use it, and it names exactly one page
-  // or collection entry.
+  // Old addresses kept working: each is a route of its own, so nothing else may use it, and it names exactly one page,
+  // collection entry or other address of the site.
   const redirects: unknown = state.site.redirects;
   if (redirects !== undefined && !Array.isArray(redirects)) out.push({ severity: 'error', code: 'REDIRECT_INVALID', message: 'The list of old page addresses is damaged.' });
   for (const r of Array.isArray(redirects) ? (redirects as unknown[]) : []) {
-    const { from, pageId, entryId } = (r && typeof r === 'object' ? r : {}) as { from?: unknown; pageId?: unknown; entryId?: unknown };
-    if (typeof from !== 'string' || (typeof pageId === 'string') === (typeof entryId === 'string') || (pageId !== undefined && typeof pageId !== 'string') || (entryId !== undefined && typeof entryId !== 'string')) {
+    const record = redirectRecord(r);
+    if (!record) {
       out.push({ severity: 'error', code: 'REDIRECT_INVALID', message: 'An old page address is damaged.' });
       continue;
     }
+    const { from, pageId, entryId, to } = record;
     const err = from === '/' ? 'The Home page address cannot send visitors elsewhere.' : validateRoute(from);
     if (err) out.push({ severity: 'error', code: 'ROUTE_INVALID', message: `Old address ${from}: ${err}` });
     if (typeof pageId === 'string' && !Object.hasOwn(state.pages, pageId)) out.push({ severity: 'error', code: 'REDIRECT_TARGET', message: `The old address ${from} goes to a page that no longer exists.` });
     if (typeof entryId === 'string' && !findEntry(state, entryId)) out.push({ severity: 'error', code: 'REDIRECT_TARGET', message: `The old address ${from} goes to a collection entry that no longer exists.` });
+    const toErr = to === undefined ? null : redirectTargetProblem(to);
+    if (toErr) out.push({ severity: 'error', code: 'REDIRECT_PATH_INVALID', message: `The old address ${from} sends visitors to ${to}, which is not an address of the site: ${toErr} The website leaves it out until it is corrected in Site settings, under Redirects.`, site: redirectPlace(from) });
     const key = from.toLowerCase();
     if (routes.has(key)) out.push({ severity: 'error', code: 'ROUTE_DUPLICATE', message: `${routes.get(key)} and the old address ${from} share ${from}.` });
     routes.set(key, `The old address ${from}`);
   }
+  // Where each leads, followed through other old addresses: one that never arrives is left out of the website.
+  // One that is not an address of the site is named above, with its redirect.
+  for (const p of resolveRedirects(state).problems) if (p.kind !== 'invalid') out.push(redirectDiagnostic(p));
   // Collections and their entries hold addresses of their own, in the same namespace.
   out.push(...collectionDiagnostics(state, routes));
   for (const id of Object.keys(state.pages)) if (!state.site.pageOrder.includes(id)) out.push({ severity: 'error', code: 'PAGE_ORPHAN', message: `Page ${state.pages[id].title} is not in the page order.` });

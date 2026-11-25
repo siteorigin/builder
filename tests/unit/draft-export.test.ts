@@ -123,6 +123,43 @@ describe('exporting a project with a draft', () => {
     expect(c.snapshot()!.state.pages.pg_winter01.draft).toBe(true);
   });
 
+  it('publishes the hosts’ 301 rules for the published redirects only, with vercel.json at the website’s root (#581)', async () => {
+    const dir = temp('project');
+    let state = createStarterState('business', 'Bookshop', false);
+    const about = Object.values(state.pages).find((p) => p.route === '/about/')!.id;
+    state = applyOperations(state, [
+      { type: 'page.create', pageId: 'pg_winter01', title: 'Winter stock preview', route: '/winter/' },
+      { type: 'page.update', pageId: 'pg_winter01', draft: true },
+      { type: 'redirect.add', from: '/winter-stock-preview/', pageId: 'pg_winter01' },
+      { type: 'redirect.add', from: '/teaser/', to: '/winter-stock-preview/' },
+      { type: 'redirect.add', from: '/team/', pageId: about },
+      { type: 'site.update', redirectHost: 'vercel' }
+    ]).state;
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    // The editable project keeps every rule, for the preview.
+    expect(readFileSync(join(dir, 'static/_redirects'), 'utf8')).toContain('/teaser/ /winter/ 301');
+    const shown = Object.keys(c.snapshot()!.state.pages).filter((id) => id !== 'pg_winter01');
+    const out = temp('out');
+    env.pick = async () => out;
+    const r = await c.exportStatic('folder', shown);
+    expect(r).toMatchObject({ ok: true });
+    expect(readFileSync(join(r.path!, '_redirects'), 'utf8').split('\n').filter((l) => l && !l.startsWith('#'))).toEqual(['/team/ /about/ 301', '/team /about/ 301']);
+    expect(JSON.parse(readFileSync(join(r.path!, 'vercel.json'), 'utf8'))).toEqual({
+      redirects: [
+        { source: '/team/', destination: '/about/', statusCode: 301 },
+        { source: '/team', destination: '/about/', statusCode: 301 }
+      ]
+    });
+    expect(existsSync(join(r.path!, 'team/index.html'))).toBe(true);
+    expect(filesIn(r.path!).filter((f) => /winter|teaser/.test(f))).toEqual([]);
+    // The editable project's export keeps the drafts' rules out of its own build too.
+    const source = await c.exportSourceTo(join(temp('out'), 'handoff'));
+    expect(source.ok).toBe(true);
+    expect(readFileSync(join(source.path!, 'static/_redirects'), 'utf8')).not.toMatch(/winter|teaser/);
+    expect(JSON.parse(readFileSync(join(source.path!, 'vercel.json'), 'utf8')).redirects).toHaveLength(2);
+  });
+
   it('refuses to publish anything at a draft’s address, even a file of the author’s own', async () => {
     const { c, dir } = await projectWithDraft();
     mkdirSync(join(dir, 'static/winter-stock-preview'), { recursive: true });
