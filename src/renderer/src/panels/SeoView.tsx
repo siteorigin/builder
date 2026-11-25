@@ -101,8 +101,8 @@ function textNote(t: SeoOverviewText, field: 'title' | 'description', listed: bo
   let tone: 'warn' | 'note' | 'ok' = 'ok';
   if (t.duplicates > 0) {
     tone = 'warn';
-    // A document search engines don't list repeats only the ones they do: it would compete with them once listed.
-    parts.push(`Same as ${plural(t.duplicates, `${listed ? 'other' : 'listed'} page or post`, `${listed ? 'other' : 'listed'} pages and posts`)}`);
+    // A document search engines don't list repeats only the published ones they can: it would compete with them once listed.
+    parts.push(`Same as ${plural(t.duplicates, `${listed ? 'other' : 'published'} page or post`, `${listed ? 'other' : 'published'} pages and posts`)}`);
   }
   const count = plural(t.chars, 'character');
   if (t.status === 'short') parts.push(`Too short · ${count}`);
@@ -267,9 +267,13 @@ export function SeoView({ shown }: { shown: boolean }) {
   useLayoutEffect(() => {
     const was = shownKey.current;
     shownKey.current = doc?.key ?? null;
-    if (!doc && was && backFocused.current && !returnTo.current) returnTo.current = was;
+    if (!doc && was && backFocused.current && !hidden && !returnTo.current) returnTo.current = was;
     if (!doc) backFocused.current = false;
   }, [doc?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A request the overview never took (the view closed first) is let go: opened again, the view leaves focus be.
+  useEffect(() => {
+    if (hidden) returnTo.current = null;
+  }, [hidden]);
   useEffect(() => {
     if (doc && opened.current) backRef.current?.focus();
     opened.current = false;
