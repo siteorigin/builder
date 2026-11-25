@@ -10,7 +10,7 @@ import { uniqueCopyName } from '@engine/definitions';
 import type { LinkHolder, PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
-import { applyOps, api, commitOps, errorText, getState, projectHistory, revertAiTurn, saveLocal, setState, stepHistory, toast, useStore } from '../store';
+import { applyOps, api, commitOps, errorText, getState, projectHistory, revertAiTurn, saveLocal, setState, shownAt, stepHistory, toast, useStore } from '../store';
 import { Field, Modal, openMenus, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
@@ -314,27 +314,6 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
       )}
     </Modal>
   );
-}
-
-/**
- * Resolves once the editor shows the project at `revision` or later (true), or after a moment without it (false). The
- * canvas ends editing a design its snapshot does not have, so a design just made is opened only once it is shown.
- */
-function shownAt(revision: number, workspaceKey: string, ms = 3000): Promise<boolean> {
-  const ok = () => {
-    const s = getState().snapshot;
-    return !!s && s.workspaceKey === workspaceKey && s.revision >= revision;
-  };
-  if (ok()) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const done = (v: boolean) => {
-      stop();
-      clearTimeout(timer);
-      resolve(v);
-    };
-    const stop = useStore.subscribe(() => void (ok() && done(true)));
-    const timer = setTimeout(() => done(ok()), ms);
-  });
 }
 
 /** Where Create component would place a new component now, by the editor's own insertion point. */

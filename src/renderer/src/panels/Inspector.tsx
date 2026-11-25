@@ -33,7 +33,9 @@ import {
   SquareDashed,
   Trash2,
   Unlink,
-  Users
+  Users,
+  BookmarkPlus,
+  Download
 } from 'lucide-react';
 import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue, TextNode } from '@shared/types';
 import { isBinding, parseStyleScopeKey } from '@shared/types';
@@ -74,6 +76,7 @@ import { platformKeys, useCopyPasteItems, type CopyPasteActions } from './CopyPa
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, createComponentTarget, definitionView, ownerLabel, placedFeedRows, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
+import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
 import { wrapItems } from './WrapItems';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
@@ -935,6 +938,13 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       ...(detachable(state, selection) ? [{ label: 'Detach component', icon: <Unlink />, hint: 'Into elements', onSelect: () => void detachPlacement(selection) }] : []),
       ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void convertToCode() }] : []),
       ...(dev ? [{ label: def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source', icon: <FileCode2 />, onSelect: viewSource }] : []),
+      // Kept for every project, or sent as a file (#372).
+      ...(carriesAcross(def) && (dev || def.kind !== 'code')
+        ? [
+            { label: 'Save to personal library', icon: <BookmarkPlus />, hint: 'For every project', onSelect: () => void saveToLibrary(def) },
+            { label: 'Export component…', icon: <Download />, hint: 'As a file', onSelect: () => void exportComponentFile(def) }
+          ]
+        : []),
       { separator: true },
       ...styleItems
     ],

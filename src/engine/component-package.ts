@@ -9,7 +9,7 @@
  * Nothing here reads or writes files: the main process reads the images for an export, and checks and stores them
  * for an import before the edit that lands the definitions runs.
  */
-import type { AssetRecord, ComponentDefinition, GraphNode, ProjectState, TextStyleValue, TokenDef, TokenGroup, TokenValue } from '@shared/types';
+import type { AssetRecord, ComponentDefinition, GraphNode, OwnerRef, ProjectState, TextStyleValue, TokenDef, TokenGroup, TokenValue } from '@shared/types';
 import { COMPONENT_CATEGORIES, SCHEMA_VERSION } from '@shared/types';
 import { COMPONENT_PACKAGE_FORMAT, COMPONENT_PACKAGE_VERSION, MAX_PACKAGE_DEFINITIONS, PACKAGE_IMAGE_MIMES, PackageError, type ComponentPackage, type PackageToken } from '@shared/component-package';
 import { LATEST_SCHEMA_VERSION, definitionHash, migrateProject, newestDocumentVersion } from '@shared/migrations';
@@ -358,6 +358,23 @@ export interface ComponentImport {
   pkg: ComponentPackage;
   /** The library asset each of the package's images is now, by the package's image ID. */
   images: Record<string, string>;
+  /**
+   * Where the imported component is also placed, in the same change (a saved component inserted from the personal
+   * library, #372): the place Insert worked out, the role it goes in as, and the ID its placement gets.
+   */
+  place?: ImportPlacement;
+}
+
+/** Where an import places its component (see ComponentImport.place). */
+export interface ImportPlacement {
+  owner: OwnerRef;
+  parentId: string | null;
+  slot?: string;
+  index?: number;
+  /** An element going straight onto a page goes in a new section of its own, as Insert puts one. */
+  role: 'section' | 'element';
+  /** The placement's ID. */
+  nodeId: string;
 }
 
 export interface ImportHelpers {
@@ -506,33 +523,61 @@ function needsOf(def: ComponentDefinition, byFile: ReadonlyMap<string, string>):
 }
 
 /**
+ * What deciding a packaged component's identity in a project needs, without the component itself: a saved component's
+ * card keeps these (#372), so the library can say whether it would bring code into the project open now without
+ * reading its package.
+ */
+export interface PackagedDefinition {
+  id: string;
+  owner: 'theme' | 'project';
+  kind: 'managed' | 'code';
+  name: string;
+  /** definitionHash of it as packaged: a theme component the theme here has unchanged has the same. */
+  hash: string;
+  /** The packaged components it renders (see needsOf). */
+  needs: string[];
+}
+
+/** The identity facts of a package's components (see PackagedDefinition). */
+export function packagedDefinitions(defs: readonly ComponentDefinition[]): PackagedDefinition[] {
+  const byFile = new Map(defs.map((d) => [normalizePath(defFile(d)), d.id]));
+  // A component its design places and its declared dependencies name too is one need, listed once.
+  return defs.map((d) => ({ id: d.id, owner: d.owner, kind: d.kind, name: d.name, hash: definitionHash(d), needs: [...new Set(needsOf(d, byFile))] }));
+}
+
+/**
  * The packaged theme components the project's theme has exactly as packaged (installed here or to install), and
  * whose every component they render is one of those too: one rendering a component that would land as a copy of its
  * own must land as a copy as well, or it would show this theme's version instead of the one it was packaged with.
  */
-function reusedFromTheme(state: ProjectState, defs: readonly ComponentDefinition[]): Set<string> {
+function reusedFromTheme(state: ProjectState, defs: readonly PackagedDefinition[]): Set<string> {
   const theme = getTheme(state.site.themeId);
   const reused = new Set(
     defs
       .filter((def) => {
         if (def.owner !== 'theme') return false;
         const local = own(state.components, def.id) ?? theme.components.find((c) => c.id === def.id);
-        return local?.owner === 'theme' && definitionHash(local) === definitionHash(def);
+        return local?.owner === 'theme' && definitionHash(local) === def.hash;
       })
       .map((d) => d.id)
   );
-  const byFile = new Map(defs.map((d) => [normalizePath(defFile(d)), d.id]));
   for (let changed = true; changed; ) {
     changed = false;
-    for (const def of defs) if (reused.has(def.id) && needsOf(def, byFile).some((d) => !reused.has(d))) changed = reused.delete(def.id);
+    for (const def of defs) if (reused.has(def.id) && def.needs.some((d) => !reused.has(d))) changed = reused.delete(def.id);
   }
   return reused;
 }
 
+/** The packaged code components that would land in the project as its own: code the project does not already have. */
+export function codeBrought(state: ProjectState, defs: readonly PackagedDefinition[]): PackagedDefinition[] {
+  const reused = reusedFromTheme(state, defs);
+  return defs.filter((d) => d.kind === 'code' && !reused.has(d.id));
+}
+
 /** The code components an import would add to the project as its own: code the project does not already have. */
 export function importedCode(state: ProjectState, input: ComponentImport): ComponentDefinition[] {
-  const reused = reusedFromTheme(state, input.pkg.definitions);
-  return input.pkg.definitions.filter((d) => d.kind === 'code' && !reused.has(d.id));
+  const brought = new Set(codeBrought(state, packagedDefinitions(input.pkg.definitions)).map((d) => d.id));
+  return input.pkg.definitions.filter((d) => brought.has(d.id));
 }
 
 /** A package style's value and stand-in in the form its kind takes: text for most kinds, metrics for a text style. */
@@ -558,7 +603,7 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
   const inPackage = new Set(defs.map((d) => d.id));
   for (const def of defs) checkShape(def, inPackage);
   // Identities: a theme component the theme here has unchanged is the theme's; every other one is a new component.
-  const reused = reusedFromTheme(state, defs);
+  const reused = reusedFromTheme(state, packagedDefinitions(defs));
   const ids = new Map<string, string>();
   const keys = new Map<string, string>();
   const moved = new Map<string, string>();

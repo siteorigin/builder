@@ -26,7 +26,7 @@ const MB = 1024 * 1024;
  * The package file for one project component: its text, and what it leaves out. Each image it shows is read from the
  * project folder and must still be the file its library record names. Fails, saying why, when it can't be made.
  */
-export async function buildComponentPackage(projectDir: string, state: ProjectState, definitionId: string, app?: string): Promise<{ text: string; notes: string[] }> {
+export async function buildComponentPackage(projectDir: string, state: ProjectState, definitionId: string, app?: string): Promise<{ text: string; notes: string[]; pkg: ComponentPackage }> {
   const { pkg, images, notes } = planComponentPackage(state, definitionId, app);
   let total = 0;
   for (const a of images) {
@@ -48,7 +48,7 @@ export async function buildComponentPackage(projectDir: string, state: ProjectSt
   if (Buffer.byteLength(text) > MAX_PACKAGE_BYTES) throw new Error(`The package would be larger than ${MAX_PACKAGE_BYTES / MB} MB. Use smaller images first.`);
   // Only a package this app can read again is written.
   decodeComponentPackage(text);
-  return { text, notes };
+  return { text, notes, pkg };
 }
 
 /** Read a package file, check its structure and bring its components to the current format. Throws a PackageError. */

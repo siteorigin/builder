@@ -1,5 +1,5 @@
 import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, Box, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, Unlink, X, LayoutTemplate } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, BookmarkPlus, Box, Download, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, Unlink, X, LayoutTemplate } from 'lucide-react';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef, slotChildren } from '@shared/types';
@@ -10,6 +10,7 @@ import { aiActivity, api, applyOps, commitDraft, getState, markDraft, setState, 
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, ungroupLayers, wrapLayers, WRAP_NAMES, type LayersPlan } from '../lib/actions';
+import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { withSeparator, wrapItems } from './WrapItems';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { copyPasteItems, PasteHere } from './CopyPaste';
@@ -626,6 +627,7 @@ export function LayersPanel() {
     };
     // Elements and basic elements, and a section together with its content: the same as the canvas and the inspector.
     const create = createComponentTarget(getState().snapshot, ref);
+    const kept = definitionMode ? undefined : placedDefinition(st, ref, !!getState().settings?.developerMode);
     const items = [
       { heading: name },
       ...(onRename ? [{ label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: onRename }] : []),
@@ -649,6 +651,8 @@ export function LayersPanel() {
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: create } }) }] : []),
             ...(!definitionMode && detachable(st, ref) ? [{ label: 'Detach component', icon: <Unlink />, onSelect: () => void detachPlacement(ref) }] : []),
+            // Kept for every project, or sent as a file (#372).
+            ...(kept ? [{ label: 'Save to personal library', icon: <BookmarkPlus />, onSelect: () => void saveToLibrary(kept) }, { label: 'Export component…', icon: <Download />, onSelect: () => void exportComponentFile(kept) }] : []),
             { separator: true },
             { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
           ]

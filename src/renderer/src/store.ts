@@ -190,6 +190,8 @@ export interface State {
   revealedItem: RevealedItem | null;
   /** Bumped when a Layers row asks for its layer to be shown on the page, even one already selected (see showLayer). */
   showSelection: number;
+  /** Bumped when the personal component library changes (#372), so Insert lists it again. */
+  libraryVersion: number;
   pendingSave: number;
   modal: Modal;
   toasts: Toast[];
@@ -308,6 +310,7 @@ export const useStore = create<State>((set) => ({
   rects: { selected: [], hovered: [], revealed: [] },
   revealedItem: null,
   showSelection: 0,
+  libraryVersion: 0,
   pendingSave: 0,
   modal: null,
   toasts: [],
@@ -939,6 +942,27 @@ export function applyWith(edit: PendingEdit | undefined, operations: EditOperati
  * on its own, it says why and opens History at the entry. None when the change made no history entry, or its
  * project is no longer the one open.
  */
+/**
+ * Resolves once the editor shows the project at `revision` or later (true), or after a moment without it (false): a
+ * change made outside an apply (a design just made, a component imported) is shown before anything acts on it.
+ */
+export function shownAt(revision: number, workspaceKey: string, ms = 3000): Promise<boolean> {
+  const ok = () => {
+    const s = getState().snapshot;
+    return !!s && s.workspaceKey === workspaceKey && s.revision >= revision;
+  };
+  if (ok()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = (v: boolean) => {
+      stop();
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const stop = useStore.subscribe(() => void (ok() && done(true)));
+    const timer = setTimeout(() => done(ok()), ms);
+  });
+}
+
 export function undoAction(r: { entryId?: string; revision: number; workspaceKey: string }): Toast['action'] {
   const { entryId, workspaceKey } = r;
   if (!entryId || !workspaceKey || getState().snapshot?.workspaceKey !== workspaceKey) return undefined;

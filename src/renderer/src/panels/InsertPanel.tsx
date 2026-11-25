@@ -1,9 +1,9 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload, LayoutTemplate, SquareDashed } from 'lucide-react';
+import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload, LayoutTemplate, SquareDashed, Library, BookmarkPlus } from 'lucide-react';
 import type { ComponentDefinition, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
-import type { ComponentExportResult, ComponentImportResult } from '@shared/api';
+import type { ComponentImportResult, SavedComponent } from '@shared/api';
 import { childLists, findParent, placesOf } from '@engine/tree';
 import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
@@ -12,6 +12,7 @@ import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
 import { elementWhere, nodeLabel, sectionWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, searchItems } from '../lib/insert-search';
+import { exportComponentFile, insertSaved, removeFromLibrary, saveToLibrary } from '../lib/saved-components';
 import { beginInsertDrag } from '../lib/insert-drag';
 import { placementMap } from '../lib/placement-map';
 import { ownerLabel, treeFor } from '../lib/model';
@@ -187,7 +188,7 @@ export function SectionSketch({ id }: { id: string }) {
 
 
 
-type Kind = 'section' | 'element' | 'component';
+type Kind = 'section' | 'element' | 'component' | 'saved';
 interface Item {
   key: string;
   kind: Kind;
@@ -214,6 +215,8 @@ interface Item {
   copyOf?: string;
   /** Project components: the theme section this one is the project's copy of, by name. */
   themeCopy?: string;
+  /** A component from the personal library (#372), inserted into this project from there. */
+  saved?: SavedComponent;
 }
 
 /** Where a saved component is used: the row's one line, the menu's heading, and the preview's list. */
@@ -592,7 +595,9 @@ const peekable = (kind?: string) => kind === 'section' || kind === 'component';
 
 /** The group of column layouts, offered above the theme's sections. */
 const COLUMN_LAYOUTS = 'Column layouts';
-const KIND_SUBJECT: Record<Kind, string> = { section: 'Sections go', element: 'Elements go', component: 'Components go' };
+const KIND_SUBJECT: Record<Kind, string> = { section: 'Sections go', element: 'Elements go', component: 'Components go', saved: 'Saved components go' };
+/** The personal library's group (#372): components saved from any project, for every project. */
+const SAVED_GROUP = 'Saved across projects';
 
 /** How far, in pixels, a pressed tile moves before it is dragged rather than clicked. */
 const DRAG_START = 5;
@@ -875,6 +880,7 @@ export function InsertPanel() {
   const selection = useStore((s) => s.selection);
   useStore((s) => s.pageId);
   useStore((s) => s.definitionMode);
+  useStore((s) => s.templateMode);
   const dev = useStore((s) => !!s.settings?.developerMode);
   const open = useStore((s) => s.leftTab === 'insert');
   const [q, setQ] = useState('');
@@ -1029,6 +1035,42 @@ export function InsertPanel() {
   useEffect(() => {
     if (added && selection !== added.selection) setAdded(null);
   }, [selection, added]);
+  // The personal library (#372), listed for the project open now (whether each would bring code depends on its theme),
+  // whenever Insert opens and after each change to it. A list for another opening is never shown.
+  // Listed again when the theme or its installed components change, and shown only for the theme it was worked out for.
+  const opening = snap?.workspaceKey;
+  const themeKey = snap ? JSON.stringify([snap.state.site.themeId, snap.state.themeLock]) : '';
+  const libraryVersion = useStore((s) => s.libraryVersion);
+  const [library, setLibrary] = useState<{ opening: string; theme: string; list: SavedComponent[] } | null>(null);
+  useEffect(() => {
+    if (!open || !opening) return;
+    let live = true;
+    api.project.savedComponents(opening).then(
+      (list) => live && setLibrary({ opening, theme: themeKey, list }),
+      () => undefined
+    );
+    return () => {
+      live = false;
+    };
+  }, [open, opening, themeKey, libraryVersion]);
+  // The saved row taken out of the library from its menu, until the list without it is shown: focus stays in the list
+  // (else search) rather than falling to the page, where the next Delete would remove the canvas selection.
+  const savedRefocus = useRef<{ id: string; index: number } | null>(null);
+  useEffect(() => {
+    // A list asked for before the removal still has the row: wait for the one without it.
+    if (!savedRefocus.current || library?.list.some((c) => c.id === savedRefocus.current!.id)) return;
+    const { index } = savedRefocus.current;
+    savedRefocus.current = null;
+    const a = document.activeElement;
+    if (a && a !== document.body && a.isConnected) return;
+    const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="saved"] .insert-tile.saved') ?? [])];
+    const next = rows[Math.min(index, rows.length - 1)];
+    if (next) {
+      for (const c of next.closest('[role="grid"]')?.querySelectorAll<HTMLElement>('[role="gridcell"] > *') ?? []) c.tabIndex = c === next ? 0 : -1;
+      next.focus({ preventScroll: true });
+      next.scrollIntoView({ block: 'nearest' });
+    } else searchRef.current?.focus({ preventScroll: true });
+  }, [library]);
   if (!snap) return null;
   const st = snap.state;
 
@@ -1135,13 +1177,28 @@ export function InsertPanel() {
     return [options.length && named.length ? { ...base, defaults: named.join(' · '), hay: `${base.hay} ${named.join(' ')}`.toLowerCase() } : base, ...options];
   });
 
-  const byKey = new Map([...mine, ...sections, ...elements].map((it) => [it.key, it]));
+  // Saved components that would bring code show only in Developer mode, as Your components' code does.
+  const savedItems: Item[] = (library?.opening === snap.workspaceKey && library.theme === themeKey ? library.list : [])
+    .filter((c) => dev || !c.code)
+    .map((c) => ({
+      key: `saved:${c.id}`,
+      kind: 'saved',
+      name: c.name,
+      description: c.description ?? '',
+      hay: `${c.name} ${c.description ?? ''} ${c.code ? 'code ' : ''}component saved library ${c.from ?? ''}`.toLowerCase(),
+      group: SAVED_GROUP,
+      spec: {},
+      code: c.code,
+      saved: c
+    }));
+
+  const byKey = new Map([...mine, ...savedItems, ...sections, ...elements].map((it) => [it.key, it]));
 
   const query = q.toLowerCase().trim();
   // A section in Variants is ranked by the name it shows ("Centered hero Dark"), and by its own name, so typing the
   // section's name still finds it first.
   const shown = (it: Item) => ((it.kind === 'section' && showVariants) || it.variant ? `${it.name} ${optionLabel(it)}` : it.name);
-  const results = searchItems([...mine, ...sections, ...elements], query, shown);
+  const results = searchItems([...mine, ...savedItems, ...sections, ...elements], query, shown);
   const current = results[Math.min(active, results.length - 1)];
 
   const sectionAt = insertionPoint('section');
@@ -1154,8 +1211,10 @@ export function InsertPanel() {
   const planOf = (it: Item) => {
     let p = plans.get(it.key);
     if (!p) {
-      const { role, at } = it.kind === 'section' ? { role: 'section' as const, at: sectionAt } : it.kind === 'element' ? { role: 'element' as const, at: elementAt } : insertPlan(it.spec, snap);
-      p = { role, at, where: it.kind === 'section' ? sectionTo : it.kind === 'element' ? elementTo : whereFor(st, at, role) };
+      // A saved component goes in as it went in where it was saved: among the sections, or into the selected layout.
+      const as = it.kind === 'saved' ? it.saved!.role : it.kind;
+      const { role, at } = as === 'section' ? { role: 'section' as const, at: sectionAt } : as === 'element' ? { role: 'element' as const, at: elementAt } : insertPlan(it.spec, snap);
+      p = { role, at, where: as === 'section' ? sectionTo : as === 'element' ? elementTo : whereFor(st, at, role) };
       plans.set(it.key, p);
     }
     return p;
@@ -1163,9 +1222,12 @@ export function InsertPanel() {
   const whereOf = (it: Item): Where => planOf(it).where;
   // Components as a group go to one place only when each of them does.
   const componentTo = mine.length && mine.every((it) => sameWhere(whereOf(it), whereOf(mine[0]))) ? whereOf(mine[0]) : null;
-  const where: Record<Kind, Where> = { section: sectionTo, element: elementTo, component: componentTo };
+  const savedTo = savedItems.length && savedItems.every((it) => sameWhere(whereOf(it), whereOf(savedItems[0]))) ? whereOf(savedItems[0]) : null;
+  const where: Record<Kind, Where> = { section: sectionTo, element: elementTo, component: componentTo, saved: savedTo };
+  // Your components, and the saved ones beside them, lead the panel once there is any (or code can be written).
+  const lead = mine.length > 0 || dev || savedItems.length > 0;
   // The first group shown speaks for the panel at rest: Your components when they lead, else the column layouts.
-  const topKind: Kind = mine.length || dev ? 'component' : 'element';
+  const topKind: Kind = lead ? 'component' : 'element';
 
   // One insert at a time: a second click or Enter before the first has landed would read the same insertion point
   // and put both in one place.
@@ -1180,7 +1242,9 @@ export function InsertPanel() {
       const prior = getState().snapshot;
       const project = prior?.workspaceKey;
       const name = fullName(it);
-      const entryId = await insert(it.spec, name);
+      // A saved one's place is worked out again as it is inserted, with the revision it is for.
+      const entryId = it.saved ? await insertSaved(it.saved) : await insert(it.spec, name);
+      if (it.saved && !entryId) return;
       const s = getState();
       const after = s.selection;
       // Landed: the selection moved to a node of this project that exists now and did not before the insert.
@@ -1220,7 +1284,7 @@ export function InsertPanel() {
   };
   const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     // The highlighted saved component's own menu, from the keyboard, as right-click opens it.
-    if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && current?.kind === 'component') {
+    if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && (current?.kind === 'component' || current?.kind === 'saved')) {
       e.preventDefault();
       const row = document.getElementById(`${id}-r${results.indexOf(current)}`);
       const box = row?.getBoundingClientRect();
@@ -1370,7 +1434,7 @@ export function InsertPanel() {
     }
   });
   const descId = (it: Item) => `${id}-d-${it.key}`;
-  const describedBy = (it: Item) => `${id}-to-${it.kind === 'component' ? it.key : it.kind}${it.description || it.usage ? ` ${descId(it)}` : ''}`;
+  const describedBy = (it: Item) => `${id}-to-${it.kind === 'component' || it.kind === 'saved' ? it.key : it.kind}${it.description || it.usage ? ` ${descId(it)}` : ''}`;
   // A saved component's description also says, in full, where it is used: the row shows only the start of it.
   const usageText = (u?: Usage) => (!u ? '' : u.status === 'used' ? `${u.short}: ${u.places.join(', ')}.` : u.status === 'needed' ? 'Not placed, but needed by code.' : 'Not used anywhere.');
   const description = (it: Item) =>
@@ -1416,12 +1480,19 @@ export function InsertPanel() {
     dragged.current = false;
     return was;
   };
+  /** Whether a click on `it` adds it: always for a saved component, which is never dragged, else unless it ends a drag. */
+  const clickAdds = (it: Item, e: React.MouseEvent<HTMLElement>) => {
+    if (!it.saved) return !endsDrag(e);
+    dragged.current = false;
+    return true;
+  };
   const tileProps = (it: Item) => ({
     'data-kind': it.kind,
     'data-key': it.key,
     'aria-describedby': describedBy(it),
-    onClick: (e: React.MouseEvent<HTMLElement>) => !endsDrag(e) && void add(it),
-    ...dragFrom(it),
+    onClick: (e: React.MouseEvent<HTMLElement>) => clickAdds(it, e) && void add(it),
+    // A saved component isn't in this project until it is inserted, so it is clicked in rather than dragged.
+    ...(it.saved ? {} : dragFrom(it)),
     ...hover(it.key, peekable(it.kind))
   });
   const justAdded = (it: Item) => added?.key === it.key;
@@ -1473,7 +1544,8 @@ export function InsertPanel() {
       ...(source ? [{ heading: source }] : []),
       { label: 'Rename', icon: <Pencil />, onSelect: () => setState({ modal: { kind: 'rename-component', definitionId: def.id } }) },
       ...edit,
-      { label: 'Export…', icon: <Download />, hint: 'For another site', onSelect: () => void exportDefinition(def) },
+      { label: 'Save to personal library', icon: <BookmarkPlus />, hint: 'For every project', onSelect: () => void saveToLibrary(def) },
+      { label: 'Export component…', icon: <Download />, hint: 'As a file', onSelect: () => void exportComponentFile(def) },
       { separator: true },
       { heading: count ? `Used ${usedTimes(count)}` : needs.length ? 'Not placed anywhere' : 'Not used anywhere' },
       ...places.flatMap(placeItems),
@@ -1490,12 +1562,6 @@ export function InsertPanel() {
     if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
     toast(`Deleted ${def.name}`, 'info', undoAction(r));
   };
-  // A package file another project can import: the chooser and the writing happen in the app.
-  const exportDefinition = async (def: ComponentDefinition) => {
-    const r: ComponentExportResult = await api.project.exportComponent(def.id).catch((e: Error) => ({ ok: false, message: `${def.name} couldn’t be exported: ${e.message}` }));
-    if (r.ok) toast([`Exported ${def.name}.`, ...(r.notes ?? [])].join(' '), 'info');
-    else if (r.message) toast(r.message, 'error');
-  };
   const importPackage = async () => {
     const workspaceKey = getState().snapshot?.workspaceKey;
     const r: ComponentImportResult = await api.project.importComponent().catch((e: Error) => ({ ok: false, message: `The component couldn’t be imported: ${e.message}` }));
@@ -1505,7 +1571,24 @@ export function InsertPanel() {
     }
     toast(`Imported ${r.name ?? 'the component'}`, 'info', workspaceKey && r.revision !== undefined ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey }) : undefined);
   };
+  // A saved component's own menu: where it came from, and taking it out of the library.
+  const savedItemsMenu = (c: SavedComponent): MenuItem[] => [
+    { heading: c.name },
+    ...(c.from ? [{ heading: `Saved from ${c.from}` }] : []),
+    { label: 'Insert here', icon: <Plus />, onSelect: () => void add(byKey.get(`saved:${c.id}`)!) },
+    { separator: true },
+    { label: 'Remove from library', icon: <Trash2 />, danger: true, hint: 'Projects keep their copies', onSelect: () => void removeSavedRow(c) }
+  ];
+  const removeSavedRow = async (c: SavedComponent) => {
+    const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="saved"] .insert-tile.saved') ?? [])];
+    savedRefocus.current = { id: c.id, index: Math.max(0, rows.findIndex((r) => r.dataset.key === `saved:${c.id}`)) };
+    if (!(await removeFromLibrary(c))) savedRefocus.current = null;
+  };
   const manage = (it: Item) => {
+    if (it.saved) {
+      menuFor.current = null;
+      return savedItemsMenu(it.saved);
+    }
     const def = st.components[it.spec.definitionId!];
     menuFor.current = def?.id ?? null;
     return def ? manageItems(def) : [];
@@ -1702,6 +1785,69 @@ export function InsertPanel() {
     </section>
   );
 
+  /** A saved component's mark: the library's, or code's, or just added. */
+  const savedPic = (it: Item) => (
+    <span className="insert-lib-pic saved" aria-hidden="true">
+      <span className={`insert-lib-mark${justAdded(it) ? ' done' : ''}`}>{justAdded(it) ? <Check /> : it.code ? <Code /> : <Library />}</span>
+    </span>
+  );
+  const savedWho = (it: Item) => [it.code ? 'saved code component' : 'saved component', it.saved?.from ? `from ${it.saved.from}` : ''].filter(Boolean).join(' ');
+  const savedGroup = (
+    <section className="insert-group" data-kind="saved" aria-labelledby={`${id}-saved`}>
+      <h4 className="insert-head" id={`${id}-saved`}>
+        {SAVED_GROUP}
+        {savedItems.length > 0 && <span className="count">{savedItems.length}</span>}
+      </h4>
+      {!savedItems.length && (
+        <div className="insert-lib-empty">
+          <span className="ico" aria-hidden="true">
+            <Library />
+          </span>
+          <span className="txt">
+            <strong>Keep a component for every project</strong>
+            <span>
+              Choose <b>Save to personal library</b> in a component’s menu. It appears here in every project you open.
+            </span>
+          </span>
+        </div>
+      )}
+      <TileGrid
+        items={savedItems}
+        labelledBy={`${id}-saved`}
+        className="compact list managed"
+        cols={1}
+        render={(it) => (
+          <button
+            className={`insert-tile project saved${justAdded(it) ? ' just-added' : ''}`}
+            title={[it.name, it.saved?.from ? `saved from ${it.saved.from}` : '', it.description].filter(Boolean).join(' — ')}
+            {...tileProps(it)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              menu.open(e.clientX, e.clientY, manage(it), `Manage saved ${it.name}`, e.currentTarget);
+            }}
+          >
+            {savedPic(it)}
+            <span className="txt">
+              <strong>{it.name}</strong>
+              <small className="insert-lib-meta">
+                <span className="insert-lib-chip">{it.code ? 'Code' : it.saved?.role === 'element' ? 'Element' : 'Section'}</span>
+                <Where text={it.saved?.from ? `From ${it.saved.from}` : ''} />
+              </small>
+              <span className="sr-only">, {savedWho(it)}</span>
+            </span>
+            {badge(it)}
+            {description(it)}
+          </button>
+        )}
+        aside={(it) => (
+          <button className="icon-btn insert-manage" aria-haspopup="menu" aria-expanded="false" aria-label={`Manage saved ${it.name}`} title="Remove from your library" onClick={(e) => menu.openAt(e.currentTarget, manage(it), `Manage saved ${it.name}`)}>
+            <Ellipsis />
+          </button>
+        )}
+      />
+    </section>
+  );
+
   return (
     <div className={`insert-panel${narrow ? ' narrow' : ''}`} onKeyDown={onPanelKey}>
       {menu.node}
@@ -1804,7 +1950,7 @@ export function InsertPanel() {
           {where[k] ? `${KIND_SUBJECT[k]} ${where[k]!.lead} ${placeText(where[k]!)}` : ''}
         </span>
       ))}
-      {mine.map((it) => {
+      {[...mine, ...savedItems].map((it) => {
         const w = whereOf(it);
         return (
           <span key={it.key} id={`${id}-to-${it.key}`} hidden>
@@ -1829,7 +1975,7 @@ export function InsertPanel() {
                   title={it.kind !== 'section' && it.description ? it.description : undefined}
                   onMouseDown={(e) => e.preventDefault()}
                   onContextMenu={
-                    it.kind === 'component'
+                    it.kind === 'component' || it.kind === 'saved'
                       ? (e) => {
                           e.preventDefault();
                           menu.open(e.clientX, e.clientY, manage(it), `Manage ${it.name}`, searchRef.current);
@@ -1837,10 +1983,10 @@ export function InsertPanel() {
                       : undefined
                   }
                   onMouseMove={() => !document.documentElement.classList.contains('insert-dragging') && (i !== active ? setActive(i) : !peek && peekResult())}
-                  {...dragFrom(it)}
+                  {...(it.saved ? {} : dragFrom(it))}
                   onClick={(e) => {
                     searchRef.current?.focus({ preventScroll: true });
-                    if (!endsDrag(e)) void add(it);
+                    if (clickAdds(it, e)) void add(it);
                   }}
                 >
                   {it.kind === 'section' ? (
@@ -1849,6 +1995,8 @@ export function InsertPanel() {
                     </span>
                   ) : it.kind === 'component' ? (
                     libraryPic(it)
+                  ) : it.kind === 'saved' ? (
+                    savedPic(it)
                   ) : (
                     iconFor(it)
                   )}
@@ -1863,6 +2011,8 @@ export function InsertPanel() {
                             : it.group
                         : it.kind === 'element'
                           ? 'Basic element'
+                          : it.kind === 'saved'
+                            ? [SAVED_GROUP, it.code ? 'Code' : '', it.saved?.from ? `From ${it.saved.from}` : ''].filter(Boolean).join(' · ')
                           : (
                             <span className="insert-lib-meta">
                               <span className="use">{[it.code ? 'Code' : '', it.variant ? `${it.variant.axis} option` : (it.usage?.short ?? '')].filter(Boolean).join(' · ')}</span>
@@ -1871,6 +2021,7 @@ export function InsertPanel() {
                           )}
                     </small>
                     {it.kind === 'component' && <span className="sr-only">, {libraryWho(it)}. Shift F10 to manage it</span>}
+                    {it.kind === 'saved' && <span className="sr-only">, {savedWho(it)}. Shift F10 to manage it</span>}
                   </span>
                   {description(it)}
                 </div>
@@ -1888,7 +2039,8 @@ export function InsertPanel() {
           )
         ) : (
           <>
-            {(components > 0 || dev) && yours}
+            {lead && yours}
+            {lead && savedGroup}
             {elementGroup('columns', COLUMN_LAYOUTS, elements.filter((it) => it.group === COLUMN_LAYOUTS))}
             {[...groups.entries()].map(([group, list], gi) => (
               <section key={group} className="insert-group" data-kind="section" aria-labelledby={`${id}-g${gi}`}>
@@ -1914,7 +2066,8 @@ export function InsertPanel() {
               </section>
             ))}
             {elementGroup('basics', 'Basic elements', elements.filter((it) => it.group !== COLUMN_LAYOUTS))}
-            {components === 0 && !dev && yours}
+            {!lead && yours}
+            {!lead && savedGroup}
           </>
         )}
       </div>
