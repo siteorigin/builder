@@ -455,11 +455,16 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
    * Whether a component may show something of its own in a slot left empty: its design's fallback there, code (which
    * can show anything while a slot is not given), or a component it hands that slot on to as it is, that may.
    */
+  const ownShown = new Map<string, boolean>();
   const showsOwn = (c: ComponentDefinition | undefined, slot: string, depth = 0): boolean => {
     if (!c || depth > 1000) return false;
     if (c.kind === 'code') return true;
+    // Each design and slot is worked out once, however many paths reach it (and a loop reached again is no answer).
+    const key = `${c.id}|${slot}`;
+    if (ownShown.has(key)) return ownShown.get(key)!;
+    ownShown.set(key, false);
     const nodes = c.tree?.nodes ?? {};
-    return Object.values(nodes).some((x) => {
+    const shown = Object.values(nodes).some((x) => {
       if (x.kind === 'slot') return x.slot === slot && slotFallback(x).length > 0;
       if (x.kind !== 'instance') return false;
       return Object.keys(x.slots ?? {}).some((k) => {
@@ -468,6 +473,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
         return only?.kind === 'slot' && only.slot === slot && !slotFallback(only).length && !only.when && !only.unless && showsOwn(own(state.components, x.definitionId), k, depth + 1);
       });
     });
+    ownShown.set(key, shown);
+    return shown;
   };
 
   /** The page nodes one of the design's nodes renders as here: none, one, or one per list item. */

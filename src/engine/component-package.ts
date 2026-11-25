@@ -545,8 +545,12 @@ export interface PackagedDefinition {
 /** The identity facts of a package's components (see PackagedDefinition). */
 export function packagedDefinitions(defs: readonly ComponentDefinition[]): PackagedDefinition[] {
   const byFile = new Map(defs.map((d) => [normalizePath(defFile(d)), d.id]));
+  const packaged = new Set(defs.map((d) => d.id));
+  // A component a slot names by its own ID is needed too: kept as the project's while that one lands as a copy, the
+  // slot would name the project's version and refuse the copy.
+  const named = (d: ComponentDefinition) => Object.values(d.slots ?? {}).flatMap((decl) => (Array.isArray(decl?.componentIds) ? decl.componentIds : [])).filter((id) => id !== d.id && packaged.has(id));
   // A component its design places and its declared dependencies name too is one need, listed once.
-  return defs.map((d) => ({ id: d.id, owner: d.owner, kind: d.kind, name: d.name, hash: definitionHash(d), needs: [...new Set(needsOf(d, byFile))] }));
+  return defs.map((d) => ({ id: d.id, owner: d.owner, kind: d.kind, name: d.name, hash: definitionHash(d), needs: [...new Set([...needsOf(d, byFile), ...named(d)])] }));
 }
 
 /**

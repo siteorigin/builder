@@ -7,6 +7,7 @@ import { createStarterState } from '@catalogue/starters';
 import { getTheme } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { slotAccepts, slotDeclProblem, slotFill, takesComponent } from '@engine/slots';
+import { packagedDefinitions } from '@engine/component-package';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { generateComponentPreview } from '@generator/preview';
@@ -182,6 +183,17 @@ describe('a slot that names the components it takes', () => {
     expect((home(r.state).nodes[placed] as InstanceNode).definitionId).toBe(r.results[0].definitionId);
     expect(r.results[0].definitionId).not.toBe(card);
     expect(errors(r.state)).toEqual([]);
+  });
+
+  it('makes a packaged component need the packaged components its slots name, so it lands as a copy with them', () => {
+    const { s, section, card } = bento();
+    const named = { ...s.components[section], slots: { content: { label: 'Cards', componentIds: [card, 'media.gallery', section] } } };
+    const [grid, cardDef] = packagedDefinitions([named, s.components[card]]);
+    // The card travels with it; a contract, or a component the package does not bring, is no need.
+    expect(grid.needs).toContain(card);
+    expect(grid.needs).not.toContain('media.gallery');
+    expect(grid.needs).not.toContain(section);
+    expect(cardDef.needs).toEqual([]);
   });
 
   it('offers the canvas’s Add list inside the slot only the components it names', () => {
