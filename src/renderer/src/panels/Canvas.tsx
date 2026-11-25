@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
+import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { newId } from '@shared/ids';
 import { applyOps, commitOps } from '../store';
@@ -26,6 +26,7 @@ import { ARRIVAL_MS, arrivalShown, takeArrival } from '../lib/arrival';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { hasDarkPalette } from '@shared/color-scheme';
+import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
@@ -1407,6 +1408,8 @@ export function Canvas() {
     const t = structuralTarget(ref);
     // Elements and basic elements, and a section together with its content: the same as Layers and the inspector.
     const create = createComponentTarget(getState().snapshot, t);
+    // A container of the design edited everywhere: the same as Layers and the inspector.
+    const repeat = repeatAsListTarget(getState().snapshot, t);
     const parent = ref.instancePath.length ? { owner: ref.owner, instancePath: ref.instancePath.slice(0, -1), nodeId: ref.instancePath[ref.instancePath.length - 1] } : null;
     const locked = !t || t.owner.kind === 'shell';
     const kept = definitionMode ? undefined : placedDefinition(state, t, devMode);
@@ -1455,6 +1458,7 @@ export function Canvas() {
               ...(wraps.length ? [...(reorderable ? [{ separator: true }] : []), ...wraps, { separator: true }] : []),
               ...(locked ? [] : [...clipboard, { label: 'Duplicate', icon: <Copy />, shortcut: keys('⌘D'), onSelect: on(duplicateSelection) }]),
               ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: on(() => setState({ modal: { kind: 'create-component' as const, ref: create } })) }] : []),
+              ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: on(() => setState({ modal: { kind: 'repeat-as-list' as const, ref: repeat, workspaceKey: getState().snapshot?.workspaceKey } })) }] : []),
               ...(!definitionMode && detachable(state, ref) ? [{ label: 'Detach component', icon: <Unlink />, onSelect: on(() => detachPlacement(ref)) }] : []),
               // Kept for every project, or sent as a file (#372).
               ...(kept ? [{ label: 'Save to personal library', icon: <BookmarkPlus />, onSelect: live(ref, () => saveToLibrary(kept)) }, { label: 'Export component…', icon: <Download />, onSelect: live(ref, () => exportComponentFile(kept)) }] : []),

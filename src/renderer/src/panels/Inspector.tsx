@@ -36,7 +36,8 @@ import {
   Unlink,
   Users,
   BookmarkPlus,
-  Download
+  Download,
+  Repeat
 } from 'lucide-react';
 import type { ComponentDefinition, DividerNode, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveScope, ResponsiveStyles, ScalarPropSchema, StyleState, StyleValue, TextNode } from '@shared/types';
 import { DIVIDER_ICON, DIVIDER_SHAPES, isBinding, parseStyleScopeKey, styleScopeKey } from '@shared/types';
@@ -83,6 +84,7 @@ import { useStyleCopyItems } from './StylePaste';
 import { platformKeys, useCopyPasteItems, type CopyPasteActions } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
+import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { assetUrl, createComponentTarget, definitionView, isCodePart, ownerLabel, placedFeedRows, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
@@ -2365,6 +2367,9 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const several = useStore((s) => (s.layerSet ? (liveGroup(s)?.ids.length ?? 0) > 1 : false));
   // The design's own node, even when it was reached through a placement on the page.
   const create = several ? null : createComponentTarget({ state, readOnly }, { owner, instancePath: [], nodeId: node.id });
+  // A container of the design becomes the item of a new list: the same as the canvas and Layers.
+  // Worked out once for each version of the project, not on every render: it reads the design (and, for rich text, every placement).
+  const repeat = useMemo(() => (several ? null : repeatAsListTarget({ state, readOnly }, { owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: node.id })), [several, state, readOnly, def.id, node.id]);
   // Wrap and Ungroup act on the design's own node, also when it was reached through a placement on the page, or on the
   // layers selected with it in Layers: followed, so the menu is rebuilt when they change.
   useStore((s) => {
@@ -2376,7 +2381,8 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const designWraps = wrapMenu(designPlan, false);
   const designItems: MenuItem[] = [
     ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
-    ...(create && designWraps.length ? [{ separator: true }] : []),
+    ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: () => setState({ modal: { kind: 'repeat-as-list', ref: repeat, workspaceKey: getState().snapshot?.workspaceKey } }) }] : []),
+    ...((create || repeat) && designWraps.length ? [{ separator: true }] : []),
     ...designWraps
   ];
   const title = partId && partId !== 'root' ? def.parts[partId].label : isRoot ? def.name : refLabel(state, { owner, instancePath: [], nodeId: node.id });

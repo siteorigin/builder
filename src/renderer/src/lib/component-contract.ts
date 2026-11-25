@@ -54,7 +54,7 @@ export const nodeName = (node: GraphNode): string => node.name?.trim() || nodeWo
 const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype', 'slot']);
 
 /** `base`, or `base2`, `base3`… as a valid camelCase name that `taken` does not hold, never longer than 40. */
-function freeName(base: string, taken: Set<string>, valid: (name: string) => boolean): string {
+export function freeName(base: string, taken: Set<string>, valid: (name: string) => boolean): string {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? '' : String(n);
     const name = base.slice(0, 40 - suffix.length) + suffix;
@@ -63,7 +63,7 @@ function freeName(base: string, taken: Set<string>, valid: (name: string) => boo
   }
 }
 
-const validPropName = (name: string) => toCodeName(name) === name && !RESERVED_IDS.has(name);
+export const validPropName = (name: string) => toCodeName(name) === name && !RESERVED_IDS.has(name);
 
 /**
  * Names a new property must not take: the component's properties and UI state, and every name a placement or an
