@@ -67,11 +67,12 @@ await marker('secondary').waitFor();
 }
 await win.screenshot({ path: join(SHOTS, 'split-empty.png') });
 
-step('on the Dark tone the empty targets are still lettered in the section’s own text color');
+step('on the Dark tone the empty targets keep a light ground and dark lettering of their own');
 await apply([{ type: 'instance.setVariant', owner, nodeId: split, axis: 'tone', variant: 'inverse' }], 'Dark');
 await eventually(async () => {
-  const colors = await marker('primary').evaluate((el) => [getComputedStyle(el).color, getComputedStyle(el.closest('section')).color]);
-  assert.equal(colors[0], colors[1]);
+  assert.equal(await marker('primary').evaluate((el) => getComputedStyle(el.closest('section')).backgroundColor !== 'rgb(248, 250, 252)'), true);
+  for (const slot of ['primary', 'secondary'])
+    assert.deepEqual(await marker(slot).evaluate((el) => [getComputedStyle(el).backgroundColor, getComputedStyle(el).color]), ['rgb(248, 250, 252)', 'rgb(71, 85, 105)']);
 });
 await win.screenshot({ path: join(SHOTS, 'split-empty-dark.png') });
 await apply([{ type: 'instance.setVariant', owner, nodeId: split, axis: 'tone', variant: 'default' }], 'Default tone');
@@ -135,7 +136,7 @@ for (const [name, search] of [
   } else await panel.locator('.insert-tile.basic', { has: win.locator('strong', { hasText: new RegExp(`^${name}$`) }) }).click();
   await eventually(async () => assert.equal((await kinds('primary')).length, before + 1, `${name} is in Primary`), 20000);
 }
-assert.ok((await kinds('primary')).includes('foundation.stats.row'), 'the Statistics section is a subcomponent of Primary');
+assert.deepEqual(await kinds('primary'), ['foundation.stats.row', 'h2'], 'the Statistics section, then the Heading');
 assert.deepEqual(await kinds('secondary'), ['p'], 'Secondary is untouched');
 
 step('the Inspector’s Proportions choice resizes the columns on desktop and tablet');
@@ -192,11 +193,13 @@ await eventually(async () => {
   const pinned = await column('secondary')
     .first()
     .evaluate(async (el) => {
-      const start = el.getBoundingClientRect().top + window.scrollY;
+      // Measured from the columns' own box, which never moves as Secondary does: the same place on every retry.
+      const start = el.parentElement.getBoundingClientRect().top + window.scrollY;
       window.scrollTo({ top: start + 300, behavior: 'instant' });
       await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      return { top: el.getBoundingClientRect().top, offset: parseFloat(getComputedStyle(el).top) };
+      return { top: el.getBoundingClientRect().top, offset: parseFloat(getComputedStyle(el).top), columns: el.parentElement.getBoundingClientRect().top };
     });
+  assert.ok(pinned.columns < 0, `the page scrolled past the columns’ top: ${pinned.columns}`);
   assert.ok(Math.abs(pinned.top - pinned.offset) < 2, `held at ${pinned.offset}px, not scrolled away: ${pinned.top}`);
 }, 20000);
 
@@ -208,10 +211,13 @@ const exported = await withTimeout(win.evaluate(() => window.builder.project.exp
 assert.equal(exported.ok, true, `source export succeeds: ${exported.message}`);
 const files = (dir) => readdirSync(dir).flatMap((name) => (statSync(join(dir, name)).isDirectory() ? files(join(dir, name)) : [join(dir, name)]));
 const sources = files(join(exported.path, 'src')).filter((f) => /\.(svelte|js|ts|css|html)$/.test(f));
-for (const f of sources) assert.doesNotMatch(readFileSync(f, 'utf8'), /data-so-slot|so-slot-empty|data-so-editor|\.siteorigin\/|so_editing/, f);
+for (const f of sources) assert.doesNotMatch(readFileSync(f, 'utf8'), /data-so-(slot|editor|node|ctx)|so-slot-empty|bridge\.client|\.siteorigin\/|so_editing/, f);
 const component = readFileSync(sources.find((f) => f.endsWith('-layout-split.svelte')), 'utf8');
 assert.match(component, /<section[\s\S]*__split-primary[\s\S]*slot_primary\?\.\(\)[\s\S]*__split-secondary[\s\S]*slot_secondary\?\.\(\)/);
 const route = readFileSync(join(exported.path, 'src', 'routes', '+page.svelte'), 'utf8');
+const snippet = (slot) => route.match(new RegExp(`\\{#snippet slot_${slot}\\(\\)\\}([\\s\\S]*?)\\{/snippet\\}`))?.[1] ?? '';
+assert.match(snippet('secondary'), /Write something here\./, 'Secondary’s Paragraph is exported in Secondary');
+assert.doesNotMatch(snippet('secondary'), /Entry 30\./);
 assert.match(route, /variant_ratio="wide-left"/);
 assert.match(route, /variant_sticky="pin-secondary"/);
 assert.match(route, /Entry 30\./);

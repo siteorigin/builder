@@ -2143,7 +2143,7 @@ describe('ai-profile examples', () => {
       const covered = new Set(examples.map((e) => e.componentId));
       // Examples are ready-to-send page sections: a block goes inside one, so it has none. Layout sections start
       // empty, and an example cannot fill their slots, so they have none either.
-      for (const c of theme.components) if (c.category !== 'shell' && c.category !== 'layout' && c.insertAs !== 'element') expect(covered.has(c.componentId), `${theme.id} is missing an example for ${c.componentId}`).toBe(true);
+      for (const c of theme.components) if (c.category !== 'shell' && !['layout.section', 'layout.split'].includes(c.componentId!) && c.insertAs !== 'element') expect(covered.has(c.componentId), `${theme.id} is missing an example for ${c.componentId}`).toBe(true);
       expect(new Set(examples.map((e) => e.id)).size).toBe(examples.length);
     }
   });
@@ -2199,7 +2199,7 @@ describe('sections only a full run lists (fullListingOnly)', () => {
     expect(listed(upsertToolSchema(state))).toEqual(expect.arrayContaining(marked));
   });
 
-  it.each(['content.steps-media', 'tabs.showcase', 'pricing.toggle'])('offers the marked %s to a small model once the project has it', (id) => {
+  it.each(['content.steps-media', 'tabs.showcase', 'pricing.toggle', 'layout.split'])('offers the marked %s to a small model once the project has it', (id) => {
     const state = createStarterState('business', 'Test', false);
     expect(listed(upsertToolSchema(state, undefined, true))).not.toContain(id);
     const def = structuredClone(catalogueComponent(state.site.themeId, id)!);

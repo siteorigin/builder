@@ -233,7 +233,7 @@ export function SectionSketch({ id }: { id: string }) {
       );
     case 'layout.split':
       return (
-        <span className="sketch open">
+        <span className="sketch split open">
           <i className="slot" />
           <i className="slot" />
         </span>

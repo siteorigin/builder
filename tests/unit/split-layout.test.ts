@@ -1,10 +1,12 @@
-import { afterAll, describe, expect, it } from 'vitest';
-import { removeRendered, serverHtml } from './generated-site';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { bundle, removeRendered, serverHtml } from './generated-site';
+import { existsSync } from 'node:fs';
 import { compile } from 'svelte/compiler';
+import { chromium, type Browser, type Page } from 'playwright';
 import type { ElementRef, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
-import { findTheme, listThemes } from '@catalogue/index';
+import { listThemes } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { STYLES_DIR, generateProject, pageFile } from '@generator/index';
@@ -30,7 +32,7 @@ function placed(themeId = 'foundation') {
   return {
     owner,
     id: nodeId as string,
-    definitionId: definitionId ?? (state.pages[state.site.homePageId].nodes[nodeId as string] as InstanceNode).definitionId,
+    definitionId: (definitionId as string | undefined) ?? (state.pages[state.site.homePageId].nodes[nodeId as string] as InstanceNode).definitionId,
     run,
     state: () => state,
     node: () => state.pages[state.site.homePageId].nodes[nodeId as string] as InstanceNode
@@ -46,7 +48,8 @@ function fill(p: ReturnType<typeof placed>) {
   const heading = into('primary', { primitive: 'heading', text: 'This season in the garden' });
   const stats = into('primary', { componentId: 'stats.row' });
   const button = into('secondary', { primitive: 'button', text: 'Sign up' });
-  return { primary: [heading, stats], secondary: [note, button] };
+  const callout = into('secondary', { componentId: 'cta.banner' });
+  return { primary: [heading, stats], secondary: [note, button, callout] };
 }
 
 /** The stylesheet's rules for the placed definitions (the theme's own base CSS is separate), spaces run together. */
@@ -96,6 +99,9 @@ describe('Split layout (#669)', () => {
     ]);
     const content = fill(p);
     expect(p.node().slots).toEqual(content);
+    const placedIn = (slot: string) => p.node().slots![slot].map((id) => p.state().pages[p.state().site.homePageId].nodes[id]).map((n) => (n.kind === 'instance' ? n.definitionId : n.kind === 'text' ? `${n.tag} ${String(n.text)}` : n.kind));
+    expect(placedIn('primary')).toEqual(['h2 This season in the garden', 'foundation.stats.row']);
+    expect(placedIn('secondary')).toEqual(['p Get the monthly newsletter', 'link', 'foundation.cta.banner']);
     expect(validateState(p.state()).filter((d) => d.severity === 'error')).toEqual([]);
   });
 
@@ -104,7 +110,7 @@ describe('Split layout (#669)', () => {
     const selected: ElementRef = { owner: p.owner, instancePath: [], nodeId: p.id, slot: 'secondary' } as ElementRef;
     const at = insertAt(p.state(), p.owner, 'element', selected)!;
     p.run(insertOps(at, { primitive: 'paragraph', text: 'Aside' }, 'element'));
-    expect(p.node().slots?.secondary).toHaveLength(1);
+    expect(p.node().slots?.secondary?.map((id) => p.state().pages[p.state().site.homePageId].nodes[id])).toMatchObject([{ kind: 'text', tag: 'p', text: 'Aside' }]);
     expect(p.node().slots?.primary ?? []).toEqual([]);
   });
 
@@ -151,18 +157,122 @@ describe('Split layout (#669)', () => {
       fill(p);
       const out = exported(p.state());
       const html = await serverHtml(out.files, 'split-layout-');
+      const snippet = (slot: string) => out.page.match(new RegExp(`\\{#snippet slot_${slot}\\(\\)\\}([\\s\\S]*?)\\{/snippet\\}`))?.[1];
+      expect(snippet('secondary')).toContain('Get the monthly newsletter');
+      expect(snippet('secondary')).not.toContain('This season in the garden');
       expect(html.indexOf('This season in the garden')).toBeGreaterThan(html.indexOf('__split-primary'));
       expect(html.indexOf('This season in the garden')).toBeLessThan(html.indexOf('__split-secondary'));
       expect(html.indexOf('Get the monthly newsletter')).toBeGreaterThan(html.indexOf('__split-secondary'));
       for (const [path, src] of out.files) {
         if (!path.startsWith('src/')) continue;
-        expect(src, path).not.toMatch(/data-so-slot|so-slot-empty|data-so-editor|\.siteorigin\/|so_editing/);
+        expect(src, path).not.toMatch(/data-so-(slot|editor|node|ctx)|so-slot-empty|siteorigin\/bridge|bridge\.client|\.siteorigin\/|so_editing/);
         if (path.endsWith('.svelte')) expect(() => compile(src, { filename: path, generate: 'client', runes: true }), path).not.toThrow();
       }
-      // A column left empty takes no gap where the two stack; the print sheet unpins Secondary.
-      const theme = findTheme(themeId)!.baseCss;
-      expect(theme).toMatch(/@media \(max-width: 767\.98px\) \{ [^\n]*__split-primary[^\n]*__split-secondary[^\n]*:empty:not\(#so-split\) \{ display: none; \} \}/);
-      expect(theme).toMatch(/--sticky-pin-secondary'\][^\n]*__split-secondary[^\n]*position: static !important/);
     }
   });
+});
+
+/**
+ * The exported page in a real browser, server-rendered and then hydrated, with the theme's stylesheet: what the CSS
+ * does, which its text cannot show.
+ */
+describe.skipIf(!existsSync(chromium.executablePath()))('Split layout in a browser (#669)', () => {
+  let browser: Browser;
+  beforeAll(async () => {
+    browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
+  }, 60_000);
+  afterAll(async () => {
+    await browser?.close();
+  });
+
+  async function open(state: ProjectState): Promise<Page> {
+    const files = generateProject(state);
+    const ssr = await serverHtml(files, 'split-layout-browser-');
+    const css = ['tokens', 'theme', 'components', 'site'].map((n) => files.get(`${STYLES_DIR}/${n}.css`) ?? '').join('\n');
+    const script = await bundle(files, generateProject(state, { instrument: true }));
+    const page = await browser.newPage();
+    await page.setContent(`<!doctype html><html><head><style>${css}</style></head><body><div id="app">${ssr}</div></body></html>`);
+    await page.addScriptTag({ content: script, type: 'module' });
+    await page.waitForFunction("'startSite' in window");
+    await page.evaluate("window.startSite('clean')");
+    return page;
+  }
+
+  /** Both columns as the browser lays them out, and the section's own colors. */
+  const MEASURE = `(() => {
+    const el = (suffix) => document.querySelector('#app [class*="-layout-split__' + suffix + '"]');
+    const column = (which) => {
+      const node = el('split-' + which);
+      const box = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return { shown: style.display !== 'none', position: style.position, x: box.x, y: box.y, width: box.width, bottom: box.bottom };
+    };
+    return { primary: column('primary'), secondary: column('secondary'), inner: el('inner').getBoundingClientRect().width, ground: getComputedStyle(el('root')).backgroundColor };
+  })()`;
+  type Column = { shown: boolean; position: string; x: number; y: number; width: number; bottom: number };
+  const measure = (page: Page) => page.evaluate<{ primary: Column; secondary: Column; inner: number; ground: string }>(MEASURE);
+  const at = async (page: Page, width: number) => {
+    await page.setViewportSize({ width, height: 800 });
+    return measure(page);
+  };
+
+  it.each(['foundation', 'editorial', 'signal'])('stacks on phones and keeps each ratio from tablet up in %s', async (themeId) => {
+    for (const [ratio, expected] of [['equal', 1], ['wide-left', 2], ['wide-right', 0.5]] as const) {
+      const p = placed(themeId);
+      fill(p);
+      p.run([{ type: 'instance.setVariant', owner: p.owner, nodeId: p.id, axis: 'ratio', variant: ratio }]);
+      const page = await open(p.state());
+      const phone = await at(page, 390);
+      expect(phone.secondary.y, ratio).toBeGreaterThan(phone.primary.bottom);
+      for (const c of [phone.primary, phone.secondary]) expect(Math.abs(c.width - phone.inner), ratio).toBeLessThan(1);
+      for (const width of [834, 1280]) {
+        const wide = await at(page, width);
+        expect(wide.secondary.x, `${ratio} at ${width}`).toBeGreaterThan(wide.primary.x + wide.primary.width);
+        expect(wide.primary.width / wide.secondary.width, `${ratio} at ${width}`).toBeCloseTo(expected, 1);
+      }
+      await page.close();
+    }
+  }, 120_000);
+
+  it.each(['primary', 'secondary'] as const)('drops an empty column on phones only, when %s is the one filled', async (filled) => {
+    const p = placed();
+    p.run([{ type: 'node.insert', owner: p.owner, parentId: p.id, slot: filled, primitive: 'paragraph', text: 'Only this' } as EditOperation]);
+    const empty = filled === 'primary' ? 'secondary' : 'primary';
+    const page = await open(p.state());
+    const phone = await at(page, 390);
+    expect([phone[filled].shown, phone[empty].shown]).toEqual([true, false]);
+    for (const width of [834, 1280]) {
+      const wide = await at(page, width);
+      expect([wide.primary.shown, wide.secondary.shown]).toEqual([true, true]);
+      expect(wide.secondary.x).toBeGreaterThan(wide.primary.x + wide.primary.width);
+    }
+    await page.close();
+  }, 60_000);
+
+  it('pins Secondary only when chosen, from tablet up, and prints it in its place', async () => {
+    const p = placed();
+    fill(p);
+    for (const [sticky, wide] of [['flow', 'static'], ['pin-secondary', 'sticky']] as const) {
+      p.run([{ type: 'instance.setVariant', owner: p.owner, nodeId: p.id, axis: 'sticky', variant: sticky }]);
+      const page = await open(p.state());
+      const positions = [];
+      for (const width of [390, 834, 1280]) positions.push((await at(page, width)).secondary.position);
+      expect(positions, sticky).toEqual(['static', wide, wide]);
+      await page.emulateMedia({ media: 'print' });
+      expect((await at(page, 834)).secondary.position, `${sticky} in print`).toBe('static');
+      await page.close();
+    }
+  }, 60_000);
+
+  it('paints each tone its own ground', async () => {
+    const p = placed();
+    const grounds = [];
+    for (const tone of ['default', 'muted', 'inverse']) {
+      p.run([{ type: 'instance.setVariant', owner: p.owner, nodeId: p.id, axis: 'tone', variant: tone }]);
+      const page = await open(p.state());
+      grounds.push((await measure(page)).ground);
+      await page.close();
+    }
+    expect(new Set(grounds).size).toBe(3);
+  }, 60_000);
 });

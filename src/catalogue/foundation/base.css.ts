@@ -299,7 +299,8 @@ ${PINNED_SPLIT}:has(> ${ends('__grid')}):not(:has(> ${ends('__intro')})) { grid-
      their picture) prints in its place, the columns one after the other, however wide the sheet: in any copy of the
      section, by the option's and the elements' class endings. */
   ${PINNED_SPLIT}:not(#so-print), ${STEPS_LAYOUT}:not(#so-print) { grid-template-columns: minmax(0, 1fr) !important; }
-  ${PINNED_HEADING}:not(#so-print), ${PINNED_SECONDARY}:not(#so-print) { position: static !important; inset: auto !important; }
+  ${PINNED_HEADING}:not(#so-print) { position: static !important; inset: auto !important; }
+  ${PINNED_SECONDARY}:not(#so-print) { position: static !important; inset: auto !important; }
   ${STEPS_LAYOUT} > ${ends('__media-stage')}:not(#so-print) { position: static !important; inset: auto !important; }
   ${STEPS_LAYOUT} > ${ends('__steps-stage')}:not(#so-print) { order: 0 !important; }
   /* Where the sheet has room: a heading, or a section's heading group (eyebrow, heading and lead, in any copy of
@@ -310,7 +311,7 @@ ${PINNED_SPLIT}:has(> ${ends('__grid')}):not(:has(> ${ends('__intro')})) { grid-
 }
 /* On a phone, where a Split layout's columns stack, one left empty takes no gap. From tablet up it stays, so what is
    in the other column keeps its side. (The editor's variant puts a drop target in an empty column.) */
-@media (max-width: 767.98px) { ${SPLIT_COLUMNS}:empty:not(#so-split) { display: none; } }
+@media (max-width: 767.98px) { ${SPLIT_COLUMNS}:empty { display: none; } }
 `;
 
 /** Foundation base stylesheet: reset, document defaults and shared primitive styles. */
