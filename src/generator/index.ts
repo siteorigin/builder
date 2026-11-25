@@ -41,7 +41,7 @@ import type {
   TokenValue,
   UiStateSchema
 } from '@shared/types';
-import { CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, slotChildren, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
+import { CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, parseStyleScopeKey, slotChildren, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
 import { INTERACTION_GROUP_CLASS, groupLookup, isInteractionGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import {
   CONTAINER_QUERIES,
@@ -667,8 +667,8 @@ interface RuleOpts {
   /** Finishes each selector written (a component's own <style> block makes them `:global()`). */
   wrap?: (sel: string) => string;
   /**
-   * The weaker rules on the same element, weakest first (a design's node rules and options under a placement's): what
-   * a container range's rules must not show where they hide it, and the container layout a show here keeps.
+   * The weaker rules on the same element, weakest first (a design's node rules and options under a placement's): the
+   * container layout a show here keeps (see restoreContainerLayouts).
    */
   under?: ResponsiveStyles[];
   /** Converted code's own stylesheet: the marker each hide is gated on (see `shownGate`). */
@@ -862,10 +862,10 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
 
 /**
  * The resting rules for each width range of the query container around the element, in their own blocks after every
- * screen size's, so they win over a screen size's value of the same layer. They never show what a screen size hides:
- * a layout (or custom CSS) setting a display is followed, in the same block, by the hide at each screen size where
- * the display that wins there, among this layer's resting rules and the weaker ones under it (`opts.under`), is a
- * hide. `styles` is `input` folded, as the stylesheet writes its hides.
+ * screen size's, so they win over a screen size's value of the same layer. They never show what the same layer hides
+ * at a screen size: a layout (or custom CSS) setting a display is followed, in the same block, by the hide at each
+ * screen size where the display that wins there among this layer's resting rules is a hide. `styles` is `input`
+ * folded, as the stylesheet writes its hides.
  */
 function addContainerRules(rules: RuleSet, raw: string, styles: ResponsiveStyles, input: ResponsiveStyles, opts: RuleOpts) {
   const wrap = opts.wrap ?? ((sel: string) => sel);
@@ -903,8 +903,9 @@ function addContainerRules(rules: RuleSet, raw: string, styles: ResponsiveStyles
     if (decls.length) list.push(`${selector} {\n${oneTranslate(decls).map((d) => `\t${mark(d)};`).join('\n')}\n}`);
     if (reduced.length) rules.reduced.push(`${opts.important ? selector : quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
     if (decls.some((d) => /^display\s*:/i.test(d))) {
-      // Hidden at a screen size by the rules there, this layer's and weaker ones: hidden in every container too.
-      const hidden = (['phone', 'tablet', 'desktop'] as const).filter((size) => displayWinner([...(opts.under ?? []), input], size) === 'none');
+      // Hidden at a screen size by this layer's own rules there: hidden in every container too. A stronger layer's
+      // display shows what a weaker one hides, at a container width as at a screen size.
+      const hidden = (['phone', 'tablet', 'desktop'] as const).filter((size) => displayWinner([input], size) === 'none');
       const hide = (size: 'phone' | 'tablet' | 'desktop') => (opts.gateHides ? wrap(shownGate(raw, size, opts.gateHides)) : selector);
       if (hidden.length === 3 && !opts.gateHides) list.push(`${selector} {\n\t${mark('display: none')};\n}`);
       else for (const size of hidden) list.push(`@media ${MEDIA_QUERIES[size]} {\n\t${hide(size)} {\n\t\t${mark('display: none')};\n\t}\n}`);
@@ -926,7 +927,8 @@ function restoreContainerLayouts(rules: RuleSet, selector: string, styles: Respo
   if (!shown.length) return;
   const mark = (d: string) => (opts.important ? important(d) : d);
   for (const scope of CONTAINER_SCOPES) {
-    if (styles[scope]?.layout !== undefined) continue;
+    // A display of this layer's own for the range keeps its place.
+    if (styles[scope]?.layout !== undefined || customDisplay(styles[scope]?.customCss) !== undefined) continue;
     let layout: unknown;
     for (const l of opts.under) if (l?.[scope]?.layout !== undefined) layout = l[scope]!.layout;
     const display = nodeDisplay(layout);
@@ -1395,6 +1397,10 @@ export function keepWeakerHides(def: ComponentDefinition, inst: InstanceNode, pa
     }
     return hidden;
   };
+  // An item that sets no display of its own shows wherever the weaker rules show the part. Where they lay it out by the
+  // container's width, a hide for a whole screen size would hide it where the rest are shown: it is left to them.
+  const writesDisplay = (rs: ResponsiveStyles | undefined) => Object.entries(rs ?? {}).some(([k, r]) => !parseStyleScopeKey(k)?.state && !!r && typeof r === 'object' && (r.layout !== undefined || r.hidden === false || customDisplay(r.customCss) !== undefined));
+  if (!writesDisplay(own) && layers.some((l) => CONTAINER_SCOPES.some((c) => l[c]?.layout !== undefined || customDisplay(l[c]?.customCss) !== undefined))) return own;
   let out = own;
   for (const range of ['phone', 'tablet', 'desktop'] as const) {
     if (!hiddenAt(range) || own.base?.hidden !== undefined || own[range]?.hidden !== undefined) continue;

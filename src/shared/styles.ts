@@ -1829,7 +1829,10 @@ export function flattenContainers(layers: StyleLayer[], opts: Pick<FlattenOption
       if (isContainerScope(r.scope) && r.scope !== c.scope) continue;
       if (!own(c) && !own(r)) continue;
       // A hide is settled by the stylesheet, not by rank: a container display is followed by the hide at each size where
-      // the display that wins is one, among its own layer and those under it (see the generator's addContainerRules).
+      // its own layer's display is one (see the generator's addContainerRules). Folded, a weaker layer's hide becomes
+      // the element's own, which would hide what the container display showed over it.
+      const hides = (r.prop === 'hidden' && r.value === true) || (r.prop === 'customCss' && /(^|;)\s*display\s*:\s*none\b/i.test(String(r.value)));
+      if (hides && own(r) && !before(r, c) && c.names.includes('display')) return null;
       if (r.prop === 'hidden') continue;
       const sameRule = r.scope === c.scope && (r.state ?? null) === (c.state ?? null);
       // One rule of the result holds both: the one that won is kept, for the same property; anything else would be
@@ -1837,7 +1840,13 @@ export function flattenContainers(layers: StyleLayer[], opts: Pick<FlattenOption
       // Custom CSS is left out only where the winner sets everything it does.
       const covered = c.prop !== 'customCss' || c.names.every((n) => r.names.includes(n));
       if (sameRule && own(r) && own(c)) {
-        if (r.prop !== c.prop) return null;
+        // Two properties in one rule are written in a fixed order (a shorthand before its own longhands): the one written
+        // later wins there, which must be the one that won.
+        if (r.prop !== c.prop) {
+          const laterInRule = styleDeclOrder(r.prop) - styleDeclOrder(c.prop) || r.prop.localeCompare(c.prop);
+          if (before(r, c) !== laterInRule > 0) return null;
+          continue;
+        }
         if (before(r, c)) {
           if (!covered) return null;
           left.add(c);
@@ -1861,6 +1870,8 @@ export function flattenContainers(layers: StyleLayer[], opts: Pick<FlattenOption
     // Custom CSS from two layers that sets nothing in common: both apply, the stronger written later.
     rules[c.prop] = c.prop === 'customCss' && typeof rules.customCss === 'string' && typeof c.value === 'string' ? `${rules.customCss.replace(/;\s*$/, '')}; ${c.value}` : c.value;
   }
+  // Custom CSS written together must still be one element's custom CSS, or none of it would be written.
+  if (Object.values(out).some((r) => typeof r?.customCss === 'string' && parseCustomCss(r.customCss).error)) return null;
   return out;
 }
 

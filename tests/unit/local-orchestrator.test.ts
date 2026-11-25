@@ -761,7 +761,7 @@ describe('what a constrained local run sends first (#364)', () => {
     // The room is made only where the tool is offered.
     expect(JSON.stringify(body.response_format).includes('"audit_seo"'), label).toBe(audit > 0);
     expect(JSON.stringify(body.response_format).includes('"backgroundImage"'), label).toBe(background > 0);
-    expect(JSON.stringify(body.response_format).includes('"cq-narrow"'), label).toBe(container > 0);
+    for (const scope of ['"cq-narrow"', '"cq-medium"', '"cq-wide"']) expect(JSON.stringify(body.response_format).includes(scope), label).toBe(container > 0);
     const actions = (body.response_format.json_schema.schema.properties.action.anyOf as Array<{ properties: { tool: { enum: string[] } } }>).flatMap((b) => b.properties.tool.enum);
     expect(actions.includes('update_page_seo'), label).toBe(seo > 0);
     expect(actions.includes('update_site_seo'), label).toBe(label.startsWith('site'));

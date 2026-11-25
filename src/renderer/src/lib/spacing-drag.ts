@@ -231,7 +231,7 @@ export function planHandle(h: SpacingHandle, target: SpacingTarget, scope: Respo
     if (!beaten(target.styles, scope, shown, edgeOf(other, rtl), h.pair, property, cssNames(h.box, other.side, rtl))) sides.push(other.side);
   }
   const cardKeeps = (own: ResponsiveStyles) =>
-    sides.some((side) => [at(own, 'base'), at(own, shown)].some((r) => setsSide(r, edgeOf(handleAt(h.box, side), rtl), h.pair, cssNames(h.box, side, rtl))));
+    sides.some((side) => [at(own, 'base'), at(own, shown), ...CONTAINER_SCOPES.map((c) => own?.[c] ?? {})].some((r) => setsSide(r, edgeOf(handleAt(h.box, side), rtl), h.pair, cssNames(h.box, side, rtl))));
   if (target.everyItem && target.items && Object.values(target.items).some(cardKeeps)) return null;
   return { handle: h, property, label: STYLE_PROP_MAP[property]?.label ?? property, sides };
 }
