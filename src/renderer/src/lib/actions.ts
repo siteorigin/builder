@@ -1334,6 +1334,30 @@ export function openSeoView(subject?: SeoSubject | null): boolean {
 }
 
 /**
+ * The Search & sharing settings beside a document (the Inspector's for a page, the post writer's for a post), as Open
+ * in SEO view sees them: `leave` leaves the field being typed in, so its own control saves what it holds or keeps it as
+ * refused; `refused` is a field still holding text it could not save, with its name.
+ */
+export type SeoSettingsPlace = { leave: () => void; refused: () => { name: string; focus: () => void } | null };
+
+/**
+ * Open in SEO view from a document's own Search & sharing settings (#708). What is being typed is saved first. Text a
+ * page's field could not save (too long, an address that is not one) goes with the field, and the view's field shows it
+ * again (#702). A post's stays in the control it was typed in, under the view (#703): the view does not open over it,
+ * and the field says why, until it is corrected or Escape lets it go.
+ */
+export function openSeoViewFrom(subject: SeoSubject, place: SeoSettingsPlace): boolean {
+  place.leave();
+  const held = subject.kind === 'entry' ? place.refused() : null;
+  if (held) {
+    held.focus();
+    toast(`What is typed in ${held.name} is not saved yet. Correct it, or press Escape to put the saved text back, then open the SEO view.`, 'error');
+    return false;
+  }
+  return openSeoView(subject);
+}
+
+/**
  * Open a post in the writer: the Posts panel shows, with the post chosen. `picture` (counted from 1) asks the writer
  * to bring that picture of its text into view, as Show in Assets does. False when the post open now has text that
  * could not be saved, which keeps it open.

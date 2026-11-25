@@ -1,5 +1,6 @@
 import './SeoPreview.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { Globe, Search } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
@@ -7,7 +8,7 @@ import { createSeoResolver } from '@generator/seo-metadata';
 import { SERP_LAYOUT, type SerpDevice } from '@shared/serp';
 import { setSerpView, useStore } from '../store';
 import { FILLER_RESULTS, PHONE_BEZEL, SAMPLE_QUERY, SERP_MARGIN, serpPageWidth, serpScale, type FillerResult } from '../lib/serp-page';
-import { openSeoView, postPreviewHandoff } from '../lib/actions';
+import { openSeoViewFrom, postPreviewHandoff } from '../lib/actions';
 import { AssetImage } from '../components/AssetImage';
 import { Segmented, Switch, Tabs } from '../components/ui';
 import { lengthMeter, previewDocument, structuredPreview, withTypedSeo, type DocumentPreview, type LengthMeter as Meter, type StructuredPreview, type TypedSeo } from '../lib/seo-preview';
@@ -385,18 +386,28 @@ export function SeoAiAction({ subject, overlay, typed, from }: { subject: SeoSub
  */
 export function SeoInlineActions({ subject, overlay, typed }: { subject: SeoSubject; overlay: ProjectState; typed: TypedSeo }) {
   const ref = useRef<HTMLDivElement>(null);
+  const open = () => {
+    const settings = ref.current?.parentElement ?? null;
+    const opened = openSeoViewFrom(subject, {
+      leave: () => {
+        const at = document.activeElement;
+        // At once, with what the field shows after: whether it refused the text is read straight after.
+        if (settings && at instanceof HTMLElement && settings.contains(at) && at.matches('input, textarea')) flushSync(() => at.blur());
+      },
+      refused: () => {
+        const el = settings?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input[aria-invalid="true"], textarea[aria-invalid="true"]');
+        if (!el) return null;
+        const label = el.labels?.[0];
+        const name = (label?.querySelector('.grow')?.textContent ?? label?.textContent ?? '').trim();
+        return { name: name || 'Search & sharing', focus: () => el.focus() };
+      }
+    });
+    // The button goes with the settings it was in: focus moves to the view's way back to the overview.
+    if (opened) requestAnimationFrame(() => document.querySelector<HTMLElement>('.seo-view .seo-back')?.focus());
+  };
   return (
     <div className="seo-inline-actions" ref={ref}>
-      <button
-        type="button"
-        className="btn btn-sm"
-        onClick={() => {
-          const at = document.activeElement;
-          const settings = ref.current?.parentElement;
-          if (settings && at instanceof HTMLElement && settings.contains(at) && at.matches('input, textarea')) at.blur();
-          openSeoView(subject);
-        }}
-      >
+      <button type="button" className="btn btn-sm" onClick={open}>
         <Search aria-hidden /> Open in SEO view
       </button>
       <SeoAiAction subject={subject} overlay={overlay} typed={typed} from="inline" />
