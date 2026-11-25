@@ -506,6 +506,50 @@ describe('component.upsert: building a managed component in one operation (#358)
     expect(applyOperations(declared, [pricing({ definitionId: ownId })]).state.components[ownId].state).toEqual(declared.components[ownId].state);
   });
 
+  it('describes UI state, the buttons that change it, the content it shows and a drawer it opens, checked as the finished component (#377)', () => {
+    const st = createStarterState('blank', 'Expo', false);
+    const tabs = (extra: Partial<Upsert> = {}): Upsert => ({
+      type: 'component.upsert',
+      name: 'Plan switch',
+      properties: {},
+      state: { plan: { type: 'enum', label: 'Plan', options: ['monthly', { value: 'annual', label: 'Annual' }] }, open: { type: 'boolean' } },
+      nodes: [
+        { kind: 'element', id: 'root', tag: 'section', children: ['tabs', 'annual', 'more', 'drawer'] },
+        { kind: 'element', id: 'tabs', children: ['monthlyTab', 'annualTab'] },
+        { kind: 'link', id: 'monthlyTab', link: { type: 'none', target: '' }, label: 'Monthly', stateAction: { state: 'plan', op: 'set', value: 'monthly' } },
+        { kind: 'link', id: 'annualTab', link: { type: 'none', target: '' }, label: 'Annual', stateAction: { state: 'plan', op: 'set', value: 'annual' } },
+        { kind: 'text', id: 'annual', text: 'Billed yearly', when: { ref: { $state: 'plan' }, eq: 'annual' } },
+        { kind: 'link', id: 'more', link: { type: 'none', target: '' }, label: 'More', stateAction: { state: 'open', op: 'toggle' } },
+        { kind: 'element', id: 'drawer', overlay: 'drawer-bottom', children: ['terms'], when: { $state: 'open' } },
+        { kind: 'text', id: 'terms', text: 'Terms' }
+      ],
+      ...extra
+    });
+    expect(validateOperation(tabs()).ok).toBe(true);
+    const made = applyOperations(st, [tabs()]);
+    const id = made.results[0].definitionId as string;
+    const def = made.state.components[id];
+    // Settled as component.setState settles one: a label from the name, an option's label from its value, the first option to start.
+    expect(def.state).toEqual({ plan: { type: 'enum', label: 'Plan', options: [{ value: 'monthly', label: 'monthly' }, { value: 'annual', label: 'Annual' }], initial: 'monthly' }, open: { type: 'boolean', label: 'open', initial: false } });
+    expect(def.tree!.nodes.annualTab).toMatchObject({ stateAction: { state: 'plan', op: 'set', value: 'annual' } });
+    expect(def.tree!.nodes.drawer).toMatchObject({ overlay: 'drawer-bottom' });
+    expect(validateState(made.state).filter((d) => d.severity === 'error')).toEqual([]);
+    const node = (nid: string, patch: Record<string, unknown>) => tabs({ nodes: tabs().nodes.map((n) => (n.id === nid ? { ...n, ...patch } : n)) as Upsert['nodes'] });
+    expect(() => applyOperations(st, [node('annual', { when: { ref: { $state: 'period' }, eq: 'annual' } })])).toThrow(/"annual" reads the UI state "period", which the component does not declare/);
+    expect(() => applyOperations(st, [node('annualTab', { stateAction: { state: 'plan', op: 'set', value: 'yearly' } })])).toThrow(/"annualTab" sets "plan" to "yearly", which is not one of its options/);
+    expect(() => applyOperations(st, [node('more', { stateAction: { state: 'open', op: 'next' } })])).toThrow(/steps the yes\/no state "open"/);
+    expect(() => applyOperations(st, [node('drawer', { when: undefined })])).toThrow(/"drawer" is a dialog or drawer that no yes\/no UI state of the component opens/);
+    expect(() => applyOperations(st, [tabs({ properties: { open: { type: 'boolean', label: 'Open' } } })])).toThrow(/already has a property "open"/);
+    expect(() => applyOperations(st, [tabs({ state: { plan: { type: 'enum', options: ['only'] } } })])).toThrow(/a choice needs 2 to 50 options/);
+    // A rebuild replaces it whole: a new option, and {} with a design that no longer uses any.
+    const rebuilt = applyOperations(made.state, [tabs({ definitionId: id, state: { plan: { type: 'enum', label: 'Plan', options: ['monthly', 'annual', 'lifetime'], initial: 'annual' }, open: { type: 'boolean' } } })]).state;
+    expect(rebuilt.components[id].state!.plan).toMatchObject({ initial: 'annual', options: [{ value: 'monthly' }, { value: 'annual' }, { value: 'lifetime' }] });
+    const plain = applyOperations(rebuilt, [{ type: 'component.upsert', definitionId: id, name: 'Plan switch', properties: {}, nodes: [{ kind: 'element', id: 'root', children: [] }], state: {} }]).state;
+    expect(plain.components[id].state).toBeUndefined();
+    // Left out, the state of a design that uses it is refused rather than dropped unseen.
+    expect(() => applyOperations(rebuilt, [{ type: 'component.upsert', definitionId: id, name: 'Plan switch', properties: {}, nodes: [{ kind: 'element', id: 'root', children: [] }] }])).toThrow(/\(plan, open\)\. Describe it again with state/);
+  });
+
   it('is never offered to the assistant as a raw operation, and is refused if sent anyway', async () => {
     const offered = JSON.stringify(toolDefinitions({ codeEnabled: true, definitionOps: true }).find((t) => t.name === 'apply_operations')!.parameters);
     expect(offered).toContain('component.create');

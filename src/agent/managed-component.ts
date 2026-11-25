@@ -576,6 +576,8 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
 
   // UI state: each variable settled as the engine will store it, so a problem is named by its row.
   const uiState: Record<string, UiStateSchema> = {};
+  // Rows refused here are reported once, on the row: not again by every node that uses them.
+  const refusedStates = new Set<string>();
   (args.state ?? []).forEach((st, i) => {
     const at = `state[${i}]`;
     if (reservedKey(st.name, `${at}.name`, issues)) return;
@@ -584,11 +586,13 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     try {
       checkPropName(st.name, 'State');
     } catch (e) {
+      refusedStates.add(st.name);
       return issues.push({ field: `${at}.name`, message: (e as Error).message });
     }
     try {
       uiState[st.name] = normalizeUiState(st, st.name);
     } catch (e) {
+      refusedStates.add(st.name);
       const message = (e as Error).message;
       issues.push({ field: /starts as/.test(message) ? `${at}.initial` : /option/.test(message) ? `${at}.options` : at, message });
     }
@@ -597,6 +601,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
   /** A condition that reads UI state: state the call declares, compared (if at all) with a value it can hold. */
   const checkStateCondition = (v: unknown, name: string, at: string, id: string) => {
     const s = Object.hasOwn(uiState, name) ? uiState[name] : undefined;
+    if (refusedStates.has(name)) return;
     if (!s) return issues.push({ field: at, message: `"${id}" reads the UI state "${name}", which is not one of the state${stateNames()}` });
     if (!isRecord(v) || !('ref' in v)) return;
     const key = 'eq' in v ? 'eq' : 'ne';
@@ -705,7 +710,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
       else checkBinding(ref as Parameters<typeof checkBinding>[0], `${at}.${c}`, n.id);
     }
     // A button's state action changes state the call declares, in a way that state can change.
-    if (n.kind === 'link' && n.stateAction) {
+    if (n.kind === 'link' && n.stateAction && !refusedStates.has(n.stateAction.state)) {
       const problem = stateActionProblem({ state: uiState, properties: {} } as unknown as ComponentDefinition, n.stateAction);
       if (problem) issues.push({ field: `${at}.stateAction`, message: `"${n.id}" ${problem}` });
     }

@@ -1162,3 +1162,48 @@ describe('the document format and the assistant', () => {
     expect(sent.map((ops) => (ops[0] as { type: string }).type)).toEqual(['component.setState', 'node.setStateAction', 'node.setBinding']);
   });
 });
+
+describe('UI state built by the assistant in one call (#377)', () => {
+  it('renders a tab list that upsert_managed_component built and placed in one call, its panels kept for each tab', async () => {
+    let s = fresh();
+    const host = {
+      state: () => s,
+      revision: () => 1,
+      diagnostics: () => validateState(s),
+      apply: async (ops: EditOperation[]) => {
+        const r = applyOperations(s, ops);
+        s = r.state;
+        return { ok: true, revision: 2, results: r.results };
+      }
+    } as unknown as Parameters<typeof executeTool>[2];
+    const args = {
+      name: 'Plan switch',
+      state: [{ type: 'enum', name: 'plan', label: 'Plan', options: [{ value: 'monthly', label: 'Monthly' }, { value: 'annual', label: 'Annual' }], initial: 'annual' }],
+      nodes: [
+        { kind: 'element', id: 'root', tag: 'section', children: ['tabs', 'monthly', 'annual'] },
+        { kind: 'element', id: 'tabs', children: ['monthlyTab', 'annualTab'] },
+        { kind: 'link', id: 'monthlyTab', link: '', label: 'Monthly', stateAction: { op: 'set', state: 'plan', value: 'monthly' } },
+        { kind: 'link', id: 'annualTab', link: '', label: 'Annual', stateAction: { op: 'set', state: 'plan', value: 'annual' } },
+        { kind: 'element', id: 'monthly', children: ['monthlyPrice'], when: { ref: { $state: 'plan' }, eq: 'monthly' } },
+        { kind: 'text', id: 'monthlyPrice', text: '$10 a month' },
+        { kind: 'element', id: 'annual', children: ['annualPrice'], when: { ref: { $state: 'plan' }, eq: 'annual' } },
+        { kind: 'text', id: 'annualPrice', text: '$100 a year' }
+      ],
+      placeOnPage: { pageId: '/' }
+    };
+    const out = await executeTool('upsert_managed_component', JSON.stringify(args), host, 'm1');
+    expect(out.ok, JSON.stringify(out.content)).toBe(true);
+    expect(errors(s)).toEqual([]);
+    const html = await renderHome(s);
+    const lists = tagsWith(html, 'role', 'tablist');
+    expect(lists).toHaveLength(1);
+    const tabs = tagsWith(html, 'role', 'tab');
+    expect(tabs.map((t) => attrOf(t, 'aria-selected'))).toEqual(['false', 'true']);
+    // Both panels are in the page, the one for the tab not chosen hidden on screen; each names its tab.
+    const panels = tagsWith(html, 'role', 'tabpanel');
+    expect(panels).toHaveLength(2);
+    expect(panels.map((p) => attrOf(p, 'class')!.split(' ').includes(STATE_OFF_CLASS))).toEqual([true, false]);
+    expect(html).toContain('$10 a month');
+    expect(html).toContain('$100 a year');
+  });
+});

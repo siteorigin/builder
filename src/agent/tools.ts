@@ -935,6 +935,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     case 'edit_definition_node':
     case 'bind_definition_field':
     case 'manage_component_prop':
+    case 'manage_component_state':
     case 'style_definition_element':
     case 'add_definition_variant':
     case 'insert_definition_node':
