@@ -145,7 +145,19 @@ function layoutItem(el) {
     const r = c.getBoundingClientRect();
     return r.width > 0 || r.height > 0;
   };
-  const item = getComputedStyle(el).display === 'contents' ? [...el.children].find(shows) || el : el;
+  // The first child that lays out, through children that lay out no box either (an image's <picture>).
+  const laid = (box) => {
+    for (const c of box.children) {
+      if (getComputedStyle(c).display !== 'contents') {
+        if (shows(c)) return c;
+      } else {
+        const inner = laid(c);
+        if (inner) return inner;
+      }
+    }
+    return null;
+  };
+  const item = getComputedStyle(el).display === 'contents' ? laid(el) || el : el;
   let parent = item.parentElement;
   while (parent && getComputedStyle(parent).display === 'contents') parent = parent.parentElement;
   return { item, ordered: !!parent && /(^|-)(flex|grid)$/.test(getComputedStyle(parent).display) };

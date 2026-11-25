@@ -182,8 +182,19 @@ describe('responsive copies', () => {
     const iptc = Buffer.concat([Buffer.from([0x1c, 2, 80, 0, 7]), Buffer.from('Cy Shot'), Buffer.from([0x1c, 2, 116, 0, 8]), Buffer.from('Shot Ltd')]);
     const block = Buffer.concat([Buffer.from('8BIM', 'latin1'), Buffer.from([4, 4, 0, 0]), u32(iptc.length), iptc]);
     expect(creditText({ iptc: block })).toEqual({ artist: 'Cy Shot', copyright: 'Shot Ltd', xmp: expect.stringContaining('<dc:rights><rdf:Alt><rdf:li xml:lang="x-default">Shot Ltd</rdf:li></rdf:Alt></dc:rights>') });
-    // The photo's own XMP is its credit packet as it is.
-    expect(creditText({ tiff: Buffer.from('MM\0*\0\0\0\x08\0\0\0\0\0\0', 'latin1'), xmp: Buffer.from('<x:xmpmeta/>') })).toEqual({ xmp: '<x:xmpmeta/>' });
+    // The photo's own XMP credits come first; what they leave unsaid comes from its EXIF and IPTC, exactly as written.
+    const ownXmp = Buffer.from('<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:creator><rdf:Seq><rdf:li>Jane Doe</rdf:li></rdf:Seq></dc:creator></rdf:Description></rdf:RDF></x:xmpmeta>');
+    expect(creditText({ tiff: Buffer.from('MM\0*\0\0\0\x08\0\0\0\0\0\0', 'latin1'), xmp: Buffer.from('<x:xmpmeta/>') })).toEqual({});
+    const rights = textCreditsAsTiff([Buffer.from('tEXtAuthor\0Ana Field', 'latin1')])!;
+    const dataset = (n: number, value: string) => Buffer.concat([Buffer.from([0x1c, 2, n, 0, Buffer.byteLength(value)]), Buffer.from(value, 'utf8')]);
+    const credit = Buffer.concat([Buffer.from([0x1c, 1, 90, 0, 3, 0x1b, 0x25, 0x47]), dataset(116, '© Zoë'), dataset(110, 'Agence Zoë')]);
+    const merged = creditText({ tiff: rights, xmp: ownXmp, iptc: Buffer.concat([Buffer.from('8BIM', 'latin1'), Buffer.from([4, 4, 0, 0]), u32(credit.length), credit]) });
+    expect(merged.artist).toBe('Ana Field');
+    expect(merged.copyright).toBe('© Zoë');
+    expect(merged.xmp).toContain('<dc:creator><rdf:Seq><rdf:li>Jane Doe</rdf:li></rdf:Seq></dc:creator>');
+    expect(merged.xmp).not.toContain('Ana Field');
+    expect(merged.xmp).toContain('<dc:rights><rdf:Alt><rdf:li xml:lang="x-default">© Zoë</rdf:li></rdf:Alt></dc:rights>');
+    expect(merged.xmp).toContain('<photoshop:Credit>Agence Zoë</photoshop:Credit>');
     // EXIF first, IPTC where EXIF has nothing; IPTC is UTF-8 only when its character set says so.
     const exifArtist = textCreditsAsTiff([Buffer.from('tEXtAuthor\0Ana Field', 'latin1')])!;
     const mixed = creditText({ tiff: exifArtist, iptc: block });
@@ -432,6 +443,23 @@ describe('media worker client', () => {
     expect(await crashed).toEqual({ unreadable: false, variants: [] });
     client.stop();
     expect(await createVariantClient(() => { throw new Error('no utility process'); }).inspect(Buffer.from('d'), 'image/png', 100)).toEqual({ unreadable: false, variants: [] });
+  });
+
+  it('gives a picture’s copies two minutes, and any other request half a minute, before the worker counts as stuck', async () => {
+    vi.useFakeTimers();
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn);
+    const copies = client.variants(Buffer.from('a'), 'image/jpeg', 10_000);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(workers[0].killed).toBe(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await copies).toEqual([]);
+    expect(workers[0].killed).toBe(true);
+    const opaque = client.opaque(Buffer.from('b'), 'image/png');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await opaque).toBeNull();
+    expect(workers[1].killed).toBe(true);
+    client.stop();
   });
 
   it('asks for exactly the copies a library image lists when making them again, and returns each with its format', async () => {

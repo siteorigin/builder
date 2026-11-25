@@ -581,19 +581,28 @@ export function firstSectionImages(
   const first = tree.rootIds[0];
   if (!first) return;
   let done = false;
-  // The sizes each page node around what renders hides it at, from the outermost one in.
-  const hiding: Array<Set<Size>> = [];
+  // The sizes each node on the way down hides what renders inside it at, as the page renders it (a design that shows
+  // slotted content is on the way), read with and without the options its placement chose: where those decide it,
+  // the image counts as shown, as hiddenInDesignEverywhere has it.
+  const hiding: Array<[Set<Size>, Set<Size>]> = [];
+  const own = (n: GraphNode, scope: Scope, def: ComponentDefinition | undefined): [Set<Size>, Set<Size>] => {
+    if (!def) {
+      const page = hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]);
+      return [page, page];
+    }
+    return [hiddenInDesign(def, n.id, scope, false)[0] ?? new Set(), hiddenInDesign(def, n.id, scope)[0] ?? new Set()];
+  };
+  const hidden = (k: 0 | 1) => hiddenEverySize(hiding.map((h) => h[k]));
   walkRendered(state, tree, {
     roots: [first],
     ...(entry ? { entry } : {}),
-    enter: (n) => void hiding.push(hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined])),
-    leave: () => void hiding.pop(),
     prune: (n) => done || (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed'),
     node: (n, scope, _reportId, _inDef, def) => {
-      if (done || n.kind !== 'image' || (scope.repeats ?? 0) > 0) return;
-      if (hiddenEverySize([...hiding, ...(def ? hiddenInDesign(def, n.id, scope) : [])])) return;
+      hiding.push(own(n, scope, def));
+      if (done || n.kind !== 'image' || (scope.repeats ?? 0) > 0 || (hidden(0) && hidden(1))) return;
       done = each(n, scope, def);
-    }
+    },
+    done: () => void hiding.pop()
   });
 }
 

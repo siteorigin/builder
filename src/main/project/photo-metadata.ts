@@ -1310,9 +1310,9 @@ export interface CreditText {
 /**
  * A photo's credits as words, for a copy in a format they cannot be copied into byte for byte (a WebP or AVIF copy of
  * a JPEG, which the encoder writes them into). The artist and copyright come from its EXIF, else its PNG Author and
- * Copyright text, else its IPTC by-line and copyright notice. The XMP is the photo's own credit packet; a photo without
- * one gets a packet saying its artist, copyright and IPTC credit line, so the copy holds them exactly as written, in
- * any script (an encoder may write EXIF text as ASCII only).
+ * Copyright text, else its IPTC by-line and copyright notice. The XMP holds the photo's own credit properties, and its
+ * artist, copyright and IPTC credit line where those say nothing of them, so the copy holds every credit exactly as
+ * written, in any script (an encoder may write EXIF text as ASCII only).
  */
 export function creditText(credits: PhotoCredits): CreditText {
   const tiff = textCreditsAsTiff(credits.text ?? [], credits.tiff);
@@ -1321,16 +1321,23 @@ export function creditText(credits: PhotoCredits): CreditText {
   const iptc = credits.iptc ? iptcCredits(credits.iptc) : {};
   const artist = word(values.get(TAG.artist)) || iptc.artist;
   const copyright = word(values.get(TAG.copyright)) || iptc.copyright;
-  let xmp = credits.xmp?.toString('utf8');
-  if (!xmp && (artist || copyright || iptc.credit)) {
-    const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    const body = [
-      artist ? `<dc:creator><rdf:Seq><rdf:li>${esc(artist)}</rdf:li></rdf:Seq></dc:creator>` : '',
-      copyright ? `<dc:rights><rdf:Alt><rdf:li xml:lang="x-default">${esc(copyright)}</rdf:li></rdf:Alt></dc:rights>` : '',
-      iptc.credit ? `<photoshop:Credit>${esc(iptc.credit)}</photoshop:Credit>` : ''
-    ].join('');
-    xmp = packet(new Set(['dc', ...(iptc.credit ? ['photoshop'] : [])]), '', body).toString('utf8');
+  // The photo's own credit properties, each as written (already XML text), and its artist, copyright and credit line
+  // from elsewhere for any of those it does not say.
+  const own = credits.xmp?.toString('utf8') ?? '';
+  const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const filled: Record<string, string | undefined> = { 'dc:creator': artist, 'dc:rights': copyright, 'photoshop:Credit': iptc.credit };
+  const ns = new Set<string>();
+  const props: string[] = [];
+  for (const p of XMP_CREDITS) {
+    const qname = `${p.prefix}:${p.name}`;
+    let items = own ? nsValues(own, p.prefix, p.name) : [];
+    if (!items.length && filled[qname]) items = [{ text: esc(filled[qname]!) }];
+    if (!items.length) continue;
+    ns.add(p.prefix);
+    if (p.kind === 'text') props.push(`<${qname}>${items[0].text}</${qname}>`);
+    else props.push(`<${qname}><rdf:${p.kind}>${items.map((i) => (p.kind === 'Alt' ? `<rdf:li xml:lang="${i.lang ?? 'x-default'}">${i.text}</rdf:li>` : `<rdf:li>${i.text}</rdf:li>`)).join('')}</rdf:${p.kind}></${qname}>`);
   }
+  const xmp = props.length ? packet(ns, '', props.join('')).toString('utf8') : undefined;
   return { ...(artist ? { artist } : {}), ...(copyright ? { copyright } : {}), ...(xmp ? { xmp } : {}) };
 }
 

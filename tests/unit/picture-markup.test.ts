@@ -209,9 +209,12 @@ describe('the hero’s preload', () => {
     const s = site(picture('hero'));
     s.assets.assets.a_other = { ...picture('other'), id: 'a_other' };
     const home = homeOf(s);
-    home.nodes.box = { id: 'box', kind: 'element', tag: 'div', children: ['empty', 'hidden', 'shown'] } as (typeof home.nodes)[string];
+    home.nodes.box = { id: 'box', kind: 'element', tag: 'div', children: ['empty', 'hidden', 'veil', 'shown'] } as (typeof home.nodes)[string];
     home.nodes.empty = { id: 'empty', kind: 'image', image: { assetId: null, alt: '' } };
     home.nodes.hidden = { id: 'hidden', kind: 'image', image: { assetId: 'a_other', alt: '' }, styles: { base: { hidden: true } } };
+    // Hidden by what is around it, at every size: by itself on phones, by its container everywhere else.
+    home.nodes.veil = { id: 'veil', kind: 'element', tag: 'div', children: ['under'], styles: { base: { hidden: true } } } as (typeof home.nodes)[string];
+    home.nodes.under = { id: 'under', kind: 'image', image: { assetId: 'a_other', alt: '' }, styles: { phone: { hidden: true } } };
     home.nodes.shown = { id: 'shown', kind: 'image', image: { assetId: 'a_hero', alt: 'Ours' } };
     home.rootIds = ['box', ...home.rootIds];
     const { head } = await renderHome(s);
