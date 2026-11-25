@@ -28,13 +28,17 @@ describe('the live relay setting', () => {
   });
 
   it('saves a relay in its normal form and reads it back from disk', async () => {
-    const { updateSettings } = await freshSettings({ settings: { appearance: 'dark', developerMode: true } });
+    const recents = [{ dir: '/Users/me/Sites/acme', name: 'Acme', openedAt: '2026-11-01T00:00:00.000Z' }];
+    const trusted = { '/Users/me/Sites/acme': 'abc' };
+    const { updateSettings } = await freshSettings({ settings: { appearance: 'dark', developerMode: true }, recents, trusted });
     const s = await updateSettings({ liveRelayUrl: '  https://Collaborate.SiteOrigin.com/  ' });
     expect(s.liveRelayUrl).toBe('https://collaborate.siteorigin.com');
     // Nothing else changed with it.
     expect(s).toMatchObject({ appearance: 'dark', developerMode: true });
     // The update itself saved it.
-    expect(JSON.parse(readFileSync(settingsFile, 'utf8')).settings).toMatchObject({ liveRelayUrl: 'https://collaborate.siteorigin.com', appearance: 'dark', developerMode: true });
+    const saved = JSON.parse(readFileSync(settingsFile, 'utf8'));
+    expect(saved.settings).toMatchObject({ liveRelayUrl: 'https://collaborate.siteorigin.com', appearance: 'dark', developerMode: true });
+    expect(saved).toMatchObject({ recents, trusted });
 
     const { loadSettings } = await freshSettings(JSON.parse(readFileSync(settingsFile, 'utf8')));
     expect((await loadSettings()).settings.liveRelayUrl).toBe('https://collaborate.siteorigin.com');

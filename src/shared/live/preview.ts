@@ -56,27 +56,30 @@ export function isPreviewHeaderValue(value: string): boolean {
 /**
  * The development server's own routes, which the preview never needs and a guest must never reach: they act on the
  * host's computer (`__open-in-editor` opens a file in the host's editor). Any first path segment starting with `__`
- * is taken for one, except SvelteKit's `__data.json`, which a page's data is fetched from; the routes that act on the
- * host are refused at any depth too, since a project's own Vite config may serve everything under another base.
+ * is taken for one, except the files SvelteKit fetches a page's data and route from. The routes that act on the host
+ * are refused at any depth too, since a project's own Vite config may serve everything under another base, and in
+ * any spelling the server matches them by: in any case, and with anything after a `.`.
  */
-const HOST_ACTION_ROUTES = new Set(['__open-in-editor', '__inspect']);
+const HOST_ACTION_ROUTES = ['__open-in-editor', '__inspect'];
+const SVELTEKIT_FILES = new Set(['__data.json', '__route.js']);
 function isDevServerRoute(segment: string, first: boolean): boolean {
-  return HOST_ACTION_ROUTES.has(segment) || (first && segment.startsWith('__') && segment !== '__data.json');
+  const lower = segment.toLowerCase();
+  if (HOST_ACTION_ROUTES.some((route) => lower === route || lower.startsWith(`${route}.`))) return true;
+  return first && segment.startsWith('__') && !SVELTEKIT_FILES.has(segment);
 }
 
 /**
  * Whether `target` is a path within the preview, with an optional query, as a request names it: one leading slash
- * and no authority, no fragment, no spaces or controls, no backslash, no empty segment, no segment that is or
- * decodes to `.` or `..` or holds an encoded slash, and none of the development server's own routes. Checked as
- * written, so nothing a URL parser or the preview server would normalize away is accepted for what it becomes.
+ * and no authority, no fragment, no spaces or controls, no backslash, no segment that is or decodes to `.` or `..`
+ * or holds an encoded slash, and none of the development server's own routes. Checked as written, so nothing a URL
+ * parser or the preview server would normalize away is accepted for what it becomes. An empty segment inside the
+ * path stays (Vite names some modules `/@fs//…`); only a leading `//`, which would name another host, is refused.
  */
 export function isPreviewTarget(target: unknown): target is string {
   if (typeof target !== 'string' || target.length === 0 || target.length > MAX_PREVIEW_PATH_LENGTH) return false;
-  if (!target.startsWith('/') || /[\s\u0000-\u001f\u007f\\#]/.test(target)) return false;
+  if (!target.startsWith('/') || target.startsWith('//') || /[\s\u0000-\u001f\u007f\\#]/.test(target)) return false;
   const segments = target.split('?', 1)[0].split('/').slice(1);
   for (const [i, segment] of segments.entries()) {
-    // Only the last segment may be empty: the trailing slash of a page's address.
-    if (segment === '' && i < segments.length - 1) return false;
     let decoded: string;
     try {
       decoded = decodeURIComponent(segment);
@@ -153,7 +156,7 @@ export class PreviewStream {
       if (this.state !== 'head') return this.fail('INVALID_RESPONSE', 'A response has one head.');
       const lengths = frame.headers.filter(([name]) => name === 'content-length').map(([, value]) => value);
       if (lengths.length > 1) return this.fail('INVALID_RESPONSE', 'The response gives its length more than once.');
-      if (lengths.length && !/^\d{1,10}$/.test(lengths[0])) return this.fail('INVALID_RESPONSE', 'The response’s length is not a number.');
+      if (lengths.length && !/^\d{1,15}$/.test(lengths[0])) return this.fail('INVALID_RESPONSE', 'The response’s length is not a number.');
       // A HEAD answer, a 204 or 205, and a 304 carry no body, whatever length they describe.
       this.bodyless = this.method === 'HEAD' || BODYLESS.has(frame.status);
       if (lengths.length && !this.bodyless) {

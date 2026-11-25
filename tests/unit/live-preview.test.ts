@@ -54,6 +54,7 @@ describe('preview response streams', () => {
   it('refuse a head that gives its length twice', () => {
     expect(new PreviewStream('GET').accept(head([['content-length', '0'], ['content-length', '1']]))).toMatchObject({ ok: false, code: 'INVALID_RESPONSE' });
     expect(new PreviewStream('GET').accept(head([['content-length', '1'], ['content-length', '1']]))).toMatchObject({ ok: false, code: 'INVALID_RESPONSE' });
+    expect(new PreviewStream('HEAD').accept(head([['content-length', '0'], ['content-length', '1']]))).toMatchObject({ ok: false, code: 'INVALID_RESPONSE' });
   });
 
   it('hold a range response to the length of the range sent', () => {
@@ -69,6 +70,7 @@ describe('preview response streams', () => {
 
   it('carry no body for HEAD or bodyless statuses, whatever length they describe', () => {
     expect(run(new PreviewStream('HEAD'), [head([['content-length', '5000']]), end(0)]).at(-1)).toEqual({ ok: true, done: true });
+    expect(run(new PreviewStream('HEAD'), [head([['content-length', '10000000000']]), end(0)]).at(-1)).toEqual({ ok: true, done: true });
     // A 304 describes the cached body, which may be larger than any response could carry.
     expect(run(new PreviewStream('GET'), [head([['content-length', String(MAX_PREVIEW_RESPONSE_BYTES + 1)]], 304), end(0)]).at(-1)).toEqual({ ok: true, done: true });
     expect(run(new PreviewStream('GET'), [head([['content-length', '123']], 204), end(0)]).at(-1)).toEqual({ ok: true, done: true });
@@ -97,10 +99,11 @@ describe('preview targets and headers', () => {
   it('keeps clear of the development server’s own routes', () => {
     for (const bad of ['/__open-in-editor', '/__open-in-editor?file=src/app.html', '/%5f%5fopen-in-editor', '/__vite_ping', '/__inspect/', '/__brand.svg'])
       expect(isPreviewTarget(bad), bad).toBe(false);
-    // Under a project's own base, the routes that act on the host are still refused.
-    for (const bad of ['/site/__open-in-editor?file=x', '/a/b/__inspect/']) expect(isPreviewTarget(bad), bad).toBe(false);
-    // SvelteKit's page data, Vite's client modules and pages with underscores stay reachable.
-    for (const ok of ['/__data.json', '/about/__data.json', '/_app/version.json', '/@vite/client', '/@id/__x00__virtual:x.js', '/node_modules/.vite/deps/svelte.js?v=1', '/a/__notes/'])
+    // Under a project's own base, the routes that act on the host are still refused, in any spelling Vite matches.
+    for (const bad of ['/site/__open-in-editor?file=x', '/a/b/__inspect/', '/site/__OPEN-IN-EDITOR?file=x', '/site/__open-in-editor.json?file=x', '/site/__Inspect.x'])
+      expect(isPreviewTarget(bad), bad).toBe(false);
+    // SvelteKit's page data and route files, Vite's modules and pages with underscores stay reachable.
+    for (const ok of ['/__data.json', '/about/__data.json', '/__route.js', '/about/__route.js', '/_app/version.json', '/@vite/client', '/@id/__x00__virtual:x.js', '/@fs//Users/host/site/x.js', '/node_modules/.vite/deps/svelte.js?v=1', '/a/__notes/', '/a/__open-in-editorial/'])
       expect(isPreviewTarget(ok), ok).toBe(true);
   });
 
@@ -108,6 +111,7 @@ describe('preview targets and headers', () => {
     expect(isPreviewLocation('/about/#team')).toBe(true);
     expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview', '/about/#team')).toBe('/s/abcdefghijkmnpqrstuvwxyz/preview/about/#team');
     expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview/', '/')).toBe('/s/abcdefghijkmnpqrstuvwxyz/preview/');
+    expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview', '/search/?q=bread&page=2#results')).toBe('/s/abcdefghijkmnpqrstuvwxyz/preview/search/?q=bread&page=2#results');
     for (const bad of ['//evil.example/', 'https://evil.example/', '/a#b#c', '/a#b c', '/__open-in-editor#x']) {
       expect(isPreviewLocation(bad), bad).toBe(false);
       expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview', bad)).toBeNull();

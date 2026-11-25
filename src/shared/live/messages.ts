@@ -389,27 +389,40 @@ export function parseFrame<D extends Direction>(direction: D, input: unknown): F
   return checkFrame(direction, value);
 }
 
-/** Check a frame already read from JSON, as parseFrame does after parsing. */
-export function checkFrame<D extends Direction>(direction: D, value: unknown): FrameResult<FrameOf<D>> {
+/** A frame's type and every field, for `direction`: what checkFrame checks apart from size. */
+function validateFrame<D extends Direction>(direction: D, value: unknown): FrameResult<FrameOf<D>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return fail('INVALID', 'A frame is a JSON object.');
   const type = (value as { type?: unknown }).type;
   if (typeof type !== 'string' || !FRAME_TYPES[direction].has(type)) return fail('UNKNOWN_TYPE', `${typeof type === 'string' ? `"${type.slice(0, 40)}"` : 'A frame with no type'} is not a frame sent ${direction.replace(/-/g, ' ')}.`, 'type');
   const parsed = FRAME_SCHEMAS[direction].safeParse(value);
-  if (parsed.success) {
-    // A frame is as large as it is when written again: the relay rewrites what it passes on, and JSON may write a
-    // value longer than it was sent (1e20 as twenty-one digits), so one that grows past the limit is refused here.
-    let text: string;
-    try {
-      text = JSON.stringify(parsed.data);
-    } catch {
-      return fail('INVALID', 'The frame cannot be written as JSON.');
-    }
-    if (utf8Length(text) > frameLimit(direction)) return fail('TOO_LARGE', `Frames are at most ${frameLimit(direction)} bytes as written.`);
-    return { ok: true, frame: parsed.data as FrameOf<D> };
-  }
+  if (parsed.success) return { ok: true, frame: parsed.data as FrameOf<D> };
   const issue = parsed.error.issues[0];
   const path = issue.path.map(String).join('.');
   return fail('INVALID', `${path || 'frame'}: ${issue.message}`.slice(0, MAX_MESSAGE_LENGTH), path || undefined);
+}
+
+/** A checked frame as JSON text, or why it cannot be: JSON cannot hold it, or it is too large as written. */
+function writeFrame(direction: Direction, frame: unknown): FrameResult<string> {
+  let text: string;
+  try {
+    text = JSON.stringify(frame);
+  } catch {
+    return fail('INVALID', 'The frame cannot be written as JSON.');
+  }
+  if (utf8Length(text) > frameLimit(direction)) return fail('TOO_LARGE', `Frames are at most ${frameLimit(direction)} bytes as written.`);
+  return { ok: true, frame: text };
+}
+
+/**
+ * Check a frame already read from JSON, as parseFrame does after parsing: its type and fields, then its size as it is
+ * written again. The relay rewrites what it passes on, and JSON may write a value longer than it was sent (1e20 as
+ * twenty-one digits), so a frame that would grow past the limit is refused here, not by the next reader.
+ */
+export function checkFrame<D extends Direction>(direction: D, value: unknown): FrameResult<FrameOf<D>> {
+  const checked = validateFrame(direction, value);
+  if (!checked.ok) return checked;
+  const written = writeFrame(direction, checked.frame);
+  return written.ok ? checked : written;
 }
 
 /**
@@ -417,14 +430,11 @@ export function checkFrame<D extends Direction>(direction: D, value: unknown): F
  * would be refused: a result JSON cannot hold (undefined, a BigInt, a cycle) fails here, not at the other end.
  */
 export function encodeFrame<D extends Direction>(direction: D, frame: FrameOf<D>): FrameResult<string> {
-  const checked = checkFrame(direction, frame);
+  const checked = validateFrame(direction, frame);
   if (!checked.ok) return checked;
-  let text: string;
-  try {
-    text = JSON.stringify(checked.frame);
-  } catch {
-    return fail('INVALID', 'The frame cannot be written as JSON.');
-  }
-  const read = parseFrame(direction, text);
-  return read.ok ? { ok: true, frame: text } : read;
+  const written = writeFrame(direction, checked.frame);
+  if (!written.ok) return written;
+  // Read back as the reader will. The text is already as JSON writes it, so its size needs no second look.
+  const read = validateFrame(direction, JSON.parse(written.frame));
+  return read.ok ? written : read;
 }

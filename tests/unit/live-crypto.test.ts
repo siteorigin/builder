@@ -156,7 +156,13 @@ describe('host challenge-response', () => {
       'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',
       'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f'
     ].map(hex);
-    for (const key of [identity, orderEight, orderEightNegated, pPlusOne, ...listed]) {
+    // Each with its sign bit set too: the same point's other spelling.
+    const signed = listed.map((key) => {
+      const bytes = fromBase64Url(key)!;
+      bytes[31] |= 0x80;
+      return toBase64Url(bytes);
+    });
+    for (const key of [identity, orderEight, orderEightNegated, pPlusOne, ...listed, ...signed]) {
       expect(isHostPublicKey(key)).toBe(false);
       expect(await importHostPublicKey(key)).toBeNull();
     }

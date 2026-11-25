@@ -171,6 +171,8 @@ describe('checking a batch', () => {
       ])
         expect(checkEditBatch('collaborator', { operations: [op] }), `${op.type} in ${owner.kind}`).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
       expect(checkEditBatch('collaborator', { operations: [{ type: 'node.copy', owner: page, nodeId: 'n_card', toOwner: owner }] })).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+      // Every operation of a batch is checked, not just the first.
+      expect(checkEditBatch('collaborator', { operations: [setText, setStyle, { ...setText, owner }] })).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 2 } });
     }
   });
 
@@ -189,8 +191,12 @@ describe('checking a batch', () => {
   });
 
   it('lets a collaborator rename, move and lay out a page, but not publish, hide or redirect it', () => {
-    expect(checkEditBatch('collaborator', { operations: [{ type: 'page.update', pageId: 'pg_about', title: 'About us', route: '/about-us/', navLabel: 'About', showHeader: false }] })).toMatchObject({ ok: true });
-    for (const field of [{ draft: false }, { draft: true }, { noindex: true }, { searchHidden: true }, { canonical: 'https://elsewhere.example/' }, { newsHidden: true }, { structuredData: { type: 'WebPage' } }])
+    expect(
+      checkEditBatch('collaborator', {
+        operations: [{ type: 'page.update', pageId: 'pg_about', title: 'About us', route: '/about-us/', navLabel: 'About', showHeader: false, showFooter: true, socialImage: 'img_1', byline: 'By Ana Ruiz', excerpt: 'Spring workshop dates' }]
+      })
+    ).toMatchObject({ ok: true });
+    for (const field of [{ draft: false }, { draft: true }, { noindex: true }, { searchHidden: true }, { canonical: 'https://elsewhere.example/' }, { newsHidden: true }, { structuredData: { type: 'WebPage' } }, { articleDate: '2026-01-01' }, { article: false }])
       expect(checkEditBatch('collaborator', { operations: [{ type: 'page.update', pageId: 'pg_about', title: 'About', ...field }] }), Object.keys(field)[0]).toMatchObject({
         ok: false,
         error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(Object.keys(field)[0]), operationIndex: 0 }
@@ -230,7 +236,8 @@ describe('checking a batch', () => {
       expect(checkEditBatch('collaborator', { operations: [{ type: 'page.reorder', pageIds: ['pg_home', reserved] }] }), reserved).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 0 } });
     // Content may hold those words, in a property of any name.
     expect(validateOperation({ type: 'node.insert', owner: page, parentId: null, componentId: 'content.text', props: { careerPath: ['prototype'], memberIds: ['constructor'] } })).toMatchObject({ ok: true });
-    expect(validateOperation({ type: 'node.wrap', owner: page, nodeIds: ['n_1', 'constructor'] })).toMatchObject({ ok: false });
+    expect(validateOperation({ type: 'node.wrap', owner: page, nodeIds: ['n_1', 'constructor'], primitive: 'row' })).toMatchObject({ ok: false });
+    expect(validateOperation({ type: 'node.wrap', owner: page, nodeIds: ['n_1', 'n_2'], primitive: 'row' })).toMatchObject({ ok: true });
     expect(validateOperation({ type: 'page.reorder', pageIds: ['pg_home', 'pg_about'] })).toMatchObject({ ok: true });
   });
 

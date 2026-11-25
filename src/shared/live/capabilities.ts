@@ -81,8 +81,12 @@ export const GUEST_OWNER_KINDS = ['page', 'shell'] as const;
  */
 export const HOST_ONLY_PROPS = ['endpoint', 'accessKey'] as const;
 
-/** The page settings a collaborator may change: its name, address, search text and image, and its shared parts. */
-export const COLLABORATOR_PAGE_FIELDS = ['title', 'navLabel', 'route', 'seoTitle', 'description', 'socialImage', 'showHeader', 'showFooter'] as const;
+/**
+ * The page settings a collaborator may change: its name, address, search text and image, its shared parts, and an
+ * article's byline and excerpt (copy the page shows). Whether and when a page is published, indexed, listed in News
+ * or dated stays with the host.
+ */
+export const COLLABORATOR_PAGE_FIELDS = ['title', 'navLabel', 'route', 'seoTitle', 'description', 'socialImage', 'showHeader', 'showFooter', 'byline', 'excerpt'] as const;
 
 const isHostOnlyProp = (prop: string) => (HOST_ONLY_PROPS as readonly string[]).includes(prop);
 

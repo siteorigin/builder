@@ -123,6 +123,6 @@ describe('relay routes', () => {
     expect(roomPreviewPath(ROOM)).toBe(`/s/${ROOM}/preview`);
     expect(() => relaySocketUrl('ftp://x', HOST_SOCKET_PATH)).toThrow();
     // Only the relay's own sockets: never a path glued onto the host name, or a room that is not one.
-    for (const bad of ['ws/host', '', '/ws/host/', `/s/${ROOM}/ws/x`, '/s/BAD/ws', `/s/${ROOM}`]) expect(() => relaySocketUrl('https://relay.example', bad), bad).toThrow();
+    for (const bad of ['ws/host', '', '/ws/host/', `/s/${ROOM}/ws/x`, '/s/BAD/ws', `/s/${ROOM}`, `/S/${ROOM}/ws`, `/s/${ROOM}/WS`, '/WS/HOST']) expect(() => relaySocketUrl('https://relay.example', bad), bad).toThrow();
   });
 });

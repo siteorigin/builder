@@ -61,6 +61,8 @@ describe('session expiry', () => {
     expect(checkSessionExpiry(start + 30 * HOUR, { startedAt: NaN }, start)).toMatchObject({ ok: false, code: 'INVALID' });
     expect(checkSessionExpiry(start + HOUR, { startedAt: start, currentExpiresAt: NaN }, start)).toMatchObject({ ok: false, code: 'INVALID' });
     expect(checkSessionExpiry(start + HOUR, { startedAt: start }, NaN)).toMatchObject({ ok: false, code: 'INVALID' });
+    expect(checkSessionExpiry(start + HOUR, { startedAt: start }, start + 0.5)).toMatchObject({ ok: false, code: 'INVALID' });
+    expect(checkGuestExpiry(null, start + HOUR, start + 0.5)).toMatchObject({ ok: false, code: 'INVALID' });
   });
 });
 
