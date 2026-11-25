@@ -6,7 +6,10 @@
 // covered by tests/unit/insert-drop.test.ts). An Image the Sidebar does not take says why on the Sidebar itself. Each
 // drag leaves the page as it found it, and Preview shows no slot placeholder at all. A Paragraph in Main drags by the
 // selection's grip into Sidebar as one change that keeps the node (#658); a Button, which Sidebar does not take, is
-// refused there live and released there changes nothing; Escape, or letting go back on the grip, changes nothing.
+// refused there live and released there changes nothing; Escape, or letting go back on the grip, changes nothing. The
+// selected Split shows a + inside each empty slot, on that slot's own box (#657): Main's offers an Image and adds a
+// Heading to Main alone; Sidebar's, on Sidebar picked by its box, offers no Image and adds a Paragraph to Sidebar alone;
+// each is one change.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -33,6 +36,9 @@ const dropReason = win.locator('[data-testid="insert-drop-reason"]');
 const surfaces = win.locator('[data-testid="insert-slot-surface"]');
 const surface = (label) => win.locator(`[data-testid="insert-slot-surface"][data-slot="${label}"]`);
 const marker = (slot) => frame.locator(`[data-so-slot-empty="${slot}"]`);
+const slotAdd = (slot) => win.locator(`[data-testid="canvas-add"][data-side="inside"][data-slot="${slot}"]`);
+const quick = win.locator('[data-testid="quick-insert"]');
+const quickSearch = quick.getByRole('combobox');
 const openInsert = async () => {
   if (!(await panel.locator('.insert-group[data-group="basics"]').isVisible())) await win.getByRole('button', { name: 'Insert', exact: true }).click();
   await panel.locator('.insert-group[data-group="basics"]').waitFor();
@@ -52,6 +58,26 @@ const pointAt = async (locator, fx, dy) => {
     return { x: b.x, y: b.y, width: b.width, height: b.height };
   });
   return { x: f.x + (r.x + r.width * fx) * k, y: f.y + (r.y + dy) * k };
+};
+/** A frame element's box in the window. */
+const windowBox = async (locator) => {
+  const { f, k } = await frameScale();
+  const r = await pageBox(locator);
+  return { x: f.x + r.x * k, y: f.y + r.y * k, width: r.width * k, height: r.height * k };
+};
+/** Whether the middle of `button` lies inside `box`. */
+const centredIn = async (button, box) => {
+  const b = await button.boundingBox();
+  const cx = b.x + b.width / 2;
+  const cy = b.y + b.height / 2;
+  return cx >= box.x && cx <= box.x + box.width && cy >= box.y && cy <= box.y + box.height;
+};
+/** Choose `name` from the open quick-add list by searching for it, as one change. */
+const chooseQuick = async (name) => {
+  await quickSearch.fill(name.toLowerCase());
+  await eventually(async () => assert.match(await quick.getByRole('option').first().innerText(), new RegExp(`^${name}`)));
+  await quickSearch.press('Enter');
+  await quick.waitFor({ state: 'detached' });
 };
 /** A marker's box in page pixels, for checking the page is as it was. */
 const pageBox = (locator) =>
@@ -254,6 +280,64 @@ step('a move dragged to Sidebar and cancelled with Escape, or let go back on its
   await undo();
   await eventually(async () => assert.deepEqual(await slotOf('main'), [], 'the fill is taken away for the steps after'));
   await marker('main').waitFor();
+}
+
+step('the selected Split shows a + inside Main and one inside Sidebar, each on its own empty box (#657)');
+{
+  // A click on Main's box picks Main; Escape steps out to the Split itself.
+  const at = await pointAt(marker('main'), 0.5, 20);
+  await win.mouse.click(at.x, at.y);
+  await eventually(async () => assert.match(await chip(), /^Main/));
+  await win.keyboard.press('Escape');
+  await eventually(async () => assert.match(await chip(), /^Split/), 10000);
+  // The pointer off the page, so only the selection's buttons show.
+  await win.mouse.move(2, 2);
+  await eventually(async () => assert.deepEqual([await slotAdd('main').count(), await slotAdd('sidebar').count()], [1, 1], 'one + in each slot'), 10000);
+  assert.equal(await slotAdd('main').getAttribute('aria-label'), 'Add inside Main in Split');
+  assert.equal(await slotAdd('sidebar').getAttribute('aria-label'), 'Add inside Sidebar in Split');
+  await eventually(async () => {
+    assert.ok(await centredIn(slotAdd('main'), await windowBox(marker('main'))), 'Main’s + is on Main’s box');
+    assert.ok(await centredIn(slotAdd('sidebar'), await windowBox(marker('sidebar'))), 'Sidebar’s + is on Sidebar’s box');
+  });
+  await win.screenshot({ path: join(SHOTS, 'slot-targets-add.png') });
+
+  step('Main’s + offers an Image, and a Heading chosen from it goes into Main alone, as one change');
+  const changes = await newest();
+  await slotAdd('main').click();
+  await quick.waitFor();
+  assert.match(await quick.innerText(), /Add inside Main in Split/, 'the list says where it adds');
+  assert.ok((await quick.getByRole('option', { name: /^Image/ }).count()) >= 1, 'Main takes an Image');
+  await chooseQuick('Heading');
+  await eventually(async () => assert.equal((await slotOf('main')).length, 1, 'the Heading is in Main'));
+  assert.match(String((await home()).nodes[(await slotOf('main'))[0]].tag), /^h[1-6]$/, 'a Heading');
+  assert.deepEqual(await slotOf('sidebar'), [], 'and not in Sidebar');
+  const added = await newest();
+  assert.notEqual(added.id, changes?.id, 'as a change');
+  await undo();
+  await eventually(async () => assert.deepEqual(await slotOf('main'), []));
+  assert.equal((await newest())?.id, changes?.id, 'one Undo takes it away');
+  await marker('main').waitFor();
+
+  step('Sidebar picked by its box has its own +, which offers no Image and adds a Paragraph into Sidebar alone');
+  const side = await pointAt(marker('sidebar'), 0.5, 20);
+  await win.mouse.click(side.x, side.y);
+  await eventually(async () => assert.match(await chip(), /^Sidebar/));
+  await win.mouse.move(2, 2);
+  await slotAdd('sidebar').waitFor({ timeout: 10000 });
+  assert.equal(await slotAdd('main').count(), 0, 'only the picked slot’s + shows');
+  assert.ok(await centredIn(slotAdd('sidebar'), await windowBox(marker('sidebar'))), 'on Sidebar’s box');
+  await slotAdd('sidebar').click();
+  await quick.waitFor();
+  assert.equal(await quick.getByRole('option', { name: /^Image/ }).count(), 0, 'Sidebar takes only text: no Image');
+  assert.ok((await quick.getByRole('option', { name: /^Paragraph/ }).count()) >= 1, 'a Paragraph is offered');
+  await chooseQuick('Paragraph');
+  await eventually(async () => assert.equal((await slotOf('sidebar')).length, 1, 'the Paragraph is in Sidebar'));
+  assert.deepEqual(await slotOf('main'), [], 'and not in Main');
+  await undo();
+  await eventually(async () => assert.deepEqual(await slotOf('sidebar'), []));
+  assert.equal((await newest())?.id, changes?.id, 'one Undo takes it away');
+  await marker('sidebar').waitFor();
+  await win.keyboard.press('Escape');
 }
 
 step('with Sidebar’s column collapsed to no height, a drop below where the column shows still goes into Sidebar');
