@@ -28,7 +28,7 @@ import { MAX_POST_TITLE, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
 import { entryTermLabels } from '@shared/entry-fields';
 import type { EditOperation } from '@shared/ops';
-import { setMode } from '../lib/actions';
+import { openSeoView, setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
 import { SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
 import { PostSearchFields } from './PostSearchFields';
@@ -509,24 +509,34 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const saved = await draft.flush();
     await Promise.allSettled([...fieldCommits.current]);
     await appliesLanded();
-    // Or text kept for being too long.
-    return saved && fieldRefusedAt.current < since && !document.querySelector('.post-page [aria-invalid="true"]');
+    // Or text kept for being too long, here or in the SEO view.
+    return saved && fieldRefusedAt.current < since && !document.querySelector('.post-page [aria-invalid="true"]') && !heldInView();
   };
   saveAllRef.current = saveAll;
+  /**
+   * Whether the SEO view holds text typed for this post that it could not save (too long, an address that is not one):
+   * still the post's, so Publish and Save draft wait for it as for the writer's own.
+   */
+  const heldInView = () => !!document.querySelector(`.seo-view [data-seo-doc="${CSS.escape(subjectKey({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }))}"] [aria-invalid="true"]`);
+  /** Say that part of the post is not saved, and where to see why: beside it here, or in the SEO view. */
+  const notSaved = (what: string) => {
+    const inView = heldInView() && !document.querySelector('.post-page [aria-invalid="true"]');
+    toast(`${what} ${inView ? 'See its search settings in the SEO view.' : 'See the note beside it.'}`, 'error', inView ? { label: 'Open SEO view', run: () => void openSeoView({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }) } : undefined);
+  };
   const publish = async (draftOn: boolean) => {
-    if (!(await saveAll())) return toast(draftOn ? 'Part of the post is not saved yet, so it stays as it is. See the note beside it.' : 'Part of the post is not saved yet, so it was not published. See the note beside it.', 'error');
+    if (!(await saveAll())) return notSaved(draftOn ? 'Part of the post is not saved yet, so it stays as it is.' : 'Part of the post is not saved yet, so it was not published.');
     const r = await update({ draft: draftOn }, draftOn ? 'Move post to drafts' : 'Publish post');
     if (r) toast(draftOn ? 'Moved to drafts: it is no longer on the website.' : 'Published: it is on the website from the next export.', 'success');
   };
   const saveDraft = async () => {
     if (await saveAll()) toast(entry.draft === false ? 'Saved.' : 'Saved as a draft.', 'success');
-    else toast('Part of the post is not saved yet. See the note beside it.', 'error');
+    else notSaved('Part of the post is not saved yet.');
   };
   const preview = async () => {
     const key = getState().snapshot?.workspaceKey;
     const away = putAway.current;
     // The preview shows what is saved: text that could not be saved stays in view with its note.
-    if (!(await saveAll())) return toast('Part of the post is not saved yet, so the preview would not show it. See the note beside it.', 'error');
+    if (!(await saveAll())) return notSaved('Part of the post is not saved yet, so the preview would not show it.');
     // Another post (or project) opened while this one saved: the preview was this post's, so it does not start (#578).
     // Nor once the writer was put away meanwhile (another panel, the SEO view), even if it is back: the author went
     // elsewhere (#700).

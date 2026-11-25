@@ -943,7 +943,7 @@ function DraftField({
     // meanwhile, say): once the AI is idle the edit is built from that, and still checked against where typing began.
     // While it still runs, stopping it takes the project back there, so the edit is built from that instead.
     const build = tooLongRef.current && !useStore.getState().snapshot?.aiBusy ? onCommit : from.commit;
-    const result = aiRan(from) ? commitDraft(from.base, () => build(text), text, { check: true }) : commitDraft(from.base, () => onCommit(text), text);
+    const result = aiRan(from) ? commitDraft(from.base, () => build(text), text, { check: true, control: owner.current }) : commitDraft(from.base, () => onCommit(text), text, { control: owner.current });
     if (result !== false) forget();
     return result;
   };
@@ -956,7 +956,8 @@ function DraftField({
   // Kept as soon as it is refused and kept current as it is edited, so a control of the same place that comes up
   // before this one has gone (the field moved into a group) finds it too.
   // Each control keeps its place's text as its own; a newer one (text handed over from a rename) is never overwritten
-  // or dropped by a control that has gone.
+  // or dropped by a control that has gone. It also names the control its typed edits come from: only its own earlier
+  // save of the field is written over unseen (see commitDraft).
   const owner = useRef({});
   const mine = () => !field || !keptDraft(field) || keptDraft(field)!.owner === owner.current;
   const stash = (text: string, start: DraftStart) => field && keepDraft<DraftStart>(field, { text, start, name: nameRef.current, alive: keepWhile, owner: owner.current });
@@ -990,7 +991,7 @@ function DraftField({
       if (!open || !(focused.current || over) || (gone && tooLongRef.current)) return;
       const copy = { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) };
       if (over) toast(`${tooLongReport(nameRef.current, text.length, limit!)} The field went away, so copy it to keep it.`, 'error', copy);
-      else if (aiRan(from!)) commitDraft(from!.base, () => from!.commit(text), text, { check: true });
+      else if (aiRan(from!)) commitDraft(from!.base, () => from!.commit(text), text, { check: true, control: owner.current });
       else if (text.trim()) toast('What you were typing was not saved, because the field went away.', 'error', copy);
     };
   }, []);
@@ -1073,7 +1074,7 @@ function DraftField({
         const from = startedAt.current ?? { base: useStore.getState().snapshot, value: valueRef.current, commit: onCommit, ai: aiActivity() };
         if (text === from.value) return forget();
         const edit: PendingEdit = { operations: [], separate: true };
-        const result = aiRan(from) ? commitDraft(from.base, () => from.commit(text, edit), text, { check: true }) : commitDraft(from.base, () => onCommit(text, edit), text);
+        const result = aiRan(from) ? commitDraft(from.base, () => from.commit(text, edit), text, { check: true, control: owner.current }) : commitDraft(from.base, () => onCommit(text, edit), text, { control: owner.current });
         if (result !== false) {
           forget();
           mark(false);

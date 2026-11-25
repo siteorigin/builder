@@ -302,8 +302,15 @@ export function SeoView({ shown }: { shown: boolean }) {
     returnTo.current = doc?.key ?? null;
     setState({ seoSubject: null });
   };
+  const root = useRef<HTMLElement>(null);
+  // Put away (the post writer, another panel): a field being typed in commits now, as leaving it does, before anything
+  // that view shows can act on the document (the writer's Publish), rather than whenever the browser lets go of it.
+  useLayoutEffect(() => {
+    const at = document.activeElement;
+    if (hidden && at instanceof HTMLElement && root.current?.contains(at)) at.blur();
+  }, [hidden]);
   return (
-    <section className="seo-view" aria-label="SEO view">
+    <section className="seo-view" aria-label="SEO view" ref={root}>
       <div className="seo-bar">
         {doc ? (
           <>

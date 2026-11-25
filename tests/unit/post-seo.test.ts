@@ -41,7 +41,13 @@ const { postSeoEdit, savePostSeo } = (await load('../../src/renderer/src/lib/pos
 const { setOpenWriter } = (await load('../../src/renderer/src/lib/post-draft')) as {
   setOpenWriter: (flush: () => Promise<boolean>, all?: () => Promise<boolean>, post?: PostRef, follow?: (change: Promise<unknown>) => void) => () => void;
 };
-const { setState } = (await load('../../src/renderer/src/store')) as { setState: (p: Record<string, unknown>) => void };
+const store = (await load('../../src/renderer/src/store')) as {
+  setState: (p: Record<string, unknown>) => void;
+  getState: () => { snapshot: ProjectSnapshot | null; heldEdits: Array<{ phase?: string; currentText?: string }> };
+  commitDraft: <T>(base: ProjectSnapshot | null, commit: () => T, text?: string | null, opts?: { control?: object }) => T;
+  applyOps: (operations: unknown[], label: string) => Promise<unknown[] | null>;
+};
+const { setState } = store;
 
 function refresh<T>(r: T): T {
   setState({ snapshot: { state: session.state, revision: session.revision, history: session.historyInfo(), workspaceKey: opening, aiBusy: false, dir: 'project' } as unknown as ProjectSnapshot });
@@ -64,7 +70,7 @@ beforeEach(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'so-post-seo-'));
   dirs.push(dir);
   session = await ProjectSession.create(dir, blog);
-  setState({ toasts: [], held: [] });
+  setState({ toasts: [], heldEdits: [] });
   refresh(null);
 });
 afterEach(async () => {
@@ -207,5 +213,36 @@ describe('saving a post’s search settings from the SEO view', () => {
     await change({ kind: 'title', text: 'Spring at Riverside' });
     expect(followed).toHaveLength(0);
     expect(entry().seo?.title).toBe('Spring at Riverside');
+  });
+});
+
+describe('the same search title typed in the writer and in the view', () => {
+  /** Commit `text` as a typed edit of the post's browser title, typed in `control` from the project at `base`. */
+  const typed = async (control: object, text: string, base: ProjectSnapshot | null) => {
+    let done: Promise<unknown> = Promise.resolve();
+    store.commitDraft(base, () => (done = store.applyOps([{ type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', seoTitle: text }], 'Change post browser title')), text, { control });
+    await done;
+  };
+
+  it('never writes the writer’s text, typed before, over a title saved in the view since: it waits for the author', async () => {
+    const writer = {};
+    const view = {};
+    // The writer's text was typed from the project as it was then (kept for being too long to save, say).
+    const before = store.getState().snapshot;
+    await typed(view, 'Saved in the view', before);
+    expect(entry().seo?.title).toBe('Saved in the view');
+    // Shortened and saved in the writer afterwards: the title saved in the view stays, and the writer's text is held.
+    await typed(writer, 'Typed in the writer', before);
+    expect(entry().seo?.title).toBe('Saved in the view');
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'changed', currentText: 'Saved in the view' });
+  });
+
+  it('still writes over a control’s own save of the title that this window had not heard of', async () => {
+    const view = {};
+    const before = store.getState().snapshot;
+    await typed(view, 'First words', before);
+    await typed(view, 'Second words', before);
+    expect(entry().seo?.title).toBe('Second words');
+    expect(store.getState().heldEdits).toEqual([]);
   });
 });
