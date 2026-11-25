@@ -44,7 +44,8 @@ const openRail = async (name) => {
   if ((await win.locator(`.rail [aria-label="${name}"]`).getAttribute('aria-pressed')) !== 'true') await win.locator(`.rail [aria-label="${name}"]`).click();
 };
 const componentSection = async () => {
-  const head = win.locator('#dock-panel-inspect .section-head', { hasText: 'Component' });
+  // Named first by its title: Style's head names the whole component as its scope too.
+  const head = win.locator('#dock-panel-inspect .section-head', { hasText: /^Component/ });
   if ((await head.getAttribute('aria-expanded')) === 'false') await head.click();
 };
 
