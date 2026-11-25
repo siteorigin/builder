@@ -36,7 +36,14 @@ export function removalKey(state: ProjectState, owner: OwnerRef, tree: NodeTree,
   if (!def) return JSON.stringify(ids.map((id) => tree.nodes[id]));
   const removed = new Set(ids);
   const parts = Object.entries(def.parts).filter(([pid, p]) => pid !== 'root' && removed.has(p.nodeId));
-  const variants = variantOptions(def).map(({ axis, id, option }) => [axis, id, ids.map((n) => option.styles?.[n] ?? null)]);
-  const set = instancesOf(state, def.id).map(({ node }) => parts.map(([pid]) => [node.overrides?.[pid] ?? null, node.itemOverrides?.[pid] ?? null]));
+  // Only what is set on what goes: an option or a placement setting nothing there is not part of what it takes.
+  const variants = variantOptions(def).flatMap(({ axis, id, option }) => {
+    const styled = ids.filter((n) => option.styles?.[n] !== undefined).map((n) => [n, option.styles![n]]);
+    return styled.length ? [[axis, id, styled]] : [];
+  });
+  const set = instancesOf(state, def.id).flatMap(({ owner: at, node }) => {
+    const own = parts.filter(([pid]) => node.overrides?.[pid] !== undefined || node.itemOverrides?.[pid] !== undefined).map(([pid]) => [pid, node.overrides?.[pid] ?? null, node.itemOverrides?.[pid] ?? null]);
+    return own.length ? [[at.kind, at.id, node.id, own]] : [];
+  });
   return JSON.stringify([ids.map((id) => tree.nodes[id]), parts, variants, set]);
 }

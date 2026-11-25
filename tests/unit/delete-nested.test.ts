@@ -245,6 +245,9 @@ describe('what a deletion planned again compares', () => {
     expect(key(part)).not.toBe(key(s0));
     const overridden = applyOperations(part, [{ type: 'node.setStyle', owner: page(), nodeId: 'n_card', partId: 'box', scope: 'base', property: 'gap', value: { token: 'space.lg' } }]).state;
     expect(key(overridden)).not.toBe(key(part));
+    // A new option, or a new placement, that sets nothing on what goes changes nothing it takes.
+    expect(key(applyOperations(overridden, [{ type: 'component.setVariant', definitionId: card, variant: 'quiet', label: 'Quiet' }]).state)).toBe(key(overridden));
+    expect(key(applyOperations(overridden, [{ type: 'node.insert', owner: page(), parentId: 'n_section', slot: 'content', definitionId: card }]).state)).toBe(key(overridden));
   });
 });
 
