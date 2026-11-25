@@ -399,12 +399,15 @@ describe('the stylesheets', () => {
 
 describe('the document format', () => {
   it('marks it with a version-only step, so an older editor opens a project with dialogs read-only', () => {
-    expect(MIGRATIONS.at(-1)!.id).toBe('managed-overlays');
-    expect(SCHEMA_VERSION).toBe(17);
+    const step = MIGRATIONS.find((m) => m.id === 'managed-overlays')!;
+    expect(step).toBeDefined();
+    expect(MIGRATIONS.indexOf(step) + 2).toBe(17);
+    expect(MIGRATIONS.indexOf(step)).toBe(MIGRATIONS.findIndex((m) => m.id === 'color-schemes') + 1);
+    expect(SCHEMA_VERSION).toBe(MIGRATIONS.length + 1);
     const s = fresh();
     bookingDef(s);
     const out = structuredClone(s);
-    MIGRATIONS.at(-1)!.migrate(out as never, () => true);
+    step.migrate(out as never, () => true);
     expect(out).toEqual(s);
   });
 });

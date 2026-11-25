@@ -1,6 +1,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AssetsDoc, Collection, CollectionDoc, ComponentDefinition, EntryDoc, PageDoc, ProjectManifest, ProjectState, SiteDoc, ThemeLock, TokensDoc } from '@shared/types';
+import type { AssetsDoc, Collection, CollectionDoc, ComponentDefinition, EntryDoc, PageDoc, ProjectBriefDoc, ProjectManifest, ProjectState, SiteDoc, ThemeLock, TokensDoc } from '@shared/types';
+import { BRIEF_FILE, BRIEF_FIELDS } from '@shared/brief';
 import { isCollectionId, isEntryId } from '@shared/collections';
 import { SCHEMA_VERSION } from '@shared/types';
 import { migrateProject, newestDocumentVersion, type MigrationResult } from '@shared/migrations';
@@ -15,7 +16,7 @@ const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 export function isCanonicalPath(p: string): boolean {
   return (
     p === MANIFEST_FILE ||
-    /^siteorigin\/(site|tokens|assets|theme-lock)\.json$/.test(p) ||
+    /^siteorigin\/(site|tokens|assets|theme-lock|brief)\.json$/.test(p) ||
     /^siteorigin\/pages\/[A-Za-z0-9_-]+\.json$/.test(p) ||
     /^siteorigin\/components\/[A-Za-z0-9][A-Za-z0-9._-]*\/component\.json$/.test(p) ||
     collectionPathOf(p) !== null ||
@@ -87,6 +88,8 @@ export function stateToDocs(state: ProjectState): Map<string, string> {
   docs.set(`${DOC_DIR}/tokens.json`, toJson(state.tokens));
   docs.set(`${DOC_DIR}/assets.json`, toJson(state.assets));
   docs.set(`${DOC_DIR}/theme-lock.json`, toJson(state.themeLock));
+  // Only while it holds something: an empty brief is no file.
+  if (state.brief) docs.set(BRIEF_FILE, toJson(state.brief));
   for (const id of Object.keys(state.pages).sort()) docs.set(`${DOC_DIR}/pages/${id}.json`, toJson(state.pages[id]));
   for (const id of Object.keys(state.components).sort()) {
     const def = state.components[id];
@@ -122,7 +125,7 @@ export class ProjectFormatError extends Error {
  * project stops at its first broken document, so a newer one later in the folder needs this to be seen at all.
  */
 export async function newestStoredVersion(dir: string): Promise<number> {
-  const paths = [MANIFEST_FILE, ...['site', 'tokens', 'assets', 'theme-lock'].map((d) => `${DOC_DIR}/${d}.json`)];
+  const paths = [MANIFEST_FILE, ...['site', 'tokens', 'assets', 'theme-lock', 'brief'].map((d) => `${DOC_DIR}/${d}.json`)];
   const names = async (rel: string) => (existsSync(join(dir, rel)) ? (await fs.readdir(join(dir, rel)).catch(() => [])).sort() : []);
   for (const f of await names(`${DOC_DIR}/pages`)) if (f.endsWith('.json')) paths.push(`${DOC_DIR}/pages/${f}`);
   for (const d of await names(`${DOC_DIR}/components`)) if (!d.startsWith('.')) paths.push(componentDocPath(d));
@@ -296,5 +299,18 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
   const { collections, orphans, duplicates } = collectionsFromDocs(collectionDocs);
   if (orphans.length) throw new ProjectFormatError(`${orphans[0]} belongs to a collection that has no collection.json. Restore that file, or move the entry out of the project.`);
   if (duplicates.length) throw new ProjectFormatError(`${duplicates[0]} has the same entry ID as an entry of another collection. Entry IDs must be unique across the project.`);
-  return { manifest, site, tokens, assets, themeLock, pages, components, collections };
+  const state: ProjectState = { manifest, site, tokens, assets, themeLock, pages, components, collections };
+  if (exists(BRIEF_FILE)) state.brief = briefDoc(await load<unknown>(BRIEF_FILE));
+  return state;
+}
+
+/**
+ * A stored brief, checked: each field is text when given, or the project is not read. It is kept as stored, a field
+ * left out and all (read as empty), so the session's copy of the file is the file, and an edit finds it unchanged.
+ */
+function briefDoc(doc: unknown): ProjectBriefDoc {
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new ProjectFormatError(`${BRIEF_FILE} is not a project brief. Restore it from a copy, or remove it to start the brief afresh.`);
+  const d = doc as Record<string, unknown>;
+  for (const f of BRIEF_FIELDS) if (d[f] !== undefined && typeof d[f] !== 'string') throw new ProjectFormatError(`${BRIEF_FILE} has a ${f} that is not text. Restore it from a copy, or correct it.`);
+  return d as unknown as ProjectBriefDoc;
 }

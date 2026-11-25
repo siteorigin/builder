@@ -434,7 +434,7 @@ describe('collections stored before layouts', () => {
     old.collections.posts.settings.schemaVersion = 11;
     const a = migrateProject(old)!;
     const b = migrateProject(old)!;
-    expect(a.applied).toEqual(['collection-templates', 'entry-articles', 'repeat-filters', 'style-strength', 'color-schemes', 'managed-overlays']);
+    expect(a.applied).toEqual(['collection-templates', 'entry-articles', 'repeat-filters', 'style-strength', 'color-schemes', 'managed-overlays', 'project-brief']);
     const t = a.state.collections.posts.settings.template;
     expect(t).toEqual(b.state.collections.posts.settings.template);
     expect(a.state.collections.posts.settings.schemaVersion).toBe(SCHEMA_VERSION);

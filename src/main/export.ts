@@ -33,12 +33,17 @@ const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'buil
 /** Private files that never leave the project folder. */
 const PRIVATE_FILE = /^(\.env(\..*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa.*|id_ed25519.*|id_ecdsa.*|id_dsa.*|.*\.(pem|key|p12|pfx|ppk|keystore|jks|asc|gpg))$/i;
 
-export async function copyProjectSource(src: string, dest: string, opts: { keepAsset?: (rel: string) => boolean } = {}) {
+/**
+ * Copy the project's source from `src` to `dest`. The project brief (#518) is private to the project and is left out
+ * unless `keepBrief` says the copy is the project itself (Duplicate project), so no export ever carries it.
+ */
+export async function copyProjectSource(src: string, dest: string, opts: { keepAsset?: (rel: string) => boolean; keepBrief?: boolean } = {}) {
   await fs.cp(src, dest, {
     recursive: true,
     verbatimSymlinks: true,
     filter: (p) => {
       if (!inProjectSource(src, p)) return false;
+      if (!opts.keepBrief && isProjectBrief(src, p)) return false;
       const rel = relative(src, p);
       if (!rel || !opts.keepAsset) return true;
       try {
@@ -50,12 +55,26 @@ export async function copyProjectSource(src: string, dest: string, opts: { keepA
   });
 }
 
+/**
+ * A file in `siteorigin/` named after the brief: the brief itself, or a copy an editor left beside it (`brief.json~`,
+ * `.brief.json.swp`, `#brief.json#`, `brief.json.bak`), which can hold notes the author has since taken out.
+ * Without case: on a case-insensitive disk, another spelling is the same file.
+ */
+const BRIEF_COPY_RE = /^siteorigin\/(?:[.#]?brief\.json(?:[~#]|\.[^/]+)?)$/i;
+
+/** Is `p` the project brief of the project in `root`, or a copy of it an editor left beside it? */
+export function isProjectBrief(root: string, p: string): boolean {
+  return BRIEF_COPY_RE.test(relative(root, p).split(sep).join('/'));
+}
+
 /** Is `p` part of the project source in `root`: not tools, caches, builds, private files or links? */
 export function inProjectSource(root: string, p: string): boolean {
   const rel = relative(root, p);
   if (!rel) return true;
   const top = rel.split(sep)[0];
-  if (EXCLUDE_TOP.has(top) || /\.tmp$/.test(p)) return false;
+  // The editor's own data (history, which holds every version of the brief) by any spelling: on a case-insensitive
+  // disk, `.SiteOrigin` is the same folder.
+  if (EXCLUDE_TOP.has(top) || top.toLowerCase() === '.siteorigin' || /\.tmp$/.test(p)) return false;
   if (PRIVATE_FILE.test(basename(p))) return false;
   try {
     return !lstatSync(p).isSymbolicLink();

@@ -8,6 +8,7 @@ import type { GraphNode, NodeTree, ProjectState, SiteDoc } from '@shared/types';
 import { displayName } from '@engine/tree';
 import { codeImports } from '@engine/definitions';
 import { publicUrl } from '@shared/public-url';
+import { BRIEF_FILE } from '@shared/brief';
 import { CUSTOM_SOURCE_RE, DOC_DIR, MANIFEST_FILE, collectionDocPath, collectionPathOf, componentDocPath, entryDocPath } from './documents';
 
 /** A document's two versions: absent (null) when the step added or deleted it. Each is the parsed document. */
@@ -192,6 +193,16 @@ export function docChanges({ path, before, after }: DocVersions, state: ProjectS
   if (path === `${DOC_DIR}/tokens.json`) return existence('Site styles', 'Colors, fonts and spacing');
   if (path === `${DOC_DIR}/theme-lock.json`) return existence('Site styles', 'Theme');
   if (path === MANIFEST_FILE) return existence('Project', 'Project details');
+  // The brief's text is the author's own: History names the field that changed, never what it says.
+  if (path === BRIEF_FILE) {
+    const text = (d: Obj | null, f: string) => (typeof d?.[f] === 'string' ? (d[f] as string) : '');
+    const fields: Array<[string, string]> = [
+      ['description', 'Description'],
+      ['notes', 'Working notes']
+    ];
+    const out = fields.filter(([f]) => text(a, f) !== text(b, f)).map(([f, property]): StepChange => ({ owner: 'Project brief', property, change: !text(a, f) ? 'added' : !text(b, f) ? 'removed' : 'changed' }));
+    return out.length ? out : existence('Project brief', 'Details');
+  }
   if (path === `${DOC_DIR}/assets.json`) {
     const names = (d: Obj | null) => new Map(Object.values(isObj(d?.assets) ? d.assets : {}).flatMap((x) => (isObj(x) && typeof x.id === 'string' ? [[x.id, words(x.name) ?? x.id] as const] : [])));
     const [p, q] = [names(a), names(b)];

@@ -47,9 +47,9 @@ describe('preview server policy', () => {
     const dir = tmp();
     const denied = (_d: string, abs: string) => deny(abs);
     const deny = await denier(dir);
-    for (const f of ['.siteorigin/history/blobs/abc.json', '.siteorigin/lock.json', '.env', '.env.local', 'server.key', 'cert.pem', 'id.p12', '.git/config', '.npmrc', '.yarnrc.yml'])
+    for (const f of ['.siteorigin/history/blobs/abc.json', '.siteorigin/lock.json', '.env', '.env.local', 'server.key', 'cert.pem', 'id.p12', '.git/config', '.npmrc', '.yarnrc.yml', 'siteorigin/brief.json', 'siteorigin/brief.json~', 'siteorigin/.brief.json.swp', 'siteorigin/#brief.json#', 'siteorigin/brief.json.bak'])
       expect(denied(dir, `${dir}/${f}`), f).toBe(true);
-    for (const f of ['src/routes/+page.svelte', 'static/assets/logo.png', 'siteorigin/site.json']) expect(denied(dir, `${dir}/${f}`), f).toBe(false);
+    for (const f of ['src/routes/+page.svelte', 'static/assets/logo.png', 'siteorigin/site.json', 'siteorigin/client-brief.json', 'src/lib/siteorigin/client-brief.json']) expect(denied(dir, `${dir}/${f}`), f).toBe(false);
     expect(previewFsPolicy(dir)).toMatchObject({ strict: true, allow: [dir] });
   });
 

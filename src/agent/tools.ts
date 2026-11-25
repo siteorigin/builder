@@ -181,7 +181,9 @@ const NEVER_OFFERED = new Set<OperationType>([
   'entry.create',
   'entry.update',
   'entry.reorder',
-  'entry.remove'
+  'entry.remove',
+  // The project brief is the author's own (#518), and session.apply refuses it from a run.
+  'brief.update'
 ]);
 /**
  * Operations the assistant is not offered yet: UI state shows only its initial value in the generated site until its

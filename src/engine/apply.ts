@@ -61,6 +61,7 @@ import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists,
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { carrySiteName, releaseKept, siteNameText } from '@shared/site-name';
+import { briefFilled, briefText } from '@shared/brief';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, storedAlt } from './values';
 import { editTable } from './table';
@@ -289,6 +290,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return tokenReplace(state, op.tokenId, op.withTokenId);
     case 'site.update':
       return siteUpdate(state, op);
+    case 'brief.update':
+      return briefUpdate(state, op);
     case 'component.create':
       return componentCreate(state, op);
     case 'component.upsert':
@@ -2590,6 +2593,19 @@ function tokenReplace(state: ProjectState, fromId: string, toId: string): OpResu
   });
   assertNoTokenCycles(state);
   return { replaced };
+}
+
+/**
+ * The project's private brief (#518): only the fields given change, kept as typed. A brief left with nothing in
+ * either field is no document at all, as for a project that never had one.
+ */
+function briefUpdate(state: ProjectState, op: Op<'brief.update'>): OpResult {
+  if (op.description === undefined && op.notes === undefined) fail('brief.update needs a description or notes to change.');
+  const description = op.description ?? briefText(state.brief, 'description');
+  const notes = op.notes ?? briefText(state.brief, 'notes');
+  if (!briefFilled(description) && !briefFilled(notes)) delete state.brief;
+  else state.brief = { schemaVersion: state.brief?.schemaVersion ?? SCHEMA_VERSION, description, notes };
+  return {};
 }
 
 function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {

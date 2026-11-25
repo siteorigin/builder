@@ -416,7 +416,8 @@ body:has(.preview-pill:not([inert] *)) .toasts { bottom: 90px; }
 .toast.held { align-items: flex-start; max-width: 460px; }
 .toast.held .held-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .toast.held .held-where { font-weight: 600; }
-.toast.held .held-text { user-select: text; overflow-wrap: anywhere; opacity: 0.9; }
+/* Long text (working notes) scrolls within a few lines, so the row's actions and the rows above stay in view. */
+.toast.held .held-text { user-select: text; overflow-wrap: anywhere; opacity: 0.9; max-height: 6.5em; overflow-y: auto; white-space: pre-line; }
 .toast.held .held-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
 .toast.held button { opacity: 1; }
 .toast.rename-offer { align-items: flex-start; max-width: 460px; }
@@ -543,6 +544,7 @@ body.dialog-open .toast.rename-offer { visibility: hidden; }
 .recent-thumb { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); font-size: 13px; font-weight: 650; letter-spacing: 0; }
 .recent-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .recent-meta strong { font-size: 13px; font-weight: 600; line-height: 1.35; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.recent-meta .desc { font-size: 12px; line-height: 1.4; color: var(--text-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: pre-line; }
 .recent-meta .where { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 12px; color: var(--text-2); }
 .recent-meta .where svg { width: 12px; height: 12px; flex: none; color: var(--text-3); }
 /* A missing project's whole path, up to two lines, breaking after any folder: it is what the user has to go and find. */
@@ -1032,6 +1034,14 @@ button.save-state { transition: background 120ms, border-color 120ms; }
 #dock-tab-chat[aria-selected='true']::after { right: 14px; }
 @keyframes live-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-fill) 45%, transparent); } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-fill) 0%, transparent); } }
 .dock-tabs .spacer + .icon-btn { margin-left: auto; }
+/* The dock's four views fit with their icons only in a wide dock. Narrower, each tab gives its name alone: plain words
+   are what tell the views apart. */
+.dock > .dock-tabs { container: dock-views / inline-size; }
+@container dock-views (max-width: 361px) {
+  .dock-tab { padding: 0 8px; }
+  .dock-tab > svg { display: none; }
+  .dock-tab[aria-selected='true']::after { left: 6px; right: 6px; }
+}
 
 .status-bar { display: flex; align-items: center; gap: 12px; padding: 0 12px 0 14px; font-size: 12px; color: var(--text-2); background: var(--panel); border-top: 1px solid var(--border); }
 .status-bar > button, .status-bar .crumbs button { border: 0; background: transparent; color: inherit; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 6px; border-radius: var(--r-sm); font-size: 12px; transition: background 120ms, color 120ms; }
@@ -4199,6 +4209,15 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp-actions { display: flex; align-items: center; gap: 2px; flex: none; }
 /* Icon buttons carry their own padding; pull them in so the glyphs line up with the panel's right edge. */
 .insp-actions:has(> .icon-btn:last-child) { margin-right: -4px; }
+/* The Project tab (#518): the project's private brief. */
+.brief { display: flex; flex-direction: column; }
+.brief-head { padding: 14px 14px 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.brief-head h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+.brief-private { margin: 0; display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+.brief-private > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+.brief-fields { padding: 14px; display: flex; flex-direction: column; gap: 16px; }
+/* Notes grow with what is written in them; the panel scrolls. */
+.brief-fields .brief-notes { min-height: 220px; max-height: none; }
 .insp-scope { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
 .insp-scope > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
 /* Wrap without leaving one word on a line of its own at narrow widths. */

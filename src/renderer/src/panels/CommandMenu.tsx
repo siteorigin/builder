@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { BookmarkPlus, SquareDashed, ChevronDown, ClipboardCopy, ClipboardPaste, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree } from 'lucide-react';
+import { BookmarkPlus, SquareDashed, ChevronDown, ClipboardCopy, ClipboardPaste, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, Monitor, NotebookPen, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
@@ -152,6 +152,7 @@ export function CommandMenu() {
       { id: 'newcomponent', label: 'Create component…', keywords: 'new component reusable design build ai', action: 'Start a new component, blank or built by AI', group: 'Insert', icon: <Component />, run: () => setState({ modal: { kind: 'new-component' } }) },
       { id: 'ai', kbd: '⌘J', label: 'Ask AI…', action: 'Open the AI chat', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
       { id: 'styles', label: 'Site styles', keywords: 'colors colours fonts typography spacing theme', action: 'Open site styles', group: 'View', icon: <Palette />, run: () => openSiteStyles() },
+      { id: 'brief', label: 'Project brief', keywords: 'description notes client audience goals private', action: 'Open the Project tab', group: 'Project', icon: <NotebookPen />, run: () => setState({ rightTab: 'project', dockOpen: true }) },
       { id: 'find', kbd: '⇧⌘F', label: 'Find and replace…', keywords: 'search words site content', action: 'Open Find and replace', group: 'Edit', icon: <Replace />, run: () => setState({ modal: { kind: 'find' } }) },
       { id: 'copy', kbd: platformKeys('⌘C'), label: 'Copy the selected section or element', group: 'Edit', icon: <ClipboardCopy />, run: () => void copySelection() },
       { id: 'paste', kbd: platformKeys('⌘V'), label: 'Paste the copied section or element', group: 'Edit', icon: <ClipboardPaste />, run: () => void pasteFromMenu() },

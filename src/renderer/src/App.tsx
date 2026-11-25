@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, applyAiEvent, getState, persistChatState, persistPlaces, projectHistory, saveLocal, setState, toast, useStore } from './store';
+import { api, applyAiEvent, getState, persistChatState, persistPlaces, projectHistory, RIGHT_TABS, saveLocal, setState, toast, useStore } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
@@ -148,7 +148,8 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     previewScheme: 'system',
     zoom: restoreZoom(local.zoom),
     leftTab: (local.leftTab as never) ?? 'pages',
-    rightTab: (local.rightTab as never) ?? 'inspect',
+    // A view this version does not have (a newer one's, a hand-edited file) opens the Inspector instead.
+    rightTab: RIGHT_TABS.find((t) => t === local.rightTab) ?? 'inspect',
     // Every project opens with its own panel widths (or the defaults), never the last project's.
     leftWidth: restorePanelWidth('left', local.leftWidth),
     rightWidth: restorePanelWidth('right', local.rightWidth),

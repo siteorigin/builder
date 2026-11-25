@@ -4140,8 +4140,15 @@ export function generateLibrary(state: ProjectState, opts: GenerateOptions = {})
  * is the same bytes either way.
  */
 export function generateProject(state: ProjectState, opts: GenerateOptions = {}, cache?: GenerationCache): FileMap {
+  // The project brief (#518) is the author's own: nothing that makes the website is ever handed it.
+  const site = state.brief ? withoutBrief(state) : state;
   // Every page's and entry's structured data reads the same documents: the run works them out once (structured-data.ts).
-  return inGenerationRun(() => generateFiles(state, opts, cache));
+  return inGenerationRun(() => generateFiles(site, opts, cache));
+}
+
+function withoutBrief(state: ProjectState): ProjectState {
+  const { brief: _brief, ...rest } = state;
+  return rest;
 }
 
 function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: GenerationCache): FileMap {

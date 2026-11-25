@@ -4,8 +4,9 @@ import { promises as fs, constants as fsConstants, existsSync, type BigIntStats,
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import type { ComponentDefinition, PageDoc, ProjectState, SiteDoc } from '@shared/types';
+import type { ComponentDefinition, PageDoc, ProjectBriefDoc, ProjectState, SiteDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
+import { BRIEF_FILE } from '@shared/brief';
 import type { ApplyResult, EditBatch, EditOperation } from '@shared/ops';
 import type { AiTurnReview, FileText, RestoreVersionResult, SavedCopy, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
@@ -1981,6 +1982,9 @@ export class ProjectSession extends EventEmitter {
       // So is the order of a component's properties, set in Edit everywhere's property list.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'component.orderProperties'))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'component.orderProperties is only for the editor.', recoverable: true } };
+      // The project brief is the author's own (#518): the assistant neither sees nor changes it.
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update'))
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'The project brief can only be changed in the editor.', recoverable: true } };
       // Collections have no tools of their own yet: the assistant neither sees nor changes them.
       if ((opts.source === 'ai' || opts.runId) && ops.some(isCollectionOperation))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections and their entries can only be changed in the editor for now.', recoverable: true } };
@@ -2693,7 +2697,8 @@ export class ProjectSession extends EventEmitter {
     } catch {
       return [...out].sort();
     }
-    const texts = [...docs.values()];
+    // The brief is the author's own notes: a file it names is not one the site uses.
+    const texts = [...docs].filter(([p]) => p !== BRIEF_FILE).map(([, t]) => t);
     const byAddress = (rel: string) => {
       const address = rel.slice('static'.length);
       const encoded = encodeURI(address);
@@ -2734,7 +2739,8 @@ export class ProjectSession extends EventEmitter {
    */
   private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> } = {}): Promise<SavedVersion> {
     const docs: Record<string, string> = {};
-    for (const [path, content] of this.docs) docs[path] = await this.versions.putText(content);
+    // A version is of the site: the brief says what the project is for, and a restore keeps the one it has.
+    for (const [path, content] of this.docs) if (path !== BRIEF_FILE) docs[path] = await this.versions.putText(content);
     const media: Record<string, string | null> = {};
     for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
       let abs: string;
@@ -2798,14 +2804,18 @@ export class ProjectSession extends EventEmitter {
     if (v.schemaVersion > SCHEMA_VERSION) return refuse(`“${v.name}” was saved by a newer version of SiteOrigin Builder. Update the app to restore it.`);
     const stored = new Map<string, string>();
     try {
-      for (const [path, h] of Object.entries(v.docs)) stored.set(path, (await this.versions.read(h)).toString('utf8'));
+      // A version never holds the brief; one that does (saved before that was so) is restored without it.
+      for (const [path, h] of Object.entries(v.docs)) if (path !== BRIEF_FILE) stored.set(path, (await this.versions.read(h)).toString('utf8'));
     } catch (e) {
       return refuse((e as Error).message);
     }
     let state: ProjectState;
     try {
       const read = await readProject(this.dir, { only: stored });
+      // The brief stays too: it says what the project is for, whichever version of the site it holds.
       state = { ...read.state, manifest: this.state.manifest };
+      if (this.state.brief) state.brief = this.state.brief;
+      else delete state.brief;
     } catch (e) {
       return refuse(`“${v.name}” can’t be restored: ${(e as Error).message}`);
     }
@@ -3045,6 +3055,8 @@ export class ProjectSession extends EventEmitter {
   /** A canonical document, other than `skip`, that differs on disk from the loaded project, or a page file it lacks. */
   private async unloadedEdit(skip: Set<string>): Promise<string | null> {
     for (const [path, cur] of this.docs) if (!skip.has(path) && !sameContent(path, await this.diskContent(path), cur)) return path;
+    // A brief written outside the app while the project had none.
+    if (!this.docs.has(BRIEF_FILE) && !skip.has(BRIEF_FILE) && existsSync(join(this.dir, BRIEF_FILE))) return BRIEF_FILE;
     for (const f of await fs.readdir(join(this.dir, DOC_DIR, 'pages')).catch(() => [] as string[])) {
       const path = `${DOC_DIR}/pages/${f}`;
       if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path)) return path;
@@ -4183,6 +4195,9 @@ function docsToState(docs: Map<string, string>, current: ProjectState): ProjectS
     components: {},
     collections: collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)])).collections
   };
+  // A brief the documents lack is none: it is only a file while it holds something.
+  const brief = parse<ProjectBriefDoc>(BRIEF_FILE);
+  if (brief) next.brief = brief;
   for (const [p, c] of docs) {
     const pm = p.match(/^siteorigin\/pages\/(.+)\.json$/);
     if (pm) next.pages[pm[1]] = JSON.parse(c);

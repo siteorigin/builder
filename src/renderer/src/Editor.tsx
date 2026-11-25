@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
-import { Check, Component, FileText, Images, Layers, Newspaper, Plus, Sparkles, SlidersHorizontal, Palette, SquareDashed } from 'lucide-react';
+import { Check, Component, FileText, Images, Layers, Newspaper, NotebookPen, Plus, Sparkles, SlidersHorizontal, Palette, SquareDashed } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
 import { api, applyOps, errorText, getState, projectHistory, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
@@ -17,6 +17,7 @@ import { InsertPanel } from './panels/InsertPanel';
 import { AssetsPanel } from './panels/AssetsPanel';
 import { Inspector } from './panels/Inspector';
 import { SiteStyles } from './panels/SiteStyles';
+import { ProjectBrief } from './panels/ProjectBrief';
 import { Chat } from './panels/Chat';
 import { SettingsModal } from './panels/SettingsModal';
 import { ExportModal } from './panels/ExportModal';
@@ -691,7 +692,7 @@ export function Editor() {
         <Seam side="right" width={shown.right} max={panelMax('right', windowWidth, prefs)} at={shown.right} restore={() => setState({ dockOpen: true })} />
         <aside id="editor-dock" className="dock" style={{ width: shown.right, display: dockOpen ? undefined : 'none' }} aria-label="Right panel">
           {/* Every dock panel stays mounted, so the chat and inspector keep their state while hidden. */}
-          <Tabs<'inspect' | 'chat' | 'styles'>
+          <Tabs<RightTab>
             className="dock-tabs"
             label="Right panel views"
             idBase="dock"
@@ -703,7 +704,9 @@ export function Editor() {
             options={[
               { value: 'inspect', label: 'Inspector', icon: <SlidersHorizontal />, panel: () => <Inspector /> },
               { value: 'chat', label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI', icon: <Sparkles />, extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined, panel: () => <Chat /> },
-              { value: 'styles', label: 'Site styles', icon: <Palette />, panel: () => <SiteStyles /> }
+              { value: 'styles', label: 'Site styles', icon: <Palette />, panel: () => <SiteStyles /> },
+              // The project's private brief (#518), apart from Site details' visitor-facing description.
+              { value: 'project', label: 'Project', icon: <NotebookPen />, panel: () => <ProjectBrief /> }
             ]}
           />
         </aside>
