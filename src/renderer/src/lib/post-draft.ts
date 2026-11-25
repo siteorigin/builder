@@ -257,17 +257,34 @@ export class PostDraft {
 
 /**
  * How the writer on screen saves its post now: its text, and (`all`) its fields too, and which post that is. Set while a
- * post is open in it.
+ * post is open in it. `follow` takes a change to that post's fields made somewhere else (the SEO view), for the writer to
+ * follow as one of its own.
  */
-let openWriter: { flush: () => Promise<boolean>; all?: () => Promise<boolean>; post?: PostRef } | null = null;
+let openWriter: { flush: () => Promise<boolean>; all?: () => Promise<boolean>; post?: PostRef; follow?: (change: Promise<unknown>) => void } | null = null;
 
-/** The writer registers how its open post is saved, and which post it holds; returns the unregister. */
-export function setOpenWriter(flush: () => Promise<boolean>, all?: () => Promise<boolean>, post?: PostRef): () => void {
-  const mine = { flush, all, post };
+/**
+ * The writer registers how its open post is saved, which post it holds, and how it follows a change to that post's
+ * fields made elsewhere; returns the unregister.
+ */
+export function setOpenWriter(flush: () => Promise<boolean>, all?: () => Promise<boolean>, post?: PostRef, follow?: (change: Promise<unknown>) => void): () => void {
+  const mine = { flush, all, post, follow };
   openWriter = mine;
   return () => {
     if (openWriter === mine) openWriter = null;
   };
+}
+
+/** Whether the writer holds `post` now, and said so. */
+const holds = (w: typeof openWriter, post: PostRef): w is NonNullable<typeof openWriter> & { post: PostRef } => !!w?.post && w.post.collectionId === post.collectionId && w.post.entryId === post.entryId;
+
+/**
+ * A change to `post`'s fields made outside the writer (the SEO view), on its way: when the writer holds that same post,
+ * it follows the change as one of its own, so its Publish and Save draft wait for it and hear when it is refused. A
+ * writer holding another post (or not saying which) is left alone.
+ */
+export function followPostChange(post: PostRef, change: Promise<unknown>): void {
+  const w = openWriter;
+  if (holds(w, post)) w.follow?.(change);
 }
 
 /** The post the writer holds now, while one is open in it and it said which (it stays mounted while hidden). */
@@ -289,7 +306,7 @@ export function saveOpenPost(): Promise<boolean> {
  */
 export function savePostIfOpen(post: PostRef): Promise<boolean> {
   const w = openWriter;
-  if (!w?.post || w.post.collectionId !== post.collectionId || w.post.entryId !== post.entryId) return Promise.resolve(true);
+  if (!holds(w, post)) return Promise.resolve(true);
   return (w.all ?? w.flush)();
 }
 

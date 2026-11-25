@@ -22,6 +22,12 @@
      that scrolls it sideways, as the Inspector does, rather than cutting its line where search results wouldn't. */
   .seo-preview-wide { gap: 12px; }
   .seo-preview-wide .code-view.seo-graph { max-height: 60vh; }
+  /* The chosen post's Search & sharing settings (#703), under its previews: the title and description, with their
+     meters, take a row each; the sharing image and canonical URL share one where there is room. */
+  .seo-settings { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .seo-settings-head { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+  .seo-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px 20px; }
+  .seo-fields > [data-entry-field] > .field, .seo-fields > .switch-row { grid-column: 1 / -1; }
 
   .seo-back { width: 28px; height: 28px; padding: 0; justify-content: center; margin-left: -6px; flex: none; }
 

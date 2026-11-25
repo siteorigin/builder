@@ -1,12 +1,16 @@
 import './SeoView.css';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowLeft, FileText, House, Newspaper, Search } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
+import type { SeoSubject } from '@shared/seo';
 import { setState, useStore } from '../store';
 import { seoDocument, seoDocuments, seoSubjectKey, type SeoDocument } from '../lib/seo-view';
-import { SeoPreview, useDocumentPreview, useTypedSeo } from './SeoPreview';
-import type { TypedSeo } from '../lib/seo-preview';
+import { SeoPreview, useDocumentPreview, useTypedSeo, type TypedSeoOn } from './SeoPreview';
+import type { DocumentPreview } from '../lib/seo-preview';
 import { seoOverviewOnce, seoOverviewProblems, type SeoImageStatus, type SeoOverviewRow, type SeoOverviewText } from '../lib/seo-overview';
+import { postAt } from '../lib/posts';
+import { savePostSeo } from '../lib/post-seo';
+import { PostSearchFields } from './PostSearchFields';
 
 /**
  * The SEO view's list (#700), in the sidebar: every page of the site in its page order, then each collection's entries
@@ -217,27 +221,43 @@ function SeoOverview({ state, problemsOnly, onProblemsOnly, returnTo, onOpen }: 
 }
 
 /**
- * The chosen document's previews at the view's width (#701): its search result, link preview and structured data,
- * picked with the surface selector above them, read from the same answers as the previews beside its settings, with
- * `typed` (text typed into its fields and not saved yet) laid over the saved settings, as there.
+ * A post's Search & sharing settings in the view (#703), under its previews: the fields the post writer has, saved the
+ * same way, whether or not the writer holds the post (savePostSeo). What they show as they are typed reaches the
+ * previews and meters through `on`; `preview` is what the previews show now.
  */
-function SeoViewPreviews({ state, doc, typed, shown }: { state: ProjectState; doc: SeoDocument; typed: TypedSeo; shown: boolean }) {
-  const { overlay, doc: preview } = useDocumentPreview(state, doc.subject, typed);
-  return <SeoPreview state={state} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} place="view" />;
+function SeoViewPostSettings({ state, subject, preview, on }: { state: ProjectState; subject: Extract<SeoSubject, { kind: 'entry' }>; preview: DocumentPreview | null; on: TypedSeoOn }) {
+  const headId = useId();
+  const post = { collectionId: subject.collectionId, entryId: subject.entryId };
+  const collection = Object.hasOwn(state.collections, post.collectionId) ? state.collections[post.collectionId] : undefined;
+  const entry = postAt(state, post);
+  if (!collection || !entry) return null;
+  return (
+    <section className="seo-settings" aria-labelledby={headId}>
+      <h3 id={headId} className="seo-settings-head">
+        Search & sharing
+      </h3>
+      <div className="seo-fields">
+        <PostSearchFields state={state} collection={collection} entry={entry} doc={preview} on={on} save={(edit) => savePostSeo(post, edit)} />
+      </div>
+    </section>
+  );
 }
 
 /**
  * One document in the view, which holds what is typed for it and not saved yet: one per document and opening (see
- * SeoView's key), so nothing of one document (its surface, its typed text, its structured data) shows for another. Its
- * fields will report through `on` what they show (useTypedSeo).
+ * SeoView's key), so nothing of one document (its surface, its typed text, its structured data) shows for another.
+ * Its previews at the view's width (#701), with the surface selector above them, read from the same answers as the
+ * previews beside its settings elsewhere, with what its fields show as typed (`typed`) laid over the saved settings.
  */
 function SeoViewDocument({ state, doc, collection, shown }: { state: ProjectState; doc: SeoDocument; collection: string | undefined; shown: boolean }) {
-  const { typed } = useTypedSeo(doc.key);
+  const { typed, on } = useTypedSeo(doc.key);
+  const { overlay, doc: preview } = useDocumentPreview(state, doc.subject, typed);
   return (
     <div className="seo-doc" data-seo-doc={doc.key}>
       <p className="seo-doc-kind">{kindOf(doc, collection)}</p>
       {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published.</p>}
-      <SeoViewPreviews state={state} doc={doc} typed={typed} shown={shown} />
+      <SeoPreview state={state} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} place="view" />
+      {doc.subject.kind === 'entry' && <SeoViewPostSettings state={state} subject={doc.subject} preview={preview} on={on} />}
     </div>
   );
 }
