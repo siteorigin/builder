@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, net, session as electronSession, shell, Menu } from 'electron';
-import type { BaseWindow, KeyboardEvent, MenuItem, MenuItemConstructorOptions } from 'electron';
+import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
@@ -13,6 +13,7 @@ import { installedCatalogue, loadInstalledPacks, packPreview, packRoots } from '
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
+import { appMenuTemplate } from './app-menu';
 import { writingMenuTemplate } from './writing-menu';
 import { loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
@@ -825,9 +826,6 @@ function updateProjectMenu() {
 }
 
 function buildMenu() {
-  const isMac = process.platform === 'darwin';
-  const send = (cmd: MenuCommand) => () => chooseCommand(cmd);
-  const projectOpen = controller.openingKey !== null;
   // Undo and Redo belong to whatever has focus, which only the editor knows: a text field (a visitor's in
   // Preview, too) keeps its own history and authoring surfaces undo the project. So these are not the
   // stock roles (text history only); the editor routes them. Their keys arrive here only when the page left
@@ -837,50 +835,7 @@ function buildMenu() {
     if (!headless && (!win || focused !== win)) return;
     controller.send('menu:history', { action, fromKey: menuKeyCopy(event, process.platform === 'darwin') });
   };
-  // Electron's own Edit menu, with Undo and Redo routed through the editor.
-  const editMenu: MenuItemConstructorOptions = {
-    label: 'Edit',
-    submenu: [
-      { id: 'edit-undo', label: 'Undo', accelerator: 'CommandOrControl+Z', click: history('undo') },
-      { id: 'edit-redo', label: 'Redo', accelerator: process.platform === 'win32' ? 'Control+Y' : 'Shift+CommandOrControl+Z', click: history('redo') },
-      { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      ...(isMac
-        ? ([
-            { role: 'pasteAndMatchStyle' },
-            { role: 'delete' },
-            { role: 'selectAll' },
-            { type: 'separator' },
-            { label: 'Substitutions', submenu: [{ role: 'showSubstitutions' }, { type: 'separator' }, { role: 'toggleSmartQuotes' }, { role: 'toggleSmartDashes' }, { role: 'toggleTextReplacement' }] },
-            { label: 'Speech', submenu: [{ role: 'startSpeaking' }, { role: 'stopSpeaking' }] }
-          ] satisfies MenuItemConstructorOptions[])
-        : ([{ role: 'delete' }, { type: 'separator' }, { role: 'selectAll' }] satisfies MenuItemConstructorOptions[]))
-    ]
-  };
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate([
-      ...(isMac ? [{ role: 'appMenu' as const }] : []),
-      {
-        label: 'File',
-        submenu: [
-          { label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', click: send('new-project') },
-          { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: send('open-project') },
-          // Open Project's picker takes a file or ZIP file here; a project folder has its own.
-          ...(isMac ? [] : [{ label: 'Open Project Folder…', click: send('open-project-folder') }]),
-          { type: 'separator' },
-          { id: 'export', label: 'Export…', accelerator: 'CmdOrCtrl+E', enabled: projectOpen, click: send('export') },
-          { type: 'separator' },
-          { id: 'close-project', label: 'Close Project', accelerator: 'CmdOrCtrl+Shift+W', enabled: projectOpen, click: send('close-project') },
-          isMac ? { role: 'close' as const } : { role: 'quit' as const }
-        ]
-      },
-      editMenu,
-      { role: 'viewMenu' },
-      { role: 'windowMenu' }
-    ])
-  );
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, controller.openingKey !== null, { command: chooseCommand, history })));
 }
 
 // One app instance at a time: a second one would race this one's settings, recents and project locks.

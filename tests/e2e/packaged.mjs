@@ -1,6 +1,7 @@
 // P01: the packaged app creates a project and previews it with no system Node on PATH, makes the starter
 // images' responsive copies in its media worker, and serves the preview with the packaged-only frame policy.
-// Works on macOS, Windows and Linux (CI runs it on all three). APP_BIN overrides the executable.
+// Written for macOS, Windows and Linux; for now only the local stabilization run takes it, on macOS. APP_BIN overrides
+// the executable.
 import assert from 'node:assert/strict';
 import { _electron as electron } from 'playwright';
 import { rmSync } from 'node:fs';

@@ -35,6 +35,16 @@ const DEFAULTS: SettingsFile = {
 };
 
 let cache: SettingsFile | null = null;
+
+/**
+ * Whether this run locks Developer mode off (`SITEORIGIN_DEVELOPER_MODE=locked-off`). The test driver sets it for a session
+ * an external model drives: in Developer mode the preview runs code a person writes with the permissions of whoever runs
+ * the app, which nothing driving the app from outside may reach. The setting then reads off, and asking for it changes
+ * nothing.
+ */
+export function developerModeLocked(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.SITEORIGIN_DEVELOPER_MODE === 'locked-off';
+}
 /**
  * What this app session last learned about each local server and the model chosen on it ('' for its first model),
  * with the model a request actually used (`resolved`). Kept in memory only: a server that was down yesterday may be
@@ -91,6 +101,7 @@ export async function loadSettings(): Promise<SettingsFile> {
     unread = (e as NodeJS.ErrnoException).code !== 'ENOENT';
     cache = structuredClone(DEFAULTS);
   }
+  if (developerModeLocked()) cache.settings.developerMode = false;
   return cache;
 }
 
@@ -136,6 +147,7 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
   const models = { ...prev.models, ...(patch.ai?.models ?? {}) };
   s.settings = { ...s.settings, ...patch, ai: withLocalModel({ ...prev, ...(patch.ai ?? {}), models, local }) };
   s.settings.ai.local.contextWindow = localContextWindow(s.settings.ai.local.contextWindow);
+  if (developerModeLocked()) s.settings.developerMode = false;
   await saveSettings();
   return s.settings;
 }

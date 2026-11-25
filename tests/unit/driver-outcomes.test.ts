@@ -11,7 +11,7 @@ import type { Area } from '../driver/desktop.ts';
 import { DOC_LIMITS, EXPORT_LIMITS, WALK_LIMITS, inspectExport, judgeApp, judgeContext, judgeLocate, judgeTerminal, parseCondition, parseInspectArgs, readProjectDocs, toSessionPath } from '../driver/outcomes.ts';
 import type { AppProbe, Checkpoint, Condition } from '../driver/outcomes.ts';
 import { errorInfo } from '../driver/protocol.ts';
-import { isReplayRecord, replay } from '../driver/replay.ts';
+import { isReplayRecord, replay, UNSTABLE_RETRIES } from '../driver/replay.ts';
 import { Session, printableKey } from '../driver/session.ts';
 import type { UiContext } from '../driver/observe.ts';
 
@@ -607,12 +607,12 @@ describe('replay', () => {
     step(8, { op: 'menu.invoke', class: 'input', window: null, args: { path: ['File', 'Open Project…'] }, outcome: { ok: true, summary: { status: 'dispatched' } } }),
     step(9, { op: 'wait.for', class: 'observation', args: { condition: 'ui.present', role: 'heading' }, outcome: { ok: true, summary: { condition: 'ui.present', met: true, count: 1 } } })
   ];
-  const answers = (o: { found?: number; outcome?: string; missing?: boolean; locate?: string; count?: number } = {}) => (f: Frame) => {
+  const answers = (o: { found?: number; outcome?: string; missing?: boolean; locate?: string; count?: number; name?: string; site?: string } = {}) => (f: Frame) => {
     if (f.op === 'wait.for' && f.args?.name === 'Missing') return o.missing ? reply(f, { met: true }) : failure(f, 'TIMEOUT');
     if (f.op === 'wait.for' && f.args?.condition === 'export.finished') return reply(f, { condition: 'export.finished', met: true, outcome: o.outcome ?? 'failed' });
     if (f.op === 'wait.for' && f.args?.role === 'heading') return reply(f, { condition: 'ui.present', met: true, count: o.count ?? 1 });
-    if (f.op === 'ui.locate') return o.locate ? failure(f, o.locate, { count: 2 }) : reply(f, { node: { ref: 'new:1' } });
-    if (f.op === 'project.summary') return reply(f, { project: { find: { matches: Array.from({ length: o.found ?? 1 }), complete: true } } });
+    if (f.op === 'ui.locate') return o.locate ? failure(f, o.locate, { count: 2 }) : reply(f, { node: { ref: 'new:1', ...(o.name ? { name: o.name } : {}) } });
+    if (f.op === 'project.summary') return reply(f, { project: { ...(o.site !== undefined ? { site: { name: o.site } } : {}), find: { matches: Array.from({ length: o.found ?? 1 }), complete: true } } });
     if (f.op === 'ui.click') return reply(f, { dispatched: 'complete', target: { role: 'button', name: 'Layers' } });
     return reply(f, {});
   };
@@ -654,6 +654,66 @@ describe('replay', () => {
       expect(r.ok).toBe(false);
       expect([r.divergence?.seq, r.divergence?.reason]).toEqual([seq, expect.stringMatching(reason)]);
     }
+  });
+
+  it('finds a target whose long name was cut short on its way to the record by the part that was kept', async () => {
+    const long = `Website files, ready to upload ${'Every published page as a finished website folder. '.repeat(4)}`.slice(0, 199) + '…';
+    const cutShort = { at: 'target', scope: 'editor', role: 'button', name: long, region: 'group "Choose an export"', replayable: true };
+    const steps = [journey[0], step(2, { op: 'ui.click', class: 'input', args: { target: { ref: 'old:1' } }, targets: [cutShort], outcome: { ok: true, summary: { dispatched: 'complete' } } })];
+    const s = fake(answers({ name: long }));
+    expect((await replay(record(steps), { make: () => s })).ok).toBe(true);
+    expect(s.sent.find((f) => f.op === 'ui.locate')!.args).toEqual({ role: 'button', name: long.slice(0, -1), exact: false, region: 'group "Choose an export"', scope: 'editor' });
+    // A full name, longer than the snapshot shows, that itself ends in an ellipsis: the one found shows its start.
+    const literal = `${'A long choice that goes on '.repeat(9)}…`;
+    const literalSteps = [journey[0], step(2, { op: 'ui.click', class: 'input', args: { target: { ref: 'old:1' } }, targets: [{ ...cutShort, name: literal }], outcome: { ok: true, summary: { dispatched: 'complete' } } })];
+    expect((await replay(record(literalSteps), { make: () => fake(answers({ name: `${literal.slice(0, 199)}…` })) })).ok).toBe(true);
+    // One that only holds that part somewhere in its name is another element.
+    const elsewhere = await replay(record(steps), { make: () => fake(answers({ name: `Also: ${long}` })) });
+    expect([elsewhere.ok, elsewhere.divergence?.reason]).toEqual([false, expect.stringMatching(/was not found as one element/)]);
+    // A short name that ends in an ellipsis is whole, and is looked for as it is.
+    const whole = [journey[0], step(2, { op: 'ui.click', class: 'input', args: { target: { ref: 'old:1' } }, targets: [{ ...layers, name: 'Export…' }], outcome: { ok: true, summary: { dispatched: 'complete' } } })];
+    const s2 = fake(answers());
+    expect((await replay(record(whole), { make: () => s2 })).ok).toBe(true);
+    expect(s2.sent.find((f) => f.op === 'ui.locate')!.args).toEqual({ role: 'button', name: 'Export…', region: 'Panels', scope: 'editor' });
+  });
+
+  it('compares the site\u2019s name and an export\u2019s kind with the recording, and says when the record itself stops it', async () => {
+    const named = [journey[0], step(2, { op: 'project.summary', class: 'observation', args: {}, outcome: { ok: true, summary: { revision: 3, site: 'Quayside Rooms' } } })];
+    expect((await replay(record(named), { make: () => fake(answers({ site: 'Quayside Rooms' })) })).ok).toBe(true);
+    const renamedBack = await replay(record(named), { make: () => fake(answers({ site: 'Harbour Lane Studio' })) });
+    expect([renamedBack.ok, renamedBack.divergence?.reason]).toEqual([false, 'its site is Harbour Lane Studio where the recording had Quayside Rooms']);
+    const exported = [journey[0], step(2, { op: 'wait.for', class: 'observation', args: { condition: 'export.finished' }, outcome: { ok: true, summary: { outcome: 'exported', kind: 'site' } } })];
+    const source = (f: Frame) => (f.op === 'wait.for' ? reply(f, { outcome: 'exported', export: { kind: 'source', path: 'exports/x' } }) : answers()(f));
+    expect((await replay(record(exported), { make: () => fake(source) })).divergence?.reason).toBe('its kind is source where the recording had site');
+    // Read again while the project is still opening: the name arrives, and the replay goes on.
+    let reads = 0;
+    const opening = (f: Frame) => (f.op === 'project.summary' ? reply(f, { project: ++reads < 3 ? null : { site: { name: 'Quayside Rooms' } } }) : answers()(f));
+    expect((await replay(record(named), { make: () => fake(opening) })).ok).toBe(true);
+    expect(reads).toBe(3);
+    // Stopped by the record's own mark, and stopped by the app, are told apart.
+    const pixels = [journey[0], step(2, { op: 'ui.click', class: 'input', args: {}, targets: [{ at: 'target', replayable: false, reason: 'a screenshot point names pixels of this run' }], outcome: { ok: true } })];
+    expect((await replay(record(pixels), { make: () => fake(answers()) })).divergence?.unreplayable).toBe(true);
+    expect((await replay(record(journey), { make: () => fake(answers({ found: 2 })) })).divergence?.unreplayable).toBeUndefined();
+  }, 20_000);
+
+  it('aims again at a target that moved as the pointer arrived, a few times, and diverges if it never settles', async () => {
+    const moving = (times: number) => {
+      let left = times;
+      return (f: Frame) => (f.op === 'ui.click' && left-- > 0 ? failure(f, 'NOT_ACTIONABLE', { reason: 'unstable', dispatched: 'partial' }) : answers()(f));
+    };
+    const settles = fake(moving(2));
+    const r = await replay(record(journey.slice(0, 2)), { make: () => settles });
+    expect(r.ok, JSON.stringify(r.divergence)).toBe(true);
+    expect(settles.sent.filter((f) => f.op === 'ui.click')).toHaveLength(3);
+    const neverSettles = fake(moving(10));
+    const never = await replay(record(journey.slice(0, 2)), { make: () => neverSettles });
+    expect([never.ok, never.divergence?.seq, never.divergence?.reason]).toEqual([false, 2, expect.stringMatching(/NOT_ACTIONABLE/)]);
+    expect(neverSettles.sent.filter((f) => f.op === 'ui.click')).toHaveLength(1 + UNSTABLE_RETRIES);
+    expect(UNSTABLE_RETRIES).toBe(3);
+    // Any other refusal is not tried again: something may have come up over the target.
+    const covered = fake((f) => (f.op === 'ui.click' ? failure(f, 'NOT_ACTIONABLE', { reason: 'obscured', dispatched: 'partial' }) : answers()(f)));
+    expect((await replay(record(journey.slice(0, 2)), { make: () => covered })).ok).toBe(false);
+    expect(covered.sent.filter((f) => f.op === 'ui.click')).toHaveLength(1);
   });
 
   it('does not repeat an input that may have sent something before it failed, or a record that lost its start', async () => {

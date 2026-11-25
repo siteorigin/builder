@@ -9,7 +9,7 @@
  * that is met where it timed out or the other way round, an export that fails where it succeeded), and says which and
  * why, with the reply.
  */
-import { REPLAY_KIND, REPLAY_VERSION } from './evidence.ts';
+import { CLIP, REPLAY_KIND, REPLAY_VERSION } from './evidence.ts';
 import type { JournalEntry, ReplayRecord, TargetDescriptor } from './evidence.ts';
 import type { Reply, StartArgs } from './protocol.ts';
 import { Session } from './session.ts';
@@ -36,6 +36,8 @@ export interface ReplayStep {
   reason?: string;
   /** The reply that diverged, or the last one of the step. */
   reply?: Reply;
+  /** Set when it diverged because the record itself marks the step as one it cannot repeat (pixels, text left out). */
+  unreplayable?: true;
 }
 
 export interface ReplayReport {
@@ -49,8 +51,24 @@ export interface ReplayReport {
 /** Observations a replay repeats: the waits that pace it, and the checks of what the run produced. */
 const REPEATED = new Set(['wait.for', 'project.summary', 'exports.inspect']);
 
+/** How often an input whose target moved as the pointer arrived is sent again, and how long it settles first. */
+export const UNSTABLE_RETRIES = 3;
+const UNSTABLE_SETTLE_MS = 300;
+/** How long, from the first attempt, an input that keeps moving may be aimed at again. */
+const UNSTABLE_BUDGET_MS = 5000;
+
 /** Failures of an input that come before anything is sent: such a step changed nothing and is passed over. */
 const REFUSED_BEFORE_INPUT = new Set(['BAD_REQUEST', 'UNKNOWN_OP', 'BUSY', 'NOT_STARTED', 'CLOSED', 'STALE_REF', 'STALE_OBSERVATION', 'AMBIGUOUS_TARGET', 'TARGET_NOT_FOUND', 'WINDOW_CLOSED', 'WINDOW_REPLACED', 'APP_EXITED']);
+
+/**
+ * A name or region cut to length before it reached the record: by the accessibility snapshot (200 characters and an
+ * ellipsis) or by the record itself (CLIP.string and an ellipsis). A short name ending in an ellipsis ("Export…") is whole.
+ */
+export const SNAPSHOT_NAME_CHARS = 200;
+function clipped(s: string | undefined): s is string {
+  // Counted both ways: one cut counts UTF-16 units, the other characters.
+  return typeof s === 'string' && s.endsWith('…') && Math.max(s.length, [...s].length) >= Math.min(SNAPSHOT_NAME_CHARS, CLIP.string + 1);
+}
 
 export function isReplayRecord(v: unknown): v is ReplayRecord {
   const r = v as Partial<ReplayRecord> | null;
@@ -61,19 +79,19 @@ export function isReplayRecord(v: unknown): v is ReplayRecord {
 function factsOf(op: string, result: unknown): Record<string, unknown> {
   const r = result as Record<string, any> | null; // eslint-disable-line @typescript-eslint/no-explicit-any
   if (!r) return {};
-  if (op === 'project.summary') return r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {};
+  if (op === 'project.summary') return { ...(r.project ? { site: r.project.site?.name ?? null } : {}), ...(r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {}) };
   if (op === 'exports.inspect') return { ...(typeof r.files === 'number' ? { files: r.files } : {}), ...(r.find ? { found: r.find.matches.length, complete: r.find.complete } : typeof r.complete === 'boolean' ? { complete: r.complete } : {}) };
-  if (op === 'wait.for') return { ...(r.outcome ? { outcome: r.outcome } : {}), ...(typeof r.count === 'number' ? { count: r.count } : {}) };
+  if (op === 'wait.for') return { ...(r.outcome ? { outcome: r.outcome } : {}), ...(typeof r.export?.kind === 'string' ? { kind: r.export.kind } : {}), ...(typeof r.count === 'number' ? { count: r.count } : {}) };
   return {};
 }
 
 
-/** Where a repeat differs from the recording: the same matches found, as completely; the same way an export ended. */
+/** Where a repeat differs from the recording: the same matches found, as completely; the same site name; the same way, and kind, an export ended. */
 function differs(e: JournalEntry, reply: Reply): string | null {
   if (!reply.ok) return null;
   const was = e.outcome?.summary ?? {};
   const now = factsOf(e.op, reply.result);
-  for (const k of ['found', 'complete', 'outcome', 'count', 'files'] as const) if (k in was && was[k] !== now[k]) return `its ${k} is ${String(now[k])} where the recording had ${String(was[k])}`;
+  for (const k of ['found', 'complete', 'outcome', 'kind', 'count', 'files', 'site'] as const) if (k in was && was[k] !== now[k]) return `its ${k} is ${String(now[k])} where the recording had ${String(was[k])}`;
   return null;
 }
 
@@ -84,8 +102,8 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
   let n = 0;
   const call = (op: string, args?: Record<string, unknown>, extra: { timeoutMs?: number; expectWindow?: number } = {}) => session.call({ v: 1, id: `replay-${++n}`, op, ...(args ? { args } : {}), ...extra });
   const report = (ok: boolean): ReplayReport => ({ ok, steps, divergence: steps.find((s) => s.status === 'diverged') ?? null, session });
-  const diverge = (e: JournalEntry, reason: string, reply?: Reply) => {
-    steps.push({ seq: e.seq, op: e.op, status: 'diverged', reason, ...(reply ? { reply } : {}) });
+  const diverge = (e: JournalEntry, reason: string, reply?: Reply, unreplayable = false) => {
+    steps.push({ seq: e.seq, op: e.op, status: 'diverged', reason, ...(reply ? { reply } : {}), ...(unreplayable ? { unreplayable: true as const } : {}) });
     return report(false);
   };
 
@@ -105,12 +123,29 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
 
   /** Find a recorded target again: wait for it to be there, then look it up as the one element it must be. */
   const resolve = async (e: JournalEntry, d: TargetDescriptor): Promise<{ ref: string } | Reply> => {
-    const query = { role: d.role, ...(d.name !== undefined ? { name: d.name } : {}), ...(d.exact === false ? { exact: false } : {}), ...(d.region ? { region: d.region } : {}), ...(d.scope ? { scope: d.scope } : {}) };
+    // A long name cut short on its way to the record is found by what was kept of it; a region cut short is left out,
+    // and the name and scope tell the element apart.
+    const query = {
+      role: d.role,
+      ...(d.name !== undefined ? { name: clipped(d.name) ? d.name.slice(0, -1) : d.name } : {}),
+      ...(d.exact === false || clipped(d.name) ? { exact: false } : {}),
+      ...(d.region && !clipped(d.region) ? { region: d.region } : {}),
+      ...(d.scope ? { scope: d.scope } : {})
+    };
     const there = await call('wait.for', { condition: 'ui.present', ...query }, { timeoutMs: opts.findMs ?? 15_000, ...on(e) });
     if (!there.ok) return there;
     const located = await call('ui.locate', query, on(e));
     if (!located.ok) return located;
-    return { ref: (located.result as { node: { ref: string } }).node.ref };
+    const node = (located.result as { node: { ref: string; name?: string } }).node;
+    // Found by part of a name cut short: the one found must begin with that part, not merely hold it.
+    // Both may be cut short (the name shown stops at 200 characters), so either may be the start of the other.
+    const kept = clipped(d.name) ? d.name.slice(0, -1) : '';
+    const shown = (node.name ?? '').replace(/…$/, '');
+    if (clipped(d.name) && !(shown.startsWith(kept) || (shown.length >= SNAPSHOT_NAME_CHARS - 1 && kept.startsWith(shown)))) {
+      const { v, id, op, sessionId, window: w, elapsedMs, events } = located;
+      return { v, id, op, ok: false, sessionId, window: w, elapsedMs, events, error: { code: 'TARGET_NOT_FOUND', message: `The ${d.role} found does not begin with the part of its name the record kept.`, retryable: false } };
+    }
+    return { ref: node.ref };
   };
 
   for (const e of [...record.steps].sort((a, b) => a.seq - b.seq)) {
@@ -140,18 +175,31 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
       return diverge(e, `it failed in the recording (${e.outcome.code}) after it may have sent input`);
     }
     // The session marks a step whose arguments it scrubbed or hid: what it holds is not what was sent.
-    if (e.unreplayable) return diverge(e, `it cannot be replayed: ${e.unreplayable}`);
+    if (e.unreplayable) return diverge(e, `it cannot be replayed: ${e.unreplayable}`, undefined, true);
     const args: Record<string, unknown> = { ...(e.args ?? {}) };
     if (e.class === 'input') {
       for (const d of e.targets ?? []) {
-        if (!d.replayable) return diverge(e, `its ${d.at} cannot be found again: ${d.reason ?? 'no description'}`);
+        if (!d.replayable) return diverge(e, `its ${d.at} cannot be found again: ${d.reason ?? 'no description'}`, undefined, true);
         const got = await resolve(e, d);
         if ('ok' in got) return diverge(e, `its ${d.at} (${d.role}${d.name !== undefined ? ` "${d.name}"` : ''}${d.region ? ` in "${d.region}"` : ''}) was not found as one element`, got);
         args[d.at] = { ref: got.ref, ...(d.position ? { position: d.position } : {}) };
       }
     }
-    const send = () => call(e.op, Object.keys(args).length ? args : undefined, { ...(e.timeoutMs !== undefined ? { timeoutMs: e.timeoutMs } : {}), ...on(e) });
+    const send = (timeoutMs = e.timeoutMs) => call(e.op, Object.keys(args).length ? args : undefined, { ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...on(e) });
+    const began = Date.now();
     let reply = await send();
+    // A target still moving when the pointer arrived (a dialog settling) was not pressed, scrolled or dragged: at most the
+    // pointer moved onto it, which can start what hovering starts. A person aims again; so does the replay, a few times
+    // within one budget, once it has had a moment to settle. Every other refusal stands.
+    for (
+      let again = 0;
+      again < UNSTABLE_RETRIES && e.class === 'input' && !reply.ok && reply.error.code === 'NOT_ACTIONABLE' && reply.error.details?.reason === 'unstable' && Date.now() - began + UNSTABLE_SETTLE_MS < UNSTABLE_BUDGET_MS;
+      again++
+    ) {
+      await new Promise((r) => setTimeout(r, UNSTABLE_SETTLE_MS));
+      // Each resend gets what is left of the budget, not the step's whole deadline again.
+      reply = await send(Math.max(1000, UNSTABLE_BUDGET_MS - (Date.now() - began)));
+    }
     // The recording moved to a newer window first: that one is now the window to use.
     if (!reply.ok && reply.error.code === 'WINDOW_REPLACED' && typeof reply.error.details?.to === 'number' && e.window !== null) {
       window = reply.error.details.to;
@@ -165,6 +213,13 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
       continue;
     }
     if (!reply.ok) return diverge(e, `it failed: ${reply.error.code} ${reply.error.message}`, reply);
+    // A summary read while the app is still writing what the recording had already seen (a project still opening, a
+    // save still landing) is read again for a little while before it counts as different.
+    for (let again = 0; e.op === 'project.summary' && differs(e, reply) && again < 10; again++) {
+      await new Promise((r) => setTimeout(r, 300));
+      reply = await send();
+      if (!reply.ok) return diverge(e, `it failed: ${reply.error.code} ${reply.error.message}`, reply);
+    }
     const different = differs(e, reply);
     if (different) return diverge(e, different, reply);
     // An untargeted key reaches what it reached in the recording.

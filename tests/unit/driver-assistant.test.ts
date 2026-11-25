@@ -606,7 +606,15 @@ describe('the script', () => {
       ['finish', 'Done.']
     ]);
     expect(parseScript({ scenario: 'edit-selection', params: { props: { heading: 'H' }, summary: 'Done.' } }).steps[0]).toMatchObject({ tool: 'update_selected_props', args: { props: { heading: 'H' } } });
-    expect(parseScript({ scenario: 'widen', params: { question: 'More?', then: 'Done.' } }).steps[0]).toMatchObject({ tool: 'request_wider_scope' });
+    expect(parseScript({ scenario: 'widen', params: { question: 'More?', then: 'Done.' } }).steps.map((s: any) => s.tool)).toEqual(['request_wider_scope', 'finish']);
+    // With a site name, the change only an allowed wider scope can make comes between the question and the finish.
+    expect(parseScript({ scenario: 'widen', params: { question: 'More?', siteName: 'Harbour Light', then: 'Done.' } }).steps.map((s: any) => [s.tool, s.args])).toEqual([
+      ['request_wider_scope', { question: 'More?' }],
+      ['update_site_brand', { siteName: 'Harbour Light' }],
+      ['finish', { message: 'Done.' }]
+    ]);
+    expect(() => parseScript({ scenario: 'widen', params: { question: 'More?', siteName: ' ', then: 'Done.' } })).toThrow(/"siteName" is text/);
+    for (const bad of [7, true, { name: 'X' }]) expect(() => parseScript({ scenario: 'widen', params: { question: 'More?', siteName: bad, then: 'Done.' } })).toThrow(/"siteName" is text/);
     expect(parseScript({ scenario: 'fail' }).steps).toEqual([{ error: { status: 409, message: 'The scripted provider refused the request.' } }]);
     expect(parseScript({ scenario: 'read-and-answer', params: { text: 'Hi.' } }).steps[0]).toMatchObject({ tool: 'read_page', args: { pageId: { $context: 'pageId' } } });
     for (const name of Object.keys(SCENARIOS)) expect(SCENARIOS[name].summary).toBeTruthy();
