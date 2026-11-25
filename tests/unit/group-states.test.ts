@@ -285,8 +285,95 @@ describe('moving elements between documents', () => {
       { styles: { base: { translateY: '8px' } } as ResponsiveStyles, strength: 3 }
     ];
     expect(flattenStates(layers)).toEqual({ 'base:groupHover': { translateX: '4px' } });
+    expect(flattenStates([{ styles: { 'base:groupFocus': { translateY: '-2px' } } as ResponsiveStyles, strength: 1 }, { styles: { base: { translateX: '6px' } } as ResponsiveStyles, strength: 3 }])).toEqual({
+      'base:groupFocus': { translateY: '-2px' }
+    });
     // Custom CSS that writes translate itself still conflicts.
     expect(flattenStates([layers[0], { styles: { base: { customCss: 'translate: 0 8px' } } as ResponsiveStyles, strength: 3 }])).toBeNull();
+  });
+});
+
+describe('detaching around nested placements and slots', () => {
+  /** A host design whose root holds a placement of `inner` and then its slot; a group around both when `grouped`. */
+  function host(s: ProjectState, inner: ComponentDefinition, grouped: boolean, componentId = 'project.host') {
+    const def = {
+      ...FOUNDATION.managed({
+        componentId,
+        name: 'Host',
+        category: 'content',
+        tags: [],
+        icon: 'sparkles',
+        description: '',
+        properties: {},
+        parts: { root: { nodeId: 'root', label: 'Host' } },
+        slots: { content: { label: 'Content' } },
+        build: (b) => b.el('root', 'div', { name: 'Host', ...(grouped ? { interactionGroup: true as const } : {}) }, [b.slot('content-slot', 'content')])
+      }),
+      owner: 'project' as const
+    } as ComponentDefinition;
+    const nestedInst = makeInstance(inner, {}) as InstanceNode;
+    def.tree!.nodes[nestedInst.id] = nestedInst;
+    (def.tree!.nodes.root as ElementNode).children.unshift(nestedInst.id);
+    s.components[def.id] = def;
+    return { def, nestedInst };
+  }
+  const placeIn = (s: ProjectState, def: ComponentDefinition, wrapped: boolean) => {
+    const p = makeInstance(def, {}) as InstanceNode;
+    home(s).nodes[p.id] = p;
+    if (wrapped) {
+      home(s).nodes.n_page_card = el('n_page_card', [p.id], { interactionGroup: true });
+      home(s).rootIds.push('n_page_card');
+    } else home(s).rootIds.push(p.id);
+    return p;
+  };
+  const detach = (s: ProjectState, nodeId: string) => apply(s, [{ type: 'component.detachInstance', owner: owner(s), nodeId }]);
+
+  it('keeps a design’s working group style on a placement inside it, over a dormant one of the placed design', () => {
+    const s = fresh();
+    // The placed card's own root has a group hover its design never shows (a root has no group of its own design).
+    const inner = cardDef(s, false);
+    inner.tree!.nodes.root.styles = { 'base:groupHover': { color: '#ff0000' } };
+    // The host, sorted before it so the card's block is the later one, colours that placement blue on its group's
+    // hover: the card's dormant red, though later, is never written, and must not win the fold either.
+    const { def, nestedInst } = host(s, inner, true, 'project.a-host');
+    expect(inner.id.localeCompare(def.id)).toBeGreaterThan(0);
+    nestedInst.styles = { 'base:groupHover': { color: '#0000ff' } };
+    const p = placeIn(s, def, false);
+    const t = detach(apply(s, []), p.id);
+    const detached = Object.values(home(t).nodes).find((n) => n.kind === 'instance' && n.definitionId === inner.id) as InstanceNode;
+    expect(detached.overrides?.root?.['base:groupHover']).toEqual({ color: '#0000ff' });
+  });
+
+  it('leaves dormant group styles of a nested placement and of slot content unshown under the groups they move into', () => {
+    let s = fresh();
+    const inner = cardDef(s, false);
+    // The host has no group around the nested card; the card's design has none either, so its arrow's override is dormant.
+    const { def, nestedInst } = host(s, inner, false);
+    nestedInst.overrides = { arrow: { 'base:groupHover': { scale: 1.2 } } };
+    const p = placeIn(s, def, true);
+    s = apply(s, []);
+    let t = detach(s, p.id);
+    const nested = Object.values(home(t).nodes).find((n) => n.kind === 'instance' && n.definitionId === inner.id) as InstanceNode;
+    expect(nested.overrides?.arrow?.['base:groupHover']).toBeUndefined();
+    // Slot content of a grouped host, placed where no page group reaches it: its group hover never showed.
+    s = fresh();
+    const plain = cardDef(s, false);
+    const grouped = host(s, plain, true).def;
+    const q = placeIn(s, grouped, false);
+    home(s).nodes.n_slotted = { id: 'n_slotted', kind: 'icon', icon: 'star', styles: { base: { opacity: 0.5 }, 'base:groupHover': { opacity: 1 } } } as IconNode;
+    q.slots = { content: ['n_slotted'] };
+    t = detach(apply(s, []), q.id);
+    expect(home(t).nodes.n_slotted.styles).toEqual({ base: { opacity: 0.5 } });
+    expect(enclosingGroup(home(t), 'n_slotted')).not.toBeNull();
+  });
+});
+
+describe('a code component’s own markup', () => {
+  const code = (source: string) => ({ id: 'cd_x', kind: 'code', source, parts: {} }) as unknown as ComponentDefinition;
+  it('counts a group it renders, not one its stylesheet or a comment names', () => {
+    expect(partInInteractionGroup(code('<div class="card so-group"><span class={so_o?.arrow}></span></div>'), 'arrow', false)).toBe(true);
+    expect(partInInteractionGroup(code('<div class="card"></div><style>:global(.so-group:hover) .card { color: red }</style>'), 'arrow', false)).toBe(false);
+    expect(partInInteractionGroup(code('<!-- so-group --><div class="card"></div>'), 'arrow', false)).toBe(false);
   });
 });
 
@@ -418,6 +505,7 @@ describe('the document format', () => {
     expect(MIGRATIONS.at(-1)?.id).toBe('interaction-groups');
     let s = group(cards(), 'n_card');
     s = style(s, 'n_arrow', 'phone', 'groupFocus', 'color', '#0000ff');
+    s = style(s, 'n_arrow', 'base', 'groupHover', 'translateX', '4px');
     const from = MIGRATIONS.length;
     for (const d of [s.manifest, s.site, s.tokens, s.assets, s.themeLock, ...Object.values(s.pages), ...Object.values(s.components)]) d.schemaVersion = from;
     const before = structuredClone(s);

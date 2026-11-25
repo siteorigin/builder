@@ -67,6 +67,8 @@ export function groupLookup(tree: NodeTree | undefined | null): (nodeId: string)
 /** The nearest group strictly around a node in its tree, or null. */
 export const enclosingGroup = (tree: NodeTree | undefined | null, nodeId: string): string | null => groupLookup(tree)(nodeId);
 
+/** A code component's source without its stylesheets and comments, where a group selector names the class too. */
+const codeMarkup = (source: string) => source.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
 /** A code component's markup that renders an interaction group (the class written as a class name of its own). */
 const CODE_GROUP = new RegExp(`(^|[^\\w-])${INTERACTION_GROUP_CLASS}(?![\\w-])`);
 
@@ -80,7 +82,7 @@ const CODE_GROUP = new RegExp(`(^|[^\\w-])${INTERACTION_GROUP_CLASS}(?![\\w-])`)
  */
 export function partInInteractionGroup(def: ComponentDefinition | undefined, partId: string, placed: boolean, lookups?: Map<string, (nodeId: string) => string | null>): boolean {
   if (placed) return true;
-  if (def?.kind === 'code') return typeof def.source === 'string' && CODE_GROUP.test(def.source);
+  if (def?.kind === 'code') return typeof def.source === 'string' && CODE_GROUP.test(codeMarkup(def.source));
   if (!def || def.kind !== 'managed' || !def.tree) return false;
   const nodeId = partId === 'root' || !Object.hasOwn(def.parts ?? {}, partId) ? def.tree.rootIds[0] : def.parts[partId]?.nodeId;
   if (!nodeId) return false;

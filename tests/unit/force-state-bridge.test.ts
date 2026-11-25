@@ -200,6 +200,9 @@ describe.skipIf(!browserInstalled)('showing the selected element in a hover, foc
       await force('groupHover', 'gc');
       await expect.poll(marked).toEqual(['g3=hover', 'g4=hover']);
       expect(await paint(at('gc'), 'color')).toBe(RED);
+      // The dialog itself selected: nothing around it counts as hovered.
+      await force('groupHover', 'g3');
+      await expect.poll(marked).toEqual([]);
     } finally {
       await force(null);
       await frame.evaluate(`document.getElementById('modal').close()`);

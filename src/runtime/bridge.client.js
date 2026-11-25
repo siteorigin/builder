@@ -4366,6 +4366,8 @@ function forcedTargets() {
     const own = !forced.part && el.hasAttribute('data-so-code') ? [...el.children].filter((c) => c.tagName !== 'STYLE' && c.tagName !== 'SCRIPT') : [el];
     for (const t of own) {
       if (group) {
+        // A dialog over the page is the top of what can be hovered: nothing around it is.
+        if (isModal(t)) continue;
         for (let a = t.parentElement; a; a = a.parentElement) {
           if (a.classList.contains('so-group')) out.push(a);
           if (isModal(a)) break;

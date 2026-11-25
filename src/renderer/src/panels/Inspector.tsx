@@ -86,7 +86,7 @@ import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import type { FocusImage } from './FocusEditor';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { assetUrl, createComponentTarget, definitionView, isCodePart, ownerLabel, placedFeedRows, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor } from '../lib/model';
-import { enclosingGroup, partInInteractionGroup } from '@shared/interaction-groups';
+import { enclosingGroup, partInInteractionGroup, withoutGroupStates } from '@shared/interaction-groups';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
 import { wrapItems } from './WrapItems';
@@ -323,6 +323,13 @@ function applyTableEdit(owner: OwnerRef, nodeId: string, prop: string, edit: Tab
 const styleKey = (property: string, key: string) => (property === 'objectPosition' ? undefined : key);
 /** A style change's size, and its interactive state (hover, focus, pressed) when it is for one. */
 const styleAt = (scope: ResponsiveScope, inState?: StyleState) => (inState ? { scope, state: inState } : { scope });
+/**
+ * A design's rules on one of its nodes as its stylesheet writes them: without the group states no group of the design
+ * around that node shows (see interaction-groups), so a dormant one never reads as what a placement starts from.
+ */
+const shownDesign = (def: ComponentDefinition, nodeId: string, styles: ResponsiveStyles | undefined) => (enclosingGroup(def.tree, nodeId) !== null ? styles : withoutGroupStates(styles));
+const shownLayers = <L extends { styles?: ResponsiveStyles }>(def: ComponentDefinition, nodeId: string, layers: L[]): L[] =>
+  enclosingGroup(def.tree, nodeId) !== null ? layers : layers.map((l) => ({ ...l, styles: withoutGroupStates(l.styles) }));
 /** Whether an interaction group encloses a node of a document, so the node's group states can show. */
 const inGroupAt = (state: ProjectState, owner: OwnerRef, nodeId: string) => enclosingGroup(treeFor(state, owner), nodeId) !== null;
 /**
@@ -1238,8 +1245,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           )}
           <StyleControls
             styles={node.overrides?.root}
-            inherited={designStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants)}
-            layers={designLayers(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants)}
+            inherited={shownDesign(def, rootPart?.nodeId ?? def.tree!.rootIds[0], designStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants))}
+            layers={shownLayers(def, rootPart?.nodeId ?? def.tree!.rootIds[0], designLayers(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants))}
             wideColumns
             allowed={placementStyleControls(def, 'root', codeStyled) ?? undefined}
             grouped={partInInteractionGroup(def, 'root', inGroupAt(state, owner, node.id))}
@@ -1767,8 +1774,8 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
               <StyleControls
                 key="all"
                 styles={inst.overrides?.[partId!]}
-                inherited={designStyles(def, part.nodeId, inst.variants)}
-                layers={designLayers(def, part.nodeId, inst.variants)}
+                inherited={shownDesign(def, part.nodeId, designStyles(def, part.nodeId, inst.variants))}
+                layers={shownLayers(def, part.nodeId, designLayers(def, part.nodeId, inst.variants))}
                 wideColumns
                 allowed={partStyleControls(def, partId!)}
                 grouped={partInInteractionGroup(def, partId!, inGroupAt(state, owner, inst.id))}
