@@ -8,6 +8,7 @@ import { diagnosticKey } from '@engine/validate';
 import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
+import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOfSight, selectPage } from '../lib/actions';
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
@@ -99,6 +100,8 @@ export function StatusBar() {
   const pageIssue = useStore((s) => s.previewIssue);
   const stylesOpen = useStore((s) => s.rightTab === 'styles' && s.dockOpen);
   const definitionMode = useStore((s) => s.definitionMode);
+  // The post writer or the SEO view covers the canvas: no path leads to what is selected under it (#578, #700).
+  const covered = useStore((s) => canvasCovered(activeWorkspace(s)));
   const frameReady = useStore((s) => s.frameReady);
   const menu = useMenu();
   // The toolbar says when a conflict appears or clears.
@@ -120,12 +123,12 @@ export function StatusBar() {
   const warnings = snap.diagnostics.filter((d) => d.severity === 'warning').length;
   // While editing a component everywhere, the path starts at the component (plum), never at a page: its
   // overview, then the design's own layers down to the selection.
-  const def = definitionMode ? snap.state.components[definitionMode.definitionId] : undefined;
+  const def = definitionMode && !covered ? snap.state.components[definitionMode.definitionId] : undefined;
   const crumbs: Array<Crumb & { def?: boolean }> = def
     ? selection && inDefinition(selection, def.id)
       ? breadcrumb(snap.state, selection).map((c, i) => (i ? c : { ...c, def: true }))
       : [{ label: def.name, full: def.name, ref: null, def: true }]
-    : selection && !stylesOpen
+    : selection && !stylesOpen && !covered
       ? breadcrumb(snap.state, selection)
       : [];
   // A deep path keeps its first item and the last two (the selection and its parent); the ones between

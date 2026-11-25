@@ -8,7 +8,7 @@ import { api, projectHistory, setState, setViewport, toast, useStore } from '../
 import { pageShowing, partName } from '@shared/page-shell';
 import { insert, pageOutOfSight, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers, currentOwner } from '../lib/actions';
 import { copiedHere, copySelection, pasteFromMenu } from '../lib/clipboard';
-import { postWorkspace } from '../lib/posts';
+import { activeWorkspace } from '../lib/workspace';
 import { platformKeys } from './CopyPaste';
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
 import { VIEWPORT_PRESETS } from '@shared/styles';
@@ -316,14 +316,17 @@ export function CommandMenu() {
   const editing = useStore((s) => s.mode === 'edit');
   const copyable = useStore((s) => s.mode === 'edit' && !s.definitionMode && planLayers(s)?.group.owner.kind === 'page');
   const pasteable = useStore((s) => !!copiedHere(s));
-  // The page under the post writer, or behind a post's preview, is out of sight: nothing is copied from it, pasted into
-  // it or inserted on it (#578).
-  const posting = useStore(postWorkspace);
+  // The page under the post writer or the SEO view, or behind a post's preview, is out of sight: nothing is copied from
+  // it, pasted into it or inserted on it (#578, #700). The SEO view also keeps the canvas's mode as it was.
+  const workspace = useStore(activeWorkspace);
+  // The page on screen: none while a workspace is in front of it, so going to the page under it is offered.
+  const pageShown = workspace ? null : pageId;
   const readOnly = !!snap?.readOnly;
   const unavailable = (c: Cmd) => {
     if (c.id === 'undo') return history?.canUndo ? undefined : 'Nothing to undo';
     if (c.id === 'redo') return history?.canRedo ? undefined : 'Nothing to redo';
-    if (posting && (c.id === 'copy' || c.id === 'paste' || c.inserts)) return posting === 'write' ? 'Not while writing a post' : 'Not while previewing a post';
+    if (workspace === 'seo' && (c.id === 'copy' || c.id === 'paste' || c.inserts || c.id === 'preview' || c.id === 'desktop' || c.id === 'tablet' || c.id === 'phone')) return 'Not in the SEO view';
+    if (workspace && (c.id === 'copy' || c.id === 'paste' || c.inserts)) return workspace === 'write' ? 'Not while writing a post' : 'Not while previewing a post';
     if (c.inserts) return readOnly ? 'Read-only' : c.refused;
     if (c.id === `panel:${leftTab}`) return 'Already open';
     if (c.id === 'copy') return !editing ? 'Edit mode only' : copyable ? undefined : 'Nothing to copy';
@@ -353,7 +356,7 @@ export function CommandMenu() {
   const matched = typed
     ? searched
     : [
-        ...restRows(searched.filter((c) => c.id.startsWith('page:') && c.id !== `page:${pageId}`), REST_PAGES, allPages, (n) => ({ id: 'page:more', label: `Show ${n} more ${n === 1 ? 'page' : 'pages'}`, group: 'Page', stay: true, icon: <ChevronDown />, run: () => setAllPages(true) })),
+        ...restRows(searched.filter((c) => c.id.startsWith('page:') && c.id !== `page:${pageShown}`), REST_PAGES, allPages, (n) => ({ id: 'page:more', label: `Show ${n} more ${n === 1 ? 'page' : 'pages'}`, group: 'Page', stay: true, icon: <ChevronDown />, run: () => setAllPages(true) })),
         ...searched.filter((c) => c.group === 'Page' && !c.id.startsWith('page:')),
         ...restRows(searched.filter((c) => c.group === 'Insert'), REST_INSERTS, allInserts, (n) => ({ id: 'ins:more', label: `Show ${n} more to insert`, group: 'Insert', stay: true, icon: <ChevronDown />, run: () => setAllInserts(true) })),
         // Opening a component in Component Studio is found by its name: one row per component would bury the commands.
@@ -530,7 +533,7 @@ export function CommandMenu() {
               {g.items.map((c) => {
                 const i = ++index;
                 const reason = unavailable(c);
-                const current = c.id === `page:${pageId}`;
+                const current = c.id === `page:${pageShown}`;
                 // A long title takes the whole first line and its address goes under it, so neither is cut short twice.
                 const stacked = !!c.detail && c.label.length - (c.verb?.length ?? 0) + c.detail.length > LONG_ROW;
                 const address = c.detail && (

@@ -9,7 +9,9 @@ import { pageShowing } from '@shared/page-shell';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type State } from '../store';
-import { postWorkspace } from './posts';
+import { activeWorkspace, canvasCovered } from './workspace';
+import { seoDocument } from './seo-view';
+import type { SeoSubject } from '@shared/seo';
 import { imageDropOps, imageInsertOps, type ImageTarget } from './image-drop';
 import { flushOpenPost } from './post-draft';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
@@ -328,7 +330,7 @@ function nothingPlanned(verb: string) {
  */
 function followChange(workspaceKey: string): { still: () => boolean; stop: () => void } {
   const start = getState();
-  const view = (s: State) => [s.pageId, s.definitionMode?.definitionId ?? null, s.templateMode?.collectionId ?? null, s.mode, postWorkspace(s), s.snapshot?.workspaceKey].join('\n');
+  const view = (s: State) => [s.pageId, s.definitionMode?.definitionId ?? null, s.templateMode?.collectionId ?? null, s.mode, activeWorkspace(s), s.snapshot?.workspaceKey].join('\n');
   let follow = start.snapshot?.workspaceKey === workspaceKey;
   const stop = useStore.subscribe((now, prev) => {
     if (!follow) return;
@@ -443,8 +445,8 @@ export async function moveToPage(pageId: string, plan = planLayers(), follow = f
   let followMove = stillOn(plan) && start.pageId === g.owner.id && !start.definitionMode && start.mode === 'edit';
   const stopWatching = useStore.subscribe((now, prev) => {
     if (!followMove) return;
-    // The post writer opened meanwhile is where the author went (#578).
-    if (now.pageId !== start.pageId || now.definitionMode || now.mode !== start.mode || postWorkspace(now) || now.snapshot?.workspaceKey !== plan.snap.workspaceKey) {
+    // The post writer or the SEO view opened meanwhile is where the author went (#578, #700).
+    if (now.pageId !== start.pageId || now.definitionMode || now.mode !== start.mode || activeWorkspace(now) || now.snapshot?.workspaceKey !== plan.snap.workspaceKey) {
       followMove = false;
     } else if (now.selection !== prev.selection || now.layerSet !== prev.layerSet) {
       // The move's snapshot clears the old selection before the apply reply supplies the new IDs.
@@ -866,10 +868,11 @@ export function openLayout(collectionId: string, entryId?: string) {
 
 /**
  * Whether showing `pageId` takes opening it: another page is open, a component is edited everywhere, or the Posts
- * workspace is in front of the page (#578). A jump to something on the page (a match, a broken link) opens it first.
+ * workspace or the SEO view is in front of the page (#578, #700). A jump to something on the page (a match, a broken
+ * link) opens it first.
  */
 export function pageOutOfSight(s: Pick<State, 'pageId' | 'definitionMode' | 'leftTab' | 'postView' | 'mode' | 'post'>, pageId: string): boolean {
-  return s.pageId !== pageId || !!s.definitionMode || !!postWorkspace(s);
+  return s.pageId !== pageId || !!s.definitionMode || !!activeWorkspace(s);
 }
 
 /**
@@ -879,10 +882,12 @@ export function pageOutOfSight(s: Pick<State, 'pageId' | 'definitionMode' | 'lef
  */
 export function selectPage(pageId: string, target?: ElementRef | null) {
   // A page chosen while a post is previewed ends that preview: the canvas goes to the page (see Editor). One chosen
-  // while the post writer covers the canvas puts the writer away, so the page shows and the editor names it (#578);
-  // the page was not on screen, so it opens at its place as another page does.
-  const covered = getState().leftTab === 'posts' && getState().postView === 'write';
-  if (getState().postView === 'preview') setState({ postView: 'write', ...(getState().leftTab === 'posts' ? { leftTab: 'pages' as const } : {}) });
+  // while the post writer or the SEO view covers the canvas puts it away, so the page shows and the editor names it
+  // (#578, #700); the page was not on screen, so it opens at its place as another page does.
+  const before = getState();
+  const covered = canvasCovered(activeWorkspace(before));
+  const away = before.leftTab === 'posts' || before.leftTab === 'seo' ? { leftTab: 'pages' as const } : {};
+  if (before.postView === 'preview') setState({ postView: 'write', ...away });
   else if (covered) setState({ leftTab: 'pages' });
   const s = getState();
   const st = s.snapshot?.state;
@@ -976,8 +981,9 @@ export async function openSeoChat(h: SeoHandoff): Promise<boolean> {
     if (now.mode !== 'edit') setMode('edit');
     // The page itself, so the request is about the whole page; also out of a component edited everywhere or a layout.
     selectPage(h.pageId, null);
-  } else if (h.mode === 'edit' && (now.definitionMode || now.templateMode)) {
-    // A component edited everywhere or a layout would make the request about that design: the page goes back on screen.
+  } else if (h.mode === 'edit' && (now.definitionMode || now.templateMode || activeWorkspace(now))) {
+    // A component edited everywhere or a layout would make the request about that design, and the Posts workspace or the
+    // SEO view about the post or document it shows (#700): the page goes back on screen.
     selectPage(keepPagesValid(st, now.definitionMode?.returnPageId ?? now.pageId, null).pageId ?? st.site.homePageId, null);
   }
   const after = getState();
@@ -1064,8 +1070,8 @@ export function openComponentStudio(definitionId: string): boolean {
     selection: kept ?? (root ? { owner: { kind: 'component', id: definitionId }, instancePath: [], nodeId: root } : null),
     rightTab: 'inspect',
     dockOpen: true,
-    // The post writer covers the canvas the studio shows on: the component's layers show instead.
-    ...(now.leftTab === 'posts' ? { leftTab: 'layers' as const } : {})
+    // The post writer or the SEO view covers the canvas the studio shows on: the component's layers show instead.
+    ...(now.leftTab === 'posts' || now.leftTab === 'seo' ? { leftTab: 'layers' as const } : {})
   });
   return true;
 }
@@ -1112,6 +1118,19 @@ export function openOutline(pageId?: string | null) {
 export function openSiteStyles() {
   const dm = getState().definitionMode;
   setState(dm ? { definitionMode: null, pageId: dm.returnPageId, selection: null, rightTab: 'styles', dockOpen: true } : { rightTab: 'styles', dockOpen: true });
+}
+
+/**
+ * Open the SEO view (#700), in the canvas's place with its list in the sidebar, on `subject` when one is given (another
+ * panel's link straight to a document), else on the document it last chose. Closes the dialog that asked. False, with
+ * the editor left as it is, while no project is open or when the project no longer has that page or post.
+ */
+export function openSeoView(subject?: SeoSubject | null): boolean {
+  const s = getState();
+  if (!s.snapshot) return false;
+  if (subject && !seoDocument(s.snapshot.state, subject)) return (toast('That page or post is no longer in the project.', 'info'), false);
+  setState({ modal: null, leftTab: 'seo', ...(subject ? { seoSubject: subject } : {}) });
+  return true;
 }
 
 /**

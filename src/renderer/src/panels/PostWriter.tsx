@@ -254,9 +254,13 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       markDraft(draftKey, false);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  // Hidden (another panel, the preview): saved now.
+  // Hidden (another panel, the preview): saved now. Each time is counted, so a preview asked for before the writer was put
+  // away (and perhaps shown again) never starts after it (#700).
+  const putAway = useRef(0);
   useEffect(() => {
-    if (hidden) void draft.flush();
+    if (!hidden) return;
+    putAway.current++;
+    void draft.flush();
   }, [hidden]); // eslint-disable-line react-hooks/exhaustive-deps
   // Text held back while the AI worked is saved once it stops.
   useEffect(() => {
@@ -512,11 +516,14 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   };
   const preview = async () => {
     const key = getState().snapshot?.workspaceKey;
+    const away = putAway.current;
     // The preview shows what is saved: text that could not be saved stays in view with its note.
     if (!(await saveAll())) return toast('Part of the post is not saved yet, so the preview would not show it. See the note beside it.', 'error');
     // Another post (or project) opened while this one saved: the preview was this post's, so it does not start (#578).
+    // Nor once the writer was put away meanwhile (another panel, the SEO view), even if it is back: the author went
+    // elsewhere (#700).
     const now = getState();
-    if (now.snapshot?.workspaceKey !== key || now.post?.collectionId !== post.collectionId || now.post?.entryId !== post.entryId) return;
+    if (now.snapshot?.workspaceKey !== key || now.post?.collectionId !== post.collectionId || now.post?.entryId !== post.entryId || putAway.current !== away || now.leftTab !== 'posts' || now.postView !== 'write') return;
     setState({ postView: 'preview' });
     setMode('preview');
     // Once the canvas shows again; a preview still starting opens the post once it is ready.

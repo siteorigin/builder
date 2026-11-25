@@ -124,8 +124,8 @@ function showElement(state: ProjectState, dest: Extract<EditorDestination, { kin
     else if (collectionId) openLayout(collectionId);
     else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
   }
-  // Opened from the post writer, Layers takes its place, so the canvas shows the element where it is.
-  setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, ...(getState().leftTab === 'posts' ? { leftTab: 'layers' as const } : {}) });
+  // Opened from the post writer or the SEO view, Layers takes its place, so the canvas shows the element where it is.
+  setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, ...(getState().leftTab === 'posts' || getState().leftTab === 'seo' ? { leftTab: 'layers' as const } : {}) });
 }
 
 /** Frames to wait for the Inspector of a new selection (or the post writer) to show a control, before giving up quietly. */

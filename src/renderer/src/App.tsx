@@ -15,6 +15,7 @@ import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwne
 import { runWriterHistory } from './lib/post-draft';
 import { endEditingHold, forgetKeptDrafts, prepareToLeave, projectClosed } from './lib/leave';
 import { keepViewValid } from './lib/model';
+import { keepSeoSubject } from './lib/seo-view';
 import { placeOn, readPlaces } from './lib/page-place';
 import { startEditorFonts } from './lib/editor-fonts';
 
@@ -51,7 +52,7 @@ export function App() {
           // as the snapshot, so nothing is ever shown or sent for what has gone. A selection whose page, element, part
           // or list item went (an Undo took it away) goes with it, so a Redo that brings it back never leaves it
           // selected, and acted on, while the author has moved on; a component edited everywhere that went ends that mode.
-          setState({ snapshot: snap, runtime: snap.runtime, ...keepViewValid(snap.state, s) });
+          setState({ snapshot: snap, runtime: snap.runtime, ...keepViewValid(snap.state, s), ...keepSeoSubject(snap.state, s.seoSubject) });
         }
       }),
       api.on('project:closed', () => {
@@ -60,7 +61,7 @@ export function App() {
         opened++;
         projectClosed();
         // Held edits and the last AI outcome belong to the project that closed.
-        setState({ screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, renameOffer: null, ...pasteStyleClosed() });
+        setState({ screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, renameOffer: null, ...pasteStyleClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -170,6 +171,8 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     postView: 'write',
     postPreviewAt: null,
     postReveal: null,
+    // The SEO view opens with no document chosen: a page or post of the last opening is never this one's.
+    seoSubject: null,
     definitionMode: null,
     templateMode: null,
     variantStyle: null,

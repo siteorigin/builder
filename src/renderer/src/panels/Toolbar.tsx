@@ -1,6 +1,6 @@
 import './Toolbar.css';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, Moon, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Sparkles, Sun, SunMoon, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
+import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, Moon, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, Search, Settings, Smartphone, Sparkles, Sun, SunMoon, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { projectDisplayName } from '@shared/project-name';
@@ -13,7 +13,8 @@ import { toolbarAnnouncement, useTransitionAnnouncement, type SaveStatus } from 
 import { VIEWPORT_LIMITS, ZOOM_LEVELS, toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
 import { runPhase, settledState } from '../lib/savestate';
-import { postShown, postWorkspace } from '../lib/posts';
+import { postShown } from '../lib/posts';
+import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { shortcutLabel } from '../lib/shortcut-keys';
 
 export function Toolbar() {
@@ -25,8 +26,11 @@ export function Toolbar() {
   const mode = useStore((s) => s.mode);
   const leftTab = useStore((s) => s.leftTab);
   // The Posts workspace in front: the toolbar names the post (or where its preview's visitor went), not the page under
-  // the writer, and the canvas's width and zoom wait while the writer covers it (#578).
-  const posting = useStore(postWorkspace);
+  // the writer, and the canvas's width and zoom wait while the writer covers it (#578). The SEO view names itself, and
+  // the canvas's width, zoom and mode wait while it covers the canvas (#700).
+  const workspace = useStore(activeWorkspace);
+  const seo = workspace === 'seo';
+  const covered = canvasCovered(workspace);
   const post = useStore((s) => s.post);
   const postPreviewAt = useStore((s) => s.postPreviewAt);
   const pending = useStore((s) => s.pendingSave);
@@ -64,13 +68,13 @@ export function Toolbar() {
   const reported = useRef<string | null>(null);
   // How many times Enter has been refused in a row, so the message is announced again on each try.
   const [widthError, setWidthError] = useState(0);
-  // Once the writer covers the canvas, a width typed but not applied is let go with the field.
+  // Once the writer or the SEO view covers the canvas, a width typed but not applied is let go with the field.
   useEffect(() => {
-    if (posting !== 'write') return;
+    if (!covered) return;
     reported.current = null;
     setWidthError(0);
     setWidthDraft(String(useStore.getState().viewport));
-  }, [posting]);
+  }, [covered]);
   const isMac = api.platform === 'darwin';
   // In a narrow window the Edit and Preview labels go first, then Zoom and Settings move into a More menu,
   // so the page switcher, Undo, Redo, the panel toggles and Export always fit.
@@ -174,12 +178,11 @@ export function Toolbar() {
   // What the author calls this project: a working copy's own name (#176), otherwise the site's.
   const projectName = projectDisplayName(state);
   const named = projectName === siteName ? projectName : `${projectName} (site name: ${siteName})`;
-  const shown = posting ? postShown(state, posting, post, postPreviewAt) : null;
+  const shown = workspace === 'write' || workspace === 'preview' ? postShown(state, workspace, post, postPreviewAt) : null;
   const shownPage = shown?.kind === 'page' && Object.hasOwn(state.pages, shown.pageId) ? state.pages[shown.pageId] : null;
-  const covered = posting === 'write';
-  const defName = !shown && definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
-  const placeName = shown ? (shown.kind === 'post' ? shown.title : shown.kind === 'page' ? (shownPage?.title ?? '') : shown.path) : (defName ?? page?.title ?? '');
-  const isHome = shown ? !!shownPage && shownPage.id === state.site.homePageId : !definitionMode && page?.id === state.site.homePageId;
+  const defName = !shown && !seo && definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
+  const placeName = seo ? 'SEO' : shown ? (shown.kind === 'post' ? shown.title : shown.kind === 'page' ? (shownPage?.title ?? '') : shown.path) : (defName ?? page?.title ?? '');
+  const isHome = seo ? false : shown ? !!shownPage && shownPage.id === state.site.homePageId : !definitionMode && page?.id === state.site.homePageId;
   // The width is a whole number from 240 to 2560. Anything else is not applied: the field says why and
   // keeps focus after Enter so it can be corrected, or goes back to the current width when left.
   const validWidth = (raw: string) => {
@@ -193,14 +196,15 @@ export function Toolbar() {
     ['light', 'Light colors', <Sun key="light" />],
     ['dark', 'Dark colors', <Moon key="dark" />]
   ] as const;
-  const schemeItems: MenuItem[] = SCHEMES.map(([id, label, icon]) => ({ label, icon, checked: previewScheme === id, onSelect: () => setState({ previewScheme: id }) }));
+  const schemeItems: MenuItem[] = SCHEMES.map(([id, label, icon]) => ({ label, icon, checked: previewScheme === id, disabled: seo, onSelect: () => setState({ previewScheme: id }) }));
   const schemeLabel = SCHEMES.find(([id]) => id === previewScheme)![1];
   const zoomItems: MenuItem[] = [
     { label: 'Fit to window', checked: zoom === 'fit', disabled: covered, onSelect: () => setZoom('fit') },
     ...ZOOM_LEVELS.map((z) => ({ label: `${Math.round(z * 100)}%`, checked: zoom === z, disabled: covered, onSelect: () => setZoom(z) }))
   ];
   const openSettings = () => setState({ modal: { kind: 'settings' } });
-  const widthCovered = 'The post writer covers the canvas. Preview in site shows the post at this width and zoom.';
+  const widthCovered = seo ? 'The SEO view covers the canvas. Leave it to see the page at another width or zoom.' : 'The post writer covers the canvas. Preview in site shows the post at this width and zoom.';
+  const modeCovered = 'The SEO view covers the canvas. Leave it to edit or preview the page.';
   const commitWidth = (fromEnter: boolean, el: HTMLInputElement) => {
     const v = validWidth(widthDraft);
     if (v !== null) {
@@ -256,7 +260,7 @@ export function Toolbar() {
                   { heading: 'Pages' },
                   ...pageChoices(state).map((p) => ({
                     label: p.title,
-                    checked: shown ? p.id === shownPage?.id : !definitionMode && p.id === pageId,
+                    checked: seo ? false : shown ? p.id === shownPage?.id : !definitionMode && p.id === pageId,
                     hint: p.home ? 'Home page · /' : p.address,
                     onSelect: () => selectPage(p.id)
                   })),
@@ -287,7 +291,9 @@ export function Toolbar() {
             <span className="sep" aria-hidden="true">/</span>
             <span className={`page${defName ? ' def' : ''}`}>
               {/* The house names the home page, unless the page's own name already says so. */}
-              {defName ? (
+              {seo ? (
+                <Search aria-hidden="true" />
+              ) : defName ? (
                 <Component role="img" aria-label="Component" />
               ) : shown?.kind === 'post' ? (
                 shown.ref ? (
@@ -391,7 +397,8 @@ export function Toolbar() {
             className="icon-btn scheme-btn"
             aria-haspopup="menu"
             aria-expanded={false}
-            title={`Preview colors: ${schemeLabel.toLowerCase()}`}
+            disabled={seo}
+            title={seo ? 'The SEO view covers the canvas. Leave it to preview the page in other colors.' : `Preview colors: ${schemeLabel.toLowerCase()}`}
             aria-label={`Preview colors: ${schemeLabel.toLowerCase()}`}
             onClick={(e) => menu.openAt(e.currentTarget, schemeItems, 'Preview colors')}
           >
@@ -415,11 +422,11 @@ export function Toolbar() {
         <div className="toolbar-divider" role="presentation" />
         {/* Named by aria-label, so the buttons keep their names when a narrow window shows only the icons. */}
         <div className="segmented" role="group" aria-label="Mode">
-          <button aria-pressed={mode === 'edit'} onClick={() => setMode('edit')} title="Edit: click things on the page to select and change them" aria-label="Edit">
+          <button aria-pressed={mode === 'edit'} disabled={seo} onClick={() => setMode('edit')} title={seo ? modeCovered : 'Edit: click things on the page to select and change them'} aria-label="Edit">
             <MousePointer2 aria-hidden="true" />
             {tier === 'full' && 'Edit'}
           </button>
-          <button aria-pressed={mode === 'preview'} onClick={() => setMode('preview')} title="Preview: use the site as a visitor would" aria-label="Preview">
+          <button aria-pressed={mode === 'preview'} disabled={seo} onClick={() => setMode('preview')} title={seo ? modeCovered : 'Preview: use the site as a visitor would'} aria-label="Preview">
             <Eye aria-hidden="true" />
             {tier === 'full' && 'Preview'}
           </button>

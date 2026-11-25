@@ -77,6 +77,17 @@ export function postWorkspace(s: { leftTab: string | null; postView: 'write' | '
 }
 
 /**
+ * What becomes of a post's preview chosen in the toolbar while it waits for the writer's save (#700), asked of every
+ * change of the editor's state: it waits while the writer is in front in Preview in the opening it was asked in. It
+ * ends once a mode is chosen, the post is previewed some other way or another opening starts, and once the writer is
+ * left with Preview still on it is undone (Edit comes back), since no preview began.
+ */
+export function waitingPreview(s: { leftTab: string | null; postView: 'write' | 'preview'; mode: 'edit' | 'preview'; workspaceKey: string | undefined }, askedIn: string | undefined): 'waits' | 'ends' | 'undone' {
+  if (s.workspaceKey !== askedIn || s.mode !== 'preview' || s.postView !== 'write') return 'ends';
+  return s.leftTab === 'posts' ? 'waits' : 'undone';
+}
+
+/**
  * What the editor shows while the Posts workspace is in front: the post written or previewed (none chosen yet in the
  * writer), or where a visitor went on to from its preview, as the canvas last reported (`at`, null until it has: the
  * post is still on its way). That is another post, a page of the site, or an address that is neither (an old one, the

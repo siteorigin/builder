@@ -38,7 +38,8 @@ import {
   Users,
   BookmarkPlus,
   Download,
-  Repeat
+  Repeat,
+  Search
 } from 'lucide-react';
 import type { ComponentDefinition, DividerNode, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveScope, ResponsiveStyles, ScalarPropSchema, StyleState, StyleValue, TextNode } from '@shared/types';
 import { DIVIDER_ICON, DIVIDER_SHAPES, isBinding, parseStyleScopeKey, styleScopeKey } from '@shared/types';
@@ -51,7 +52,9 @@ import { publicUrl } from '@shared/public-url';
 import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
-import { postAt, postShown, postWorkspace } from '../lib/posts';
+import { postAt, postShown } from '../lib/posts';
+import { activeWorkspace } from '../lib/workspace';
+import { seoDocument } from '../lib/seo-view';
 import { STATE_WORDS, cascadeStyles, columnLayoutPart, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
@@ -566,12 +569,14 @@ function InspectorBody() {
   const pageId = useStore((s) => s.pageId);
   const definitionMode = useStore((s) => s.definitionMode);
   const templateMode = useStore((s) => s.templateMode);
-  const posting = useStore(postWorkspace);
+  const workspace = useStore(activeWorkspace);
   const tokens = useMemo(() => (snap ? effectiveTokens(snap.state) : []), [snap?.state.tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!snap) return null;
   const st = snap.state;
+  // The SEO view covers the canvas: what it has chosen is what is in front, never the page or selection under it (#700).
+  if (workspace === 'seo') return <SeoOverview state={st} />;
   // The post writer, or a post previewed: the post is what is in front, never the page under it (#578).
-  if (posting) return <PostOverview state={st} workspace={posting} />;
+  if (workspace) return <PostOverview state={st} workspace={workspace} />;
   const editingDef = definitionMode ? st.components[definitionMode.definitionId] : undefined;
   // While editing a component everywhere, every route (canvas, Layers, nothing selected) shows that component.
   const throughPlacement = !!selection && selection.instancePath.length > 0 && (() => {
@@ -3153,6 +3158,22 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
  * went on to from its preview. The page under the writer, its sections and its settings stay out of reach until it
  * shows again, so nothing changed here lands on it. The post's own details are edited in the writer.
  */
+/** While the SEO view covers the canvas (#700): the document it has chosen, and that nothing here changes the page under it. */
+function SeoOverview({ state }: { state: ProjectState }) {
+  const subject = useStore((s) => s.seoSubject);
+  const doc = seoDocument(state, subject);
+  const kind = !doc ? 'Nothing chosen' : doc.subject.kind === 'page' ? (doc.draft ? 'Draft page' : 'Page') : doc.draft ? 'Draft post' : 'Published post';
+  return (
+    <div className="panel-body insp" key={`seo:${doc?.key ?? ''}`}>
+      <Header title={doc?.title ?? 'SEO'} kind={kind} icon={<Search />} />
+      <div className="insp-empty">
+        <Search aria-hidden="true" />
+        <p>{doc ? `The SEO view shows ${doc.subject.kind === 'page' ? 'this page' : 'this post'} in the canvas’s place. Nothing here changes the page under it.` : 'Choose a page or post in the SEO list. The SEO view covers the canvas, and nothing here changes the page under it.'}</p>
+      </div>
+    </div>
+  );
+}
+
 function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'write' | 'preview' }) {
   const post = useStore((s) => s.post);
   const at = useStore((s) => s.postPreviewAt);

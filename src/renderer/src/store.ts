@@ -3,6 +3,8 @@ import type { AiEvent, AppSettings, ChatContext, ChatEditScope, ChatMessage, Cha
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
+import type { SeoSubject } from '@shared/seo';
+import { seoSubjectKey } from './lib/seo-view';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
@@ -19,7 +21,7 @@ import type { ChatFocusRequest } from './lib/page-start';
 
 export const api = window.builder;
 
-export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets';
+export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets' | 'seo';
 export type { PostRef };
 export type RightTab = 'chat' | 'inspect' | 'styles' | 'project';
 /** Every view of the right panel, in the order the dock shows them: the AI first, as the view a new window opens on. */
@@ -151,6 +153,11 @@ export interface State {
   postPreviewAt: string | null;
   /** A picture of the open post's text to bring into view once the writer shows it (Show in Assets). */
   postReveal: { entryId: string; picture: number; seq: number } | null;
+  /**
+   * The page or post the SEO view has chosen (shown while the SEO panel is), kept while other panels are. Null with none
+   * chosen, and once the project no longer has it (see App). Never saved: each opening starts with none.
+   */
+  seoSubject: SeoSubject | null;
   selection: ElementRef | null;
   /** Sibling layers selected in Layers together with `selection`, which is always one of them (lib/layer-set). */
   layerSet: LayerSet | null;
@@ -304,6 +311,7 @@ export const useStore = create<State>((set) => ({
   postView: 'write',
   postPreviewAt: null,
   postReveal: null,
+  seoSubject: null,
   selection: null,
   layerSet: null,
   pagePlaces: {},
@@ -398,7 +406,8 @@ export const setState = (p: Partial<State>) => useStore.setState(oneSelection(sc
 
 /**
  * What the next AI message may change starts again from the selected element (or, with none, the page) whenever what
- * the editor shows changes: another page, a component edited everywhere or not, another element or none. A choice
+ * the editor shows changes: another page, a component edited everywhere or not, another element or none, the SEO view
+ * opened or left, or another document chosen there. A choice
  * made for one view never carries into the next. An update that says its own scope ("Edit and try again", Ask AI
  * about this) keeps it.
  */
@@ -407,8 +416,13 @@ function scopeFollows(p: Partial<State>): Partial<State> {
   const s = useStore.getState();
   if (s.chatContextEnabled.scope === 'selection') return p;
   const key = (r: ElementRef | null | undefined) => (r ? refKey(r) : null);
+  const subject = (x: SeoSubject | null | undefined) => (x ? seoSubjectKey(x) : null);
   const moved =
     ('pageId' in p && p.pageId !== s.pageId) ||
+    // The SEO view's document is what a message is about while the view shows (#700): opening, leaving or changing it is
+    // another view too. One it remembers while another panel shows (let go once deleted) is not.
+    ('seoSubject' in p && subject(p.seoSubject) !== subject(s.seoSubject) && ('leftTab' in p ? p.leftTab : s.leftTab) === 'seo') ||
+    ('leftTab' in p && (p.leftTab === 'seo') !== (s.leftTab === 'seo')) ||
     ('definitionMode' in p && (p.definitionMode?.definitionId ?? null) !== (s.definitionMode?.definitionId ?? null)) ||
     ('templateMode' in p && (p.templateMode?.collectionId ?? null) !== (s.templateMode?.collectionId ?? null)) ||
     ('selection' in p && key(p.selection) !== key(s.selection));
