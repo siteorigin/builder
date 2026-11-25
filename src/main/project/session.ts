@@ -373,6 +373,9 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     case 'node.wrap':
     case 'node.unwrap':
       return true;
+    // A placement inside a design changes what every placement of that design renders, in files it may leave as they are.
+    case 'instance.swapComponent':
+      return o.owner.kind === 'component';
     case 'entry.update':
       return o.slug !== undefined;
     default:

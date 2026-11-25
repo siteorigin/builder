@@ -306,6 +306,8 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'instance.listMove': 'node',
   'instance.editTable': 'node',
   'instance.setVariant': 'node',
+  // The placement changes design where it is; the components themselves stay as they are.
+  'instance.swapComponent': 'node',
   'token.set': 'wider',
   'token.create': 'wider',
   'token.rename': 'wider',
