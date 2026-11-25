@@ -12,6 +12,7 @@ import { installComponent } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { runSeoAudit } from '@engine/seo-audit';
 import { RUNTIME_DIR, defFile, generateProject, webMcpFormFile } from '@generator/index';
+import { GenerationCache } from '@generator/cache';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE } from '@generator/search';
 import { adaptFormSource, formToolDescription, WEBMCP_SEARCH_FILE } from '@generator/webmcp';
 import { uniqueToolNames, webMcpText, webMcpToolName, WEBMCP_NAME_MAX } from '@shared/webmcp';
@@ -183,6 +184,25 @@ describe('the exported website with WebMCP on', () => {
     expect(new Set(names).size).toBe(2);
     for (const n of names) expect(n).toMatch(/^contact\.[A-Za-z0-9_-]+$/);
     expect(await compileProject(on(s))).toEqual([]);
+  });
+
+  it('makes again exactly the files a change of the switch, a name or the shell’s forms touches, in a cached run', () => {
+    const cache = new GenerationCache();
+    let s = withSearch(withForms(fresh(), 2));
+    const same = (state: ProjectState) => {
+      for (const opts of [{}, { instrument: true }]) expect([...generateProject(state, opts, cache)]).toEqual([...generateProject(state, opts)]);
+    };
+    same(s);
+    s = on(s);
+    same(s);
+    s = setTool(s, home(s), forms(s, home(s))[1].id, 'webmcpToolName', 'Quote');
+    same(s);
+    // A form added to the header takes "contact", and the page's first form is numbered around it.
+    s = withForms(s, 1, header);
+    same(s);
+    expect(toolsIn(generateProject(s, {}, cache).get('src/routes/+page.svelte')!).map((t) => t.name)).toEqual(['contact_2', 'Quote']);
+    s = run(s, { type: 'site.update', webmcp: false });
+    same(s);
   });
 
   it('never reaches the editor’s preview', () => {
