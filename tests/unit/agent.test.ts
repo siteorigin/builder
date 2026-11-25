@@ -10,7 +10,7 @@ import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
 import { copiesCode, imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
-import { requestedWidths } from '@agent/preview-check';
+import { findingsOf, introducedProblems, requestedWidths } from '@agent/preview-check';
 import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, requestAuthority, widenChoices, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
@@ -4481,7 +4481,7 @@ describe('the preview check before a changed run finishes (#742)', () => {
     });
   };
   const clean = (width: number) => ({ viewportWidth: width, documentWidth: width, issues: [] });
-  const wide = (width: number, documentWidth = 520) => ({ viewportWidth: width, documentWidth, issues: [{ kind: 'horizontal-overflow', message: `The page is ${documentWidth}px wide.` }] });
+  const wide = (width: number, documentWidth = width + 130) => ({ viewportWidth: width, documentWidth, issues: [{ kind: 'horizontal-overflow', message: `The page is ${documentWidth}px wide.` }] });
   /** What the app sent back for repair, from the request that followed it. */
   const repairPrompts = (adapter: FakeAdapter) =>
     (adapter.requests.at(-1)?.items ?? []).filter((i): i is Extract<typeof i, { kind: 'user' }> => i.kind === 'user' && i.text.startsWith('The app checked the changed pages in the preview')).map((i) => i.text);
@@ -4559,8 +4559,8 @@ describe('the preview check before a changed run finishes (#742)', () => {
     expect(JSON.stringify(env.session.state.pages[homeId])).toBe(before);
     // Once before the change and once after: a finish that changed nothing is judged on the same check.
     expect(measured).toBe(2);
-    // What the preview found is on the card of the reverted request.
-    expect(result!.checks).toContainEqual({ status: 'issue', text: 'Content is wider than the screen at phone width on Home.' });
+    // What the run brought in is on the card of the reverted request.
+    expect(result!.checks).toContainEqual({ status: 'issue', text: 'At phone width on Home: The page is 520px wide on a 390px screen.' });
   });
 
   it('sends back phone overflow from phone styles added after other changes to the page', async () => {
@@ -4783,7 +4783,84 @@ describe('the preview check before a changed run finishes (#742)', () => {
     const { result } = await env.run('Give the hero more room');
     expect(result?.status).toBe('failed');
     expect(repairPrompts(env.adapter)).toHaveLength(LIMITS.repairPasses);
-    expect(result!.checks).toEqual([{ status: 'issue', text: 'Content is wider than the screen at desktop width on Home.' }]);
+    expect(result!.checks).toEqual([{ status: 'issue', text: 'At desktop width on Home: The page is 1410px wide on a 1280px screen.' }]);
+  });
+
+  it('says a problem it sent back is not known to be fixed when the page could not be checked after the repair', async () => {
+    let down = false;
+    const env = await setup(
+      [() => [restyle(env.session)], () => finish('Done.'), () => ((down = true), [restyle(env.session, { value: 'space.sm', id: 's2' })]), () => finish('Fixed it.')],
+      { inspectLayout: async (_p, width) => (down ? { error: 'The preview is not running.' } : env.session.revision >= 1 ? wide(width) : clean(width)) }
+    );
+    const { result } = await env.run('Give the hero more room');
+    expect(result?.status).toBe('completed');
+    expect(repairPrompts(env.adapter)).toHaveLength(1);
+    expect(result!.checks).toContainEqual({ status: 'issue', text: 'Found problems at desktop width on Home that could not be checked again after the last change.' });
+    expect(result!.checks).toContainEqual({ status: 'unverified', text: "Couldn't check the layout at desktop width on Home." });
+  });
+
+  it("counts a kind of overflow the page had none of as new, even when the preview's list of findings was full", () => {
+    const contrast = Array.from({ length: 40 }, (_, i) => ({ kind: 'low-contrast', ref: { owner: { kind: 'page', id: 'p' }, nodeId: `n${i}` }, message: 'Low contrast.' }));
+    const before = findingsOf({ viewportWidth: 390, documentWidth: 390, issues: contrast });
+    const spill = { kind: 'text-overflow', ref: { owner: { kind: 'page', id: 'p' }, nodeId: 'card' }, message: 'Text spills out of its box.' };
+    expect(introducedProblems(before, findingsOf({ viewportWidth: 390, documentWidth: 390, issues: [...contrast.slice(0, 39), spill] }))).toEqual(['Text spills out of its box. (at {"owner":{"kind":"page","id":"p"},"nodeId":"card"})']);
+    // A full list that already had text overflow cannot say whether one more is new.
+    const had = findingsOf({ viewportWidth: 390, documentWidth: 390, issues: [...contrast.slice(0, 39), { ...spill, ref: { owner: { kind: 'page', id: 'p' }, nodeId: 'old' } }] });
+    expect(introducedProblems(had, findingsOf({ viewportWidth: 390, documentWidth: 390, issues: [...contrast.slice(0, 39), spill] }))).toEqual([]);
+    // Without a full list, the element counts.
+    expect(introducedProblems(findingsOf({ issues: [] }), findingsOf({ issues: [spill, spill] }))).toHaveLength(1);
+    expect(introducedProblems(findingsOf({ issues: [spill] }), findingsOf({ issues: [spill, spill] }))).toHaveLength(1);
+  });
+
+  it('checks phone width when phone styles went on a component before it was placed', async () => {
+    const inspected: Array<[string, number]> = [];
+    let built: { definitionId?: string; rootNodeId?: string } = {};
+    let homeId = '';
+    const env = await setup(
+      [
+        () => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'component.create', name: 'Promo' }] })],
+        (req) => {
+          built = JSON.parse((req.items.at(-1) as { content: string }).content).results[0];
+          return [call('c2', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'node.setStyle', owner: { kind: 'component', id: built.definitionId }, nodeId: built.rootNodeId, scope: 'phone', property: 'paddingBlock', value: { token: 'space.lg' } }] })];
+        },
+        () => [call('c3', 'apply_operations', { expectedRevision: 2, operations: [{ type: 'node.insert', owner: { kind: 'page', id: homeId }, definitionId: built.definitionId, index: 0 }] })],
+        () => finish('Added the Promo component to Home.')
+      ],
+      { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), clean(width)) }
+    );
+    homeId = env.session.state.site.homePageId;
+    const { result } = await env.run('Add a promo to the home page');
+    expect(result?.status).toBe('completed');
+    // Before the placement at both widths, then as it finished at both.
+    expect(inspected).toEqual([
+      [homeId, 390],
+      [homeId, 1280],
+      [homeId, 390],
+      [homeId, 1280]
+    ]);
+  });
+
+  it('keeps a page sampled for a shared change in the check when a later change shows elsewhere', async () => {
+    const inspected: Array<[string, number]> = [];
+    const env = await setup(
+      [
+        () => [call('t1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#000080' }] })],
+        () => {
+          const def = Object.values(env.session.state.components).find((d) => d.name === 'About intro')!;
+          return [call('c1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'node.setStyle', owner: { kind: 'component', id: def.id }, nodeId: def.tree!.rootIds[0], scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } }] })];
+        },
+        () => finish('Done.')
+      ],
+      { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), clean(width)) }
+    );
+    const about = aboutOf(env.session);
+    const homeId = env.session.state.site.homePageId;
+    expect((await env.session.apply({ operations: [{ type: 'component.makeUnique', owner: { kind: 'page', id: about.id }, nodeId: about.rootIds[0], name: 'About intro' }] }, { label: 'Make unique', source: 'user' })).ok).toBe(true);
+    const { result } = await env.run('Make the brand colour navy and give the intro more room');
+    expect(result?.status).toBe('completed');
+    // Home was measured before the colour changed, so it is still checked at the end, beside About.
+    expect(inspected.slice(-2).map(([p]) => p).sort()).toEqual([homeId, about.id].sort());
+    expect(result!.checks?.slice(0, 2).map((c) => c.text)).toEqual(['Fits the screen at desktop width on Home.', 'Fits the screen at desktop width on About.']);
   });
 
   it('checks a change to a component on the pages it is placed on', async () => {

@@ -4,7 +4,7 @@ import { pageDirection, siteDirection } from '@shared/languages';
 import type { EditOperation, OperationType } from '@shared/ops';
 import { scopeForWidth } from '@shared/styles';
 import type { ProjectState } from '@shared/types';
-import { instancesOf, placementCounts } from '@engine/tree';
+import { allTrees, placementCounts } from '@engine/tree';
 import { named } from './completeness';
 import type { Viewport } from './report';
 
@@ -176,11 +176,12 @@ export function visibleReach(ops: EditOperation[], before: ProjectState, after?:
   const reach: Reach = { pages: new Set(), shared: false, lists: false, phone: false, components: new Set(), unreachable: new Set() };
   const article = (pageId: string) => !!pageArticle(Object.hasOwn(before.pages, pageId) ? before.pages[pageId] : undefined);
   // A component placed nowhere shows on no page yet: building one costs nothing until it is placed, which is a page edit.
+  // Code can be imported by other code rather than placed, so a code component always counts.
   let counts: Record<string, number> | undefined;
-  const placed = (definitionId: string) => ((counts ??= placementCounts(before))[definitionId] ?? 0) > 0;
+  const placed = (definitionId: string) => before.components[definitionId]?.kind === 'code' || ((counts ??= placementCounts(before))[definitionId] ?? 0) > 0;
   for (const op of ops) {
-    // Phone styles count only where they show: a component not placed yet has none.
-    let shows = false;
+    // Phone styles count wherever they are written: a component styled for phones may be placed later in the run.
+    if (isPhoneScoped(op)) reach.phone = true;
     switch (LOOK[op.type] ?? 'shared') {
       case 'none':
         break;
@@ -195,27 +196,23 @@ export function visibleReach(ops: EditOperation[], before: ProjectState, after?:
           if (!placed(definitionId)) break;
           reach.components.add(definitionId);
         }
-        reach.shared = shows = true;
+        reach.shared = true;
         break;
       }
       case 'owner': {
         const owner = op.type === 'node.copy' || op.type === 'node.paste' ? op.toOwner : 'owner' in op ? op.owner : undefined;
-        if (owner?.kind === 'page') {
-          reach.pages.add(owner.id);
-          shows = true;
-        } else if (owner?.kind === 'template') reach.unreachable.add('posts');
+        if (owner?.kind === 'page') reach.pages.add(owner.id);
+        else if (owner?.kind === 'template') reach.unreachable.add('posts');
         else if (owner?.kind !== 'component' || placed(owner.id)) {
           if (owner?.kind === 'component') reach.components.add(owner.id);
-          reach.shared = shows = true;
+          reach.shared = true;
         }
         break;
       }
       case 'fields':
         fieldsReach(op, reach, before, article);
-        shows = true;
         break;
     }
-    if (shows && isPhoneScoped(op)) reach.phone = true;
   }
   if (after) {
     for (const id of Object.keys(after.pages)) if (!Object.hasOwn(before.pages, id)) reach.pages.add(id);
@@ -285,6 +282,8 @@ export interface Findings {
   overflow: Map<string, { line: string; n: number }>;
   /** The preview lists at most so many findings: past that, one missing from the list may still be there. */
   saturated: boolean;
+  /** The kinds of overflow found: the preview lists at least one of every kind there is, however long the list. */
+  kinds: Set<string>;
   /** Failed images by file, with how many failed; `complete` when the report names every failed image. */
   files: Map<string, number>;
   complete: boolean;
@@ -340,7 +339,8 @@ export function findingsOf(report: unknown): Findings {
   const failed = typeof r.images?.failed === 'number' ? r.images.failed : issues.filter((i) => i.kind === 'broken-image').length;
   const errors = new Map<string, number>();
   if (Array.isArray(r.runtimeErrors)) for (const e of r.runtimeErrors.map((x) => String(x).trim()).filter(Boolean)) count(errors, e);
-  return { wide, documentWidth, viewportWidth, overflow, saturated, files, complete: named.length === failed, failed, errors };
+  const kinds = new Set(issues.map((i) => i.kind).filter((k): k is string => typeof k === 'string' && OVERFLOW_KINDS.has(k)));
+  return { wide, documentWidth, viewportWidth, overflow, saturated, kinds, files, complete: named.length === failed, failed, errors };
 }
 
 /**
@@ -352,8 +352,12 @@ export function introducedProblems(before: Findings | null, after: Findings): st
   const out: string[] = [];
   if (after.wide && !before?.wide)
     out.push(after.documentWidth !== undefined && after.viewportWidth !== undefined ? `The page is ${after.documentWidth}px wide on a ${after.viewportWidth}px screen.` : 'The page is wider than the screen.');
-  if (!before?.saturated)
-    for (const [key, { line, n }] of after.overflow) if (n > (before?.overflow.get(key)?.n ?? 0) && !(after.wide && key.startsWith('horizontal-overflow|'))) out.push(line);
+  // A full list can leave out a finding the page already had, so only a kind it had none of counts as new then.
+  for (const [key, { line, n }] of after.overflow) {
+    if (after.wide && key.startsWith('horizontal-overflow|')) continue;
+    const kind = key.slice(0, key.indexOf('|'));
+    if (before?.saturated ? !before.kinds.has(kind) : n > (before?.overflow.get(key)?.n ?? 0)) out.push(line);
+  }
   if (after.complete && (!before || before.complete)) {
     for (const [file, n] of after.files) if (n > (before?.files.get(file) ?? 0)) out.push(`The image ${file} failed to load.`);
   } else if (after.failed > (before?.failed ?? 0)) {
@@ -362,6 +366,31 @@ export function introducedProblems(before: Findings | null, after: Findings): st
   }
   for (const [e, n] of after.errors) if (n > (before?.errors.get(e) ?? 0)) out.push(`A script failed: ${e.length > ERROR_CHARS ? `${e.slice(0, ERROR_CHARS - 1)}…` : e}`);
   return out;
+}
+
+/**
+ * The pages, in site order, that show any of these components: placed on them, or inside another component that is,
+ * however deep. A component in the shared header or footer shows on every page, so Home stands for those.
+ */
+export function pagesShowing(state: ProjectState, definitionIds: Iterable<string>): string[] {
+  const wanted = new Set(definitionIds);
+  const pages = new Set<string>();
+  let everywhere = false;
+  const trees = allTrees(state);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const t of trees) {
+      if (!Object.values(t.tree.nodes).some((n) => n.kind === 'instance' && wanted.has(n.definitionId))) continue;
+      if (t.owner.kind === 'page') pages.add(t.owner.id);
+      else if (t.owner.kind === 'shell') everywhere = true;
+      else if (t.owner.kind === 'component' && !wanted.has(t.owner.id)) {
+        wanted.add(t.owner.id);
+        grew = true;
+      }
+    }
+  }
+  if (everywhere) pages.add(state.site.homePageId);
+  return state.site.pageOrder.filter((id) => pages.has(id));
 }
 
 /** A page as it was before the run reached it: measured, empty (the run created it), or not known. */
@@ -395,6 +424,8 @@ export class PreviewCheck {
   private phone = false;
   /** Placed components the run changed, whose placements show the change. */
   private components = new Set<string>();
+  /** Pages sampled for a change every page shows, kept in the sample once picked: they were measured before it. */
+  private sampledPages: string[] = [];
   private unreachable = new Set<Unreachable>();
   /** Pages and widths whose problems were sent back for repair: checked again until they are gone. */
   private flagged = new Map<string, CheckTarget>();
@@ -429,8 +460,7 @@ export class PreviewCheck {
    */
   private sampled(state: ProjectState, edited: string[], components: Set<string>): string[] {
     const names = namedPages(state, this.request);
-    const placements = state.site.pageOrder.filter((id) => [...components].some((d) => instancesOf(state, d).some((i) => i.owner.kind === 'page' && i.owner.id === id)));
-    const out = [...new Set([...names, ...placements])].filter((p) => !edited.includes(p) && Object.hasOwn(state.pages, p));
+    const out = [...new Set([...this.sampledPages, ...names, ...pagesShowing(state, components)])].filter((p) => !edited.includes(p) && Object.hasOwn(state.pages, p));
     if (!edited.length && !out.length) return Object.hasOwn(state.pages, state.site.homePageId) ? [state.site.homePageId] : [];
     return out.slice(0, MAX_SAMPLED_PAGES);
   }
@@ -444,34 +474,34 @@ export class PreviewCheck {
     const reach = visibleReach(ops, state);
     const pages = new Set(reach.pages);
     // The pages the finish will sample, from what this batch changes: the ones it edits directly are checked anyway.
-    if (reach.shared && !this.shared) for (const p of this.sampled(state, [...this.edited, ...reach.pages], new Set([...this.components, ...reach.components]))) pages.add(p);
-    // The widths the run needs first, so a slow preview spends the time left on them; phone last.
+    if (reach.shared) for (const p of this.sampled(state, [...this.edited, ...reach.pages], new Set([...this.components, ...reach.components]))) pages.add(p);
+    // Every page at the widths the run needs first, so a slow preview spends the time left on them; phone last.
     const needed = this.widths(this.phone || reach.phone);
-    const widths = [...needed, ...(needed.includes('phone') ? [] : (['phone'] as const))];
-    for (const pageId of pages) {
+    const order = [...needed, ...(needed.includes('phone') ? [] : (['phone'] as const))];
+    for (const [pageId, viewport] of order.flatMap((w) => [...pages].map((p) => [p, w] as const))) {
       if (!Object.hasOwn(state.pages, pageId)) continue;
-      for (const viewport of widths) {
-        const key = keyOf(pageId, viewport);
-        if (this.baselines.has(key)) continue;
-        if (!Object.hasOwn(this.start.pages, pageId)) {
-          this.baselines.set(key, 'empty');
-          continue;
-        }
-        // The run has already changed what this page shows: a measurement now would count its changes as the page's own.
-        if (this.shared || this.edited.includes(pageId)) {
-          this.baselines.set(key, 'unknown');
-          continue;
-        }
-        const prior = seen(pageId, viewport);
-        const m = prior?.ok ? prior : await measure(pageId, viewport);
-        this.baselines.set(key, m.ok ? { findings: findingsOf(m.report) } : 'unknown');
+      const key = keyOf(pageId, viewport);
+      if (this.baselines.has(key)) continue;
+      if (!Object.hasOwn(this.start.pages, pageId)) {
+        this.baselines.set(key, 'empty');
+        continue;
       }
+      // The run has already changed what this page shows: a measurement now would count its changes as the page's own.
+      if (this.shared || this.edited.includes(pageId)) {
+        this.baselines.set(key, 'unknown');
+        continue;
+      }
+      const prior = seen(pageId, viewport);
+      const m = prior?.ok ? prior : await measure(pageId, viewport);
+      this.baselines.set(key, m.ok ? { findings: findingsOf(m.report) } : 'unknown');
     }
   }
 
   /** A batch landed, taking the project from `before` to `after`. */
   landed(ops: EditOperation[], before: ProjectState, after: ProjectState): Reach {
     const reach = visibleReach(ops, before, after);
+    // The pages sampled for it stay sampled, whatever the run changes next.
+    if (reach.shared) for (const p of this.sampled(before, [...this.edited, ...reach.pages], new Set([...this.components, ...reach.components]))) if (!this.sampledPages.includes(p)) this.sampledPages.push(p);
     for (const p of reach.pages) if (!this.edited.includes(p)) this.edited.push(p);
     if (reach.shared) this.shared = true;
     if (reach.phone) this.phone = true;
@@ -504,8 +534,8 @@ export class PreviewCheck {
    * The problems the run brought in, from the latest measurement of each page and width, said for the model. A page
    * measured only after the run reached it, or a measurement that could not run, has none: its rows say what it found.
    */
-  introduced(state: ProjectState, measured: Array<CheckTarget & { m: Measurement | undefined }>): Array<CheckTarget & { problems: string }> {
-    const out: Array<CheckTarget & { problems: string }> = [];
+  introduced(state: ProjectState, measured: Array<CheckTarget & { m: Measurement | undefined }>): Array<CheckTarget & { problems: string; card: string }> {
+    const out: Array<CheckTarget & { problems: string; card: string }> = [];
     for (const { pageId, viewport, m } of measured) {
       const key = keyOf(pageId, viewport);
       if (!m?.ok) continue;
@@ -520,8 +550,23 @@ export class PreviewCheck {
       const page = Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
       const where = `${page ? `${page.title} (page ${pageId})` : `Page ${pageId}`} at ${viewport} width`;
       const shown = found.slice(0, PROBLEMS_SHOWN);
-      out.push({ pageId, viewport, problems: `${where}: ${shown.join(' ')}${found.length > shown.length ? ` And ${found.length - shown.length} more.` : ''}` });
+      const more = found.length > shown.length ? ` And ${found.length - shown.length} more.` : '';
+      // The card says the same for the author, without where each finding is in the project's terms.
+      const plain = shown.map((f) => f.replace(/ \(at \{.*\}\)$/, '').replace(/([^.!?…])$/, '$1.'));
+      out.push({ pageId, viewport, problems: `${where}: ${shown.join(' ')}${more}`, card: `At ${viewport} width on ${page?.title ?? 'a page'}: ${plain.join(' ')}${more}` });
     }
     return out;
+  }
+
+  /**
+   * Card rows for pages and widths whose problems went back for repair and that could not be checked again after the
+   * run's last change: what was found is not known to be fixed.
+   */
+  unresolved(state: ProjectState, measured: Array<CheckTarget & { m: Measurement | undefined }>): ChatCheck[] {
+    return [...this.flagged.values()].flatMap((t) => {
+      if (!Object.hasOwn(state.pages, t.pageId)) return [];
+      const m = measured.find((x) => x.pageId === t.pageId && x.viewport === t.viewport)?.m;
+      return m?.ok ? [] : [{ status: 'issue' as const, text: `Found problems at ${t.viewport} width on ${state.pages[t.pageId].title} that could not be checked again after the last change.` }];
+    });
   }
 }

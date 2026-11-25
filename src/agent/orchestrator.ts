@@ -12,7 +12,7 @@ import { canCarryOn, summaryNow, turnState, type TurnHistory } from '@shared/tur
 import { getTheme } from '@catalogue/index';
 import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
-import { describeOps, InspectionLog, inspectionChecks, pagesTouched, type Viewport } from './report';
+import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
 import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { PreviewCheck } from './preview-check';
 import { compactProjectSummary, describeSelection, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
@@ -1985,10 +1985,8 @@ export class Orchestrator {
             const broke = preview.introduced(session.state, latest);
             if (broke.length) {
               if (repairs >= LIMITS.repairPasses) {
-                // What the preview found on the pages that broke is shown with the rollback: the changes it describes are gone.
-                const evidence = broke.flatMap((b) =>
-                  inspectionChecks(true, { viewport: b.viewport, report: inspections.fresh(b.pageId, b.viewport)?.report }, Object.hasOwn(session.state.pages, b.pageId) ? ` on ${session.state.pages[b.pageId].title}` : '').filter((c) => c.status === 'issue')
-                );
+                // What the run brought in is shown with the rollback: the changes it describes are gone.
+                const evidence = broke.map((b): ChatCheck => ({ status: 'issue', text: b.card }));
                 await revertAndFinish('failed', 'The changes caused problems in the preview that could not be repaired.', broke.map((b) => b.problems).join(' '), undefined, evidence);
                 return;
               }
@@ -1999,7 +1997,7 @@ export class Orchestrator {
               msg.text = '';
               continue outer;
             }
-            const checks: ChatCheck[] = [...buildChecks(diags, unchecked), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))];
+            const checks: ChatCheck[] = [...buildChecks(diags, [...preview.unresolved(session.state, latest), ...unchecked]), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))];
             const changes = describeOps(executedOps, startState, session.state, opResults);
             const label = (finalText.split(/(?<=[.!?])\s/)[0] || userMsg.text).slice(0, 80);
             // An unfinished request is never labelled with the model's claim that it is done.
