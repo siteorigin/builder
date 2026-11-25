@@ -2882,3 +2882,96 @@ describe('inspect_component (#362)', () => {
     expect(names(toolsForRun({ ...base, ask: true }))).not.toContain('inspect_component');
   });
 });
+
+describe('search settings on the page and brand tools (#598)', () => {
+  const photo = 'a_share001';
+  const withPhoto = (s: ProjectState) => {
+    s.assets.assets[photo] = { id: photo, name: 'Shop front', file: `static/assets/${photo}.jpg`, mime: 'image/jpeg', bytes: 1, width: 1200, height: 630, hash: 'x', kind: 'image', createdAt: '' };
+  };
+
+  it('builds a new page with its search settings, and changes them on an existing page', async () => {
+    const { session, adapter, run } = await setup(
+      [
+        () => [call('u1', 'upsert_page_with_sections', { ...services, seoTitle: 'Garden care services in Riverside', description: 'Weekly garden visits.', socialImage: photo, noindex: true, canonical: 'https://example.org/services/' })],
+        () => [call('u2', 'upsert_page_with_sections', { slug: 'services', noindex: false, socialImage: '', seoTitle: '' })],
+        () => [call('u3', 'upsert_page_with_sections', { slug: 'services', socialImage: 'a_missing0' })],
+        () => finish()
+      ],
+      {},
+      'business',
+      withPhoto
+    );
+    const { result } = await run('Add a services page', null);
+    expect(result?.status).toBe('completed');
+    const page = pageAt(session.state, '/services/')!;
+    // The second call took the noindex, image and title back off; the description stays as the first set it.
+    expect(page.seo.description).toBe('Weekly garden visits.');
+    expect(page.seo.canonical).toBe('https://example.org/services/');
+    expect(page.seo.noindex).toBeFalsy();
+    expect(page.seo.socialImage ?? null).toBeNull();
+    expect(page.seo.title).toBeUndefined();
+    expect(lastResult(adapter.requests[1])).toMatchObject({ ok: true, created: true });
+    expect(lastResult(adapter.requests[2])).toMatchObject({ ok: true, created: false });
+    expect(lastResult(adapter.requests[3])).toMatchObject({ error: 'VALIDATION_FAILED', message: expect.stringContaining('socialImage: no library image has the assetId "a_missing0"') });
+  });
+
+  it('sets the search settings of the page it creates in the call that creates it', async () => {
+    const { session, adapter, run } = await setup([() => [call('u1', 'upsert_page_with_sections', { ...services, seoTitle: 'Garden care services in Riverside', socialImage: photo, noindex: true })], () => finish()], {}, 'business', withPhoto);
+    const { result } = await run('Add a services page');
+    expect(result?.status).toBe('completed');
+    expect(lastResult(adapter.requests[1])).toMatchObject({ ok: true, created: true, revision: 1 });
+    expect(pageAt(session.state, '/services/')!.seo).toMatchObject({ title: 'Garden care services in Riverside', socialImage: photo, noindex: true });
+  });
+
+  it("sets the site's public address, language and sharing image with the brand, alone or with the rest", async () => {
+    const { session, adapter, run } = await setup(
+      [
+        () => [call('b1', 'update_site_brand', { baseUrl: 'https://Harbour.example/', language: 'en-NZ', socialImage: photo })],
+        () => [call('b2', 'update_site_brand', { brandColor: '#0b5cad', language: 'not a language' })],
+        () => [call('b3', 'update_site_brand', { siteName: 'Harbour Plumbing', socialImage: '' })],
+        () => finish()
+      ],
+      {},
+      'business',
+      withPhoto
+    );
+    await run('Publish at harbour.example');
+    expect(lastResult(adapter.requests[1])).toMatchObject({ ok: true });
+    // A bad field refuses the whole call: the brand color is not applied either.
+    expect(lastResult(adapter.requests[2])).toMatchObject({ error: 'VALIDATION_FAILED', fields: [{ field: 'language' }] });
+    expect(session.state.tokens.overrides['color.brand']).toBeUndefined();
+    const site = session.state.site;
+    expect(site).toMatchObject({ baseUrl: 'https://harbour.example', language: 'en-NZ', name: 'Harbour Plumbing' });
+    expect(site.socialImage ?? null).toBeNull();
+    const schema = adapter.requests[0].tools.find((t) => t.name === 'update_site_brand')!.parameters as { properties: Record<string, unknown> };
+    expect(Object.keys(schema.properties)).toEqual(expect.arrayContaining(['baseUrl', 'language', 'socialImage']));
+  });
+
+  it('tells every page and site run how pages are found and quoted, and which tool sets what', async () => {
+    const firstRequest = async (caps: Partial<ModelCapabilities>, scope: 'page' | 'site') => {
+      const { session, adapter, run } = await setup([() => finish()], caps);
+      const about = pageAt(session.state, '/about/')!;
+      await run('Hello', null, { pageId: about.id, pageTitle: about.title, scope });
+      return adapter.requests[0];
+    };
+    const sizes = [
+      { toolCalling: 'native' as const, contextWindowTokens: 400_000 },
+      { toolCalling: 'native' as const, contextWindowTokens: 32_000 },
+      { toolCalling: 'constrained-json' as const, contextWindowTokens: 32_000 }
+    ];
+    for (const caps of sizes)
+      for (const scope of ['page', 'site'] as const) {
+        const req = await firstRequest(caps, scope);
+        const label = `${caps.toolCalling} ${caps.contextWindowTokens} ${scope}`;
+        // One Heading 1, sections that answer first, described images, links that say where they go, and facts only.
+        expect(req.system, label).toMatch(/one Heading 1/);
+        expect(req.system, label).toMatch(/direct answer/);
+        expect(req.system, label).toMatch(/alt text/);
+        expect(req.system, label).toMatch(/link text/i);
+        expect(req.system, label).toMatch(/description on every page|every page gets a specific description/);
+        expect(req.system, label).toMatch(/publisher identity (comes )?only from facts the user gave/);
+        expect(req.system, label).toContain('update_page_seo');
+        expect(req.system.includes('update_site_seo'), label).toBe(scope === 'site');
+      }
+  });
+});

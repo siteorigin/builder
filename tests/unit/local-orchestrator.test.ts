@@ -767,6 +767,36 @@ describe('what a constrained local run sends first (#364)', () => {
     expect(results[0]).toEqual({ heading: 'Sharper', image: { assetId: null, alt: 'A calm room' }, tone: 'muted' });
     expect(results[1]).toEqual(results[0]);
   });
+
+  it("sets the site's identity and crawler policy from a constrained reply as from a native call (#598)", async () => {
+    const results: unknown[] = [];
+    // Crawlers go as rows, which the grammar can hold and the tool turns into the policy's list by name.
+    const args = {
+      baseUrl: 'https://riverside.example',
+      identity: { kind: 'Person', name: 'Ana Riverside', sameAs: ['https://github.com/ana-riverside'] },
+      crawlerPolicy: { preset: 'custom', overrides: [{ token: 'GPTBot', access: 'disallow' }, { token: 'ClaudeBot', access: 'allow' }], disallowPaths: ['/drafts/'] }
+    };
+    for (const toolMode of ['constrained-json', 'native'] as const) {
+      const sentBefore = server.requests.length;
+      const { session, run } = await setup({ toolMode });
+      server.script(...(toolMode === 'native' ? [toolCallReply('update_site_seo', args), textReply('Done.')] : [envelopeReply('update_site_seo', args), envelopeReply('finish', { message: 'Done.' })]));
+      const { result } = await run('Make the site findable');
+      expect(result?.status, toolMode).toBe('completed');
+      const first = server.requests.slice(sentBefore).find((r) => r.method === 'POST')!.body;
+      if (toolMode === 'constrained-json') {
+        expect(first.messages[0].content).toContain('\n- update_site_seo {');
+        expect(findForbiddenShapes(first.response_format.json_schema.schema)).toEqual([]);
+      }
+      const site = session.state.site;
+      results.push({ baseUrl: site.baseUrl, identity: site.identity, crawlerPolicy: site.crawlerPolicy });
+    }
+    expect(results[0]).toEqual({
+      baseUrl: 'https://riverside.example',
+      identity: { kind: 'Person', name: 'Ana Riverside', sameAs: ['https://github.com/ana-riverside'] },
+      crawlerPolicy: { preset: 'custom', overrides: { GPTBot: 'disallow', ClaudeBot: 'allow' }, disallowPaths: ['/drafts/'] }
+    });
+    expect(results[1]).toEqual(results[0]);
+  });
 });
 
 describe("a component's design on a small model (#360)", () => {
