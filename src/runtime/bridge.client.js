@@ -2776,6 +2776,8 @@ async function imageReport(deadline, within = null) {
       summary.loaded++;
       continue;
     }
+    // Which elements asked for it is in, as the page was when it was asked for.
+    const tag = scopeTag(img, within);
     checks.push(
       probe(url, deadline).then((ok) => {
         const path = imagePath(url);
@@ -2784,7 +2786,7 @@ async function imageReport(deadline, within = null) {
           summary.failed++;
           if (summary.failedFiles.length < 10) summary.failedFiles.push(path.slice(path.lastIndexOf('/') + 1) || path);
           const d = findingDesc(img);
-          issues.push({ kind: 'broken-image', ...(d ? { desc: d } : {}), ...scopeTag(img, within), message: `Image ${path} failed to load.` });
+          issues.push({ kind: 'broken-image', ...(d ? { desc: d } : {}), ...tag, message: `Image ${path} failed to load.` });
         } else {
           summary.unverified++;
           issues.push({ kind: 'image-unverified', message: `Image ${path} was still loading when the check ran out of time, so it could not be checked. This is not a problem with the site.` });
@@ -3542,11 +3544,11 @@ function readability(vw, deadline, within = null) {
         const clamped = (st) => st.webkitLineClamp && st.webkitLineClamp !== 'none';
         let cut = null;
         let n = 0;
-        const tw = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-        for (let t = tw.nextNode(); t && !cut; t = tw.nextNode()) {
+        // Around the elements asked for, only the text inside them is read: the rest is never walked.
+        const sources = inside ? [el] : within.roots.filter((r) => Node.prototype.contains.call(el, r));
+        for (const t of textsUnder(sources)) {
+          if (cut) break;
           const holder = parentOf(t);
-          // Text outside the elements asked for neither counts nor uses up the budget.
-          if (!inside && (!holder || !within(holder))) continue;
           if (++n > MAX_CLIP_TEXT_NODES) {
             checks.clippedText.incomplete = true;
             break;
@@ -4251,10 +4253,12 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
   // Narrowed to elements the editor names (`opts.targets`, descriptors in the order asked): every element each one
   // finds on the page, and only findings inside those. What belongs to the page as a whole (its width, its h1s, its
   // runtime errors) is still reported.
-  const found = Array.isArray(opts.targets) ? opts.targets.map((d) => (d && typeof d === 'object' ? safeFindAll(d) : [])) : null;
+  let found = Array.isArray(opts.targets) ? opts.targets.map((d) => (d && typeof d === 'object' ? safeFindAll(d) : [])) : null;
   // Images first: one that arrives while they are requested again can still change the layout measured below.
   const images = await imageReport(deadline, found ? scopeOf(found) : null);
-  // What is inside the elements is worked out again: the page could change while its images loaded.
+  // The elements are found again, and what is inside them worked out again: the page could change (a component
+  // re-rendering one of them) while its images loaded.
+  if (found) found = opts.targets.map((d) => (d && typeof d === 'object' ? safeFindAll(d) : []));
   const within = found ? scopeOf(found) : null;
   const vw = document.documentElement.clientWidth;
   const issues = [];
@@ -4388,6 +4392,14 @@ function scopeTag(el, within, also = null) {
   return targets.length ? { targets } : {};
 }
 
+/** Every text node under each of `sources`, in order. */
+function* textsUnder(sources) {
+  for (const src of sources) {
+    const tw = document.createTreeWalker(src, NodeFilter.SHOW_TEXT);
+    for (let t = tw.nextNode(); t; t = tw.nextNode()) yield t;
+  }
+}
+
 /** The elements a descriptor finds, or none when it cannot be looked up (a malformed part or slot name). */
 function safeFindAll(desc) {
   try {
@@ -4405,19 +4417,22 @@ const MAX_TARGET_ELEMENTS = 10;
  * CSS pixels from the top left of the page, null when it lays out no box), the size of its content (scrollWidth and
  * scrollHeight) and whether it shows at this width. One that rendered nowhere has no elements and does not show.
  */
+const SCROLL_WIDTH = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth').get;
+const SCROLL_HEIGHT = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight').get;
 function targetReport(els) {
   // Whether it shows: a box with area, drawn (a wrapper that makes no box of its own, a code component's, through what it holds).
-  const shows = (el, r) => !!r && r.width > 0 && r.height > 0 && (getComputedStyle(el).display === 'contents' ? [...el.children].some((c) => drawn(c)) : drawn(el));
+  const shows = (el, r) => !!r && r.width > 0 && r.height > 0 && (getComputedStyle(el).display === 'contents' ? [...childrenOf(el)].some((c) => drawn(c)) : drawn(el));
   const elements = els.slice(0, MAX_TARGET_ELEMENTS).map((el) => {
     try {
       const r = rectOf(el);
       const box = r ? { x: Math.round(r.x + window.scrollX), y: Math.round(r.y + window.scrollY), width: Math.round(r.width), height: Math.round(r.height) } : null;
       const contents = getComputedStyle(el).display === 'contents';
       const visible = shows(el, r);
-      return { box, scrollWidth: contents ? (box ? box.width : 0) : el.scrollWidth, scrollHeight: contents ? (box ? box.height : 0) : el.scrollHeight, visible };
+      // Through the prototype: a form's control named "scrollWidth" would hide the form's own.
+      return { box, scrollWidth: contents ? (box ? box.width : 0) : SCROLL_WIDTH.call(el), scrollHeight: contents ? (box ? box.height : 0) : SCROLL_HEIGHT.call(el), visible };
     } catch {
-      // An element whose own properties are hidden (a form's named controls) is reported as not measured.
-      return { box: null, scrollWidth: 0, scrollHeight: 0, visible: false };
+      // Not measured: never read as an element that does not show (the editor fails the check).
+      return { box: null, scrollWidth: 0, scrollHeight: 0, visible: false, measured: false };
     }
   });
   // Whether it shows anywhere, the occurrences not listed included.

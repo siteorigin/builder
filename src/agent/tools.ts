@@ -1012,7 +1012,11 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       try {
         const report = (await (targets ? host.inspectLayout(a.pageId, WIDTHS[a.viewport], targets) : host.inspectLayout(a.pageId, WIDTHS[a.viewport]))) as { error?: unknown; targets?: unknown } | null;
         // One measurement per element asked for, each saying whether it shows and where it rendered.
-        const answered = (t: unknown) => !!t && typeof t === 'object' && typeof (t as { visible?: unknown }).visible === 'boolean' && Array.isArray((t as { elements?: unknown }).elements);
+        // An element the preview could not measure is no answer, never one that does not show.
+        const answered = (t: unknown) => {
+          const m = t as { visible?: unknown; elements?: unknown } | null;
+          return !!m && typeof m === 'object' && typeof m.visible === 'boolean' && Array.isArray(m.elements) && !m.elements.some((e) => !e || typeof e !== 'object' || (e as { measured?: unknown }).measured === false);
+        };
         const measured = targets && Array.isArray(report?.targets) && report.targets.length === targets.length && report.targets.every(answered) ? (report.targets as Array<Record<string, unknown>>) : null;
         // A preview that is not running or did not load is a failed check, never a clean result; nor is a narrowed
         // check that did not say what it found for each element.

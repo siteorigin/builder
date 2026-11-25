@@ -118,7 +118,7 @@ describe('inspect_layout with refs', () => {
     const one = JSON.stringify({ pageId: '/', viewport: 'desktop', refs: [{ owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id }] });
     expect(await executeTool('inspect_layout', one, blind.host, 'c1')).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED' } });
     // Nor one that answered for each element without measuring it.
-    for (const targets of [[null], [{ visible: true }], [], [{ visible: true, elements: [] }, { visible: true, elements: [] }]]) {
+    for (const targets of [[null], [{ visible: true }], [{ visible: 'yes', elements: [] }], [{ visible: false, elements: [{ box: null, visible: false, measured: false }] }], [], [{ visible: true, elements: [] }, { visible: true, elements: [] }]]) {
       const odd = hostFor(s, () => ({ issues: [], targets }));
       expect(await executeTool('inspect_layout', one, odd.host, 'c1'), JSON.stringify(targets)).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED' } });
     }
