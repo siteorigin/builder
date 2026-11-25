@@ -4376,6 +4376,18 @@ describe('the project diagnostics in the editor context (#757)', () => {
     expect(diagnosticRank(state, { pageId: home, definitionId: placed.definitionId })({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId } })).toBe(0);
   });
 
+  it('asks again without the list, keeping the tools, when the provider finds the first request too long', async () => {
+    const tooLong: ModelEvent = { type: 'error', code: 'invalid_request', message: 'This request exceeds the maximum context length.', context: { windowTokens: 8000, promptTokens: 8100 } };
+    const env = await setup([() => [tooLong], () => finish('Done.')]);
+    seed(env.session, pagesOf(env.session));
+    const { result } = await env.run('Tidy up the footer', pageCtx(env.session.state.site.homePageId, 'Home', { scope: 'site' }));
+    expect(result?.error).toBeUndefined();
+    const [refused, retried] = env.adapter.requests;
+    expect(editorContext(refused).diagnostics.errors.length).toBeGreaterThan(0);
+    expect(editorContext(retried)).not.toHaveProperty('diagnostics');
+    expect(retried.tools.map((t) => t.name)).toEqual(refused.tools.map((t) => t.name));
+  });
+
   it('drops the list when only that keeps the request inside a known window, before narrowing the tools', async () => {
     const caps = { contextWindowKnown: true, maxOutputTokens: 2000 } as const;
     // Long enough that the window below still offers the general tools.
