@@ -174,7 +174,7 @@ const wordsNode = (await snapshot()).state.pages[pageId].nodes[words];
 step('a tighter contract is refused with the engine’s reason, and the content stays');
 // Home remembers its paragraph as the place to come back to, so Go to placement below has to select the card itself.
 await openRail('Layers');
-await frame.locator(`[data-so-ctx$="|${words}"]`).first().click();
+await frame.locator(`[data-so-node="${words}"]`).first().dispatchEvent('click');
 await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-owner="page:${pageId}"][data-node="${words}"]`).getAttribute('aria-selected'), 'true', 'the paragraph is selected on Home'), 15000);
 await openStudio();
 await openRail('Layers');
