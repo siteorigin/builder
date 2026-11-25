@@ -27,11 +27,12 @@ import { AnthropicAdapter } from '@agent/anthropic';
 import { OpenAIAdapter } from '@agent/openai';
 import { EVAL_CASES, SUITE_VERSION } from './eval/cases';
 import { resolveLocalRun } from './eval/local';
-import { estimateCostUsd, runSuite, ScriptedAdapter, tracesToJsonl, type EvalCase, type EvalReport, type RunOptions } from './eval/harness';
+import { estimateCostUsd, runSuite, ScriptedAdapter, scriptedAdapter, tracesToJsonl, type EvalCase, type EvalReport, type RunOptions } from './eval/harness';
 
 const ASSUMED_PRICES = { inputPerMillion: 5, outputPerMillion: 25 };
 
-const scripted: RunOptions = { adapterName: 'scripted-fake', model: 'scripted', adapter: (c, state) => new ScriptedAdapter(c.script(state)) };
+/** Each case's script, played as the model its profile names. */
+const scripted: RunOptions = { adapterName: 'scripted-fake', model: 'scripted', adapter: scriptedAdapter };
 
 /** A cloud provider's key is only ever sent to that provider's own API, so a cloud run takes no --base-url. */
 function liveAdapter(provider: string, model: string): () => AgentModelAdapter {
