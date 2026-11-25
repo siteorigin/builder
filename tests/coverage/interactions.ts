@@ -687,7 +687,12 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/history-steps.mjs', kind: 'e2e', step: 'edits made with the editor’s own controls' },
       { test: 'tests/unit/layer-set.test.ts', kind: 'unit', step: 'duplicates Gallery and Testimonials together' },
       { test: 'tests/e2e/flows.mjs', kind: 'e2e', step: 'copy a section, delete it, then paste it on another page' },
-      { test: 'tests/unit/layer-set.test.ts', kind: 'unit', step: 'deletes them all' }
+      { test: 'tests/unit/layer-set.test.ts', kind: 'unit', step: 'deletes them all' },
+      { test: 'tests/e2e/delete-nested-content.mjs', kind: 'e2e', step: 'the Delete key asks first, with Cancel holding the focus, and Enter on it changes nothing' },
+      { test: 'tests/e2e/delete-nested-content.mjs', kind: 'e2e', step: 'Delete all takes the Split and everything in it as one change; the library keeps its components; one Undo puts it all back' },
+      { test: 'tests/e2e/delete-nested-content.mjs', kind: 'e2e', step: 'Remove wrapper & keep content, from the Layers menu, puts what the Split held in its place, selected, as one change' },
+      { test: 'tests/e2e/delete-nested-content.mjs', kind: 'e2e', step: 'an empty Section is deleted at once, with no question' },
+      { test: 'tests/unit/delete-nested.test.ts', kind: 'unit' }
     ],
     gaps: [
       { missing: 'Duplicate in the Layers, canvas and Inspector menus is never chosen by an e2e script', owner: 'layers' },
@@ -1094,6 +1099,14 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/insert-destination.mjs', kind: 'e2e', step: 'Gallery drags before, between and after the two sections, each in one change' },
       { test: 'tests/e2e/insert-destination.mjs', kind: 'e2e', step: 'a gap an Order style keeps it out of is refused, and says why' },
       { test: 'tests/e2e/insert-destination.mjs', kind: 'e2e', step: 'Escape cancels a drag; a tile still inserts from the keyboard afterwards' },
+      { test: 'tests/e2e/blocks.mjs', kind: 'e2e', step: 'with Column 1 selected, the Feature card’s tile names the column, and its click puts the card there in one change' },
+      { test: 'tests/e2e/blocks.mjs', kind: 'e2e', step: 'the Stat card’s tile drags into Column 2, in one change' },
+      { test: 'tests/e2e/blocks.mjs', kind: 'e2e', step: 'the Testimonial card’s tile drags into the Proof section’s slot, in one change' },
+      { test: 'tests/e2e/blocks.mjs', kind: 'e2e', step: 'the full slot takes no second block: a click on its tile with the slot’s card selected says so, and adds nothing' },
+      { test: 'tests/e2e/slot-targets.mjs', kind: 'e2e', step: 'a Paragraph dragged from Insert draws a surface for each empty slot, at least 72px tall, and drops into Main' },
+      { test: 'tests/e2e/slot-targets.mjs', kind: 'e2e', step: 'with Sidebar’s column collapsed to no height, a drop below where the column shows still goes into Sidebar' },
+      { test: 'tests/e2e/slot-targets.mjs', kind: 'e2e', step: 'an Image dragged over Sidebar, which takes only text, says so on Sidebar; Escape leaves everything as it was' },
+      { test: 'tests/e2e/slot-targets.mjs', kind: 'e2e', step: 'Preview shows no slot placeholder, and no slot address, anywhere on the page' },
       { test: 'tests/unit/insert-drop.test.ts', kind: 'unit' }
     ]
   },
@@ -1109,6 +1122,8 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/canvas-insert.mjs', kind: 'e2e', step: 'Gallery chosen from search lands between Home’s first two sections, in one change' },
       { test: 'tests/e2e/canvas-insert.mjs', kind: 'e2e', step: 'a selected Row shows a + inside it' },
       { test: 'tests/e2e/canvas-insert.mjs', kind: 'e2e', step: 'Preview shows no Add buttons' },
+      { test: 'tests/e2e/blocks.mjs', kind: 'e2e', step: 'the + inside an empty column offers every block, in its own group' },
+      { test: 'tests/e2e/blocks.mjs', kind: 'e2e', step: 'the + inside the Proof section offers only the blocks its slot takes' },
       { test: 'tests/unit/inline-insert.test.ts', kind: 'unit' }
     ]
   },
@@ -1216,11 +1231,11 @@ export const INTERACTIONS: Interaction[] = [
     area: 'components',
     intent: 'See where my components are used, rename them, and delete the unused ones',
     start: 'Blank site with project components, Insert › Your components',
-    routes: ['item:Insert:Rename', 'item:Insert:* · *', 'item:Insert:Delete component', 'panel:Insert › Your components', 'item:Insert:<data>'],
-    outcome: 'Each tile says how often it is used and shows a thumbnail redrawn when its style or the brand changes; its menu lists and shows each placement; a used one cannot be deleted; an unused one is deleted and Undo brings it back',
+    routes: ['item:Insert:Rename', 'item:Insert:* · *', 'item:Insert:Delete component', 'item:Insert:Delete component…', 'panel:Insert › Your components', 'item:Insert:<data>'],
+    outcome: 'Each tile says how often it is used and shows a thumbnail redrawn when its style or the brand changes; its menu lists and shows each placement; deleting a used one reviews where it is used instead; an unused one is deleted and Undo brings it back',
     scenario: 'Blank starter · none',
     proof: [
-      { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'usage locations show where a component is placed, and a used one cannot be deleted' },
+      { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'usage locations show where a component is placed, and deleting a used one reviews where instead' },
       { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'Rename gives a variant a descriptive name and a description' },
       { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'deleting an unused variant keeps the others, and Undo brings it back' },
       { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'each component in Your components shows a thumbnail, drawn again when its style changes (#370)' },
@@ -1299,12 +1314,15 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Give a component a slot that takes only some content',
     start: 'Blank site, a project component with an empty Body in Component Studio',
     routes: ['inspector:Add slot', 'inspector:Slot › Takes'],
-    outcome: 'Add slot declares it and places it in one Undo; its name and what it takes save together; on a page it takes only what it allows; a tighter contract or removing it while content is there is refused with the engine’s reason',
+    outcome: 'Add slot declares it and places it in one Undo; its name and what it takes save together; on a page it takes only what it allows; a tighter contract is refused with the engine’s reason; removing it while content is there reviews where, with a way to each placement, or takes the slot and its content in one change',
     scenario: 'Blank starter · none',
     proof: [
       { test: 'tests/e2e/slot-authoring.mjs', kind: 'e2e', step: 'Add slot declares Buttons and places it inside the selected Body, in one Undo' },
       { test: 'tests/e2e/slot-authoring.mjs', kind: 'e2e', step: 'placed on a page, the slot takes one paragraph and nothing else' },
-      { test: 'tests/e2e/slot-authoring.mjs', kind: 'e2e', step: 'a tighter contract, or removing the slot, is refused with the engine’s reason, and the content stays' },
+      { test: 'tests/e2e/slot-authoring.mjs', kind: 'e2e', step: 'a tighter contract is refused with the engine’s reason, and the content stays' },
+      { test: 'tests/e2e/slot-authoring.mjs', kind: 'e2e', step: 'removing the slot while Home fills it reviews where, and Go to placement leaves the studio with the card selected' },
+      { test: 'tests/e2e/slot-authoring.mjs', kind: 'e2e', step: 'Remove slot and its content takes both in one change, and its Undo puts both back' },
+      { test: 'tests/unit/removal-review.test.ts', kind: 'unit' },
       { test: 'tests/unit/slot-authoring.test.ts', kind: 'unit' },
       { test: 'tests/unit/slot-contracts.test.ts', kind: 'unit' }
     ]
