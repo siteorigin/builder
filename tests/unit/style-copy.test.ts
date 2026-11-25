@@ -361,6 +361,9 @@ describe('paste style', () => {
     (after.pages[homeId(s)].nodes[from.nodeId].styles!.base as Record<string, unknown>).background = { token: 'color.surface' };
     (after.pages[homeId(s)].nodes[to.nodeId].styles!.base as Record<string, unknown>).background = { token: 'color.surface', alpha: 1 };
     expect(planStylePaste(after, captureStyle(after, from)!, to, 'every').operations).toEqual([]);
+    // A strength out of range is no match for a good link: the paste repairs it.
+    (after.pages[homeId(s)].nodes[to.nodeId].styles!.base as Record<string, unknown>).background = { token: 'color.surface', alpha: 2 };
+    expect(planStylePaste(after, captureStyle(after, from)!, to, 'every').operations).toEqual([{ ...at, property: 'background', value: { token: 'color.surface' } }]);
   });
 
   it('holds back a property whose site style was removed since copying, and only that property', () => {

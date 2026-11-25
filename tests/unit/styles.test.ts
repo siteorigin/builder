@@ -836,7 +836,7 @@ describe('backdrop blur (#353)', () => {
   it('accepts 0 or one px, rem or em length up to its limit, and nothing else', () => {
     for (const ok of ['0', '0px', '4px', '12px', '.5rem', '0.75em', '64px', '4rem', '4em', ' 12px ', 0])
       expect(validateStyleValue('backdropBlur', ok), String(ok)).toBeNull();
-    for (const bad of ['64.5px', '4.1rem', '4.1em', '-4px', '+4px', '10%', '1vw', '4', 'auto', 'none', 'blur(4px)', '4px 4px', 'calc(4px + 1px)', 'var(--x)', '1e2px', 4])
+    for (const bad of ['64.1px', '64.5px', '4.1rem', '4.1em', '-4px', '+4px', '10%', '1vw', '4', 'auto', 'none', 'blur(4px)', '4px 4px', 'calc(4px + 1px)', 'var(--x)', '1e2px', 4])
       expect(validateStyleValue('backdropBlur', bad as string), String(bad)).toMatch(/not a valid blur/);
     expect(validateStyleValue('backdropBlur', { token: 'space.lg' })).toMatch(/cannot use a token/);
   });
@@ -875,7 +875,7 @@ describe('see-through site colors (#353)', () => {
     for (const prop of ['background', 'color'])
       for (const alpha of [0, 0.05, 0.7, 1]) expect(validateStyleValue(prop, { token: 'color.surface', alpha }), `${prop} ${alpha}`).toBeNull();
     for (const prop of ['background', 'color'])
-      for (const alpha of [-0.1, 1.01, Number.NaN, Infinity, '0.7', null, true])
+      for (const alpha of [-0.1, 1.001, 1.01, Number.NaN, Infinity, '0.7', null, true])
         expect(validateStyleValue(prop, { token: 'color.surface', alpha } as never), `${prop} ${String(alpha)}`).toMatch(/strength \("alpha"\) must be a number from 0 to 1/);
     // Only a color can be see-through, even at full strength, and a link holds nothing else.
     expect(validateStyleValue('gap', { token: 'space.lg', alpha: 0.5 })).toMatch(/full strength/);
@@ -943,6 +943,8 @@ describe('see-through site colors (#353)', () => {
       { type: 'token.create', group: 'color', label: 'Sea', value: '#2e8b57' }
     ]).state;
     const [glass, sea] = s.tokens.custom.map((t) => t.id);
+    // As a hand-edited document may hold it, with a line break after the color.
+    s.tokens.custom[0].value = 'rgb(255 255 255 / 0.5)\n';
     s = applyOperations(s, [
       { type: 'node.setStyle', owner, nodeId: hero.id, scope: 'base', property: 'background', value: { token: sea, alpha: 0.4 } },
       { type: 'node.setStyle', owner, nodeId: hero.id, scope: 'phone', state: 'hover', property: 'color', value: { token: sea } }
@@ -955,7 +957,8 @@ describe('see-through site colors (#353)', () => {
     // Kept as a value: the half-transparent color at 40% still paints at 20%, as the link did.
     const detached = applyOperations(replaced, [{ type: 'token.remove', tokenId: glass, detach: true }]).state;
     expect(root(detached)?.base?.background).toBe('color-mix(in srgb, rgb(255 255 255 / 0.5) 40%, transparent)');
-    expect(root(detached)?.['phone:hover']?.color).toBe('rgb(255 255 255 / 0.5)');
+    // At full strength the value is written as the site style held it, as before.
+    expect(root(detached)?.['phone:hover']?.color).toBe('rgb(255 255 255 / 0.5)\n');
     expect(validateStyleValue('background', root(detached)!.base!.background)).toBeNull();
     // Removing it in favour of another style keeps the strength too.
     const moved = applyOperations(replaced, [{ type: 'token.remove', tokenId: glass, replacementTokenId: 'color.surface' }]).state;
@@ -999,12 +1002,13 @@ describe('the document format for see-through colors and backdrop blur (#353)', 
   it('reports a strength or a blur the stylesheet would write nothing for, by the node and property', () => {
     const s = fresh();
     const hero = instanceOf(s, 'hero.split');
-    hero.overrides = { root: { base: { background: { token: 'color.surface', alpha: 2 }, gap: { token: 'space.md', alpha: 0.5 }, backdropBlur: '65px', color: { token: 'color.text', alpha: 0.5 } } } };
+    hero.overrides = { root: { base: { background: { token: 'color.surface', alpha: 2 }, gap: { token: 'space.md', alpha: 0.5 }, backdropBlur: '65px', color: { token: 'color.text', alpha: 0.5 }, shadow: { token: 42 } as never } } };
     const found = validateState(s).filter((d) => d.code === 'STYLE_VALUE_INVALID');
     expect(found.map((d) => [d.severity, d.nodeId, d.site?.split('|').at(-1)])).toEqual([
       ['error', hero.id, 'background'],
       ['error', hero.id, 'gap'],
-      ['error', hero.id, 'backdropBlur']
+      ['error', hero.id, 'backdropBlur'],
+      ['error', hero.id, 'shadow']
     ]);
     expect(found[0].message).toMatch(/from 0 to 1.*Nothing is written for it/);
   });

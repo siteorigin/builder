@@ -831,7 +831,9 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
         // What the stylesheet writes nothing for, from a document edited or imported outside the editor: a link holding
         // more than its token that the property cannot take, or a backdrop blur outside its grammar.
         const unwritten =
-          token !== undefined && Object.keys(v as object).length > 1 && Object.hasOwn(STYLE_PROP_MAP, prop)
+          v && typeof v === 'object' && token === undefined
+            ? 'A token reference must name its site style in "token".'
+            : token !== undefined && Object.keys(v as object).length > 1 && Object.hasOwn(STYLE_PROP_MAP, prop)
             ? linkShapeError(prop, v as StyleTokenRef)
             : prop === 'backdropBlur' && token === undefined
               ? validateStyleValue(prop, v as StyleValue)

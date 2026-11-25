@@ -337,6 +337,8 @@ export function tokenRefCss(ref: StyleTokenRef): string {
  */
 export function canonicalStyleValue(v: StyleValue): StyleValue {
   if (typeof v !== 'object' || v === null || typeof v.token !== 'string') return v;
+  // A malformed link (another key, a strength out of range) is left as it is, so it never compares equal to a good one.
+  if (Object.keys(v).some((k) => k !== 'token' && k !== 'alpha') || (v.alpha !== undefined && !(typeof v.alpha === 'number' && v.alpha >= 0 && v.alpha <= 1))) return v;
   return partStrength(v) ? { token: v.token, alpha: v.alpha } : { token: v.token };
 }
 

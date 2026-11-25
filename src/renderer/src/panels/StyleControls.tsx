@@ -750,9 +750,9 @@ function Control({
   const setStrength = (t: string) => {
     const text = t.trim().replace(/\s*%$/, '');
     if (text && !/^(\d+(\.\d+)?|\.\d+)$/.test(text)) return false;
+    if (Number(text) > 100) return false;
     // In tenths of a percent, as the field shows it.
     const n = text ? Math.round(Number(text) * 10) / 10 : 100;
-    if (n > 100) return false;
     // Empty or 100 is full strength: the plain link, kept here only if a strength was set here.
     if (n === 100) {
       if (linked && partStrength(value)) onSet({ token: value.token });
