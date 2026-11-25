@@ -7,6 +7,7 @@ import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
 import { IDENTITY_LIMITS } from './site-identity';
+import { PAGE_STRUCTURED_TYPES, PRODUCT_AVAILABILITY, STRUCTURED_LIMITS } from './page-structured-data';
 import { checkCrawlerPath, checkCrawlerToken, CRAWLER_LIMITS, CRAWLER_PRESETS, FIXED_CRAWLER_PRESETS } from './crawler-policy';
 
 /**
@@ -210,6 +211,24 @@ const COLLECTION_SETTINGS = {
   categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.')
 };
 
+/** A change to what a page is for search engines (shared/page-structured-data.ts), as page.update takes it. */
+const STRUCTURED_DATA_PATCH = z
+  .object({
+    type: z.enum(PAGE_STRUCTURED_TYPES).optional().describe('What the page is. "WebPage" removes the type and its facts; another type drops the facts of the one before.'),
+    serviceType: z.string().max(STRUCTURED_LIMITS.text).optional().describe('Service: what kind of service, e.g. "Pottery classes".'),
+    areaServed: z.string().max(STRUCTURED_LIMITS.text).optional().describe('Service: where it is offered, e.g. "Cape Town".'),
+    price: z.string().max(STRUCTURED_LIMITS.price).optional().describe('Product: a number, e.g. "129.50".'),
+    currency: z.string().max(3).optional().describe('Product: ISO 4217 code, e.g. "ZAR".'),
+    availability: z.enum(['', ...PRODUCT_AVAILABILITY] as const).optional().describe('Product.'),
+    offerUrl: z.string().max(STRUCTURED_LIMITS.url).optional().describe('Product: where to buy it (https://…).'),
+    startDate: z.string().max(40).optional().describe('Event: YYYY-MM-DD, or YYYY-MM-DDThh:mm with an optional +hh:mm offset.'),
+    endDate: z.string().max(40).optional().describe('Event: as startDate.'),
+    venue: z.string().max(STRUCTURED_LIMITS.text).optional().describe('Event: the venue\'s name.'),
+    address: z.string().max(STRUCTURED_LIMITS.address).optional().describe('Event: the venue\'s address on one line.'),
+    steps: z.array(z.string().max(STRUCTURED_LIMITS.step)).max(STRUCTURED_LIMITS.steps).optional().describe('HowTo: every step in order. Replaces the list.')
+  })
+  .strict();
+
 const CANONICAL_DESCRIPTION = 'The full address (https://…) search engines are told is the original, when it is published elsewhere first. "" uses its own public URL.';
 
 /** An entry's details, as entry.create and entry.update take them. */
@@ -269,7 +288,8 @@ export const OPERATION_SCHEMAS = {
     linkTranslationTo: z.string().nullable().optional().describe('Page ID of this page in another language: links them, joining any versions the other has. Each version needs its own language. null unlinks.'),
     ...ARTICLE_FIELDS,
     article: z.literal(false).optional().describe('false makes a dated article an ordinary page again: its date, byline and excerpt are removed and News lists no longer show it.'),
-    newsHidden: z.boolean().optional().describe('Articles only. true leaves this article out of every News list while the page stays published; false lists it again.')
+    newsHidden: z.boolean().optional().describe('Articles only. true leaves this article out of every News list while the page stays published; false lists it again.'),
+    structuredData: STRUCTURED_DATA_PATCH.optional().describe('What the page is for search engines: one of the publisher\'s own services, products, events or guides, with its facts. Only the fields given change; "" (or [] for steps) clears one.')
   }),
   'page.duplicate': z.object({ type: z.literal('page.duplicate'), pageId: z.string(), title: z.string().optional() }),
   'page.reorder': z.object({ type: z.literal('page.reorder'), pageIds: z.array(z.string()) }),

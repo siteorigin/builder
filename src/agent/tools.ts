@@ -293,7 +293,10 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: 
                 OPERATION_SCHEMAS[t].omit({ allowDrops: true })
               : t === 'page.update' && only
                 ? // A run limited to a page changes its own settings: a new route or translation reaches other pages.
-                  OPERATION_SCHEMAS[t].omit({ route: true, linkTranslationTo: true })
+                  OPERATION_SCHEMAS[t].omit({ route: true, linkTranslationTo: true, structuredData: true })
+              : t === 'page.update'
+                ? // What a page is for search engines states facts only the author has (a price, an event's date).
+                  OPERATION_SCHEMAS[t].omit({ structuredData: true })
               : t === 'node.setBinding'
                 ? OPERATION_SCHEMAS[t].extend({ binding: MODEL_BINDING })
                 : OPERATION_SCHEMAS[t]

@@ -67,6 +67,7 @@ import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, style
 import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
+import { StructuredDataFields, structuredSummary } from '../components/StructuredDataFields';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
@@ -2971,6 +2972,10 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
       </Section>
       <Section title="Search & sharing" id="page-seo" level={LEVEL} scope={searchSummary(page)}>
         <PageSearchSettings page={page} state={state} draft={draft} upd={upd} />
+      </Section>
+      {/* What the page is for search engines: a service, product, event or guide of the publisher's, with its facts. */}
+      <Section title="Structured data" id="page-structured-data" level={LEVEL} defaultOpen={false} scope={structuredSummary(page)}>
+        <StructuredDataFields page={page} upd={upd} />
       </Section>
       {dev && (
         <Section title="Advanced" id="page-adv" defaultOpen={false} level={LEVEL}>

@@ -5,8 +5,9 @@
  * dates, author, description and image;
  * a page's FAQ makes it an FAQ page with its questions in order, and each contact section it shows is a part of the
  * page with the contact details it gives (who they belong to is not said, since a page can show a venue's box office
- * as well as the publisher's own); and the website says where it can be searched, once a page shows a search that
- * reads the words it is sent in its address.
+ * as well as the publisher's own); a page the author says is an About or Contact page is one, and a page about one of
+ * the publisher's own services, products, events or guides names it with the facts it needs; and the website says
+ * where it can be searched, once a page shows a search that reads the words it is sent in its address.
  *
  * Only what visitors are shown or the author set for the public is written: nothing from the project's private brief
  * or notes.
@@ -23,6 +24,7 @@ import { derived } from './cache';
 import { createSeoResolver, type SeoResolver } from './seo-metadata';
 import { structuredContent } from './checks';
 import { searchesFromAddress } from './search';
+import { inspectPageStructuredData } from '@shared/page-structured-data';
 
 /** One value, or several. */
 const oneOrMany = (list: string[]): JsonValue | undefined => (list.length === 1 ? list[0] : list.length ? list : undefined);
@@ -106,6 +108,61 @@ const pageContent: GraphContributor = ({ state, meta, ids }) => {
 
 const opt = (key: string, value: JsonValue | undefined) => (value === undefined ? {} : { [key]: value });
 
+/**
+ * What the author says a page is (shared/page-structured-data.ts). An About or Contact page is that kind of web page.
+ * The page of one of the publisher's own services, products, events or guides is about that entity, named by the
+ * page's title and described by its own description: a Service the publisher provides, a Product with the publisher's
+ * offer of it, an Event the publisher organizes at its venue, a HowTo with its steps in order. The entity names the
+ * page as the one it is the main entity of, so the page's FAQ and the Home page's subject stay as they are. Nothing is
+ * said until the facts it needs are there: a product without a price is no product to compare.
+ */
+const typedPage: GraphContributor = ({ state, meta, ids }) => {
+  if (meta.subject.kind !== 'page') return null;
+  const page = state.pages[meta.subject.pageId];
+  const seo = page?.seo && typeof page.seo === 'object' ? page.seo : undefined;
+  const { type, facts, ready } = inspectPageStructuredData(seo?.structuredData);
+  if (!ready || type === 'WebPage') return null;
+  if (type === 'AboutPage' || type === 'ContactPage') return { extend: [{ id: ids.webpage, add: { '@type': type } }] };
+  const entity = (fragment: string) => ({
+    '@type': type,
+    '@id': ids.page(fragment),
+    name: seoText(page.title) || seoText(meta.title),
+    ...opt('description', seoText(seo?.description) || undefined),
+    mainEntityOfPage: { '@id': ids.webpage }
+  });
+  const publisher = { '@id': ids.publisher };
+  if (type === 'Service') return { nodes: [{ ...entity('service'), serviceType: facts.serviceType!, ...opt('areaServed', facts.areaServed), provider: publisher }] };
+  if (type === 'Product')
+    return {
+      nodes: [
+        {
+          ...entity('product'),
+          offers: {
+            '@type': 'Offer',
+            price: facts.price!,
+            priceCurrency: facts.currency!,
+            ...opt('availability', facts.availability ? `https://schema.org/${facts.availability}` : undefined),
+            ...opt('url', facts.offerUrl),
+            seller: publisher
+          }
+        }
+      ]
+    };
+  if (type === 'Event')
+    return {
+      nodes: [
+        {
+          ...entity('event'),
+          startDate: facts.startDate!,
+          ...opt('endDate', facts.endDate),
+          location: { '@type': 'Place', ...opt('name', facts.venue), ...opt('address', facts.address) },
+          organizer: publisher
+        }
+      ]
+    };
+  return { nodes: [{ ...entity('howto'), step: facts.steps!.map((text, i) => ({ '@type': 'HowToStep', position: i + 1, text })), publisher }] };
+};
+
 /** Whether a tree shows a component that searches from its page's address, in its own content or a design inside it. */
 function treeSearches(state: ProjectState, tree: NodeTree | undefined, seen = new Set<string>()): boolean {
   for (const n of Object.values(tree?.nodes ?? {})) {
@@ -153,7 +210,7 @@ const siteSearch: GraphContributor = ({ state, resolver, ids }) => {
 };
 
 /** What the generated website says about its documents, beyond the graph's own entities. */
-export const SITE_CONTRIBUTORS: readonly GraphContributor[] = [homeAbout, revised, entryArticle, pageContent, siteSearch];
+export const SITE_CONTRIBUTORS: readonly GraphContributor[] = [homeAbout, revised, entryArticle, pageContent, typedPage, siteSearch];
 
 /**
  * The resolver of each project state a generator run is working from, while one is (`inGenerationRun`): every page's
