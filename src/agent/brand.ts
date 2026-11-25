@@ -43,7 +43,7 @@ export type BrandArgs = z.infer<typeof BRAND_ARGS>;
 export const BRAND_DESCRIPTION =
   'Update the site brand in one call: the theme (the whole design; content is kept), the site name, tagline and contact details everywhere they appear (site settings, header, footer; a header or footer name or copyright line the author wrote themselves is kept), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once), and the site\'s public address, language and link preview image. Send only what changes. Fonts must be installed; an error lists the choices.';
 
-export const BRAND_BRIEF = 'Set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors, installed fonts, the type scale (every heading and text size at once), and the site address, language and link preview image. Send only what changes.';
+export const BRAND_BRIEF = 'Switch the theme (the whole design; content stays), set the site name, tagline and contact details everywhere they appear, the brand color with its derived colors, installed fonts, the type scale (every heading and text size at once), and the site address, language and link preview image. Send only what changes.';
 
 /** The themes a site can switch to: every installed pack but its own theme and development fixtures. */
 export function brandThemes(state: Pick<ProjectState, 'site'>) {

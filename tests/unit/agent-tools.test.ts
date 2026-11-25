@@ -751,7 +751,7 @@ describe('update_site_brand', () => {
     expect(result?.status).toBe('completed');
     const schema = adapter.requests[0].tools.find((t) => t.name === 'update_site_brand')!.parameters as { properties: Record<string, { enum?: string[]; description?: string }> };
     // The shipped themes it can switch to, each described so the model can choose.
-    expect(schema.properties.theme.enum).toEqual(['signal']);
+    expect(schema.properties.theme.enum).toEqual(['editorial', 'signal']);
     expect(schema.properties.theme.description).toContain('signal: Geometric and crisp');
     const s = session.state;
     expect(s.site.themeId).toBe('signal');
@@ -770,7 +770,7 @@ describe('update_site_brand', () => {
     const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'foundation-alt', siteName: 'Kept Out' })], () => finish()]);
     await run('Use the other theme');
     const r = lastResult(adapter.requests[1]);
-    expect(r.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('Use one of: signal') })]);
+    expect(r.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('Use one of: editorial, signal') })]);
     expect(session.state.site.themeId).toBe('foundation');
     expect(session.state.site.name).toBe('Test Studio');
   });
