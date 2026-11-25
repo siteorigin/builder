@@ -23,12 +23,13 @@ import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
 import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, slotInsertAt, whereFor, whereText, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { SLOT_NO_PLACE } from './slot-contract';
+import { clearSlotOps, moveOutOps } from './slot-overview';
 import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refExists, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { sampleEntries } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
-import { editLabel, placeWords } from './edit-label';
+import { editLabel, placeWords, subjectWords } from './edit-label';
 import { heldContent, removalKey, type HeldContent } from './delete-content';
 import { dropRefusal, savingProblems } from './insert-drop';
 import { draftFor, imagesFor, withDraft } from './chatDrafts';
@@ -662,14 +663,15 @@ export async function insert(spec: InsertSpec, label: string): Promise<string | 
 }
 
 /**
- * Insert `spec` (called `name`) at `at`, a place the author pointed at on the canvas (a drop from Insert, or one of the
- * canvas's Add buttons), as one change planned on the project as `snap` had it: refused if the project has moved on
- * since. Selected while the author is still on the page (or layout) it went on, with the arrival cue once the page
- * shows it, and said where it went, with an Undo. Returns whether it was inserted.
+ * Insert `spec` (called `name`) at `at`, a place the author pointed at (a drop from Insert onto the canvas, one of its
+ * Add buttons, or a slot's Add in the Inspector), as one change planned on the project as `snap` had it: refused if the
+ * project has moved on since. Selected while the author is still on the page (or layout) it went on, with the arrival
+ * cue once the page shows it, and said where it went, with an Undo. Returns whether it was inserted.
  */
 export async function insertHere(spec: InsertSpec, name: string, role: InsertRole, at: InsertAt, snap: ProjectSnapshot): Promise<boolean> {
   if (getState().snapshot?.workspaceKey !== snap.workspaceKey) return false;
   const w = whereFor(snap.state, at, role);
+  const from = getState();
   // Named here, so what is selected is the thing inserted (or a new Grid's first column), not the last node the
   // change made.
   const named = newId('n');
@@ -679,7 +681,13 @@ export async function insertHere(spec: InsertSpec, name: string, role: InsertRol
   const id = r.results?.some((x) => x?.nodeId === named) ? insertSelection(ops, named) : undefined;
   const now = getState();
   const owner = at.owner;
-  const here = owner.kind === 'template' ? now.templateMode?.collectionId === owner.id : now.pageId === owner.id && !now.templateMode;
+  // The shared header and footer show on whatever page or layout the author is on: still on the one they added from.
+  const here =
+    owner.kind === 'template'
+      ? now.templateMode?.collectionId === owner.id
+      : owner.kind === 'shell'
+        ? now.pageId === from.pageId && now.templateMode?.collectionId === from.templateMode?.collectionId
+        : now.pageId === owner.id && !now.templateMode;
   if (id && here && now.mode === 'edit' && !now.definitionMode) {
     const ref: ElementRef = { owner, instancePath: [], nodeId: id };
     markArrival(ref);
@@ -687,6 +695,25 @@ export async function insertHere(spec: InsertSpec, name: string, role: InsertRol
   }
   toast(`Added ${name}${w ? ` ${whereText(w)}` : ''}.`, 'info', undoAction(r));
   return true;
+}
+
+/**
+ * Take out what the slot `slot` of the placement `ref` holds, as one change (#654): `clear` deletes it, `move` puts it
+ * just after the placement (see moveOutOps). Planned on the project as this window has it and refused if that has moved
+ * on; a change the project refuses leaves it all where it was, with the engine's reason. The placement stays selected.
+ */
+export async function emptySlot(ref: ElementRef, slot: string, how: 'move' | 'clear'): Promise<void> {
+  const snap = getState().snapshot;
+  if (!snap) return;
+  const ops = (how === 'move' ? moveOutOps : clearSlotOps)(snap.state, ref.owner, ref.nodeId, slot);
+  if (!ops.length) return;
+  const node = treeFor(snap.state, ref.owner)?.nodes[ref.nodeId];
+  const def = node?.kind === 'instance' ? snap.state.components[node.definitionId] : undefined;
+  const label = def?.slots?.[slot]?.label || slot;
+  const what = subjectWords(snap.state, ref);
+  const r = await commitOps(ops, how === 'move' ? `Move ${label} content out of ${what}` : `Clear ${label} of ${what}`, undefined, snap.revision);
+  if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
+  toast(how === 'move' ? `Moved what “${label}” held out of ${what}.` : `Cleared “${label}” of ${what}.`, 'info', undoAction(r));
 }
 
 /** Where Place on page puts a library image (`key` tells two placements apart), or why it can't be placed now. */

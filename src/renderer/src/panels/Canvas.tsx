@@ -2889,7 +2889,7 @@ export function Canvas() {
         )}
       </div>
       {menu.node}
-      {adding && <QuickInsert point={adding.point} items={adding.items} anchor={adding.anchor} trigger={adding.trigger} refused={adding.refused} onChoose={chooseAdd} onClose={closeAdd} />}
+      {adding && <QuickInsert title={pointLabel(adding.point)} search={adding.point.role === 'section' ? 'Search sections' : 'Search elements'} items={adding.items} anchor={adding.anchor} trigger={adding.trigger} refused={adding.refused} onChoose={chooseAdd} onClose={closeAdd} />}
       {/* The image a drag from Assets carries, beside the pointer wherever it is in the window. */}
       {imageDrop &&
         createPortal(

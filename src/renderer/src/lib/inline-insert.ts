@@ -9,7 +9,7 @@ import type { Diagnostic } from '@engine/validate';
 import { childLists } from '@engine/tree';
 import { slotDecl } from '@engine/slots';
 import { catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
-import { catalogueRole, definitionRole, heldSlots, insertOps, shownOnceSlots, type InsertAt, type InsertRole } from './insert-at';
+import { catalogueRole, definitionRole, heldSlots, insertOps, shownOnceSlots, slotRefuses, type InsertAt, type InsertRole } from './insert-at';
 import { dropRefusal, savingProblems } from './insert-drop';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, type InsertSpec } from './insert-search';
 import { refLabel, treeFor } from './model';
@@ -139,9 +139,13 @@ export function quickItems(state: ProjectState, role: InsertRole, dev = false): 
   const mine = projectInsertDefinitions(state, dev)
     .filter((d) => definitionRole(state, d.id) === role)
     .map(componentItem);
-  if (role === 'element')
-    return [...BASICS.map((b): QuickItem => ({ key: `e:${b.id}`, kind: 'element', name: b.name, hay: basicHay(b), group: 'Basic elements', spec: basicSpec(b), icon: b.icon })), ...themeItems(state, 'element'), ...mine];
+  if (role === 'element') return [...basicItems(), ...themeItems(state, 'element'), ...mine];
   return [...themeItems(state, 'section'), ...mine];
+}
+
+/** The basic elements as + items. */
+function basicItems(): QuickItem[] {
+  return BASICS.map((b): QuickItem => ({ key: `e:${b.id}`, kind: 'element', name: b.name, hay: basicHay(b), group: 'Basic elements', spec: basicSpec(b), icon: b.icon }));
 }
 
 /** A project component as a + item. */
@@ -200,6 +204,18 @@ export function offeredAt(state: ProjectState, at: InsertAt, role: InsertRole, d
   const items = [...quickItems(state, role, dev), ...(role === 'element' ? namedItems(state, at, dev) : [])].filter((it) => !seen.has(it.key) && !!seen.add(it.key));
   const tried = new Set(fitting(state, at, role, items.filter((it) => role === 'element' || it.kind === 'component')).map((it) => it.key));
   return items.filter((it) => (role === 'section' && it.kind !== 'component') || tried.has(it.key));
+}
+
+/**
+ * What the Inspector's Add for a placement's slot at `at` offers (#654): everything its contract takes, however each
+ * is otherwise inserted, since the author has named the slot: the basic elements, the project's components and then
+ * the theme's sections, less what the place would refuse (see fitting). A slot of media components offers the theme's
+ * media sections, which a canvas + inside a container leaves among the page's sections.
+ */
+export function slotItems(state: ProjectState, at: InsertAt, dev = false): QuickItem[] {
+  const all = [...basicItems(), ...projectInsertDefinitions(state, dev).map(componentItem), ...themeItems(state, null)];
+  // The contract alone rules most out, before anything is tried on a copy of the project.
+  return fitting(state, at, 'element', all.filter((it) => !slotRefuses(state, at, it.spec)));
 }
 
 /**
