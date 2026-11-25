@@ -7,6 +7,7 @@ import type { ComponentThumb } from './component-thumbs';
 import type { ThemePack } from '@catalogue/pack';
 import type { FontCoverage } from './font-scripts';
 import type { Recipient, TurnModel } from './turn-model';
+import type { EarlierSummary } from './earlier-summary';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
@@ -632,6 +633,11 @@ export interface Conversation {
   named?: boolean;
   createdAt: string;
   messages: ChatMessage[];
+  /**
+   * What the assistant hears of the messages before the replayed window, extended as messages leave it (see
+   * shared/earlier-summary). Saved with the conversation, so it goes when the conversation is deleted or cleared.
+   */
+  earlierSummary?: EarlierSummary;
 }
 
 /** A stored conversation as Earlier conversations lists it (see shared/conversations). */

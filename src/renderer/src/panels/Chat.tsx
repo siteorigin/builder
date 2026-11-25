@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation } from '@shared/api';
@@ -246,6 +246,8 @@ export function Chat() {
   // The local server or model failed the last time anything asked it: Chat says so instead of offering starters.
   const notReady = configured && provider?.id === 'local' && provider.check && !provider.check.ok ? provider.check : null;
   const msgs = conversation?.messages ?? [];
+  // Summarising a long conversation's older messages is worked out again only when they change, not at every key typed.
+  const replayed = useMemo(() => replayedWords(conversation?.messages ?? []), [conversation?.messages]);
   const running = !!runStatus;
   const waiting = runStatus === 'awaiting-input';
   // While the AI waits on a question, the composer answers it from its own box; the unsent message stays put.
@@ -517,7 +519,7 @@ export function Chat() {
   const localModel = configured && provider?.id === 'local';
   const headroom =
     localModel && !asking && settings
-      ? headroomWarning({ draft, history: replayedWords(msgs), contextWindow: settings.ai.local.contextWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !scope.post && !(toSelection && !!scope.selection && smallToolsCover(st, scope.selection)) })
+      ? headroomWarning({ draft, history: replayed, contextWindow: settings.ai.local.contextWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !scope.post && !(toSelection && !!scope.selection && smallToolsCover(st, scope.selection)) })
       : null;
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component

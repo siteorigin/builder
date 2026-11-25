@@ -70,7 +70,14 @@ export function summaryNow(turn: TurnState): string {
   // A transcript is read back from disk: a summary that is not text is none.
   if (typeof said !== 'string') return '';
   if (!turn.result.incomplete || !turn.result.canUndo || canCarryOn(turn)) return said;
-  // The app ended the summary with them; the same words anywhere else (a page title, say) are left alone.
+  return withoutKeptClaims(said);
+}
+
+/**
+ * A summary without the app's own closing sentences saying the changes are kept and the request can be continued.
+ * The app ended the summary with them; the same words anywhere else (a page title, say) are left alone.
+ */
+export function withoutKeptClaims(said: string): string {
   const claim = KEPT_CLAIMS.find((c) => said.endsWith(c));
   return claim ? said.slice(0, -claim.length) : said;
 }

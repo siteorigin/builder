@@ -28,7 +28,8 @@ import { blueprintSection, exampleSection, retrieveBlueprints, retrieveExamples 
 import { changedComponents, introducedReusability, reusabilityNudge } from './reusability';
 import { modelInfo } from './models';
 import { hasBrief, withBrief } from './brief';
-import { MAX_REPLAYED_ANSWER, readRecipient, replayedHistory, turnModelText, type Recipient } from '@shared/turn-model';
+import { MAX_REPLAYED_ANSWER, readRecipient, turnModelText, type Recipient } from '@shared/turn-model';
+import { planReplay, summarizeEarlier, summaryText, type EarlierSummary } from '@shared/earlier-summary';
 
 /**
  * Budgets for one run. They are sized for building a whole multi-page site in one request; a run that
@@ -937,7 +938,12 @@ export class Orchestrator {
     else delete stored.assetIds;
     const userMsg: ChatMessage = { id: newId('m'), role: 'user', text: text.trim(), time: new Date().toISOString(), context: stored, ...(attached.images.length ? { images: attached.images } : {}) };
     const assistant: ChatMessage = { id: newId('m'), role: 'assistant', text: '', time: new Date().toISOString(), runId, activities: [] };
-    const history = replayedHistory(conv.messages);
+    // The conversation before this request: its older messages as the stored summary, extended by any that have
+    // left the replayed window since (built once for a conversation that has none), and the recent ones in full.
+    const earlier = conv.messages.slice();
+    const replay = planReplay(earlier, conv.earlierSummary);
+    if (replay.summary) conv.earlierSummary = replay.summary;
+    else delete conv.earlierSummary;
     // The request a "continue" carries on with, read from the whole conversation: a long run of "continue"
     // messages can push it out of the history the model sees.
     // A saved request whose text cannot be read is not one to carry on with.
@@ -954,7 +960,7 @@ export class Orchestrator {
     this.deps.onBusyChange(true);
     this.emitMessage(userMsg, runId);
     this.emitMessage(assistant, runId);
-    this.runEnded = this.execute(runId, userMsg, assistant, history, request, requestTask)
+    this.runEnded = this.execute(runId, userMsg, assistant, earlier, replay.summary, request, requestTask)
       .catch((e: Error) => console.error('AI request failed', e))
       .finally(async () => {
         // A request that ended without a result (its rollback threw) still ends: nothing may wait on it.
@@ -1036,7 +1042,11 @@ export class Orchestrator {
     return r.ok ? { ok: true } : { ok: false, message: r.error?.message };
   }
 
-  private async execute(runId: string, userMsg: ChatMessage, msg: ChatMessage, history: ChatMessage[], request?: string, requestTask?: 'component') {
+  /**
+   * `earlier`: the conversation before this request. `summary`: what it holds of the messages before the replayed
+   * window; the rest are replayed in full unless the model's window needs more of them summarised.
+   */
+  private async execute(runId: string, userMsg: ChatMessage, msg: ChatMessage, earlier: ChatMessage[], summary: EarlierSummary | null, request?: string, requestTask?: 'component') {
     const run = this.run!;
     const signal = run.abort.signal;
     const session = this.deps.session()!;
@@ -1205,7 +1215,9 @@ export class Orchestrator {
     /** Pages this request tried to create in a change that never landed. */
     const wanted: WantedPage[] = [];
     // "Continue" after an unfinished request still owes the pages that one never created.
-    const before = [...history].reverse().find((h) => h.role === 'assistant');
+    /** Where the messages replayed in full start; anything before it reaches the model through the summary. */
+    let replayFrom = summary?.covered ?? 0;
+    const before = [...earlier.slice(replayFrom)].reverse().find((h) => h.role === 'assistant');
     const previousTurn = before ? turnState(before, steps) : null;
     const previous = previousTurn?.result;
     // An unfinished request that changed the site carries on only while its changes are known to be in it.
@@ -1217,48 +1229,55 @@ export class Orchestrator {
     }
     /** What was asked for: a "continue" carries on with the request before it (a blank page there stays wanted blank). */
     const requestText = (continuing && request) || userMsg.text;
-    const items: CanonicalItem[] = [];
-    for (const h of history) {
-      if (h.role === 'user') {
-        // A transcript is read back from disk: only text is replayed, never anything else a malformed one holds.
-        const said = withAttachments(typeof h.text === 'string' ? h.text : '', h.images);
-        if (said) items.push({ kind: 'user', text: said });
-      }
-      else {
-        // Questions asked during an earlier request, and their answers, are replayed in the order they were said.
-        const unanswered: string[] = [];
-        for (const q of turnQuestions(h)) {
-          // A transcript is read back from disk: anything malformed is left out rather than stopping the request.
-          if (typeof q?.text !== 'string' || !q.text.trim()) continue;
-          if (typeof q.answered !== 'string') {
-            // The pictures it offered are named, so "the second one" can still be found.
-            const offered = savedImages(q.images);
-            unanswered.push(`I asked "${q.text}", but the request ended before it was answered.${offered.length ? ` It offered ${offered.map(imageLabel).join(', ')}.` : ''}`);
-            continue;
-          }
-          const images = savedImages(q.images);
-          const choices = [...images.map(imageLabel), ...(Array.isArray(q.choices) ? q.choices.filter((c) => typeof c === 'string') : [])];
-          items.push({ kind: 'assistant', text: choices.length ? `${q.text}\nChoices: ${choices.join(' | ')}` : q.text, toolCalls: [] });
-          // An image answer names the image it chose; a very long pasted answer is replayed in part, as a live tool
-          // result would be.
-          const picked = images.find((i) => i.assetId === q.answeredAssetId);
-          items.push({ kind: 'user', text: picked ? imageAnswer(picked) : q.answered.length > MAX_REPLAYED_ANSWER ? `${q.answered.slice(0, MAX_REPLAYED_ANSWER)}…` : q.answered });
+    /** The earlier conversation as the model hears it: the summary, labelled, then the recent messages as they were said. */
+    const historyItems = (): CanonicalItem[] => {
+      const items: CanonicalItem[] = [];
+      // Its standing is read from History now, so a turn undone after it was summarised says so.
+      if (summary) items.push({ kind: 'user', text: summaryText(summary, steps) });
+      for (const h of earlier.slice(replayFrom)) {
+        if (h.role === 'user') {
+          // A transcript is read back from disk: only text is replayed, never anything else a malformed one holds.
+          const said = withAttachments(typeof h.text === 'string' ? h.text : '', h.images);
+          if (said) items.push({ kind: 'user', text: said });
         }
-        // The turn as it was said, with where its change stands now: History's to say, not the summary's.
-        const turn = h.result ? turnState(h, steps) : null;
-        const r = turn?.result;
-        const undone = turn?.standing === 'undone';
-        // A run stopped at its budget lists what it already did, so "continue" picks up where it left off: only while
-        // those changes are known to be in the site.
-        const done = r?.incomplete && r.canUndo && r.changes.length && turn?.standing === 'applied' ? ` Changes made so far: ${r.changes.map((c) => c.label).join('; ')}.` : '';
-        const unsure = !!r?.incomplete && r.canUndo && turn?.standing === 'unknown' && !turn.undoneEarlier;
-        const standing = undone ? ' These changes were undone afterwards.' : turn?.undoneEarlier ? ' These changes were undone afterwards, and may have been redone since.' : unsure ? ' Whether these changes are still in the site is not known.' : '';
-        const summary = turn ? summaryNow(turn) : '';
-        const said = summary || h.text ? (summary || h.text) + done + standing : '';
-        const text = [said, ...unanswered].filter(Boolean).join(' ');
-        if (text) items.push({ kind: 'assistant', text, toolCalls: [] });
+        else {
+          // Questions asked during an earlier request, and their answers, are replayed in the order they were said.
+          const unanswered: string[] = [];
+          for (const q of turnQuestions(h)) {
+            // A transcript is read back from disk: anything malformed is left out rather than stopping the request.
+            if (typeof q?.text !== 'string' || !q.text.trim()) continue;
+            if (typeof q.answered !== 'string') {
+              // The pictures it offered are named, so "the second one" can still be found.
+              const offered = savedImages(q.images);
+              unanswered.push(`I asked "${q.text}", but the request ended before it was answered.${offered.length ? ` It offered ${offered.map(imageLabel).join(', ')}.` : ''}`);
+              continue;
+            }
+            const images = savedImages(q.images);
+            const choices = [...images.map(imageLabel), ...(Array.isArray(q.choices) ? q.choices.filter((c) => typeof c === 'string') : [])];
+            items.push({ kind: 'assistant', text: choices.length ? `${q.text}\nChoices: ${choices.join(' | ')}` : q.text, toolCalls: [] });
+            // An image answer names the image it chose; a very long pasted answer is replayed in part, as a live tool
+            // result would be.
+            const picked = images.find((i) => i.assetId === q.answeredAssetId);
+            items.push({ kind: 'user', text: picked ? imageAnswer(picked) : q.answered.length > MAX_REPLAYED_ANSWER ? `${q.answered.slice(0, MAX_REPLAYED_ANSWER)}…` : q.answered });
+          }
+          // The turn as it was said, with where its change stands now: History's to say, not the summary's.
+          const turn = h.result ? turnState(h, steps) : null;
+          const r = turn?.result;
+          const undone = turn?.standing === 'undone';
+          // A run stopped at its budget lists what it already did, so "continue" picks up where it left off: only while
+          // those changes are known to be in the site.
+          const done = r?.incomplete && r.canUndo && r.changes.length && turn?.standing === 'applied' ? ` Changes made so far: ${r.changes.map((c) => c.label).join('; ')}.` : '';
+          const unsure = !!r?.incomplete && r.canUndo && turn?.standing === 'unknown' && !turn.undoneEarlier;
+          const standing = undone ? ' These changes were undone afterwards.' : turn?.undoneEarlier ? ' These changes were undone afterwards, and may have been redone since.' : unsure ? ' Whether these changes are still in the site is not known.' : '';
+          const summary = turn ? summaryNow(turn) : '';
+          const said = summary || h.text ? (summary || h.text) + done + standing : '';
+          const text = [said, ...unanswered].filter(Boolean).join(' ');
+          if (text) items.push({ kind: 'assistant', text, toolCalls: [] });
+        }
       }
-    }
+      return items;
+    };
+    const items: CanonicalItem[] = historyItems();
     const ctx = userMsg.context;
     // A grammar-constrained edit with the selection's own tools is not told how operations it does not have would do it.
     const selection = ctx ? describeSelection(readState(), ctx.selection, { operations: !(constrainedJson && current.focused && !ask) }) : null;
@@ -1663,6 +1682,27 @@ export class Orchestrator {
     };
 
     /**
+     * Summarise one more exchange of the earlier conversation, oldest first, for the rest of this run; once every
+     * earlier message is summarised, the summary's own oldest exchanges go. The stored summary keeps the usual window,
+     * so a later request to a model with more room hears the recent messages in full again. False when nothing is left
+     * to give up.
+     */
+    const foldHistory = (): boolean => {
+      if (replayFrom < earlier.length) {
+        // A request goes with its reply, so a question is never replayed without its answer.
+        const pair = earlier[replayFrom]?.role === 'user' && earlier[replayFrom + 1]?.role === 'assistant';
+        replayFrom = Math.min(earlier.length, replayFrom + (pair ? 2 : 1));
+        summary = summarizeEarlier(earlier, replayFrom, summary);
+      } else if (summary?.turns.length) {
+        summary = summary.turns.length > 1 ? { ...summary, turns: summary.turns.slice(1), omitted: summary.omitted + 1 } : null;
+      } else return false;
+      items.splice(0, items.indexOf(requestItem), ...historyItems());
+      return true;
+    };
+    /** The server refused a request as too long once already, and the earlier conversation was summarised for it. */
+    let foldedForServer = false;
+
+    /**
      * Whether a run may be sent back to make a component reusable: only one that may change that component's whole
      * design and contract (the whole site, or the component edited everywhere), so every fix it is asked for is one it
      * can make. A narrower request never is; what it leaves is listed on the result.
@@ -1721,6 +1761,9 @@ export class Orchestrator {
           system = systemPrompt(readState(), current, constrainedJson, briefShown);
           budget = fit();
         }
+        // The earlier conversation is next: its oldest exchanges are summarised, one at a time, keeping what was
+        // decided, before any tool is given up or the run is refused. It is only text, so on any step.
+        if (budget.overflow && (turns > 1 || caps.contextWindowKnown)) while (budget.overflow && foldHistory()) budget = fit();
         // A known window that cannot hold the general tools may still hold the small set. Only before this run's
         // first call, so no call in the history names a tool that is no longer offered.
         if (budget.overflow && turns === 1 && caps.contextWindowKnown && !current.focused && narrowTools()) {
@@ -1818,6 +1861,15 @@ export class Orchestrator {
           }
           if (tooLong && briefShown && hasBrief(readState())) {
             briefShown = false;
+            turns--;
+            msg.text = finalText;
+            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
+            continue outer;
+          }
+          // Then the earlier conversation, summarised further and the same step asked again: once, after which the
+          // window the server reported decides how much more is summarised before the request goes out.
+          if (tooLong && failed.context && !foldedForServer && foldHistory()) {
+            foldedForServer = true;
             turns--;
             msg.text = finalText;
             this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
