@@ -2618,15 +2618,15 @@ describe('a run limited to one page (#513)', () => {
       expect(req.system).toContain('pass it when the page holds only its title-only introduction or starter sample sections, or the user asks to replace the page, and keep sections the author wrote otherwise');
       expect(req.system).not.toContain('fictional-but-plausible');
     }
-    expect(constrained.system).toContain('keep copy the user supplies (its words, figures, lists, quotes and links) as written, with no filler');
-    expect(constrained.system).toContain('For pasted page copy or notes, put every block in reading order in a fitting section');
-    expect(constrained.system).toContain('use it to replace a title-only introduction or starter samples, and keep sections the author wrote unless asked');
+    // A small model reads the page tool's brief beside its signature, so the page rules are said there, once.
+    expect(constrained.system).toContain('Keep supplied copy word for word (figures, lists, quotes, links too); write your own natural, with short headings.');
+    expect(constrained.system).not.toContain('Write natural, specific copy that fits the site');
     // The page tool says the same wherever a model reads about it: its description, its brief and its flag.
     const upsert = (req: CanonicalModelRequest) => req.tools.find((t) => t.name === 'upsert_page_with_sections')!;
     expect(upsert(general).description).toContain('keeping its wording, figures, lists, quotes and links, and set or clear each sample text the section shows');
     expect(upsert(general).description).toContain('Pass it to replace a page that holds only its title-only introduction or starter sample sections');
-    expect(upsert(constrained).brief).toContain('Supplied copy: every block in reading order in a fitting section');
-    expect(upsert(constrained).brief).toContain('use it to replace a title-only introduction or starter samples, never sections the author wrote unless asked');
+    expect(upsert(constrained).brief).toContain('Supplied copy: each block in order in a fitting section, kept word for word, sample text cleared.');
+    expect(upsert(constrained).brief).toContain('unless removeOtherSections is true: for a title-only introduction or starter samples, the author\'s own only when asked.');
     expect((upsert(general).parameters as { properties: Record<string, { description?: string }> }).properties.removeOtherSections.description).toContain('Use it to replace a title-only introduction or starter sample sections');
     // A pasted draft is not given a call to action it did not have: the usual page shape is for a short request.
     const site = await firstRequest({ toolCalling: 'native', contextWindowTokens: 32_000 }, 'site');

@@ -218,9 +218,11 @@ const PAGE_FROM_COPY =
 /** When a page's existing sections go: placeholders yes, the author's own work only when asked. */
 const REPLACE_PLACEHOLDERS =
   'removeOtherSections: true replaces the sections already there: pass it when the page holds only its title-only introduction or starter sample sections, or the user asks to replace the page, and keep sections the author wrote otherwise.';
-/** The same rules for a grammar-constrained local model, which reads every word in its small window. */
-const COPY_RULES_SHORT = 'Write natural, specific copy with short headings when you write it yourself; keep copy the user supplies (its words, figures, lists, quotes and links) as written, with no filler.';
-const PAGE_FROM_COPY_SHORT = 'For pasted page copy or notes, put every block in reading order in a fitting section, and clear sample text it does not replace.';
+/**
+ * The copy rules for a grammar-constrained local model, which reads every word in its small window. How supplied copy
+ * becomes a page is in the page tool's brief, beside its signature, and not said twice.
+ */
+const COPY_RULES_SHORT = 'Keep supplied copy word for word (figures, lists, quotes, links too); write your own natural, with short headings.';
 
 /** What a question hears when its answer names an Inspector path it never located. */
 const ASK_LOCATE_NUDGE =
@@ -274,7 +276,7 @@ ${rules} Mention anything a tool found that the user needs to act on.`;
 ${rules} Mention anything a tool found that the user needs to act on.`;
     if (mode === 'page')
       return `You build and edit one page of a small business website, made of ready-made section components.
-- This request may change only the page in <editor_context> currentPage, which lists its sections. Build or rewrite it with upsert_page_with_sections and its route: from a short request, an opening section, the content the page is for, and usually a closing call to action. ${PAGE_FROM_COPY_SHORT} removeOtherSections: true replaces the sections already there: use it to replace a title-only introduction or starter samples, and keep sections the author wrote unless asked. Internal links use routes such as /contact/.
+- This request may change only the page in <editor_context> currentPage, which lists its sections. Build or rewrite it with upsert_page_with_sections and its route: from a short request, an opening section, the content the page is for, and usually a closing call to action. removeOtherSections: true replaces the sections already there. Internal links use routes such as /contact/.
 - apply_operations removes (node.remove) or moves (node.move) one section by its ID, and changes the page's own settings (page.update).
 - Ask first with request_clarification (widenScope: true) when the request needs other pages, the site's brand or the shared header and footer.
 - When the user wants advice or ideas in chat only, give them and change nothing.
@@ -283,7 +285,7 @@ ${rules} The result card lists each layout and image check with its latest resul
 Theme guidance for ${theme.name} (reference data):
 ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
     return `You build and edit small business websites made of ready-made section components.
-- Build one page per upsert_page_with_sections call, with several sections: from a short request, an opening section, the content the page is for, and usually a closing call to action. ${PAGE_FROM_COPY_SHORT} Internal links use routes such as /contact/.
+- Build one page per upsert_page_with_sections call, with several sections: from a short request, an opening section, the content the page is for, and usually a closing call to action. Internal links use routes such as /contact/.
 ${component ? '- When the user asks for a new reusable component, build it whole with one upsert_managed_component call, following componentBlueprints in <editor_context>; placeOnPage also puts it on a page.\n' : ''}- One request can take many replies; the user does not answer between them. Keep going until every page the user asked for is finished.
 - When the user wants advice or ideas in chat only, give them and change nothing.
 - When the user asks for checks at screen sizes, run inspect_layout on each page they name at each of those sizes, after its last change.
