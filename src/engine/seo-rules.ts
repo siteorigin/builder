@@ -18,7 +18,9 @@ import { checkPublicUrl } from '@shared/public-url';
 import { agentDiscovery } from '@shared/llms';
 import { crawlerAction, crawlerRules, isWholeSitePattern, KNOWN_CRAWLERS, presetAction, type CrawlerKind, type CrawlerRules } from '@shared/crawler-policy';
 import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
-import { showsEntryText, type SiteLink } from '@generator/checks';
+import { showsEntryText, siteShowsCode, type SiteLink } from '@generator/checks';
+import { searchesSite, usesSiteSearch } from '@generator/search';
+import { isWebMcpForm, webMcpOn } from '@shared/webmcp';
 import { isLibraryImage } from '@generator/seo-graph';
 import { sitePublisher } from '@shared/site-identity';
 import { inspectPageStructuredData, typePhrase } from '@shared/page-structured-data';
@@ -414,6 +416,33 @@ const agenticDiscovery: SeoAuditRule = {
 };
 
 /**
+ * WebMCP readiness: a website with a contact form or its own search, which agents in a visitor's browser could use
+ * through declared tools (shared/webmcp.ts), while the author has not turned WebMCP on. A suggestion only: it is off by
+ * choice until the author decides agents may fill in the site's forms.
+ */
+const webMcpReadiness: SeoAuditRule = {
+  id: 'webmcp-readiness',
+  check({ state }) {
+    if (webMcpOn(state.site)) return [];
+    const forms = siteShowsCode(state, (def) => isWebMcpForm(def));
+    const search = usesSiteSearch(state) && siteShowsCode(state, searchesSite);
+    if (!forms && !search) return [];
+    const what = forms && search ? 'a contact form and site search' : forms ? 'a contact form' : 'site search';
+    return [
+      finding('agentic', {
+        severity: 'info',
+        code: 'SEO_WEBMCP_OFF',
+        message: `The website has ${what} but declares no WebMCP tools: AI agents in visitors’ browsers have to work ${forms && search ? 'them' : 'it'} out from the page.`,
+        site: 'webmcp',
+        explanation: 'With WebMCP on, each contact form tells AI assistants in the browser what it is for and what each field asks, and the site’s search can be used as a tool. The visitor still checks and sends every message.',
+        aiFixable: true,
+        destination: { kind: 'site', field: 'webmcp' }
+      })
+    ];
+  }
+};
+
+/**
  * Whether robots.txt keeps a crawler out of the whole site when its preset would let it in: Custom keeps it out by
  * name, or closes every path ("/") to every crawler it lets in. A crawler the preset itself keeps out (Traditional
  * search engines only keeps out AI search) is the author's choice, and is never reported.
@@ -529,4 +558,4 @@ const pageStructuredData: SeoAuditRule = {
 };
 
 /** Every baseline rule, in the order their findings are listed within a pillar. */
-export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness, pageStructuredData, agenticDiscovery, crawlerPolicy];
+export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness, pageStructuredData, agenticDiscovery, webMcpReadiness, crawlerPolicy];

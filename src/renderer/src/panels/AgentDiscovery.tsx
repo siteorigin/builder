@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import type { ProjectState } from '@shared/types';
 import { agentDiscovery, LLMS_FULL_FILE, LLMS_TXT_FILE, MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { publicUrl } from '@shared/public-url';
+import { webMcpOn } from '@shared/webmcp';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { generateLlmsTxt } from '@generator/llms';
 import { DraftInput, Field, SwitchRow } from '../components/ui';
@@ -41,6 +42,13 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
         onChange={(v) => onChange({ markdownMirrors: v })}
         label="Write a Markdown copy of each page"
         hint={`Beside each page and post in the index, at its address with ${MARKDOWN_MIRROR_FILE} added, without the header, footer or layout. Each page links to its copy.`}
+      />
+      <SwitchRow
+        id="site-webmcp"
+        checked={webMcpOn(site)}
+        onChange={(v) => onChange({ webmcp: v })}
+        label="Declare WebMCP tools"
+        hint="AI assistants in a visitor’s browser learn what each contact form is for and what its fields ask, and can search the site. The assistant only fills a form in: the visitor checks it and sends it. Browsers without WebMCP ignore it."
       />
       <Field label="Summary" hint="One or two sentences llms.txt opens with. Leave it empty to use the site’s default description.">
         <DraftInput multiline limit={TEXT_LIMITS.siteDescription} keep="site:llmsSummary" value={typeof site.llmsSummary === 'string' ? site.llmsSummary : ''} placeholder={typeof site.description === 'string' ? site.description : ''} onDirty={shown} onCommit={(v) => onChange({ llmsSummary: v })} />

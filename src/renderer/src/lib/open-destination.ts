@@ -17,6 +17,7 @@ const SITE_FIELDS: Record<Extract<EditorDestination, { kind: 'site' }>['field'],
   logo: { section: 'site-settings', focus: '#site-identity-logo button' },
   sameAs: { section: 'site-settings', focus: '#site-identity-profiles' },
   llmsTxt: { section: 'site-agents', focus: '#site-llms-txt' },
+  webmcp: { section: 'site-agents', focus: '#site-webmcp' },
   crawlerPolicy: { section: 'site-crawlers', focus: '#site-crawler-preset' }
 };
 

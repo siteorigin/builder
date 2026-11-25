@@ -42,6 +42,7 @@ import { patchPageStructuredData } from '@shared/page-structured-data';
 import { patchCrawlerPolicy } from '@shared/crawler-policy';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
+import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
 import { feedRowFields } from '@shared/entry-feed';
 import { archiveRouteOwner, collectionRouteOwner } from '@shared/collections';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
@@ -1369,6 +1370,8 @@ function instanceSwap(state: ProjectState, op: Op<'instance.swapComponent'>): Op
   if (plan.slots) node.slots = plan.slots;
   else delete node.slots;
   if (!plan.keepAppear) delete node.appear;
+  // A form's tool name and description stay with it when it becomes another form, and go when it becomes something else.
+  if (!isWebMcpForm(target)) delete node.webmcp;
   // Brand text kept through a site rename belongs to the shared header and footer, which are never swapped.
   delete node.keepsText;
   return { nodeId: node.id, from: node.name ?? def.name, definitionId: target.id, kept: plan.kept.map((k) => k.to), dropped: plan.dropped.map((d) => d.label), restyled: plan.restyled };
@@ -2174,6 +2177,26 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       if (v === null || v === undefined || v === '') delete node.overlay;
       else if (typeof v === 'string' && (OVERLAY_MODES as readonly string[]).includes(v)) node.overlay = v as OverlayMode;
       else fail(`A dialog or drawer is ${OVERLAY_MODES.join(', ')}, or null to show the container in its place again.`);
+      return {};
+    }
+    case 'webmcpToolName':
+    case 'webmcpToolDescription': {
+      if (node.kind !== 'instance' || !isWebMcpForm(own(state.components, node.definitionId))) fail('Only a contact form has a WebMCP tool name and description.');
+      const key = op.field === 'webmcpToolName' ? 'toolName' : 'toolDescription';
+      if (v !== null && v !== undefined && typeof v !== 'string') fail(`${op.field} is text, or null for the default.`);
+      const text = typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '';
+      if (key === 'toolName' && text) {
+        if ([...text].length > WEBMCP_TYPED_NAME_MAX) fail(`A tool name can be at most ${WEBMCP_TYPED_NAME_MAX} characters.`);
+        if (!webMcpToolName(text)) fail('A tool name needs at least one letter or digit.');
+      }
+      if (key === 'toolDescription' && [...text].length > WEBMCP_DESCRIPTION_MAX) fail(`A tool description can be at most ${WEBMCP_DESCRIPTION_MAX} characters.`);
+      // Each is kept only while it holds something, and the pair only while either does.
+      const kept = { ...toolOverrides(node) };
+      if (text) kept[key] = text;
+      else kept[key] = '';
+      const next = Object.fromEntries(Object.entries(kept).filter(([, t]) => t));
+      if (Object.keys(next).length) node.webmcp = next;
+      else delete node.webmcp;
       return {};
     }
     case 'appearStagger': {

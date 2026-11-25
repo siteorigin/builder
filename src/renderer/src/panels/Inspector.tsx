@@ -77,6 +77,8 @@ import { StyleControls } from './StyleControls';
 import { ConditionControls } from './ConditionControls';
 import { ClickActionSection, OverlaySection, UiStateSection, overlayOffered } from './InteractionControls';
 import { EntranceField, StaggerSwitch, appearSummary } from './EntranceControls';
+import { FormToolFields } from './FormToolFields';
+import { isWebMcpForm } from '@shared/webmcp';
 import { useStyleCopyItems } from './StylePaste';
 import { platformKeys, useCopyPasteItems, type CopyPasteActions } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
@@ -1309,6 +1311,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           </Field>
         )}
         {entrance && <EntranceField owner={owner} node={node} design={designAppear(state, def)} />}
+        {isWebMcpForm(def) && <FormToolFields state={state} owner={owner} node={node} def={def} />}
         {dev && (
           <p className="mono faint insp-note" style={{ userSelect: 'text' }}>
             {node.id} · {def.id}
@@ -2472,6 +2475,11 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       <ConditionControls def={def} node={node} level={LEVEL} />
       {node.kind === 'link' && <ClickActionSection def={def} node={node} level={LEVEL} />}
       {overlayOffered(def, node) && <OverlaySection def={def} node={node} level={LEVEL} />}
+      {node.kind === 'instance' && isWebMcpForm(placedDef) && (
+        <Section title="Agent tool" id="def-webmcp" defaultOpen={false} level={LEVEL}>
+          <FormToolFields state={state} owner={owner} node={node} def={placedDef} />
+        </Section>
+      )}
       {(node.kind === 'element' || node.kind === 'repeat' || (node.kind === 'instance' && anchorCapable(state, placedDef))) && (
         <Section
           title="Entrance"
