@@ -8,6 +8,7 @@
 //   npm run test:model-smoke                # the journey (MODEL=gpt-6.2-sol EFFORT=medium by default)
 //   npm run test:model-smoke -- --probe     # only checks that Codex starts with the Builder tools and calls one
 //   npm run test:model-smoke -- --no-replay # the journey without replaying its record (the verdict says so)
+//   npm run test:model-smoke -- --keep-screens  # also keep the session's closing screenshots (pixels are not redacted)
 //
 // Codex runs in an empty folder in the OS temporary folder, outside any repository, with a read-only sandbox, no user
 // configuration, rules or project documents, its shell, browser, image, app, plugin and sub-agent tools turned off, and
@@ -22,8 +23,12 @@
 //
 // Everything is kept in .tmp/model-smoke/<run>/: transcript.jsonl (every event, with host paths, the user's name,
 // credentials and image data taken out), report.md (the model's own account, redacted the same way), evidence/ (the
-// session's replay.json and app.log, redacted the same way, and its closing screenshots), proof.txt and summary.json.
-// The screenshots of each observation are left out: their pixels can show a folder path.
+// session's replay.json and app.log, redacted the same way), proof.txt and summary.json. No screenshot is kept unless
+// asked for (--keep-screens): pixels cannot be redacted, and a dialog can show a folder path.
+//
+// The Builder tools can do whatever a person can in the app, which includes turning on Developer mode, where the app runs
+// code a person writes with the permissions of whoever runs the test. The model is told not to, and a record that shows
+// it did fails the run; run this only on a machine and account you would let such code run on.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -31,7 +36,7 @@ import { basename, join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
-import { describeProof, proveJourney } from '../tests/coverage/journey-proof.ts';
+import { describeProof, forbiddenSteps, proveJourney } from '../tests/coverage/journey-proof.ts';
 import { auditTranscript, redactEvent, redactText } from '../tests/coverage/transcript.ts';
 import { machineRoots, pathHider } from '../tests/driver/evidence.ts';
 import { thisNode } from '../tests/driver/mcp.ts';
@@ -41,6 +46,7 @@ import { Session } from '../tests/driver/session.ts';
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const PROBE = process.argv.includes('--probe');
 const NO_REPLAY = process.argv.includes('--no-replay');
+const KEEP_SCREENS = process.argv.includes('--keep-screens');
 const MODEL = process.env.MODEL ?? 'gpt-6.2-sol';
 const EFFORT = process.env.EFFORT ?? 'medium';
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MIN ?? (PROBE ? 5 : 60)) * 60_000;
@@ -73,6 +79,8 @@ const EXPECT = { edit: HEADING, oldName: NAME, newName: NEW_NAME, answer: ANSWER
 const PROMPT = PROBE
   ? `You have MCP tools from a server called ${SERVER}. Call its session_describe tool once, then reply with the word DONE and the number of ${SERVER} tools you can see. Do not call any other tool.`
   : `You are testing SiteOrigin Builder, a desktop website builder, through the ${SERVER} MCP tools. They drive a disposable, headless copy of the app as a person would. Use only those tools: no shell, no files, no web. Discover what you need from the tools' descriptions and from what the app shows you (ui_snapshot, ui_locate), and act on the controls a person would use, by the refs those observations give (not by screenshot pixels), so the run can be replayed.
+
+Do not turn on Developer mode or open the app's settings for it: this test does not need it.
 
 Do this, checking each outcome before moving on:
 1. Start a new session at the Welcome screen with keepArtifacts "always", and look at what it offers.
@@ -146,6 +154,8 @@ process.on('SIGTERM', onSignal);
 /** Run Codex to the end (or the deadline), keeping its events redacted as they arrive. */
 async function runCodex() {
   const out = createWriteStream(join(RUN, 'transcript.jsonl'));
+  /** The events as they came, for the audit (redaction could change what it reads), and as they are kept. */
+  const raw = [];
   const events = [];
   let tail = '';
   const child = spawn('codex', codexArgs(), { cwd: CLIENT, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
@@ -173,6 +183,7 @@ async function runCodex() {
     } catch {
       event = { type: 'unparsed', text: line.slice(0, 2000) };
     }
+    raw.push(event);
     const kept = redact(event);
     events.push(kept);
     out.write(`${JSON.stringify(kept)}\n`);
@@ -182,7 +193,7 @@ async function runCodex() {
   const code = await new Promise((done) => child.on('close', (c) => done(c ?? 1)));
   clearTimeout(timer);
   await new Promise((done) => out.end(done));
-  return { code, events, stderrTail: text(tail) };
+  return { code, raw, events, stderrTail: text(tail) };
 }
 
 /** The replay records the session wrote, newest last. */
@@ -207,7 +218,7 @@ function keepEvidence(artifacts, record) {
   mkdirSync(EVIDENCE, { recursive: true });
   writeFileSync(join(EVIDENCE, 'replay.json'), `${JSON.stringify(redact(record), null, 2)}\n`);
   if (existsSync(join(artifacts, 'app.log'))) writeFileSync(join(EVIDENCE, 'app.log'), text(readFileSync(join(artifacts, 'app.log'), 'utf8')));
-  const named = [record.evidence?.screenshots?.editor, record.evidence?.screenshots?.preview, 'final.png'].filter((f) => typeof f === 'string' && !f.includes('..'));
+  const named = KEEP_SCREENS ? [record.evidence?.screenshots?.editor, record.evidence?.screenshots?.preview, 'final.png'].filter((f) => typeof f === 'string' && !f.includes('..')) : [];
   const kept = [];
   for (const f of new Set(named)) {
     if (!existsSync(join(artifacts, f))) continue;
@@ -222,17 +233,22 @@ function keepEvidence(artifacts, record) {
   return { screenshots: kept, leftOut: all.length - kept.length };
 }
 
-/** This run's processes still running (its sessions, apps and preview servers), or null when they cannot be listed. */
+/**
+ * This run's processes still running (its MCP server, session hosts, apps and preview servers), or null when they cannot
+ * be listed. A session host names the run's folder only in its environment (WORK), so the scan reads each process's
+ * command line and environment, and matches the folders as plain text.
+ */
 function leftovers() {
   if (process.platform === 'win32') return [];
-  const pids = new Set();
-  for (const dir of [RUN, CLIENT]) {
-    const r = spawnSync('pgrep', ['-f', dir], { encoding: 'utf8' });
-    if (r.status === 1) continue;
-    if (r.status !== 0) return null;
-    for (const pid of r.stdout.split('\n').filter(Boolean)) if (Number(pid) !== process.pid) pids.add(Number(pid));
+  const r = spawnSync('ps', process.platform === 'darwin' ? ['-A', '-ww', '-E', '-o', 'pid=,command='] : ['axeww', '-o', 'pid=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) return null;
+  const pids = [];
+  for (const line of r.stdout.split('\n')) {
+    const m = /^\s*(\d+)\s(.*)$/.exec(line);
+    if (!m || Number(m[1]) === process.pid) continue;
+    if (m[2].includes(RUN) || m[2].includes(CLIENT)) pids.push(Number(m[1]));
   }
-  return [...pids];
+  return pids;
 }
 
 /** End what is left and see that it went: true when nothing of this run is still running. */
@@ -263,13 +279,13 @@ try {
   summary.dirty = execFileSync('git', ['status', '--porcelain'], { cwd: ROOT, encoding: 'utf8' }).trim().length > 0;
   console.log(`model-smoke: ${PROBE ? 'probe' : 'journey'} with ${MODEL} (${EFFORT}), ${summary.codex}; run folder ${RUN}`);
 
-  const { code, events, stderrTail } = await runCodex();
+  const { code, raw, events, stderrTail } = await runCodex();
   summary.codexExit = code;
-  const { calls, foreign, unreadable } = auditTranscript(events, SERVER);
+  const { calls, started, foreign, unreadable } = auditTranscript(raw, SERVER);
   summary.toolCalls = calls.length;
   summary.failedToolCalls = calls.filter((c) => !c.ok).length;
   summary.tools = Object.fromEntries([...new Set(calls.map((c) => c.tool))].sort().map((t) => [t, calls.filter((c) => c.tool === t).length]));
-  summary.foreignTools = foreign;
+  summary.foreignTools = foreign.map(text);
   summary.unreadableEvents = unreadable;
   const usage = events.filter((e) => e.type === 'turn.completed').map((e) => e.usage).filter(Boolean);
   if (usage.length) summary.usage = usage.at(-1);
@@ -280,7 +296,7 @@ try {
   checks.transcript = code === 0 && !foreign.length && !unreadable && !interrupted;
 
   if (PROBE) {
-    checks.probe = calls.length === 1 && calls[0].tool === 'session_describe' && calls[0].ok;
+    checks.probe = started === 1 && calls.length === 1 && calls[0].tool === 'session_describe' && calls[0].ok;
     console.log(`model-smoke probe: ${checks.probe && checks.transcript ? 'Codex called the one Builder tool asked for, and nothing else' : 'FAILED'}\n${final}`);
   } else {
     const kept = records();
@@ -293,6 +309,10 @@ try {
     writeFileSync(join(RUN, 'proof.txt'), `${proofText}\n`);
     summary.proof = Object.fromEntries(proof.witnesses.map((w) => [w.id, w.seq]));
     checks.proof = proof.ok;
+    const forbidden = forbiddenSteps(record);
+    summary.forbiddenSteps = forbidden;
+    checks.noDeveloperMode = !forbidden.length;
+    if (forbidden.length) console.error(`model-smoke: the model turned on Developer mode (steps ${forbidden.join(', ')})`);
     console.log(`\nThe session's record:\n${proofText}`);
 
     if (NO_REPLAY || interrupted) {
@@ -311,8 +331,9 @@ try {
         checks.replay = site === NEW_NAME && found > 0;
       } else {
         const reason = r.divergence?.reason ?? '';
-        // A step the record itself says cannot be repeated (screenshot pixels, text left out) ends the replay early.
-        const unreplayable = /cannot be (replayed|found again)/.test(reason);
+        // A step the record itself marks as one it cannot repeat (screenshot pixels, text left out) ends the replay early.
+        const at = record.steps.find((st) => st.seq === r.divergence?.seq);
+        const unreplayable = !!at && (!!at.unreplayable || (at.targets ?? []).some((t) => !t.replayable));
         summary.replay = { outcome: unreplayable ? 'partial' : 'diverged', ...counts, at: r.divergence?.seq, op: r.divergence?.op, reason: text(reason) };
         checks.replay = unreplayable;
       }
@@ -338,6 +359,7 @@ try {
     rmSync(SESSIONS, { recursive: true, force: true });
     rmSync(REPLAY_DIR, { recursive: true, force: true });
   } else console.error(`model-smoke: processes of this run are still running (or could not be listed); left ${CLIENT} and ${SESSIONS} in place`);
+  checks.notInterrupted = !interrupted;
   summary.checks = checks;
   summary.verdict = Object.values(checks).length && Object.values(checks).every(Boolean) ? (summary.replay?.outcome === 'partial' ? 'pass (replay partial)' : summary.replay?.skipped ? 'pass (replay skipped)' : 'pass') : 'fail';
   summary.finishedAt = new Date().toISOString();

@@ -85,13 +85,15 @@ const isRedo = (e: JournalEntry) =>
   sent(e) &&
   ((e.op === 'ui.click' && reaches(e, /^(button|menuitem)$/, /^Redo\b/)) || /^(ControlOrMeta|Meta|Control)\+Shift\+z$/i.test(key(e)) || /^(ControlOrMeta|Control)\+y$/i.test(key(e)) || menuPath(e) === 'Edit > Redo');
 
-/** A look that found the site under `name`: its brand in the preview by that name, or the project's documents. */
+/** A look that found an element there: not one that waited for it to go. */
+const present = (e: JournalEntry) =>
+  looked(e) && (e.op === 'ui.locate' || (e.op === 'wait.for' && arg(e, 'condition') === 'ui.present') || (e.op === 'ui.waitFor' && arg(e, 'state') !== 'absent'));
+
+/** A look that found the site under `name`: its brand in the preview by that whole name, or the project's documents. */
 function showsName(e: JournalEntry, name: string): boolean {
-  if (!looked(e)) return false;
-  if (e.op === 'project.summary') return summary(e).site === name;
-  if (!['ui.locate', 'ui.waitFor', 'wait.for'].includes(e.op) || arg(e, 'scope') !== 'preview') return false;
-  if (e.op === 'wait.for' && arg(e, 'condition') !== 'ui.present') return false;
-  return arg(e, 'name') === name || summary(e).name === name;
+  if (looked(e) && e.op === 'project.summary') return summary(e).site === name;
+  if (!present(e) || arg(e, 'scope') !== 'preview') return false;
+  return summary(e).name === name || (e.args?.exact !== false && arg(e, 'name') === name);
 }
 
 /** A look at the preview: a snapshot that takes it in, a search in it, or a wait for it to be ready. */
@@ -147,7 +149,8 @@ export function proveJourney(record: JourneyRecord, expect: JourneyExpectations)
         const s = summary(e);
         return s.reason === 'terminal' && s.ask === true && (expect.answer === undefined ? typeof s.text === 'string' && !!s.text : s.text === expect.answer);
       }
-      return ['wait.for', 'ui.waitFor', 'ui.locate'].includes(e.op) && /^Answered · site unchanged/.test(arg(e, 'name'));
+      // The heading a finished question's reply carries, found there (its full name goes on with the steps it took).
+      return present(e) && (/^Answered · site unchanged/.test(arg(e, 'name')) || /^Answered · site unchanged/.test(String(summary(e).name ?? '')));
     },
     expect.answer === undefined ? 'no wait saw the question answered' : `no wait saw the question answered with “${expect.answer}”`
   );
@@ -160,16 +163,31 @@ export function proveJourney(record: JourneyRecord, expect: JourneyExpectations)
   const undone = find('undone', `the old name “${expect.oldName}” seen back`, undo, (e) => showsName(e, expect.oldName), `nothing showed “${expect.oldName}” again after the Undo`);
   const redo = find('redo', 'a Redo', undone, isRedo, 'no Redo after the Undo was seen');
   const redone = find('redone', `“${expect.newName}” seen again`, redo, (e) => showsName(e, expect.newName), `nothing showed “${expect.newName}” again after the Redo`);
-  const exported = find('exported', 'the website exported after all of it', redone, (e) => looked(e) && e.op === 'wait.for' && arg(e, 'condition') === 'export.finished' && summary(e).outcome === 'exported', 'no export finished as exported after the Redo');
-  const folder = exported === null ? undefined : (summary(steps.find((e) => e.seq === exported)!).export as string | undefined);
+  // The website, not the editable project: an export of the site's source can hold the same text.
+  const exported = find(
+    'exported',
+    'the website exported after all of it',
+    redone,
+    (e) => looked(e) && e.op === 'wait.for' && arg(e, 'condition') === 'export.finished' && summary(e).outcome === 'exported' && summary(e).kind === 'site' && typeof summary(e).export === 'string',
+    'no website export finished as exported after the Redo'
+  );
+  const folder = exported === null ? null : (summary(steps.find((e) => e.seq === exported)!).export as string);
   find(
     'export-read',
     `that export's files read back holding “${expect.edit}”`,
     exported,
-    (e) => looked(e) && e.op === 'exports.inspect' && arg(e, 'find') === expect.edit && (summary(e).found as number) > 0 && (!folder || arg(e, 'path') === folder),
+    (e) => looked(e) && e.op === 'exports.inspect' && arg(e, 'path') === folder && arg(e, 'find') === expect.edit && (summary(e).found as number) > 0,
     `no exports.inspect of ${folder ?? 'the export'} found “${expect.edit}”`
   );
   return { ok: witnesses.every((w) => w.seq !== null), witnesses };
+}
+
+/**
+ * Inputs a smoke run must not make: turning on Developer mode, where the app runs code a person writes with the
+ * permissions of whoever runs the test. The model is told not to; the record shows whether it did.
+ */
+export function forbiddenSteps(record: JourneyRecord): number[] {
+  return record.steps.filter((e) => e.class === 'input' && /developer mode/i.test(target(e).name ?? '')).map((e) => e.seq);
 }
 
 /** One line per witness, for a report. */

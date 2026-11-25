@@ -656,6 +656,20 @@ describe('replay', () => {
     }
   });
 
+  it('finds a target whose long name was cut short on its way to the record by the part that was kept', async () => {
+    const long = `Website files, ready to upload ${'Every published page as a finished website folder. '.repeat(4)}`.slice(0, 199) + '…';
+    const cutShort = { at: 'target', scope: 'editor', role: 'button', name: long, region: 'group "Choose an export"', replayable: true };
+    const steps = [journey[0], step(2, { op: 'ui.click', class: 'input', args: { target: { ref: 'old:1' } }, targets: [cutShort], outcome: { ok: true, summary: { dispatched: 'complete' } } })];
+    const s = fake(answers());
+    expect((await replay(record(steps), { make: () => s })).ok).toBe(true);
+    expect(s.sent.find((f) => f.op === 'ui.locate')!.args).toEqual({ role: 'button', name: long.slice(0, -1), exact: false, region: 'group "Choose an export"', scope: 'editor' });
+    // A short name that ends in an ellipsis is whole, and is looked for as it is.
+    const whole = [journey[0], step(2, { op: 'ui.click', class: 'input', args: { target: { ref: 'old:1' } }, targets: [{ ...layers, name: 'Export…' }], outcome: { ok: true, summary: { dispatched: 'complete' } } })];
+    const s2 = fake(answers());
+    expect((await replay(record(whole), { make: () => s2 })).ok).toBe(true);
+    expect(s2.sent.find((f) => f.op === 'ui.locate')!.args).toEqual({ role: 'button', name: 'Export…', region: 'Panels', scope: 'editor' });
+  });
+
   it('aims again at a target that moved as the pointer arrived, a few times, and diverges if it never settles', async () => {
     const moving = (times: number) => {
       let left = times;

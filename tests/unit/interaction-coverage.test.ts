@@ -138,6 +138,8 @@ describe('checkCoverage', () => {
     const steps = (step?: string, kind: 'driver' | 'unit' = 'driver', test = kind === 'unit' ? 'tests/unit/a.test.ts' : 'tests/e2e/a.mjs') => checkCoverage(base({ rows: [row({ proof: [{ test: 'tests/e2e/a.mjs', kind: 'driver', step: 'creates it again' }, { test, kind, ...(step ? { step } : {}) }] })] }));
     expect(steps('only in a comment')).toEqual(['Row projects.create: tests/e2e/a.mjs declares no step "only in a comment".']);
     expect(steps('creates')).toEqual(['Row projects.create: "creates" is part of 2 steps of tests/e2e/a.mjs; name the one that proves it.']);
+    // A title the file declares twice does not say which one proves it.
+    expect(checkCoverage(base({ read: (path) => (path === 'tests/e2e/a.mjs' ? "step('creates it'); step('creates it');" : (files[path] ?? null)) }))).toEqual(['Row projects.create: "creates it" is part of 2 steps of tests/e2e/a.mjs; name the one that proves it.']);
     expect(steps()).toEqual(['Row projects.create: name the step of tests/e2e/a.mjs that proves it.']);
     // A unit test may be linked as a whole; a named one must be declared.
     expect(steps(undefined, 'unit')).toEqual([]);

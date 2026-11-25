@@ -9,7 +9,7 @@
  * that is met where it timed out or the other way round, an export that fails where it succeeded), and says which and
  * why, with the reply.
  */
-import { REPLAY_KIND, REPLAY_VERSION } from './evidence.ts';
+import { CLIP, REPLAY_KIND, REPLAY_VERSION } from './evidence.ts';
 import type { JournalEntry, ReplayRecord, TargetDescriptor } from './evidence.ts';
 import type { Reply, StartArgs } from './protocol.ts';
 import { Session } from './session.ts';
@@ -57,6 +57,15 @@ const UNSTABLE_BUDGET_MS = 5000;
 
 /** Failures of an input that come before anything is sent: such a step changed nothing and is passed over. */
 const REFUSED_BEFORE_INPUT = new Set(['BAD_REQUEST', 'UNKNOWN_OP', 'BUSY', 'NOT_STARTED', 'CLOSED', 'STALE_REF', 'STALE_OBSERVATION', 'AMBIGUOUS_TARGET', 'TARGET_NOT_FOUND', 'WINDOW_CLOSED', 'WINDOW_REPLACED', 'APP_EXITED']);
+
+/**
+ * A name or region cut to length before it reached the record: by the accessibility snapshot (200 characters and an
+ * ellipsis) or by the record itself (CLIP.string and an ellipsis). A short name ending in an ellipsis ("Export…") is whole.
+ */
+export const SNAPSHOT_NAME_CHARS = 200;
+function clipped(s: string | undefined): s is string {
+  return typeof s === 'string' && s.endsWith('…') && [...s].length >= Math.min(SNAPSHOT_NAME_CHARS, CLIP.string + 1);
+}
 
 export function isReplayRecord(v: unknown): v is ReplayRecord {
   const r = v as Partial<ReplayRecord> | null;
@@ -111,7 +120,15 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
 
   /** Find a recorded target again: wait for it to be there, then look it up as the one element it must be. */
   const resolve = async (e: JournalEntry, d: TargetDescriptor): Promise<{ ref: string } | Reply> => {
-    const query = { role: d.role, ...(d.name !== undefined ? { name: d.name } : {}), ...(d.exact === false ? { exact: false } : {}), ...(d.region ? { region: d.region } : {}), ...(d.scope ? { scope: d.scope } : {}) };
+    // A long name cut short on its way to the record is found by what was kept of it; a region cut short is left out,
+    // and the name and scope tell the element apart.
+    const query = {
+      role: d.role,
+      ...(d.name !== undefined ? { name: clipped(d.name) ? d.name.slice(0, -1) : d.name } : {}),
+      ...(d.exact === false || clipped(d.name) ? { exact: false } : {}),
+      ...(d.region && !clipped(d.region) ? { region: d.region } : {}),
+      ...(d.scope ? { scope: d.scope } : {})
+    };
     const there = await call('wait.for', { condition: 'ui.present', ...query }, { timeoutMs: opts.findMs ?? 15_000, ...on(e) });
     if (!there.ok) return there;
     const located = await call('ui.locate', query, on(e));
@@ -156,7 +173,7 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
         args[d.at] = { ref: got.ref, ...(d.position ? { position: d.position } : {}) };
       }
     }
-    const send = () => call(e.op, Object.keys(args).length ? args : undefined, { ...(e.timeoutMs !== undefined ? { timeoutMs: e.timeoutMs } : {}), ...on(e) });
+    const send = (timeoutMs = e.timeoutMs) => call(e.op, Object.keys(args).length ? args : undefined, { ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...on(e) });
     const began = Date.now();
     let reply = await send();
     // A target still moving when the pointer arrived (a dialog settling) was not pressed, scrolled or dragged: at most the
@@ -168,7 +185,8 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
       again++
     ) {
       await new Promise((r) => setTimeout(r, UNSTABLE_SETTLE_MS));
-      reply = await send();
+      // Each resend gets what is left of the budget, not the step's whole deadline again.
+      reply = await send(Math.max(1000, UNSTABLE_BUDGET_MS - (Date.now() - began)));
     }
     // The recording moved to a newer window first: that one is now the window to use.
     if (!reply.ok && reply.error.code === 'WINDOW_REPLACED' && typeof reply.error.details?.to === 'number' && e.window !== null) {

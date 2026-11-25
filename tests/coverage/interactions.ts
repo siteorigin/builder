@@ -1923,7 +1923,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'assistant',
     intent: 'Stay in control of a run: approve or decline a wider change, stop it, or undo it',
     start: 'Business site, a run asking to go beyond the selection, or one that made two changes',
-    routes: ['chat:Yes, allow changes across the whole site', 'chat:No, only change the selection', 'chat:Undo turn', 'chat:Stop and undo'],
+    routes: ['chat:Yes, allow changes across the whole site', 'chat:No, only change the selection', 'chat:Undo turn', 'chat:Stop and undo', 'chat:Stop'],
     outcome: 'Declined, the run stays within the selection and still edits it; approved, the wider change lands; Undo turn reverts both changes and the card says so; Stop ends the run stopped and its change is gone',
     scenario: 'business-v1 · scripted',
     proof: [
@@ -1933,7 +1933,8 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/assistant.mjs', kind: 'driver', step: 'Undo turn reverts both changes, and the card says so' },
       { test: 'tests/e2e/assistant.mjs', kind: 'driver', step: 'Stop and undo: the run ends stopped, and its change is gone' },
       { test: 'tests/unit/ai-turn-review.test.ts', kind: 'unit' }
-    ]
+    ],
+    gaps: [{ missing: 'Stop on a question in Ask mode (the control is named Stop there) is not driven', owner: 'assistant' }]
   },
   {
     id: 'assistant.questions',

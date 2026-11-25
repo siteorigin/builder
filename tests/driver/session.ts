@@ -1328,8 +1328,9 @@ export class Session {
           condition: r.condition,
           met: true,
           ...(r.outcome ? { outcome: r.outcome } : {}),
-          // Which export finished, by its session path: a check of the files can be tied to it.
+          // Which export finished, by its session path and kind (site or source): a check of the files can be tied to it.
           ...(typeof r.export?.path === 'string' ? { export: r.export.path } : {}),
+          ...(typeof r.export?.kind === 'string' ? { kind: r.export.kind } : {}),
           ...(typeof r.revision === 'number' ? { revision: r.revision } : {}),
           ...(typeof r.count === 'number' ? { count: r.count } : {})
         };

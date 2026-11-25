@@ -96,7 +96,8 @@ export function checkCoverage(input: CoverageInput): string[] {
       const titles = stepsOf(p.test, text);
       if (p.step) {
         // The step is a title the file declares, or part of exactly one: not a comment, and not shared by several steps.
-        const hits = titles.includes(p.step) ? [p.step] : titles.filter((t) => t.includes(p.step!));
+        const exact = titles.filter((t) => t === p.step);
+        const hits = exact.length ? exact : titles.filter((t) => t.includes(p.step!));
         if (!hits.length) problems.push(`${at}: ${p.test} declares no step "${p.step}".`);
         else if (hits.length > 1) problems.push(`${at}: "${p.step}" is part of ${hits.length} steps of ${p.test}; name the one that proves it.`);
       } else if ((p.kind === 'driver' || p.kind === 'e2e') && titles.length) problems.push(`${at}: name the step of ${p.test} that proves it.`);

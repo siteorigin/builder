@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { JournalEntry } from '../driver/evidence';
-import { describeProof, proveJourney } from '../coverage/journey-proof';
+import { describeProof, forbiddenSteps, proveJourney } from '../coverage/journey-proof';
 import type { JourneyRecord } from '../coverage/journey-proof';
 
 type Step = Omit<JournalEntry, 'seq' | 'id' | 't' | 'window'>;
@@ -45,7 +45,7 @@ const JOURNEY: Step[] = [
   inPreview(EXPECT.oldName),
   click('button', 'Redo Rename the site'),
   look('project.summary', {}, { revision: 9, site: EXPECT.newName }),
-  look('wait.for', { condition: 'export.finished' }, { condition: 'export.finished', met: true, outcome: 'exported', export: 'exports/quayside-rooms-site' }),
+  look('wait.for', { condition: 'export.finished' }, { condition: 'export.finished', met: true, outcome: 'exported', export: 'exports/quayside-rooms-site', kind: 'site' }),
   look('exports.inspect', { path: 'exports/quayside-rooms-site', find: EXPECT.edit }, { type: 'folder', found: 2, complete: true })
 ];
 const record = (steps: Step[], over: Partial<JourneyRecord> = {}): JourneyRecord => ({
@@ -114,8 +114,9 @@ describe('proveJourney (issue #498)', () => {
     expect(missing(record(replace((s) => s.op === 'assistant.wait', look('assistant.wait', { runId: 'run_1' }, { reason: 'input', status: 'awaiting-input' }))))).toEqual(['answer']);
     expect(missing(record(replace((s) => s.op === 'assistant.wait', look('assistant.observe', { after: 0 }, {}))))).toEqual(['answer']);
     expect(missing(record(replace((s) => s.op === 'assistant.wait', look('assistant.wait', { runId: 'run_1' }, { reason: 'terminal', ask: true, text: 'Something else.' }))))).toEqual(['answer']);
-    // The finished question's own heading on screen is an answer seen.
+    // The finished question's own heading on screen is an answer seen; waiting for it to go is not.
     expect(missing(record(replace((s) => s.op === 'assistant.wait', look('wait.for', { condition: 'ui.present', role: 'button', name: 'Answered · site unchanged', exact: false }, { met: true }))))).toEqual([]);
+    expect(missing(record(replace((s) => s.op === 'assistant.wait', look('wait.for', { condition: 'ui.absent', role: 'button', name: 'Answered · site unchanged', exact: false }, { met: true }))))).toEqual(['answer']);
     expect(missing(record(without((s) => named(s, /^Edit/))))).toContain('requested');
   });
 
@@ -131,6 +132,14 @@ describe('proveJourney (issue #498)', () => {
     // Redo shows it, too late for the Undo.
     const inEditor = proveJourney(record(replace((s) => s.args?.name === EXPECT.newName, look('ui.locate', { role: 'textbox', name: EXPECT.newName, scope: 'editor' }, { name: EXPECT.newName }))), EXPECT);
     expect([inEditor.witnesses.find((w) => w.id === 'renamed')?.seq, inEditor.ok]).toEqual([21, false]);
+    // Waiting for the new name to go, or finding a name that only contains the old one, is not seeing the old name back.
+    const absent = replace((s) => s.args?.name === EXPECT.oldName, look('ui.waitFor', { role: 'link', name: EXPECT.newName, scope: 'preview', state: 'absent' }, {}));
+    expect(missing(record(absent))).toEqual(['undone', 'redo', 'redone', 'exported', 'export-read']);
+    const partial = replace((s) => s.args?.name === EXPECT.oldName, look('wait.for', { condition: 'ui.present', role: 'link', name: 'Harbour', exact: false, scope: 'preview' }, { met: true }));
+    expect(missing(record(partial))).toEqual(['undone', 'redo', 'redone', 'exported', 'export-read']);
+    // The name the app reported reaching counts over the words searched for: "allow" found the whole choice.
+    const searched = replace((s) => named(s, /^Yes/), { ...click('button', ALLOW), targets: [{ at: 'target', role: 'button', name: 'allow', exact: false, replayable: true }] });
+    expect(missing(record(searched))).toEqual([]);
     // Undo before Redo; the keyboard and the Edit menu count as well.
     const keys = JOURNEY.map((s) => (named(s, /^Undo/) ? press('ControlOrMeta+z') : named(s, /^Redo/) ? input('menu.invoke', { path: ['Edit', 'Redo'] }) : s));
     expect(missing(record(keys))).toEqual([]);
@@ -146,9 +155,19 @@ describe('proveJourney (issue #498)', () => {
     const early = [...JOURNEY.slice(0, 8), exportStep, ...JOURNEY.slice(8).filter((s) => s !== exportStep)];
     expect(missing(record(early))).toEqual(['exported', 'export-read']);
     expect(missing(record(without((s) => s.op === 'exports.inspect')))).toEqual(['export-read']);
+    // The editable project exported instead of the website, or an export the record cannot name, does not count.
+    const source = replace((s) => s.args?.condition === 'export.finished', look('wait.for', { condition: 'export.finished' }, { outcome: 'exported', export: 'exports/quayside-rooms-source', kind: 'source' }));
+    expect(missing(record(source))).toEqual(['exported', 'export-read']);
+    const unnamed = replace((s) => s.args?.condition === 'export.finished', look('wait.for', { condition: 'export.finished' }, { outcome: 'exported', kind: 'site' }));
+    expect(missing(record(unnamed))).toEqual(['exported', 'export-read']);
     // Another folder, or a search that found nothing, is not that export read back.
     expect(missing(record(replace((s) => s.op === 'exports.inspect', look('exports.inspect', { path: 'exports/older-site', find: EXPECT.edit }, { found: 2 }))))).toEqual(['export-read']);
     expect(missing(record(replace((s) => s.op === 'exports.inspect', look('exports.inspect', { path: 'exports/quayside-rooms-site', find: EXPECT.edit }, { found: 0 }))))).toEqual(['export-read']);
+  });
+
+  it('names the inputs a smoke run must not make: turning on Developer mode', () => {
+    expect(forbiddenSteps(record(JOURNEY))).toEqual([]);
+    expect(forbiddenSteps(record([...JOURNEY, click('switch', 'Developer mode')]))).toEqual([JOURNEY.length + 1]);
   });
 
   it('gives no credit for a step that failed', () => {
