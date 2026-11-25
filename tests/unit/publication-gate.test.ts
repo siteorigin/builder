@@ -226,7 +226,7 @@ describe('publication gate', () => {
     expect(order).toEqual(['1 after 1', '2 after 1']);
   });
 
-  it('reports a missed file that is there as added, so what failed to import it is tried again', async () => {
+  it('reports a missed file that is there as changed and added, so Vite reads it again and retries what failed to import it', async () => {
     const root = mkdtempSync(join(tmpdir(), 'so-gate-'));
     try {
       mkdirSync(join(root, 'src', 'lib'), { recursive: true });
@@ -238,7 +238,7 @@ describe('publication gate', () => {
       gate.hold('1');
       gate.release('1', ['src/lib/New.svelte', 'src/lib/Gone.svelte']);
       await vi.advanceTimersByTimeAsync(GATE_LIMITS.settleMs + 20);
-      expect(reported).toEqual(['add src/lib/New.svelte', 'unlink src/lib/Gone.svelte']);
+      expect(reported).toEqual(['change src/lib/New.svelte', 'add src/lib/New.svelte', 'unlink src/lib/Gone.svelte']);
       expect(vite.messages()).toHaveLength(1);
     } finally {
       rmSync(root, { recursive: true, force: true });

@@ -193,10 +193,9 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
     buffer = [];
     // A file the watcher has not reported (a change it dropped as a repeat of one just before, say) is reported
     // here, so Vite reads it again with the rest of the batch; it saying so later only repeats an update. One that is
-    // there is reported as added: Vite then also retries what failed to import it, as for a new file.
+    // there is reported changed (Vite drops what it made of it) and added (Vite retries what failed to import it).
     for (const abs of expected) {
-      const event = existsSync(abs) ? 'add' : 'unlink';
-      events.push([event, abs], ['all', event, abs]);
+      for (const event of existsSync(abs) ? ['change', 'add'] : ['unlink']) events.push([event, abs], ['all', event, abs]);
     }
     expected.clear();
     seen.clear();
