@@ -8,6 +8,7 @@ import { newId } from '@shared/ids';
 import { displayName, placesOf } from '@engine/tree';
 import { planHomeChange } from '@engine/apply';
 import { uniqueCopyName } from '@engine/definitions';
+import { placementRole } from '@engine/insert-role';
 import { planSwap, type SwapCarry, type SwapPlan } from '@engine/swap';
 import type { LinkHolder, PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
@@ -617,7 +618,7 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
   // The placement chosen, still showing the design it showed then: an Undo or the AI may have changed it.
   const current = node?.kind === 'instance' && node.definitionId === definitionId ? node : undefined;
   const def = st && current ? st.components[definitionId] : undefined;
-  const [opened] = useState(() => (def && current ? { name: current.name ?? def.name, top: !!tree?.rootIds.includes(nodeId) } : null));
+  const [opened] = useState(() => (def && current ? { name: current.name ?? def.name, top: !!tree?.rootIds.includes(nodeId) && placementRole(st!, owner, nodeId) === 'section' } : null));
   const choices = useMemo(() => (st && current ? swapChoices(st, current, dev) : []), [st, current, dev]);
   const [key, setKey] = useState(() => choices[0]?.key ?? '');
   // Only the design picked: one that has gone since (an Undo, the AI) is never swapped for another without a word.

@@ -321,6 +321,12 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       if (op.description !== undefined) def.description = op.description;
       return {};
     }
+    case 'component.setInsertAs': {
+      const def = projectDef(state, op.definitionId);
+      if (op.insertAs === null) delete def.insertAs;
+      else def.insertAs = op.insertAs;
+      return {};
+    }
     case 'component.fork': {
       const id = ensureProjectOwned(state, op.definitionId);
       return { definitionId: id };

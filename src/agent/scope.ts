@@ -345,6 +345,7 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'component.detachInstance': 'node',
   'component.duplicate': 'wider',
   'component.rename': 'wider',
+  'component.setInsertAs': 'wider',
   'component.fork': 'wider',
   'component.convertToCode': 'node',
   'component.createCode': 'wider',

@@ -1,7 +1,9 @@
 // Component Studio (#367), against the real app: a project component that no page places opens from Insert > Your
 // components in the canvas, shown on its own by the editor's isolated preview. Its variant options, sample content
 // and width change what the preview shows without changing the project; a click picks the design's own part, whose
-// style is edited there (with Undo and Redo); Done goes back to the page; and the Command menu opens it again.
+// style is edited there (with Undo and Redo); Done goes back to the page; and the Command menu opens it again. There
+// its placement role (#661) is chosen with Undo and Redo, and Insert then puts it inside a section, where the
+// Inspector calls the placement a component.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { createProject, eventually, launch, MOD, scratch, step } from './harness.mjs';
@@ -154,8 +156,64 @@ await win.keyboard.type(`${def.name} studio`);
 await win.locator('.cmdk [role="option"]', { hasText: 'in Component Studio' }).first().click();
 await band.filter({ hasText: `${def.name} in Component Studio` }).waitFor();
 await inStudio(`[data-so-node="${root}"]`).first().waitFor({ timeout: 60000 });
+
+step('its placement role is chosen in Component Studio, in one undoable step (#661)');
+const role = win.locator('#dock-panel-inspect [data-placement-role]');
+await role.waitFor();
+const insertAs = async () => (await snapshot()).state.components[defId].insertAs;
+const appliedIds = () => win.evaluate(async () => (await window.builder.project.snapshot()).history.entries.filter((e) => e.applied).map((e) => e.id));
+/** Chooses a role and waits for the design to record it as one new change. */
+const chooseRole = async (value, expected) => {
+  const before = await appliedIds();
+  await role.selectOption(value);
+  await eventually(async () => {
+    assert.equal(await insertAs(), expected, `the design records ${value || 'Automatic'}`);
+    const after = await appliedIds();
+    assert.deepEqual(after.slice(0, before.length), before, 'nothing undone');
+    assert.equal(after.length, before.length + 1, 'one change');
+  }, 15000);
+};
+assert.equal(await insertAs(), undefined, 'the copy has no role of its own yet');
+assert.equal(await role.inputValue(), '', 'Automatic is chosen');
+assert.equal((await role.locator('option:checked').innerText()).trim(), 'Automatic (page section)', 'and says what the editor tells from the design');
+await chooseRole('section', 'section');
+await chooseRole('', undefined);
+await chooseRole('element', 'element');
+await win.locator('.canvas').focus();
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.equal(await insertAs(), undefined, 'Undo takes the role back'), 15000);
+await eventually(async () => assert.equal(await role.inputValue(), '', 'and the field follows'));
+await win.locator('.canvas').focus();
+await win.keyboard.press(`${MOD}+Shift+z`);
+await eventually(async () => assert.equal(await insertAs(), 'element', 'Redo brings it back'), 15000);
+await eventually(async () => assert.equal(await role.inputValue(), 'element', 'and the field follows'));
 await win.locator('.mode-band-done').click();
 await band.waitFor({ state: 'detached' });
+
+step('Insert puts it inside a layout now, and the Inspector calls the placement a component');
+const [{ nodeId: holder }] = await apply([{ type: 'node.insert', owner, parentId: null, index: 0, componentId: 'layout.section' }], 'Insert a section');
+await win.evaluate(() => document.activeElement?.blur?.());
+if (!(await panel.locator('.insert-group[data-kind="component"]').isVisible())) await win.getByRole('button', { name: 'Insert', exact: true }).click();
+const tile = panel.locator('.insert-tile.project', { has: win.locator('strong', { hasText: new RegExp(`^${def.name}$`) }) });
+const rootsBefore = (await snapshot()).state.pages[pageId].rootIds;
+await tile.click();
+const nested = await eventually(async () => {
+  const page = (await snapshot()).state.pages[pageId];
+  assert.deepEqual(page.rootIds, rootsBefore, 'nothing new among the page’s sections');
+  const id = Object.values(page.nodes[holder].slots ?? {}).flat().find((n) => page.nodes[n]?.definitionId === defId);
+  assert.ok(id, 'it goes inside the section');
+  return id;
+}, 15000);
+const inspector = win.locator('#dock-panel-inspect');
+await eventually(async () => assert.equal(JSON.parse((await win.locator('.canvas').getAttribute('data-selected-ref')) ?? 'null')?.nodeId, nested, 'the new placement is selected'), 15000);
+await eventually(async () => assert.equal(await inspector.locator('.insp-kind-label').first().innerText(), 'Component · your component', 'the header calls it a component'));
+const styleScope = inspector.locator('.section-head', { hasText: /^Style/ }).locator('.scope');
+assert.equal(await styleScope.first().innerText(), 'Whole component', 'and so does Style');
+await win.screenshot({ path: join(SHOTS, 'component-studio-nested-inspector.png') });
+// The section holding it is still one of the page's sections.
+await openRail('Layers');
+await win.locator(`[role="treeitem"][data-owner="page:${pageId}"][data-node="${holder}"]`).click();
+await eventually(async () => assert.match(await inspector.locator('.insp-kind-label').first().innerText(), /^Section · /, 'a section of the page is still a section'));
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

@@ -336,6 +336,10 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Copied the ${quoted(componentName(op.definitionId))} component as ${quoted(op.name)}`);
       case 'component.rename':
         return plain(op, `Renamed the ${quoted(before.components[op.definitionId]?.name ?? 'component')} component to ${quoted(op.name)}`);
+      case 'component.setInsertAs': {
+        const name = quoted(before.components[op.definitionId]?.name ?? 'component');
+        return plain(op, op.insertAs === null ? `Let the editor choose where the ${name} component is inserted` : `Set the ${name} component to insert as ${op.insertAs === 'section' ? 'a page section' : 'a subcomponent'}`);
+      }
       case 'component.fork':
         return plain(op, `Made an editable copy of the ${quoted(componentName(op.definitionId))} component`);
       case 'component.convertToCode':
