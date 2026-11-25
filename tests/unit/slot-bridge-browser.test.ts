@@ -28,7 +28,7 @@ let page: Page;
 let frame: Frame;
 
 type Box = { x: number; y: number; width: number; height: number };
-type Message = { type: string; payload: { chain?: Array<Record<string, unknown>>; selected?: Box[]; hovered?: Box[]; spacing?: unknown; rects?: Array<(Box & { many?: boolean }) | null>; requestId?: string } };
+type Message = { type: string; payload: { chain?: Array<Record<string, unknown>>; selected?: Box[]; hovered?: Box[]; spacing?: unknown; slots?: Array<{ desc: Record<string, unknown>; box: Box }>; rects?: Array<(Box & { many?: boolean }) | null>; requestId?: string } };
 const messages = () => page.evaluate<Message[]>(`window.seen`);
 const post = (type: string, payload: object) => page.evaluate(`document.querySelector('iframe').contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: ${JSON.stringify(type)}, payload: ${JSON.stringify(payload)} }, '*')`);
 const boxOf = (id: string) => frame.evaluate<Box>(`(() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
@@ -95,6 +95,26 @@ describe.skipIf(!browserInstalled)('a placement’s empty slots in the preview (
     const twice = (await messages()).find((m) => m.type === 'measured' && m.payload.requestId === 'm2')!.payload.rects![0];
     expect(twice).toMatchObject(await boxOf('shown-twice'));
     expect(twice!.many).toBeUndefined();
+  });
+
+  it('reports the box of each slot tracked with the selection where it shows, until the selection no longer asks (#657)', async () => {
+    await page.evaluate(`window.seen = []`);
+    const placement = { ctx: 'page:p', node: 'split', items: '' };
+    await post('track', { selected: placement, hovered: null, slots: [slot('main'), slot('sidebar'), slot('footer')] });
+    const rects = async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload;
+    // Each on its own placeholder (Sidebar's that shows, not its hidden copy); one the page does not show is left out.
+    const main = await boxOf('main');
+    const side = await boxOf('side');
+    await expect.poll(async () => (await rects())?.slots).toEqual([
+      { desc: slot('main'), box: main },
+      { desc: slot('sidebar'), box: side }
+    ]);
+    // A new list replaces the old one.
+    await post('track', { selected: placement, hovered: null, slots: [slot('sidebar')] });
+    await expect.poll(async () => (await rects())?.slots).toEqual([{ desc: slot('sidebar'), box: side }]);
+    // A new selection that tracks none drops them.
+    await post('track', { selected: placement, hovered: null });
+    await expect.poll(async () => (await rects())?.slots).toEqual([]);
   });
 
   it('leaves placeholders out of what a drag asks is under the pointer', async () => {
