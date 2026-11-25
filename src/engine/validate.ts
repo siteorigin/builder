@@ -943,13 +943,13 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
         }
         const token = v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' ? (v as { token: string }).token : undefined;
         // What the stylesheet writes nothing for, from a document edited or imported outside the editor: a link holding
-        // more than its token that the property cannot take, or a backdrop blur outside its grammar.
+        // more than its token that the property cannot take, or a backdrop blur or grid packing or row size outside its grammar.
         const unwritten =
           v && typeof v === 'object' && token === undefined
             ? 'A token reference must name its site style in "token".'
             : token !== undefined && Object.keys(v as object).length > 1 && Object.hasOwn(STYLE_PROP_MAP, prop)
             ? linkShapeError(prop, v as StyleTokenRef)
-            : prop === 'backdropBlur' && token === undefined
+            : (prop === 'backdropBlur' || prop === 'gridAutoFlow' || prop === 'gridAutoRows') && token === undefined
               ? validateStyleValue(prop, v as StyleValue)
               : null;
         if (unwritten) out.push({ severity: 'error', code: 'STYLE_VALUE_INVALID', message: `${label}: ${unwritten} Nothing is written for it until it is fixed.`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}|${prop}` });

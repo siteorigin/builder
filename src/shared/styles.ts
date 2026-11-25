@@ -54,6 +54,10 @@ const GRID_TEMPLATE_HELP =
   'such as "16rem 1fr 14rem" or "2fr repeat(2, 1fr)". For as many columns as fit, give the narrowest a column may get: ' +
   '"repeat(auto-fit, minmax(18rem, 1fr))", or auto-fill to keep empty columns. Applies from tablet up unless a phone value is set.';
 
+const GRID_AUTO_ROWS_HELP =
+  'How tall the rows a grid makes for its items are. A preset, or one row size: a length, auto, min-content, max-content, 1fr or minmax(min, max) with a min that is not fr, ' +
+  'such as "minmax(12rem, auto)", which keeps every row at least 12rem and lets it grow with its content. A fixed length lets taller content spill out of its row.';
+
 const edge = (id: string, label: string, group: StylePropDef['group'], kind: 'length' | 'border', tokenGroup: TokenGroup | TokenGroup[], placeholder: string): StylePropDef => ({ id, label, group, kind, tokenGroup, placeholder, advanced: true });
 
 export const STYLE_PROPS: StylePropDef[] = [
@@ -78,6 +82,13 @@ export const STYLE_PROPS: StylePropDef[] = [
     { value: '1fr 1fr', label: 'Equal halves' }, { value: '1fr 2fr', label: 'Narrow, wide' }, { value: '2fr 1fr', label: 'Wide, narrow' },
     { value: '1fr 1.5fr', label: 'Slightly wider second' }, { value: '1.5fr 1fr', label: 'Slightly wider first' },
     { value: 'auto-fit-sm', label: 'As many as fit (small)' }, { value: 'auto-fit-md', label: 'As many as fit (medium)' }
+  ] },
+  { id: 'gridAutoFlow', label: 'Grid packing', group: 'layout', kind: 'enum', description: 'How items fill the grid. Pack gaps tightly lets a later item move up into a hole a wider or taller one left, so items can show out of their order; keyboard and screen reader order does not change.', options: [
+    { value: 'row', label: 'Keep order' }, { value: 'dense', label: 'Pack gaps tightly' }
+  ] },
+  { id: 'gridAutoRows', label: 'Row heights', group: 'layout', kind: 'tracks', placeholder: 'minmax(12rem, auto)', description: GRID_AUTO_ROWS_HELP, options: [
+    { value: 'auto', label: 'Fit each row' }, { value: '1fr', label: 'All equal' },
+    { value: 'minmax(8rem, auto)', label: 'At least 8rem' }, { value: 'minmax(12rem, auto)', label: 'At least 12rem' }, { value: 'minmax(16rem, auto)', label: 'At least 16rem' }
   ] },
   { id: 'containerType', label: 'Query container', group: 'layout', kind: 'enum', advanced: true, description: 'Makes this box the width its contents\' container rules (narrow, medium, wide) read, so a card in a narrow column can stack while the same card in a wide one stays side by side. Use it on a box its parent sizes, such as a grid column or a stretched stack: inside one sized to its content (a horizontal stack without grow, Fit content) it shrinks to nothing.', options: [
     { value: 'inline-size', label: 'Its width' }, { value: 'normal', label: 'None' }
@@ -251,7 +262,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
     case 'icon':
       return ['color', 'fontSize', 'background', 'radius', ...margins, ...child, ...placed, ...end];
     case 'element':
-      return ['layout', 'columns', 'gridTemplate', 'containerType', 'align', 'justify', 'wrap', 'gap', 'rowGap', 'columnGap', ...child, ...spacing, 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'maxHeight', 'marginInline', 'overflow', 'textAlign', ...boxAppearance, ...placed, ...end];
+      return ['layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'containerType', 'align', 'justify', 'wrap', 'gap', 'rowGap', 'columnGap', ...child, ...spacing, 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'maxHeight', 'marginInline', 'overflow', 'textAlign', ...boxAppearance, ...placed, ...end];
     default:
       return undefined;
   }
@@ -294,7 +305,7 @@ export function placementStyleControls(def: Pick<ComponentDefinition, 'kind' | '
 }
 
 /** The controls that arrange content in columns, in the order Column layout shows them. */
-const COLUMN_CONTROLS = ['layout', 'columns', 'gridTemplate', 'gap', 'rowGap', 'columnGap', 'align', 'justify'];
+const COLUMN_CONTROLS = ['layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'gap', 'rowGap', 'columnGap', 'align', 'justify'];
 
 /**
  * A Section's Container, with the column controls it offers, so a placement's inspector can arrange the Section's
@@ -605,6 +616,26 @@ function gridTrack(raw: string): { css: string; fr: number | null } | null {
   return { css: `minmax(${least.css}, ${most.css})`, fr: most.kind === 'fr' && TOKEN_ZERO_RE.test(least.css) ? most.fr! : null };
 }
 
+/**
+ * The height of every row a grid makes for its items: one track size or minmax(), as a column takes, but a bare fr
+ * share stays as written, so equal rows never shrink below their content. Null for anything else.
+ */
+export function parseRowSize(raw: string): string | null {
+  const value = raw.trim();
+  if (!isSafeTrackText(value)) return null;
+  const size = trackBreadth(value);
+  if (size) return size.css;
+  return gridTrack(value)?.css ?? null;
+}
+
+/** Whether a track value is short, safe text whose brackets do not nest deeper than browsers read. */
+function isSafeTrackText(value: string): boolean {
+  if (!value || value.length > MAX_TRACKS_TEXT || !isSafeCssValue(value)) return false;
+  let depth = 0;
+  for (const ch of value) if ((depth += ch === '(' ? 1 : ch === ')' ? -1 : 0) > MAX_TRACKS_DEPTH) return false;
+  return true;
+}
+
 /** A column-size value as the stylesheet writes it, with each column's fr share (null for any other size). */
 type GridTemplate = { css: string; fr: Array<number | null> };
 
@@ -619,9 +650,7 @@ export function parseGridTemplate(raw: string): GridTemplate | string {
   const preset = Object.hasOwn(AUTO_FIT_PRESETS, value) ? AUTO_FIT_PRESETS[value] : undefined;
   if (preset) return { css: preset, fr: [] };
   const bad = `"${value.slice(0, 60)}" is not a list of column sizes. Use up to ${MAX_GRID_TRACKS} of: 1fr, a length such as 16rem, auto, minmax(12rem, 1fr) or repeat(3, 1fr); or repeat(auto-fit, minmax(18rem, 1fr)) for as many as fit.`;
-  if (!value || value.length > MAX_TRACKS_TEXT || !isSafeCssValue(value)) return bad;
-  let depth = 0;
-  for (const ch of value) if ((depth += ch === '(' ? 1 : ch === ')' ? -1 : 0) > MAX_TRACKS_DEPTH) return bad;
+  if (!isSafeTrackText(value)) return bad;
   const auto = callArgs(value, 'repeat');
   if (auto && /^auto-(fit|fill)$/i.test(auto[0])) {
     if (auto.length !== 2) return bad;
@@ -1037,7 +1066,9 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
       if (NON_NEGATIVE_LENGTHS.has(propId) && s.startsWith('-') && /[1-9]/.test(s)) return `${def.label} cannot be negative.`;
       return length ? null : `"${s}" needs a unit, such as ${s}px or ${s}rem.`;
     case 'tracks': {
-      if (typeof value !== 'string') return `${def.label} must be text, such as "1fr 2fr".`;
+      if (typeof value !== 'string') return `${def.label} must be text, such as "${def.placeholder}".`;
+      if (propId === 'gridAutoRows')
+        return parseRowSize(s) ? null : `"${s.slice(0, 60)}" is not a row size. Use one of: auto, min-content, max-content, 1fr, a length such as 12rem or minmax(12rem, auto).`;
       const parsed = parseGridTemplate(s);
       return typeof parsed === 'string' ? parsed : null;
     }
@@ -1059,7 +1090,7 @@ function cssValue(v: StyleValue): string {
 
 /** Fixed-grammar properties: a hand-edited document that breaks the grammar writes nothing. */
 const CHECKED_AT_OUTPUT = new Set([
-  'containerType', 'gridTemplate', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
+  'containerType', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
   'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing', 'backdropBlur'
 ]);
 
@@ -1096,6 +1127,12 @@ export function styleToCss(propId: string, raw: StyleValue): string[] {
     case 'gridTemplate': {
       const parsed = parseGridTemplate(v);
       return typeof parsed === 'string' ? [] : [`grid-template-columns: ${parsed.css}`];
+    }
+    case 'gridAutoFlow':
+      return [`grid-auto-flow: ${v}`];
+    case 'gridAutoRows': {
+      const size = parseRowSize(v);
+      return size ? [`grid-auto-rows: ${size}`] : [];
     }
     case 'columnSpan':
       return [value === 'full' ? 'grid-column: 1 / -1' : `grid-column: span ${Number(value)} / span ${Number(value)}`];

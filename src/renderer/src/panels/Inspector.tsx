@@ -75,6 +75,7 @@ import { StructuredDataFields, structuredSummary } from '../components/Structure
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
+import { isGridChild } from '../lib/grid-child';
 import { TagField } from './TagField';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, PropField, ScalarField, IconPicker, useRevealedItem, type ListFill, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
@@ -1306,6 +1307,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             layers={shownLayers(def, rootPart?.nodeId ?? def.tree!.rootIds[0], designLayers(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants))}
             wideColumns
             allowed={placementStyleControls(def, 'root', codeStyled) ?? undefined}
+            gridChild={isGridChild(state, selection, scope)}
             grouped={partInInteractionGroup(def, 'root', inGroupAt(state, owner, node.id))}
             tokens={tokens}
             image={rootImage}
@@ -1339,6 +1341,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             inherited={undefined}
             wideColumns
             allowed={placementStyleControls(def, styledPart, codeStyled) ?? undefined}
+            // A part inside the code sits in markup no tree describes: only the whole component can be told apart.
+            gridChild={styledPart === 'root' && isGridChild(state, selection, scope)}
             grouped={partInInteractionGroup(def, styledPart, inGroupAt(state, owner, node.id))}
             tokens={tokens}
             onSet={onStyle(styledPart)}
@@ -1794,6 +1798,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 wideColumns
                 // Rows the shared style uses show here too, so the item can change what every item was given.
                 allowed={sharedRows(partStyleControls(def, partId!))}
+                gridChild={isGridChild(state, selection, scope)}
                 grouped={partInInteractionGroup(def, partId!, inGroupAt(state, owner, inst.id))}
                 tokens={tokens}
                 image={itemImage}
@@ -1849,6 +1854,8 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 layers={shownLayers(def, part.nodeId, designLayers(def, part.nodeId, inst.variants))}
                 wideColumns
                 allowed={partStyleControls(def, partId!)}
+                // The style every item shares: no one item's own styles decide the box around it.
+                gridChild={isGridChild(state, { ...selection, itemPath: undefined }, scope)}
                 grouped={partInInteractionGroup(def, partId!, inGroupAt(state, owner, inst.id))}
                 tokens={tokens}
                 image={partImage}
@@ -2084,6 +2091,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
           styles={node.styles}
           inherited={undefined}
           allowed={styleSetFor(node)}
+          gridChild={isGridChild(state, selection, scope)}
           grouped={inGroupAt(state, owner, node.id)}
           tokens={tokens}
           image={node.kind === 'image' ? focusImage(state, devUrl, shownImage(state, selection, node.image), [], 'This picture can’t be shown here.') : undefined}
@@ -2505,6 +2513,8 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         })()
       : designLayers(def, node.id, { [look.axis]: look.variant })
     : undefined;
+  // Whether the design itself puts this element in a grid, in the look being styled.
+  const gridChild = isGridChild(state, { owner, instancePath: [], nodeId: node.id }, scope, look ?? undefined);
   const lookInherited = lookLayers ? cascadeStyles(lookLayers.filter((l) => l.styles !== lookOption!.styles?.[node.id])) : undefined;
   // The look's preview renders only while the Inspector is on screen: a hidden one would prepare it again on every change.
   const inspecting = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
@@ -2717,6 +2727,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
               wideColumns
               tokens={tokens}
               allowed={node.kind === 'instance' ? (placedDef?.parts.root?.styleControls ?? styleSetFor(node)) : styleSetFor(node)}
+              gridChild={gridChild}
               grouped={inGroupAt(state, owner, node.id)}
               onSet={(property, value, expectedRevision, inState) =>
                 commitOps(
@@ -2743,6 +2754,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
             wideColumns
             tokens={tokens}
             allowed={placedDef?.parts.root?.styleControls ?? styleSetFor(node)}
+            gridChild={gridChild}
             grouped={inGroupAt(state, owner, node.id)}
             layers={placedDef?.kind === 'managed' && placedDef.tree ? designLayers(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, stateShown)) : undefined}
             onSet={(property, value, expectedRevision, inState) =>
@@ -2758,6 +2770,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           designSizesWin
           tokens={tokens}
           allowed={styleSetFor(node)}
+          gridChild={gridChild}
           // A list or a slot renders no element of its own: nothing would show a state of it.
           states={node.kind !== 'repeat' && node.kind !== 'slot'}
           grouped={inGroupAt(state, owner, node.id)}

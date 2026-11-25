@@ -756,7 +756,7 @@ export const container = managed({
   slots: { content: { label: 'Content', description: 'Headings, text, images, buttons and components placed inside the section.' } },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'paddingInline', 'background', 'color', 'minHeight'] },
-    container: { nodeId: 'inner', label: 'Container', styleControls: ['maxWidth', 'layout', 'columns', 'gridTemplate', 'gap', 'rowGap', 'columnGap', 'align', 'justify', 'textAlign'] }
+    container: { nodeId: 'inner', label: 'Container', styleControls: ['maxWidth', 'layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'gap', 'rowGap', 'columnGap', 'align', 'justify', 'textAlign'] }
   },
   variantAxes: { tone: toneAxis([]) },
   build: (b) => sectionShell(b, [b.slot('content-slot', 'content', { name: 'Content' })], { inner: { base: { gap: tok('space.lg') } } })

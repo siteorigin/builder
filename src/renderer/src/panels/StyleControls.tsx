@@ -15,6 +15,7 @@ import { DraftInput } from '../components/ui';
 import { setState, setViewport, useStore } from '../store';
 import { allSizesReach, readStyleNumber, refinementShown, stateChangeCount, stateUnder, statesWithChanges, styleReached, styleUnder } from '../lib/style-source';
 import { STATE_LABEL, StatePicker } from './StatePicker';
+import { styleRowGroups, withGridChildProps } from '../lib/grid-child';
 
 type Size = Exclude<ResponsiveScope, 'base'>;
 const SIZES: Size[] = ['phone', 'tablet', 'desktop'];
@@ -241,6 +242,7 @@ export function StyleControls({
   designSizesWin,
   image,
   wideColumns,
+  gridChild,
   layers,
   states = true,
   grouped,
@@ -277,6 +279,8 @@ export function StyleControls({
    * sizes off phones, where the design's own layout still applies.
    */
   wideColumns?: boolean;
+  /** The element sits directly in a grid at the edited size: its spans are offered and shown (see `isGridChild`). */
+  gridChild?: boolean;
   /**
    * The design's rules under `styles` as stored, weakest first (see `designLayers`), so the values a hover, focus or
    * pressed state shows through include the design's and the chosen look's own states.
@@ -323,21 +327,20 @@ export function StyleControls({
   };
   // Group states are offered inside a group, or where one already holds changes.
   const groupOffered = !!states && (!!grouped || hasGroupStyles(styles));
-  const candidates = allowed?.length ? allowed : STYLE_PROPS.map((p) => p.id);
+  const listed = withGridChildProps(allowed, !!gridChild);
+  const candidates = listed?.length ? listed : STYLE_PROPS.map((p) => p.id);
   // Hover, focus and pressed states are offered where a property a state can change is, or where one is already set.
   const statesOffered = states && (candidates.some((p) => isStateStyleProp(p) || (groupOffered && isStateStyleProp(p, 'groupHover'))) || hasStateStyles(styles));
   // A group state chosen for another element is no state of this one.
   const state = statesOffered && (!isGroupStyleState(chosenState) || groupOffered) ? chosenState : null;
   // A value set outside the offered controls (by the AI, say) still gets a row, so it can be seen and reset.
-  const setOutside = allowed?.length ? [...new Set(rulesIn(styles, state).flatMap((sc) => Object.keys(sc ?? {})))].filter((id) => !allowed.includes(id)) : [];
+  const setOutside = listed?.length ? [...new Set(rulesIn(styles, state).flatMap((sc) => Object.keys(sc ?? {})))].filter((id) => !listed.includes(id)) : [];
   // In a state, only what a state can change.
-  const props = (allowed?.length ? [...allowed, ...setOutside].map((id) => STYLE_PROP_MAP[id]).filter(Boolean) : STYLE_PROPS).filter((p) => !state || isStateStyleProp(p.id, state));
-  const groups = new Map<StylePropDef['group'], StylePropDef[]>();
-  for (const p of props) groups.set(p.group, [...(groups.get(p.group) ?? []), p]);
+  const props = (listed?.length ? [...listed, ...setOutside].map((id) => STYLE_PROP_MAP[id]).filter(Boolean) : STYLE_PROPS).filter((p) => !state || isStateStyleProp(p.id, state));
   // Where the values shown are stored: the size being edited, in the chosen state or at rest.
   const at = (sc: ResponsiveScope) => styleScopeKey(sc, state ?? undefined);
   const own = styles?.[at(scope)] ?? {};
-  const offered = (id: string) => !allowed?.length || allowed.includes(id);
+  const offered = (id: string) => !listed?.length || listed.includes(id);
   // Under All sizes every size counts, so a phone-only preset still offers the duration that would apply to it.
   const reached = (id: string) => styleReached({ prop: id, scope, styles, inherited, designSizesWin, wideColumns });
   // Layout controls that only mean something for a stack or grid show when the layout is one at a size the edit
@@ -351,20 +354,13 @@ export function StyleControls({
   const relevant = (id: string) => {
     if (setAnywhere(id)) return true;
     if (id === 'order') return false;
-    if (id === 'columns' || id === 'gridTemplate') return grid;
+    if (id === 'columns' || id === 'gridTemplate' || id === 'gridAutoFlow' || id === 'gridAutoRows') return grid;
     if (id === 'align' || id === 'justify' || id === 'gap' || id === 'wrap' || id === 'rowGap' || id === 'columnGap') return flexLike;
     // Offsets do nothing until the element is positioned.
     if (id === 'inset') return positioned;
     // An origin, duration or easing shows once what it refines is in effect.
     return refinementShown(id, reached, offered) ?? true;
   };
-  // Long lists show the common controls of the first two groups plus anything already set; each group's other
-  // controls open from its heading.
-  const entries = [...groups.entries()];
-  const long = entries.reduce((n, [, l]) => n + l.filter((p) => relevant(p.id)).length, 0) > 10;
-  const primary = new Set(entries.slice(0, 2).map(([g]) => g));
-  const isPrimary = (g: StylePropDef['group'], p: StylePropDef) => !long || (primary.has(g) && !p.advanced);
-  const tucked = (g: StylePropDef['group'], p: StylePropDef) => !isPrimary(g, p) && relevant(p.id) && !setAnywhere(p.id);
   const total = Object.values(styles ?? {}).reduce((n, s) => n + Object.keys(s ?? {}).length, 0);
   // A size's reset clears its hover, focus and pressed changes with it, so they count as its changes. In a state,
   // only that state's changes at this size count.
@@ -559,13 +555,7 @@ export function StyleControls({
 
   // Each group once, in registry order. A group in a long list shows its common rows and anything set at any size;
   // the rest open from its own heading, so every group is a direct way in.
-  const groupList = entries
-    .map(([g, list]) => {
-      const rel = list.filter((p) => relevant(p.id));
-      const visible = rel.filter((p) => !tucked(g, p));
-      return { g, rel, visible, hidden: rel.length - visible.length };
-    })
-    .filter((x) => x.rel.length);
+  const groupList = styleRowGroups(props, { relevant, setAnywhere, gridChild });
   const toggle = (g: string) =>
     setOpen((was) => {
       const next = new Set(was);

@@ -7,6 +7,7 @@
 import type { EditOperation } from '@shared/ops';
 import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleScope, StyleScopeKey, StyleState, StyleValue } from '@shared/types';
 import { CONTAINER_SCOPES, STYLE_STATES, isContainerScope, parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { isGridChild, withGridChildProps } from './grid-child';
 import { CONTAINER_SCOPE_LABEL, STYLE_PROP_MAP, containerStyleError, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { isBackgroundImageValue, isPictureAsset } from '@shared/background-image';
@@ -127,7 +128,7 @@ function partTarget(def: ComponentDefinition, inst: InstanceNode, owner: OwnerRe
  * one set of a selected part or element. Null for what takes no style changes of its own here: a component's
  * design (Edit everywhere styles every placement), a part of a component nested inside a section, a repeat or slot.
  */
-export function styleSelection(state: ProjectState, ref: ElementRef): StyleSelection | null {
+export function styleSelection(state: ProjectState, ref: ElementRef, scope: ResponsiveScope = 'base'): StyleSelection | null {
   // A slot of a placement, picked by its empty box, is a place for content: it has no styles of its own.
   if (ref.owner.kind === 'component' || ref.slot !== undefined) return null;
   // A part picked by name stays that part, as in the inspector, even on its component's root element: a component
@@ -149,7 +150,9 @@ export function styleSelection(state: ProjectState, ref: ElementRef): StyleSelec
     const codeStyled = def.kind === 'code' && codeTakesOverrides(def);
     const targets = ['root', ...Object.keys(def.parts).filter((p) => p !== 'root')].flatMap((p) => {
       const list = placementStyleControls(def, p, codeStyled);
-      return list === null ? [] : [partTarget(def, node, b.owner, p, list)];
+      if (list === null) return [];
+      const partRef: ElementRef = p === 'root' ? b : { owner: b.owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p };
+      return [partTarget(def, node, b.owner, p, withGridChildProps(list, isGridChild(state, partRef, scope)))];
     });
     return targets.length ? { kind: 'section', label: node.name ?? def.name, where, targets } : null;
   }
@@ -160,7 +163,7 @@ export function styleSelection(state: ProjectState, ref: ElementRef): StyleSelec
   if (inst?.kind !== 'instance' || !def || own(def.parts, b.partId)?.nodeId !== b.nodeId) return null;
   const list = placementStyleControls(def, b.partId, def.kind === 'code' && codeTakesOverrides(def));
   if (list === null) return null;
-  const t = partTarget(def, inst, b.owner, b.partId, list);
+  const t = partTarget(def, inst, b.owner, b.partId, withGridChildProps(list, isGridChild(state, b, scope)));
   return { kind: 'single', label: `${t.label} in ${inst.name ?? def.name}`, where, targets: [{ ...t, part: null }] };
 }
 
@@ -259,7 +262,8 @@ const scopeList = (s: ResponsiveStyles, property: string) => ALL_KEYS.filter((k)
  * offer, is left as it is.
  */
 export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: ElementRef, scope: PasteScope): PastePlan {
-  const destination = styleSelection(state, ref);
+  // A grid item takes its spans where the Inspector offers them: at the size pasted onto, or any for every size.
+  const destination = styleSelection(state, ref, scope === 'every' ? 'base' : scope);
   if (!destination) return { destination, rows: [], operations: [] };
   const now = effectiveTokens(state);
   const known: Known = { tokens: new Set(now.map((t) => t.id)), vars: new Set(now.map((t) => tokenVar(t.id))), copied: new Set(copy.vars) };
