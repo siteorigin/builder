@@ -316,7 +316,7 @@ try {
     console.log(`\nThe session's record:\n${proofText}`);
 
     if (NO_REPLAY || interrupted) {
-      summary.replay = { skipped: interrupted ? 'interrupted' : '--no-replay' };
+      summary.replay = { outcome: 'skipped', why: interrupted ? 'interrupted' : '--no-replay' };
       checks.replay = !interrupted;
     } else {
       mkdirSync(REPLAY_DIR, { recursive: true });
@@ -361,7 +361,8 @@ try {
   } else console.error(`model-smoke: processes of this run are still running (or could not be listed); left ${CLIENT} and ${SESSIONS} in place`);
   checks.notInterrupted = !interrupted;
   summary.checks = checks;
-  summary.verdict = Object.values(checks).length && Object.values(checks).every(Boolean) ? (summary.replay?.outcome === 'partial' ? 'pass (replay partial)' : summary.replay?.skipped ? 'pass (replay skipped)' : 'pass') : 'fail';
+  const pass = Object.values(checks).length > 0 && Object.values(checks).every(Boolean);
+  summary.verdict = !pass ? 'fail' : summary.replay?.outcome === 'partial' ? 'pass (replay partial)' : summary.replay?.outcome === 'skipped' ? 'pass (replay skipped)' : 'pass';
   summary.finishedAt = new Date().toISOString();
   writeFileSync(join(RUN, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
   console.log(`\nmodel-smoke: ${summary.verdict.toUpperCase()}. Kept in ${RUN}`);
