@@ -5,7 +5,9 @@
 // document survives switching away and back, falls back cleanly when it is deleted, and no window is ever shown.
 // With nothing chosen the view shows the overview (#707): every page and post with where it stands in search results,
 // the ones with something to fix first, kept up to date as the site changes, filtered to problems, each row opening
-// its document.
+// its document. A page's or post's previews follow what is typed in its fields before it is saved (#597), and the
+// Inspector's Search & sharing section, which has no previews of its own, opens its page here with what is being typed
+// saved first, or carried over when it can't be (#708).
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -355,6 +357,8 @@ const card = (platform) => sample(platform);
 const graphShown = view.getByTestId('seo-graph');
 const screen = (name) => view.getByRole('radio', { name, exact: true });
 const darkResults = view.getByRole('switch', { name: 'Dark results' });
+/** Shows one screen's results without taking focus from a field being typed in, which would save it. */
+const peekScreen = (name) => screen(name).dispatchEvent('click');
 const resultsPage = view.locator('.serp-page');
 /** The results page as drawn: its colours, its real and shown widths, and how its title and description are set. */
 const drawn = () =>
@@ -622,7 +626,9 @@ await titleBox.pressSequentially('Glaze');
 await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Glaze', 'the result follows the title as it is typed'));
 assert.equal(await viewMeter('title').innerText(), '5 characters · short: 15 to 60 reads best', 'and so does the meter');
 await titleBox.pressSequentially(' weekend');
+await peekScreen('Phone');
 await eventually(async () => assert.equal(await result('mobile').locator('.serp-title').innerText(), 'Glaze weekend'));
+await peekScreen('Computer');
 assert.equal(await viewMeter('title').innerText(), '13 characters · short: 15 to 60 reads best');
 assert.equal((await entryNow('en_spring')).seo.title, 'Spring open studio at Riverside', 'nothing is saved while it is typed');
 await titleBox.press('Escape');
@@ -923,7 +929,9 @@ await title.pressSequentially('Pot');
 await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Pot', 'the result follows each keystroke'));
 assert.match(await meter('title').innerText(), /^3 characters/, 'and so does the title’s meter');
 await title.pressSequentially('tery classes by the river');
+await peekScreen('Phone');
 await eventually(async () => assert.equal(await result('mobile').locator('.serp-title').innerText(), 'Pottery classes by the river'));
+await peekScreen('Computer');
 assert.match(await meter('title').innerText(), /^28 characters/);
 assert.equal((await aboutPage()).seo.title, documents[0].seoTitle, 'nothing is saved while it is typed');
 await title.press('Escape');
@@ -1063,6 +1071,216 @@ await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.equal(await panel.locator('.seo-open', { hasText: 'Winter hours' }).count(), 1, 'Undo brings the post back to the list'));
 assert.equal(await view.locator('.seo-title').innerText(), 'SEO', 'without choosing it again on its own');
 await eventually(async () => assert.equal(await ovRow('entry:posts:en_winter').count(), 1, 'and the overview lists it again'));
+
+step('a page opened in the view from its Inspector section, which keeps its fields and meters but no previews (#708)');
+await apply([{ type: 'page.create', title: 'Kitchens', route: '/kitchens/', starter: 'intro' }], 'Add page');
+const kitchensId = Object.values((await snapshot()).state.pages).find((p) => p.title === 'Kitchens').id;
+const kitchensSeo = async () => (await snapshot()).state.pages[kitchensId].seo;
+const inspSearch = inspector.locator('.section', { has: win.locator('button.section-head', { hasText: 'Search & sharing' }) });
+const inspMeter = (kind) => inspSearch.locator(`.seo-meter[data-meter="${kind}"]`);
+const openInView = inspSearch.getByRole('button', { name: 'Open in SEO view' });
+/** Kitchens on the canvas, its settings in the Inspector, the view put away. */
+const inspectKitchens = async () => {
+  if ((await rail('pages').getAttribute('aria-pressed')) !== 'true') await rail('pages').click();
+  await eventually(async () => assert.equal(await holder.isVisible(), false, 'the view is put away'));
+  await win.locator('.pages-list [role="option"]', { hasText: 'Kitchens' }).first().click();
+  await openInspector(win);
+  await eventually(async () => assert.equal(await inspected.innerText(), 'Kitchens', 'the Inspector shows Kitchens'));
+};
+await inspectKitchens();
+assert.equal(await inspSearch.getByRole('tab').count(), 0, 'the Inspector shows no previews of its own');
+assert.equal(await inspSearch.locator('.serp, .share-card, [data-testid="seo-graph"]').count(), 0);
+assert.equal(await inspSearch.getByRole('button', { name: 'Optimize with AI' }).count(), 1, 'Optimize with AI is still beside the settings');
+assert.equal(await inspSearch.getByRole('button', { name: 'Optimize with AI' }).isEnabled(), true);
+assert.equal(await inspMeter('title').innerText(), 'Default title: 27 characters · fits on computers and phones', 'the Inspector keeps the title meter');
+assert.match(await inspMeter('description').innerText(), /^From the fallback: \d+ characters/, 'and the description meter');
+await inspField('title').fill('Kitchens in oak');
+await eventually(async () => assert.equal(await inspMeter('title').innerText(), '15 characters · fits on computers and phones', 'the meter follows the title as it is typed'));
+await inspField('title').press('Escape');
+await eventually(async () => assert.match(await inspMeter('title').innerText(), /^Default title:/));
+await openInView.click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Kitchens', 'Open in SEO view opens the view on the page'));
+assert.equal(await holder.isVisible(), true);
+await eventually(async () => assert.equal(await back.evaluate((el) => el === document.activeElement), true, 'focus moves into the view'));
+
+step('the search result and the title meter follow the browser title as it is typed, before it is saved (#597)');
+await eventually(async () => assert.equal(await surfaceShown('Search result'), true));
+await screen('Computer').click();
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Kitchens · Riverside Studio', 'a page without a title of its own is listed by its default'));
+assert.equal(await result('desktop').locator('.serp-url').innerText(), 'riverside.example › kitchens', 'under its public address');
+assert.equal(await meter('title').innerText(), 'Default title: 27 characters · fits on computers and phones', 'the meter measures the default title');
+assert.match(await meter('description').innerText(), /^From the fallback: \d+ characters/, 'and the site’s description, which the page falls back to');
+const kitchensTitle = 'Kitchens in oak, steel and stone, designed and built by hand in our Riverside workshop';
+await title.fill(kitchensTitle);
+await eventually(async () => assert.match(await result('desktop').locator('.serp-title').innerText(), /^Kitchens in oak, .*…$/, 'the title being typed is cut short with an ellipsis'));
+assert.equal(await meter('title').innerText(), `${kitchensTitle.length} characters · likely cut short on computers and phones`);
+assert.equal(await meter('title').getAttribute('data-tone'), 'cut');
+assert.equal((await kitchensSeo()).title, undefined, 'nothing is saved while it is typed');
+await title.press('Escape');
+await eventually(async () => assert.match(await meter('title').innerText(), /^Default title:/, 'Escape puts the default back'));
+await screen('Phone').click();
+const phoneTitle = () => result('mobile').locator('.serp-title').innerText();
+await eventually(async () => assert.equal(await phoneTitle(), 'Kitchens · Riverside Studio'));
+await title.fill(kitchensTitle);
+await eventually(async () => assert.match(await phoneTitle(), /^Kitchens in oak, [\s\S]*…$/, 'cut short on a phone too'));
+await title.press('Escape');
+await eventually(async () => assert.equal(await phoneTitle(), 'Kitchens · Riverside Studio', 'Escape puts the default back on a phone too'));
+await allSaved();
+assert.equal((await kitchensSeo()).title, undefined, 'nothing was saved while it was typed');
+await screen('Computer').click();
+// The results page holds its room when it comes back from another surface.
+await surface('Link preview').click();
+await surface('Search result').click();
+await eventually(() => noSidewaysScroll('the search result shown again'));
+assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Kitchens · Riverside Studio');
+await description.fill('Oak, steel and stone kitchens, drawn and built by hand.');
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-desc').innerText(), 'Oak, steel and stone kitchens, drawn and built by hand.', 'the description being typed shows in the result'));
+assert.equal(await meter('description').innerText(), '55 characters · fits on computers and phones', 'and is what the meter measures');
+assert.equal((await kitchensSeo()).description, undefined, 'nothing is saved while it is typed');
+await description.press('Escape');
+await eventually(async () => assert.match(await meter('description').innerText(), /^From the fallback:/, 'Escape puts the fallback back'));
+await win.screenshot({ path: join(SHOTS, 'seo-view-kitchens-search-result.png') });
+
+step('the structured data follows the title and canonical URL as they are typed (#597)');
+await surface('Structured data').click();
+const graphOf = async () => JSON.parse(await graphShown.innerText());
+const webPage = async () => (await graphOf())['@graph'].find((n) => n['@type'] === 'WebPage');
+await eventually(async () => assert.deepEqual(await webPage().then((n) => ({ url: n.url, name: n.name })), { url: 'https://riverside.example/kitchens/', name: 'Kitchens · Riverside Studio' }), 20000);
+const status = (id) => view.locator(`[data-status="${id}"] dd`);
+assert.equal(await status('canonical').innerText(), 'https://riverside.example/kitchens/');
+assert.equal(await status('search').innerText(), 'May list it');
+assert.equal(await status('sitemap').innerText(), 'Listed');
+await title.fill('Oak and steel kitchens · Riverside');
+await eventually(async () => assert.equal((await webPage()).name, 'Oak and steel kitchens · Riverside', 'the graph names the page by the title being typed'));
+assert.equal((await kitchensSeo()).title, undefined, 'still unsaved');
+await title.press('Enter');
+await eventually(async () => assert.equal((await kitchensSeo()).title, 'Oak and steel kitchens · Riverside', 'Enter saves it'));
+await allSaved();
+await canonical.fill('https://journal.example/kitchens/');
+await eventually(async () => assert.equal(await status('canonical').innerText(), 'https://journal.example/kitchens/ (another address)', 'the canonical URL being typed shows in the status'));
+assert.match(await status('sitemap').innerText(), /canonical URL names another address/, 'a copy leaves the sitemap to the original');
+assert.equal(await status('structured').innerText(), 'Written into its page', 'and still carries its structured data');
+assert.equal((await webPage()).url, 'https://riverside.example/kitchens/', 'its graph names the page by its own address');
+assert.equal((await kitchensSeo()).canonical, undefined, 'nothing is saved while it is typed');
+await canonical.press('Escape');
+await eventually(async () => assert.equal(await status('canonical').innerText(), 'https://riverside.example/kitchens/', 'Escape puts the page’s own address back'));
+// Text that is no address is never previewed as one: the status keeps the saved address.
+await canonical.fill('riverside.example/kitchens');
+await win.waitForTimeout(500);
+assert.equal(await status('canonical').innerText(), 'https://riverside.example/kitchens/', 'an unusable address leaves the status as saved');
+await canonical.press('Escape');
+await win.screenshot({ path: join(SHOTS, 'seo-view-kitchens-structured-data.png') });
+
+step('a title refused for being too long is measured when the page is opened again, until Escape puts the saved one back (#597)');
+const refusedTitle = `${'Oak kitchens '.repeat(10)}x`.slice(0, 121);
+assert.equal(refusedTitle.length, 121);
+await allSaved();
+await surface('Search result').click();
+await title.fill(refusedTitle);
+await title.press('Tab');
+await eventually(async () => assert.equal(await title.getAttribute('aria-invalid'), 'true', 'the title over the limit is refused and kept'));
+await row('About').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'About'));
+await row('Kitchens').click();
+await eventually(async () => assert.equal(await title.inputValue(), refusedTitle, 'the refused title is shown again'));
+await eventually(async () => assert.equal(await meter('title').innerText(), `${refusedTitle.trim().length} characters · likely cut short on computers and phones`, 'and the meter measures what the field shows'));
+await title.click();
+await title.press('Escape');
+await eventually(async () => assert.match(await meter('title').innerText(), /^\d+ characters · fits on computers and phones$/, 'Escape puts the saved title back in the meter'));
+assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Oak and steel kitchens · Riverside');
+
+step('Open in SEO view from the Inspector saves what is being typed first, and carries text it could not save to the view (#708)');
+await inspectKitchens();
+await inspField('title').fill('Kitchens by the river');
+await openInView.click();
+await eventually(async () => assert.equal((await kitchensSeo()).title, 'Kitchens by the river', 'what was typed is saved'));
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Kitchens'));
+await eventually(async () => assert.equal(await title.inputValue(), 'Kitchens by the river', 'the view’s field shows it'));
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Kitchens by the river', 'and so does its result'));
+await allSaved();
+await inspectKitchens();
+await inspField('title').fill(refusedTitle);
+await openInView.click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Kitchens'));
+await eventually(async () => assert.equal(await title.inputValue(), refusedTitle, 'text too long to save goes with the field to the view'));
+assert.match(await countOf(title).innerText(), /^Not saved: 121 \/ 120/, 'still refused');
+assert.equal((await kitchensSeo()).title, 'Kitchens by the river', 'and nothing of it is saved');
+await title.click();
+await title.press('Escape');
+await eventually(async () => assert.equal(await title.inputValue(), 'Kitchens by the river', 'Escape puts the saved title back'));
+
+step('a post’s search result, link preview and structured data follow what is typed before it is saved (#597)');
+const left = 'Winter light on the water '.repeat(4).trim();
+const right = 'Winter light on the water '.repeat(4).trim().slice(0, 96);
+const fullTitle = `${left} ${right}`;
+await apply(
+  [
+    { type: 'site.update', baseUrl: '' },
+    { type: 'entry.create', collectionId: 'posts', entryId: 'en_raku', title: fullTitle, slug: 'raku', publishedAt: '2025-06-01', draft: false }
+  ],
+  'A long post, no public URL'
+);
+const rakuSeo = async () => (await entryNow('en_raku')).seo ?? {};
+await row(left).click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), fullTitle));
+const postTitle = viewField('Browser title');
+const postDescription = viewField('Description');
+const postCanonical = viewField('Canonical URL');
+await eventually(async () => assert.equal(await surfaceShown('Search result'), true, 'the previews open on the search result'));
+await screen('Computer').click();
+await eventually(async () => assert.match(await result('desktop').locator('.serp-title').innerText(), /^Winter light on the water .*…$/, 'the long default title is cut short with an ellipsis'));
+assert.match(await viewMeter('title').innerText(), /^Default title: \d+ characters · likely cut short on computers and phones$/, 'the meter measures the default title');
+assert.match(await result('desktop').locator('.serp-date').innerText(), /2025 — $/, 'a dated post opens its description with its date');
+await postTitle.fill('Raku notes');
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Raku notes', 'the result follows the title as it is typed'));
+assert.equal(await viewMeter('title').innerText(), '10 characters · short: 15 to 60 reads best');
+assert.equal((await rakuSeo()).title, undefined, 'nothing is saved while it is typed');
+await postTitle.press('Escape');
+await eventually(async () => assert.match(await viewMeter('title').innerText(), /^Default title:/, 'Escape puts the default back'));
+await screen('Phone').click();
+await eventually(async () => assert.match(await phoneTitle(), /^Winter light on the water [\s\S]*…$/));
+await postTitle.fill('Glaze diary');
+await eventually(async () => assert.equal(await phoneTitle(), 'Glaze diary', 'and on a phone'));
+await postTitle.press('Escape');
+await eventually(async () => assert.match(await phoneTitle(), /^Winter light on the water [\s\S]*…$/, 'Escape puts the default back on a phone too'));
+assert.equal((await rakuSeo()).title, undefined, 'nothing was saved while it was typed');
+await screen('Computer').click();
+await postDescription.fill('Notes from a weekend of raku firing.');
+await eventually(async () => assert.match(await result('desktop').locator('.serp-desc').innerText(), /— Notes from a weekend of raku firing\.$/, 'the description being typed follows the date in the result'));
+assert.equal(await viewMeter('description').innerText(), '36 characters · short: 50 to 160 reads best');
+assert.equal((await rakuSeo()).description, undefined, 'nothing is saved while it is typed');
+await postDescription.press('Escape');
+await eventually(async () => assert.match(await viewMeter('description').innerText(), /^From the fallback:/, 'Escape puts the fallback back'));
+await surface('Link preview').click();
+await eventually(async () => assert.equal(await card.locator('.share-card-title').textContent(), fullTitle, 'a shared link shows the post’s own title, without the site’s name'));
+assert.equal(await card.locator('.share-card-host').textContent(), 'No usable public URL');
+await postTitle.fill('Raku firing notes from the weekend');
+await eventually(async () => assert.equal(await card.locator('.share-card-title').textContent(), 'Raku firing notes from the weekend', 'the card follows the title as it is typed'));
+await postTitle.press('Enter');
+await eventually(async () => assert.equal((await rakuSeo()).title, 'Raku firing notes from the weekend', 'Enter saves it'), 20000);
+await surface('Structured data').click();
+await eventually(async () => assert.match(await view.locator('.seo-graph-none').innerText(), /Public URL/, 'without a public URL the post carries no structured data, and says why'));
+assert.equal(await status('search').innerText(), 'May list it');
+assert.equal(await status('siteSearch').innerText(), 'May find it', 'Site search finds a published post');
+await apply([{ type: 'site.update', baseUrl: 'https://riverside.example' }], 'Set public URL');
+await eventually(async () => {
+  const node = (await webPage()) ?? {};
+  assert.deepEqual({ url: node.url, name: node.name }, { url: 'https://riverside.example/blog/raku/', name: 'Raku firing notes from the weekend' }, 'the post’s structured data names it by its address and its title');
+}, 20000);
+await postTitle.fill('Raku notes from the kiln');
+await eventually(async () => assert.equal((await webPage()).name, 'Raku notes from the kiln', 'the graph follows the title as it is typed'));
+assert.equal((await rakuSeo()).title, 'Raku firing notes from the weekend', 'nothing new is saved while it is typed');
+await postTitle.press('Escape');
+await eventually(async () => assert.equal((await webPage()).name, 'Raku firing notes from the weekend', 'Escape puts the saved title back in the graph'));
+await postCanonical.fill('https://journal.example/raku/');
+await eventually(async () => assert.equal(await status('canonical').innerText(), 'https://journal.example/raku/ (another address)', 'the canonical URL being typed shows in the status'));
+assert.match(await status('sitemap').innerText(), /another address/);
+assert.equal((await rakuSeo()).canonical, undefined, 'nothing is saved while it is typed');
+await postCanonical.press('Escape');
+await eventually(async () => assert.equal(await status('canonical').innerText(), 'https://riverside.example/blog/raku/', 'Escape puts the post’s own address back'));
+await win.screenshot({ path: join(SHOTS, 'seo-view-post-typing.png') });
+await surface('Search result').click();
+await allSaved();
 
 step('the screen and the dark toggle are remembered across a reload (#704)');
 await panel.locator('.seo-open', { hasText: 'About' }).first().click();
