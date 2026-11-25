@@ -15,6 +15,7 @@
   .seo-doc-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 12px; }
   .seo-doc-facts dt { color: var(--text-3); }
   .seo-doc-facts dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+  .seo-doc .seo-note { margin: 0; }
 
   .seo-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .seo-group { padding: 0 6px 10px; }
