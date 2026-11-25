@@ -128,6 +128,7 @@ describe('the code check holds code to its contract', () => {
     expect(await errors(with_("{#if typeof slot_content === 'function'}{@render slot_content()}{/if}"), c)).toEqual([]);
     expect(await errors(with_('{#if !!slot_content}{@render slot_content()}{/if}'), c)).toEqual([]);
     expect(await errors(with_('{#if slot_content !== null}{@render slot_content()}{/if}'), c)).toHaveLength(1);
+    expect(await errors(with_('{#if slot_content !== undefined}{@render slot_content()}{/if}'), c)).toHaveLength(1);
     // A variable as the default may hold undefined itself: no fallback.
     expect(await errors(SOURCE.replace('slot_content = undefined', 'slot_content = fallback').replace('{@render slot_content?.()}', '{@render slot_content()}').replace('</script>', '\tconst fallback = undefined;\n</script>'), c)).toHaveLength(1);
     // A default that may itself be missing is no fallback.

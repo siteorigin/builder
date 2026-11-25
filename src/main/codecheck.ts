@@ -582,8 +582,8 @@ export async function codeContractNames(source: string): Promise<{ parts: string
 }
 
 /**
- * Whether a block's test is true only while `name` holds something: `name`, `!!name`, `name != null`,
- * `name !== undefined`, `typeof name === 'function'`, or an `&&` chain with one of them.
+ * Whether a block's test is true only while `name` holds something: `name`, `!!name`, `name != null` (or
+ * `!= undefined`), `typeof name === 'function'`, or an `&&` chain with one of them.
  */
 function truthyTest(test: Node | undefined, name: string): boolean {
   if (!test) return false;
@@ -594,10 +594,8 @@ function truthyTest(test: Node | undefined, name: string): boolean {
   if (test.type === 'LogicalExpression' && test.operator === '&&') return truthyTest(test.left as Node, name) || truthyTest(test.right as Node, name);
   if (test.type === 'BinaryExpression') {
     const [l, r] = [test.left as Node, test.right as Node];
-    if (test.operator === '!=' || test.operator === '!==') {
-      const loose = test.operator === '!=';
-      return (is(l) && nothing(r, loose)) || (is(r) && nothing(l, loose));
-    }
+    // Loosely, so null (a default of null) is ruled out with undefined.
+    if (test.operator === '!=') return (is(l) && nothing(r, true)) || (is(r) && nothing(l, true));
     if (test.operator === '===' || test.operator === '==') {
       const typed = (a: Node, b: Node) => a?.type === 'UnaryExpression' && a.operator === 'typeof' && is(a.argument as Node) && b?.type === 'Literal' && b.value === 'function';
       return typed(l, r) || typed(r, l);
