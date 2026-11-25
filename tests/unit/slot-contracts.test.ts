@@ -4,6 +4,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree
 import { validateOperation, type EditOperation } from '@shared/ops';
 import { PREVIEW_MODULE } from '@shared/component-preview';
 import { createStarterState } from '@catalogue/starters';
+import { getTheme } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { slotAccepts, slotDeclProblem, slotFill, takesComponent } from '@engine/slots';
 import { validateState } from '@engine/validate';
@@ -84,6 +85,12 @@ describe('a slot that names the components it takes', () => {
     expect(slotAccepts({ label: 'x', componentIds: ['studio.bento-card'] }, s)).toBe('“studio.bento-card”');
     expect(slotAccepts({ label: 'x', componentIds: [] })).toBe('nothing');
     expect(slotAccepts({ label: 'x', categories: ['media'], componentIds: [card], primitives: ['image'] }, s)).toBe('media components, “Feature card” and images');
+    // With both, a component either takes goes in.
+    expect(takesComponent({ label: 'x', categories: ['hero'], componentIds: [card] }, def)).toBe(true);
+    expect(takesComponent({ label: 'x', categories: [def.category], componentIds: ['pricing.plans'] }, def)).toBe(true);
+    // A name longer than an ID can be is no ID.
+    expect(slotDeclProblem({ label: 'x', componentIds: ['c'.repeat(121)] })).toMatch(/component IDs/);
+    expect(slotDeclProblem({ label: 'x', componentIds: ['c'.repeat(120)] })).toBeNull();
   });
 
   it('refuses tightening a contract its content no longer fits, keeps the list a relabel leaves out, and clears it with null', () => {
@@ -100,6 +107,7 @@ describe('a slot that names the components it takes', () => {
     expect(() => applyOperations(s, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: ['  '] }])).toThrow(/by its ID/);
     expect(validateOperation({ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'x', componentIds: [''] }).ok).toBe(false);
     expect(validateOperation({ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'x', componentIds: Array.from({ length: 51 }, (_, i) => `c${i}`) }).ok).toBe(false);
+    expect(validateOperation({ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'x', componentIds: ['c'.repeat(121)] }).ok).toBe(false);
     expect(validateOperation({ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'x', componentIds: [card] }).ok).toBe(true);
   });
 
@@ -135,6 +143,16 @@ describe('a slot that names the components it takes', () => {
     expect(errors(s).map((d) => d.code)).toEqual(['SLOT_REFUSED']);
     s = applyOperations(s, [{ type: 'component.setSlot', definitionId: inner, slot: 'content', label: 'Cards', componentIds: ['studio.missing'] }]).state;
     expect(errors(s)).toEqual([]);
+    // The card named by its definition ID outside is taken inside by its contract.
+    s = applyOperations(s, [
+      { type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: [card] },
+      { type: 'component.setSlot', definitionId: inner, slot: 'content', label: 'Cards', componentIds: [s.components[card].componentId] }
+    ]).state;
+    expect(errors(s)).toEqual([]);
+    // An outer contract damaged by hand is reported, and decides nothing, rather than stopping the project opening.
+    (s.components[section].slots!.content as { componentIds: unknown }).componentIds = 'media.gallery';
+    expect(() => validateState(s)).not.toThrow();
+    expect(errors(s).map((d) => d.code)).toEqual(['SLOT_INVALID']);
   });
 
   it('changes a placement in the slot to another design only when the slot takes that design', () => {
@@ -145,6 +163,9 @@ describe('a slot that names the components it takes', () => {
     ]).state;
     const placed = slotOf(s, grid)[0];
     expect(() => applyOperations(s, [{ type: 'instance.swapComponent', owner: page, nodeId: placed, componentId: 'features.grid' }])).toThrow(/takes “Feature card” and “.*”, not “Services grid” \(a content component\)/);
+    // To a design it names, it changes.
+    const swapped = applyOperations(s, [{ type: 'instance.swapComponent', owner: page, nodeId: placed, componentId: 'media.gallery' }]).state;
+    expect(swapped.components[(home(swapped).nodes[placed] as InstanceNode).definitionId].componentId).toBe('media.gallery');
   });
 
   it('refuses making a placement in the slot unique when the slot names the original, which the copy is not', () => {
@@ -158,6 +179,8 @@ describe('a slot that names the components it takes', () => {
     // Taken by its category instead, the copy goes too.
     const open = applyOperations(s, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: null, categories: ['custom'] }]).state;
     const r = applyOperations(open, [{ type: 'component.makeUnique', owner: page, nodeId: placed }]);
+    expect((home(r.state).nodes[placed] as InstanceNode).definitionId).toBe(r.results[0].definitionId);
+    expect(r.results[0].definitionId).not.toBe(card);
     expect(errors(r.state)).toEqual([]);
   });
 
@@ -193,6 +216,22 @@ describe('the Insert panel and the canvas’s Add list inside a slot that names 
     expect(keys).toContain(`c:${card}`);
     expect(keys).not.toContain('s:features.grid');
     expect(offeredAt(open, at, 'element').some((it) => it.key.startsWith('s:'))).toBe(false);
+    // Named by the ID of the theme's design of it, the gallery is offered by its contract all the same; a component of
+    // the project's that goes in as a section is offered here too, since the slot names it.
+    const galleryDef = getTheme(s.site.themeId).components.find((c) => c.componentId === 'media.gallery')!.id;
+    s.components[card].insertAs = 'section';
+    const byDef = applyOperations(s, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: [galleryDef, card] }]).state;
+    const named = offeredAt(byDef, at, 'element').map((it) => it.key);
+    expect(named).toContain('s:media.gallery');
+    expect(named).toContain(`c:${card}`);
+    expect(new Set(named).size).toBe(named.length);
+    // Once it holds as many as it can, the slot takes nothing more.
+    const full = applyOperations(s, [
+      { type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', max: 1 },
+      { type: 'node.insert', owner: page, parentId: grid, slot: 'content', primitive: 'heading' }
+    ]).state;
+    expect(slotRefuses(full, at, { primitive: 'paragraph' })).toBe(true);
+    expect(slotRefuses(full, at, { definitionId: card })).toBe(true);
   });
 });
 
@@ -225,11 +264,18 @@ describe('a slot’s fallback content', () => {
     expect((tree(moved, section).nodes[outlet] as SlotNode).children).toEqual([]);
     const back = applyOperations(moved, [{ type: 'node.move', owner: own, nodeId: badge, parentId: outlet, index: 0 }]).state;
     expect((tree(back, section).nodes[outlet] as SlotNode).children).toEqual([badge]);
-    // Removing the slot takes its fallback with it, and the parts that named it.
-    const parted = applyOperations(s, [{ type: 'component.setPart', definitionId: section, partId: 'badge', nodeId: badge, label: 'Badge' }]).state;
+    // Removing the slot takes its fallback with it, and the parts and variant styles that named it.
+    const [axis, a] = Object.entries(s.components[section].variantAxes!)[0];
+    const option = Object.keys(a.options)[0];
+    const parted = applyOperations(s, [
+      { type: 'component.setPart', definitionId: section, partId: 'badge', nodeId: badge, label: 'Badge' },
+      { type: 'node.setStyle', owner: own, nodeId: badge, axis, variant: option, scope: 'base', property: 'color', value: '#ff0000' }
+    ] as EditOperation[]).state;
+    expect(parted.components[section].variantAxes![axis].options[option].styles?.[badge]).toBeDefined();
     const gone = applyOperations(parted, [{ type: 'component.removeSlot', definitionId: section, slot: 'aside' }]).state;
     expect(tree(gone, section).nodes[badge]).toBeUndefined();
     expect(gone.components[section].parts.badge).toBeUndefined();
+    expect(gone.components[section].variantAxes![axis].options[option].styles?.[badge]).toBeUndefined();
     expect(errors(gone)).toEqual([]);
   });
 
@@ -241,6 +287,13 @@ describe('a slot’s fallback content', () => {
     const removedBadge = applyOperations(r.state, [{ type: 'node.remove', owner: own, nodeId: badge }]).state;
     expect((tree(removedBadge, section).nodes[outlet] as SlotNode).children).toEqual([r.results[0].nodeId]);
     expect(Object.keys(t.nodes)).toContain(badge);
+    // Copying the element holding the slot copies its fallback too, the copy pointing at its own copies.
+    const copied = applyOperations(s, [{ type: 'node.duplicate', owner: own, nodeId: 'inner' }]);
+    const ct = tree(copied.state, section);
+    const copyOutlet = Object.values(ct.nodes).find((n): n is SlotNode => n.kind === 'slot' && n.slot === 'aside' && n.id !== outlet)!;
+    expect(copyOutlet.children).toHaveLength(1);
+    expect(copyOutlet.children![0]).not.toBe(badge);
+    expect(ct.nodes[copyOutlet.children![0]]).toMatchObject({ kind: 'text', text: 'Default badge' });
     const dup = applyOperations(s, [{ type: 'component.duplicate', definitionId: section, name: 'Twin' }]);
     const twin = dup.state.components[dup.results[0].definitionId as string];
     const twinOutlet = Object.values(twin.tree!.nodes).find((n): n is SlotNode => n.kind === 'slot' && n.slot === 'aside')!;
@@ -255,6 +308,9 @@ describe('a slot’s fallback content', () => {
     expect(() => generateProject(s)).not.toThrow();
     (tree(s, section).nodes[outlet] as { children: unknown }).children = ['ghost'];
     expect(errors(s).map((d) => d.code)).toContain('NODE_MISSING');
+    // A list holding something other than IDs is the slot's own problem, and nothing in it is looked for.
+    (tree(s, section).nodes[outlet] as { children: unknown }).children = [42];
+    expect(errors(s).map((d) => d.code)).toEqual(['SLOT_INVALID']);
   });
 
   it('shows on the website and in Preview while the placement leaves the slot empty, and gives way as soon as it has content', async () => {
@@ -315,6 +371,8 @@ describe('a slot’s fallback content', () => {
     expect(slotFill(s, t, ['o'], { label: 'Inner', primitives: ['text'], max: 1 }, design({ primitives: ['text'], max: 1 })).count).toBe(2);
     // The fallback's paragraphs are refused by a slot that takes only images.
     expect(slotFill(s, t, ['o'], { label: 'Inner', primitives: ['image'] }, design({ primitives: ['image'], max: 1 })).refusedAll.map((r) => r.nodeId)).toEqual(['a', 'b']);
+    // Three passed on, or two of the fallback's: three.
+    expect(slotFill(s, t, ['o'], { label: 'Inner', primitives: ['text'] }, design({ primitives: ['text'], max: 3 })).count).toBe(3);
     // A slot closed to content brings only its fallback.
     expect(slotFill(s, t, ['o'], { label: 'Inner', primitives: ['text'] }, design({ max: 0 }))).toEqual({ count: 2, refusedAll: [] });
   });
@@ -327,6 +385,30 @@ describe('a slot’s fallback content', () => {
     const filled = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: grid, slot: 'aside', primitive: 'paragraph', text: 'Book now' }]).state;
     const d = applyOperations(filled, [{ type: 'component.detachInstance', owner: page, nodeId: grid } as EditOperation]);
     expect(Object.values(home(d.state).nodes).some((n) => n.kind === 'text' && n.text === 'Default badge')).toBe(false);
+    expect(Object.values(home(d.state).nodes).some((n) => n.kind === 'text' && n.text === 'Book now')).toBe(true);
+  });
+
+  it('refuses a detach where content hidden here keeps a nested component’s fallback out of its slot, which would then show', () => {
+    const { s: base, page, grid } = badged();
+    // A Feature band component whose design holds a Section placement holding the badged Section.
+    let r = applyOperations(base, [{ type: 'node.insert', owner: page, parentId: null, index: 0, componentId: 'layout.section' }]);
+    const holder = r.results[0].nodeId as string;
+    r = applyOperations(r.state, [{ type: 'node.move', owner: page, nodeId: grid, parentId: holder, slot: 'content', index: 0 }]);
+    r = applyOperations(r.state, [{ type: 'component.createFromNode', owner: page, nodeId: holder, name: 'Feature band' }]);
+    const band = r.results[0].definitionId as string;
+    const placed = r.results[0].nodeId as string;
+    let s = r.state;
+    const design: OwnerRef = { kind: 'component', id: band };
+    const inner = Object.values(tree(s, band).nodes).find((n): n is InstanceNode => n.kind === 'instance' && n.definitionId === (base.pages[base.site.homePageId].nodes[grid] as InstanceNode).definitionId)!;
+    // The band gives the Aside a note, shown only while its Note is set; it is empty on Home.
+    s = applyOperations(s, [{ type: 'component.setPropSchema', definitionId: band, prop: 'note', schema: { type: 'string', label: 'Note', default: '' } }]).state;
+    const note = applyOperations(s, [{ type: 'node.insert', owner: design, parentId: inner.id, slot: 'aside', primitive: 'paragraph', text: 'A note' }]);
+    s = applyOperations(note.state, [{ type: 'node.setBinding', owner: design, nodeId: note.results[0].nodeId as string, field: 'when', binding: { $prop: 'note' } }]).state;
+    expect(errors(s)).toEqual([]);
+    expect(() => applyOperations(s, [{ type: 'component.detachInstance', owner: page, nodeId: placed } as EditOperation])).toThrow(/would show what “Section” shows in its empty “Aside” slot once detached/);
+    // With the note set, it shows, and the detach goes ahead.
+    const set = applyOperations(s, [{ type: 'instance.setProp', owner: page, nodeId: placed, prop: 'note', value: 'Open late' }]).state;
+    expect(() => applyOperations(set, [{ type: 'component.detachInstance', owner: page, nodeId: placed } as EditOperation])).not.toThrow();
   });
 
   it('is kept by a design written whole, with the components its slots name, and by a copy converted to code', async () => {
@@ -350,12 +432,65 @@ describe('a slot’s fallback content', () => {
     expect(def.slots).toEqual({ cards: { label: 'Cards', componentIds: ['media.gallery'] }, side: { label: 'Side' } });
     expect(def.tree!.nodes.side).toEqual({ id: 'side', kind: 'slot', slot: 'side', children: ['hint'] });
     expect(errors(r.state)).toEqual([]);
-    // Converted to code, the fallback is the code's own {#if}…{:else}, which the code check takes.
-    const converted = applyOperations(s, [{ type: 'component.convertToCode', owner: page, nodeId: grid }]);
+    // Converted to code, the fallback is the code's own {#if}…{:else}, which the code check takes, and the slots keep
+    // the components they name.
+    const named = applyOperations(s, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: ['media.gallery'] }]).state;
+    const converted = applyOperations(named, [{ type: 'component.convertToCode', owner: page, nodeId: grid }]);
     const code = converted.state.components[converted.results[0].definitionId as string];
     expect(code.source).toMatch(/\{#if so_in_aside\}[\s\S]*Default badge/);
+    expect(code.slots?.content.componentIds).toEqual(['media.gallery']);
     const problems = await checkSvelteSource(code.source!, { contract: { slots: code.slots, parts: code.parts } });
     expect(problems.filter((p) => p.severity === 'error')).toEqual([]);
     expect(s.components[section].kind).toBe('managed');
+  });
+});
+
+describe('a design rebuilt whole around slot fallbacks', () => {
+  /** A Split component of the project's own, written whole, with two slots shown side by side, placed on Home with both filled. */
+  function split() {
+    let s = createStarterState('blank', 'Split', false);
+    const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const nodes = (one: string[], two: string[]) => [
+      { kind: 'element', id: 'root', children: ['one', ...two] },
+      { kind: 'slot', id: 'one', slot: 'one', children: one },
+      { kind: 'slot', id: 'two', slot: 'two' },
+      { kind: 'text', id: 'hint', tag: 'p', text: 'Nothing here yet' }
+    ].filter((n) => n.id !== 'hint' || one.includes('hint') || two.includes('hint'));
+    const made = applyOperations(s, [{ type: 'component.upsert', name: 'Split', category: 'layout', properties: {}, nodes: nodes([], ['two']), slots: { one: { label: 'One' }, two: { label: 'Two' } } } as EditOperation]);
+    const id = made.results[0].definitionId as string;
+    s = made.state;
+    const placed = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: null, definitionId: id }]);
+    s = placed.state;
+    const node = placed.results[0].nodeId as string;
+    s = applyOperations(s, [
+      { type: 'node.insert', owner: page, parentId: node, slot: 'one', primitive: 'paragraph', text: 'First' },
+      { type: 'node.insert', owner: page, parentId: node, slot: 'two', primitive: 'paragraph', text: 'Second' }
+    ]).state;
+    return { s, id, node, nodes };
+  }
+
+  it('refuses one that would hide filled content inside another slot’s fallback, which a filled slot never shows', () => {
+    const { s, id, nodes } = split();
+    // "two" moves into the fallback of "one": the placement fills "one", so "two" would never show.
+    const moved = nodes([], []).map((n) => (n.id === 'one' ? { ...n, children: ['two'] } : n));
+    expect(() => applyOperations(s, [{ type: 'component.upsert', definitionId: id, name: 'Split', category: 'layout', properties: {}, nodes: moved, slots: { one: { label: 'One' }, two: { label: 'Two' } } } as EditOperation])).toThrow(/“Two”|"two"/);
+  });
+
+  it('keeps a placement’s styles for a part the rebuild keeps, when the slot whose fallback held it goes', () => {
+    let { s, id, node, nodes } = split();
+    const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    // A hint shown in "one" while it is empty, styled on the placement as a part.
+    s = applyOperations(s, [{ type: 'component.upsert', definitionId: id, name: 'Split', category: 'layout', properties: {}, nodes: nodes(['hint'], ['two']), parts: { hint: { nodeId: 'hint', label: 'Hint' } }, slots: { one: { label: 'One' }, two: { label: 'Two' } } } as EditOperation]).state;
+    s = applyOperations(s, [{ type: 'node.setStyle', owner: page, nodeId: node, partId: 'hint', scope: 'base', property: 'color', value: '#ff0000' }]).state;
+    // Rebuilt with the hint under the root and slot "one" gone (its content moved out first).
+    s = applyOperations(s, [{ type: 'node.remove', owner: page, nodeId: (home(s).nodes[node] as InstanceNode).slots!.one[0] }]).state;
+    const rebuilt = [
+      { kind: 'element', id: 'root', children: ['hint', 'two'] },
+      { kind: 'slot', id: 'two', slot: 'two' },
+      { kind: 'text', id: 'hint', tag: 'p', text: 'Nothing here yet' }
+    ];
+    s = applyOperations(s, [{ type: 'component.upsert', definitionId: id, name: 'Split', category: 'layout', properties: {}, nodes: rebuilt, parts: { hint: { nodeId: 'hint', label: 'Hint' } }, slots: { two: { label: 'Two' } } } as EditOperation]).state;
+    expect((home(s).nodes[node] as InstanceNode).overrides?.hint?.base).toMatchObject({ color: '#ff0000' });
+    expect(errors(s)).toEqual([]);
   });
 });

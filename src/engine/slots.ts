@@ -94,7 +94,9 @@ export function slotFill(state: ProjectState, tree: NodeTree, ids: readonly stri
       const fallback = slotFallback(n);
       const shown = fallback.length ? slotFill(state, tree, fallback, { ...decl, max: undefined }, design, new Set(seen).add(id)) : undefined;
       if (shown) refusedAll.push(...shown.refusedAll);
-      const outer = design?.slots && Object.hasOwn(design.slots, n.slot) ? design.slots[n.slot] : undefined;
+      // A contract damaged by hand decides nothing until it is fixed (validation reports it).
+      const declared = design?.slots && Object.hasOwn(design.slots, n.slot) ? design.slots[n.slot] : undefined;
+      const outer = declared && !slotDeclProblem(declared) ? declared : undefined;
       if (!outer) {
         count += shown?.count ?? 0;
         continue;

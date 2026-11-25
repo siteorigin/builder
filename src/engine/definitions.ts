@@ -556,7 +556,8 @@ export function setSlot(state: ProjectState, op: Op<'component.setSlot'>): OpRes
   // Where this design passes the slot's content on to a component inside it, that component's slot must still take
   // what it can now bring: measured before and after, so content already over a limit is never made worse.
   const forwards = Object.values(def.tree?.nodes ?? {}).flatMap((n) =>
-    n.kind !== 'instance' ? [] : Object.keys(n.slots ?? {}).filter((k) => slotChildren(n, k).some((c) => def.tree!.nodes[c]?.kind === 'slot' && (def.tree!.nodes[c] as { slot: string }).slot === op.slot)).map((k) => ({ inst: n, slot: k }))
+    // Directly, or inside the fallback of another slot handed on there.
+    n.kind !== 'instance' ? [] : Object.keys(n.slots ?? {}).filter((k) => slotChildren(n, k).some((c) => subtreeIds(def.tree!, c).some((id) => def.tree!.nodes[id]?.kind === 'slot' && (def.tree!.nodes[id] as { slot: string }).slot === op.slot))).map((k) => ({ inst: n, slot: k }))
   );
   const fillOf = (f: (typeof forwards)[number]) => {
     const decl = slotDecl(state, f.inst, f.slot);
@@ -587,14 +588,15 @@ export function setSlot(state: ProjectState, op: Op<'component.setSlot'>): OpRes
   return {};
 }
 
-export function removeSlot(state: ProjectState, op: Op<'component.removeSlot'>): OpResult {
+/** `designReplaced`: the caller replaces the design's tree and parts itself (a rebuild), so they are left as they are. */
+export function removeSlot(state: ProjectState, op: Op<'component.removeSlot'>, opts: { designReplaced?: boolean } = {}): OpResult {
   const def = projectDef(state, op.definitionId);
   if (!own(def.slots, op.slot)) fail(`"${def.name}" has no slot "${op.slot}".`);
   const filled = instancesOf(state, def.id).filter((u) => u.node.slots?.[op.slot]?.length);
   if (filled.length) fail(`The "${def.slots![op.slot].label}" slot has content in ${plural(filled.length, 'place')} (${[...new Set(filled.map((u) => u.label))].join(', ')}). Move or remove it first.`);
   // The placeholder that rendered the slot goes with it, and its fallback content, with the parts and variant styles
   // of that content.
-  if (def.tree) {
+  if (def.tree && !opts.designReplaced) {
     const removed = new Set<string>();
     for (const n of Object.values(def.tree.nodes)) {
       if (n.kind !== 'slot' || n.slot !== op.slot || removed.has(n.id)) continue;

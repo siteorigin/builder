@@ -243,14 +243,19 @@ describe('component packages: export and import (#371)', () => {
 
   it('lands a slot naming a component the package brings under that component’s new ID, and a theme contract as it is (#660)', async () => {
     const src = await pricingCard();
-    ok(await src.s.apply({ operations: [{ type: 'component.setSlot', definitionId: src.rootId, slot: 'extra', label: 'Extra', componentIds: [src.childId, 'media.gallery'] }] }, { label: 'Slot' }));
+    // A card the design never places, but names for its slot, goes with it.
+    const spare = ok(await src.s.apply({ operations: [{ type: 'component.upsert', name: 'Spare card', category: 'custom', properties: {}, nodes: [{ kind: 'element', id: 'root', children: [] }] } as never] }, { label: 'Create' })).results![0].definitionId as string;
+    ok(await src.s.apply({ operations: [{ type: 'component.setSlot', definitionId: src.rootId, slot: 'extra', label: 'Extra', componentIds: [src.childId, 'media.gallery', spare] }] }, { label: 'Slot' }));
     const { path } = await exportTo(src.s, src.rootId);
+    expect((JSON.parse(readFileSync(path, 'utf8')) as ComponentPackage).definitions.map((d) => d.id)).toContain(spare);
     const dest = await blank('Destination');
     const r = ok(await importInto(dest, path, { codeAllowed: false }));
     const root = dest.state.components[r.results!.at(-1)!.definitionId as string];
     const child = Object.values(dest.state.components).find((d) => d.name === 'Plan title')!;
     expect(child.id).not.toBe(src.childId);
-    expect(root.slots?.extra).toEqual({ label: 'Extra', componentIds: [child.id, 'media.gallery'] });
+    const landed = Object.values(dest.state.components).find((d) => d.name === 'Spare card')!;
+    expect(landed.id).not.toBe(spare);
+    expect(root.slots?.extra).toEqual({ label: 'Extra', componentIds: [child.id, 'media.gallery', landed.id] });
   });
 
   it('reuses a site style the destination already has, renames one that differs, and stands in for a theme style its theme lacks', async () => {

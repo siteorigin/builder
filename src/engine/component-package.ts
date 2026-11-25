@@ -185,6 +185,8 @@ export function packageClosure(state: ProjectState, rootId: string): ComponentDe
     out.set(id, def);
     if (out.size > MAX_PACKAGE_DEFINITIONS) fail(`It uses more than ${MAX_PACKAGE_DEFINITIONS} components, more than one package carries.`);
     const needs = new Set([...(def.kind === 'managed' ? directDependencies(def) : []), ...(def.dependencies ?? [])]);
+    // A component a slot names by its own ID goes with it, so the slot takes something where it lands.
+    for (const decl of Object.values(def.slots ?? {})) for (const named of Array.isArray(decl?.componentIds) ? decl.componentIds : []) if (Object.hasOwn(state.components, named)) needs.add(named);
     if (def.kind === 'code') {
       const files = new Set(importedFiles(def.source ?? '', defFile(def)));
       for (const other of Object.values(state.components)) if (other.id !== def.id && (codeImports(state, def, other.id) || files.has(defFile(other)))) needs.add(other.id);

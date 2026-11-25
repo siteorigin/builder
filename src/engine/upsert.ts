@@ -112,7 +112,8 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
         if ('error' in findVariant(was, option, axis)) forgetOption(state, id, axis, option);
         else removeVariant(state, { type: 'component.removeVariant', definitionId: id, variant: option, axis });
       }
-    for (const slot of Object.keys(was.slots ?? {})) if (!own(slots, slot)) removeSlot(state, { type: 'component.removeSlot', definitionId: id, slot });
+    // The new design replaces the tree and its parts whole, so nothing of the old one is cleaned up here.
+    for (const slot of Object.keys(was.slots ?? {})) if (!own(slots, slot)) removeSlot(state, { type: 'component.removeSlot', definitionId: id, slot }, { designReplaced: true });
     keepFieldContent(state, was, properties);
   } else state.components[id] = { ...candidate, properties: {}, slots: undefined };
   const def = state.components[id];

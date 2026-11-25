@@ -1,5 +1,5 @@
 import type { AppearPreset, ComponentDefinition, ElementNode, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { STYLE_SCOPES, isAppearPreset, isBinding } from '@shared/types';
+import { STYLE_SCOPES, isAppearPreset, isBinding, slotFallback } from '@shared/types';
 import { pageParents } from '@shared/page-tree';
 
 export class EngineError extends Error {
@@ -47,7 +47,7 @@ export function getNode(tree: NodeTree, nodeId: string): GraphNode {
 export function childLists(node: GraphNode): Array<{ slot?: string; ids: string[] }> {
   if (node.kind === 'element' || node.kind === 'repeat') return [{ ids: node.children }];
   // A slot outlet's fallback content (a list damaged by hand is none; validation reports it).
-  if (node.kind === 'slot') return Array.isArray(node.children) ? [{ ids: node.children }] : [];
+  if (node.kind === 'slot') return slotFallback(node).length ? [{ ids: node.children! }] : [];
   // A slot's list damaged by hand is no list of children (validation reports it).
   if (node.kind === 'instance') return Object.entries(node.slots ?? {}).flatMap(([slot, ids]) => (Array.isArray(ids) ? [{ slot, ids }] : []));
   return [];

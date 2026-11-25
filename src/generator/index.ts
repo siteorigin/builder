@@ -222,7 +222,7 @@ export function propLocals(def: ComponentDefinition): Map<string, string> {
   const taken = new Set<string>();
   for (const name of Object.keys(def.properties).sort()) {
     let local = /^[a-zA-Z_$][\w$]*$/.test(name) ? name : `_${name.replace(/[^\w$]/g, '_')}`;
-    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|so_given_|variant_|so_children_|so_state_|so_filter_|so_dialog_|so_opener_|so_overlay_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
+    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|so_given_|variant_|so_slot_|so_children_|so_state_|so_filter_|so_dialog_|so_opener_|so_overlay_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
     let unique = local;
     for (let i = 2; taken.has(unique); i++) unique = `${local}_${i}`;
     taken.add(unique);

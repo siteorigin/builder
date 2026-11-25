@@ -9,7 +9,7 @@ import { join, relative, sep, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import type { ComponentDefinition, GraphNode, ProjectState } from '@shared/types';
 import { COMPONENT_CATEGORIES, SCHEMA_VERSION, SLOT_PRIMITIVES, conditionRef, isBinding, isStateRef, slotChildren } from '@shared/types';
-import { slotDecl, slotFill } from '@engine/slots';
+import { slotDecl, slotDeclProblem, slotFill } from '@engine/slots';
 import { BUNDLED_PACK_IDS, PACK_FILE_RE, PACK_FORMAT, PACK_ID_RE, PACK_MANIFEST, PACK_VERSION_RE, type PackManifest, type ThemePack } from '@catalogue/pack';
 import { FONT_FAMILY_RE } from '@shared/fonts';
 import { variantIdsValid } from '@shared/variants';
@@ -306,6 +306,9 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
       const ident = slotIdent(slot);
       if (idents.has(ident)) refuse(`${where}: the slots "${idents.get(ident)}" and "${slot}" would generate the same name.`);
       idents.set(ident, slot);
+      // A contract the project could not read would decide nothing once installed: the slot would take anything.
+      const problem = slotDeclProblem(def.slots![slot]);
+      if (problem) refuse(`${where}: the slot "${slot}" ${problem}.`);
     }
     if (def.provenance?.pack !== m.id || def.provenance?.packVersion !== m.version || def.provenance?.componentId !== def.componentId) refuse(`${where} says it comes from another pack or version.`);
     if (!COMPONENT_LICENSES.has(def.license ?? '')) refuse(`${where} has the licence "${def.license}", which does not allow it to be published in websites.`);

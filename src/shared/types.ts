@@ -614,7 +614,7 @@ export interface InstanceNode extends NodeBase {
 
 /** A slot outlet's fallback: what its design shows while a placement gives the slot nothing (none for a list damaged by hand). */
 export function slotFallback(node: { children?: unknown }): string[] {
-  return Array.isArray(node.children) ? (node.children as string[]) : [];
+  return Array.isArray(node.children) && node.children.every((c) => typeof c === 'string') ? (node.children as string[]) : [];
 }
 
 /** A placement's content in one slot: the list it holds, or none when a hand edit left something else there. */

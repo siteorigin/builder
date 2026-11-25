@@ -190,7 +190,7 @@ function suppliesNothing(from: Frame['slots'], slot: string, depth = 0): boolean
   const ids = slotChildren({ slots: from.content }, slot);
   if (!ids.length) return true;
   const n = ids.length === 1 && from.frame.def ? from.frame.tree.nodes[ids[0]] : undefined;
-  if (n?.kind !== 'slot' || slotFallback(n).length || n.when || n.unless || depth > 16 || !Object.hasOwn(from.frame.def!.slots ?? {}, n.slot)) return false;
+  if (n?.kind !== 'slot' || slotFallback(n).length || n.when || n.unless || depth > 1000 || !Object.hasOwn(from.frame.def!.slots ?? {}, n.slot)) return false;
   return suppliesNothing(from.frame.slots, n.slot, depth + 1);
 }
 

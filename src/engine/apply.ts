@@ -1330,7 +1330,8 @@ function insertionList(tree: NodeTree, parentId: string | null | undefined, slot
   // Inside a slot outlet of a design: its fallback, shown while a placement leaves that slot empty.
   if (parent.kind === 'slot') {
     if (slot) fail('A slot’s fallback content has no slots of its own.');
-    if (!Array.isArray(parent.children)) parent.children = [];
+    // A list damaged by hand shows nothing (validation reports it): new content starts it again.
+    if (!Array.isArray(parent.children) || parent.children.some((c) => typeof c !== 'string')) parent.children = [];
     return parent.children;
   }
   if (parent.kind === 'instance') {

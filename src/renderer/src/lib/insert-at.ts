@@ -4,10 +4,11 @@
  */
 import type { EditOperation } from '@shared/ops';
 import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, SlotPrimitive, StyleValue } from '@shared/types';
+import { slotChildren } from '@shared/types';
 import { newId } from '@shared/ids';
 import { STICKY_BELOW_HEADER } from '@shared/styles';
 import { childLists, findParent } from '@engine/tree';
-import { restrictsKinds, slotDecl, takesComponent } from '@engine/slots';
+import { restrictsKinds, slotDecl, slotFill, takesComponent } from '@engine/slots';
 import { getTheme } from '@catalogue/index';
 import { ownerLabel, refLabel, treeFor } from './model';
 import type { InsertSpec, LayoutStarter, Primitive } from './insert-search';
@@ -41,15 +42,21 @@ const PRIMITIVE_KINDS: Record<Primitive, SlotPrimitive> = {
 
 /**
  * Whether the slot `at` puts something into refuses `spec` by its contract alone: a component it neither names nor takes
- * by category, or an element of a kind it does not list. Cheap enough for a whole list of tiles; the insert itself
- * checks the rest (how many the slot holds, what saving needs).
+ * by category, an element of a kind it does not list, or anything once it holds as many as it can. Cheap enough for a
+ * whole list of tiles; the insert itself checks the rest (what saving needs).
  */
 export function slotRefuses(state: ProjectState, at: InsertAt | null, spec: InsertSpec): boolean {
-  const parent = at?.parentId ? own(treeFor(state, at.owner)?.nodes, at.parentId) : undefined;
-  if (parent?.kind !== 'instance') return false;
+  const tree = at ? treeFor(state, at.owner) : undefined;
+  const parent = at?.parentId ? own(tree?.nodes, at.parentId) : undefined;
+  if (!tree || parent?.kind !== 'instance') return false;
   const slot = at!.slot ?? slotFor(state, parent.definitionId);
   const decl = slot === undefined ? undefined : slotDecl(state, parent, slot);
-  if (!decl || !restrictsKinds(decl)) return false;
+  if (!decl) return false;
+  if (decl.max !== undefined) {
+    const design = at!.owner.kind === 'component' ? own(state.components, at!.owner.id) : undefined;
+    if (slotFill(state, tree, slotChildren(parent, slot!), decl, design).count >= decl.max) return true;
+  }
+  if (!restrictsKinds(decl)) return false;
   if (spec.primitive) return !(decl.primitives ?? []).includes(PRIMITIVE_KINDS[spec.primitive]);
   // A theme component goes in as the project's copy of it, or the theme's own when the project has none yet.
   const def: ComponentDefinition | undefined = spec.definitionId

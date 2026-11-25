@@ -1212,7 +1212,7 @@ export function InsertPanel() {
     for (const c of (copies.get(d.id) ?? []).sort(byName)) visit(c, 1);
   };
   for (const d of defs.filter((d) => !sourceOf(d)).sort(byName)) visit(d, 0);
-  const mine: Item[] = familyOrder.flatMap(([d, depth]): Item[] => {
+  const everyMine: Item[] = familyOrder.flatMap(([d, depth]): Item[] => {
     const from = d.provenance?.forkedFrom ? st.components[d.provenance.forkedFrom] : undefined;
     const copyOf = from?.owner === 'project' ? from.name : undefined;
     const themeCopy = from?.owner === 'theme' ? from.name : undefined;
@@ -1248,6 +1248,7 @@ export function InsertPanel() {
       .filter((l): l is string => !!l && l.trim().toLowerCase() !== 'default');
     return [options.length && named.length ? { ...base, defaults: named.join(' · '), hay: `${base.hay} ${named.join(' ')}`.toLowerCase() } : base, ...options];
   });
+  const mine = everyMine.filter(offered);
 
   // Saved components that would bring code show only in Developer mode, as Your components' code does.
   const savedItems: Item[] = (library?.opening === snap.workspaceKey && library.theme === themeKey ? library.list : [])
@@ -1764,7 +1765,9 @@ export function InsertPanel() {
   const libraryWho = (it: Item) =>
     [it.code ? 'code component' : 'component', it.variant ? `${it.variant.axis.toLowerCase()} option of ${it.name}` : '', it.copyOf ? `copy of ${it.copyOf}` : '', it.themeCopy ? `copy of the theme's ${it.themeCopy} section` : ''].filter(Boolean).join(', ');
   // Basic elements, and the column layouts offered near the top of the panel: a Grid with its columns ready to fill.
-  const elementGroup = (group: 'columns' | 'basics' | 'slots', label: string, list: Item[]) => (
+  // A group the selected slot takes nothing of is left out (see slotRefuses).
+  const elementGroup = (group: 'columns' | 'basics' | 'slots', label: string, list: Item[]) =>
+    list.length > 0 && (
     <section className="insert-group" data-kind="element" data-group={group} aria-labelledby={`${id}-${group}`}>
       <h4 className="insert-head" id={`${id}-${group}`}>
         {label}
@@ -1794,12 +1797,19 @@ export function InsertPanel() {
           <span className="ico" aria-hidden="true">
             <Component />
           </span>
-          <span className="txt">
-            <strong>Reuse what you design</strong>
-            <span>
-              Start one below, or right-click a group on the page and choose <b>Create component</b>. It appears here, ready to add to any page.
+          {everyMine.length ? (
+            <span className="txt">
+              <strong>None of yours go here</strong>
+              <span>The selected slot takes other components. Select somewhere else to add or manage yours.</span>
             </span>
-          </span>
+          ) : (
+            <span className="txt">
+              <strong>Reuse what you design</strong>
+              <span>
+                Start one below, or right-click a group on the page and choose <b>Create component</b>. It appears here, ready to add to any page.
+              </span>
+            </span>
+          )}
         </div>
       )}
       <TileGrid

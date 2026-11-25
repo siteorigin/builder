@@ -11,7 +11,7 @@
  * - the new version keeps the public contract its placements rely on, and accepts the content they hold.
  */
 import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
-import { isBinding } from '@shared/types';
+import { isBinding, slotChildren } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { getTheme, themeLockEntry } from '@catalogue/index';
 import { definitionHash, matchesLock } from '@shared/migrations';
@@ -150,7 +150,11 @@ export function shownSlots(next: ComponentDefinition, node: InstanceNode): Set<s
     const n = own(next.tree!.nodes, id);
     if (!n || seen.has(id)) return;
     seen.add(id);
-    if (n.kind === 'slot') out.add(n.slot);
+    if (n.kind === 'slot') {
+      out.add(n.slot);
+      // Its fallback shows only while the placement leaves the slot empty.
+      if (slotChildren(node, n.slot).length) return;
+    }
     if (n.kind === 'repeat') {
       const prop = n.list?.$prop;
       const schema = typeof prop === 'string' ? own(next.properties, prop) : undefined;

@@ -394,10 +394,11 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
         Object.keys(src.slots).map((slot) => {
           const given = slotChildren(src, slot);
           const shown = given.flatMap((c) => emit(c, at));
-          // Content the design gives that slot, hidden here, still keeps the placed component's fallback out of it. Left
-          // empty on the page, the fallback would show.
-          if (given.length && !shown.length && given.some((c) => !handsOn(c)) && inner?.kind === 'managed' && Object.values(inner.tree?.nodes ?? {}).some((x) => x.kind === 'slot' && x.slot === slot && slotFallback(x).length))
-            fail(`“${label}” would show what “${inner.name}” shows in its empty “${inner.slots?.[slot]?.label ?? slot}” slot once detached, where the content its design puts there is hidden now. Change its settings first.`);
+          // Content the design gives that slot, hidden here, still keeps what the placed component shows of its own in an
+          // empty slot out of it (only this placement's own slot handed on, as it is, gives it nothing). Left empty on the
+          // page, that would show.
+          if (given.length && !shown.length && !(given.length === 1 && handsOn(given[0])) && showsOwn(inner, slot))
+            fail(`“${label}” would show what “${inner!.name}” shows in its empty “${inner!.slots?.[slot]?.label ?? slot}” slot once detached, where the content its design puts there is hidden now. Change its settings first.`);
           return [slot, shown];
         })
       );
@@ -444,10 +445,29 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     anchors.add(src.anchor);
   };
 
-  /** Whether a design node given to a nested slot is only this placement's own slot handed on, as it is. */
+  /** Whether a design node given to a nested slot is only this placement's own slot handed on, as it is (as the generator hands it on). */
   const handsOn = (id: string): boolean => {
     const n = own(design.nodes, id);
-    return n?.kind === 'slot' && !slotFallback(n).length && !n.when && !n.unless;
+    return n?.kind === 'slot' && !slotFallback(n).length && !n.when && !n.unless && !!own(def.slots, n.slot);
+  };
+
+  /**
+   * Whether a component may show something of its own in a slot left empty: its design's fallback there, code (which
+   * can show anything while a slot is not given), or a component it hands that slot on to as it is, that may.
+   */
+  const showsOwn = (c: ComponentDefinition | undefined, slot: string, depth = 0): boolean => {
+    if (!c || depth > 16) return false;
+    if (c.kind === 'code') return true;
+    const nodes = c.tree?.nodes ?? {};
+    return Object.values(nodes).some((x) => {
+      if (x.kind === 'slot') return x.slot === slot && slotFallback(x).length > 0;
+      if (x.kind !== 'instance') return false;
+      return Object.keys(x.slots ?? {}).some((k) => {
+        const ids = slotChildren(x, k);
+        const only = ids.length === 1 ? own(nodes, ids[0]) : undefined;
+        return only?.kind === 'slot' && only.slot === slot && !slotFallback(only).length && !only.when && !only.unless && showsOwn(own(state.components, x.definitionId), k, depth + 1);
+      });
+    });
   };
 
   /** The page nodes one of the design's nodes renders as here: none, one, or one per list item. */
