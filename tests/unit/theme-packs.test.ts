@@ -11,7 +11,7 @@ import type { AuthoredPack, ThemePack } from '@catalogue/pack';
 import { P, createPack } from '@catalogue/dsl';
 import { BUILTIN_PACKS, EDITORIAL_PACK, FOUNDATION_ALT_PACK, FOUNDATION_PACK } from '@catalogue/builtin';
 import { defaultTheme, findTheme, getTheme, listThemes, registerPacks, themeLockEntry, themePinProblem } from '@catalogue/index';
-import { createStarterState } from '@catalogue/starters';
+import { createStarterState, starterProblem } from '@catalogue/starters';
 import { applyOperations, assetUsages } from '@engine/apply';
 import { contractConflicts } from '@engine/theme-updates';
 import { validateState } from '@engine/validate';
@@ -137,6 +137,7 @@ describe('the pack registry', () => {
     // A fixture is never the default, even listed first: the first pack that is not one is.
     registerPacks([...listThemes()].reverse());
     expect(defaultTheme().id).toBe('editorial');
+    expect(getTheme('nope').id).toBe('editorial');
     registerPacks([]);
     expect(() => getTheme('foundation')).toThrow(/No theme packs are loaded/);
   });
@@ -161,7 +162,7 @@ describe('the Editorial pack (#390)', () => {
       expect(contractConflicts(state, f, e), e.componentId).toEqual([]);
       expect(contractConflicts(state, e, f), e.componentId).toEqual([]);
     }
-    // And it is a theme of its own: most sections are laid out differently.
+    // And it is a theme of its own: at least twelve sections are laid out differently.
     expect(pairs().filter(([f, e]) => JSON.stringify(f.tree) !== JSON.stringify(e.tree) || JSON.stringify(f.variantAxes) !== JSON.stringify(e.variantAxes)).length).toBeGreaterThanOrEqual(12);
   });
 
@@ -175,7 +176,7 @@ describe('the Editorial pack (#390)', () => {
     const card = def('features.grid').tree!.nodes.card.styles!.base!;
     expect(card).toMatchObject({ borderBlockStart: '1px solid currentColor', paddingInline: '0' });
     for (const gone of ['background', 'border', 'radius', 'color']) expect(card, gone).not.toHaveProperty(gone);
-    expect(EDITORIAL_PACK.baseCss).toMatch(/features-grid__card'\][^{]*\)::before \{\s*content: counter\(so-index, decimal-leading-zero\);/);
+    expect(EDITORIAL_PACK.baseCss).toMatch(/\.so--d-editorial-features-grid__card\)::before \{\s*content: counter\(so-index, decimal-leading-zero\);/);
     // Hover states use the style scopes a page can set too.
     expect(def('blog.grid').tree!.nodes.card.styles?.['base:hover']).toEqual({ borderBlockStart: '1px solid var(--so-color-brand)' });
   });
@@ -192,6 +193,8 @@ describe('the Editorial pack (#390)', () => {
     // Every font a Foundation site can choose ships with Editorial too, so a switch never stops at a font.
     expect(EDITORIAL_PACK.fonts.map((f) => f.family).sort()).toEqual(FOUNDATION_PACK.fonts.map((f) => f.family).sort());
     expect(EDITORIAL_PACK.aiProfile.guidance.join(' ')).toMatch(/asymmetric/);
+    // Its stylesheet sets the same colours against each other as Foundation's, so it declares the same pairs.
+    expect(EDITORIAL_PACK.contrastPairs!.map((p) => p.id)).toEqual(FOUNDATION_PACK.contrastPairs!.map((p) => p.id));
   });
 
   it('starts a new project of either starter, recording Editorial and placing only its sections', () => {
@@ -206,6 +209,24 @@ describe('the Editorial pack (#390)', () => {
     }
     // Without a choice, a project starts on the default theme.
     expect(createStarterState('blank', 'Plain', false).site.themeId).toBe('foundation');
+  });
+
+  it('keeps its numbered index and colours to its own services grid, not another theme’s kept in a project component', () => {
+    const css = EDITORIAL_PACK.baseCss;
+    expect(css).toContain(':is(.so-editorial-features-grid__card, .so--d-editorial-features-grid__card)::before');
+    expect(css).not.toMatch(/\[class\$='-features-grid__card'\]/);
+  });
+
+  it('says before anything is made when a theme cannot make a starter', () => {
+    expect(starterProblem('business', 'editorial')).toBeNull();
+    expect(starterProblem('blank')).toBeNull();
+    expect(starterProblem('business', 'nope')).toMatch(/"nope" is not installed/);
+    // An installed pack without the split hero can make a blank site, but not the Business starter.
+    const { components, ...meta } = FOUNDATION_PACK;
+    const author = createPack({ ...meta, id: 'sparse', name: 'Sparse', version: '1.0.0', license: 'MIT' });
+    registerPacks([...listThemes(), buildPack(author.define(components.filter((c) => c.componentId !== 'hero.split').map((c) => author.adopt(c)))).pack]);
+    expect(starterProblem('blank', 'sparse')).toBeNull();
+    expect(starterProblem('business', 'sparse')).toMatch(/^The Sparse theme cannot make the Business starter: Unknown component "hero\.split"/);
   });
 });
 

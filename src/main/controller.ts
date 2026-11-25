@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
-import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
+import { createStarterState, STARTER_ASSETS, starterProblem } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
 import { sourceHash } from '@engine/apply';
@@ -387,8 +387,11 @@ export class Controller {
     const progress = (p: ProgressEvent) => this.progress({ ...p, attempt: opts.attempt });
     const name = opts.name.trim();
     if (!name) return { ok: false, message: 'Enter a project name.' };
-    // A theme chosen in the dialog must be one this app has: the project would otherwise open on another one.
-    if (opts.themeId !== undefined && !findTheme(opts.themeId)) return { ok: false, message: `The theme "${opts.themeId}" is not installed. Choose another theme.` };
+    // A theme chosen in the dialog must be one this app offers, with every section the starter places, before anything is
+    // written: the project would otherwise open on another theme, or stop half made.
+    if (opts.themeId !== undefined && findTheme(opts.themeId)?.devOnly) return { ok: false, message: `The theme "${opts.themeId}" is a development fixture, which cannot start a project. Choose another theme.` };
+    const themeProblem = starterProblem(opts.starter, opts.themeId);
+    if (themeProblem) return { ok: false, message: themeProblem };
     let dir = join(opts.parentDir, slugify(name) || 'website');
     if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: `${dir} already exists and is not empty. Choose another name or folder.` };
     // Asked before the new project is made, so keeping editing costs no setup, and again at the switch, for anything

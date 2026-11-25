@@ -2960,6 +2960,20 @@ function visuallyHidden(el, s = getComputedStyle(el)) {
   return /inset\(\s*50%/.test(s.clipPath);
 }
 
+/**
+ * Whether `el` shows only through an ancestor that clips to a pixel or less, as the visually hidden pattern does (a
+ * form's spam trap, a screen-reader-only label): whatever its own size, nothing of it is there to see or tap.
+ */
+function clippedAway(el) {
+  for (let e = parentOf(el); e && e.nodeType === 1 && e !== document.body; e = parentOf(e)) {
+    const s = getComputedStyle(e);
+    if (s.overflowX === 'visible' && s.overflowY === 'visible') continue;
+    const r = boxRect(e);
+    if (r.width <= 1 || r.height <= 1) return true;
+  }
+  return false;
+}
+
 const boxOf = (r) => ({ x: r.left, y: r.top, width: r.width, height: r.height });
 /** How far two boxes cross on each axis (negative when they do not). */
 const crossing = (a, b) => ({ w: Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x), h: Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) });
@@ -3433,11 +3447,8 @@ function readability(vw, deadline) {
       for (const el of document.querySelectorAll(INTERACTIVE)) {
         const going = each(checks.tapTargets, () => {
           if (!drawn(el) || el.closest(':disabled, [aria-disabled="true"]')) return;
-          // A control kept out of the tab order inside content hidden from assistive technology (a form's spam trap,
-          // parked off screen) is for robots: nobody is meant to tap it.
-          if (el.tabIndex < 0 && el.closest('[aria-hidden="true"]')) return;
           const s = getComputedStyle(el);
-          if (visuallyHidden(el, s) || inSentence(el, s)) return;
+          if (visuallyHidden(el, s) || clippedAway(el) || inSentence(el, s)) return;
           let r = rectOf(el);
           if (!r) return;
           if (el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {

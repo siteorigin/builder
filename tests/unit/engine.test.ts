@@ -349,7 +349,7 @@ describe('theme switching (P06, I03)', () => {
         expect({ props: n.props, overrides: n.overrides, itemOverrides: n.itemOverrides, variants: n.variants }).toEqual({ props: was.props, overrides: was.overrides, itemOverrides: was.itemOverrides, variants: was.variants });
       }
     expect(editorial.site.shell).toEqual({ header: expect.anything(), footer: expect.anything() });
-    expect(Object.values(editorial.site.shell.header.nodes).map((n) => (n.kind === 'instance' ? n.definitionId : n.kind))).toEqual(['editorial.shell.header']);
+    for (const part of ['header', 'footer'] as const) expect(Object.values(editorial.site.shell[part].nodes).map((n) => (n.kind === 'instance' ? n.definitionId : n.kind))).toEqual([`editorial.shell.${part}`]);
     expect(editorial.components[forkId]).toEqual(s.components[forkId]);
     expect(editorial.components[builtId]).toEqual(s.components[builtId]);
     expect(editorial.assets).toEqual(s.assets);

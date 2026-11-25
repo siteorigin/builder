@@ -10,7 +10,7 @@ import sharp from 'sharp';
 import type { ComponentDefinition } from '@shared/types';
 import { BUNDLED_PACK_IDS, type AuthoredPack, type PackManifest } from '@catalogue/pack';
 import { createPack } from '@catalogue/dsl';
-import { EDITORIAL_PACK, FOUNDATION_PACK } from '@catalogue/builtin';
+import { EDITORIAL_PACK, FOUNDATION_ALT_PACK, FOUNDATION_PACK } from '@catalogue/builtin';
 import { buildPack, fileSource, registerBuiltinPacks, writeRelease } from '../../src/main/packs/build';
 import { loadPackDir, loadPacks, type PackRoot } from '../../src/main/packs/loader';
 import { readPackFile, registerPackFiles } from '../../src/main/packs/files';
@@ -373,9 +373,13 @@ describe('loading every installed pack', () => {
     // A folder the list does not name comes after the ones it does.
     const { pack, files } = buildPack(studio('aardvark'));
     writeRelease(join(bundled, 'aardvark'), pack, files);
-    const { packs, refused } = await loadPacks([{ dir: bundled, source: 'bundled' }]);
+    // The development fixtures' folder follows, as packaged builds list it.
+    const fixtures = tmp();
+    const alt = buildPack(FOUNDATION_ALT_PACK);
+    writeRelease(join(fixtures, 'foundation-alt'), alt.pack, alt.files);
+    const { packs, refused } = await loadPacks([{ dir: bundled, source: 'bundled' }, { dir: fixtures, source: 'bundled' }]);
     expect(refused).toEqual([]);
-    expect(packs.map((p) => p.pack.id)).toEqual(['foundation', 'editorial', 'aardvark']);
+    expect(packs.map((p) => p.pack.id)).toEqual(['foundation', 'editorial', 'aardvark', 'foundation-alt']);
     registerPacks(packs.map((p) => p.pack));
     expect(defaultTheme().id).toBe('foundation');
     registerBuiltinPacks();

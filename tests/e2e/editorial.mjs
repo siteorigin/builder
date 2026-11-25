@@ -88,8 +88,8 @@ st = await snapshot();
 const onPage = new Set(st.pages[pageId].rootIds.map((id) => st.components[st.pages[pageId].nodes[id].definitionId]?.componentId));
 assert.deepEqual(SECTIONS.filter((c) => !onPage.has(c)), [], 'every section is on the page');
 
-const READABILITY = ['low-contrast', 'overlap', 'clipped-text', 'small-tap-target', 'contrast-unverified'];
-/** Readability findings, less the shared header's and footer's small links, which Foundation reports too (inspect-layout.mjs). */
+const READABILITY = ['low-contrast', 'overlap', 'clipped-text', 'small-tap-target', 'contrast-unverified', 'horizontal-overflow', 'element-overflow', 'text-overflow'];
+/** Readability and overflow findings, less the shared header's and footer's small links, which Foundation reports too (inspect-layout.mjs). */
 const measure = async (width) => {
   let report;
   for (let i = 0; i < 8; i++) {

@@ -1,10 +1,16 @@
-import { FOUNDATION_BASE_CSS, ends } from '../foundation/base.css';
+import { FOUNDATION_BASE_CSS } from '../foundation/base.css';
 
 /** Foundation's base stylesheet (reset, document defaults, surfaces and primitives), with Editorial's own after it. */
 const SHARED = FOUNDATION_BASE_CSS.replace('/* Foundation theme base styles */', '/* Editorial theme base styles */');
 
-const featureGrid = ends('-features-grid__grid');
-const featureCard = `li${ends('-features-grid__card')}`;
+/**
+ * A node of one of Editorial's own components, placed or detached into elements (whose copy keeps the class as
+ * `so--d-…`). Exact classes, not endings: another theme's section kept inside a project component (a Foundation
+ * services grid with its white cards) must keep its own look.
+ */
+const own = (component: string, node: string) => `:is(.so-editorial-${component}__${node}, .so--d-editorial-${component}__${node})`;
+const featureGrid = own('features-grid', 'grid');
+const featureCard = `li${own('features-grid', 'card')}`;
 
 /**
  * Square corners, hairline rules, set-in-capitals buttons and underline hover states. Each rule follows the
@@ -15,17 +21,20 @@ export const EDITORIAL_BASE_CSS = `${SHARED}
 :focus-visible { border-radius: 0; }
 ::selection { background: color-mix(in srgb, var(--so-color-brand) 18%, transparent); }
 
-.so-btn:not(.so-btn--text) { padding: 0.85em 1.5em; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; }
+.so-btn:where(:not(.so-btn--text)) { padding: 0.85em 1.5em; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; }
 .so-btn { border-radius: var(--so-radius-sm); }
-.so-btn--primary { box-shadow: none; }
 .so-btn--secondary { border-color: currentColor; }
-:is(a, button).so-btn--secondary:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+/* Tinted over the button's own background, so one given a fill keeps it. */
+:is(a, button).so-btn--secondary:hover { background: color-mix(in srgb, currentColor 8%, var(--so-btn-bg, transparent)); }
 .so-btn--text { padding-block: 0.3em; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.45em; }
 :is(a, button).so-btn--text:hover { text-decoration-thickness: 2px; }
 
 .so-link { text-underline-offset: 0.2em; }
 .so-link:hover, .so-rich a:hover { text-decoration-thickness: 2px; }
 .so-plain-link:hover { text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
+/* The tab chosen, or a choice that is on, keeps the heavier underline that marks it (Foundation's rule, restated after
+   Editorial's own underlines, which would otherwise win). */
+:is(.so-btn--text, .so-link, .so-plain-link):where([aria-selected='true'], [aria-pressed='true']) { text-decoration-thickness: 3px; }
 /* A card that is one link: its title underlines while the pointer is over the card. */
 .so-card-link:hover :is(h2, h3, h4) { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
 
@@ -48,5 +57,5 @@ ${featureCard}::before {
 }
 
 /* An index section (a narrow heading column beside a wide one) gives the whole row to a column left on its own. */
-:is(${ends('-faq-list__list')}, ${ends('-content-text__heading')}, ${ends('-content-text__body')}):only-child { grid-column: 1 / -1; }
+:is(${own('faq-list', 'list')}, ${own('content-text', 'heading')}, ${own('content-text', 'body')}):only-child { grid-column: 1 / -1; }
 `;

@@ -2,7 +2,7 @@ import type { GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, PageDoc,
 import { SCHEMA_VERSION, GENERATOR_VERSION } from '@shared/types';
 import { installComponent, makeInstance } from '@engine/install';
 import { newId } from '@shared/ids';
-import { defaultTheme, getTheme, themeLockEntry } from './index';
+import { defaultTheme, findTheme, getTheme, themeLockEntry } from './index';
 import { canonicalRich } from './dsl';
 import { TEMPLATE_VERSION } from './fonts';
 
@@ -86,6 +86,22 @@ function inst(state: ProjectState, componentId: string, props: Record<string, un
 
 function tree(node: InstanceNode): NodeTree {
   return { rootIds: [node.id], nodes: { [node.id]: node } };
+}
+
+/**
+ * Why a new project cannot start from `starter` on this theme (the default theme without one), or null when it can.
+ * Only built-in themes are certain to have every section a starter places; an installed pack may lack some.
+ */
+export function starterProblem(starter: StarterId, themeId?: string): string | null {
+  const theme = themeId === undefined ? defaultTheme() : findTheme(themeId);
+  if (!theme) return `The theme "${themeId}" is not installed. Choose another theme.`;
+  try {
+    createStarterState(starter, 'Check', false, theme.id);
+    return null;
+  } catch (e) {
+    const name = STARTERS.find((s) => s.id === starter)?.name ?? starter;
+    return `The ${theme.name} theme cannot make the ${name}: ${(e as Error).message} Choose another theme or starter.`;
+  }
 }
 
 /** A new project's state from a starter, on `themeId` (the default theme when it is not given or not installed). */

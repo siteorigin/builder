@@ -637,3 +637,19 @@ describe('protecting what was already there', () => {
     expect(readFileSync(join(dir, 'notes.txt'), 'utf8')).toBe('mine');
   });
 });
+
+describe('the theme a new project starts with (#390)', () => {
+  it('records the theme chosen, and refuses one it cannot start from before writing anything', async () => {
+    const { c, parent } = setup();
+    expect(await c.create({ ...opts(parent), themeId: 'editorial' })).toEqual({ ok: true });
+    const site = JSON.parse(readFileSync(join(parent, 'meadow-studio', 'siteorigin', 'site.json'), 'utf8'));
+    expect(site.themeId).toBe('editorial');
+    expect(JSON.parse(readFileSync(join(parent, 'meadow-studio', 'siteorigin', 'theme-lock.json'), 'utf8')).theme).toEqual({ id: 'editorial', version: '0.1.0' });
+
+    const other = realpathSync(mkdtempSync(join(tmpdir(), 'so-create-theme-')));
+    dirs.push(other);
+    expect(await c.create({ ...opts(other), themeId: 'nope' })).toEqual({ ok: false, message: 'The theme "nope" is not installed. Choose another theme.' });
+    expect(await c.create({ ...opts(other), themeId: 'foundation-alt' })).toEqual({ ok: false, message: expect.stringMatching(/development fixture/) });
+    expect(readdirSync(other)).toEqual([]);
+  });
+});

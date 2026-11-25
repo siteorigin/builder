@@ -1,8 +1,9 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Check, CircleAlert, CloudAlert, CloudDownload, Copy, FileArchive, FolderOpen, Info, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
 import type { DuplicateProjectResult, ProgressEvent, WebsiteTools } from '@shared/api';
 import { MAX_COPY_NAME, projectDisplayName, projectFolderName } from '@shared/project-name';
 import { defaultTheme, getTheme, listThemes } from '@catalogue/index';
+import { starterProblem } from '@catalogue/starters';
 import { isImeComposing } from '../lib/ime';
 import { endEditingHold } from '../lib/leave';
 import { api, errorText, toast, useStore } from '../store';
@@ -558,9 +559,10 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [parent, setParent] = useState('');
   const [starter, setStarter] = useState<StarterId>('business');
-  // The themes a site can start with (development fixtures are only for switching), the default first.
-  const themes = listThemes().filter((t) => !t.devOnly);
-  const [themeId, setThemeId] = useState(() => defaultTheme().id);
+  // The themes a site can start with, the default first: development fixtures are only for switching, and an installed
+  // pack must have every section both starters place.
+  const themes = useMemo(() => listThemes().filter((t) => !t.devOnly && STARTERS.every((s) => !starterProblem(s.id, t.id))), []);
+  const [themeId, setThemeId] = useState(() => (themes.some((t) => t.id === defaultTheme().id) ? defaultTheme().id : (themes[0]?.id ?? defaultTheme().id)));
   const theme = getTheme(themeId);
   const [images, setImages] = useState(true);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
