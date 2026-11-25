@@ -21,11 +21,13 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { cpSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { describeProof, proveJourney } from '../tests/coverage/journey-proof.ts';
-import { hideDeep, machineRoots, pathHider } from '../tests/driver/evidence.ts';
+import { auditTranscript, redactEvent } from '../tests/coverage/transcript.ts';
+import { machineRoots, pathHider } from '../tests/driver/evidence.ts';
 import { codexConfig, thisNode } from '../tests/driver/mcp.ts';
 import { replay } from '../tests/driver/replay.ts';
 
@@ -39,8 +41,6 @@ const SERVER = 'siteorigin_builder';
 
 /** Codex's own tools that could read or change anything outside the Builder session: all turned off. */
 const DISABLED = ['shell_tool', 'unified_exec', 'view_image', 'image_generation', 'apps', 'plugins', 'browser_use', 'browser_use_external', 'multi_agent', 'multi_agent_v2'];
-/** Transcript items that are not tool use. */
-const TALK = new Set(['agent_message', 'reasoning', 'todo_list', 'error']);
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const RUN = join(ROOT, '.tmp', 'model-smoke', `${stamp}${PROBE ? '-probe' : ''}`);
@@ -51,19 +51,8 @@ mkdirSync(CLIENT, { recursive: true });
 mkdirSync(SESSIONS, { recursive: true });
 
 const hide = pathHider([{ path: CLIENT, label: '<client>' }, { path: SESSIONS, label: '<sessions>' }, { path: RUN, label: '<run>' }, { path: ROOT, label: '<repo>' }, ...machineRoots()]);
-const CREDENTIAL = /\b(sk-[A-Za-z0-9_-]{12,}|sk-ant-[A-Za-z0-9_-]{12,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|Bearer\s+[A-Za-z0-9._-]{12,})/g;
-/** An event as it is kept: host paths named by label, anything like a credential and any image data taken out. */
-function redact(event) {
-  const strip = (v) => {
-    if (Array.isArray(v)) return v.map(strip);
-    if (v && typeof v === 'object') {
-      if (v.type === 'image' && typeof v.data === 'string') return { type: 'image', mimeType: v.mimeType, bytes: Math.floor((v.data.length * 3) / 4), data: '[image data left out]' };
-      return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, strip(x)]));
-    }
-    return typeof v === 'string' ? v.replace(CREDENTIAL, '[redacted]') : v;
-  };
-  return hideDeep(strip(event), hide);
-}
+const USER = basename(homedir());
+const redact = (event) => redactEvent(event, hide, USER);
 
 const NAME = 'Lantern Lane Bakery';
 const HEADING = 'Fresh bread from the lantern oven';
@@ -182,23 +171,6 @@ async function runCodex() {
   return { code, events, stderrTail: hide(tail) };
 }
 
-/** Every tool the model used or tried: only the Builder server's are allowed. */
-function audit(events) {
-  const calls = [];
-  const foreign = [];
-  for (const e of events) {
-    if (e.type !== 'item.completed' && e.type !== 'item.started') continue;
-    const item = e.item ?? {};
-    if (TALK.has(item.type)) continue;
-    if (item.type === 'mcp_tool_call' && item.server === SERVER) {
-      if (e.type === 'item.completed') calls.push({ tool: item.tool, ok: item.status !== 'failed' && !item.error });
-      continue;
-    }
-    foreign.push(`${item.type}${item.server ? ` ${item.server}` : ''}${item.tool ? ` ${item.tool}` : ''}${item.command ? `: ${String(item.command).slice(0, 80)}` : ''}`);
-  }
-  return { calls, foreign: [...new Set(foreign)] };
-}
-
 /** The replay records the session wrote, newest last. */
 function records() {
   const found = [];
@@ -235,7 +207,7 @@ try {
 
   const { code, events, stderrTail } = await runCodex();
   summary.codexExit = code;
-  const { calls, foreign } = audit(events);
+  const { calls, foreign } = auditTranscript(events, SERVER);
   summary.toolCalls = calls.length;
   summary.failedToolCalls = calls.filter((c) => !c.ok).length;
   summary.tools = Object.fromEntries([...new Set(calls.map((c) => c.tool))].sort().map((t) => [t, calls.filter((c) => c.tool === t).length]));
