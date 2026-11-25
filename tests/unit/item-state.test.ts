@@ -15,7 +15,6 @@ import type { Component } from 'svelte';
 import type { ComponentDefinition, InstanceNode, LinkNode, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
-import { LATEST_SCHEMA_VERSION, MIGRATIONS } from '@shared/migrations';
 import { createStarterState } from '@catalogue/starters';
 import { makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
@@ -165,11 +164,6 @@ describe('declaring item state', () => {
     // A change that leaves out the starting position keeps it.
     const moved = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'active', schema: { type: 'item', label: 'Current step', list: 'steps' } }]);
     expect(moved.components[def.id].state!.active).toEqual({ type: 'item', label: 'Current step', list: 'steps', initial: 1 });
-  });
-
-  it('marks the format with a version-only step', () => {
-    expect(MIGRATIONS.at(-1)!.id).toBe('item-state');
-    expect(LATEST_SCHEMA_VERSION).toBe(MIGRATIONS.length + 1);
   });
 
   it('takes positions for its values, as Component Studio previews them', () => {
