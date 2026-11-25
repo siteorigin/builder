@@ -1,5 +1,7 @@
+import { turnQuestions, type ChatMessage } from '@shared/api';
 import { DEFAULT_LOCAL_CONTEXT_WINDOW, localContextWindow, type LocalToolMode } from '@shared/local';
 import { estimateTokens, FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
+import { MAX_REPLAYED_ANSWER, replayedHistory } from '@shared/turn-model';
 
 /**
  * Whether a message, such as a page's copy pasted whole, may be too long for a local model's context, said in the
@@ -9,19 +11,22 @@ import { estimateTokens, FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
  */
 
 /**
- * About what the instructions, tools and editor context take before the messages, by the tools a local model gets:
- * grammar-constrained JSON, the small native set (a window under FOCUSED_WINDOW_TOKENS) and the full native set.
- * Measured on the business starter's Home page and rounded up (tests/unit/chat-headroom.test.ts keeps them honest).
+ * About what the instructions, page tools and editor context take before the messages, by the tools a local model
+ * gets: grammar-constrained JSON, or the small native set (a window under FOCUSED_WINDOW_TOKENS). From there up the full
+ * native set takes about 17,000 tokens, under half the window, so the half is what counts. Measured on the business
+ * starter's Home page and rounded up (tests/unit/chat-headroom.test.ts keeps them honest).
  */
-export const LOCAL_OVERHEAD_TOKENS = { constrained: 3584, focused: 10_240, general: 17_408 } as const;
+export const LOCAL_OVERHEAD_TOKENS = { constrained: 3584, focused: 10_240 } as const;
 /** The smallest reply worth asking for, as the assistant keeps it free (budget.ts MIN_OUTPUT_TOKENS). */
 const REPLY_TOKENS = 1024;
 
 export interface HeadroomInput {
   /** The message being written. */
   draft: string;
-  /** The earlier messages a request replays with it, oldest first. */
+  /** What a request replays of the conversation before it (see `replayedWords`). */
   history: readonly string[];
+  /** The request may build pages (This page or Whole site), so it carries the page tools and the page's sections. */
+  pageTools: boolean;
   /** The context size set in Settings, or null to read it from the server. */
   contextWindow: number | null;
   toolMode: LocalToolMode;
@@ -40,10 +45,32 @@ export interface HeadroomWarning {
   text: string;
 }
 
-/** The share of the window the messages may take: half, or less where the instructions leave less. */
-export function messageRoom(windowTokens: number, toolMode: LocalToolMode): number {
-  const overhead = toolMode !== 'native' ? LOCAL_OVERHEAD_TOKENS.constrained : windowTokens < FOCUSED_WINDOW_TOKENS ? LOCAL_OVERHEAD_TOKENS.focused : LOCAL_OVERHEAD_TOKENS.general;
-  return Math.max(0, Math.min(Math.floor(windowTokens / 2), windowTokens - overhead - REPLY_TOKENS));
+/**
+ * The share of the window the messages may take: half, or less where the page tools leave less. A request about a
+ * selection, a component or a question carries far smaller tools, and gets the half.
+ */
+export function messageRoom(windowTokens: number, toolMode: LocalToolMode, pageTools = true): number {
+  const half = Math.floor(windowTokens / 2);
+  if (!pageTools) return half;
+  if (toolMode === 'native' && windowTokens >= FOCUSED_WINDOW_TOKENS) return half;
+  const overhead = toolMode === 'native' ? LOCAL_OVERHEAD_TOKENS.focused : LOCAL_OVERHEAD_TOKENS.constrained;
+  return Math.max(0, Math.min(half, windowTokens - overhead - REPLY_TOKENS));
+}
+
+/**
+ * The words a request replays of the conversation before it, as the assistant replays them: the last messages, and
+ * in each earlier turn the questions it asked with their answers (a long answer cut short) before its reply.
+ */
+export function replayedWords(messages: readonly ChatMessage[]): string[] {
+  return replayedHistory(messages).flatMap((m) => {
+    const said = typeof m.text === 'string' ? m.text : '';
+    if (m.role === 'user') return [said];
+    // A transcript is read back from disk: anything malformed is left out, as the assistant leaves it out.
+    const asked = turnQuestions(m).flatMap((q) =>
+      typeof q?.text === 'string' ? [q.text, ...(Array.isArray(q.choices) ? q.choices.filter((c) => typeof c === 'string') : []), typeof q.answered === 'string' ? q.answered.slice(0, MAX_REPLAYED_ANSWER) : ''] : []
+    );
+    return [...asked, said];
+  });
 }
 
 const n = (t: number) => t.toLocaleString('en-US');
@@ -54,7 +81,7 @@ export function headroomWarning(input: HeadroomInput): HeadroomWarning | null {
   const set = localContextWindow(input.contextWindow);
   const windowTokens = set ?? DEFAULT_LOCAL_CONTEXT_WINDOW;
   const assumed = set === null;
-  const roomTokens = messageRoom(windowTokens, input.toolMode);
+  const roomTokens = messageRoom(windowTokens, input.toolMode, input.pageTools);
   const draftTokens = estimateTokens(input.draft);
   const historyTokens = input.history.reduce((sum, m) => sum + estimateTokens(m), 0);
   if (draftTokens + historyTokens <= roomTokens) return null;

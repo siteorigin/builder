@@ -2729,7 +2729,10 @@ iframe { color-scheme: light dark; }
 /* Before a message goes to a model that has not seen the recent messages of the conversation. */
 .switch-note { background: var(--panel-2); }
 .switch-note .link:disabled { color: var(--text-3); text-decoration: none; cursor: default; }
-/* Before a message that may not fit the local model's context: an advisory, so amber; Send stays available. */
+/* Before a message that may not fit the local model's context: an advisory, so amber; Send stays available. Its live
+   region stays in place, empty, while a local model takes the message. */
+.headroom-live { flex: none; }
+.headroom-live > .scope-note { margin: 8px 12px 0; border-radius: var(--r-md); }
 .headroom-note { background: var(--amber-soft); }
 .headroom-note > svg { color: var(--amber); }
 .headroom-note .link:disabled { color: var(--text-3); text-decoration: none; cursor: default; }

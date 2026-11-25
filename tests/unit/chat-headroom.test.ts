@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { estimateRequestTokens } from '@agent/budget';
+import { FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
 import type { CanonicalModelRequest, ModelCapabilities } from '@agent/types';
 import { runCase, ScriptedAdapter, type EvalCase } from '../../scripts/eval/harness';
-import { headroomWarning, LOCAL_OVERHEAD_TOKENS, messageRoom } from '../../src/renderer/src/lib/chatHeadroom';
+import type { ChatMessage } from '@shared/api';
+import { headroomWarning, LOCAL_OVERHEAD_TOKENS, messageRoom, replayedWords } from '../../src/renderer/src/lib/chatHeadroom';
 
 /** What the first request of a page edit really takes besides its one-word message, with the tools a local model gets. */
 async function overhead(caps: Partial<ModelCapabilities>, route: string): Promise<number> {
@@ -22,22 +24,25 @@ async function overhead(caps: Partial<ModelCapabilities>, route: string): Promis
 }
 
 const a = (tokens: number) => 'a'.repeat(tokens * 4);
-const warn = (draft: string, o: Partial<Parameters<typeof headroomWarning>[0]> = {}) => headroomWarning({ draft, history: [], contextWindow: null, toolMode: 'auto', ...o });
+const warn = (draft: string, o: Partial<Parameters<typeof headroomWarning>[0]> = {}) => headroomWarning({ draft, history: [], contextWindow: null, toolMode: 'auto', pageTools: true, ...o });
 
 describe('composer headroom for a local model', () => {
   it('reserves at least what the instructions, tools and editor context take, and not much more', async () => {
     const modes: Array<[keyof typeof LOCAL_OVERHEAD_TOKENS, Partial<ModelCapabilities>]> = [
       ['constrained', { toolCalling: 'constrained-json', contextWindowTokens: 32_768 }],
-      ['focused', { toolCalling: 'native', contextWindowTokens: 32_768 }],
-      ['general', { toolCalling: 'native', contextWindowTokens: 65_536 }]
+      ['focused', { toolCalling: 'native', contextWindowTokens: 32_768 }]
     ];
     // Home has the most sections of the starter's pages, so the most editor context.
-    for (const route of ['/', '/about/'])
+    for (const route of ['/', '/about/']) {
       for (const [mode, caps] of modes) {
         const used = await overhead(caps, route);
         expect(used, `${mode} on ${route}`).toBeLessThanOrEqual(LOCAL_OVERHEAD_TOKENS[mode]);
         expect(LOCAL_OVERHEAD_TOKENS[mode] - used, `${mode} on ${route}`).toBeLessThan(1536);
       }
+      // The full native set, from the focused cutoff up, leaves the half of the window and a reply free.
+      const full = await overhead({ toolCalling: 'native', contextWindowTokens: FOCUSED_WINDOW_TOKENS }, route);
+      expect(full + 1024, route).toBeLessThanOrEqual(FOCUSED_WINDOW_TOKENS / 2);
+    }
   }, 60000);
 
   it('gives the messages half the window, or less where the instructions leave less', () => {
@@ -49,6 +54,40 @@ describe('composer headroom for a local model', () => {
     expect(messageRoom(12_288, 'native')).toBe(12_288 - 10_240 - 1024);
     expect(messageRoom(65_536, 'native')).toBe(32_768);
     expect(messageRoom(8192, 'native')).toBe(0);
+    expect(messageRoom(8192, 'constrained-json')).toBe(8192 - 3584 - 1024);
+    // From the focused cutoff up the full set leaves the half free; under it, the small set's reserve can bind.
+    expect(messageRoom(FOCUSED_WINDOW_TOKENS, 'native')).toBe(FOCUSED_WINDOW_TOKENS / 2);
+    expect(messageRoom(20_000, 'native')).toBe(20_000 - 10_240 - 1024);
+    expect(messageRoom(20_000, 'auto')).toBe(10_000);
+    // A request without the page tools (a selection, a component, a question) gets the half, whatever the tools.
+    expect(messageRoom(8192, 'native', false)).toBe(4096);
+    expect(messageRoom(12_288, 'native', false)).toBe(6144);
+  });
+
+  it('charges the page tools only to a request that may build pages', () => {
+    // "Change this heading" about a selection on a small native window fits; the same words for the whole page do not.
+    expect(warn('Change this heading to Services', { contextWindow: 8192, toolMode: 'native', pageTools: false })).toBeNull();
+    expect(warn('Change this heading to Services', { contextWindow: 8192, toolMode: 'native' })?.kind).toBe('setup');
+    expect(warn(a(1500), { contextWindow: 12_288, toolMode: 'native', pageTools: false })).toBeNull();
+    expect(warn(a(1500), { contextWindow: 12_288, toolMode: 'native' })?.kind).toBe('draft');
+  });
+
+  it('replays what the assistant replays: the last messages, and the questions asked with their answers', () => {
+    const msg = (role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({ id: `m${Math.random()}`, role, text, time: '', ...extra });
+    const answer = 'お'.repeat(5000);
+    const words = replayedWords([
+      msg('user', 'Build the services page'),
+      msg('assistant', 'Built it.', { questions: [{ id: 'q1', text: 'Which services?', choices: ['Repairs', 'Checks'], answered: answer } as never, { id: 'q2', text: 'And the order?', choices: [] } as never] })
+    ]);
+    // A long answer is replayed cut short; an unanswered question still says what it asked.
+    expect(words).toEqual(['Build the services page', 'Which services?', 'Repairs', 'Checks', answer.slice(0, 4000), 'And the order?', '', 'Built it.']);
+    // Only the messages a request replays count: the oldest beyond them do not.
+    const many = Array.from({ length: 30 }, (_, i) => msg(i % 2 ? 'assistant' : 'user', `message ${i}`));
+    expect(replayedWords(many)).toEqual(many.slice(-12).map((m) => m.text));
+    // An answer long enough to tip a follow-up over is counted.
+    const history = replayedWords([msg('assistant', 'Done.', { questions: [{ id: 'q', text: 'Paste it?', choices: [], answered: answer } as never] })]);
+    expect(warn(a(3000), { contextWindow: 8192 })).toBeNull();
+    expect(warn(a(3000), { contextWindow: 8192, history })?.kind).toBe('history');
   });
 
   it('says nothing while the message fits, and how to split it or make room once it does not', () => {

@@ -2615,23 +2615,34 @@ describe('a run limited to one page (#513)', () => {
       expect(req.system).toContain('When you write copy yourself, from a short request');
       expect(req.system).toContain('Copy the user supplies (pasted text, notes or a draft) is the source: keep its wording, headings, figures, lists, quotes and links as written, add no filler');
       expect(req.system).toContain('put every distinct block of it, in reading order, in the theme catalogue section that fits it');
-      expect(req.system).toContain('pass it when the page holds only its title-only introduction or starter sample sections, or the user asks to replace the page, and keep sections the author wrote otherwise');
+      expect(req.system).toContain('add no section or text the copy does not call for');
+      expect(req.system).toContain('The theme guidance on heading length, sentences and calls to action is for copy you write');
+      // The page's sections go only under a draft of the whole page: never when the copy is added to the page.
+      expect(req.system).toContain('pass it when supplied copy is the whole page and the page holds only its title-only introduction or starter sample sections, or when the user asks to replace the page. When they ask to add to the page, or it has sections the author wrote, keep the sections already there.');
       expect(req.system).not.toContain('fictional-but-plausible');
     }
     // A small model reads the page tool's brief beside its signature, so the page rules are said there, once.
-    expect(constrained.system).toContain('Keep supplied copy word for word (figures, lists, quotes, links too); write your own natural, with short headings.');
+    expect(constrained.system).toContain('Keep supplied copy, figures and links word for word unless asked to edit; write your own natural, with short headings.');
     expect(constrained.system).not.toContain('Write natural, specific copy that fits the site');
     // The page tool says the same wherever a model reads about it: its description, its brief and its flag.
     const upsert = (req: CanonicalModelRequest) => req.tools.find((t) => t.name === 'upsert_page_with_sections')!;
-    expect(upsert(general).description).toContain('keeping its wording, figures, lists, quotes and links, and set or clear each sample text the section shows');
-    expect(upsert(general).description).toContain('Pass it to replace a page that holds only its title-only introduction or starter sample sections');
-    expect(upsert(constrained).brief).toContain('Supplied copy: each block in order in a fitting section, kept word for word, sample text cleared.');
-    expect(upsert(constrained).brief).toContain('unless removeOtherSections is true: for a title-only introduction or starter samples, the author\'s own only when asked.');
-    expect((upsert(general).parameters as { properties: Record<string, { description?: string }> }).properties.removeOtherSections.description).toContain('Use it to replace a title-only introduction or starter sample sections');
+    expect(upsert(general).description).toContain('keeping its wording, figures, lists, quotes and links, add nothing the copy does not call for, and set or clear each sample text the section shows');
+    expect(upsert(general).description).toContain('Pass it when a draft of the whole page replaces a title-only introduction or starter sample sections, or when the user asks to replace the page; never to add to a page');
+    // A local model reads the brief beside the tool's signature, in the instructions its server is sent.
+    const envelope = envelopeInstructions(constrained.tools);
+    expect(envelope).toContain('Supplied copy: each block in order in a fitting section, kept word for word, nothing added, sample text cleared.');
+    expect(envelope).toContain('unless removeOtherSections is true: for a whole-page draft over a title-only introduction or starter samples, never to add to a page or over the author\'s own unless asked.');
+    expect((upsert(general).parameters as { properties: Record<string, { description?: string }> }).properties.removeOtherSections.description).toContain('omit it to add to a page or to keep sections the author wrote');
     // A pasted draft is not given a call to action it did not have: the usual page shape is for a short request.
     const site = await firstRequest({ toolCalling: 'native', contextWindowTokens: 32_000 }, 'site');
-    expect(site.system).toContain('from a short request, an opening section, the content the page is for, and usually a closing call to action');
-    expect(site.system).not.toMatch(/several sections: an opening section/);
+    expect(site.system).toContain('Build one page per call; from a short request, give it several sections: an opening section, the content the page is for, and usually a closing call to action.');
+    expect(site.system).not.toContain('each with several sections');
+    // A site run populates the page the author is on from pasted copy by the same rules.
+    expect(site.system).toContain('put every distinct block of it, in reading order, in the theme catalogue section that fits it');
+    expect(site.system).toContain('pass it when supplied copy is the whole page');
+    const constrainedSite = await firstRequest({ toolCalling: 'constrained-json', contextWindowTokens: 32_000 }, 'site');
+    expect(constrainedSite.system).toContain('Build one page per upsert_page_with_sections call; from a short request, give it several sections');
+    expect(envelopeInstructions(constrainedSite.tools)).toContain('Supplied copy: each block in order in a fitting section');
   });
 
   /** A project session's apply, for one authority, without the rest of a run. */

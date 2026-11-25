@@ -685,9 +685,9 @@ describe('what a constrained local run sends first (#364)', () => {
    */
   const FROSTED_BYTES = 170;
   const PAGE_AUDIT_BYTES = 650;
-  /** The supplied-copy rule every edit run is given (41 bytes), and with the page tool its brief's rules (204 more). */
+  /** The supplied-copy rule every edit run is given (45 bytes), and with the page tool its brief's rules (274 more). */
   const COPY_BYTES = 50;
-  const PAGE_COPY_BYTES = COPY_BYTES + 220;
+  const PAGE_COPY_BYTES = COPY_BYTES + 280;
   const BUDGETS = {
     // The site runs offer every catalogue section to insert, so a new section (the Carousel's ~830 bytes) grows them.
     // They also start with the open page's sections (#513): about 1 KB for the starter's eight-section home page.
