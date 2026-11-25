@@ -2,10 +2,11 @@
  * WebMCP (#590): the contact forms and site search of the exported website declared as tools to AI agents in the
  * visitor's browser, only while the author turns it on, and the audit's suggestion to turn it on.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { chromium, type Route } from 'playwright';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent } from '@engine/install';
@@ -17,11 +18,11 @@ import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE } from '@generator/search';
 import { adaptFormSource, formToolDescription, WEBMCP_SEARCH_FILE } from '@generator/webmcp';
 import { uniqueToolNames, webMcpText, webMcpToolName, WEBMCP_NAME_MAX } from '@shared/webmcp';
 import { describeOps } from '@agent/report';
-import { projectSummary } from '@agent/context';
+import { compactNode, projectSummary } from '@agent/context';
 import type { EditOperation } from '@shared/ops';
 import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { compileProject } from '../../src/main/compile';
-import { removeRendered, serverHtml } from './generated-site';
+import { bundle, removeRendered, serverHtml } from './generated-site';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 /** The theme's contact form code, as a new project installs it. */
@@ -67,6 +68,7 @@ describe('tool names and descriptions', () => {
   it('gives each name its own number after the first, whatever its case, and never search_site', () => {
     expect(uniqueToolNames(['contact', 'contact', 'Contact', 'search_site'])).toEqual(['contact', 'contact_2', 'Contact_3', 'search_site_2']);
     expect(uniqueToolNames(['contact', 'contact_2', 'contact'])).toEqual(['contact', 'contact_2', 'contact_3']);
+    expect(uniqueToolNames(['contact', 'search_site'], ['Contact'])).toEqual(['contact_2', 'search_site']);
     const long = 'x'.repeat(WEBMCP_NAME_MAX);
     const [a, b] = uniqueToolNames([long, long]);
     expect(a).toBe(long);
@@ -79,31 +81,56 @@ describe('tool names and descriptions', () => {
     const cut = webMcpText(`${'word '.repeat(200)}end`, 50);
     expect([...cut].length).toBeLessThanOrEqual(50);
     expect(cut.endsWith('word…')).toBe(true);
+    expect(cut.startsWith('word word word word word word')).toBe(true);
     expect(webMcpText(null)).toBe('');
   });
 });
 
 describe('the contact form’s code', () => {
-  it('takes the tool attributes on the form and on every field the visitor fills in, never autosubmitting', () => {
+  it('takes the tool attributes on the form and on every field, never autosubmitting', () => {
     const adapted = adaptFormSource(FORM_SOURCE_FOR_TESTS)!;
     expect(adapted).not.toBeNull();
     expect(adapted).toContain('toolname={so_webmcpName}');
     expect(adapted).toContain('tooldescription={so_webmcp?.description}');
-    // Short text, long text, a single-choice question's answers and a checkbox.
-    expect(adapted.match(/toolparamdescription=/g)).toHaveLength(4);
     expect(adapted).not.toContain('toolautosubmit');
-    // The hidden service fields and the spam trap are no parameters.
-    expect(adapted.match(/name=\{honeypot\}/g)?.length).toBe(FORM_SOURCE_FOR_TESTS.match(/name=\{honeypot\}/g)?.length);
-    for (const line of adapted.split('\n').filter((l) => /name=\{honeypot\}|name="form-name"|name="access_key"/.test(l))) expect(line).not.toContain('toolparam');
-    // Everything else is the form as it was.
-    expect(adapted.replace(/\n\t*(toolname|tooldescription|toolparamdescription)=\{[^\n]*/g, '').replace(",\n\t\tso_webmcp = null", '').replace(/\n\t\/\/ The tool the form is[^\n]*\n\t\/\/[^\n]*\n\tconst so_webmcpName[^\n]*/, '')).toBe(FORM_SOURCE_FOR_TESTS);
+    // Short text, long text, a single-choice question's answers and its group, and a checkbox: each from its label.
+    expect(adapted.match(/toolparamdescription=\{so_webmcp \? String\(field\.label/g)).toHaveLength(5);
+    expect(adapted).toMatch(/<fieldset class="so-form__field so-form__field--wide so-form__choices" toolparamdescription=\{so_webmcp \? String\(field\.label/);
+    // The spam trap and the service's own fields tell agents to leave them be.
+    expect(adapted.match(/name=\{honeypot\} toolparamdescription=\{so_webmcp \? 'A spam trap/g)).toHaveLength(FORM_SOURCE_FOR_TESTS.match(/name=\{honeypot\}/g)!.length);
+    expect(adapted).toMatch(/name="form-name" toolparamdescription=\{so_webmcp \? 'Set by the website/);
+    expect(adapted).toMatch(/name="access_key" toolparamdescription=\{so_webmcp \? 'Set by the website/);
+    // Sending tells the agent how it went, and empties the form only after that.
+    expect(adapted).toContain('\tfunction submit(event) {');
+    expect(adapted).toContain('\tasync function so_send(event) {\n\t\tevent.preventDefault();');
+    expect(adapted.match(/so_reset\(form\);/g)!.length).toBe(FORM_SOURCE_FOR_TESTS.match(/HTMLFormElement\.prototype\.reset\.call\(form\);/g)!.length);
+    expect(adapted.match(/HTMLFormElement\.prototype\.reset\.call\(form\)/g)).toHaveLength(2);
+  });
+
+  it('adapts the first forms too, whose fields are named by fieldName', () => {
+    const first = FORM_SOURCE_FOR_TESTS.replace(/name=\{names\[i\]\}/g, 'name={fieldName(field, i)}');
+    expect(adaptFormSource(first)?.match(/name=\{fieldName\(field, i\)\}\n\t+toolparamdescription=/g)).toHaveLength(4);
   });
 
   it('leaves code that no longer reads as the theme’s form alone', () => {
-    expect(adaptFormSource(FORM_SOURCE_FOR_TESTS.replace('class="so-form__form"', 'class="my-form"'))).toBeNull();
-    expect(adaptFormSource(FORM_SOURCE_FOR_TESTS.replace(/name=\{names\[i\]\}/g, 'name={field.name}'))).toBeNull();
-    expect(adaptFormSource(FORM_SOURCE_FOR_TESTS.replace("import { visitorText } from '../runtime/visitor-text.js';", "import { visitorText } from './visitor-text.js';"))).toBeNull();
-    expect(adaptFormSource(FORM_SOURCE_FOR_TESTS.replace('<form', '<form toolname="mine"'))).toBeNull();
+    const changed = (from: string | RegExp, to: string) => {
+      const source = FORM_SOURCE_FOR_TESTS.replace(from, to);
+      expect(source).not.toBe(FORM_SOURCE_FOR_TESTS);
+      return adaptFormSource(source);
+    };
+    expect(changed('class="so-form__form"', 'class="my-form"')).toBeNull();
+    expect(changed(/name=\{names\[i\]\}/g, 'name={field.name}')).toBeNull();
+    // One field's name moved onto another line would leave that field undescribed.
+    expect(changed(/\n\t+name=\{names\[i\]\}/, ' name={names[i]}')).toBeNull();
+    // A file beside it, however it is imported, would not be beside the copy.
+    expect(changed("import { visitorText } from '../runtime/visitor-text.js';", "import { visitorText } from './visitor-text.js';")).toBeNull();
+    expect(changed("import { visitorText } from '../runtime/visitor-text.js';", "import { visitorText } from'./visitor-text.js';")).toBeNull();
+    expect(changed('const uid = $props.id();', "const uid = $props.id();\n\tconst extra = import('./Note.svelte');")).toBeNull();
+    // A tool attribute of its own (an autosubmit would send without the visitor) leaves the form as the author made it.
+    expect(changed('\t\t\tclass="so-form__form"', '\t\t\tclass="so-form__form"\n\t\t\ttoolautosubmit')).toBeNull();
+    expect(changed('\t\t\tclass="so-form__form"', '\t\t\tclass="so-form__form"\n\t\t\ttooldescription="Contact us"')).toBeNull();
+    expect(changed('\t\t\tclass="so-form__form"', '\t\t\tclass="so-form__form"\n\t\t\ttoolname="mine"')).toBeNull();
+    expect(changed('async function submit(event) {', 'async function submit(e) {\n\t\tconst event = e;')).toBeNull();
   });
 });
 
@@ -114,6 +141,8 @@ describe('the exported website with WebMCP off', () => {
     const named = setTool(setTool(plain, home(plain), node.id, 'webmcpToolName', 'Book a call'), home(plain), node.id, 'webmcpToolDescription', 'Book.');
     const off = run(on(named), { type: 'site.update', webmcp: false });
     expect(Object.hasOwn(off.site, 'webmcp')).toBe(false);
+    // The names typed stay for when it is turned on again.
+    expect(forms(off, home(off))[0].webmcp).toEqual({ toolName: 'Book a call', toolDescription: 'Book.' });
     const before = generateProject(plain);
     for (const s of [named, off]) {
       const after = generateProject(s);
@@ -154,7 +183,8 @@ describe('the exported website with WebMCP on', () => {
     expect(html).toContain('toolparamdescription="Your &quot;name&quot; {here}"');
     // Each answer of a single-choice question is described by the question it answers.
     expect(html.match(/type="radio"[^>]*toolparamdescription="Topic"|toolparamdescription="Topic"[^>]*type="radio"/g)).toHaveLength(2);
-    expect(html).not.toMatch(/name="(?:_gotcha|form-name|access_key)"[^>]*toolparam/);
+    // The spam trap is in the agent's view too, told to stay empty.
+    expect(html).toMatch(/name="_gotcha" toolparamdescription="A spam trap: always leave it empty\./);
   });
 
   it('names the header’s forms first, and each page’s around them; a name given is kept, made a tool name', () => {
@@ -167,6 +197,22 @@ describe('the exported website with WebMCP on', () => {
     expect(toolsIn(files.get('src/routes/+layout.svelte')!).map((t) => t.name)).toEqual(['contact']);
     // "." is kept for the forms inside designs, which add their own ID after it.
     expect(toolsIn(files.get('src/routes/+page.svelte')!).map((t) => t.name)).toEqual(['Book_a_call', 'search_site_2', 'contact_v2']);
+    // One the header has already is numbered.
+    const plain = generateProject(on(setTool(s, home(s), a.id, 'webmcpToolName', '')));
+    expect(toolsIn(plain.get('src/routes/+page.svelte')!).map((t) => t.name)).toEqual(['contact_2', 'search_site_2', 'contact_v2']);
+  });
+
+  it('names a header’s and a footer’s forms apart even when they share a node ID', () => {
+    let s = withForms(withForms(fresh(), 1, header), 1, { kind: 'shell', id: 'footer' });
+    const h = s.site.shell.header;
+    const f = s.site.shell.footer;
+    const hid = h.rootIds.at(-1)!;
+    const fid = f.rootIds.at(-1)!;
+    // A hand-edited footer that reuses the header form's ID.
+    f.nodes = Object.fromEntries(Object.entries(f.nodes).map(([k, n]) => (k === fid ? [hid, { ...n, id: hid }] : [k, n])));
+    f.rootIds = f.rootIds.map((id) => (id === fid ? hid : id));
+    s = on(s);
+    expect(toolsIn(generateProject(s).get('src/routes/+layout.svelte')!).map((t) => t.name)).toEqual(['contact', 'contact_2']);
   });
 
   it('has a form inside a design name itself from its own ID, so two placements of the design never share a name', async () => {
@@ -224,8 +270,11 @@ describe('the exported website with WebMCP on', () => {
     // Not while the search box is only on a draft.
     let draft = run(on(fresh()), { type: 'page.create', pageId: 'pg_find', title: 'Find', route: '/find/' }, { type: 'page.update', pageId: 'pg_find', draft: true });
     draft = run(draft, { type: 'node.insert', owner: { kind: 'page', id: 'pg_find' }, componentId: 'site.search' });
-    expect(files(draft).has(`${RUNTIME_DIR}/${WEBMCP_SEARCH_FILE}`)).toBe(false);
     expect(files(draft).get('src/routes/+layout.svelte')).not.toContain('offerSearch');
+    // The file is there whenever the search code is, so leaving drafts out of an export never leaves the layout naming
+    // a file the copy lacks.
+    expect(files(draft).has(`${RUNTIME_DIR}/${WEBMCP_SEARCH_FILE}`)).toBe(true);
+    expect(files(run(draft, { type: 'site.update', webmcp: false })).has(`${RUNTIME_DIR}/${WEBMCP_SEARCH_FILE}`)).toBe(false);
   });
 
   it('starts the entrances and the search tool from one onMount import', async () => {
@@ -234,6 +283,7 @@ describe('the exported website with WebMCP on', () => {
     s = run(s, { type: 'node.setContent', owner: home(s), nodeId: section, field: 'appear', value: 'fade' });
     const layout = generateProject(s).get('src/routes/+layout.svelte')!;
     expect(layout).toContain('onMount(observeAppear);');
+    expect(layout).toContain('onMount(() => offerSearch(resolve));');
     expect(layout.match(/import \{ onMount \} from 'svelte';/g)).toHaveLength(1);
     expect(await compileProject(s)).toEqual([]);
   });
@@ -280,6 +330,7 @@ describe('the search_site tool in the visitor’s browser', () => {
     const loads = (globalThis as { __soIndexLoads?: number }).__soIndexLoads ?? 0;
     expect(await t.execute({ query: 'oak' })).toEqual({ total: 1, results: [{ title: 'About the studio', excerpt: 'We make oak furniture.', url: 'https://example.com/studio/about/' }] });
     expect((globalThis as { __soIndexLoads?: number }).__soIndexLoads).toBe(loads + 1);
+    expect(await t.execute({ query: 'welcome' })).toEqual({ total: 1, results: [{ title: 'Home', excerpt: 'Welcome', url: 'https://example.com/studio/' }] });
     expect(await t.execute({ query: ' ' })).toEqual({ error: expect.any(String) });
     expect(await t.execute(null)).toEqual({ error: expect.any(String) });
     expect(signal.aborted).toBe(false);
@@ -299,7 +350,17 @@ describe('the search_site tool in the visitor’s browser', () => {
     const stop = offerSearch((r) => r);
     expect(typeof stop).toBe('function');
     stop();
+    await new Promise((r) => setTimeout(r, 20));
     expect((globalThis as { __soIndexLoads?: number }).__soIndexLoads ?? 0).toBe(loads);
+    expect(registered).toHaveLength(1);
+  });
+
+  it('stops the tool by its name where the browser takes no signal', async () => {
+    const { offerSearch } = await tool();
+    const calls: string[] = [];
+    (globalThis as { document?: unknown }).document = { modelContext: { registerTool: (t: { name: string }) => calls.push(`register ${t.name}`), unregisterTool: (name: string) => calls.push(`unregister ${name}`) }, baseURI: 'https://example.com/' };
+    offerSearch((r) => r)();
+    expect(calls).toEqual(['register search_site', 'unregister search_site']);
   });
 
   it('leaves a name already offered alone, whether the refusal is thrown or rejected', async () => {
@@ -344,19 +405,38 @@ describe('editing a form’s tool', () => {
     fails({ type: 'node.setContent', owner: home(s), nodeId: id, field: 'webmcpToolDescription', value: 'a'.repeat(501) });
     fails({ type: 'node.setContent', owner: home(s), nodeId: id, field: 'webmcpToolName', value: 7 });
     fails({ type: 'node.setContent', owner: home(s), nodeId: s.pages[s.site.homePageId].rootIds[0], field: 'webmcpToolName', value: 'hero' });
+    // Site search is code too, and no form.
+    const searching = withSearch(s);
+    fails({ type: 'node.setContent', owner: home(s), nodeId: searching.pages[s.site.homePageId].rootIds.at(-1)!, field: 'webmcpToolName', value: 'find' } as EditOperation);
+    expect(() => applyOperations(searching, [{ type: 'node.setContent', owner: home(s), nodeId: searching.pages[s.site.homePageId].rootIds.at(-1)!, field: 'webmcpToolName', value: 'find' }])).toThrow(/contact form/);
+    // At the limits, accepted.
+    const at = setTool(setTool(s, home(s), id, 'webmcpToolName', 'a'.repeat(128)), home(s), id, 'webmcpToolDescription', 'b'.repeat(500));
+    expect(forms(at, home(at))[0].webmcp).toEqual({ toolName: 'a'.repeat(128), toolDescription: 'b'.repeat(500) });
   });
 
-  it('drops the tool when the form becomes another kind of component', () => {
+  it('drops the tool when the form becomes another kind of component, and says so first', () => {
     let s = withForms(fresh(), 1);
     const id = forms(s, home(s))[0].id;
-    s = setTool(s, home(s), id, 'webmcpToolName', 'Book');
+    s = setTool(s, home(s), id, 'webmcpToolDescription', 'Book.');
+    expect(() => applyOperations(s, [{ type: 'instance.swapComponent', owner: home(s), nodeId: id, componentId: 'content.text' }])).toThrow(/Agent tool name and description/);
     s = run(s, { type: 'instance.swapComponent', owner: home(s), nodeId: id, componentId: 'content.text', allowDrops: true });
     expect(Object.hasOwn(s.pages[s.site.homePageId].nodes[id], 'webmcp')).toBe(false);
   });
 
-  it('tells the AI the site’s WebMCP choice, and describes the edits', () => {
+  it('tells the AI the site’s WebMCP choice and a form’s own names, and describes the edits', () => {
     const s = on(fresh());
     expect(projectSummary(s, 1).site).toMatchObject({ agentDiscovery: { webmcp: true } });
+    const named = withForms(fresh(), 1);
+    const node = forms(named, home(named))[0];
+    const withName = setTool(named, home(named), node.id, 'webmcpToolName', 'Book');
+    const page = withName.pages[withName.site.homePageId];
+    expect(compactNode(withName, page, node.id)).toMatchObject({ webmcp: { toolName: 'Book' } });
+    expect(compactNode(named, named.pages[named.site.homePageId], node.id)).not.toHaveProperty('webmcp');
+    const labels = (ops: EditOperation[], before: ProjectState) => {
+      const r = applyOperations(before, ops);
+      return describeOps(ops, before, r.state, r.results).map((c) => c.label).join(' ');
+    };
+    expect(labels([{ type: 'node.setContent', owner: home(named), nodeId: node.id, field: 'webmcpToolName', value: 'Book' }], named)).toContain('agent tool name');
     expect(projectSummary(fresh(), 1).site).not.toHaveProperty('agentDiscovery');
     const ops: EditOperation[] = [{ type: 'site.update', webmcp: true }];
     const r = applyOperations(fresh(), ops);
@@ -377,10 +457,126 @@ describe('the WebMCP readiness suggestion', () => {
     expect(finding(withSearch(fresh()))[0].message).toContain('has site search but');
   });
 
+  it('counts what collection pages show: the shell they always show, and each entry’s page as its layout shows it', () => {
+    // The header is hidden on every page, but entries show it.
+    let s = withForms(fresh(), 1, header);
+    for (const id of s.site.pageOrder) s = run(s, { type: 'page.update', pageId: id, showHeader: false } as EditOperation);
+    expect(finding(s)).toEqual([]);
+    s = run(s, { type: 'collection.create', collectionId: 'projects', name: 'Projects', route: '/projects/' } as EditOperation, { type: 'entry.create', collectionId: 'projects', entryId: 'en_first', title: 'First', publishedAt: '2026-01-01', draft: false, body: ['First.'] } as EditOperation);
+    expect(finding(s)[0]?.message).toContain('a contact form');
+  });
+
+  it('says nothing for a form whose code declares no tool', () => {
+    const s = withForms(fresh(), 1);
+    const def = formDef(s);
+    def.source = def.source!.replace('class="so-form__form"', 'class="my-form"');
+    expect(finding(s)).toEqual([]);
+  });
+
   it('says nothing once WebMCP is on, or for a form only on a draft', () => {
     expect(finding(on(withSearch(withForms(fresh(), 1))))).toEqual([]);
     let s = run(fresh(), { type: 'page.create', pageId: 'pg_draft', title: 'Later', route: '/later/' }, { type: 'page.update', pageId: 'pg_draft', draft: true });
     s = withForms(s, 1, { kind: 'page', id: 'pg_draft' });
     expect(finding(s)).toEqual([]);
   });
+});
+
+describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent filled in, sent by the visitor', () => {
+  const ORIGIN = 'https://site.test';
+  const ENDPOINT = 'https://forms.test/f/abc';
+  afterAll(removeRendered);
+
+  /** The exported Home page with one connected form, served, hydrated, and its POSTs held for the test to answer. */
+  async function open() {
+    let s = on(withForms(fresh(), 1));
+    const node = forms(s, home(s))[0];
+    s = run(s, { type: 'instance.setProp', owner: home(s), nodeId: node.id, prop: 'endpoint', value: ENDPOINT });
+    const files = generateProject(s);
+    const [html, script] = await Promise.all([serverHtml(files, 'webmcp-agent-'), bundle(files, files)]);
+    const browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
+    const page = await (await browser.newContext()).newPage();
+    const posts: Route[] = [];
+    await page.route(`${ORIGIN}/**`, (route) =>
+      new URL(route.request().url()).pathname === '/site.js'
+        ? route.fulfill({ contentType: 'text/javascript', body: script })
+        : route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="app">${html}</div><script type="module" src="/site.js"></script></body></html>` })
+    );
+    await page.route(`${ENDPOINT}**`, (route) => void posts.push(route));
+    await page.goto(`${ORIGIN}/`);
+    await page.waitForFunction(() => typeof (window as unknown as { startSite?: unknown }).startSite === 'function');
+    await page.evaluate(() => (window as unknown as { startSite: (v: string) => void }).startSite('clean'));
+    await page.fill('input[name="name"]', 'Ana');
+    await page.fill('input[name="email"]', 'ana@example.com');
+    await page.fill('textarea[name="message"]', 'Hello');
+    return { browser, page, posts };
+  }
+
+  /** Submits the form as the browser does once the visitor sends what an agent filled in, holding what it is told. */
+  const agentSubmit = (agent: boolean) => {
+      const w = window as unknown as Record<string, unknown>;
+      const form = document.querySelector('form')!;
+      const event = new SubmitEvent('submit', { bubbles: true, cancelable: true });
+      w.told = undefined;
+      w.claimed = false;
+      if (agent) {
+        Object.defineProperty(event, 'agentInvoked', { value: true });
+        Object.defineProperty(event, 'respondWith', {
+          value: (answer: Promise<unknown>) => {
+            // Claimed while the event is still being dispatched, after the page took the submission over.
+            w.claimed = event.defaultPrevented;
+            answer.then((value) => {
+              w.told = value;
+              w.nameWhenTold = (document.querySelector('input[name="name"]') as HTMLInputElement).value;
+            });
+          }
+        });
+      }
+      form.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+
+  it('tells the agent the message was sent, and empties the form only after that', async () => {
+    const { browser, page, posts } = await open();
+    try {
+      expect(await page.evaluate(agentSubmit, true)).toBe(true);
+      expect(await page.evaluate(() => (window as unknown as { claimed: boolean }).claimed)).toBe(true);
+      await expect.poll(() => posts.length).toBe(1);
+      expect(await page.evaluate(() => (window as unknown as { told?: unknown }).told)).toBeUndefined();
+      await posts[0].fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      await page.waitForFunction(() => (window as unknown as { told?: unknown }).told !== undefined);
+      expect(await page.evaluate(() => (window as unknown as { told: unknown }).told)).toEqual({ sent: true, message: 'The message was sent.' });
+      // Still filled in when the agent was told; emptied right after.
+      expect(await page.evaluate(() => (window as unknown as { nameWhenTold: string }).nameWhenTold)).toBe('Ana');
+      await expect.poll(() => page.inputValue('input[name="name"]')).toBe('');
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
+  it('tells the agent when the service refuses the message, and keeps what was typed', async () => {
+    const { browser, page, posts } = await open();
+    try {
+      await page.evaluate(agentSubmit, true);
+      await expect.poll(() => posts.length).toBe(1);
+      await posts[0].fulfill({ status: 500, body: 'no' });
+      await page.waitForFunction(() => (window as unknown as { told?: unknown }).told !== undefined);
+      expect(await page.evaluate(() => (window as unknown as { told: unknown }).told)).toEqual({ sent: false, message: expect.stringContaining('could not be sent') });
+      expect(await page.inputValue('input[name="name"]')).toBe('Ana');
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
+  it('sends as before when the visitor sends without an agent', async () => {
+    const { browser, page, posts } = await open();
+    try {
+      expect(await page.evaluate(agentSubmit, false)).toBe(true);
+      await expect.poll(() => posts.length).toBe(1);
+      await posts[0].fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      await expect.poll(() => page.inputValue('input[name="name"]')).toBe('');
+      expect(await page.evaluate(() => (window as unknown as { claimed: boolean }).claimed)).toBe(false);
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
 });

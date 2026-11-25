@@ -2186,10 +2186,11 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       if (v !== null && v !== undefined && typeof v !== 'string') fail(`${op.field} is text, or null for the default.`);
       const text = typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '';
       if (key === 'toolName' && text) {
-        if ([...text].length > WEBMCP_TYPED_NAME_MAX) fail(`A tool name can be at most ${WEBMCP_TYPED_NAME_MAX} characters.`);
+        // Counted as the Inspector's field counts it, so what it lets the author type is never refused.
+        if (text.length > WEBMCP_TYPED_NAME_MAX) fail(`A tool name can be at most ${WEBMCP_TYPED_NAME_MAX} characters.`);
         if (!webMcpToolName(text)) fail('A tool name needs at least one letter or digit.');
       }
-      if (key === 'toolDescription' && [...text].length > WEBMCP_DESCRIPTION_MAX) fail(`A tool description can be at most ${WEBMCP_DESCRIPTION_MAX} characters.`);
+      if (key === 'toolDescription' && text.length > WEBMCP_DESCRIPTION_MAX) fail(`A tool description can be at most ${WEBMCP_DESCRIPTION_MAX} characters.`);
       // Each is kept only while it holds something, and the pair only while either does.
       const kept = { ...toolOverrides(node) };
       if (text) kept[key] = text;

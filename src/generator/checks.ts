@@ -13,7 +13,7 @@ import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
-import { codeTakesBlocks, isDraftEntry, isDraftPage, keptPanels, liveRedirects, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
+import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
@@ -644,29 +644,52 @@ export function netlifyFormClashes(state: ProjectState): FormNameClash[] {
 
 /**
  * Whether the website shows a code component `test` picks: on a published page, in the shared header or footer where
- * a published page shows it, or in the layout of a collection with a published entry, at any depth (inside designs,
- * content areas and kept panels). A component only installed, or placed only on drafts, is not shown.
+ * the website shows it (a published page that does, or any page of a collection: its entries and archives always do),
+ * or on a published entry's page as its collection's layout shows it for that entry, at any depth (inside designs,
+ * content areas and kept panels). A component only installed, or placed only on drafts, is not shown. With
+ * `throughCode`, code that places the component itself (a design converted to code) shows it too.
  */
-export function siteShowsCode(state: ProjectState, test: (def: ComponentDefinition) => boolean): boolean {
+export function siteShowsCode(state: ProjectState, test: (def: ComponentDefinition) => boolean, opts: { throughCode?: boolean } = {}): boolean {
   const pages = state.site.pageOrder.flatMap((id) => (Object.hasOwn(state.pages, id) && !isDraftPage(state, state.pages[id]) ? [state.pages[id]] : []));
-  const trees: NodeTree[] = [...pages, ...SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part))).map((part) => state.site.shell[part])];
-  const live = new Set(siteEntries(publishedState(state)).map((e) => e.collection.settings.id));
-  for (const id of [...live].sort()) {
-    const layout = storedLayout(state, id);
-    if (layout) trees.push(layout);
-  }
-  let found = false;
-  for (const tree of trees) {
+  const entries = siteEntries(state).filter((e) => !isDraftEntry(e.entry));
+  const collectionPages = entries.length > 0 || archivePages(state).length > 0;
+  const shell = SHELL_PARTS.filter((part) => collectionPages || pages.some((p) => showsPart(p, part))).map((part) => state.site.shell[part]);
+  const reached = new Map<string, boolean>();
+  const picks = (def: ComponentDefinition) => test(def) || (!!opts.throughCode && def.kind === 'code' && codeReaches(state, def, test, reached));
+  const shows = (tree: NodeTree) => {
+    let found = false;
     walkRendered(state, tree, {
       kept: true,
       prune: () => found,
       code: (def) => {
-        if (test(def)) found = true;
+        if (!found && picks(def)) found = true;
       }
     });
-    if (found) return true;
-  }
-  return false;
+    return found;
+  };
+  if ([...pages, ...shell].some(shows)) return true;
+  // Each entry's page as the website has it: its layout's conditions read for that entry.
+  return entries.some(({ collection, entry }) => shows(entryArticle(state, collection, entry)));
+}
+
+/**
+ * Whether code places, through the files it imports (other code, or designs, as a design converted to code does), a
+ * component `test` picks. Each definition is judged once (`memo`).
+ */
+function codeReaches(state: ProjectState, def: ComponentDefinition, test: (def: ComponentDefinition) => boolean, memo: Map<string, boolean>): boolean {
+  const known = memo.get(def.id);
+  if (known !== undefined) return known;
+  memo.set(def.id, false);
+  const inside = (d: ComponentDefinition | undefined): boolean => {
+    if (!d) return false;
+    if (test(d)) return true;
+    if (d.kind === 'code') return codeReaches(state, d, test, memo);
+    return Object.values(d.tree?.nodes ?? {}).some((n) => n?.kind === 'instance' && inside(Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined));
+  };
+  const source = typeof def.source === 'string' ? def.source : '';
+  const found = Object.values(state.components).some((d) => d.id !== def.id && source.includes(`/${defFile(d).split('/').pop()}`) && inside(d));
+  memo.set(def.id, found);
+  return found;
 }
 
 /** A content field of a placement: one of its properties, or one field of one item in a list property. */

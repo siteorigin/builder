@@ -1,6 +1,6 @@
 import { axesOf, selectedVariants } from '@shared/variants';
 import { agentDiscovery, oneLine } from '@shared/llms';
-import { webMcpOn } from '@shared/webmcp';
+import { toolOverrides, webMcpOn } from '@shared/webmcp';
 import { crawlerRules, storedCrawlerPolicy } from '@shared/crawler-policy';
 import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import { isBinding, slotChildren } from '@shared/types';
@@ -263,6 +263,9 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       if (n.overrides) base.styleOverrides = n.overrides;
       if (n.itemOverrides) base.itemStyleOverrides = n.itemOverrides;
       if (n.appear) base.appear = n.appear;
+      // A contact form's own WebMCP tool name and description (node.setContent webmcpToolName / webmcpToolDescription).
+      const tool = toolOverrides(n);
+      if (tool.toolName || tool.toolDescription) base.webmcp = Object.fromEntries(Object.entries(tool).filter(([, v]) => v));
       if (n.slots && depth < 4) base.slots = Object.fromEntries(Object.keys(n.slots).map((k) => [k, slotChildren(n, k).map((c) => compactNode(state, tree, c, depth + 1))]));
       break;
     }

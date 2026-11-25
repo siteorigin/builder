@@ -90,7 +90,7 @@ import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } fro
 import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
-import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, searchesSite, usesSiteSearch } from './search';
+import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
 import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
@@ -104,9 +104,9 @@ import { generateWebManifest, siteColors, siteIconLinks, themeColorMeta } from '
 import { WEB_MANIFEST } from '@shared/site-icons';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
-import { notFoundSectionRoutes, siteShowsCode } from './checks';
+import { notFoundSectionRoutes } from './checks';
 import { webMcpOn } from '@shared/webmcp';
-import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
+import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, showsSiteSearch, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
 import { graphScript, inGenerationRun } from './structured-data';
 import { RSS_PATH, feedLink, generateRssFeed } from './rss';
 import { siteTwitterHandle } from '@shared/site-identity';
@@ -3278,7 +3278,7 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
     indent: 0,
     locals: new Map()
   };
-  if (!opts.instrument && webMcpOn(state.site)) ctx.toolNames = pageToolNames(state, page, shellTools(state));
+  if (!opts.instrument && webMcpOn(state.site)) ctx.toolNames = pageToolNames(state, page, shellTools(state).names);
   // The first section is usually what fills the first screen; its images load eagerly.
   const markup = page.rootIds
     .map((id, i) => {
@@ -3358,7 +3358,11 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const hctx = mk(state.site.shell.header, 'header');
   const fctx = mk(state.site.shell.footer, 'footer');
   // The header's and footer's forms are named once, together, and every page names its own around them.
-  if (!opts.instrument && webMcpOn(state.site)) hctx.toolNames = fctx.toolNames = shellTools(state);
+  if (!opts.instrument && webMcpOn(state.site)) {
+    const shell = shellTools(state);
+    hctx.toolNames = shell.header;
+    fctx.toolNames = shell.footer;
+  }
   const header = emitNodes(hctx, state.site.shell.header.rootIds);
   fctx.imports = hctx.imports;
   const footer = emitNodes(fctx, state.site.shell.footer.rootIds);
@@ -3684,7 +3688,7 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
     indent: 0,
     locals: new Map()
   };
-  if (!opts.instrument && webMcpOn(state.site)) ctx.toolNames = pageToolNames(state, tree, shellTools(state));
+  if (!opts.instrument && webMcpOn(state.site)) ctx.toolNames = pageToolNames(state, tree, shellTools(state).names);
   // The first section is usually what fills the first screen; its images load eagerly.
   const markup = tree.rootIds
     .map((id, i) => {
@@ -4166,8 +4170,10 @@ function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, 
   // visitor's website places (see generator/webmcp.ts). Never in the editor's preview, and never with WebMCP off.
   if (!opts.instrument && webMcpOn(state.site)) {
     for (const def of sortedDefs(state)) if (declaresFormTool(def)) files.set(webMcpFormFile(def), adaptedForm(def.source!)!);
-    // The search tool, while a page of the website shows Site search.
-    if (offersSearchTool(state)) files.set(`${RUNTIME_DIR}/${WEBMCP_SEARCH_FILE}`, webMcpSearchJs());
+    // The search tool, beside the search code. Whether the layout starts it depends on what published pages show, which
+    // leaving drafts out of an export can change; whether the file is there depends only on the components, as the
+    // search code's own does, so the layout never names a file a draft-free copy of the site lacks.
+    if (usesSiteSearch(state)) files.set(`${RUNTIME_DIR}/${WEBMCP_SEARCH_FILE}`, webMcpSearchJs());
   }
 }
 
@@ -4177,12 +4183,13 @@ function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, 
  * on drafts, offers nothing).
  */
 export function offersSearchTool(state: ProjectState): boolean {
-  return webMcpOn(state.site) && derived(state, 'webmcpSearch', (s) => usesSiteSearch(s) && siteShowsCode(s, searchesSite));
+  return webMcpOn(state.site) && derived(state, 'webmcpSearch', showsSiteSearch);
 }
 
-/** The forms' tool names the shared header and footer take, while the site declares WebMCP tools. */
-function shellTools(state: ProjectState): ReadonlyMap<string, string> {
-  return new Map(derived(state, 'webmcpShellNames', (s) => [...shellToolNames(s)]));
+/** The forms' tool names the shared header and footer take, while the site declares WebMCP tools: each part's, by node ID. */
+function shellTools(state: ProjectState): { header: ReadonlyMap<string, string>; footer: ReadonlyMap<string, string>; names: string[] } {
+  const [header, footer] = derived(state, 'webmcpShellNames', shellToolNames);
+  return { header: new Map(header), footer: new Map(footer), names: [...header, ...footer].map(([, name]) => name) };
 }
 
 /** The library alone (see addLibrary), as generateProject makes it, without the routes that use it. */

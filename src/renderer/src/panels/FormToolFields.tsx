@@ -20,12 +20,10 @@ export function FormToolFields({ state, owner, node, def }: { state: ProjectStat
   // What agents are told today, as the generator writes it (a form inside a design adds its own ID to the name).
   const name = formToolBase(node);
   const status = !unchanged
-    ? 'This form’s code was changed, so it declares no tool.'
+    ? 'This form’s code is not the theme’s form as it ships (an edited copy), so it declares no tool.'
     : off
       ? 'Used once WebMCP is on (Site styles › AI agents).'
-      : owner.kind === 'component'
-        ? `Agents see “${name}” followed by the form’s own ID, so each placement of the design has a name of its own.`
-        : `Agents see “${name}”, numbered when another form on the page has the same name.`;
+      : `Agents see “${name}”: numbered when another form on the page (or the name search_site) has it, and followed by the form’s own ID when the form is inside a component or a content area.`;
   return (
     <>
       <Field label="Agent tool name" hint={`What AI agents in a visitor’s browser call this form (WebMCP). Letters, digits, “_”, “-”. ${status}`}>

@@ -18,9 +18,9 @@ import { checkPublicUrl } from '@shared/public-url';
 import { agentDiscovery } from '@shared/llms';
 import { crawlerAction, crawlerRules, isWholeSitePattern, KNOWN_CRAWLERS, presetAction, type CrawlerKind, type CrawlerRules } from '@shared/crawler-policy';
 import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
-import { showsEntryText, siteShowsCode, type SiteLink } from '@generator/checks';
-import { searchesSite, usesSiteSearch } from '@generator/search';
-import { isWebMcpForm, webMcpOn } from '@shared/webmcp';
+import { showsEntryText, type SiteLink } from '@generator/checks';
+import { showsFormTool, showsSiteSearch } from '@generator/webmcp';
+import { webMcpOn } from '@shared/webmcp';
 import { isLibraryImage } from '@generator/seo-graph';
 import { sitePublisher } from '@shared/site-identity';
 import { inspectPageStructuredData, typePhrase } from '@shared/page-structured-data';
@@ -424,8 +424,9 @@ const webMcpReadiness: SeoAuditRule = {
   id: 'webmcp-readiness',
   check({ state }) {
     if (webMcpOn(state.site)) return [];
-    const forms = siteShowsCode(state, (def) => isWebMcpForm(def));
-    const search = usesSiteSearch(state) && siteShowsCode(state, searchesSite);
+    // Only forms whose code can declare a tool: an edited copy would declare none, whatever the switch says.
+    const forms = showsFormTool(state);
+    const search = showsSiteSearch(state);
     if (!forms && !search) return [];
     const what = forms && search ? 'a contact form and site search' : forms ? 'a contact form' : 'site search';
     return [

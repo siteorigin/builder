@@ -9,6 +9,8 @@
  */
 import type { ComponentDefinition, InstanceNode, NodeTree, ProjectState } from '@shared/types';
 import { isWebMcpForm, toolOverrides, uniqueToolNames, WEBMCP_NAME_MAX, WEBMCP_SEARCH_TOOL, webMcpText, webMcpToolName } from '@shared/webmcp';
+import { siteShowsCode } from './checks';
+import { searchesSite, usesSiteSearch } from './search';
 
 /** The name a form takes when the author gives it none, or one with nothing usable in it. */
 export const DEFAULT_FORM_TOOL = 'contact';
@@ -17,40 +19,86 @@ export const DEFAULT_FORM_TOOL = 'contact';
 export const WEBMCP_SEARCH_FILE = 'webmcp-search.js';
 
 /**
- * The pieces of the theme's contact form the tool attributes are added at, each exactly as every version of the form
- * with single-choice questions writes it. Code that writes any of them differently (a copy the author changed) is
- * left as it is, and its form declares no tool.
+ * The pieces of the theme's contact form the tool attributes are added at, each exactly as every version of the form so
+ * far writes it. Code that writes any of them differently (a copy the author changed) is left as it is, and its form
+ * declares no tool.
  */
 const PROPS_END = "\n\t\tclass: className = ''\n\t} = $props();";
 const UID = '\n\tconst uid = $props.id();';
 const FORM_OPEN = '\n\t\t<form\n\t\t\tclass="so-form__form"';
 const FIELD_LOOP = '{#each fields as field, i (field.id)}';
-const FIELD_NAME = /\n(\t+)name=\{names\[i\]\}/g;
+const SUBMIT = '\n\tasync function submit(event) {\n\t\tevent.preventDefault();';
+const RESET = 'HTMLFormElement.prototype.reset.call(form);';
+/** The name each field the visitor fills in is sent under, on a line of its own: today's form, and the first ones. */
+const FIELD_NAME = /\n(\t+)(name=\{(?:names\[i\]|fieldName\(field, i\))\})/g;
+const ANY_FIELD_NAME = /name=\{(?:names\[i\]|fieldName\(field, i\))\}/g;
+/** A single-choice question's group, whose description agents read for all of its answers. */
+const CHOICES_OPEN = '<fieldset class="so-form__field so-form__field--wide so-form__choices"';
+/** The fields the visitor never fills in: the spam trap, and what the form sends for its service. Agents see them too. */
+const TRAP = /name=\{honeypot\}/g;
+const SERVICE_FIELD = /name="(?:form-name|access_key)"/g;
 
 const count = (text: string, piece: string) => text.split(piece).length - 1;
+const LABEL = "so_webmcp ? String(field.label ?? '').trim() || undefined : undefined";
 
 /**
- * The form's code with the tool attributes added: `toolname` and `tooldescription` on the form, and on each field the
- * visitor fills in, `toolparamdescription` from its label (a single-choice question's own words on each of its
- * answers, whose labels are only the answers). The attributes read the `so_webmcp` the placement hands the form, and
- * render nothing without it. No `toolautosubmit`: the browser fills the form in, and the visitor checks and sends it.
+ * The form's code with the tool attributes added: `toolname` and `tooldescription` on the form; on each field the
+ * visitor fills in, `toolparamdescription` from its label (a single-choice question's own words on its group and on each
+ * of its answers, whose labels are only the answers); and on the fields the visitor never fills in (the spam trap, the
+ * service's own), a description that tells agents to leave them be. The attributes read the `so_webmcp` the placement
+ * hands the form, and render nothing without it. No `toolautosubmit`: the browser fills the form in, and the visitor
+ * checks and sends it. Once they do, the agent is told whether the message was sent (`respondWith`), and the form is
+ * emptied only after that, since emptying it first would tell the agent its request was cancelled.
  *
- * Null when the code is not the theme's form as it is written (see the pieces above), already speaks of WebMCP, or
- * imports a file beside it (the copy is written to another folder, from which that path would lead nowhere).
+ * Null when the code is not the theme's form as it is written (see the pieces above), already speaks of WebMCP (a tool
+ * attribute of its own, an existing `toolautosubmit` among them, would change what the form does), or names a file
+ * beside it (the copy is written to another folder, from which that path would lead nowhere).
  */
 export function adaptFormSource(source: string): string | null {
-  if (/\bso_webmcp\b|\btoolname\b/.test(source) || /\bfrom\s+['"]\.\/|\bimport\s+['"]\.\//.test(source)) return null;
-  if (count(source, PROPS_END) !== 1 || count(source, UID) !== 1 || count(source, FORM_OPEN) !== 1 || count(source, FIELD_LOOP) !== 1) return null;
+  if (/\bso_(?:webmcp|send|reset|told)|\btool(?:name|description|autosubmit|param\w*)\b/i.test(source) || /['"`]\.\//.test(source)) return null;
+  if ([PROPS_END, UID, FORM_OPEN, FIELD_LOOP, SUBMIT].some((piece) => count(source, piece) !== 1) || !source.includes(RESET)) return null;
   const fields = source.match(FIELD_NAME)?.length ?? 0;
-  if (!fields) return null;
+  // Every field's name on a line of its own, so none is left without its description.
+  if (!fields || fields !== (source.match(ANY_FIELD_NAME)?.length ?? 0)) return null;
   return source
+    // First, so the emptying the agent's answer waits for is not itself made to wait.
+    .replaceAll(RESET, 'so_reset(form);')
     .replace(PROPS_END, "\n\t\tclass: className = '',\n\t\tso_webmcp = null\n\t} = $props();")
     .replace(
       UID,
       `${UID}\n\t// The tool the form is to AI agents in the visitor's browser (WebMCP), as its placement names it. A form inside a\n\t// design takes the design's name for it with its own ID added, so every form on a page has a name of its own.\n\tconst so_webmcpName = $derived(so_webmcp?.unique ? so_webmcp.name + '.' + String(uid).replace(/[^A-Za-z0-9_-]/g, '') : so_webmcp?.name);`
     )
+    .replace(
+      SUBMIT,
+      `\n\t// An agent in the visitor's browser that filled the form in (WebMCP) waits to hear whether the message was sent. It is
+\t// told once sending ends (respondWith, claimed while the browser still asks), and the form is emptied only after that.
+\tlet so_told = null;
+\tfunction so_reset(form) {
+\t\tif (so_told) so_told.then(() => HTMLFormElement.prototype.reset.call(form));
+\t\telse HTMLFormElement.prototype.reset.call(form);
+\t}
+
+\tfunction submit(event) {
+\t\tif (!so_webmcp || !event.agentInvoked || typeof event.respondWith !== 'function') return so_send(event);
+\t\tlet tell;
+\t\tconst told = new Promise((resolve) => (tell = resolve));
+\t\tso_told = told;
+\t\tconst result = () => (status === 'sent' ? { sent: true, message: 'The message was sent.' } : { sent: false, message: status === 'error' ? 'The message could not be sent. The visitor can try again.' : 'The form cannot be sent yet.' });
+\t\tso_send(event).then(() => tell(result()), () => tell(result()));
+\t\tevent.respondWith(told);
+\t\ttold.then(() => {
+\t\t\tif (so_told === told) so_told = null;
+\t\t});
+\t}
+
+\tasync function so_send(event) {
+\t\tevent.preventDefault();`
+    )
     .replace(FORM_OPEN, `${FORM_OPEN}\n\t\t\ttoolname={so_webmcpName}\n\t\t\ttooldescription={so_webmcp?.description}`)
-    .replace(FIELD_NAME, (_m, tabs: string) => `\n${tabs}name={names[i]}\n${tabs}toolparamdescription={so_webmcp ? String(field.label ?? '').trim() || undefined : undefined}`);
+    .replace(FIELD_NAME, (_m, tabs: string, name: string) => `\n${tabs}${name}\n${tabs}toolparamdescription={${LABEL}}`)
+    .replace(CHOICES_OPEN, `${CHOICES_OPEN} toolparamdescription={${LABEL}}`)
+    .replace(TRAP, (name) => `${name} toolparamdescription={so_webmcp ? 'A spam trap: always leave it empty. Filling it in discards the message.' : undefined}`)
+    .replace(SERVICE_FIELD, (name) => `${name} toolparamdescription={so_webmcp ? 'Set by the website for its form service: leave it as it is.' : undefined}`);
 }
 
 /** Adapted sources by the code they came from: a form placed on every page is adapted once. */
@@ -63,6 +111,19 @@ export function adaptedForm(source: string): string | null {
     adapted.set(source, adaptFormSource(source));
   }
   return adapted.get(source)!;
+}
+
+/**
+ * Whether the published website shows Site search: the site writes the search code, and a published page (or the shell
+ * or an entry's page it shows) places a component that searches, directly or inside code converted from a design.
+ */
+export function showsSiteSearch(state: ProjectState): boolean {
+  return usesSiteSearch(state) && siteShowsCode(state, searchesSite, { throughCode: true });
+}
+
+/** Whether the published website shows a contact form that declares a tool while WebMCP is on. */
+export function showsFormTool(state: ProjectState): boolean {
+  return siteShowsCode(state, declaresFormTool);
 }
 
 /** Whether a definition is a contact form whose code takes the tool attributes. */
@@ -113,24 +174,29 @@ function directForms(state: ProjectState, tree: NodeTree): InstanceNode[] {
   return out;
 }
 
-/** Tool names for the forms trees place directly, by node ID, each its own and none of `taken`. */
-function allocate(state: ProjectState, trees: NodeTree[], taken: readonly string[]): Map<string, string> {
-  const forms = trees.flatMap((t) => directForms(state, t));
+/**
+ * Tool names for the forms trees place directly, one map of node IDs to names per tree (two trees can use one node
+ * ID), each name its own and none of `taken`.
+ */
+function allocate(state: ProjectState, trees: NodeTree[], taken: readonly string[]): Array<Map<string, string>> {
+  const forms = trees.map((t) => directForms(state, t));
   const names = uniqueToolNames(
-    forms.map((n) => formToolBase(n).slice(0, WEBMCP_NAME_MAX)),
+    forms.flat().map((n) => formToolBase(n).slice(0, WEBMCP_NAME_MAX)),
     [WEBMCP_SEARCH_TOOL, ...taken]
   );
-  return new Map(forms.map((n, i) => [n.id, names[i]]));
+  let at = 0;
+  return forms.map((list) => new Map(list.map((n) => [n.id, names[at++]])));
 }
 
-/** The names of the forms the shared header and footer place directly, which every page leaves them. */
-export function shellToolNames(state: ProjectState): Map<string, string> {
-  return allocate(state, [state.site.shell.header, state.site.shell.footer], []);
+/** The names of the forms the shared header and footer place directly, as `[header, footer]` lists of [node ID, name]. */
+export function shellToolNames(state: ProjectState): [Array<[string, string]>, Array<[string, string]>] {
+  const [header, footer] = allocate(state, [state.site.shell.header, state.site.shell.footer], []);
+  return [[...header], [...footer]];
 }
 
 /** The names of the forms a page's (or an entry's page's) own tree places directly, around the shared header's and footer's. */
-export function pageToolNames(state: ProjectState, tree: NodeTree, shell: ReadonlyMap<string, string>): Map<string, string> {
-  return allocate(state, [tree], [...shell.values()]);
+export function pageToolNames(state: ProjectState, tree: NodeTree, shell: readonly string[]): Map<string, string> {
+  return allocate(state, [tree], shell)[0];
 }
 
 /** What a placement hands its form: the tool's name (or, inside a design, the start of it) and what it does. */
@@ -194,7 +260,17 @@ export function offerSearch(resolveRoute) {
 	} catch {
 		// The same: this page offers the tool already, or the browser refused it.
 	}
-	return () => controller.abort();
+	return () => {
+		controller.abort();
+		// The first browsers to offer WebMCP took no signal, and stopped a tool by its name.
+		if (typeof context.unregisterTool === 'function') {
+			try {
+				context.unregisterTool(tool.name);
+			} catch {
+				// Gone already.
+			}
+		}
+	};
 }
 `;
 }

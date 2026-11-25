@@ -7,6 +7,7 @@ import { displayName, enclosingRepeatProp } from '@engine/tree';
 import { boundSchema } from '@engine/schema';
 import { followsPage, inheritedValue } from '@shared/page-teasers';
 import { pagesWithin } from '@shared/page-tree';
+import { toolOverrides } from '@shared/webmcp';
 import { normalizeRoute, readablePath } from '@shared/routes';
 import { itemStylesOf, placementItems, repeatedPartList } from '@shared/item-styles';
 import { ownVisitorTextFor } from '@shared/visitor-text';
@@ -239,6 +240,13 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
     case 'node.setContent': {
       const node = nodeOf(state, op.owner, op.nodeId);
       if (typeof node === 'string') return gone(node);
+      // A form's tool name and description are kept together on the placement (shared/webmcp.ts), each its own field,
+      // and only for the form they were typed for.
+      if (op.field === 'webmcpToolName' || op.field === 'webmcpToolDescription') {
+        if (node.kind !== 'instance') return gone('element');
+        const tool = toolOverrides(node);
+        return found({ form: node.definitionId, value: op.field === 'webmcpToolName' ? tool.toolName : tool.toolDescription });
+      }
       const value = (node as unknown as Record<string, unknown>)[op.field];
       // In component editing, bound content writes the property's default, so that property is the field.
       const bound = isBinding(value) && '$prop' in value ? value : null;
