@@ -176,6 +176,10 @@ describe('the signup form block (#664)', () => {
     const note = signupNote(next);
     expect(note?.message).toBe(found[0].message);
     expect(note?.destination?.kind === 'form' ? formDestinationField(next, note.destination) : null).toMatchObject({ prop: 'endpoint' });
+    // With Web3Forms chosen, it leads to the access key instead.
+    const web3 = apply(next, [{ type: 'instance.setProp', owner, nodeId: 'n_signup', prop: 'provider', value: 'web3forms' }]);
+    const keyNote = signupNote(web3);
+    expect(keyNote?.destination?.kind === 'form' ? formDestinationField(web3, keyNote.destination) : null).toMatchObject({ prop: 'accessKey' });
     const connected = apply(next, [{ type: 'instance.setProp', owner, nodeId: 'n_signup', prop: 'endpoint', value: 'https://formspree.io/f/abc123' }]);
     expect(healthForms(connected).filter((d) => d.nodeId === 'n_signup')).toEqual([]);
     expect(signupNote(connected)).toBeUndefined();

@@ -264,9 +264,9 @@ describe('the blocks (#664)', () => {
     const css = componentsCss();
     expect(css).toMatch(new RegExp(`\\.${nodeClass('block.callout', 'root')}\\s*\\{[^}]*border-inline-start:\\s*4px solid var\\(--so-color-brand\\)`));
     // The filled tones change its background, never its border.
-    const tones = [...css.matchAll(/\.so-foundation-block-callout--tone-(muted|inverse)[^{]*\{([^}]*)\}/g)].map((m) => m[2]);
-    expect(tones.length).toBeGreaterThan(0);
-    for (const rule of tones) expect(rule).not.toMatch(/border/);
+    const tones = [...css.matchAll(/\.so-foundation-block-callout--tone-(muted|inverse)[^{]*\{([^}]*)\}/g)];
+    expect(new Set(tones.map((m) => m[1]))).toEqual(new Set(['muted', 'inverse']));
+    for (const [, , rule] of tones) expect(rule).not.toMatch(/border/);
   });
 
   it('testimonial card: a figure whose quote comes first and whose caption, last, names the client', () => {

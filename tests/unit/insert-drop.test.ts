@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { EditOperation } from '@shared/ops';
 import type { ElementNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
+import { catalogueComponent } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import type { AssetRecord, InstanceNode } from '@shared/types';
 import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertDestination, insertIndex, measuredLists, measureIds, savingProblems, slotKey, slotOfKey, type Measured } from '../../src/renderer/src/lib/insert-drop';
@@ -254,6 +255,16 @@ describe('a new node among siblings with an Order style (#52)', () => {
     let s = createStarterState('blank', 'Order', false);
     const owner: OwnerRef = { kind: 'page', id: s.site.homePageId };
     expect(incomingOrder(s, { componentId: 'block.stat' })).toBe(0);
+    // Not installed yet: the theme's own design says.
+    const shipped = catalogueComponent(s.site.themeId, 'block.stat')!;
+    const shippedRoot = shipped.tree!.nodes[shipped.tree!.rootIds[0]] as { styles?: Record<string, Record<string, unknown>> };
+    const kept = shippedRoot.styles;
+    try {
+      shippedRoot.styles = { ...kept, base: { ...(kept?.base ?? {}), order: 4 } };
+      expect(incomingOrder(s, { componentId: 'block.stat' })).toBe(4);
+    } finally {
+      shippedRoot.styles = kept;
+    }
     s = applyOperations(s, [
       { type: 'node.insert', newNodeId: 'n_sec', owner, parentId: null, componentId: 'layout.section' },
       { type: 'node.insert', owner, parentId: 'n_sec', slot: 'content', componentId: 'block.stat' }

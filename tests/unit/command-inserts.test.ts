@@ -140,6 +140,10 @@ describe('where an insert from the command menu lands', () => {
     expect(insertLanding(s, owner, selected, { componentId: 'block.feature' })).toEqual({ refused: 'Not taken by that slot' });
     expect(insertLanding(s, owner, selected, { componentId: 'block.stat' })).toEqual({ where: 'inside Intro' });
     expect(insertLanding(s, owner, selected, { primitive: 'heading' })).toEqual({ refused: 'Not taken by that slot' });
+    // The same for the slot picked for Insert, with nothing selected.
+    const picked = { owner, parentId: intro, slot: 'content' };
+    expect(insertLanding(s, owner, null, { componentId: 'block.feature' }, picked)).toEqual({ refused: 'Not taken by that slot' });
+    expect(insertLanding(s, owner, null, { componentId: 'block.testimonial' }, picked)).toEqual({ where: expect.stringContaining('Intro') });
   });
 
   it('refuses a component inside itself, or inside one that holds it however deep, while it is edited everywhere', () => {

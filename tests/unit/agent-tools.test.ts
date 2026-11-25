@@ -2982,7 +2982,15 @@ describe('a run limited to one page (#513)', () => {
     const out = await runUpsert({ slug: 'services', sections: [{ componentId: 'intro.page', props: { heading: 'Services' } }, { componentId: 'block.feature', props: { title: 'Planning' } }] }, host, 'c1', newMacroMemory());
     expect(out.ok).toBe(false);
     expect(JSON.stringify(out.content)).toContain('\\"block.feature\\" is a block, not a section');
+    // A repair cannot take a section away, so it is not what the call is told to send.
+    expect(JSON.stringify(out.content)).toContain('Call again without repair');
+    expect(JSON.stringify(out.content)).not.toContain('repair: true');
     expect(pageAt(now(), '/services/')).toBeUndefined();
+    // The project's installed copy decides, as Insert reads it: one set to insert inside layouts is a block here too.
+    const installed = structuredClone(state);
+    installed.components['foundation.features.grid'] = { ...structuredClone(catalogueComponent(state.site.themeId, 'features.grid')!), insertAs: 'element' };
+    const relisted = ((upsertToolSchema(installed) as { properties: { sections: { items: { oneOf: Array<{ properties: { componentId: { enum: string[] } } }> } } } }).properties.sections.items.oneOf).map((o) => o.properties.componentId.enum[0]);
+    expect(relisted).not.toContain('features.grid');
     // The catalogue and a search say which components are blocks.
     const catalogue = (await executeTool('read_project', JSON.stringify({ sections: ['catalogue'] }), host, 'r1')).content as { catalogue: Array<{ componentId: string; block?: boolean }> };
     expect(catalogue.catalogue.filter((c) => c.block).map((c) => c.componentId)).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video']);
