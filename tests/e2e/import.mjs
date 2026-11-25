@@ -152,16 +152,19 @@ const diskBytes = () => onDisk().reduce((n, f) => n + statSync(join(assetDir, f)
 const imported = onDisk();
 const importedBytes = diskBytes();
 const mb = (b) => `${(b / (1024 * 1024)).toFixed(1)} MB`;
-assert.equal(imported.length, PHOTOS * 5, 'each photo is an original and four responsive copies');
+// Each photo is its original and its copies: four smaller JPEGs, a WebP set and an AVIF set (when it is the smaller).
+const FILES = run.result.assetIds.reduce((n, id) => n + 1 + snap.state.assets.assets[id].variants.length, 0);
+assert.ok(FILES >= PHOTOS * 10, `each photo has its copies in every format (${FILES} files)`);
+assert.equal(imported.length, FILES, 'each photo is an original and its responsive copies');
 
 step('remove every unused image: the files stay, and the Assets panel says they are kept for Undo');
 await win.getByRole('button', { name: 'Assets', exact: true }).click();
 const storage = win.getByTestId('asset-storage');
-await storage.getByText(`${PHOTOS * 5} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
+await storage.getByText(`${FILES} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
 await win.getByRole('button', { name: /^Unused/ }).click();
 await win.getByRole('button', { name: `Remove all ${PHOTOS}` }).click();
 await storage.getByText('Kept for Undo').waitFor({ timeout: 15000 });
-await storage.getByText(`${PHOTOS * 5} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
+await storage.getByText(`${FILES} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
 await storage.getByText('0 files · 0 bytes').waitFor();
 assert.deepEqual(onDisk().sort(), imported.sort(), 'removing keeps every file for Undo');
 
@@ -184,7 +187,7 @@ const { plan, refused } = await win.evaluate(async () => {
   return { plan: info.reclaim, refused: await window.builder.project.reclaimStorage(info.reclaim.key, `${key}-another-opening`) };
 });
 assert.equal(refused.ok, false, 'a plan is only carried out in the opening it was made for');
-assert.deepEqual(plan.files, { files: PHOTOS * 5, bytes: importedBytes }, 'the plan frees every removed file');
+assert.deepEqual(plan.files, { files: FILES, bytes: importedBytes }, 'the plan frees every removed file');
 assert.deepEqual(onDisk().sort(), imported.sort(), 'nothing is deleted before the author confirms');
 await win.getByRole('button', { name: `Free ${mb(plan.files.bytes + plan.historyBytes)}`, exact: true }).click();
 await dialog.waitFor({ state: 'detached', timeout: 15000 });

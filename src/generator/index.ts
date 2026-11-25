@@ -3799,8 +3799,6 @@ function heroImage(ctx: EmitCtx): { image: Record<string, unknown>; sizes: strin
   const sizingParents: EmitCtx['sizingParents'] = new Map();
   walkRendered(state, tree, {
     roots: [first],
-    n: 0,
-    defs: new Set(),
     prune: (n) => hero !== undefined || n.kind === 'repeat' || (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed'),
     node: (n, scope, _reportId, _inDef, def) => {
       if (hero !== undefined || n.kind !== 'image') return;

@@ -120,7 +120,7 @@ async function photoMetadata(buf) {
 
 /**
  * Assert a published copy of the photo carries no location or device details, and keeps its credits. A copy's pixels
- * are already upright: it has no orientation tag, or (a WebP, whose encoder always writes one) one that turns nothing.
+ * are already upright: it has no orientation tag, or (a WebP or AVIF, whose encoder always writes one) one that turns nothing.
  */
 async function assertPublicPhoto(buf, label, { original }) {
   const text = buf.toString('latin1');
@@ -132,7 +132,7 @@ async function assertPublicPhoto(buf, label, { original }) {
   assert.equal(m.copyright, '(c) 2026 Jane Doe', `${label} keeps the copyright`);
   assert.match(m.xmp, /<rdf:li>Jane Doe<\/rdf:li>/, `${label} keeps the XMP creator`);
   if (original) assert.equal(m.orientation, 6, `${label} keeps its orientation tag`);
-  else if (m.format === 'webp') assert.ok(m.orientation === undefined || m.orientation === 1, `${label} is already upright and its orientation tag turns nothing (${m.orientation})`);
+  else if (m.format !== 'jpeg') assert.ok(m.orientation === undefined || m.orientation === 1, `${label} is already upright and its orientation tag turns nothing (${m.orientation})`);
   else assert.equal(m.orientation, undefined, `${label} is already upright and has no orientation tag`);
 }
 
