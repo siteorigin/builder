@@ -559,11 +559,13 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [parent, setParent] = useState('');
   const [starter, setStarter] = useState<StarterId>('business');
-  // The themes a site can start with, the default first: development fixtures are only for switching, and an installed
-  // pack must have every section both starters place.
-  const themes = useMemo(() => listThemes().filter((t) => !t.devOnly && STARTERS.every((s) => !starterProblem(s.id, t.id))), []);
-  const [themeId, setThemeId] = useState(() => (themes.some((t) => t.id === defaultTheme().id) ? defaultTheme().id : (themes[0]?.id ?? defaultTheme().id)));
-  const theme = getTheme(themeId);
+  // The themes each starter can start with, the default first: development fixtures are only for switching, and an
+  // installed pack must have every section the starter places. A starter the chosen theme cannot make shows the first
+  // that can.
+  const eligible = useMemo(() => new Map(STARTERS.map((s) => [s.id, listThemes().filter((t) => !t.devOnly && !starterProblem(s.id, t.id))])), []);
+  const themes = eligible.get(starter) ?? [];
+  const [themeId, setThemeId] = useState(() => defaultTheme().id);
+  const theme = themes.find((t) => t.id === themeId) ?? themes[0] ?? getTheme(themeId);
   const [images, setImages] = useState(true);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);

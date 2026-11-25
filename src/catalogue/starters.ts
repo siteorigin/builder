@@ -4,6 +4,7 @@ import { installComponent, makeInstance } from '@engine/install';
 import { newId } from '@shared/ids';
 import { defaultTheme, findTheme, getTheme, themeLockEntry } from './index';
 import { canonicalRich } from './dsl';
+import { contractConflicts } from '@engine/theme-updates';
 import { TEMPLATE_VERSION } from './fonts';
 
 export type StarterId = 'business' | 'blank';
@@ -97,21 +98,24 @@ export function starterProblem(starter: StarterId, themeId?: string): string | n
   if (!theme) return `The theme "${themeId}" is not installed. Choose another theme.`;
   const name = STARTERS.find((s) => s.id === starter)?.name ?? starter;
   const problem = (why: string) => `The ${theme.name} theme cannot make the ${name}: ${why} Choose another theme or starter.`;
-  let made: ProjectState;
   try {
-    made = createStarterState(starter, 'Check', false, theme.id);
+    createStarterState(starter, 'Check', false, theme.id);
   } catch (e) {
     return problem((e as Error).message);
   }
-  // Every section the starter places must take what it sets: a property its design does not declare would not show.
+  // The starters are written for Foundation's contracts: each section they place must take what they set in it, as a
+  // switch from Foundation to this theme would require (the properties, lists and variant options they fill in).
+  const reference = findTheme('foundation') ?? defaultTheme();
+  if (reference.id === theme.id) return null;
+  const made = createStarterState(starter, 'Check', false, reference.id);
   for (const tree of [...Object.values(made.pages), made.site.shell.header, made.site.shell.footer])
     for (const n of Object.values(tree.nodes)) {
       if (n.kind !== 'instance') continue;
       const def = made.components[n.definitionId];
-      const props = Object.keys(n.props).filter((k) => !Object.hasOwn(def.properties, k));
-      if (props.length) return problem(`its ${def.name} has no ${props.map((p) => `"${p}"`).join(', ')}.`);
-      const options = Object.entries(n.variants ?? {}).filter(([axis, option]) => typeof option === 'string' && !Object.hasOwn(def.variantAxes?.[axis]?.options ?? {}, option));
-      if (options.length) return problem(`its ${def.name} has no ${options.map(([axis, option]) => `${axis} "${String(option)}"`).join(', ')}.`);
+      const next = theme.components.find((c) => c.componentId === def.componentId);
+      if (!next) return problem(`it has no ${def.name}.`);
+      const conflicts = contractConflicts(made, def, next);
+      if (conflicts.length) return problem(conflicts[0]);
     }
   return null;
 }

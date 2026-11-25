@@ -2965,20 +2965,22 @@ function visuallyHidden(el, s = getComputedStyle(el)) {
  * form's spam trap, a screen-reader-only label): whatever its own size, nothing of it is there to see or tap.
  */
 function clippedAway(el) {
-  // What escapes an ancestor's clip as the walk goes up: a fixed box escapes every one, an absolute box every one
-  // below the positioned ancestor it is placed against.
-  let escapes = getComputedStyle(el).position;
+  // Which ancestors clip the box being walked up from: all of them while it is in flow; for an absolute box, its
+  // containing block (positioned, transformed, filtered or contained) and what is above it; for a fixed one, only a
+  // transformed, filtered or contained containing block and what is above that, or none (the viewport holds it).
+  let placed = getComputedStyle(el).position === 'fixed' ? 'fixed' : getComputedStyle(el).position === 'absolute' ? 'absolute' : 'flow';
   for (let e = parentOf(el); e && e.nodeType === 1 && e !== document.body; e = parentOf(e)) {
-    if (escapes === 'fixed') return false;
     const s = getComputedStyle(e);
-    // A box that makes no box of its own (display: contents) clips nothing.
-    const clips = s.display !== 'contents' && (s.overflowX !== 'visible' || s.overflowY !== 'visible') && (escapes !== 'absolute' || s.position !== 'static');
-    if (clips) {
+    // A box that makes no box of its own (display: contents) neither clips nor holds anything.
+    if (s.display === 'contents') continue;
+    const holdsFixed = s.transform !== 'none' || s.filter !== 'none' || s.perspective !== 'none' || /paint|layout|strict|content/.test(s.contain || '');
+    const holds = placed === 'flow' || (placed === 'absolute' ? s.position !== 'static' || holdsFixed : holdsFixed);
+    if (holds && (s.overflowX !== 'visible' || s.overflowY !== 'visible')) {
       const r = boxRect(e);
       if (r.width <= 1 || r.height <= 1) return true;
     }
-    if (s.position === 'fixed' || s.position === 'absolute') escapes = s.position;
-    else if (escapes === 'absolute' && s.position !== 'static') escapes = 'static';
+    if (s.position === 'fixed' || s.position === 'absolute') placed = s.position;
+    else if (holds) placed = 'flow';
   }
   return false;
 }

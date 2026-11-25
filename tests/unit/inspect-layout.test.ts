@@ -201,6 +201,8 @@ describe('layout inspection readability checks', () => {
       `<div ${so('placed')} style="position:relative"><div style="height:0;overflow:hidden">${small('position:absolute;top:40px;left:20px')}</div></div>`
     ])
       expect(of(await inspect(html), 'small-tap-target'), html).toHaveLength(1);
+    // A transformed box holds a fixed control, so its clip hides it like any other.
+    expect(of(await inspect(`<div ${so('held')} style="width:1px;height:1px;overflow:hidden;transform:translateZ(0)">${small('position:fixed;top:40px;left:20px')}</div>`), 'small-tap-target')).toEqual([]);
   }, 30000);
 
   it.skipIf(!browserInstalled)('counts a repeated element once with its items, and keeps every kind under the cap', async () => {

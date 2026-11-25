@@ -215,6 +215,8 @@ describe('the Editorial pack (#390)', () => {
     const css = EDITORIAL_PACK.baseCss;
     expect(css).toContain(':is(.so-editorial-features-grid__card, .so--d-editorial-features-grid__card)::before');
     expect(css).not.toMatch(/\[class\$='-features-grid__card'\]/);
+    // Its hover ring has no weight of its own, so a shadow a design or a page gives a button wins.
+    expect(css).toContain(':where(:is(a, button).so-btn--secondary:hover) { box-shadow: inset 0 0 0 1px currentColor; }');
   });
 
   it('says before anything is made when a theme cannot make a starter', () => {
@@ -235,7 +237,17 @@ describe('the Editorial pack (#390)', () => {
       return d;
     });
     registerPacks([...listThemes(), buildPack(bare.define(headless)).pack]);
-    expect(starterProblem('blank', 'bare')).toMatch(/^The Bare theme cannot make the Blank site: its Header has no "links"\./);
+    expect(starterProblem('blank', 'bare')).toMatch(/^The Bare theme cannot make the Blank site: Header: property "links" is not compatible\./);
+    // And one whose image section lost the layout the Business starter chooses for it.
+    const plain = createPack({ ...meta, id: 'plain', name: 'Plain', version: '1.0.0', license: 'MIT' });
+    const fixed = components.map((c) => {
+      const d = plain.adopt(c);
+      if (d.componentId === 'content.media') delete d.variantAxes!.layout.options['media-end'];
+      return d;
+    });
+    registerPacks([...listThemes(), buildPack(plain.define(fixed)).pack]);
+    expect(starterProblem('blank', 'plain')).toBeNull();
+    expect(starterProblem('business', 'plain')).toMatch(/^The Plain theme cannot make the Business starter: Content with image: layout variant "media-end" is missing\./);
   });
 });
 

@@ -24,8 +24,9 @@ export const EDITORIAL_BASE_CSS = `${SHARED}
 .so-btn:where(:not(.so-btn--text)) { padding: 0.85em 1.5em; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; }
 .so-btn { border-radius: var(--so-radius-sm); }
 .so-btn--secondary { border-color: currentColor; }
-/* The rule thickens on hover: the button's own fill, a gradient included, is left as it is. */
-:is(a, button).so-btn--secondary:hover { box-shadow: inset 0 0 0 1px currentColor; }
+/* The rule thickens on hover: the button's own fill, a gradient included, is left as it is, and with no weight of its
+   own, any shadow a design or a page gives the button wins. */
+:where(:is(a, button).so-btn--secondary:hover) { box-shadow: inset 0 0 0 1px currentColor; }
 .so-btn--text { padding-block: 0.3em; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.45em; }
 :is(a, button).so-btn--text:hover { text-decoration-thickness: 2px; }
 
