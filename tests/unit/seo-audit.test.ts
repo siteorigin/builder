@@ -345,6 +345,7 @@ describe('baseline rules', () => {
     expect(JSON.stringify(runSeoAudit(structuredClone(s)))).toBe(JSON.stringify(found));
     // Findings that say where they are fixed do.
     for (const f of found) if (!['SEO_PAGE_UNLINKED'].includes(f.code)) expect(f.destination, f.code).toBeTruthy();
+    expect(found.find((f) => f.code === 'SEO_AI_SEARCH_CRAWLERS_BLOCKED')?.destination).toEqual({ kind: 'site', field: 'crawlerPolicy' });
   });
 });
 

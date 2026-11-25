@@ -59,7 +59,7 @@ const extraTokens = (rules: CrawlerRules) =>
  * A field of lines that saves as one part of the policy, checked as it is typed against the policy it would leave:
  * text it can't take stays in it with the reason, unsaved.
  */
-function CheckedLines({ id, label, hint, value, placeholder, toPatch, onLive, onSave }: { id: string; label: string; hint: string; value: string; placeholder: string; toPatch: (v: string) => Checked<CrawlerPolicyPatch>; onLive: (v: string | null) => void; onSave: (patch: CrawlerPolicyPatch) => unknown }) {
+function CheckedLines({ id, label, hint, value, placeholder, toPatch, toLines, onLive, onSave }: { id: string; label: string; hint: string; value: string; placeholder: string; toPatch: (v: string) => Checked<CrawlerPolicyPatch>; toLines: (v: string) => Checked<CrawlerPolicyPatch>; onLive: (v: string | null) => void; onSave: (patch: CrawlerPolicyPatch) => unknown }) {
   const [problem, setProblem] = useState<DraftProblem | null>(null);
   const settled = useCallback((dirty: boolean) => void (dirty || onLive(null)), [onLive]);
   const error = problem && (
@@ -84,7 +84,8 @@ function CheckedLines({ id, label, hint, value, placeholder, toPatch, onLive, on
         onDirty={settled}
         reveal={revealCrawlers}
         onCommit={(v) => {
-          const c = toPatch(v);
+          // Only the lines themselves are checked here: the project decides the rest as it is when the save lands.
+          const c = toLines(v);
           if (!c.ok) return false;
           // The preview shows the saved policy from here, whether or not the field's text changes with it.
           onLive(null);
@@ -111,12 +112,15 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
   const [typedTokens, setTypedTokens] = useState<string | null>(null);
   // Each field's lines replace its whole list, so a save never depends on what the panel last heard of the policy.
   // They are checked against the policy they would leave (its limits among them) before anything is sent.
+  const lines = (part: 'alsoBlock' | 'disallowPaths', text: string): Checked<CrawlerPolicyPatch> => {
+    const c = part === 'alsoBlock' ? checkCrawlerTokenLines(text) : checkCrawlerPathLines(text);
+    return c.ok ? { ok: true, value: { [part]: c.value } } : c;
+  };
   const linesPatch = (part: 'alsoBlock' | 'disallowPaths', text: string): Checked<CrawlerPolicyPatch> => {
-    const lines = part === 'alsoBlock' ? checkCrawlerTokenLines(text) : checkCrawlerPathLines(text);
-    if (!lines.ok) return lines;
-    const patch: CrawlerPolicyPatch = { [part]: lines.value };
-    const next = patchCrawlerPolicy(site.crawlerPolicy, patch);
-    return next.ok ? { ok: true, value: patch } : next;
+    const patch = lines(part, text);
+    if (!patch.ok) return patch;
+    const next = patchCrawlerPolicy(site.crawlerPolicy, patch.value);
+    return next.ok ? patch : next;
   };
   // The preview shows the lines being typed once they can be saved.
   const typed: CrawlerPolicyPatch = {};
@@ -182,10 +186,11 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
           <CheckedLines
             id="site-crawler-extra"
             label="Also block"
-            hint="Other crawlers to keep out of the whole site, by the name robots.txt gives them, one per line."
+            hint="Other crawlers to keep out of the whole site, by the name robots.txt gives them, one per line. Those listed above are chosen on their own rows."
             value={extraTokens(rules)}
             placeholder="ExampleBot"
             toPatch={(v) => linesPatch('alsoBlock', v)}
+            toLines={(v) => lines('alsoBlock', v)}
             onLive={setTypedTokens}
             onSave={save}
           />
@@ -196,6 +201,7 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
             value={rules.paths.join('\n')}
             placeholder="/private/"
             toPatch={(v) => linesPatch('disallowPaths', v)}
+            toLines={(v) => lines('disallowPaths', v)}
             onLive={setTypedPaths}
             onSave={save}
           />

@@ -75,6 +75,11 @@ const PRESET_BLOCKS: Record<FixedCrawlerPreset, readonly CrawlerKind[]> = {
 
 /** The most named crawlers and paths a policy keeps, and the longest of each: far inside what crawlers read of a robots.txt. */
 export const CRAWLER_LIMITS = { overrides: 64, paths: 64, token: 128, path: 512 } as const;
+/**
+ * The most a hand-edited policy is read with, well past what an edit may save, so a crawler kept out or a path closed
+ * is never dropped from one that went over, while robots.txt stays inside the 500 KiB crawlers read.
+ */
+const READ_LIMITS = { overrides: 256, paths: 256 } as const;
 
 /** The policy as the site keeps it: only what differs from the default, the rules of its own only for Custom. */
 export interface CrawlerPolicy {
@@ -98,7 +103,7 @@ export interface CrawlerPolicyPatch {
   overrides?: Record<string, CrawlerAction | null>;
   /**
    * The crawlers no list names that are kept out, as Site settings' "Also block" lists them: replaces that list. A
-   * listed crawler given here is kept out by name. Applied before `overrides`.
+   * listed crawler is refused here: its own entry in `overrides` sets it. Applied before `overrides`.
    */
   alsoBlock?: string[];
   /** Replaces the list. */
@@ -268,14 +273,16 @@ export function crawlerRules(site: Pick<SiteDoc, 'crawlerPolicy'>): CrawlerRules
       const had = named.get(key);
       if (!had || (had.action !== action && action === 'disallow')) named.set(key, { token: had?.token ?? token.value, action });
     }
-  const overrides = new Map([...named].sort((a, b) => byToken(a[1].token, b[1].token)).slice(0, CRAWLER_LIMITS.overrides));
+  // Past the limit, the crawlers kept out come first.
+  const kept = [...named].sort((a, b) => (a[1].action === b[1].action ? 0 : a[1].action === 'disallow' ? -1 : 1) || byToken(a[1].token, b[1].token)).slice(0, READ_LIMITS.overrides);
+  const overrides = new Map(kept.sort((a, b) => byToken(a[1].token, b[1].token)));
   const found = new Set<string>();
   if (custom && Array.isArray(raw.disallowPaths))
     for (const p of raw.disallowPaths) {
       const c = typeof p === 'string' ? checkCrawlerPath(p) : null;
       if (c?.ok) found.add(c.value);
     }
-  const paths = [...found].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).slice(0, CRAWLER_LIMITS.paths);
+  const paths = [...found].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).slice(0, READ_LIMITS.paths);
   const set = typeof raw.noAiMeta === 'boolean';
   return { preset, base, overrides, paths, noAiMeta: set ? (raw.noAiMeta as boolean) : presetNoAiMeta(base), noAiMetaSet: set };
 }
@@ -337,11 +344,12 @@ export function patchCrawlerPolicy(stored: unknown, patch: CrawlerPolicyPatch | 
   if (patch.base !== undefined) base = patch.base ?? 'allow-all';
   const overrides = new Map(custom && was ? current.overrides : []);
   if (patch.alsoBlock) {
-    // The crawlers no list names that were kept out make way for the new list.
+    // The crawlers no list names that were kept out make way for the new list. A listed crawler has its own row.
     for (const [key, o] of overrides) if (o.action === 'disallow' && !knownCrawler(o.token)) overrides.delete(key);
     for (const name of patch.alsoBlock) {
       const token = checkCrawlerToken(name);
       if (!token.ok) return token;
+      if (knownCrawler(token.value)) return no(`${token.value} is listed with the crawlers above: choose Block on its own row.`);
       overrides.set(foldToken(token.value), { token: token.value, action: 'disallow' });
     }
   }
@@ -406,10 +414,13 @@ function sitePattern(path: string, mount: string): string[] {
  */
 export function robotsTxt(rules: CrawlerRules, opts: { mount?: string; sitemap?: string } = {}): string {
   const mount = opts.mount ?? '';
-  const open = rules.paths.length ? [...new Set(rules.paths.flatMap((p) => sitePattern(p, mount)))].map((p) => `Disallow: ${p}`) : ['Allow: /'];
-  const lines = ['User-agent: *', ...open];
+  const closed = [...new Set(rules.paths.flatMap((p) => sitePattern(p, mount)))].map((p) => `Disallow: ${p}`);
+  const lines = ['User-agent: *', ...(closed.length ? closed : ['Allow: /'])];
   const allowed = allowedCrawlers(rules);
-  if (allowed.length) lines.push('', ...allowed.map((t) => `User-agent: ${t}`), ...open);
+  // A crawler let in by name is let into this site alone: merged into its domain's robots.txt, a group under a
+  // sub-path never reopens the domain's other addresses to it. A path closing the whole site keeps it out all the same.
+  const letIn = mount ? (rules.paths.some(isWholeSitePattern) ? [] : [`Allow: ${mount}/`]) : closed.length ? [] : ['Allow: /'];
+  if (allowed.length) lines.push('', ...allowed.map((t) => `User-agent: ${t}`), ...letIn, ...closed);
   const blocked = blockedCrawlers(rules);
   if (blocked.length) {
     lines.push('');
