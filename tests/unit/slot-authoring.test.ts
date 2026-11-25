@@ -442,4 +442,46 @@ describe('a slot passed on to a component placed in the design (#655)', () => {
     const html = await renderHome(s);
     expect(html.split('Book a class')).toHaveLength(2);
   });
+
+  it('is read under a name of its own wherever a placed component has a slot generated under its name, editor preview too', async () => {
+    // The card declares Body (first) and Content; a Shelf passes its own Content slot on to the card's Body.
+    let s = card().s;
+    const cardId = Object.values(s.components).find((d) => d.name === 'Profile card')!.id;
+    const cardOwner: OwnerRef = { kind: 'component', id: cardId };
+    s = run(s, [
+      { type: 'component.setSlot', definitionId: cardId, slot: 'body', label: 'Body' },
+      { type: 'node.insert', owner: cardOwner, parentId: 'body', primitive: 'slot', bind: 'body' },
+      { type: 'component.setSlot', definitionId: cardId, slot: 'content', label: 'Content' },
+      { type: 'node.insert', owner: cardOwner, parentId: 'root', primitive: 'slot', bind: 'content' }
+    ]).state;
+    const shelf = run(s, [{ type: 'component.upsert', name: 'Shelf', properties: {}, nodes: [{ kind: 'element', id: 'root', tag: 'section', children: [] }] }]);
+    const shelfId = shelf.results[0].definitionId as string;
+    const shelfOwner: OwnerRef = { kind: 'component', id: shelfId };
+    const inner = run(shelf.state, [{ type: 'node.insert', owner: shelfOwner, parentId: 'root', definitionId: cardId }]);
+    s = inner.state;
+    const at = slotInsertAt(s, shelfId, ref(shelfOwner, inner.results[0].nodeId as string));
+    expect(at).toMatchObject({ slot: 'body' });
+    s = run(s, createSlotOps(s, s.components[shelfId], 'Content', at!)!.operations).state;
+    const page: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const placed = run(s, [{ type: 'node.insert', owner: page, parentId: null, index: 0, definitionId: shelfId }]);
+    s = run(placed.state, [{ type: 'node.insert', owner: page, parentId: placed.results[0].nodeId as string, slot: 'content', primitive: 'paragraph', text: 'Book a class' }]).state;
+    expect(errors(s)).toEqual([]);
+    // The editor's preview gives the card an empty Content snippet beside Body: the Shelf's own Content must not read it.
+    const file = (instrument: boolean) => [...generateProject(s, { instrument })].find(([path, src]) => path.endsWith('.svelte') && src.includes('Code component') === false && src.includes(`slot_content: so_given_content = undefined`))?.[1] ?? '';
+    for (const instrument of [false, true]) {
+      const shelfFile = file(instrument);
+      expect(shelfFile).toContain('{@render so_given_content?.()}');
+      expect(shelfFile).not.toContain('{@render slot_content?.()}');
+    }
+    expect((await renderHome(s)).split('Book a class')).toHaveLength(2);
+    // Names that differ but generate the same identifier ("detail-pane", "_detail_pane") shadow it the same way.
+    const odd = structuredClone(s);
+    odd.components[cardId].slots = { 'detail-pane': { label: 'Detail' } };
+    odd.components[shelfId].slots = { _detail_pane: { label: 'Detail' } };
+    const oddFile = [...generateProject(odd)].map(([, src]) => src).find((src) => src.includes('slot__detail_pane: so_given__detail_pane = undefined'));
+    expect(oddFile).toBeDefined();
+    // A design with no component placed in it keeps the slot's own name.
+    const plain = [...generateProject(s)].map(([, src]) => src).find((src) => src.includes('slot_body = undefined') && src.includes('slot_content = undefined'));
+    expect(plain).toContain('{@render slot_content?.()}');
+  });
 });

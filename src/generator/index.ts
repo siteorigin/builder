@@ -217,7 +217,7 @@ export function propLocals(def: ComponentDefinition): Map<string, string> {
   const taken = new Set<string>();
   for (const name of Object.keys(def.properties).sort()) {
     let local = /^[a-zA-Z_$][\w$]*$/.test(name) ? name : `_${name.replace(/[^\w$]/g, '_')}`;
-    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|so_slot_|variant_|so_children_|so_state_|so_filter_|so_dialog_|so_opener_|so_overlay_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
+    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|so_given_|variant_|so_children_|so_state_|so_filter_|so_dialog_|so_opener_|so_overlay_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
     let unique = local;
     for (let i = 2; taken.has(unique); i++) unique = `${local}_${i}`;
     taken.add(unique);
@@ -2125,13 +2125,19 @@ function safeIdent(name: string): string {
 export const slotIdent = (slot: string) => `slot_${safeIdent(slot)}`;
 
 /**
- * The local a managed component reads a slot's content from: the prop's own name, unless the design passes a slot of
- * that name on to a component placed in it. It does that in a snippet of the same name, inside which the prop's name
- * means the snippet itself, which would then render itself forever.
+ * The local a managed component reads a slot's content from: the prop's own name, unless a component placed in its
+ * design has a slot generated under that same name. The design gives such a component a snippet of that name for its
+ * slot (empty ones too, in the editor's preview), and inside those snippets the name means the snippet: a slot of this
+ * design shown there would render that snippet instead, or itself, forever.
  */
-function slotLocal(def: ComponentDefinition | null | undefined, slot: string): string {
-  const passed = Object.values(def?.tree?.nodes ?? {}).some((n) => n.kind === 'instance' && !!n.slots && Object.hasOwn(n.slots, slot));
-  return passed ? `so_slot_${safeIdent(slot)}` : slotIdent(slot);
+function slotLocal(state: ProjectState, def: ComponentDefinition | null | undefined, slot: string): string {
+  const ident = slotIdent(slot);
+  const shadowed = Object.values(def?.tree?.nodes ?? {}).some((n) => {
+    if (n.kind !== 'instance') return false;
+    const inner = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
+    return [...Object.keys(inner?.slots ?? {}), ...Object.keys(n.slots ?? {})].some((k) => slotIdent(k) === ident);
+  });
+  return shadowed ? `so_given_${safeIdent(slot)}` : ident;
 }
 
 function idAttrs(ctx: EmitCtx, nodeId: string): string {
@@ -2941,7 +2947,7 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
     }
     case 'slot':
       // The slot's local, never its prop's name: a snippet passing it on to a component placed here takes that name.
-      return `${p}{@render ${slotLocal(ctx.def, node.slot)}?.()}`;
+      return `${p}{@render ${slotLocal(ctx.state, ctx.def, node.slot)}?.()}`;
     case 'instance':
       return emitInstance(ctx, node);
   }
@@ -3606,7 +3612,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
     propDecls.push(`\t\t${variantProp(axis)} = ${fallback},`);
   }
   for (const slotName of Object.keys(def.slots ?? {}).sort()) {
-    const local = slotLocal(def, slotName);
+    const local = slotLocal(state, def, slotName);
     propDecls.push(local === slotIdent(slotName) ? `\t\t${local} = undefined,` : `\t\t${slotIdent(slotName)}: ${local} = undefined,`);
   }
   propDecls.push(`\t\tso_o = undefined,`);
