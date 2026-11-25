@@ -51,7 +51,8 @@ const openPage = async (title) => {
 const inspectorSection = () => win.locator('#dock-panel-inspect .section', { has: win.locator('button.section-head', { hasText: 'Search & sharing' }) });
 /** The page's Search & sharing settings in the SEO view. */
 const section = () => view.locator('.seo-settings-group', { has: win.locator('h3', { hasText: 'Search & sharing' }) });
-const card = () => view.locator('.share-card');
+/** One platform's card in the view, which shows every platform's (#708); Facebook's unless another is named. */
+const card = (name = 'Facebook') => view.getByRole('group', { name: `${name} link preview`, exact: true }).locator('.share-card');
 /** The link card with the note under it, beside the settings in the SEO view. */
 const sharePreview = () => view.locator('.share-preview');
 const picker = () => section().locator('.insp-image');
@@ -101,20 +102,19 @@ await openPage('Kitchens');
 await eventually(async () => assert.equal(await imageName().innerText(), 'Kitchen', 'the picker names the page’s own photo'));
 await loaded(cardImage(), /kitchen/);
 await loaded(pickerThumb(), /kitchen/);
-// The Inspector shows one platform's card at a time, shrunk as one piece to the room it has.
-const shape = () => card().evaluate((el) => {
+// The view shows every platform's card, each shrunk as one piece to the room it has.
+const shape = (name) => card(name).evaluate((el) => {
   const box = el.querySelector('.share-card-image').getBoundingClientRect();
   return { platform: el.dataset.platform, ratio: box.width / box.height, fits: el.getBoundingClientRect().width <= el.parentElement.getBoundingClientRect().width + 0.5 };
 });
 for (const [name, platform, ratio] of [['X', 'x', 2], ['WhatsApp', 'messages', 1.91], ['Slack', 'chat', null], ['Facebook', 'feed', 1.91]]) {
-  await section().getByRole('radio', { name, exact: true }).click();
-  await eventually(async () => assert.equal((await shape()).platform, platform));
-  assert.equal(await card().count(), 1, 'one card at a time');
-  await loaded(cardImage(), /kitchen/);
-  const drawn = await shape();
+  await eventually(async () => assert.equal((await shape(name)).platform, platform));
+  assert.equal(await card(name).count(), 1, `${name}’s card shows`);
+  await loaded(card(name).locator('.share-card-image img'), /kitchen/);
+  const drawn = await shape(name);
   if (ratio) assert.ok(Math.abs(drawn.ratio - ratio) < 0.03, `${name}: cropped to ${ratio}:1 (${drawn.ratio})`);
-  assert.ok(drawn.fits, `${name}: fits the Inspector`);
-  await section().scrollIntoViewIfNeeded();
+  assert.ok(drawn.fits, `${name}: fits the view`);
+  await card(name).scrollIntoViewIfNeeded();
   await win.screenshot({ path: join(SHOTS, `page-sharing-${platform}.png`) });
 }
 const siteDescription = (await snapshot()).state.site.description;
@@ -153,14 +153,12 @@ step('two pages with different photos, chosen from the visual picker');
 await openPage('About');
 assert.equal(await imageName().innerText(), 'No sharing image', 'About has none, and the site has none');
 assert.equal(await card().locator('.share-card-image').count(), 0, 'the card has no picture');
-assert.equal(await section().locator('.share-preview-image').innerText(), 'No sharing image.', 'and the preview says there is none');
+assert.equal(await sharePreview().locator('.share-preview-image').innerText(), 'No sharing image.', 'and the preview says there is none');
 // Without a picture X draws its small card: a square placeholder beside the text, with a description.
-await section().getByRole('radio', { name: 'X', exact: true }).click();
-await eventually(async () => assert.equal(await card().getAttribute('data-platform'), 'x'));
-const placeholder = await card().locator('.share-card-image.empty').boundingBox();
+assert.equal(await card('X').getAttribute('data-platform'), 'x');
+const placeholder = await card('X').locator('.share-card-image.empty').boundingBox();
 assert.ok(Math.abs(placeholder.width - placeholder.height) < 1, 'a square placeholder');
-assert.equal(await card().locator('.share-card-desc').count(), 1, 'with a description');
-await section().getByRole('radio', { name: 'Facebook', exact: true }).click();
+assert.equal(await card('X').locator('.share-card-desc').count(), 1, 'with a description');
 await choose('Bedroom');
 await eventually(() => assert.equal(pageFile(about).seo.socialImage, 'a_bedroom', 'About is saved with the Bedroom photo'));
 await eventually(async () => assert.equal(await imageName().innerText(), 'Bedroom'));

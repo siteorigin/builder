@@ -473,7 +473,7 @@ export function SeoPreview({
         idBase={`seo-preview-${uid.replace(/[^A-Za-z0-9_-]/g, '')}-${key.replace(/[^A-Za-z0-9_-]/g, '-')}`}
         options={[
           { value: 'search', label: 'Search result', panel: () => <SearchResults state={state} doc={doc} /> },
-          { value: 'link', label: 'Link preview', panel: () => <SharingPreview card={doc.card} all={place === 'view'} /> },
+          { value: 'link', label: 'Link preview', panel: () => <SharingPreview card={doc.card} /> },
           { value: 'data', label: 'Structured data', panel: () => <StructuredData key={key} structured={ready && settled.current ? structured!.value : undefined} /> }
         ]}
       />
