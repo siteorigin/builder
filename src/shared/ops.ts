@@ -416,8 +416,8 @@ export const OPERATION_SCHEMAS = {
     owner,
     nodeId: z.string(),
     field: z
-      .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty', 'appear', 'appearStagger', 'overlay'])
-      .describe('"collapseEmpty" (definition containers): true hides it when all children are hidden. "overlay" (a plain div in a definition whose one condition reads a yes/no UI state): "dialog", "drawer-start", "drawer-end" or "drawer-bottom" shows it over the page while that condition holds, opened and closed by the state\'s buttons; null shows it in its place again. "tag" must fit where the node sits: li in ul/ol, dt/dd in dl, figcaption in figure, summary in details, only inline content in a p or span. "appear": a section or container enters as "fade", "lift" or "scale-subtle"; null clears, "none" turns a design\'s off. "appearStagger" (repeats): true staggers item entrances.'),
+      .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty', 'appear', 'appearStagger', 'overlay', 'webmcpToolName', 'webmcpToolDescription'])
+      .describe('"webmcpToolName" / "webmcpToolDescription" (contact form placements): the name and description AI agents in visitors\' browsers know the form by while the site has WebMCP on; "" or null goes back to the default. "collapseEmpty" (definition containers): true hides it when all children are hidden. "overlay" (a plain div in a definition whose one condition reads a yes/no UI state): "dialog", "drawer-start", "drawer-end" or "drawer-bottom" shows it over the page while that condition holds, opened and closed by the state\'s buttons; null shows it in its place again. "tag" must fit where the node sits: li in ul/ol, dt/dd in dl, figcaption in figure, summary in details, only inline content in a p or span. "appear": a section or container enters as "fade", "lift" or "scale-subtle"; null clears, "none" turns a design\'s off. "appearStagger" (repeats): true staggers item entrances.'),
     value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'node.setBinding': z.object({
@@ -549,6 +549,7 @@ export const OPERATION_SCHEMAS = {
     llmsFull: z.boolean().optional().describe('llms-full.txt, every listed page in one file. Default false.'),
     markdownMirrors: z.boolean().optional().describe('A Markdown copy beside each listed page. Default false.'),
     llmsSummary: limited(TEXT_LIMITS.siteDescription).optional().describe('llms.txt summary; "" uses the description.'),
+    webmcp: z.boolean().optional().describe('WebMCP: declare each contact form, and site search, as tools AI agents in visitors\' browsers can use. Default false.'),
     crawlerPolicy: z
       .object({
         preset: z

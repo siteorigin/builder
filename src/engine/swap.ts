@@ -8,6 +8,7 @@ import { isBinding, isBindingRef } from '@shared/types';
 import { toRichText, type RichText } from '@shared/richtext';
 import { repeatedPartList } from '@shared/item-styles';
 import { newId } from '@shared/ids';
+import { isWebMcpForm, toolOverrides } from '@shared/webmcp';
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import { EngineError, anchorCapable, findParent } from './tree';
 import { clone } from './install';
@@ -393,6 +394,9 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
   }
   plan.keepAppear = anchors;
   if (node.appear && !anchors) restyled.push('Entrance');
+  // A form's own tool name and description (WebMCP) go with it unless it becomes another form.
+  const tool = toolOverrides(node);
+  if ((tool.toolName || tool.toolDescription) && !isWebMcpForm(target)) dropped.push({ label: 'Agent tool name and description', reason: 'only a contact form is a tool for AI agents' });
   return plan;
 }
 

@@ -16,7 +16,9 @@ import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
 import { describeDraftLink, draftTarget, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
 import { archivePages } from '@shared/archives';
-import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
+import { declaresFormTool } from '@generator/webmcp';
+import { webMcpOn } from '@shared/webmcp';
+import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { hasFeedEntries } from '@generator/rss';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
@@ -590,11 +592,15 @@ export async function leaveOutDrafts(dir: string, state: ProjectState): Promise<
 export async function stripPartMarkers(project: string, state: ProjectState): Promise<void> {
   for (const def of Object.values(state.components)) {
     if (def.kind !== 'code' || def.owner !== 'project' || !def.sourcePath) continue;
-    const abs = safeJoin(project, def.sourcePath);
-    const source = await readIfExists(abs);
-    if (source === null) continue;
-    const clean = await withoutPartMarkers(source);
-    if (clean !== source) await fs.writeFile(abs, clean);
+    // And the copy of a contact form's code that declares its WebMCP tool, made from the same code with its markers,
+    // which the website has only while it declares its tools.
+    for (const path of [def.sourcePath, ...(webMcpOn(state.site) && declaresFormTool(def) ? [webMcpFormFile(def)] : [])]) {
+      const abs = safeJoin(project, path);
+      const source = await readIfExists(abs);
+      if (source === null) continue;
+      const clean = await withoutPartMarkers(source);
+      if (clean !== source) await fs.writeFile(abs, clean);
+    }
   }
 }
 

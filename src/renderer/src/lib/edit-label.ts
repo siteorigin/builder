@@ -59,7 +59,7 @@ export function fieldLabel(state: ProjectState, field: string, ref: ElementRef, 
 }
 
 /** The words for an element's content fields other than its text. */
-const FIELD_WORDS: Record<string, string> = { iconPosition: 'icon position', ariaLabel: 'accessible name', collapseEmpty: 'empty hiding', appear: 'entrance', appearStagger: 'entrance stagger' };
+const FIELD_WORDS: Record<string, string> = { iconPosition: 'icon position', ariaLabel: 'accessible name', collapseEmpty: 'empty hiding', appear: 'entrance', appearStagger: 'entrance stagger', webmcpToolName: 'agent tool name', webmcpToolDescription: 'agent tool description' };
 
 /** A content field of an element changed: its text is the element itself ("Edit Heading on About"), any other field is named ("Edit link of Button on Home"). */
 export function contentLabel(state: ProjectState, field: string, ref: ElementRef): string {

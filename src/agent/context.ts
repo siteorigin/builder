@@ -1,5 +1,6 @@
 import { axesOf, selectedVariants } from '@shared/variants';
 import { agentDiscovery, oneLine } from '@shared/llms';
+import { toolOverrides, webMcpOn } from '@shared/webmcp';
 import { crawlerRules, storedCrawlerPolicy } from '@shared/crawler-policy';
 import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import { isBinding, slotChildren } from '@shared/types';
@@ -170,8 +171,9 @@ export function pageIdFor(state: ProjectState, ref: string): string | null {
 function agentDiscoverySummary(site: ProjectState['site']): { agentDiscovery?: Record<string, unknown> } {
   const { llmsTxt, llmsFull, markdownMirrors } = agentDiscovery(site);
   const summary = oneLine(site.llmsSummary);
-  if (llmsTxt && !llmsFull && !markdownMirrors && !summary) return {};
-  return { agentDiscovery: { llmsTxt, llmsFull, markdownMirrors, ...(summary ? { summary } : {}) } };
+  const webmcp = webMcpOn(site);
+  if (llmsTxt && !llmsFull && !markdownMirrors && !summary && !webmcp) return {};
+  return { agentDiscovery: { llmsTxt, llmsFull, markdownMirrors, ...(summary ? { summary } : {}), ...(webmcp ? { webmcp } : {}) } };
 }
 
 /** The site's crawler policy as the website follows it, only while it differs from the default (every crawler let in). */
@@ -197,7 +199,7 @@ export function projectSummary(state: ProjectState, revision: number) {
       // Who publishes the site, as its pages tell search engines (site.update identity changes it).
       ...(state.site.identity ? { identity: state.site.identity } : {}),
       notFoundPage: notFoundCopy(state.site),
-      // What the website offers AI agents beside its pages (site.update llmsTxt, llmsFull, markdownMirrors, llmsSummary).
+      // What the website offers AI agents beside its pages (site.update llmsTxt, llmsFull, markdownMirrors, llmsSummary, webmcp).
       ...agentDiscoverySummary(state.site),
       // Which crawlers robots.txt keeps out, as the website reads the policy, once it differs from the default (site.update crawlerPolicy).
       ...crawlerPolicySummary(state.site),
@@ -261,6 +263,9 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       if (n.overrides) base.styleOverrides = n.overrides;
       if (n.itemOverrides) base.itemStyleOverrides = n.itemOverrides;
       if (n.appear) base.appear = n.appear;
+      // A contact form's own WebMCP tool name and description (node.setContent webmcpToolName / webmcpToolDescription).
+      const tool = toolOverrides(n);
+      if (tool.toolName || tool.toolDescription) base.webmcp = Object.fromEntries(Object.entries(tool).filter(([, v]) => v));
       if (n.slots && depth < 4) base.slots = Object.fromEntries(Object.keys(n.slots).map((k) => [k, slotChildren(n, k).map((c) => compactNode(state, tree, c, depth + 1))]));
       break;
     }
