@@ -88,6 +88,20 @@ describe('seoOverview', () => {
     expect(row(rows, SERVICES).level).toBe('warning');
     // Problems first, then the rest in the view's order.
     expect(rows.map((r) => r.key)).toEqual([HOME(dup), SERVICES, SPRING]);
+    // Two pages left to the site's description share it, and a draft with the same words repeats both.
+    const inherited = run(
+      state,
+      { type: 'page.update', pageId: home, description: '' },
+      { type: 'page.update', pageId: services, description: '' },
+      { type: 'page.create', pageId: 'pg_draft', title: 'Prices', route: '/prices/' },
+      { type: 'page.update', pageId: 'pg_draft', draft: true, description: '' }
+    );
+    const shared = seoOverview(inherited);
+    expect([HOME(inherited), SERVICES].map((k) => [row(shared, k).description.duplicates, row(shared, k).description.fallback, row(shared, k).problems])).toEqual([
+      [1, true, ['description-duplicate']],
+      [1, true, ['description-duplicate']]
+    ]);
+    expect(row(shared, 'page:pg_draft').description.duplicates).toBe(2);
   });
 
   it('keeps documents in different languages apart', () => {
@@ -140,6 +154,7 @@ describe('seoOverview', () => {
     delete gone.assets.assets.img_share;
     rows = seoOverview(gone);
     expect([HOME(gone), SERVICES, SPRING].map((k) => row(rows, k).image)).toEqual(['gone', 'gone', 'gone']);
+    expect(rows.every((r) => r.problems.includes('image-missing') && r.level === 'warning')).toBe(true);
     rows = seoOverview(run(state, { type: 'site.update', socialImage: null }));
     expect(rows.every((r) => r.image === 'none' && r.problems.includes('image-missing'))).toBe(true);
     // The audit rolls them up into one finding for the site; the overview flags each document it covers.
@@ -153,6 +168,8 @@ describe('seoOverview', () => {
     expect(row(rows, SERVICES)).toMatchObject({ noindex: true, listed: false, problems: [], level: 'ok' });
     expect(row(rows, HOME(s))).toMatchObject({ noindex: true, problems: ['home-hidden'], level: 'warning' });
     expect(runSeoAudit(s).map((f) => f.code)).toContain('SEO_HOME_NOINDEX');
+    const post = row(seoOverview(run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', noindex: true })), SPRING);
+    expect(post).toMatchObject({ noindex: true, listed: false, level: 'ok' });
   });
 
   it('puts warnings first, then notes, each in the view’s order', () => {
@@ -178,11 +195,30 @@ describe('seoOverview', () => {
     expect(seoOverview(damaged).map((r) => r.key)).toEqual([HOME(state), SERVICES, SPRING]);
   });
 
+  it('leaves out a draft the resolver can’t read, where the audit never looks', () => {
+    const { state } = seoSite();
+    const s = copy(run(state, { type: 'page.create', pageId: 'pg_draft', title: 'Prices', route: '/prices/' }, { type: 'page.update', pageId: 'pg_draft', draft: true }));
+    (s.pages.pg_draft.seo as Record<string, unknown>).socialImage = { toString: null };
+    expect(() => runSeoAudit(s)).not.toThrow();
+    expect(seoOverview(s).map((r) => r.key)).toEqual([HOME(state), SERVICES, SPRING]);
+  });
+
+  it('lists a document once however often a hand-edited entry order names it', () => {
+    const { state } = seoSite();
+    const s = copy(run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', excerpt: 'Short.' }));
+    s.collections.posts.settings.entryOrder = ['en_spring', 'en_spring'];
+    const rows = seoOverview(s);
+    expect(rows.map((r) => r.key)).toEqual([SPRING, HOME(state), SERVICES]);
+    expect(overviewText(s)).toEqual(auditText(s));
+  });
+
   it('works a saved state out once, and a new one again', () => {
     const { state, services } = seoSite();
     expect(seoOverviewOnce(state)).toBe(seoOverviewOnce(state));
     const next = run(state, { type: 'page.update', pageId: services, seoTitle: x(10) });
+    const first = seoOverviewOnce(state);
     expect(row(seoOverviewOnce(next), SERVICES).problems).toEqual(['title-length']);
+    expect(seoOverviewOnce(state)).toBe(first);
   });
 
   it('stays quick on a site with a few hundred documents', () => {
@@ -193,5 +229,10 @@ describe('seoOverview', () => {
     const rows = seoOverview(big);
     expect(performance.now() - start).toBeLessThan(1000);
     expect(rows).toHaveLength(303);
+    // The published posts sharing an excerpt each repeat the others; the drafts among them repeat all of those.
+    const shared = rows.filter((r) => r.key.startsWith('entry:posts:en_') && r.key !== SPRING && r.description.text.startsWith('The same excerpt'));
+    const listedCount = shared.filter((r) => r.listed).length;
+    expect(listedCount).toBeGreaterThan(1);
+    expect(shared.every((r) => r.description.duplicates === (r.listed ? listedCount - 1 : listedCount))).toBe(true);
   });
 });

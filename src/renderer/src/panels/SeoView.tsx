@@ -1,5 +1,5 @@
 import './SeoView.css';
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowLeft, FileText, House, Newspaper, Search } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import { setState, useStore } from '../store';
@@ -120,7 +120,8 @@ function listing(r: SeoOverviewRow): { tone: 'warn' | 'ok' | 'quiet'; label: str
   if (r.noindex) return { tone: r.home ? 'warn' : 'quiet', label: 'Hidden from search engines' };
   if (r.draft) return { tone: 'quiet', label: 'Draft: not on the website' };
   if (!r.listed) return { tone: 'quiet', label: 'Not on the website' };
-  return { tone: 'ok', label: 'Listed' };
+  // Allowed, not known to be: whether a search engine has listed it is beyond the editor.
+  return { tone: 'ok', label: 'Can be listed' };
 }
 
 function TextCell({ t, field, listed }: { t: SeoOverviewText; field: 'title' | 'description'; listed: boolean }) {
@@ -192,8 +193,8 @@ function SeoOverview({ state, problemsOnly, onProblemsOnly, returnTo, onOpen }: 
                         <span className="ellipsis">{r.name}</span>
                       </span>
                       <span className="seo-ov-where ellipsis">{r.collection ? `${r.collection} · ${r.address}` : r.address}</span>
+                      {r.draft && <span className="badge amber">Draft</span>}
                     </button>
-                    {r.draft && <span className="badge amber">Draft</span>}
                   </th>
                   <TextCell t={r.title} field="title" listed={r.listed} />
                   <TextCell t={r.description} field="description" listed={r.listed} />
@@ -259,6 +260,16 @@ export function SeoView({ shown }: { shown: boolean }) {
   const returnTo = useRef<string | null>(null);
   const backRef = useRef<HTMLButtonElement>(null);
   const opened = useRef(false);
+  const backFocused = useRef(false);
+  const shownKey = useRef<string | null>(null);
+  // A document gone while Back had focus (deleted, undone away) takes Back with it: focus goes to the overview, as Back
+  // would have taken it. Before the overview's own effect, which reads where to put it.
+  useLayoutEffect(() => {
+    const was = shownKey.current;
+    shownKey.current = doc?.key ?? null;
+    if (!doc && was && backFocused.current && !returnTo.current) returnTo.current = was;
+    if (!doc) backFocused.current = false;
+  }, [doc?.key]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (doc && opened.current) backRef.current?.focus();
     opened.current = false;
@@ -272,7 +283,7 @@ export function SeoView({ shown }: { shown: boolean }) {
       <div className="seo-bar">
         {doc ? (
           <>
-            <button ref={backRef} className="btn btn-ghost seo-back" aria-label="Back to overview" title="Back to overview" onClick={back}>
+            <button ref={backRef} className="btn btn-ghost seo-back" aria-label="Back to overview" title="Back to overview" onClick={back} onFocus={() => (backFocused.current = true)} onBlur={() => (backFocused.current = false)}>
               <ArrowLeft />
             </button>
             {doc.subject.kind === 'page' ? <FileText aria-hidden="true" /> : <Newspaper aria-hidden="true" />}

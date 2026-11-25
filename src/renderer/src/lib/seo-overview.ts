@@ -89,6 +89,15 @@ function imageStatus(meta: EffectiveSeo): SeoImageStatus {
 export function seoOverview(project: ProjectState): SeoOverviewRow[] {
   const state = readableState(project);
   const resolver = createSeoResolver(state);
+  // A draft the audit never reads may hold a value damaged by hand that the resolver can't read: it is left out, and
+  // never takes the rest of the overview with it.
+  const resolve = (subject: SeoSubject): EffectiveSeo | null => {
+    try {
+      return resolver.resolve(subject);
+    } catch {
+      return null;
+    }
+  };
   // The documents search engines may list, as the audit's duplicate rule groups them.
   const counts = { title: new Map<string, number>(), description: new Map<string, number>() };
   for (const d of resolver.published())
@@ -99,9 +108,13 @@ export function seoOverview(project: ProjectState): SeoOverviewRow[] {
       }
 
   const rows: SeoOverviewRow[] = [];
+  const seen = new Set<string>();
   for (const group of seoDocuments(state))
     for (const doc of group.documents) {
-      const meta = resolver.resolve(doc.subject);
+      // Once each, however often a hand-edited entry order names it.
+      if (seen.has(doc.key)) continue;
+      seen.add(doc.key);
+      const meta = resolve(doc.subject);
       if (!meta) continue;
       const listed = meta.visibility.website && meta.visibility.indexable;
       const own = ownSettings(state, doc.subject);

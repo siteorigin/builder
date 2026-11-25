@@ -142,6 +142,9 @@ await apply(
   'Share and describe About'
 );
 await eventually(async () => assert.equal(await ovRow(`page:${about.id}`).getAttribute('data-level'), 'ok', 'About has nothing left to fix, without reopening the view'));
+const aboutText = await ovRow(`page:${about.id}`).innerText();
+for (const shown of ['Meet the designers behind Riverside Studio', '90 characters', 'The site’s', 'Can be listed']) assert.ok(aboutText.includes(shown), `About’s row shows “${shown}”: ${aboutText}`);
+assert.match(await ovRow('entry:posts:en_winter').innerText(), /Draft: not on the website/, 'the draft says it is not on the website');
 rows = await ovRows();
 assert.ok(sortedByLevel(rows), 'and the order follows');
 const toFix = rows.filter((r) => r.level !== 'ok').map((r) => r.key);

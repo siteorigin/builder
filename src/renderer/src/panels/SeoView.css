@@ -10,7 +10,8 @@
   .seo-bar > svg { width: 16px; height: 16px; color: var(--text-3); flex: none; }
   .seo-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); min-width: 0; }
   .seo-address { font-size: 12px; color: var(--text-3); min-width: 0; }
-  .seo-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+  /* Room for the overview's sticky header, so a row brought into view by focus is never under it. */
+  .seo-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; scroll-padding-top: 44px; }
   .seo-none { margin: 64px auto; max-width: 36ch; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--text-3); text-align: center; padding: 24px; font-size: 13px; }
   .seo-none svg { width: 28px; height: 28px; }
   .seo-doc { max-width: 720px; margin: 24px auto 64px; padding: 0 24px; font-size: 13px; color: var(--text-2); display: flex; flex-direction: column; gap: 10px; }
@@ -35,11 +36,11 @@
   .seo-ov-table thead th:nth-child(2) { width: 26%; }
   .seo-ov-table thead th:nth-child(3) { width: 30%; }
   .seo-ov-table thead th:nth-child(4), .seo-ov-table thead th:nth-child(5) { width: 11%; }
-  .seo-ov-row > * { padding: 8px; vertical-align: top; border-bottom: 1px solid var(--border); text-align: left; font-weight: 400; min-width: 0; }
+  .seo-ov-row > * { padding: 8px; vertical-align: top; border-bottom: 1px solid var(--border); text-align: left; font-weight: 400; min-width: 0; overflow-wrap: anywhere; }
   .seo-ov-row:hover > * { background: var(--hover); }
   .seo-ov-row[data-level='warning'] > th { box-shadow: inset 3px 0 0 var(--amber); }
   .seo-ov-row[data-level='note'] > th { box-shadow: inset 3px 0 0 var(--border-strong); }
-  .seo-ov-row > th .badge { margin-top: 4px; }
+  .seo-ov-open .badge { margin-top: 2px; }
   .seo-ov-open { width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 0; border: 0; background: transparent; text-align: left; color: var(--text); cursor: pointer; border-radius: var(--r-sm); }
   .seo-ov-open:hover .seo-ov-name > span { text-decoration: underline; }
   .seo-ov-name { max-width: 100%; display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 13px; }
