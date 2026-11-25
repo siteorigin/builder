@@ -202,6 +202,38 @@ const gold = Object.values((await snapshot()).components).find((d) => d.name ===
 assert.equal(gold.description, 'For gold sponsors on the floor plan');
 await tile('Exhibitor card gold sponsor').waitFor();
 
+step('Duplicate copies a component under a new name, leaves every placement on it, and one Undo takes it back (#746)');
+const beforeCopy = await snapshot();
+const usesBefore = await library();
+await openInsert();
+await manage('Exhibitor card').click();
+await menu.getByRole('menuitem', { name: 'Duplicate…', exact: true }).click();
+assert.equal(await nameField.inputValue(), 'Exhibitor card copy', 'the dialog suggests a name');
+await dialog.getByRole('button', { name: 'Duplicate', exact: true }).click();
+await dialog.waitFor({ state: 'detached' });
+await eventually(async () => assert.deepEqual(await library(), { ...usesBefore, 'Exhibitor card copy': 0 }, 'the copy is placed nowhere, and every placement stays'));
+const copied = Object.values((await snapshot()).components).find((d) => d.name === 'Exhibitor card copy');
+const toastCopy = win.locator('.toast', { hasText: 'Duplicated Exhibitor card as Exhibitor card copy' });
+await toastCopy.getByRole('button', { name: 'Open in Component Studio' }).waitFor();
+assert.deepEqual((await snapshot()).pages, beforeCopy.pages, 'no page changes');
+await tile('Exhibitor card copy').waitFor();
+assert.match(await tile('Exhibitor card copy').innerText(), /Not used/);
+const order = await panel.locator('.insert-group[data-kind="component"] .insert-tile.project strong').allInnerTexts();
+const from = order.indexOf('Exhibitor card');
+// Its family: the original, then its copies by name.
+assert.ok(order.indexOf('Exhibitor card copy') > from, `listed under the original (${order.join(', ')})`);
+await manage('Exhibitor card copy').click();
+await menu.getByText('Copy of Exhibitor card', { exact: true }).waitFor();
+await win.keyboard.press('Escape');
+await menu.waitFor({ state: 'detached' });
+assert.match(await tile('Exhibitor card copy').getAttribute('class'), /\bsub\b/, 'and indented as part of its family');
+await win.evaluate(() => window.builder.project.undo());
+await eventually(async () => assert.deepEqual(await library(), usesBefore, 'one Undo removes the copy'));
+await win.evaluate(() => window.builder.project.redo());
+await eventually(async () => assert.ok((await snapshot()).components[copied.id], 'Redo brings it back with the same ID'));
+await win.evaluate(() => window.builder.project.undo());
+await eventually(async () => assert.deepEqual(await library(), usesBefore));
+
 step('deleting an unused variant keeps the others, and Undo brings it back');
 const before = await snapshot();
 const blue = Object.values(before.components).find((d) => d.name === 'Exhibitor card blue');

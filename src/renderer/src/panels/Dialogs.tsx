@@ -1,6 +1,6 @@
 import './Dialogs.css';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRightLeft, Box, CircleAlert, CircleMinus, Component, CornerDownRight, FileText, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
+import { ArrowRightLeft, Box, CircleAlert, CircleMinus, Component, Copy, CornerDownRight, FileText, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import type { AiTurnReview, ProjectSnapshot } from '@shared/api';
 import type { ApplyResult } from '@shared/ops';
@@ -17,7 +17,8 @@ import { applyOps, api, commitOps, errorText, getState, projectHistory, revertAi
 import { Field, Modal, openMenus, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
-import { goToShellPart, insertionPoint, selectPage, setMode } from '../lib/actions';
+import { goToShellPart, insertionPoint, openComponentStudio, selectPage, setMode } from '../lib/actions';
+import { duplicateName, duplicateOperation } from '../lib/duplicate-component';
 import { componentRequest, componentRequestContext, newComponentPlace, startBlankOps } from '../lib/new-component';
 import { NEW_HOME, planPageRemoval, reviewPageRemoval, withoutCards, type PageReplacement } from '../lib/page-removal';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
@@ -727,6 +728,96 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
             : node?.kind === 'instance'
               ? 'This placement now shows a different design. Select it again to change it.'
               : 'This placement was removed, so there is nothing to change.'}
+        </GoneNotice>
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * Copy a component's definition as a new project component (spec §8.4). Nothing placed moves to the copy, which is
+ * what sets it apart from Make unique.
+ */
+export function DuplicateComponentModal({ definitionId }: { definitionId: string }) {
+  const st = useStore((s) => s.snapshot?.state);
+  const workspaceKey = useStore((s) => s.snapshot?.workspaceKey);
+  // Bound to the project it was opened in: another project made from the same theme can hold the same component ID.
+  const [openedIn] = useState(() => getState().snapshot?.workspaceKey);
+  const def = st && workspaceKey === openedIn && Object.hasOwn(st.components, definitionId) ? st.components[definitionId] : undefined;
+  // Suggested once, as the dialog opens, so the field never changes under the author.
+  const [suggested] = useState(() => (st && def ? duplicateName(st, def.name) : ''));
+  const [opened] = useState(() => def?.name);
+  const [name, setName] = useState(suggested);
+  const [busy, setBusy] = useState(false);
+  const count = st && def ? placesOf(st, definitionId).reduce((n, p) => n + p.nodeIds.length, 0) : 0;
+  const input = useSelectedOnOpen();
+  const close = useCloseOwn();
+  const ready = !!def && !!name.trim() && !busy;
+  const nameError = name.trim() ? undefined : 'Enter a name for the copy.';
+  const duplicate = async () => {
+    const snap = getState().snapshot;
+    if (!ready || !snap || snap.workspaceKey !== openedIn || !Object.hasOwn(snap.state.components, definitionId)) return;
+    const op = duplicateOperation(snap.state, snap.state.components[definitionId], name.trim(), suggested);
+    setBusy(true);
+    // The name was checked against this revision, so it goes with the change.
+    let r: Awaited<ReturnType<typeof commitOps>> = null;
+    try {
+      r = await commitOps([op], `Duplicate component ${def.name}`, undefined, snap.revision);
+    } finally {
+      if (!r) setBusy(false);
+    }
+    if (!r) return;
+    close();
+    const made = r.results?.[0]?.definitionId as string | undefined;
+    if (!made || getState().snapshot?.workspaceKey !== openedIn || op.type !== 'component.duplicate') return;
+    toast(`Duplicated ${def.name} as ${op.name}`, 'info', {
+      label: 'Open in Component Studio',
+      run: () => {
+        if (getState().snapshot?.workspaceKey !== openedIn) return;
+        if (!openComponentStudio(made)) toast(`${op.name} is no longer in this project.`, 'info');
+      }
+    });
+  };
+  return (
+    <Modal
+      title="Duplicate component"
+      icon={<Badge icon={<Copy />} tone={def ? 'neutral' : 'caution'} />}
+      onClose={close}
+      busy={busy}
+      describedBy={def ? 'duplicate-component-desc duplicate-component-subject duplicate-component-details' : GONE_ID}
+      footer={
+        def ? (
+          <>
+            <button className="btn" onClick={close} disabled={busy}>
+              Cancel
+            </button>
+            <button className="btn btn-primary" disabled={!ready} onClick={() => void duplicate()}>
+              {busy ? 'Duplicating…' : 'Duplicate'}
+            </button>
+          </>
+        ) : (
+          <GoneClose onClose={close} />
+        )
+      }
+    >
+      {def ? (
+        <div className="authoring-form">
+          <FormStatus text={busy ? 'Duplicating component' : (nameError ?? limitSaid(name.length, NAME_MAX, 'Names'))} />
+          <p id="duplicate-component-desc" className="confirm-lead">
+            Makes a new component with the same design, which you can change on its own.
+          </p>
+          <Subject id="duplicate-component-subject" icon={<Component />} name={def.name} note={st ? reachOf(st, placesOf(st, definitionId)).text : undefined} />
+          <Details
+            id="duplicate-component-details"
+            items={[{ kind: 'keep', icon: <ShieldCheck />, text: count ? `${count === 1 ? 'Its placement keeps' : `All ${count} placements keep`} following ${def.name}.` : `${def.name} stays as it is.` }]}
+          />
+          <Field label="Name for the copy" hint={nameHint(name, WHERE_NAMES_SHOW)} error={nameError} extra={<Count length={name.length} max={NAME_MAX} />}>
+            <input ref={input} className="input" autoFocus readOnly={busy} aria-required="true" maxLength={NAME_MAX} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void duplicate()} />
+          </Field>
+        </div>
+      ) : (
+        <GoneNotice>
+          <strong>{opened ?? 'This component'}</strong> is no longer in this project, so there is nothing to duplicate.
         </GoneNotice>
       )}
     </Modal>

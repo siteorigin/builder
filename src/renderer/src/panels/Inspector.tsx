@@ -91,6 +91,7 @@ import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { turnIntoSlotItem, turnIntoSlotTarget } from '../lib/turn-into-slot';
 import { assetUrl, createComponentTarget, definitionView, isCodePart, ownerLabel, placedFeedRows, placedSlot, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownOrDefault, throughPlacement, treeFor, withoutSlot } from '../lib/model';
 import { enclosingGroup, partInInteractionGroup, withoutGroupStates } from '@shared/interaction-groups';
+import { canDuplicate } from '../lib/duplicate-component';
 import { carriesAcross, exportComponentFile, saveToLibrary } from '../lib/saved-components';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, groupCount, liveGroup, openPost, planFor, planLayers, selectPage, setMode, structuralTarget, ungroupLayers, wrapLayers } from '../lib/actions';
 import { wrapItems } from './WrapItems';
@@ -1074,6 +1075,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const selectPart = (p: string) => selectAndFocus({ owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p });
   const editEverywhere = () => setState({ modal: { kind: 'edit-definition', ref: selection } });
   const makeUnique = () => setState({ modal: { kind: 'make-unique', owner, nodeId: node.id, definitionId: def.id } });
+  // A copy of the component alone: this placement stays on the original. Named apart from the layer's own Duplicate.
+  const duplicateComponent = () => setState({ modal: { kind: 'duplicate-component', definitionId: def.id } });
   // A section (or a card inside one) can show another design where it is, keeping its content (#374). The shared
   // header and footer keep theirs, and a placement inside a design is changed in that design.
   const swappable = !shell && !readOnly && !selection.instancePath.length && !selection.partId && (owner.kind === 'page' || owner.kind === 'template');
@@ -1097,6 +1100,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
       ...(swappable ? [{ label: top && noun === 'section' ? 'Change section design…' : 'Change design…', icon: <ArrowRightLeft />, hint: 'Keeps its content', onSelect: swapDesign }] : []),
       ...(canMakeUnique ? [{ label: 'Make unique…', icon: <Split />, onSelect: makeUnique }] : []),
+      ...(canDuplicate(def, dev) ? [{ label: 'Duplicate component…', icon: <Copy />, hint: 'This one keeps the original', onSelect: duplicateComponent }] : []),
       ...(create ? [{ label: 'Create component…', icon: <Component />, hint: 'With its content', onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
       ...(detachable(state, selection) ? [{ label: 'Detach component', icon: <Unlink />, hint: 'Into elements', onSelect: () => void detachPlacement(selection) }] : []),
       ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void convertToCode() }] : []),
@@ -1358,6 +1362,11 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           {canMakeUnique && (
             <button className="btn btn-sm" onClick={makeUnique} title="Make a separate copy of this component for this placement, so its design can change on its own">
               <Split /> Make unique…
+            </button>
+          )}
+          {canDuplicate(def, dev) && (
+            <button className="btn btn-sm" onClick={duplicateComponent} title="Copy this component as a new one. This placement keeps the original.">
+              <Copy /> Duplicate component…
             </button>
           )}
           {dev && def.kind === 'managed' && (
