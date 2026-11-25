@@ -311,11 +311,15 @@ const viewField = (name) => settings.getByLabel(name, { exact: true });
 const viewMeter = (kind) => settings.locator(`.seo-meter[data-meter="${kind}"]`);
 const viewSwitch = (name) => settings.getByRole('switch', { name });
 const entryNow = async (id) => (await snapshot()).state.collections.posts.entries[id];
-/** The newest step is `label`, as History keeps it, and the editor has heard of it too: its Undo button names it. */
-const lastStep = async (label) => {
-  assert.equal((await snapshot()).history.undoLabel, label);
-  await eventually(async () => assert.equal(await win.locator('.toolbar').getByRole('button', { name: `Undo ${label}`, exact: true }).count(), 1, `the editor has heard of “${label}”`));
-};
+/**
+ * The newest step is `label`, as History keeps it (once it has recorded it, which can be just after the change itself),
+ * and the editor has heard of it too: its Undo button names it.
+ */
+const lastStep = (label) =>
+  eventually(async () => {
+    assert.equal((await snapshot()).history.undoLabel, label);
+    assert.equal(await win.locator('.toolbar').getByRole('button', { name: `Undo ${label}`, exact: true }).count(), 1, `the editor has heard of “${label}”`);
+  });
 const toasts = async () => (await win.locator('.toast').allInnerTexts()).join('\n');
 assert.equal(await win.locator('.post-writer-holder .post-page').count(), 0, 'no post is open in the writer');
 await row('Spring open studio').click();
@@ -478,11 +482,22 @@ assert.equal(await modeButton('Preview').isDisabled(), false);
 
 step('a post’s search settings edited in the view with the writer open on it (#703)');
 const writerHolder = win.locator('.post-writer-holder');
+// With the writer holding another post, a title saved in the view is the view's post's alone.
+assert.equal(await writerHolder.locator('.post-title-input').inputValue(), 'Spring open studio', 'the writer holds Spring');
+await rail('seo').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
+await viewField('Browser title').fill('Winter hours by the river');
+await viewField('Browser title').press('Enter');
+await eventually(async () => assert.equal((await entryNow('en_winter')).seo?.title, 'Winter hours by the river', 'saved to the post chosen in the view'));
+assert.equal((await entryNow('en_spring')).seo.title, 'Glaze weekend at Riverside', 'never to the post the writer holds');
+await lastStep('Change post browser title');
+await rail('posts').click();
 await win.locator('.post-row .post-open', { hasText: 'Winter hours' }).click();
 await eventually(async () => assert.equal(await writerHolder.locator('.post-title-input').inputValue(), 'Winter hours', 'the writer holds Winter'));
 const writerSeo = writerHolder.locator('.post-seo');
 await writerSeo.locator('summary').first().click();
 const writerField = (name) => writerSeo.getByLabel(name, { exact: true });
+assert.equal(await writerField('Browser title').inputValue(), 'Winter hours by the river', 'the writer shows the title saved in the view');
 // Saved in the writer, it shows in the view.
 await writerField('Browser title').fill('Winter hours at the studio');
 await writerField('Browser title').press('Enter');
@@ -519,8 +534,11 @@ await viewField('Browser title').fill('Winter hours, shorter days');
 assert.equal(await pressInWriterWhileTyping('Publish'), true, 'the title was still being typed in the view');
 await eventually(async () => assert.equal((await entryNow('en_winter')).draft, false, 'Publish publishes the post'));
 assert.equal((await entryNow('en_winter')).seo.title, 'Winter hours, shorter days', 'with the title typed in the view');
-const lastSteps = (await snapshot()).history.entries.filter((e) => e.applied).map((e) => e.label).slice(-2);
-assert.deepEqual(lastSteps, ['Change post browser title', 'Publish post'], 'the view’s change is saved before the post is published');
+// History names the step once it has recorded it, which can be just after the post itself changed.
+await eventually(async () => {
+  const lastSteps = (await snapshot()).history.entries.filter((e) => e.applied).map((e) => e.label).slice(-2);
+  assert.deepEqual(lastSteps, ['Change post browser title', 'Publish post'], 'the view’s change is saved before the post is published');
+});
 await eventually(async () => assert.equal(await writerField('Browser title').inputValue(), 'Winter hours, shorter days'));
 // An address the view refused is still the post’s: Move to drafts waits, and says where to look.
 await rail('seo').click();

@@ -104,12 +104,16 @@ describe('what a change to a post’s search settings writes', () => {
     // Emptied, it clears the setting, so the fallback shows; spaces alone are emptied too.
     expect(postSeoEdit(post({ title: 'Spring at Riverside' }), { kind: 'title', text: '   ' })).toEqual({ fields: { seoTitle: '' }, label: 'Change post browser title' });
     expect(postSeoEdit(post({}), { kind: 'title', text: '' })).toBeNull();
+    expect(postSeoEdit(post({ description: 'Wheel and glaze.' }), { kind: 'description', text: ' ' })).toEqual({ fields: { description: '' }, label: 'Change post description' });
+    expect(postSeoEdit(post({}), { kind: 'description', text: '' })).toBeNull();
   });
 
   it('names each setting’s change as the writer does', () => {
     const p = post({});
     expect(postSeoEdit(p, { kind: 'socialImage', assetId: 'as_1' })).toEqual({ fields: { socialImage: 'as_1' }, label: 'Change post sharing image' });
     expect(postSeoEdit(p, { kind: 'socialImage', assetId: null })).toEqual({ fields: { socialImage: null }, label: 'Use the default sharing image' });
+    // The picker's empty choice is the default too.
+    expect(postSeoEdit(p, { kind: 'socialImage', assetId: '' })).toEqual({ fields: { socialImage: null }, label: 'Use the default sharing image' });
     expect(postSeoEdit(p, { kind: 'canonical', url: 'https://elsewhere.example/spring/' })).toEqual({ fields: { canonical: 'https://elsewhere.example/spring/' }, label: 'Change post canonical URL' });
     expect(postSeoEdit(p, { kind: 'canonical', url: '' })).toEqual({ fields: { canonical: '' }, label: 'Clear post canonical URL' });
     expect(postSeoEdit(p, { kind: 'noindex', on: true })).toEqual({ fields: { noindex: true }, label: 'Hide post from search engines' });
@@ -153,6 +157,10 @@ describe('saving a post’s search settings from the SEO view', () => {
     expect(session.historyInfo().entries.length).toBe(steps + 3);
     // The other post is untouched throughout.
     expect(entry(winter).seo ?? {}).toEqual({});
+    // And saved to itself when it is the one edited.
+    await change({ kind: 'title', text: 'Winter at Riverside' }, winter);
+    expect(entry(winter).seo?.title).toBe('Winter at Riverside');
+    expect(entry().seo?.title).toBeUndefined();
   });
 
   it('leaves the post as the writer’s own save of the same change does', async () => {
@@ -213,6 +221,17 @@ describe('saving a post’s search settings from the SEO view', () => {
     await change({ kind: 'title', text: 'Spring at Riverside' });
     expect(followed).toHaveLength(0);
     expect(entry().seo?.title).toBe('Spring at Riverside');
+  });
+
+  it('hands changes to the writer open now, not to one it replaced that lets go late', async () => {
+    const earlier: Array<Promise<unknown>> = [];
+    const offEarlier = setOpenWriter(async () => true, undefined, spring, (c) => void earlier.push(c));
+    const now = writerOn(spring);
+    // The writer it replaced lets go after the new one registered: the new one still follows.
+    offEarlier();
+    await change({ kind: 'title', text: 'Spring at Riverside' });
+    expect(earlier).toHaveLength(0);
+    expect(now).toHaveLength(1);
   });
 });
 
