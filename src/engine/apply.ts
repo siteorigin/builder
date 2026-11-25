@@ -2685,6 +2685,11 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
     if (summary) s.llmsSummary = summary;
     else delete s.llmsSummary;
   }
+  // WebMCP (shared/webmcp.ts) is stored only while it is on.
+  if (op.webmcp !== undefined) {
+    if (op.webmcp) s.webmcp = true;
+    else delete s.webmcp;
+  }
   if (op.visitorText) setVisitorText(s, op.visitorText.language, op.visitorText.text);
   // The crawler policy (shared/crawler-policy.ts) is kept only while it differs from the default.
   if (op.crawlerPolicy !== undefined) {

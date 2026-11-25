@@ -541,6 +541,11 @@ export interface InstanceNode extends NodeBase {
    * choice for its root; `none`: no entrance here, whatever the design chooses. Managed components only.
    */
   appear?: AppearPreset | 'none';
+  /**
+   * For a contact form: the name and description it is declared to AI agents by while the site has WebMCP on
+   * (src/shared/webmcp.ts), as the author typed them. Either left out takes the default.
+   */
+  webmcp?: { toolName?: string; toolDescription?: string };
 }
 
 /** A placement's content in one slot: the list it holds, or none when a hand edit left something else there. */
@@ -902,6 +907,11 @@ export interface SiteDoc {
   llmsFull?: boolean;
   markdownMirrors?: boolean;
   llmsSummary?: string;
+  /**
+   * Whether the website declares tools to AI agents in visitors' browsers through WebMCP (src/shared/webmcp.ts): its
+   * contact forms, and its search while it has one. Off unless this is true.
+   */
+  webmcp?: boolean;
   /**
    * Which crawlers the website's robots.txt asks to stay away, and whether its pages ask AI services not to train on
    * them (src/shared/crawler-policy.ts). Absent: every crawler is let in, as the website always did.

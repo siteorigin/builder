@@ -90,7 +90,7 @@ import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } fro
 import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
-import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
+import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, searchesSite, usesSiteSearch } from './search';
 import { addDiscoveryFiles, hasMarkdownMirror } from './llms';
 import { MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { crawlerRules, NOAI_META, siteMount, siteRobotsTxt } from '@shared/crawler-policy';
@@ -104,7 +104,9 @@ import { generateWebManifest, siteColors, siteIconLinks, themeColorMeta } from '
 import { WEB_MANIFEST } from '@shared/site-icons';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
-import { notFoundSectionRoutes } from './checks';
+import { notFoundSectionRoutes, siteShowsCode } from './checks';
+import { webMcpOn } from '@shared/webmcp';
+import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
 import { graphScript, inGenerationRun } from './structured-data';
 import { RSS_PATH, feedLink, generateRssFeed } from './rss';
 import { siteTwitterHandle } from '@shared/site-identity';
@@ -145,6 +147,14 @@ export function defKey(defId: string): string {
 export function defFile(def: ComponentDefinition): string {
   if (def.kind === 'code' && def.sourcePath) return def.sourcePath;
   return `${GENERATED_DIR}/${defKey(def.id)}.svelte`;
+}
+/**
+ * The copy of a contact form's code that declares its WebMCP tool (generator/webmcp.ts), beside the theme's generated
+ * components whatever folder the form's own code is in: both are one folder below the library, so its imports lead
+ * where they did. Written only while the site declares tools.
+ */
+export function webMcpFormFile(def: ComponentDefinition): string {
+  return `${GENERATED_DIR}/${defKey(def.id)}.webmcp.svelte`;
 }
 /** Import identifiers come from the definition ID, so they are always valid whatever the display name is. */
 function importName(def: ComponentDefinition): string {
@@ -1190,6 +1200,11 @@ interface EmitCtx {
   widgets?: StateWidgets;
   /** The design's working category filters (see repeatFilters). */
   filters?: FilterGen[];
+  /**
+   * While the site declares WebMCP tools (visitors' website only): the tool name of each contact form the page or
+   * shell tree places directly, by node ID (see generator/webmcp.ts). A form not in it names itself as it renders.
+   */
+  toolNames?: ReadonlyMap<string, string>;
 }
 
 /** One UI state variable of the definition being emitted: the local holding it and its well-formed declaration. */
@@ -2664,8 +2679,12 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   const def = ctx.state.components[node.definitionId];
   if (!def) return `${p}<!-- Missing component definition ${node.definitionId} -->`;
   const name = importName(def);
-  useImport(ctx, name, defFile(def));
+  // While the site declares WebMCP tools, a contact form in the visitor's website is the copy of its code that declares
+  // its tool, told its name. The editor's preview, and code written from a design, keep the form's own code.
+  const tool = !ctx.instrument && !ctx.standalone && webMcpOn(ctx.state.site) && declaresFormTool(def) ? formTool(ctx.state, node, ctx.def ? undefined : ctx.toolNames?.get(node.id)) : null;
+  useImport(ctx, name, tool ? webMcpFormFile(def) : defFile(def));
   const attrs: string[] = [];
+  if (tool) attrs.push(`so_webmcp={${js(tool)}}`);
   // Class: definitions pass their node class; pages pass nothing (overrides use so_o). A code placement inside a
   // definition shows its root again through the same markers a page's code placement takes (see shownClasses).
   const rootShown = shownClasses(def, node.overrides?.root).trim();
@@ -3259,6 +3278,7 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
     indent: 0,
     locals: new Map()
   };
+  if (!opts.instrument && webMcpOn(state.site)) ctx.toolNames = pageToolNames(state, page, shellTools(state));
   // The first section is usually what fills the first screen; its images load eagerly.
   const markup = page.rootIds
     .map((id, i) => {
@@ -3336,8 +3356,10 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
     locals: new Map()
   });
   const hctx = mk(state.site.shell.header, 'header');
-  const header = emitNodes(hctx, state.site.shell.header.rootIds);
   const fctx = mk(state.site.shell.footer, 'footer');
+  // The header's and footer's forms are named once, together, and every page names its own around them.
+  if (!opts.instrument && webMcpOn(state.site)) hctx.toolNames = fctx.toolNames = shellTools(state);
+  const header = emitNodes(hctx, state.site.shell.header.rootIds);
   fctx.imports = hctx.imports;
   const footer = emitNodes(fctx, state.site.shell.footer.rootIds);
   const imports = renderImports(hctx.imports);
@@ -3377,8 +3399,13 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   // Sections and containers with an entrance come in as they first scroll into view (see generator/appear.ts). The
   // editor's layout already imports onMount for its bridge.
   const appear = derived(state, 'usesAppear', usesAppear);
+  // The site's search, offered to AI agents in the visitor's browser while the site declares WebMCP tools (see
+  // generator/webmcp.ts). Never in the editor's preview.
+  const offerSearch = !opts.instrument && offersSearchTool(state);
   const appearImport = appear ? `${opts.instrument ? '' : `\n\timport { onMount } from 'svelte';`}\n\timport { observeAppear } from '../lib/siteorigin/runtime/${APPEAR_FILE}';` : '';
   const appearStart = appear ? `\n\t// Sections and containers with an entrance fade or lift in as they first scroll into view.\n\tonMount(observeAppear);` : '';
+  const searchImport = offerSearch ? `${appear ? '' : `\n\timport { onMount } from 'svelte';`}\n\timport { offerSearch } from '../lib/siteorigin/runtime/${WEBMCP_SEARCH_FILE}';` : '';
+  const searchStart = offerSearch ? `\n\t// AI agents in the visitor's browser can search the site (WebMCP), in browsers that offer them tools.\n\tonMount(() => offerSearch(resolve));` : '';
   // The visitor's Light/Dark switch goes in the shared header while the page shows it (see generator/color-scheme.ts).
   // The website also applies a remembered choice before anything is drawn; the editor's preview remembers none.
   const toggle = usesThemeToggle(state);
@@ -3399,15 +3426,15 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import '../lib/siteorigin/styles/components.css';
 	import '../lib/siteorigin/styles/site.css';
 	import { page } from '$app/state';
-	import { asset } from '$app/paths';
-	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';${appearImport}${toggleImport}
+	import { asset${offerSearch ? ', resolve' : ''} } from '$app/paths';
+	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';${appearImport}${searchImport}${toggleImport}
 	import { ${languages ? 'speak, ' : ''}visitorText } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
 	let { children } = $props();
 	const text = visitorText();
 	// A message typed into a form and not sent comes back when the visitor returns with Back.
-	keepDrafts();${appearStart}
+	keepDrafts();${appearStart}${searchStart}
 	// Each page chooses the shared header and footer on its own.
 	const pagesWithoutHeader = new Set(${js(without('header'))});
 	const pagesWithoutFooter = new Set(${js(without('footer'))});
@@ -3657,6 +3684,7 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
     indent: 0,
     locals: new Map()
   };
+  if (!opts.instrument && webMcpOn(state.site)) ctx.toolNames = pageToolNames(state, tree, shellTools(state));
   // The first section is usually what fills the first screen; its images load eagerly.
   const markup = tree.rootIds
     .map((id, i) => {
@@ -4134,6 +4162,27 @@ function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, 
     if (def.kind === 'managed' && def.tree) files.set(defFile(def), file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
     else if (def.kind === 'code' && def.source) files.set(defFile(def), def.source);
   }
+  // While the site declares WebMCP tools, each contact form's code that can declare one has a copy that does, which the
+  // visitor's website places (see generator/webmcp.ts). Never in the editor's preview, and never with WebMCP off.
+  if (!opts.instrument && webMcpOn(state.site)) {
+    for (const def of sortedDefs(state)) if (declaresFormTool(def)) files.set(webMcpFormFile(def), adaptedForm(def.source!)!);
+    // The search tool, while a page of the website shows Site search.
+    if (offersSearchTool(state)) files.set(`${RUNTIME_DIR}/${WEBMCP_SEARCH_FILE}`, webMcpSearchJs());
+  }
+}
+
+/**
+ * Whether the visitor's website offers its search to AI agents as the WebMCP `search_site` tool: the site declares its
+ * tools, writes the search code, and a page it publishes shows a component that searches (one only installed, or only
+ * on drafts, offers nothing).
+ */
+export function offersSearchTool(state: ProjectState): boolean {
+  return webMcpOn(state.site) && derived(state, 'webmcpSearch', (s) => usesSiteSearch(s) && siteShowsCode(s, searchesSite));
+}
+
+/** The forms' tool names the shared header and footer take, while the site declares WebMCP tools. */
+function shellTools(state: ProjectState): ReadonlyMap<string, string> {
+  return new Map(derived(state, 'webmcpShellNames', (s) => [...shellToolNames(s)]));
 }
 
 /** The library alone (see addLibrary), as generateProject makes it, without the routes that use it. */

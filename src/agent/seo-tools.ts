@@ -88,6 +88,7 @@ export const SITE_SEO_ARGS = z
     llmsFull: z.boolean().optional(),
     markdownMirrors: z.boolean().optional(),
     llmsSummary: text(TEXT_LIMITS.siteDescription),
+    webmcp: z.boolean().optional().describe('WebMCP: contact forms and site search as tools AI agents in visitors\' browsers can use.'),
     identity: IDENTITY_ARG.nullable().optional().describe('The publisher, for search and AI answer engines.'),
     crawlerPolicy: CRAWLER_POLICY_ARG.nullable().optional().describe('robots.txt.')
   })
@@ -99,7 +100,7 @@ export const PAGE_SEO_DESCRIPTION =
 export const PAGE_SEO_BRIEF = 'Send only what changes; "" restores a default.';
 
 export const SITE_SEO_DESCRIPTION =
-  'Set how search engines and AI agents find and read the whole site: description, public address, language, link preview image (a library assetId), llms.txt (llmsFull: every page in one file; markdownMirrors: a Markdown copy of each page), publisher identity and robots.txt crawler policy. Send only what changes; "" or [] clears a field, null resets identity or crawlerPolicy, and inside them only the fields given change. Identity only from facts the user gave.';
+  'Set how search engines and AI agents find and read the whole site: description, public address, language, link preview image (a library assetId), llms.txt (llmsFull: every page in one file; markdownMirrors: a Markdown copy of each page), WebMCP tools (webmcp), publisher identity and robots.txt crawler policy. Send only what changes; "" or [] clears a field, null resets identity or crawlerPolicy, and inside them only the fields given change. Identity only from facts the user gave.';
 export const SITE_SEO_BRIEF = '"" or [] clears; null resets identity or crawlerPolicy. Identity only from facts the user gave.';
 
 /** The page tool's schema; `onlyPageId` is the one page a run limited to it may change. */

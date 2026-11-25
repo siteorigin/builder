@@ -66,7 +66,7 @@ const PAGE_FIELDS: Record<string, string[]> = {
   // Turning an article back into a page clears all of it: any change to the article meanwhile is a conflict.
   article: ['article']
 };
-const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel', 'llmsTxt', 'llmsFull', 'markdownMirrors', 'llmsSummary'];
+const SITE_FIELDS = ['name', 'language', 'direction', 'description', 'baseUrl', 'favicon', 'socialImage', 'notFoundHeading', 'notFoundMessage', 'notFoundLinkLabel', 'llmsTxt', 'llmsFull', 'markdownMirrors', 'llmsSummary', 'webmcp'];
 
 /** The author's wording for these pieces of visitor text in a language: the one piece's text, or each piece's. */
 function visitorTextRead(state: ProjectState, language: string, keys: string[]): unknown {

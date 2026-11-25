@@ -642,6 +642,33 @@ export function netlifyFormClashes(state: ProjectState): FormNameClash[] {
   return [...byName].filter(([, forms]) => forms.length > 1).map(([name, forms]) => ({ name, forms }));
 }
 
+/**
+ * Whether the website shows a code component `test` picks: on a published page, in the shared header or footer where
+ * a published page shows it, or in the layout of a collection with a published entry, at any depth (inside designs,
+ * content areas and kept panels). A component only installed, or placed only on drafts, is not shown.
+ */
+export function siteShowsCode(state: ProjectState, test: (def: ComponentDefinition) => boolean): boolean {
+  const pages = state.site.pageOrder.flatMap((id) => (Object.hasOwn(state.pages, id) && !isDraftPage(state, state.pages[id]) ? [state.pages[id]] : []));
+  const trees: NodeTree[] = [...pages, ...SHELL_PARTS.filter((part) => pages.some((p) => showsPart(p, part))).map((part) => state.site.shell[part])];
+  const live = new Set(siteEntries(publishedState(state)).map((e) => e.collection.settings.id));
+  for (const id of [...live].sort()) {
+    const layout = storedLayout(state, id);
+    if (layout) trees.push(layout);
+  }
+  let found = false;
+  for (const tree of trees) {
+    walkRendered(state, tree, {
+      kept: true,
+      prune: () => found,
+      code: (def) => {
+        if (test(def)) found = true;
+      }
+    });
+    if (found) return true;
+  }
+  return false;
+}
+
 /** A content field of a placement: one of its properties, or one field of one item in a list property. */
 export interface PlacementField {
   prop: string;

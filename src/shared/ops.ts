@@ -548,6 +548,7 @@ export const OPERATION_SCHEMAS = {
     llmsFull: z.boolean().optional().describe('llms-full.txt, every listed page in one file. Default false.'),
     markdownMirrors: z.boolean().optional().describe('A Markdown copy beside each listed page. Default false.'),
     llmsSummary: limited(TEXT_LIMITS.siteDescription).optional().describe('llms.txt summary; "" uses the description.'),
+    webmcp: z.boolean().optional().describe('WebMCP: declare each contact form, and site search, as tools AI agents in visitors\' browsers can use. Default false.'),
     crawlerPolicy: z
       .object({
         preset: z

@@ -164,6 +164,11 @@ export function usesSiteSearch(state: ProjectState): boolean {
   return Object.values(state.components).some((def) => def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source));
 }
 
+/** Whether a code component searches the site: its code names the search code, as usesSiteSearch reads it. */
+export function searchesSite(def: ComponentDefinition): boolean {
+  return def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source);
+}
+
 /**
  * Code that reads its page's address, not only a form it submits: `location.search`, `new URL(location.href)` or
  * SvelteKit's `page.url.searchParams`, with a `q` parameter read from it (directly, or through a variable).
