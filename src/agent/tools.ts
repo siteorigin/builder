@@ -1053,7 +1053,8 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       const offset = a.offset ?? 0;
       // Which check could not run, as a result that did would name it.
       const which = { definitionId: target.def.id, ...(target.placement ? { placement: target.placement } : {}), ...(offset ? { offset } : {}) };
-      if (offset >= cases.length) return toolError('INVALID_ARGUMENT', `There are ${cases.length} cases to measure; offset ${offset} is past the last.`, { details: which });
+      // Never one of the sweep's windows: a call past its end leaves a check that measured every case a clean one.
+      if (offset >= cases.length) return toolError('INVALID_ARGUMENT', `There are ${cases.length} cases to measure; offset ${offset} is past the last.`);
       const failed = (message: string, recoverable?: boolean) => toolError('VALIDATION_FAILED', `The component could not be inspected: ${message}`, { details: which, recoverable });
       // No call in this run can measure it.
       if (!host.inspectComponent) return failed('measuring a component is not available here.', false);

@@ -474,6 +474,28 @@ describe("the orchestrator's own refusals in the envelope (#744)", () => {
   });
 });
 
+describe('the result card (#744)', () => {
+  it('keeps a component checked in every case a clean check when a later call asks past the last case', async () => {
+    const { session } = await sessionFor();
+    let finished = false;
+    const step = (req: CanonicalModelRequest): ModelEvent[] => {
+      const last = req.items.at(-1);
+      const body = last?.kind === 'tool_result' ? (JSON.parse(last.content) as { ok: boolean; next?: { offset: number } }) : null;
+      if (!body) return [call('c0', 'inspect_component', { componentId: 'features.grid' })];
+      if (body.ok && body.next) return [call(`c${body.next.offset}`, 'inspect_component', { componentId: 'features.grid', offset: body.next.offset })];
+      if (body.ok) return [call('past', 'inspect_component', { componentId: 'features.grid', offset: 999 })];
+      finished = true;
+      return finish('Checked.');
+    };
+    const { adapter, run } = runner(session, Array.from({ length: 30 }, () => step));
+    const { result } = await run('Check the features grid in every case');
+    expect(finished).toBe(true);
+    expect(resultOf(adapter, 'past').body).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('past the last') } });
+    expect(result?.checks).toContainEqual({ status: 'pass', text: expect.stringMatching(/has no layout or readability problems in its variants/) });
+    expect(result?.checks?.filter((c) => /Only part of/.test(c.text))).toEqual([]);
+  });
+});
+
 describe('a result cut to the size limit (#744)', () => {
   const big = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `n_${i}`, text: `Quote "${i}" \\ line\n ${'é😀'.repeat(20)}` }));
   const fits = (out: string) => {
