@@ -6,7 +6,7 @@ import { validateOperation } from '@shared/ops';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { generateProject } from '@generator/index';
 import { IMAGE_SCHEMA } from '@agent/propschema';
-import { clearKeptDrafts, dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, limitNote, pruneKeptDrafts, tooLongReport, unsavedReport } from '../../src/renderer/src/lib/kept-drafts';
+import { clearKeptDrafts, dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, pruneKeptDrafts, tooLongReport, unsavedReport } from '../../src/renderer/src/lib/kept-drafts';
 import { draftCount, refusedDraftCount, reportRefused, resetPendingForTests, setDraft, settle } from '../../src/renderer/src/lib/pending';
 
 /** Issue #226: text over a field's limit is refused whole, with its length and the limit, never cut short; the
@@ -156,6 +156,61 @@ describe('page details, site description and library text', () => {
     expect(next.pages[about.id].seo.description).toBe(text);
     const page = [...generateProject(next).entries()].find(([path, content]) => path.includes('about') && content.includes(text));
     expect(page, 'the About page carries the whole description').toBeTruthy();
+  });
+});
+
+describe('text a field refused, handed between the places that show the same field (#702)', () => {
+  afterEach(() => clearKeptDrafts());
+  const leaving = { open: true, gone: false, over: false, tooLong: false, checked: false, mine: true };
+
+  it('is shown again as what it was refused for: too long, or by the field’s check', () => {
+    const canonical = keptField('ws-1', 'page:pg_about:canonical');
+    expect(keptRefusal(keptDraft(canonical))).toBeNull();
+    keepDraft(canonical, { text: 'journal.example/about', start: null, refused: 'check' });
+    expect(keptRefusal(keptDraft(canonical))).toBe('check');
+    // Text kept before checks were kept (an inline rename's, a description's) is too long, as it always was.
+    const description = keptField('ws-1', 'page:pg_about:description');
+    keepDraft(description, { text: sentence(342), start: null });
+    expect(keptRefusal(keptDraft(description))).toBe('long');
+  });
+
+  it('stays for its place when the control showing it goes with it unsaved, and goes once settled', () => {
+    // Refused by the check and still in the field: the next control of the place (the Inspector, the SEO view) takes it up.
+    expect(keptOnLeave({ ...leaving, checked: true })).toBe('check');
+    // Too long wins: text over the limit, or once refused as such, is kept as too long.
+    expect(keptOnLeave({ ...leaving, checked: true, over: true })).toBe('long');
+    expect(keptOnLeave({ ...leaving, tooLong: true })).toBe('long');
+    // Put back (Escape), saved, or typed in another opening: nothing is open, so what was kept goes.
+    expect(keptOnLeave({ ...leaving, open: false, checked: true })).toBe('drop');
+    expect(keptOnLeave({ ...leaving, open: false, tooLong: true })).toBe('drop');
+    // The page it belongs to has gone: nothing is kept for a place no field can show again.
+    expect(keptOnLeave({ ...leaving, gone: true, checked: true })).toBe('drop');
+    // A field that refused nothing keeps nothing.
+    expect(keptOnLeave(leaving)).toBeNull();
+  });
+
+  it('is never kept or dropped by a control another control of its place has taken it from', () => {
+    for (const f of [{ checked: true }, { tooLong: true }, { checked: true, open: false }, { tooLong: true, gone: true }]) expect(keptOnLeave({ ...leaving, ...f, mine: false })).toBeNull();
+  });
+
+  it('passes from the SEO view to the Inspector and back as the same text, never to another page', () => {
+    const about = keptField('ws-1', 'page:pg_about:canonical');
+    const view = {};
+    const inspector = {};
+    // Refused in the view: kept for the place at once, so the Inspector's field, rendered in the same update, finds it.
+    keepDraft(about, { text: 'journal.example/about', start: { value: 'https://old.example/about' }, refused: 'check', owner: view });
+    const found = keptDraft<{ value: string }>(about);
+    expect(keptRefusal(found)).toBe('check');
+    expect(found?.text).toBe('journal.example/about');
+    // The Inspector takes it up; the view's control, going after, leaves it alone.
+    keepDraft(about, { ...found!, owner: inspector });
+    expect(keptOnLeave({ ...leaving, checked: true, mine: keptDraft(about)?.owner === view })).toBeNull();
+    expect(keptDraft(about)?.text).toBe('journal.example/about');
+    // Another page, or the same page in another opening, has nothing kept.
+    expect(keptDraft(keptField('ws-1', 'page:pg_contact:canonical'))).toBeUndefined();
+    expect(keptDraft(keptField('ws-2', 'page:pg_about:canonical'))).toBeUndefined();
+    // Corrected and saved in the Inspector: settled, so nothing comes back in the view.
+    expect(keptOnLeave({ ...leaving, open: false, checked: true, mine: keptDraft(about)?.owner === inspector })).toBe('drop');
   });
 });
 

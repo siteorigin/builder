@@ -1,9 +1,8 @@
 import type { PageDoc, ProjectState } from '@shared/types';
-import type { EditOperation } from '@shared/ops';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
 import { TEXT_LIMITS } from '@shared/text-limits';
-import { applyOps, getState } from '../store';
+import { pageAlive, type PageUpd } from '../lib/page-settings';
 import { DraftInput, Field, SwitchRow } from '../components/ui';
 import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
 import { sharingView } from '../lib/sharing';
@@ -11,21 +10,6 @@ import type { DocumentPreview } from '../lib/seo-preview';
 import { ImageEditor } from './PropEditors';
 import { openSiteSharing } from './SharingPreview';
 import { LengthMeter, type TypedSeoOn } from './SeoPreview';
-
-/** Whether a page is still in the project: text kept for one of its fields goes with it (see DraftInput's keepWhile). */
-export const pageAlive = (id: string) => () => Object.hasOwn(getState().snapshot?.state.pages ?? {}, id);
-
-/** Saves a change to one page's settings. */
-export type PageUpd = (patch: Record<string, unknown>, label?: string) => void;
-
-/**
- * How a page's settings are saved, wherever they are edited (the Inspector, the SEO view): one `page.update`, with a
- * history label naming the page ("Change browser title (About)"), so undo reads the same from either place.
- */
-export const pageUpdater =
-  (page: PageDoc): PageUpd =>
-  (patch, label = 'Update page settings') =>
-    void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], `${label} (${page.title})`);
 
 /**
  * A page's Search & sharing settings: its browser title and description with their length meters, sharing image,

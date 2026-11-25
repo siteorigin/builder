@@ -321,3 +321,14 @@ describe('the SEO view in the editor', () => {
     expect(getState()).toMatchObject({ leftTab: 'pages', postView: 'write', pageId: about });
   });
 });
+
+describe('a page’s search settings in the SEO view (#702)', () => {
+  it('save with the operation and history label the Inspector saves them with', async () => {
+    const { pageUpdate } = (await load('../../src/renderer/src/lib/page-settings')) as typeof import('../../src/renderer/src/lib/page-settings');
+    const about = { id: 'pg_about', title: 'About' };
+    expect(pageUpdate(about, { seoTitle: 'About us' }, 'Change browser title')).toEqual({ operations: [{ type: 'page.update', pageId: 'pg_about', seoTitle: 'About us' }], label: 'Change browser title (About)' });
+    // The visibility switches say only that the page's settings changed, as they always have.
+    expect(pageUpdate(about, { noindex: true })).toEqual({ operations: [{ type: 'page.update', pageId: 'pg_about', noindex: true }], label: 'Update page settings (About)' });
+    expect(pageUpdate(about, { structuredData: { price: '129' } }, 'Change price').label).toBe('Change price (About)');
+  });
+});
