@@ -306,6 +306,8 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'page.setHome': 'wider',
   'node.insert': 'insert',
   'node.remove': 'node',
+  // One node, whose content takes its place in the same list: checkOne keeps the selection itself from it.
+  'node.removeKeepContent': 'node',
   'node.move': 'node',
   // Several siblings of one list at once; checkOne and checkComponentAuthority check each one.
   'node.wrap': 'node',
@@ -483,7 +485,7 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
         if (!mine(o.owner) || !Object.hasOwn(nodes, o.nodeId)) return outside(op);
         if (op.type === 'node.move' && !inside(o.parentId)) return `node.move would move content outside ${authority.label}.`;
         if (op.type === 'node.move' && !repair(op) && (o.nodeId === root ? !(!o.parentId && o.index === 0) : beforeRoot(o.parentId, o.index))) return `node.move: ${rootFirst}`;
-        if (op.type === 'node.remove' && o.nodeId === root) return `node.remove: ${rootFirst}`;
+        if ((op.type === 'node.remove' || op.type === 'node.removeKeepContent') && o.nodeId === root) return `${op.type}: ${rootFirst}`;
         break;
       }
       case 'insert': {
@@ -604,6 +606,8 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
       if (op.type === 'node.move' && (!o.parentId || !allowed.has(o.parentId))) return `node.move would move content outside ${authority.label}.`;
       if (op.type === 'node.move' && o.nodeId === authority.nodeId) return `node.move would move ${authority.label} itself.`;
       if (op.type === 'node.duplicate' && o.nodeId === authority.nodeId) return `node.duplicate would add a new section outside ${authority.label}.`;
+      // What the selected element holds would take its place, beside it: outside it.
+      if (op.type === 'node.removeKeepContent' && o.nodeId === authority.nodeId) return `node.removeKeepContent would put what ${authority.label} holds outside it.`;
       if (part) {
         if (o.nodeId === authority.nodeId) return outsidePart(op, part, authority.label);
         // Content placed in a slot the part renders is inside it, and may move only within such content.

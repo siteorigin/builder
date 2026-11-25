@@ -65,7 +65,8 @@ import { isPictureAsset } from '@shared/background-image';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
+import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { carrySiteName, releaseKept, siteNameText } from '@shared/site-name';
@@ -199,18 +200,11 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       const removed = new Set(subtreeIds(tree, op.nodeId));
       removeNode(tree, op.nodeId);
       if (op.owner.kind === 'component' && !settled) followRoot(state.components[op.owner.id]);
-      // In definition editing, parts and variant rules for removed elements go with them.
-      if (op.owner.kind === 'component') {
-        const def = state.components[op.owner.id];
-        for (const [pid, part] of Object.entries(def.parts))
-          if (pid !== 'root' && removed.has(part.nodeId)) {
-            delete def.parts[pid];
-            dropPartOverrides(state, def.id, pid);
-          }
-        for (const { option: v } of variantOptions(def)) for (const nid of Object.keys(v.styles ?? {})) if (removed.has(nid)) delete v.styles![nid];
-      }
+      if (op.owner.kind === 'component') dropRemovedFromDesign(state, state.components[op.owner.id], removed);
       return {};
     }
+    case 'node.removeKeepContent':
+      return nodeRemoveKeepContent(state, op);
     case 'node.move':
       return nodeMove(state, op);
     case 'node.wrap':
@@ -1530,6 +1524,16 @@ function followRoot(def: ComponentDefinition) {
   if (first && def.parts.root && def.parts.root.nodeId !== first) def.parts.root = { ...def.parts.root, nodeId: first };
 }
 
+/** In definition editing, parts and variant rules for removed elements go with them (the root part stays: it follows the root). */
+function dropRemovedFromDesign(state: ProjectState, def: ComponentDefinition, removed: ReadonlySet<string>) {
+  for (const [pid, part] of Object.entries(def.parts))
+    if (pid !== 'root' && removed.has(part.nodeId)) {
+      delete def.parts[pid];
+      dropPartOverrides(state, def.id, pid);
+    }
+  for (const { option: v } of variantOptions(def)) for (const nid of Object.keys(v.styles ?? {})) if (removed.has(nid)) delete v.styles![nid];
+}
+
 function removeNode(tree: NodeTree, nodeId: string) {
   const info = findParent(tree, nodeId) ?? fail(`Node "${nodeId}" is not attached.`);
   info.list.splice(info.index, 1);
@@ -1712,6 +1716,108 @@ function nodeUnwrap(state: ProjectState, op: Op<'node.unwrap'>): OpResult {
   for (const id of run.ids) delete tree.nodes[id];
   landed(children);
   return { nodeId: children[0], nodeIds: children };
+}
+
+const KEEP_SHELL = 'The shared header and footer cannot be removed. Edit what they hold instead.';
+
+/**
+ * What a node deleted by removeKeepContent holds, in the order it takes the node's place: a container's children, or a
+ * placement's slot content, slot by slot in the order its component declares them (the component's own design is not
+ * the placement's to keep). Fails with why when the node holds nothing of its own, or what it holds can't do without it.
+ */
+function keptContent(state: ProjectState, owner: OwnerRef, def: ComponentDefinition | undefined, tree: NodeTree, n: GraphNode, at: ParentInfo): string[] {
+  const name = `“${displayName(state, n, def)}”`;
+  // A design keeps its one root, and nothing joins its top level (see nodeMove).
+  if (def && at.list === tree.rootIds) fail(settledRoot(tree) ? ROOT_IS_COMPONENT('removed') : UNSETTLED);
+  if (owner.kind === 'shell' && at.list === tree.rootIds) fail(KEEP_SHELL);
+  let held: string[];
+  if (n.kind === 'element') held = [...n.children];
+  else if (n.kind === 'instance') {
+    const d = own(state.components, n.definitionId) ?? fail(`Component definition "${n.definitionId}" is missing.`);
+    if (d.category === 'shell') fail(KEEP_SHELL);
+    const declared = Object.keys(d.slots ?? {});
+    if (!declared.length) fail(`${name} has no slots, so it holds no content of its own to keep. Delete it, or detach it to keep its elements.`);
+    for (const [slot, ids] of Object.entries(n.slots ?? {})) {
+      // Content left in a slot the component no longer has shows nowhere: kept, it would show again unasked.
+      if (!declared.includes(slot) && (!Array.isArray(ids) || ids.length))
+        fail(`${name} holds content in “${slot}”, a slot its component no longer has, so it can’t be kept. Move that content out, or delete ${name} with what it holds.`);
+      if (declared.includes(slot) && ids !== undefined && !Array.isArray(ids)) fail(`The “${slot}” slot of ${name} is damaged, so what it holds can’t be kept. Delete ${name} with what it holds instead.`);
+    }
+    held = declared.flatMap((slot) => slotChildren(n, slot));
+  } else if (n.kind === 'repeat') fail(`${name} shows what it holds once per list item, so what it holds can’t be kept without it. Delete it with what it holds instead.`);
+  else fail(`${name} holds nothing to keep. Delete it instead.`);
+  const nodes = held.map((c) => (Object.hasOwn(tree.nodes, c) ? tree.nodes[c] : undefined));
+  // Both are known by the element that holds them alone: put among others, the tabs would lose their list and the
+  // category pills their place above the list.
+  if (nodes.some(choosesState)) fail(`${name} holds the buttons that choose what the component shows (its tabs), which are known by the element holding them, so they can’t be kept without it.`);
+  if (nodes.some((c) => c?.kind === 'repeat' && !!c.filter)) fail(`${name} holds a list with category filter pills, which go just above the element holding the list, so the list can’t be kept without it.`);
+  return held;
+}
+
+/**
+ * Delete a container, or a placement of a component with slots, and keep what it holds (#656): its children take its
+ * place, in order, with their IDs, anchors, styles and everything inside them, while the node goes with its own
+ * styles, properties, anchor and link, as a deletion does. A slot that held it must take what it held (measured as for
+ * an ungroup). A page's top level holds sections: a section lands there as it is, and each run of anything else goes
+ * into a new Section. One edit, so one Undo puts the node back with its slots as they were.
+ */
+function nodeRemoveKeepContent(state: ProjectState, op: Op<'node.removeKeepContent'>): OpResult {
+  const tree = editableTree(state, op.owner);
+  const def = op.owner.kind === 'component' ? state.components[op.owner.id] : undefined;
+  const n = getNode(tree, op.nodeId);
+  const at = findParent(tree, op.nodeId) ?? fail(`Node "${op.nodeId}" is not attached.`);
+  const held = keptContent(state, op.owner, def, tree, n, at);
+  const name = `“${displayName(state, n, def)}”`;
+  const refused = (e: unknown): never => {
+    if (e instanceof EngineError) e.message = `${e.message} Delete ${name} with what it holds instead, or move that content out of it first.`;
+    throw e;
+  };
+  let placed: string[];
+  if (op.owner.kind === 'page' && at.parentId === null) {
+    // Read before anything moves: a component's role can follow from where it is placed (see definitionRole).
+    const runs: Array<{ section: boolean; ids: string[] }> = [];
+    for (const id of held) {
+      const c = Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
+      const section = c?.kind === 'instance' && definitionRole(state, c.definitionId) === 'section';
+      const last = runs[runs.length - 1];
+      if (!section && last && !last.section) last.ids.push(id);
+      else runs.push({ section, ids: [id] });
+    }
+    at.list.splice(at.index, 1);
+    delete tree.nodes[n.id];
+    placed = [];
+    for (const run of runs) {
+      const index = at.index + placed.length;
+      if (run.section) {
+        at.list.splice(index, 0, run.ids[0]);
+        placed.push(run.ids[0]);
+        continue;
+      }
+      // As Insert places an element on a page's top level (insertOps): in a new Section of the theme's.
+      try {
+        const sectionId = nodeInsert(state, { type: 'node.insert', owner: op.owner, parentId: null, index, componentId: 'layout.section' }).nodeId as string;
+        const list = insertionList(tree, sectionId, 'content', state);
+        const landed = slotLanding(state, op.owner, tree, sectionId, list);
+        list.push(...run.ids);
+        landed(run.ids);
+        placed.push(sectionId);
+      } catch (e) {
+        refused(e);
+      }
+    }
+  } else {
+    const landed = slotLanding(state, op.owner, tree, at.parentId, at.list);
+    at.list.splice(at.index, 1, ...held);
+    delete tree.nodes[n.id];
+    try {
+      landed(held);
+    } catch (e) {
+      refused(e);
+    }
+    placed = held;
+  }
+  if (def) dropRemovedFromDesign(state, def, new Set([n.id]));
+  return placed.length ? { nodeId: placed[0], nodeIds: placed } : { nodeIds: [] };
 }
 
 /** The bindings a node holds, conditions included (the binding a comparison reads). */
@@ -3771,14 +3877,14 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     }
   }
   // Retagged nodes must fit where they render once the batch is done (a list item in a list, say), and so must every
-  // node of a design built whole, and what a wrap or an ungroup put in a new place (list items wrapped out of their list),
-  // and a placement shown as another design.
+  // node of a design built whole, what a wrap, an ungroup or a removal that keeps content put in a new place (list items
+  // wrapped out of their list), and a placement shown as another design.
   const retagged = ops.flatMap((op, i): Array<{ owner: OwnerRef; nodeId?: string; i: number; type: string }> =>
     op.type === 'node.setContent' && op.field === 'tag'
       ? [{ owner: op.owner, nodeId: op.nodeId, i, type: op.type }]
       : op.type === 'component.upsert'
         ? [{ owner: { kind: 'component', id: String(results[i].definitionId) }, i, type: op.type }]
-        : op.type === 'node.wrap' || op.type === 'node.unwrap' || op.type === 'instance.swapComponent'
+        : op.type === 'node.wrap' || op.type === 'node.unwrap' || op.type === 'node.removeKeepContent' || op.type === 'instance.swapComponent'
           ? [{ owner: op.owner, i, type: op.type }]
           : []
   );

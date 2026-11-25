@@ -364,6 +364,15 @@ export const OPERATION_SCHEMAS = {
     icon: z.string().optional().describe('A badge\'s leading icon, or the icon of a divider of shape "icon", by name.')
   }),
   'node.remove': z.object({ type: z.literal('node.remove'), owner, nodeId: z.string() }),
+  'node.removeKeepContent': z
+    .object({
+      type: z.literal('node.removeKeepContent'),
+      owner,
+      nodeId: z.string().describe('A container, or a placed component with slots, that holds content.')
+    })
+    .describe(
+      'Delete a container or a placed component (a two-column layout, say) but keep what it holds: its children, or the content of its slots in the order its component declares them, take its place with their IDs, styles and anchors. The node goes with its own styles, properties, anchor and link. A slot that held it must take that content. On a page\'s top level, sections stay sections and each run of other content goes into a new Section. Not for a component\'s own root, a list repeat, or the shared header or footer.'
+    ),
   'node.move': z.object({
     type: z.literal('node.move'),
     owner,

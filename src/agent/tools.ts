@@ -261,6 +261,7 @@ const COMPONENT_BUILD_OPERATIONS = new Set<OperationType>([
   'node.setStateAction',
   'node.insert',
   'node.remove',
+  'node.removeKeepContent',
   'node.move',
   'node.wrap',
   'node.unwrap',

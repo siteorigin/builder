@@ -381,9 +381,11 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     // A rebuild is checked against every placement of the component, in files it may leave as they are.
     case 'component.upsert':
       return o.definitionId !== undefined;
-    // So is what a wrap or an ungroup moves: it must still nest where it renders, in designs and placements in other files.
+    // So is what a wrap, an ungroup or a removal that keeps content moves: it must still nest where it renders, in designs
+    // and placements in other files.
     case 'node.wrap':
     case 'node.unwrap':
+    case 'node.removeKeepContent':
       return true;
     // So is a swap: it is planned against the old and new designs (and, inside a design, every placement of it), which
     // live in files it may leave as they are.

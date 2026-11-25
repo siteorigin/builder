@@ -1349,7 +1349,7 @@ export class Orchestrator {
             };
         }
         // The shared header and footer are edited in place; removing one would empty it on every page.
-        const shellRoot = operations.find((o) => o.type === 'node.remove' && o.owner.kind === 'shell' && session.state.site.shell[o.owner.id as 'header' | 'footer']?.rootIds.includes(o.nodeId));
+        const shellRoot = operations.find((o) => (o.type === 'node.remove' || o.type === 'node.removeKeepContent') && o.owner.kind === 'shell' && session.state.site.shell[o.owner.id as 'header' | 'footer']?.rootIds.includes(o.nodeId));
         if (shellRoot)
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'The shared header and footer cannot be removed. Edit their properties with instance.setProp and instance.listInsert instead.' } };
         const denied = checkAuthority(session.state, operations, authority, grants);

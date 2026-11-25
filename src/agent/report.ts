@@ -186,6 +186,8 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       }
       case 'node.remove':
         return plain(op, `Removed ${name(op.owner, op.nodeId)} from ${where(op.owner)}`, linkTo(op.owner));
+      case 'node.removeKeepContent':
+        return plain(op, `Removed ${name(op.owner, op.nodeId)} from ${where(op.owner)}, keeping what it held`, linkTo(op.owner, res.nodeId));
       case 'node.move':
         return plain(op, `Moved ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
       case 'node.wrap': {
