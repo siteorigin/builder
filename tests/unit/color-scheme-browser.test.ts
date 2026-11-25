@@ -326,4 +326,35 @@ describe.each(ENGINES)('visitor palettes in %s', { timeout: 30_000 }, (name, eng
       await close();
     }
   });
+
+  it(`shrinks a large wordmark to fit beside the switch on a small phone (#576, ${name})`, async () => {
+    // A 6:1 wordmark at the header's Large size, shown alone and beside a long name, as the header shows a logo.
+    for (const beside of ['', '<span>Palette Studio and Workshop</span>']) {
+      const { page, close } = await open('toggle', { viewport: { width: 320, height: 640 } });
+      try {
+        const box = await page.evaluate<{ logoLeft: number; logoRight: number; logoHeight: number; brandRight: number; switchLeft: number; switchWidth: number; menuWidth: number; scroll: number }>(
+          `(async () => {
+            const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="400" viewBox="0 0 2400 400"><rect width="2400" height="400" fill="black"/></svg>';
+            const brand = document.querySelector('.so-header__brand');
+            brand.innerHTML = '<img class="so-header__logo so-header__logo--large" alt="Wordmark" width="2400" height="400" src="data:image/svg+xml,' + encodeURIComponent(svg) + '">' + ${JSON.stringify(beside)};
+            const img = brand.querySelector('img');
+            await img.decode();
+            const l = img.getBoundingClientRect();
+            const s = document.querySelector('.so-theme-toggle').getBoundingClientRect();
+            const m = document.querySelector('.so-header__menu').getBoundingClientRect();
+            return { logoLeft: l.left, logoRight: l.right, logoHeight: l.height, brandRight: brand.getBoundingClientRect().right, switchLeft: s.left, switchWidth: s.width, menuWidth: m.width, scroll: document.documentElement.scrollWidth };
+          })()`
+        );
+        expect(box.logoHeight, beside).toBe(46);
+        expect(box.logoLeft, beside).toBeGreaterThanOrEqual(0);
+        expect(box.logoRight, beside).toBeLessThanOrEqual(box.switchLeft);
+        expect(box.brandRight, beside).toBeLessThanOrEqual(box.switchLeft + 0.5);
+        expect(box.switchWidth, beside).toBeGreaterThanOrEqual(44);
+        expect(box.menuWidth, beside).toBeGreaterThanOrEqual(44);
+        expect(box.scroll, beside).toBeLessThanOrEqual(320);
+      } finally {
+        await close();
+      }
+    }
+  });
 });

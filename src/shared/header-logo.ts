@@ -18,6 +18,6 @@ export function headerHiddenProps(state: ProjectState, def: ComponentDefinition 
   if (!def || !sizesLogo(def)) return [];
   const logo = (Object.hasOwn(props, 'logo') ? props.logo : undefined) ?? def.properties.logo.default;
   const assetId = logo && typeof logo === 'object' ? (logo as { assetId?: unknown }).assetId : undefined;
-  const shown = typeof assetId === 'string' && Object.hasOwn(state.assets.assets, assetId);
+  const shown = typeof assetId === 'string' && Object.hasOwn(state.assets.assets, assetId) && state.assets.assets[assetId].kind === 'image';
   return shown ? [] : [LOGO_SIZE_PROP];
 }

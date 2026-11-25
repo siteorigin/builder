@@ -89,6 +89,19 @@ describe('locateField', () => {
     node.props.logo = { assetId: null, alt: '' };
     expect(at().ok).toBe(false);
     expect(node.props.logoSize).toBe('large');
+    // A document chosen where the logo goes is no logo either.
+    state.assets.assets.doc_menu = { id: 'doc_menu', name: 'menu.pdf', file: 'static/assets/menu.pdf', mime: 'application/pdf', bytes: 1, hash: 'h', kind: 'document', createdAt: '2026-01-01T00:00:00Z' };
+    node.props.logo = { assetId: 'doc_menu', alt: '' };
+    expect(at().ok).toBe(false);
+    // A copy of the header made unique keeps the rule: its provenance still names the shared header.
+    const def = state.components[node.definitionId];
+    const copy = { ...structuredClone(def), id: 'project.my-header', componentId: 'project.my-header' } as typeof def;
+    state.components[copy.id] = copy;
+    node.definitionId = copy.id;
+    expect(copy.provenance?.componentId).toBe('shell.header');
+    expect(at().ok).toBe(false);
+    node.props.logo = { assetId: 'img_mark', alt: 'Test Studio' };
+    expect(at()).toMatchObject({ ok: true, shown: 'Large' });
   });
 
   it('finds a field in the shared header from a page that shows it', () => {

@@ -64,7 +64,7 @@ const HEADER_SOURCE = `<script>
 	const logoAlt = $derived(logo?.src && !logo.decorative && typeof logo.alt === 'string' ? logo.alt.trim() : '');
 	// The logo shows at one of three heights, each with its widest, so a small copy of the picture is all it needs.
 	const LOGO_BOXES = { small: [26, 130], medium: [34, 160], large: [46, 220] };
-	const logoBox = $derived(Object.hasOwn(LOGO_BOXES, logoSize) ? logoSize : 'medium');
+	const logoBox = $derived(typeof logoSize === 'string' && Object.hasOwn(LOGO_BOXES, logoSize) ? logoSize : 'medium');
 	const logoSizes = $derived.by(() => {
 		const [tall, wide] = LOGO_BOXES[logoBox];
 		return logo?.width > 0 && logo?.height > 0 ? \`\${Math.min(wide, Math.ceil((tall * logo.width) / logo.height))}px\` : \`\${wide}px\`;
@@ -472,8 +472,14 @@ const HEADER_SOURCE = `<script>
 		letter-spacing: -0.02em;
 		text-decoration: none;
 	}
+	/* On a narrow phone a logo shrinks, letterboxed, to leave the menu and the switch their room: only once the name
+	   beside it has wrapped as far as it can (it gives up its room first), so a logo that fits keeps its size. */
+	.so-header__brand > :global(span) {
+		flex-shrink: 1000;
+	}
 	.so-header__brand :global(.so-header__logo) {
 		width: auto;
+		min-width: 0;
 		max-width: 160px;
 		height: 34px;
 		object-fit: contain;

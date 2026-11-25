@@ -492,9 +492,13 @@ describe('shell.header', () => {
     expect(img({ logoSize: 'large' })).toMatch(/\bso-header__logo--large\b/);
     expect(sizesOf(img({ logoSize: 'large' }))).toBe('220px');
     const square = { ...wordmark, width: 400, height: 400 };
-    expect(sizesOf(brand(html('shell.header', { siteName: 'Test Studio', logo: square, showSiteName: false, logoSize: 'large' })).match(/<img\b[^>]*>/)![0])).toBe('46px');
-    // A value the header doesn't know shows as medium.
+    const squareAt = (logoSize: string) => sizesOf(brand(html('shell.header', { siteName: 'Test Studio', logo: square, showSiteName: false, logoSize })).match(/<img\b[^>]*>/)![0]);
+    expect(squareAt('small')).toBe('26px');
+    expect(squareAt('medium')).toBe('34px');
+    expect(squareAt('large')).toBe('46px');
+    // A value the header doesn't know shows as medium, a name inside a list as much as an unknown name.
     expect(img({ logoSize: 'huge' })).toMatch(/\bso-header__logo--medium\b/);
+    expect(img({ logoSize: ['large'] })).toMatch(/\bso-header__logo--medium\b/);
     const css = bundle.defs['shell.header'].source!;
     const rule = (size: string) => css.match(new RegExp(`\\.so-header__brand :global\\(\\.so-header__logo--${size}\\)\\s*\\{([^}]*)\\}`))![1];
     expect(rule('small')).toMatch(/height:\s*26px/);
