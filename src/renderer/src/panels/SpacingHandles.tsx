@@ -543,7 +543,11 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
 
   // The handle being dragged stays while its own preview moves things about (a stack wrapping onto another line can
   // take its gutter away), so the pointer it holds is not lost.
-  const held = drag.current && !grips.some((g) => g.id === drag.current!.grip.id) ? [...grips, drag.current.grip] : grips;
+  // It is drawn first, so React never moves its element (a moved element loses the pointer it holds), whatever the
+  // others do.
+  const dragged = drag.current?.grip;
+  const shownDragged = dragged ? (grips.find((g) => g.id === dragged.id) ?? dragged) : null;
+  const held = shownDragged ? [shownDragged, ...grips.filter((g) => g.id !== shownDragged.id)] : grips;
   if (!held.length && !live) return null;
   const activeId = live?.id ?? hot;
   const active = held.find((g) => g.id === activeId);
