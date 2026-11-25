@@ -48,6 +48,7 @@ import { runPhase } from './lib/savestate';
 import { PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, fitPanels, panelMax, resizePanel, type PanelPrefs, type PanelSide } from './lib/layout';
 import { closeProject, endEditingHold, saveNow } from './lib/leave';
 import { shortcutLabel } from './lib/shortcut-keys';
+import { isAskAiKey } from './lib/ask-ai-key';
 
 /** Leave "editing everywhere" for the page it was entered from. However it is left (Done editing, Esc), focus
  *  lands on the page switcher, where the page now being edited is named. */
@@ -68,11 +69,22 @@ const textSelected = () => {
   return !!sel && !sel.isCollapsed;
 };
 
-/** Global editor shortcuts. Also called for keys forwarded from the preview frame. */
-export function handleShortcut(key: string, mod: boolean, shift: boolean): boolean {
+/**
+ * Global editor shortcuts. Also called for keys forwarded from the preview frame. `askAi`: the press is Ask AI's,
+ * on the key the author gave it in Settings (#750). It is looked at first, so a binding such as Cmd/Ctrl+Shift+K
+ * never also opens what Cmd/Ctrl+K does.
+ */
+export function handleShortcut(key: string, mod: boolean, shift: boolean, askAi = false): boolean {
   const s = getState();
   // While the project is being left, nothing may change it any more (the editor itself is inert then).
   if (s.leaving) return true;
+  // What is selected on the page under the post writer or the SEO view is out of sight: no key changes it, copies it or
+  // asks the AI about it until that page shows again (#578, #700).
+  const covered = canvasCovered(activeWorkspace(s));
+  if (askAi) {
+    askAiAbout(covered ? null : s.selection);
+    return true;
+  }
   if (mod && key.toLowerCase() === 'z') {
     projectHistory(shift ? 'redo' : 'undo');
     return true;
@@ -96,9 +108,6 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     void saveNow();
     return true;
   }
-  // What is selected on the page under the post writer or the SEO view is out of sight: no key changes it, copies it or
-  // asks the AI about it until that page shows again (#578, #700).
-  const covered = canvasCovered(activeWorkspace(s));
   // Duplicate, delete and move act on every layer selected together in Layers, or on the selection alone.
   if (mod && key.toLowerCase() === 'd') {
     if (!covered) void duplicateLayers();
@@ -117,10 +126,6 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   if (mod && !shift && s.mode === 'edit' && !covered && !s.modal && !openDialogs.length && !openMenus.count) {
     if (key.toLowerCase() === 'c' && !textSelected() && !s.definitionMode) return copySelection();
     if (key.toLowerCase() === 'v') return pasteCopy();
-  }
-  if (mod && key.toLowerCase() === 'j') {
-    askAiAbout(covered ? null : s.selection);
-    return true;
   }
   // With Shift held, macOS reports the backslash key as "|".
   if (mod && (key === '\\' || key === '|')) {
@@ -448,8 +453,9 @@ export function Editor() {
       }
       // Undo and Redo from a control without text history of its own (a select, a checkbox) undo the project.
       const history = mod && !e.altKey && ['z', 'y'].includes(e.key.toLowerCase()) && focusedSurface(e.target as HTMLElement) !== 'text';
-      // The panel shortcuts (Cmd/Ctrl+\ and Shift+Cmd/Ctrl+\) type nothing, so they work from a field too.
-      if (isTyping(e) && !history && !(mod && ['k', 'e', 'j', 's', '\\', '|'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
+      const askAi = isAskAiKey({ key: e.key, code: e.code, meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey });
+      // The panel shortcuts (Cmd/Ctrl+\ and Shift+Cmd/Ctrl+\) and Ask AI type nothing, so they work from a field too.
+      if (isTyping(e) && !history && !askAi && !(mod && ['k', 'e', 's', '\\', '|'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
       // Delete removes the canvas selection only when the canvas or Layers has the focus, never from a
       // button or row in another panel (an Assets tile, a page row).
       if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
@@ -458,8 +464,8 @@ export function Editor() {
       }
       // Copy and paste of sections and elements: Copy only from the page, Layers and the selection's own controls, Paste
       // from any control that takes no typing (lib/clip-keys).
-      if (mod && ['c', 'v'].includes(e.key.toLowerCase()) && !clipKeyIsEditors(e.key.toLowerCase() === 'c' ? 'copy' : 'paste', e.target as HTMLElement, document.body)) return;
-      if (handleShortcut(e.key, mod, e.shiftKey)) e.preventDefault();
+      if (mod && !askAi && ['c', 'v'].includes(e.key.toLowerCase()) && !clipKeyIsEditors(e.key.toLowerCase() === 'c' ? 'copy' : 'paste', e.target as HTMLElement, document.body)) return;
+      if (handleShortcut(e.key, mod, e.shiftKey, askAi)) e.preventDefault();
     };
     const onCmd = (e: Event) => {
       if (openDialogs.length || openMenus.count || getState().leaving) return;

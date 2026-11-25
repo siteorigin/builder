@@ -16,6 +16,7 @@ import { LucideIcon } from './InsertPanel';
 import { openContentMatch } from './FindReplace';
 import { contentFields, findContent, placedSections, sectionMatches } from '../lib/find-content';
 import { insertChoices, insertLanding } from '../lib/command-inserts';
+import { useAskAiKeys } from '../lib/ask-ai-key';
 import { LEFT_TABS } from './LeftTabs';
 
 interface Cmd {
@@ -169,6 +170,7 @@ export function CommandMenu() {
   // With nothing typed: whether the full page list and the full insert list have been opened up.
   const [allPages, setAllPages] = useState(false);
   const [allInserts, setAllInserts] = useState(false);
+  const askKey = useAskAiKeys().hint;
   const cmds = useMemo<Cmd[]>(() => {
     if (!snap) return [];
     const st = snap.state;
@@ -199,7 +201,7 @@ export function CommandMenu() {
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
         .map((d) => ({ id: `studio:${d.id}`, label: `Open ${d.name} in Component Studio`, keywords: 'component studio design variants edit everywhere', action: 'Open in Component Studio', group: 'Your components', icon: <SquareDashed />, run: () => void openComponentStudio(d.id) })),
       { id: 'newcomponent', label: 'Create component…', keywords: 'new component reusable design build ai', action: 'Start a new component, blank or built by AI', group: 'Insert', icon: <Component />, run: () => setState({ modal: { kind: 'new-component' } }) },
-      { id: 'ai', kbd: '⌘J', label: 'Ask AI…', action: 'Open the AI chat', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
+      { id: 'ai', kbd: askKey, label: 'Ask AI…', action: 'Open the AI chat', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
       { id: 'styles', label: 'Site styles', keywords: 'colors colours fonts typography spacing theme', action: 'Open site styles', group: 'View', icon: <Palette />, run: () => openSiteStyles() },
       { id: 'brief', label: 'Project brief', keywords: 'description notes client audience goals private', action: 'Open the Project tab', group: 'Project', icon: <NotebookPen />, run: () => setState({ rightTab: 'project', dockOpen: true }) },
       { id: 'find', kbd: '⇧⌘F', label: 'Find and replace…', keywords: 'search words site content', action: 'Open Find and replace', group: 'Edit', icon: <Replace />, run: () => setState({ modal: { kind: 'find' } }) },
@@ -226,7 +228,7 @@ export function CommandMenu() {
       { id: 'dock', kbd: '⇧⌘\\', label: dockOpen ? 'Hide the right panel' : 'Show the right panel', keywords: 'show hide right panel inspector', group: 'View', icon: <PanelRight />, run: () => setState({ dockOpen: !useStore.getState().dockOpen }) },
       { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void closeProject() }
     ];
-  }, [snap, mode, dockOpen, leftTab, dev, selection, slotTarget, pageId, definitionId, templateId]);
+  }, [snap, mode, dockOpen, leftTab, dev, selection, slotTarget, pageId, definitionId, templateId, askKey]);
   // What is already on the site comes before what can be added: the sections placed on each page, and a few of the
   // words and destinations the search finds (the full list is in Find and replace).
   const sections = useMemo(() => (snap ? placedSections(snap.state) : []), [snap]);

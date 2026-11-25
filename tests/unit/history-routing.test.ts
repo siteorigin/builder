@@ -21,8 +21,19 @@ describe('undo and redo routing', () => {
       for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(page, key, false)).toBe(false);
       for (const key of ['z', 'd', 'c', 'v', 'ArrowUp', 'ArrowDown']) expect(forwardedKeyRuns(page, key, true)).toBe(false);
     }
-    for (const key of ['k', 'K', 's', 'S', 'e', 'j', '\\', '|']) expect(forwardedKeyRuns(visitor, key, true)).toBe(true);
+    for (const key of ['k', 'K', 's', 'S', 'e', '\\', '|']) expect(forwardedKeyRuns(visitor, key, true)).toBe(true);
     expect(forwardedKeyRuns(visitor, 'Escape', false)).toBe(true);
+  });
+
+  it('runs Ask AI from a visitor’s page or a field on it on whatever key it has, and no longer on J once moved (#750)', () => {
+    for (const page of [visitor, { ...visitor, frameText: true }, ctx({ focus: 'canvas', overlay: true })]) {
+      for (const key of ['L', '7', 'q']) expect(forwardedKeyRuns(page, key, true, true)).toBe(true);
+      expect(forwardedKeyRuns(page, 'j', true, false)).toBe(false);
+    }
+    // Typing on the page keeps its keys: only Save runs while site copy is edited. Off the canvas, nothing forwarded runs.
+    expect(forwardedKeyRuns(ctx({ focus: 'canvas', inlineEdit: true }), 'L', true, true)).toBe(false);
+    expect(forwardedKeyRuns(ctx({ focus: 'other' }), 'L', true, true)).toBe(false);
+    expect(forwardedKeyRuns(ctx({ editor: false, focus: 'canvas' }), 'L', true, true)).toBe(false);
   });
 
   it('undoes the project from the canvas in Edit mode exactly once', () => {

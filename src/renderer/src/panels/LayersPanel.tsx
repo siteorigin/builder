@@ -27,6 +27,7 @@ import { OutlinePanel } from './OutlinePanel';
 import { templateOwner } from '../lib/template-view';
 import { layerSlots, placeOps } from '../lib/layer-drop';
 import { sameSlotTarget, type SlotTarget } from '../lib/slot-target';
+import { askAiHint } from '../lib/ask-ai-key';
 
 /*
  * The Layers panel: the current page's outline (shared header, page content, shared footer), or a
@@ -614,7 +615,7 @@ export function LayersPanel() {
     const items = [
       { heading: name },
       ...(onRename ? [{ label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: onRename }] : []),
-      { label: 'Ask AI about this', icon: <Sparkles />, shortcut: '⌘J', onSelect: () => askAiAbout(ref) },
+      { label: 'Ask AI about this', icon: <Sparkles />, shortcut: askAiHint(), onSelect: () => askAiAbout(ref) },
       ...(editable && here
         ? [
             { separator: true },

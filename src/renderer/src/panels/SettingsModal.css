@@ -23,6 +23,12 @@
   .settings-group-title { margin: 8px 2px -4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
   .settings-row { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; min-width: 0; }
   .settings-row-inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
+  /* A recorded shortcut (Settings → General → Keyboard shortcuts): its keys, then Change; Reset beside it. */
+  .settings-shortcut { display: flex; flex: none; align-items: center; gap: 8px; }
+  .settings-shortcut-key { gap: 8px; }
+  .settings-shortcut-key .kbd { min-width: 44px; text-align: center; color: var(--text); }
+  .settings-shortcut-key.recording { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .settings-shortcut-key.recording .kbd { color: var(--text-3); font-style: italic; }
   .settings-row-text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
   .settings-row-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
   .settings-row-head:has(> :nth-child(2)) { min-height: 26px; }

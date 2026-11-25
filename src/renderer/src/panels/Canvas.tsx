@@ -53,6 +53,7 @@ import { sampleEntries, shownView, templateOwner, viewAt, viewKey, type Template
 import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourney, stepTarget, type FrameEntry, type VisitorHistory } from '../lib/preview-history';
 import { shortcutLabel } from '../lib/shortcut-keys';
 import { settlePageClick } from '../lib/page-clicks';
+import { askAiHint, useAskAiKeys } from '../lib/ask-ai-key';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -1477,7 +1478,7 @@ export function Canvas() {
         { heading: name },
         ...(editable ? [{ label: 'Edit text', icon: <Pencil />, onSelect: editText }] : []),
         ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: live(parent, () => setState({ selection: parent })) }] : []),
-        { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys('⌘J'), onSelect: live(ref, () => askAiAbout(ref)) },
+        { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys(askAiHint()), onSelect: live(ref, () => askAiAbout(ref)) },
         // A part of a placed section has no place of its own to paste at (nor a Duplicate): only a component's own root, edited everywhere, does.
         ...(!t && clipboard.length && ref.owner.kind === 'component' && !ref.instancePath.length ? [{ separator: true }, ...clipboard] : []),
         ...(t
@@ -3165,6 +3166,7 @@ function chipPlacement(box: { top: number; height: number }, topLevel: boolean, 
  * equivalent. Delete is not here: it lives at the end of More actions, in red, and on the Delete key.
  */
 function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, canMove, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; canMove: boolean; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
+  const askKeys = useAskAiKeys();
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
   // With the inspector out of sight (dock closed, or AI / Site styles showing), the chip offers the way back.
@@ -3325,7 +3327,7 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
         </span>
       )}
       <span className="chip-sep" aria-hidden="true" />
-      <button className="icon-btn" title={`Ask AI about this (${keys('⌘J')})`} aria-label="Ask AI about this" aria-keyshortcuts={ariaKeys('Meta+J')} onClick={() => askAiAbout(selection)}>
+      <button className="icon-btn" title={`Ask AI about this (${keys(askKeys.hint)})`} aria-label="Ask AI about this" aria-keyshortcuts={askKeys.aria} onClick={() => askAiAbout(selection)}>
         <Sparkles />
       </button>
       {onEditText && !compact && (

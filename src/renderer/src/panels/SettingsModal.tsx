@@ -6,6 +6,7 @@ import { api, setState, useStore, confirmDialog, refreshProviders, setProviders 
 import { Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
 import { InlineRow, LocalModelSettings, StackedRow, type LocalServerStatus } from './LocalModelSettings';
 import { checkLocalBaseURL, localKeyProblem } from '@shared/local';
+import { AskAiShortcut } from './ShortcutSettings';
 
 /** A connection test's outcome, shown only while what it tested is still what is on screen. */
 type TestResult = { signature: string; provider: ProviderId; edits: number; ok: boolean; message: string; draft: boolean; stage?: 'server' | 'chat' };
@@ -628,6 +629,10 @@ export function SettingsModal() {
                     <div className="settings-row">
                       <SwitchRow checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte. Code is checked before it’s saved." />
                     </div>
+                  </div>
+                  <div className="settings-group-title">Keyboard shortcuts</div>
+                  <div className="settings-group">
+                    <AskAiShortcut binding={settings.shortcuts.askAi} save={async (askAi) => void (await update({ shortcuts: { askAi } }))} />
                   </div>
                   <div className="settings-aside">
                     <History aria-hidden="true" />
