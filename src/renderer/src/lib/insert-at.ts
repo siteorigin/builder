@@ -24,7 +24,8 @@ export type InsertAt = { owner: OwnerRef; parentId: string | null; slot?: string
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 
 /** The kind of element each basic element is, as a slot's contract names the kinds it takes. */
-const PRIMITIVE_KINDS: Record<Primitive, SlotPrimitive> = {
+/** A slot placeholder is left out: what it brings depends on its own contract, which the insert itself checks. */
+const PRIMITIVE_KINDS: Record<Exclude<Primitive, 'slot'>, SlotPrimitive> = {
   container: 'element',
   stack: 'element',
   row: 'element',
@@ -59,6 +60,7 @@ export function slotRefusal(state: ProjectState, at: InsertAt | null, spec: Inse
   }
   if (!restrictsKinds(decl)) return null;
   const takes = `${where} takes ${slotAccepts(decl, state)}.`;
+  if (spec.primitive === 'slot') return null;
   if (spec.primitive) return (decl.primitives ?? []).includes(PRIMITIVE_KINDS[spec.primitive]) ? null : takes;
   // A theme component goes in as the site's theme has it (installing it, or using the copy installed from it).
   const def: ComponentDefinition | undefined = spec.definitionId

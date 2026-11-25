@@ -3417,7 +3417,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
       // so the component placed here shows its own fallback then.
       const handed = handedSlot(ctx, childIds);
       if (handed !== undefined) {
-        attrs.push(`${slotIdent(slotName)}={${slotLocal(handed)}}`);
+        attrs.push(`${slotIdent(slotName)}={${slotLocal(ctx.state, ctx.def, handed)}}`);
         continue;
       }
       ctx.indent += 2;

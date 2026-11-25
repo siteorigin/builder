@@ -470,8 +470,10 @@ describe('a slot passed on to a component placed in the design (#655)', () => {
     const file = (instrument: boolean) => [...generateProject(s, { instrument })].find(([path, src]) => path.endsWith('.svelte') && src.includes('Code component') === false && src.includes(`slot_content: so_given_content = undefined`))?.[1] ?? '';
     for (const instrument of [false, true]) {
       const shelfFile = file(instrument);
-      expect(shelfFile).toContain('{@render so_given_content?.()}');
+      // Handed straight on to the card's Body, so the card shows its own fallback while the Shelf's Content is empty.
+      expect(shelfFile).toContain('slot_body={so_given_content}');
       expect(shelfFile).not.toContain('{@render slot_content?.()}');
+      expect(shelfFile).not.toContain('slot_body={slot_content}');
     }
     expect((await renderHome(s)).split('Book a class')).toHaveLength(2);
     // Names that differ but generate the same identifier ("detail-pane", "_detail_pane") shadow it the same way.

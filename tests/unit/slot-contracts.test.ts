@@ -329,9 +329,9 @@ describe('a slot’s fallback content', () => {
   it('shows on the website and in Preview while the placement leaves the slot empty, and gives way as soon as it has content', async () => {
     const { s, page, grid } = badged();
     const files = generateProject(s);
-    const design = [...files.values()].find((src) => src.includes('Default badge') && src.includes('so_in_aside'))!;
-    expect(design).toMatch(/\{#if so_in_aside\}\s*\{@render so_in_aside\(\)\}\s*\{:else\}[\s\S]*Default badge[\s\S]*\{\/if\}/);
-    expect(design).toContain('slot_aside: so_in_aside = undefined');
+    const design = [...files.values()].find((src) => src.includes('Default badge') && src.includes('slot_aside = undefined'))!;
+    expect(design).toMatch(/\{#if slot_aside\}\s*\{@render slot_aside\(\)\}\s*\{:else\}[\s\S]*Default badge[\s\S]*\{\/if\}/);
+    expect(design).toContain('slot_aside = undefined');
     for (const [path, src] of files) expect(src, path).not.toMatch(EDITOR);
     expect(await serverHtml(files, 'slot-fallback-')).toContain('Default badge');
     const filled = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: grid, slot: 'aside', primitive: 'paragraph', text: 'Book now' }]).state;
@@ -450,7 +450,7 @@ describe('a slot’s fallback content', () => {
     const named = applyOperations(s, [{ type: 'component.setSlot', definitionId: section, slot: 'content', label: 'Cards', componentIds: ['media.gallery'] }]).state;
     const converted = applyOperations(named, [{ type: 'component.convertToCode', owner: page, nodeId: grid }]);
     const code = converted.state.components[converted.results[0].definitionId as string];
-    expect(code.source).toMatch(/\{#if so_in_aside\}[\s\S]*Default badge/);
+    expect(code.source).toMatch(/\{#if slot_aside\}[\s\S]*Default badge/);
     expect(code.slots?.content.componentIds).toEqual(['media.gallery']);
     const problems = await checkSvelteSource(code.source!, { contract: { slots: code.slots, parts: code.parts } });
     expect(problems.filter((p) => p.severity === 'error')).toEqual([]);

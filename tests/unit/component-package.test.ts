@@ -526,7 +526,7 @@ describe('component packages: export and import (#371)', () => {
     expect(twice.error?.message).toMatch(/the element "c" is placed in more than one place/);
     const loop = await importInto(dest, writePackage(JSON.stringify({ ...good, rootId: 'proj.band-abcde', definitions: [managed({ root: { id: 'root', kind: 'element', tag: 'div', children: [] }, x: { id: 'x', kind: 'element', tag: 'div', children: ['x'] } })] })));
     expect(loop.error?.message).toMatch(/the element "x" is placed inside itself/);
-    expect(clash.error?.message).toMatch(/“Band” can't be imported: its design doesn't compile \(Identifier 'so_in__hero_title' has already been declared\)/);
+    expect(clash.error?.message).toMatch(/“Band” can't be imported: its design doesn't compile \(Identifier 'slot__hero_title' has already been declared\)/);
     expect(snapshot(dest)).toBe(untouched);
     await dest.close();
   });
