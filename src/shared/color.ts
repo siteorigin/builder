@@ -57,12 +57,18 @@ const toSrgb = (v: number) => {
   return 255 * (c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
 };
 
-/** OKLab to sRGB channels (0-255), each clipped to the sRGB gamut. */
-export function oklabToRgb(L: number, a: number, b: number): [number, number, number] {
+/** OKLab to linear-light sRGB, unclipped: a channel below 0 or above 1 says the colour is outside the sRGB gamut. */
+export function oklabToLinearRgb(L: number, a: number, b: number): [number, number, number] {
   const l = Math.pow(L + 0.3963377774 * a + 0.2158037573 * b, 3);
   const m = Math.pow(L - 0.1055613458 * a - 0.0638541728 * b, 3);
   const s = Math.pow(L - 0.0894841775 * a - 1.291485548 * b, 3);
-  return [toSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s), toSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s), toSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s)];
+  return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s];
+}
+
+/** OKLab to sRGB channels (0-255), each clipped to the sRGB gamut. */
+export function oklabToRgb(L: number, a: number, b: number): [number, number, number] {
+  const [r, g, bl] = oklabToLinearRgb(L, a, b);
+  return [toSrgb(r), toSrgb(g), toSrgb(bl)];
 }
 
 const toLinear = (v: number) => {

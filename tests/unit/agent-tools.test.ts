@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { AiEvent, ChatContext } from '@shared/api';
 import type { ElementNode, ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, ProjectState, PropSchema, TableValue } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { catalogueComponent, listThemes } from '@catalogue/index';
+import { catalogueComponent, getTheme, listThemes } from '@catalogue/index';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolDefinition } from '@agent/types';
 import { executeTool, FOCUSED_PAGE_OPERATIONS, PAGE_OPERATIONS, toolsForRun } from '@agent/tools';
@@ -32,7 +32,9 @@ import { ProjectSession } from '../../src/main/project/session';
 import { validateState } from '@engine/validate';
 import { installComponent, makeInstance } from '@engine/install';
 import { compileProject } from '../../src/main/compile';
-import { resolveInstanceProps } from '@generator/index';
+import { effectiveTokens, resolveInstanceProps } from '@generator/index';
+import { evaluatePairs } from '@shared/contrast';
+import { PALETTE_MOODS, harmonizePalette } from '@shared/palette';
 import { applyOperation } from '@engine/apply';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[];
@@ -764,6 +766,97 @@ describe('update_site_brand', () => {
     expect(session.state.site.themeId).toBe('foundation');
     expect(session.state.tokens).toEqual(before.tokens);
     expect(session.state.pages).toEqual(before.pages);
+  });
+
+  /** Every pair the site's theme sets against each other, measured on the site's colors as they are now. */
+  const unreadable = (s: ProjectState, scheme: 'light' | 'dark' = 'light') =>
+    evaluatePairs(effectiveTokens(s, scheme), getTheme(s.site.themeId).contrastPairs ?? [])
+      .filter((r) => r.status !== 'pass')
+      .map((r) => r.pair.id);
+
+  it('re-colors the whole site from a brand color and a palette mood in one undoable call, every pair readable (#357)', async () => {
+    const small = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'native' as const };
+    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { brandColor: '#1e3a5f', paletteMood: 'tinted' })], () => finish()], small);
+    const before = structuredClone(session.state.tokens);
+    const expected = harmonizePalette({ brand: '#1e3a5f', mood: 'tinted', tokens: effectiveTokens(session.state), pairs: getTheme('foundation').contrastPairs! });
+    const { result } = await run('Rebrand the site in navy, with matching backgrounds');
+    // A small model re-skins the site in its one call, and the run ends there.
+    expect(result?.status).toBe('completed');
+    expect(adapter.requests).toHaveLength(1);
+    const schema = adapter.requests[0].tools.find((t) => t.name === 'update_site_brand')!.parameters as { properties: Record<string, { enum?: string[]; description?: string }> };
+    expect(schema.properties.paletteMood.enum).toEqual([...PALETTE_MOODS]);
+    expect(schema.properties.paletteMood.description).toContain('tinted: Backgrounds, lines and text tinted with the brand hue.');
+    const s = session.state;
+    // The warm-stone grounds and every other role now come from the navy, not only the four brand colors.
+    for (const id of ['color.brand', 'color.background', 'color.surface-alt', 'color.border', 'color.muted', 'color.brand-strong', 'color.inverse', 'color.accent', 'color.text']) {
+      expect(s.tokens.overrides[id], id).toBe(expected.values[id as keyof typeof expected.values]);
+    }
+    expect(unreadable(s)).toEqual([]);
+    expect(await compileProject(s)).toEqual([]);
+    await session.undo();
+    expect(session.state.tokens).toEqual(before);
+  });
+
+  it("makes the palette from the site's own brand when only a mood is sent, against the theme switched to in the same call", async () => {
+    const { session, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'signal', paletteMood: 'warm' })], () => finish()]);
+    await run('Switch to the software look, with warm backgrounds');
+    const s = session.state;
+    expect(s.site.themeId).toBe('signal');
+    // Signal's own brand stays; the grounds around it are warm.
+    expect(s.tokens.overrides['color.brand']).toBeUndefined();
+    const expected = harmonizePalette({ brand: '#4338ca', mood: 'warm', tokens: effectiveTokens({ ...s, tokens: { ...s.tokens, overrides: {} } }), pairs: getTheme('signal').contrastPairs! });
+    expect(s.tokens.overrides['color.background']).toBe(expected.values['color.background']);
+    expect(unreadable(s)).toEqual([]);
+  });
+
+  it('keeps an accent sent with the mood, gives a brand that only reads on dark grounds a dark page, and says so', async () => {
+    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { brandColor: '#f5c518', accentColor: '#d98f48', paletteMood: 'neutral' })], () => finish()]);
+    await run('Make it yellow');
+    const s = session.state;
+    expect(s.tokens.overrides['color.brand']).toBe('#f5c518');
+    expect(s.tokens.overrides['color.accent']).toBeUndefined(); // the theme's own accent, sent as it is
+    expect(s.tokens.overrides['color.on-brand']).toBe('#14181a');
+    expect(unreadable(s)).toEqual([]);
+    expect(lastResult(adapter.requests[1]).warnings).toEqual(['#f5c518 only reads as text on dark backgrounds, so the site\'s backgrounds are now dark.']);
+  });
+
+  it('moves a brand no page can carry as text the least it must, and says how', async () => {
+    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { theme: 'signal', brandColor: '#747474', paletteMood: 'tinted' })], () => finish()]);
+    await run('Grey brand please');
+    const s = session.state;
+    const brand = String(s.tokens.overrides['color.brand']);
+    expect(brand).toMatch(/^#[0-9a-f]{6}$/);
+    expect(brand).not.toBe('#747474');
+    expect(unreadable(s)).toEqual([]);
+    expect(lastResult(adapter.requests[1]).warnings).toEqual([expect.stringMatching(new RegExp(`^#747474 was made (lighter|darker) \\(${brand}\\) so brand-colored links stay readable`))]);
+  });
+
+  it('refuses a mood the tool does not offer, and a brand it cannot read, changing nothing', async () => {
+    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { siteName: 'Kept Out', paletteMood: 'pastel' })], () => [call('p2', 'update_site_brand', { siteName: 'Kept Out', paletteMood: 'neutral' })], () => finish()], {}, 'business', (s) => {
+      s.tokens.overrides['color.brand'] = 'var(--brand-from-somewhere)';
+    });
+    const before = structuredClone(session.state.tokens);
+    await run('Recolor it');
+    expect(JSON.stringify(lastResult(adapter.requests[1]))).toContain('paletteMood');
+    expect(lastResult(adapter.requests[2]).fields).toEqual([expect.objectContaining({ field: 'brandColor', message: expect.stringContaining('cannot be read') })]);
+    expect(session.state.site.name).toBe('Test Studio');
+    expect(session.state.tokens).toEqual(before);
+  });
+
+  it('keeps the dark palette’s own colors, and says when the new light ones leave pairs there hard to read', async () => {
+    // A dark palette whose brand shows the light one: a navy brand there sits on dark grounds.
+    const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { brandColor: '#1e3a5f', paletteMood: 'neutral' })], () => finish()], {}, 'business', (s) => {
+      Object.assign(s, applyOperations(s, [{ type: 'token.setColorScheme', mode: 'system' }]).state);
+      delete s.tokens.darkOverrides!['color.brand'];
+    });
+    const dark = structuredClone(session.state.tokens.darkOverrides);
+    await run('Make it navy');
+    expect(session.state.tokens.darkOverrides).toEqual(dark);
+    expect(unreadable(session.state)).toEqual([]);
+    expect(unreadable(session.state, 'dark')).toEqual(expect.arrayContaining(['brand-text-background', 'brand-text-surface', 'brand-text-surface-alt']));
+    expect(lastResult(adapter.requests[1]).warnings).toEqual([
+      expect.stringMatching(/^The dark palette kept its own colors, and \d+ pairs there are hard to read \(.*brand-colored links on the page.*\)\. token\.setColorScheme with regenerate: true makes the dark colors again from the new palette\.$/)
+    ]);
   });
 
   it('refuses a theme that is not offered, naming the field, and changes nothing else in the call', async () => {
