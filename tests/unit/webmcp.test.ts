@@ -96,15 +96,21 @@ describe('the contact form’s code', () => {
     // Short text, long text, a single-choice question's answers and its group, and a checkbox: each from its label.
     expect(adapted.match(/toolparamdescription=\{so_webmcp \? String\(field\.label/g)).toHaveLength(5);
     expect(adapted).toMatch(/<fieldset class="so-form__field so-form__field--wide so-form__choices" toolparamdescription=\{so_webmcp \? String\(field\.label/);
-    // The spam trap and the service's own fields tell agents to leave them be.
-    expect(adapted.match(/name=\{honeypot\} toolparamdescription=\{so_webmcp \? 'A spam trap/g)).toHaveLength(FORM_SOURCE_FOR_TESTS.match(/name=\{honeypot\}/g)!.length);
-    expect(adapted).toMatch(/name="form-name" toolparamdescription=\{so_webmcp \? 'Set by the website/);
-    expect(adapted).toMatch(/name="access_key" toolparamdescription=\{so_webmcp \? 'Set by the website/);
+    // The spam trap tells agents to leave it empty. The service's hidden fields get no description, which keeps them out
+    // of what agents may fill in (an access key decides whose inbox a message reaches).
+    expect(adapted.match(/name=\{honeypot\} toolparamdescription=\{so_webmcp \? 'A spam trap: always leave it empty\. Filling it in discards the message\.' : undefined\}/g)).toHaveLength(FORM_SOURCE_FOR_TESTS.match(/name=\{honeypot\}/g)!.length);
+    expect(adapted).toMatch(/name="form-name" value/);
+    expect(adapted).toMatch(/name="access_key" value/);
+    // A field the browser sees change would change the tool under it: they stay as they are while an agent waits.
+    expect(adapted.match(/readonly=\{status === 'sending' && !so_answering\}/g)).toHaveLength(2);
+    expect(adapted.match(/disabled=\{status === 'sending' && !so_answering\}/g)).toHaveLength(2);
+    expect(adapted).not.toMatch(/(?:readonly|disabled)=\{status === 'sending'\}/);
     // Sending tells the agent how it went, and empties the form only after that.
     expect(adapted).toContain('\tfunction submit(event) {');
     expect(adapted).toContain('\tasync function so_send(event) {\n\t\tevent.preventDefault();');
     expect(adapted.match(/so_reset\(form\);/g)!.length).toBe(FORM_SOURCE_FOR_TESTS.match(/HTMLFormElement\.prototype\.reset\.call\(form\);/g)!.length);
-    expect(adapted.match(/HTMLFormElement\.prototype\.reset\.call\(form\)/g)).toHaveLength(2);
+    // The one place left that empties the form, inside so_reset.
+    expect(adapted.match(/HTMLFormElement\.prototype\.reset\.call\(form\)/g)).toHaveLength(1);
   });
 
   it('adapts the first forms too, whose fields are named by fieldName', () => {
@@ -131,6 +137,14 @@ describe('the contact form’s code', () => {
     expect(changed('\t\t\tclass="so-form__form"', '\t\t\tclass="so-form__form"\n\t\t\ttooldescription="Contact us"')).toBeNull();
     expect(changed('\t\t\tclass="so-form__form"', '\t\t\tclass="so-form__form"\n\t\t\ttoolname="mine"')).toBeNull();
     expect(changed('async function submit(event) {', 'async function submit(e) {\n\t\tconst event = e;')).toBeNull();
+    // Attributes spread from elsewhere might carry an autosubmit of their own.
+    expect(changed('\t\t\tclass="so-form__form"', '\t\t\tclass="so-form__form"\n\t\t\t{...formAttributes}')).toBeNull();
+    // A sibling named in any but the plainest way.
+    expect(changed("import { visitorText } from '../runtime/visitor-text.js';", "import { visitorText } from '../runtime/visitor-text.js';\n\timport Helper from '\\x2e/Helper.svelte';")).toBeNull();
+    // A field named some other way would go undescribed.
+    expect(changed(/name=\{names\[i\]\}/, "name={names[i] ?? 'message'}")).toBeNull();
+    // The sending state the agent's answer reads, under another name.
+    expect(changed(/\bstatus\b/g, 'sendStatus')).toBeNull();
   });
 });
 
@@ -361,6 +375,19 @@ describe('the search_site tool in the visitor’s browser', () => {
     (globalThis as { document?: unknown }).document = { modelContext: { registerTool: (t: { name: string }) => calls.push(`register ${t.name}`), unregisterTool: (name: string) => calls.push(`unregister ${name}`) }, baseURI: 'https://example.com/' };
     offerSearch((r) => r)();
     expect(calls).toEqual(['register search_site', 'unregister search_site']);
+    // A name another script offered first is never stopped here.
+    calls.length = 0;
+    (globalThis as { document?: unknown }).document = {
+      modelContext: {
+        registerTool: () => {
+          throw Object.assign(new Error('Duplicate'), { name: 'InvalidStateError' });
+        },
+        unregisterTool: (name: string) => calls.push(`unregister ${name}`)
+      },
+      baseURI: 'https://example.com/'
+    };
+    offerSearch((r) => r)();
+    expect(calls).toEqual([]);
   });
 
   it('leaves a name already offered alone, whether the refusal is thrown or rejected', async () => {
@@ -464,6 +491,15 @@ describe('the WebMCP readiness suggestion', () => {
     expect(finding(s)).toEqual([]);
     s = run(s, { type: 'collection.create', collectionId: 'projects', name: 'Projects', route: '/projects/' } as EditOperation, { type: 'entry.create', collectionId: 'projects', entryId: 'en_first', title: 'First', publishedAt: '2026-01-01', draft: false, body: ['First.'] } as EditOperation);
     expect(finding(s)[0]?.message).toContain('a contact form');
+  });
+
+  it('counts a form in a collection’s layout only while an entry shows it', () => {
+    const posts = run(fresh(), { type: 'collection.create', collectionId: 'projects', name: 'Projects', route: '/projects/' } as EditOperation, { type: 'entry.create', collectionId: 'projects', entryId: 'en_first', title: 'First', publishedAt: '2026-01-01', draft: true, body: ['First.'] } as EditOperation);
+    const layout: OwnerRef = { kind: 'template', id: 'projects' };
+    const placed = withForms(posts, 1, layout);
+    expect(finding(placed)).toEqual([]);
+    const published = run(placed, { type: 'entry.update', collectionId: 'projects', entryId: 'en_first', draft: false } as EditOperation);
+    expect(finding(published)[0]?.message).toContain('a contact form');
   });
 
   it('says nothing for a form whose code declares no tool', () => {
@@ -570,11 +606,46 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
     }
   }, 60_000);
 
+  it('keeps the fields as they are while the agent waits, and answers a second request without sending again', async () => {
+    const { browser, page, posts } = await open();
+    try {
+      await page.evaluate(agentSubmit(true));
+      await expect.poll(() => posts.length).toBe(1);
+      expect(await page.evaluate("document.querySelector('input[name=\"name\"]').readOnly")).toBe(false);
+      // Another agent request while the message is on its way is told so, and leaves the first one's answer alone.
+      await page.evaluate(agentSubmit(true));
+      await page.waitForFunction(told);
+      expect(await page.evaluate('window.told')).toEqual({ sent: false, message: 'The form is already sending a message.' });
+      expect(posts).toHaveLength(1);
+      await page.evaluate('window.told = undefined');
+      await posts[0].fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      await expect.poll(() => page.inputValue('input[name="name"]')).toBe('');
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
+  it('tells the agent a message caught by the spam trap was discarded, sending nothing', async () => {
+    const { browser, page, posts } = await open();
+    try {
+      await page.evaluate("document.querySelector('input[name=\"_gotcha\"]').value = 'spam'");
+      await page.evaluate(agentSubmit(true));
+      await page.waitForFunction(told);
+      expect(await page.evaluate('window.told')).toEqual({ sent: false, message: expect.stringContaining('spam trap') });
+      expect(await page.evaluate('window.nameWhenTold')).toBe('Ana');
+      await expect.poll(() => page.inputValue('input[name="name"]')).toBe('');
+      expect(posts).toHaveLength(0);
+    } finally {
+      await browser.close();
+    }
+  }, 60_000);
+
   it('sends as before when the visitor sends without an agent', async () => {
     const { browser, page, posts } = await open();
     try {
       expect(await page.evaluate(agentSubmit(false))).toBe(true);
       await expect.poll(() => posts.length).toBe(1);
+      expect(posts[0].request().postDataBuffer()?.toString()).toContain('Ana');
       await posts[0].fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
       await expect.poll(() => page.inputValue('input[name="name"]')).toBe('');
       expect(await page.evaluate('window.claimed')).toBe(false);

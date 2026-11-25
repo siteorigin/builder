@@ -650,15 +650,19 @@ export function netlifyFormClashes(state: ProjectState): FormNameClash[] {
  * `throughCode`, code that places the component itself (a design converted to code) shows it too.
  */
 export function siteShowsCode(state: ProjectState, test: (def: ComponentDefinition) => boolean, opts: { throughCode?: boolean } = {}): boolean {
-  const pages = state.site.pageOrder.flatMap((id) => (Object.hasOwn(state.pages, id) && !isDraftPage(state, state.pages[id]) ? [state.pages[id]] : []));
-  const entries = siteEntries(state).filter((e) => !isDraftEntry(e.entry));
-  const collectionPages = entries.length > 0 || archivePages(state).length > 0;
-  const shell = SHELL_PARTS.filter((part) => collectionPages || pages.some((p) => showsPart(p, part))).map((part) => state.site.shell[part]);
   const reached = new Map<string, boolean>();
   const picks = (def: ComponentDefinition) => test(def) || (!!opts.throughCode && def.kind === 'code' && codeReaches(state, def, test, reached));
-  const shows = (tree: NodeTree) => {
+  // Nothing installed is one, or leads to one: nothing to look for.
+  if (!Object.values(state.components).some((d) => !!d && picks(d))) return false;
+  const pages = state.site.pageOrder.flatMap((id) => (Object.hasOwn(state.pages, id) && !isDraftPage(state, state.pages[id]) ? [state.pages[id]] : []));
+  // Entries as the website has them: drafts left out before addresses are shared out.
+  const live = publishedState(state);
+  const entries = siteEntries(live);
+  const collectionPages = entries.length > 0 || archivePages(state).length > 0;
+  const shell = SHELL_PARTS.filter((part) => collectionPages || pages.some((p) => showsPart(p, part))).map((part) => state.site.shell[part]);
+  const shows = (s: ProjectState, tree: NodeTree) => {
     let found = false;
-    walkRendered(state, tree, {
+    walkRendered(s, tree, {
       kept: true,
       prune: () => found,
       code: (def) => {
@@ -667,27 +671,55 @@ export function siteShowsCode(state: ProjectState, test: (def: ComponentDefiniti
     });
     return found;
   };
-  if ([...pages, ...shell].some(shows)) return true;
-  // Each entry's page as the website has it: its layout's conditions read for that entry.
-  return entries.some(({ collection, entry }) => shows(entryArticle(state, collection, entry)));
+  if ([...pages, ...shell].some((tree) => shows(state, tree))) return true;
+  // Each entry's page as the website has it, its layout's conditions read for that entry: only in collections whose
+  // layout places such a component somewhere, whatever its conditions say.
+  const placing = new Map<string, boolean>();
+  return entries.some(({ collection, entry }) => {
+    const id = collection.settings.id;
+    if (!placing.has(id)) placing.set(id, treePlaces(live, collection.settings.template, picks));
+    if (!placing.get(id)) return false;
+    const page = materializeTemplate(live, collection, entry, entryNeighbours(live, id, entry.id));
+    entryTrees.set(page, { collectionId: id, entryId: entry.id });
+    return shows(live, page);
+  });
+}
+
+/** Whether a tree places, anywhere and whatever its conditions, a component `picks` says yes to, or a design that does. */
+function treePlaces(state: ProjectState, tree: NodeTree | undefined, picks: (def: ComponentDefinition) => boolean): boolean {
+  const seen = new Set<string>();
+  const inside = (nodes: unknown): boolean =>
+    !!nodes &&
+    typeof nodes === 'object' &&
+    Object.values(nodes as Record<string, GraphNode>).some((n) => {
+      if (n?.kind !== 'instance' || typeof n.definitionId !== 'string') return false;
+      const d = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
+      if (!d || seen.has(d.id)) return false;
+      seen.add(d.id);
+      return picks(d) || (d.kind === 'managed' && inside(d.tree?.nodes));
+    });
+  return inside(tree?.nodes);
 }
 
 /**
  * Whether code places, through the files it imports (other code, or designs, as a design converted to code does), a
- * component `test` picks. Each definition is judged once (`memo`).
+ * component `test` picks. Each definition is judged once (`memo`), and a definition that leads back to itself leads
+ * nowhere new.
  */
 function codeReaches(state: ProjectState, def: ComponentDefinition, test: (def: ComponentDefinition) => boolean, memo: Map<string, boolean>): boolean {
   const known = memo.get(def.id);
   if (known !== undefined) return known;
   memo.set(def.id, false);
+  const seen = new Set<string>([def.id]);
   const inside = (d: ComponentDefinition | undefined): boolean => {
-    if (!d) return false;
+    if (!d || seen.has(d.id)) return false;
+    seen.add(d.id);
     if (test(d)) return true;
     if (d.kind === 'code') return codeReaches(state, d, test, memo);
     return Object.values(d.tree?.nodes ?? {}).some((n) => n?.kind === 'instance' && inside(Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined));
   };
   const source = typeof def.source === 'string' ? def.source : '';
-  const found = Object.values(state.components).some((d) => d.id !== def.id && source.includes(`/${defFile(d).split('/').pop()}`) && inside(d));
+  const found = Object.values(state.components).some((d) => !!d && d.id !== def.id && source.includes(`/${defFile(d).split('/').pop()}`) && inside(d));
   memo.set(def.id, found);
   return found;
 }

@@ -19,47 +19,59 @@ export const DEFAULT_FORM_TOOL = 'contact';
 export const WEBMCP_SEARCH_FILE = 'webmcp-search.js';
 
 /**
- * The pieces of the theme's contact form the tool attributes are added at, each exactly as every version of the form so
- * far writes it. Code that writes any of them differently (a copy the author changed) is left as it is, and its form
- * declares no tool.
+ * The pieces of the theme's contact form the tool attributes are added at, each exactly as every version of the form
+ * with its fields' names on lines of their own writes it. Code that writes any of them differently (a copy the author
+ * changed, or the very first form) is left as it is, and its form declares no tool.
  */
 const PROPS_END = "\n\t\tclass: className = ''\n\t} = $props();";
 const UID = '\n\tconst uid = $props.id();';
+const STATUS = "\n\tlet status = $state('idle');";
+const HONEYPOT = '\n\tconst honeypot = $derived(';
 const FORM_OPEN = '\n\t\t<form\n\t\t\tclass="so-form__form"';
-const FIELD_LOOP = '{#each fields as field, i (field.id)}';
+const FIELD_LOOP = '\t\t\t{#each fields as field, i (field.id)}';
+const FIELD_LOOP_END = '\n\t\t\t{/each}';
 const SUBMIT = '\n\tasync function submit(event) {\n\t\tevent.preventDefault();';
 const RESET = 'HTMLFormElement.prototype.reset.call(form);';
 /** The name each field the visitor fills in is sent under, on a line of its own: today's form, and the first ones. */
 const FIELD_NAME = /\n(\t+)(name=\{(?:names\[i\]|fieldName\(field, i\))\})/g;
-const ANY_FIELD_NAME = /name=\{(?:names\[i\]|fieldName\(field, i\))\}/g;
 /** A single-choice question's group, whose description agents read for all of its answers. */
 const CHOICES_OPEN = '<fieldset class="so-form__field so-form__field--wide so-form__choices"';
-/** The fields the visitor never fills in: the spam trap, and what the form sends for its service. Agents see them too. */
+/** The spam trap: off screen, but in the agent's view of the form all the same. */
 const TRAP = /name=\{honeypot\}/g;
-const SERVICE_FIELD = /name="(?:form-name|access_key)"/g;
+/** What makes a field read-only, or a question unanswerable, while a message sends. */
+const WHILE_SENDING = /(readonly|disabled)=\{status === 'sending'\}/g;
 
 const count = (text: string, piece: string) => text.split(piece).length - 1;
 const LABEL = "so_webmcp ? String(field.label ?? '').trim() || undefined : undefined";
+/** Every module path the code imports, statically or not. */
+const SPECIFIERS = /\b(?:from|import)\s*\(?\s*(['"`])((?:(?!\1)[^\n])*)\1/g;
 
 /**
  * The form's code with the tool attributes added: `toolname` and `tooldescription` on the form; on each field the
  * visitor fills in, `toolparamdescription` from its label (a single-choice question's own words on its group and on each
- * of its answers, whose labels are only the answers); and on the fields the visitor never fills in (the spam trap, the
- * service's own), a description that tells agents to leave them be. The attributes read the `so_webmcp` the placement
- * hands the form, and render nothing without it. No `toolautosubmit`: the browser fills the form in, and the visitor
- * checks and sends it. Once they do, the agent is told whether the message was sent (`respondWith`), and the form is
- * emptied only after that, since emptying it first would tell the agent its request was cancelled.
+ * of its answers, whose labels are only the answers); and on the spam trap, a description that tells agents to leave it
+ * empty. The service's own hidden fields get none, which keeps them out of what agents may fill in. The attributes read
+ * the `so_webmcp` the placement hands the form, and render nothing without it.
  *
- * Null when the code is not the theme's form as it is written (see the pieces above), already speaks of WebMCP (a tool
- * attribute of its own, an existing `toolautosubmit` among them, would change what the form does), or names a file
- * beside it (the copy is written to another folder, from which that path would lead nowhere).
+ * No `toolautosubmit`: the browser fills the form in, and the visitor checks and sends it. Once they do, the agent is
+ * told whether the message was sent (`respondWith`). While it waits, the fields stay as they are (a field the browser
+ * sees change would change the tool under it), and the form is emptied only once the agent has its answer, since
+ * emptying it first would tell the agent its request was cancelled.
+ *
+ * Null when the code is not the theme's form as it is written (see the pieces above); already speaks of WebMCP, or
+ * spreads attributes from elsewhere that might (an existing `toolautosubmit` would send without the visitor); or
+ * imports a module beside it, or one named in any but the plainest way (the copy is written to another folder, from
+ * which a path beside the form would lead nowhere).
  */
 export function adaptFormSource(source: string): string | null {
-  if (/\bso_(?:webmcp|send|reset|told)|\btool(?:name|description|autosubmit|param\w*)\b/i.test(source) || /['"`]\.\//.test(source)) return null;
-  if ([PROPS_END, UID, FORM_OPEN, FIELD_LOOP, SUBMIT].some((piece) => count(source, piece) !== 1) || !source.includes(RESET)) return null;
-  const fields = source.match(FIELD_NAME)?.length ?? 0;
-  // Every field's name on a line of its own, so none is left without its description.
-  if (!fields || fields !== (source.match(ANY_FIELD_NAME)?.length ?? 0)) return null;
+  if (/\bso_(?:webmcp|send|reset|told|answering)|\btool(?:name|description|autosubmit|param\w*)\b|\{\s*\.\.\./i.test(source) || /['"`]\.\//.test(source)) return null;
+  if ([...source.matchAll(SPECIFIERS)].some((m) => m[2].includes('\\') || m[2].startsWith('./') || m[2] === '.')) return null;
+  if ([PROPS_END, UID, STATUS, HONEYPOT, FORM_OPEN, FIELD_LOOP, SUBMIT].some((piece) => count(source, piece) !== 1) || !source.includes(RESET)) return null;
+  // Every field the loop places names itself on a line of its own, so none is left without its description.
+  const at = source.indexOf(FIELD_LOOP);
+  const loop = source.slice(at, source.indexOf(FIELD_LOOP_END, at));
+  const fields = loop.match(FIELD_NAME)?.length ?? 0;
+  if (!fields || fields !== (loop.match(/\bname=/g)?.length ?? 0)) return null;
   return source
     // First, so the emptying the agent's answer waits for is not itself made to wait.
     .replaceAll(RESET, 'so_reset(form);')
@@ -71,20 +83,45 @@ export function adaptFormSource(source: string): string | null {
     .replace(
       SUBMIT,
       `\n\t// An agent in the visitor's browser that filled the form in (WebMCP) waits to hear whether the message was sent. It is
-\t// told once sending ends (respondWith, claimed while the browser still asks), and the form is emptied only after that.
+\t// told once sending ends (respondWith, claimed while the browser still asks). Meanwhile the fields stay as they are,
+\t// and the form is emptied only once the agent has its answer.
 \tlet so_told = null;
+\tlet so_answering = $state(false);
 \tfunction so_reset(form) {
-\t\tif (so_told) so_told.then(() => HTMLFormElement.prototype.reset.call(form));
-\t\telse HTMLFormElement.prototype.reset.call(form);
+\t\tconst reset = () => HTMLFormElement.prototype.reset.call(form);
+\t\t// After the browser has taken the answer in, never before.
+\t\tif (so_told) so_told.then(() => setTimeout(reset));
+\t\telse reset();
 \t}
 
 \tfunction submit(event) {
 \t\tif (!so_webmcp || !event.agentInvoked || typeof event.respondWith !== 'function') return so_send(event);
+\t\t// A message already on its way answers for itself; this request is told so and sends nothing.
+\t\tif (status === 'sending') {
+\t\t\tconst busy = so_send(event);
+\t\t\tevent.respondWith(busy.then(() => ({ sent: false, message: 'The form is already sending a message.' })));
+\t\t\treturn;
+\t\t}
 \t\tlet tell;
 \t\tconst told = new Promise((resolve) => (tell = resolve));
 \t\tso_told = told;
-\t\tconst result = () => (status === 'sent' ? { sent: true, message: 'The message was sent.' } : { sent: false, message: status === 'error' ? 'The message could not be sent. The visitor can try again.' : 'The form cannot be sent yet.' });
-\t\tso_send(event).then(() => tell(result()), () => tell(result()));
+\t\tso_answering = true;
+\t\tlet trapped = false;
+\t\ttry {
+\t\t\ttrapped = !!new FormData(event.currentTarget).get(honeypot);
+\t\t} catch {
+\t\t\t// Read as not filled in.
+\t\t}
+\t\tconst answer = () => {
+\t\t\tif (trapped) return { sent: false, message: 'The message was discarded: the spam trap was filled in.' };
+\t\t\tif (status === 'sent') return { sent: true, message: 'The message was sent.' };
+\t\t\treturn { sent: false, message: status === 'error' ? 'The message could not be sent. The visitor can try again.' : 'The form cannot be sent yet.' };
+\t\t};
+\t\tconst done = () => {
+\t\t\tso_answering = false;
+\t\t\ttell(answer());
+\t\t};
+\t\tso_send(event).then(done, done);
 \t\tevent.respondWith(told);
 \t\ttold.then(() => {
 \t\t\tif (so_told === told) so_told = null;
@@ -98,7 +135,7 @@ export function adaptFormSource(source: string): string | null {
     .replace(FIELD_NAME, (_m, tabs: string, name: string) => `\n${tabs}${name}\n${tabs}toolparamdescription={${LABEL}}`)
     .replace(CHOICES_OPEN, `${CHOICES_OPEN} toolparamdescription={${LABEL}}`)
     .replace(TRAP, (name) => `${name} toolparamdescription={so_webmcp ? 'A spam trap: always leave it empty. Filling it in discards the message.' : undefined}`)
-    .replace(SERVICE_FIELD, (name) => `${name} toolparamdescription={so_webmcp ? 'Set by the website for its form service: leave it as it is.' : undefined}`);
+    .replace(WHILE_SENDING, (_m, attr: string) => `${attr}={status === 'sending' && !so_answering}`);
 }
 
 /** Adapted sources by the code they came from: a form placed on every page is adapted once. */
@@ -253,17 +290,20 @@ export function offerSearch(resolveRoute) {
 			};
 		}
 	};
+	// Whether the tool offered is this registration's, which only then is stopped here.
+	let ours = false;
 	try {
 		const done = context.registerTool(tool, { signal: controller.signal });
+		ours = true;
 		// A name already offered (by another script, or a registration not yet stopped) is left as it is.
-		if (done && typeof done.catch === 'function') done.catch(() => {});
+		if (done && typeof done.then === 'function') done.then(() => {}, () => (ours = false));
 	} catch {
 		// The same: this page offers the tool already, or the browser refused it.
 	}
 	return () => {
 		controller.abort();
 		// The first browsers to offer WebMCP took no signal, and stopped a tool by its name.
-		if (typeof context.unregisterTool === 'function') {
+		if (ours && typeof context.unregisterTool === 'function') {
 			try {
 				context.unregisterTool(tool.name);
 			} catch {
