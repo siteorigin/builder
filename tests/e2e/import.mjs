@@ -9,6 +9,16 @@ import { basename, join } from 'node:path';
 import sharp from 'sharp';
 import { createProject, eventually, launch, openInspector, scratch, step, withTimeout } from './harness.mjs';
 
+/** A record's copies in one format, as their widths. */
+const widthsIn = (record, ext) => (record.variants ?? []).filter((v) => v.file.endsWith(`.${ext}`)).map((v) => v.width);
+/** A picture's copies: `smaller` in its own format, a WebP set to its `full` width, and an AVIF set of those widths or none. */
+function assertCopies(record, ext, smaller, full, what) {
+  assert.deepEqual(widthsIn(record, ext), smaller, `${what}: its smaller ${ext} copies`);
+  assert.deepEqual(widthsIn(record, 'webp'), [...smaller, full], `${what}: its WebP set`);
+  const avif = JSON.stringify(widthsIn(record, 'avif'));
+  assert.ok(avif === '[]' || avif === JSON.stringify([...smaller, full]), `${what}: its AVIF set is whole or left out (${avif})`);
+}
+
 /**
  * The longest the main process may go without answering the window. With the pictures decoded in the media
  * worker it answers within about 10 ms throughout; decoding them on the main thread stalled it for 280 ms.
@@ -76,7 +86,7 @@ const snap = await win.evaluate(() => window.builder.project.snapshot());
 const preview = new URL(await win.locator('.frame-box iframe').getAttribute('src'));
 for (const id of run.result.assetIds) {
   const asset = snap.state.assets.assets[id];
-  assert.deepEqual(asset.variants?.map((v) => v.width), [160, 480, 960, 1440], `${id} has its copies`);
+  assertCopies(asset, asset.mime === 'image/png' ? 'png' : 'jpg', [160, 480, 960, 1440], asset.width, `${id} has its copies`);
   for (const v of asset.variants) {
     const res = await fetch(new URL(`/${v.file.replace(/^static\//, '')}`, preview.origin), { signal: AbortSignal.timeout(30000) });
     const data = Buffer.from(await res.arrayBuffer());
@@ -84,7 +94,8 @@ for (const id of run.result.assetIds) {
     assert.equal(res.headers.get('content-security-policy'), 'frame-ancestors app://editor http://127.0.0.1:* http://localhost:*', `${v.file} carries the development frame policy`);
     const meta = await sharp(data).metadata();
     assert.equal(meta.width, v.width, `${v.file} decodes at its width`);
-    assert.equal(meta.format, asset.mime === 'image/png' ? 'png' : 'jpeg', `${v.file} keeps its format`);
+    const ext = v.file.split('.').pop();
+    assert.equal(meta.format, { jpg: 'jpeg', png: 'png', webp: 'webp', avif: 'heif' }[ext], `${v.file} is the format its name says`);
   }
 }
 
@@ -244,13 +255,13 @@ const arrived = Object.values(now.state.assets.assets).filter((a) => !before.has
 const byName = Object.fromEntries(arrived.map((a) => [a.name, a]));
 assert.deepEqual(Object.keys(byName).sort(), [...(CONVERTS ? ['IMG 0042'] : []), 'field scan', 'plain'].sort(), 'the photos and the plain picture arrive; the text file does not');
 assert.deepEqual([byName['field scan'].mime, byName['field scan'].width, byName['field scan'].height], ['image/jpeg', 2560, 1707], 'the large PNG arrives as its web-sized JPEG');
-assert.deepEqual(byName['field scan'].variants.map((v) => v.width), [160, 480, 960, 1440], 'the web-sized copy has its responsive copies');
+assertCopies(byName['field scan'], 'jpg', [160, 480, 960, 1440], 2560, 'the web-sized copy has its responsive copies');
 assert.equal(byName.plain.mime, 'image/jpeg');
 const first = CONVERTS ? byName['IMG 0042'] : byName['field scan'];
 assert.equal(await win.locator('.asset-detail h4').innerText(), first.name, 'the first picture made opens in Assets');
 if (CONVERTS) {
   assert.deepEqual([first.mime, first.width, first.height], ['image/jpeg', 1200, 1600], 'the HEIC photo arrives as an upright JPEG');
-  assert.deepEqual(first.variants.map((v) => v.width), [160, 480, 960], 'the converted photo has its responsive copies');
+  assertCopies(first, 'jpg', [160, 480, 960], 1200, 'the converted photo has its responsive copies');
 }
 
 step('the inspector image picker: Choose image → Import reviews the photo and places it at once');

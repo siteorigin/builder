@@ -226,7 +226,7 @@ describe('ZIP export', () => {
 });
 
 describe('website export assets', () => {
-  const image = (id: string, file: string, variants: string[] = []): AssetRecord => ({ id, name: `${id}.svg`, file, mime: 'image/svg+xml', bytes: 1, width: 1000, height: 500, hash: 'x', kind: 'image', variants: variants.map((f, i) => ({ width: 480 * (i + 1), file: f })), createdAt: '' });
+  const image = (id: string, file: string, variants: string[] = []): AssetRecord => ({ id, name: `${id}.${file.split('.').pop()}`, file, mime: file.endsWith('.jpg') ? 'image/jpeg' : 'image/svg+xml', bytes: 1, width: 1000, height: 500, hash: 'x', kind: 'image', variants: variants.map((f, i) => ({ width: 480 * (i + 1), file: f })), createdAt: '' });
   /** Put an asset into the first image slot of the home page. */
   const place = (state: ProjectState, assetId: string) => {
     const home = state.pages[state.site.homePageId];
@@ -245,9 +245,9 @@ describe('website export assets', () => {
     const state = createStarterState('business', 'Test', false);
     state.site.baseUrl = 'https://example.com';
     const assets: AssetRecord[] = [
-      image('placed', 'static/assets/big-sketch-12345678.svg', ['static/assets/big-sketch-12345678-480w.svg']),
+      image('placed', 'static/assets/big-sketch-12345678.jpg', ['static/assets/big-sketch-12345678-480w.jpg']),
       // Never placed: its name is part of the placed file's name, which must not count as a use.
-      image('draft', 'static/assets/sketch-12345678.svg', ['static/assets/sketch-12345678-480w.svg']),
+      image('draft', 'static/assets/sketch-12345678.jpg', ['static/assets/sketch-12345678-480w.jpg']),
       image('favicon', 'static/assets/mark-aaaaaaaa.svg'),
       image('social', 'static/assets/share-bbbbbbbb.svg'),
       image('coded', 'static/assets/gallery-cccccccc.svg'),
@@ -272,17 +272,17 @@ describe('website export assets', () => {
     write(dir, 'static/site.webmanifest', JSON.stringify({ icons: [{ src: '/assets/app-icon-dddddddd.svg' }] }));
     // The authoring documents list every asset, and the README is not part of the site: neither is a use.
     write(dir, 'siteorigin/assets.json', JSON.stringify(state.assets));
-    write(dir, 'siteorigin.project.json', JSON.stringify({ cover: 'static/assets/sketch-12345678.svg' }));
-    write(dir, 'README.md', 'Drafts: sketch-12345678.svg, old-draft.svg');
+    write(dir, 'siteorigin.project.json', JSON.stringify({ cover: 'static/assets/sketch-12345678.jpg' }));
+    write(dir, 'README.md', 'Drafts: sketch-12345678.jpg, old-draft.svg');
 
     const omitted = await pruneWebsiteAssets(dir, state);
     const left = (f: string) => existsSync(join(dir, f));
     expect(omitted.map((a) => a.id).sort()).toEqual(['draft', 'legacy']);
-    for (const f of ['static/assets/sketch-12345678.svg', 'static/assets/sketch-12345678-480w.svg', 'static/assets/old-draft.svg', 'static/assets/deleted-99999999.svg', 'static/assets/banner-77777777.svg'])
+    for (const f of ['static/assets/sketch-12345678.jpg', 'static/assets/sketch-12345678-480w.jpg', 'static/assets/old-draft.svg', 'static/assets/deleted-99999999.svg', 'static/assets/banner-77777777.svg'])
       expect(left(f), f).toBe(false);
     for (const f of [
-      'static/assets/big-sketch-12345678.svg',
-      'static/assets/big-sketch-12345678-480w.svg',
+      'static/assets/big-sketch-12345678.jpg',
+      'static/assets/big-sketch-12345678-480w.jpg',
       'static/assets/mark-aaaaaaaa.svg',
       'static/assets/share-bbbbbbbb.svg',
       'static/assets/gallery-cccccccc.svg',
@@ -294,7 +294,7 @@ describe('website export assets', () => {
       'siteorigin/assets.json'
     ])
       expect(left(f), f).toBe(true);
-    expect(omittedAssetsWarning(omitted)).toBe("Left out of the website because no page or code refers to them: draft.svg, legacy.svg. They stay in the project's assets.");
+    expect(omittedAssetsWarning(omitted)).toBe("Left out of the website because no page or code refers to them: draft.jpg, legacy.svg. They stay in the project's assets.");
   });
 
   it('lists every asset it left out, and says nothing when it left none out', () => {

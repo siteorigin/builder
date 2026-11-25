@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, delimiter, join, sep } from 'node:path';
+import sharp from 'sharp';
 import { answerChoosers, choosersShown, createProject, desktopCursor, desktopIntents, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 // ---------------------------------------------------------------------------
@@ -68,6 +69,24 @@ function withPhoneMetadata(jpeg) {
   return Buffer.concat([jpeg.subarray(0, at), exif, xmp, jpeg.subarray(at)]);
 }
 
+/** A TIFF block's first directory, read into `out`: its tags, orientation and credits. Either byte order. */
+function readTiff(t, out) {
+  const le = t.toString('latin1', 0, 2) === 'II';
+  const u16 = (o) => (le ? t.readUInt16LE(o) : t.readUInt16BE(o));
+  const u32 = (o) => (le ? t.readUInt32LE(o) : t.readUInt32BE(o));
+  const ifd = u32(4);
+  for (let k = 0; k < u16(ifd); k++) {
+    const e = ifd + 2 + k * 12;
+    const tag = u16(e);
+    out.tags.push(tag);
+    const count = u32(e + 4);
+    const text = () => (count <= 4 ? t.subarray(e + 8, e + 8 + count) : t.subarray(u32(e + 8), u32(e + 8) + count)).toString('latin1').replace(/\0+$/, '');
+    if (tag === 0x0112) out.orientation = u16(e + 8);
+    if (tag === 0x013b) out.artist = text();
+    if (tag === 0x8298) out.copyright = text();
+  }
+}
+
 /** What a JPEG says about itself: its first EXIF directory's tags, orientation and credits, and its XMP. */
 function jpegMetadata(buf) {
   const out = { tags: [], orientation: undefined, artist: undefined, copyright: undefined, xmp: '' };
@@ -77,17 +96,7 @@ function jpegMetadata(buf) {
     if (buf[i + 1] === 0xe1 && payload.toString('latin1', 0, 6) === 'Exif\0\0') {
       const t = payload.subarray(6);
       assert.equal(t.toString('latin1', 0, 2), 'II', 'the EXIF keeps its byte order');
-      const ifd = t.readUInt32LE(4);
-      for (let k = 0; k < t.readUInt16LE(ifd); k++) {
-        const e = ifd + 2 + k * 12;
-        const tag = t.readUInt16LE(e);
-        out.tags.push(tag);
-        const count = t.readUInt32LE(e + 4);
-        const text = () => (count <= 4 ? t.subarray(e + 8, e + 8 + count) : t.subarray(t.readUInt32LE(e + 8), t.readUInt32LE(e + 8) + count)).toString('latin1').replace(/\0+$/, '');
-        if (tag === 0x0112) out.orientation = t.readUInt16LE(e + 8);
-        if (tag === 0x013b) out.artist = text();
-        if (tag === 0x8298) out.copyright = text();
-      }
+      readTiff(t, out);
     }
     if (buf[i + 1] === 0xe1 && payload.toString('latin1', 0, 29) === 'http://ns.adobe.com/xap/1.0/\0') out.xmp += payload.subarray(29).toString('utf8');
     i += 2 + len;
@@ -95,17 +104,75 @@ function jpegMetadata(buf) {
   return out;
 }
 
-/** Assert a published copy of the photo carries no location or device details, and keeps its credits. */
-function assertPublicPhoto(buf, label, { original }) {
+/** What a picture says about itself, in any format: a JPEG read byte by byte, a WebP or AVIF through its decoder. */
+async function photoMetadata(buf) {
+  if (buf[0] === 0xff && buf[1] === 0xd8) return { format: 'jpeg', ...jpegMetadata(buf) };
+  const meta = await sharp(buf).metadata();
+  const out = { format: meta.format, tags: [], orientation: undefined, artist: undefined, copyright: undefined, xmp: meta.xmp ? meta.xmp.toString('utf8') : '' };
+  if (meta.exif) {
+    // The TIFF block, after whatever header the container puts before it ("Exif\0\0", an offset).
+    const at = [...meta.exif.subarray(0, 16).keys()].find((k) => /^(II\*\0|MM\0\*)$/.test(meta.exif.toString('latin1', k, k + 4)));
+    assert.ok(at !== undefined, 'the EXIF holds a TIFF block');
+    readTiff(meta.exif.subarray(at), out);
+  }
+  return out;
+}
+
+/**
+ * Assert a published copy of the photo carries no location or device details, and keeps its credits. A copy's pixels
+ * are already upright: it has no orientation tag, or (a WebP, whose encoder always writes one) one that turns nothing.
+ */
+async function assertPublicPhoto(buf, label, { original }) {
   const text = buf.toString('latin1');
   assert.ok(!text.includes(SERIAL) && !text.includes(MAKE) && !text.includes('Pocket 9'), `${label} has no camera make, model or serial`);
-  const m = jpegMetadata(buf);
+  const m = await photoMetadata(buf);
   assert.ok(!m.tags.includes(0x8825), `${label} has no GPS directory`);
   assert.ok(!/GPS/.test(m.xmp), `${label} has no GPS in its XMP`);
   assert.equal(m.artist, 'Jane Doe Photography', `${label} keeps the photographer credit`);
   assert.equal(m.copyright, '(c) 2026 Jane Doe', `${label} keeps the copyright`);
   assert.match(m.xmp, /<rdf:li>Jane Doe<\/rdf:li>/, `${label} keeps the XMP creator`);
-  assert.equal(m.orientation, original ? 6 : undefined, original ? `${label} keeps its orientation tag` : `${label} is already upright and has no orientation tag`);
+  if (original) assert.equal(m.orientation, 6, `${label} keeps its orientation tag`);
+  else if (m.format === 'webp') assert.ok(m.orientation === undefined || m.orientation === 1, `${label} is already upright and its orientation tag turns nothing (${m.orientation})`);
+  else assert.equal(m.orientation, undefined, `${label} is already upright and has no orientation tag`);
+}
+
+/** A copy's format, by its file's extension, as a MIME type. */
+const mimeOf = (file) => ({ jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', avif: 'image/avif' })[file.split('.').pop()];
+/** A record's copies in one format, as their widths. */
+const widthsIn = (record, ext) => (record.variants ?? []).filter((v) => v.file.endsWith(`.${ext}`)).map((v) => v.width);
+
+/** An element's attributes, by name. */
+const attrsOf = (tag) => Object.fromEntries([...tag.matchAll(/\s([a-z-]+)(?:="([^"]*)")?/g)].map((m) => [m[1], (m[2] ?? '').replace(/&amp;/g, '&')]));
+
+/**
+ * #583: the exported Home page (under `base`) shows the photo as a <picture> (an AVIF set when it has one, then WebP,
+ * then its JPEG <img> with its size), its head asks for the set the <picture> takes first, at the same sizes, and every
+ * picture address on the page is a file the website has.
+ */
+function checkHomePictures(root, photo, base = '') {
+  const html = readFileSync(join(root, 'index.html'), 'utf8').replace(/<!--[^]*?-->/g, '');
+  const stem = basename(photo.file).replace(/\.jpg$/, '');
+  const picture = [...html.matchAll(/<picture\b[^>]*>[^]*?<\/picture>/g)].map((m) => m[0]).find((p) => p.includes(stem));
+  assert.ok(picture, `${base || '/'}: the hero photo is a <picture>`);
+  const sources = [...picture.matchAll(/<source\b[^>]*>/g)].map((m) => attrsOf(m[0]));
+  assert.deepEqual(sources.map((x) => x.type), [...(widthsIn(photo, 'avif').length ? ['image/avif'] : []), 'image/webp'], `${base || '/'}: the best format first`);
+  const img = attrsOf(picture.match(/<img\b[^>]*>/)[0]);
+  assert.deepEqual([img.width, img.height, img.alt, img.loading, img.fetchpriority], ['2000', '1200', 'The front of the house', 'eager', 'high'], `${base || '/'}: the hero's <img> keeps its size, words and priority`);
+  for (const x of sources) assert.equal(x.sizes, img.sizes, `${base || '/'}: every source is sized as the <img> is`);
+  const preloads = [...html.matchAll(/<link\b[^>]*rel="preload"[^>]*>/g)].map((m) => attrsOf(m[0])).filter((l) => l.as === 'image');
+  assert.deepEqual(preloads, [{ rel: 'preload', as: 'image', fetchpriority: 'high', type: sources[0].type, imagesrcset: sources[0].srcset, imagesizes: sources[0].sizes }], `${base || '/'}: the head asks for the hero's first set`);
+  assert.ok(html.indexOf('rel="preload" as="image"') < html.indexOf('<picture'), `${base || '/'}: the request comes before the body`);
+  const candidates = (set) => (set ? set.split(/,\s+/).map((c) => c.trim().split(/\s+/)[0]) : []);
+  const addresses = [...html.matchAll(/<(?:img|source|link)\b[^>]*>/g)]
+    .map((m) => attrsOf(m[0]))
+    .filter((a) => a.rel === undefined || (a.rel === 'preload' && a.as === 'image'))
+    .flatMap((a) => [a.src, ...candidates(a.srcset), ...candidates(a.imagesrcset)])
+    .filter((u) => u && !/^(data:|https?:)/.test(u));
+  assert.ok(addresses.length > 10, `${base || '/'}: the page names its pictures`);
+  for (const u of new Set(addresses)) {
+    const path = decodeURIComponent(new URL(u, `https://example.test${base}/`).pathname);
+    assert.ok(path.startsWith(`${base}/`) && existsSync(join(root, path.slice(base.length))), `${base || '/'}: ${u} is a file the website has`);
+  }
 }
 
 const BUILD = process.argv.includes('--build');
@@ -139,7 +206,9 @@ assert.equal(photoImport.ok, true, `the photo imports: ${photoImport.message}`);
 const photoId = photoImport.assetIds[0];
 const photo = (await win.evaluate(() => window.builder.project.snapshot())).state.assets.assets[photoId];
 assert.deepEqual([photo.width, photo.height], [2000, 1200], 'the photo is recorded as it is displayed');
-assert.deepEqual(photo.variants.map((v) => v.width), [160, 480, 960, 1440], 'the photo has four responsive copies');
+assert.deepEqual(widthsIn(photo, 'jpg'), [160, 480, 960, 1440], 'the photo has four smaller JPEG copies');
+assert.deepEqual(widthsIn(photo, 'webp'), [160, 480, 960, 1440, 2000], 'the photo has a WebP set to its full width');
+assert.ok([[], [160, 480, 960, 1440, 2000]].some((w) => JSON.stringify(w) === JSON.stringify(widthsIn(photo, 'avif'))), `the photo's AVIF set is whole or left out: ${widthsIn(photo, 'avif')}`);
 const homeHero = await win.evaluate(async () => {
   const s = await window.builder.project.snapshot();
   const home = s.state.pages[s.state.site.homePageId];
@@ -940,18 +1009,18 @@ if (!siteList.error) {
     const served = f.replace(/^static\//, '');
     const entry = spawnSync('unzip', ['-p', staticZip, served], { maxBuffer: 64 * 1024 * 1024 });
     assert.equal(entry.status, 0, `the site ZIP holds ${served}`);
-    assertPublicPhoto(entry.stdout, `the site ZIP's ${served}`, { original: f === photo.file });
+    await assertPublicPhoto(entry.stdout, `the site ZIP's ${served}`, { original: f === photo.file });
   }
   const sourceEntry = spawnSync('unzip', ['-p', sourceZip, `harbour-lane-studio-source/${photo.file}`], { maxBuffer: 64 * 1024 * 1024 });
   assert.equal(createHash('sha256').update(sourceEntry.stdout).digest('hex'), photoHash, 'the editable project ZIP keeps the original photo as imported');
 }
 
 step('the photo as visitors get it, and as the project keeps it');
-const pixels = async (buf) =>
-  win.evaluate(async (b64) => {
+const pixels = async (buf, type) =>
+  win.evaluate(async ([b64, type]) => {
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     const img = new Image();
-    img.src = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+    img.src = URL.createObjectURL(new Blob([bytes], { type }));
     await img.decode();
     const c = document.createElement('canvas');
     c.width = img.naturalWidth;
@@ -960,19 +1029,20 @@ const pixels = async (buf) =>
     g.drawImage(img, 0, 0);
     const at = (x, y) => [...g.getImageData(x, y, 1, 1).data.slice(0, 3)];
     return { width: img.naturalWidth, height: img.naturalHeight, topLeft: at(5, 5), topRight: at(img.naturalWidth - 6, 5) };
-  }, buf.toString('base64'));
+  }, [buf.toString('base64'), type]);
 const red = ([r, g, b]) => r > 180 && g < 90 && b < 90;
 const blue = ([r, g, b]) => r < 90 && b > 150;
 for (const f of photoFiles) {
   const published = readFileSync(join(staticOut, f.replace(/^static\//, '')));
-  assertPublicPhoto(published, `the website's ${basename(f)}`, { original: f === photo.file });
-  const shown = await pixels(published);
+  await assertPublicPhoto(published, `the website's ${basename(f)}`, { original: f === photo.file });
+  const shown = await pixels(published, mimeOf(f));
   const width = f === photo.file ? 2000 : photo.variants.find((v) => v.file === f).width;
   assert.deepEqual([shown.width, shown.height], [width, Math.round((width * 1200) / 2000)], `${basename(f)} is shown upright at its size`);
   assert.ok(red(shown.topRight) && blue(shown.topLeft), `${basename(f)} is turned the right way: ${JSON.stringify(shown)}`);
 }
 const homeHtml = readFileSync(join(staticOut, 'index.html'), 'utf8');
 for (const f of photoFiles) assert.ok(homeHtml.includes(f.replace(/^static\//, '')), `the Home page offers ${basename(f)} to visitors`);
+checkHomePictures(staticOut, photo);
 const kept = readFileSync(join(dir, photo.file));
 assert.equal(createHash('sha256').update(kept).digest('hex'), photoHash, 'the project keeps the original photo byte for byte');
 assert.equal(readFileSync(join(sourceOut, photo.file)).equals(kept), true, 'the editable project export keeps the original photo as imported');
@@ -992,6 +1062,7 @@ assert.deepEqual(
 );
 assert.equal(studioStat.ok, true, `the export under /studio succeeds: ${studioStat.message} ${studioStat.warnings?.join(' ')}`);
 assert.match(studioStat.previewUrl ?? '', /\/studio\/$/, 'the proof is served under /studio');
+checkHomePictures(studioStat.path, photo, '/studio');
 step('#393: the sitemap under /studio lists each published post with the day it last changed, and no draft');
 {
   const sitemap = readFileSync(join(studioStat.path, 'sitemap.xml'), 'utf8');

@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { crc32 } from 'node:zlib';
 import sharp from 'sharp';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { handleVariantRequest, isOpaque, isReadable, renderVariants, renderWebCopy } from '../../src/main/project/image-variants';
+import { cleanPhoto, creditText } from '../../src/main/project/photo-metadata';
 import { createVariantClient, webCopySize, type VariantReply, type VariantRequest, type WorkerHandle } from '../../src/main/project/media-client';
 
 const u32 = (n: number) => {
@@ -57,58 +58,140 @@ async function pixel(buf: Buffer, x: number, y: number) {
   return { r: data[at], g: data[at + 1], b: data[at + 2], a: info.channels === 4 ? data[at + 3] : 255 };
 }
 
+/** Copies as "width format" pairs, in the order they come. */
+const pairs = (variants: Array<{ width: number; mime: string }>) => variants.map((v) => `${v.width} ${v.mime.slice('image/'.length)}`);
+/** One format's copies, as their widths. */
+const widthsOf = (variants: Array<{ width: number; mime: string }>, mime: string) => variants.filter((v) => v.mime === mime).map((v) => v.width);
+
+/** A real photo (the Business starter's hero) cut to a size, on which AVIF saves well over WebP. */
+async function photo(width: number, height: number, format: 'jpeg' | 'png' | 'webp' | 'avif' = 'jpeg'): Promise<Buffer> {
+  const img = sharp(readFileSync('resources/starter-assets/hero.jpg')).resize(width, height, { fit: 'cover' });
+  return (format === 'jpeg' ? img.jpeg({ quality: 92 }) : format === 'png' ? img.png() : format === 'webp' ? img.webp({ quality: 90 }) : img.avif({ quality: 70 })).toBuffer();
+}
+
 describe('responsive copies', () => {
-  it('makes each width meaningfully smaller than the picture, as JPEG without metadata', async () => {
-    const variants = await renderVariants(await halves(2000, 1000, 'jpeg'), 'image/jpeg', 2000);
-    expect(variants.map((v) => v.width)).toEqual([160, 480, 960, 1440]);
+  it('makes each width meaningfully smaller than the picture as JPEG without metadata, and WebP and AVIF sets to its full width', async () => {
+    const variants = await renderVariants(await photo(2000, 1000), 'image/jpeg', 2000);
+    // Narrowest first; at one width the picture's own format, then WebP, then AVIF.
+    expect(pairs(variants)).toEqual(['160 jpeg', '160 webp', '160 avif', '480 jpeg', '480 webp', '480 avif', '960 jpeg', '960 webp', '960 avif', '1440 jpeg', '1440 webp', '1440 avif', '2000 webp', '2000 avif']);
     for (const v of variants) {
       const m = await sharp(v.data).metadata();
-      expect(m).toMatchObject({ format: 'jpeg', width: v.width, height: v.width / 2 });
-      expect(m.exif).toBeUndefined();
+      expect(m, `${v.width} ${v.mime}`).toMatchObject({ format: v.mime === 'image/avif' ? 'heif' : v.mime.slice(6), width: v.width, height: v.width / 2 });
+      // Nothing to credit on this photo, so no copy carries metadata of any kind.
+      expect(m.exif, `${v.width} ${v.mime}`).toBeUndefined();
+      expect(m.xmp, `${v.width} ${v.mime}`).toBeUndefined();
     }
     // A copy is made only when it is under 90% of the picture's width: 1440 is not, at 1600.
-    expect((await renderVariants(await halves(1600, 800, 'jpeg'), 'image/jpeg', 1600)).map((v) => v.width)).toEqual([160, 480, 960]);
-    expect((await renderVariants(await halves(1602, 800, 'jpeg'), 'image/jpeg', 1602)).map((v) => v.width)).toEqual([160, 480, 960, 1440]);
+    const at1600 = await renderVariants(await halves(1600, 800, 'jpeg'), 'image/jpeg', 1600);
+    expect(widthsOf(at1600, 'image/jpeg')).toEqual([160, 480, 960]);
+    expect(widthsOf(at1600, 'image/webp')).toEqual([160, 480, 960, 1600]);
+    expect(widthsOf(await renderVariants(await halves(1602, 800, 'jpeg'), 'image/jpeg', 1602), 'image/jpeg')).toEqual([160, 480, 960, 1440]);
     // A header that overstates the width gets copies for the picture's real width, each labelled as it is.
     const small = await renderVariants(await halves(600, 300, 'jpeg'), 'image/jpeg', 2000);
-    expect(small.map((v) => v.width)).toEqual([160, 480]);
-    expect((await sharp(small[1].data).metadata()).width).toBe(480);
+    expect(widthsOf(small, 'image/jpeg')).toEqual([160, 480]);
+    expect(widthsOf(small, 'image/webp')).toEqual([160, 480, 600]);
+    expect((await sharp(small.find((v) => v.width === 480 && v.mime === 'image/jpeg')!.data).metadata()).width).toBe(480);
+    expect((await sharp(small.find((v) => v.width === 600)!.data).metadata()).width).toBe(600);
   });
 
-  it('turns a copy the way its EXIF orientation says, sized by its displayed width', async () => {
+  it('turns every copy the way its EXIF orientation says, sized by its displayed width', async () => {
     // Stored 1200x600 on its side (orientation 6: turn clockwise), so displayed 600x1200 with red on top.
     const variants = await renderVariants(await halves(1200, 600, 'jpeg', 6), 'image/jpeg', 600);
-    expect(variants.map((v) => v.width)).toEqual([160, 480]);
-    const copy = variants.find((v) => v.width === 480)!;
-    const m = await sharp(copy.data).metadata();
-    expect([m.width, m.height, m.orientation]).toEqual([480, 960, undefined]);
-    const top = await pixel(copy.data, 240, 100);
-    const bottom = await pixel(copy.data, 240, 860);
-    expect(top.r).toBeGreaterThan(200);
-    expect(top.b).toBeLessThan(60);
-    expect(bottom.b).toBeGreaterThan(200);
-    expect(bottom.r).toBeLessThan(60);
+    expect(widthsOf(variants, 'image/jpeg')).toEqual([160, 480]);
+    expect(widthsOf(variants, 'image/webp')).toEqual([160, 480, 600]);
+    for (const copy of variants.filter((v) => v.width === 480 || v.width === 600)) {
+      const m = await sharp(copy.data).metadata();
+      expect([m.width, m.height, m.orientation ?? 1], copy.mime).toEqual([copy.width, copy.width * 2, 1]);
+      const top = await pixel(copy.data, copy.width / 2, copy.width / 5);
+      const bottom = await pixel(copy.data, copy.width / 2, copy.width * 2 - copy.width / 5);
+      expect(top.r, copy.mime).toBeGreaterThan(200);
+      expect(top.b, copy.mime).toBeLessThan(60);
+      expect(bottom.b, copy.mime).toBeGreaterThan(200);
+      expect(bottom.r, copy.mime).toBeLessThan(60);
+    }
     // Orientation 2 mirrors: red ends up on the right.
     const mirrored = (await renderVariants(await halves(1200, 600, 'jpeg', 2), 'image/jpeg', 1200)).find((v) => v.width === 480)!;
     expect((await pixel(mirrored.data, 400, 100)).r).toBeGreaterThan(200);
     expect((await pixel(mirrored.data, 80, 100)).b).toBeGreaterThan(200);
   });
 
-  it('keeps a PNG a PNG, transparency included', async () => {
+  it('keeps a PNG a PNG, transparency included, in every format', async () => {
     const clear = await sharp({ create: { width: 1200, height: 600, channels: 4, background: { r: 0, g: 128, b: 0, alpha: 0 } } }).png().toBuffer();
-    const v = (await renderVariants(clear, 'image/png', 1200)).find((c) => c.width === 480)!;
+    const variants = await renderVariants(clear, 'image/png', 1200);
+    const v = variants.find((c) => c.width === 480 && c.mime === 'image/png')!;
     expect(await sharp(v.data).metadata()).toMatchObject({ format: 'png', width: 480, height: 240, hasAlpha: true });
     expect((await pixel(v.data, 10, 10)).a).toBe(0);
+    const webp = variants.find((c) => c.width === 480 && c.mime === 'image/webp')!;
+    expect(await sharp(webp.data).metadata()).toMatchObject({ format: 'webp', hasAlpha: true });
+    expect((await pixel(webp.data, 10, 10)).a).toBe(0);
   });
 
-  it('makes no copies of an animated PNG, whose resized copies would each be one still frame', async () => {
+  it('gives a WebP smaller WebP copies, the original serving its full width, and an AVIF its AVIF copies and a WebP set', async () => {
+    const webp = await renderVariants(await photo(1600, 800, 'webp'), 'image/webp', 1600);
+    expect(widthsOf(webp, 'image/webp')).toEqual([160, 480, 960]);
+    expect(widthsOf(webp, 'image/avif')).toEqual([160, 480, 960, 1600]);
+    expect(widthsOf(webp, 'image/jpeg')).toEqual([]);
+    const avif = await renderVariants(await photo(1600, 800, 'avif'), 'image/avif', 1600);
+    expect(widthsOf(avif, 'image/avif')).toEqual([160, 480, 960]);
+    expect(widthsOf(avif, 'image/webp')).toEqual([160, 480, 960, 1600]);
+    for (const v of [...webp, ...avif]) expect((await sharp(v.data).metadata()).width, `${v.width} ${v.mime}`).toBe(v.width);
+  });
+
+  it('keeps an AVIF set only when it is at least 10% smaller than the WebP one', async () => {
+    // A photo: AVIF is far smaller.
+    const photoCopies = await renderVariants(await photo(1200, 800), 'image/jpeg', 1200);
+    const bytes = (list: typeof photoCopies, mime: string) => list.filter((v) => v.mime === mime).reduce((n, v) => n + v.data.length, 0);
+    expect(bytes(photoCopies, 'image/avif')).toBeGreaterThan(0);
+    expect(bytes(photoCopies, 'image/avif')).toBeLessThanOrEqual(bytes(photoCopies, 'image/webp') * 0.9);
+    // Two flat colours: AVIF's larger container outweighs what it saves, so its set is left out whole.
+    const flat = await renderVariants(await halves(1200, 600, 'png'), 'image/png', 1200);
+    expect(widthsOf(flat, 'image/webp')).toEqual([160, 480, 960, 1200]);
+    expect(widthsOf(flat, 'image/avif')).toEqual([]);
+    const avifOfFlat = await renderVariants(await halves(1200, 600, 'png'), 'image/png', 1200, [160, 480, 960, 1200].map((width) => ({ width, mime: 'image/avif' as const })));
+    expect(avifOfFlat.reduce((n, v) => n + v.data.length, 0)).toBeGreaterThan(bytes(flat, 'image/webp') * 0.9);
+  });
+
+  it('writes the original’s credits into its WebP and AVIF copies, and nothing private', async () => {
+    const credited = await sharp(await photo(1000, 500))
+      .withExif({ IFD0: { Artist: 'Ana Field', Copyright: 'Field Studio 2026', Make: 'Acme Phones', Model: 'Pocket 9' } })
+      .jpeg({ quality: 92 })
+      .toBuffer();
+    const variants = await renderVariants(credited, 'image/jpeg', 1000);
+    for (const v of variants) {
+      const text = v.data.toString('latin1');
+      expect(text, `${v.width} ${v.mime}`).not.toContain('Acme Phones');
+      // JPEG copies get theirs when the site is exported (see addCredits); the encoder writes the others'.
+      if (v.mime === 'image/jpeg') expect(text).not.toContain('Ana Field');
+      else {
+        expect(text, `${v.width} ${v.mime}`).toContain('Ana Field');
+        expect(text, `${v.width} ${v.mime}`).toContain('Field Studio 2026');
+        expect(cleanPhoto(v.data)?.credits.tiff?.toString('latin1'), `${v.width} ${v.mime}`).toContain('Ana Field');
+      }
+    }
+    // A PNG's Author text, an IPTC by-line and an XMP creator are carried the same way.
+    expect(creditText({ text: [Buffer.from('tEXtAuthor\0Bo Lens', 'latin1')] })).toEqual({ artist: 'Bo Lens' });
+    const iptc = Buffer.concat([Buffer.from([0x1c, 2, 80, 0, 7]), Buffer.from('Cy Shot'), Buffer.from([0x1c, 2, 116, 0, 8]), Buffer.from('Shot Ltd')]);
+    const block = Buffer.concat([Buffer.from('8BIM', 'latin1'), Buffer.from([4, 4, 0, 0]), u32(iptc.length), iptc]);
+    expect(creditText({ iptc: block })).toEqual({ artist: 'Cy Shot', copyright: 'Shot Ltd' });
+    expect(creditText({ tiff: Buffer.from('MM\0*\0\0\0\x08\0\0\0\0\0\0', 'latin1'), xmp: Buffer.from('<x:xmpmeta/>') })).toEqual({ xmp: '<x:xmpmeta/>' });
+  });
+
+  it('makes no copies of a moving picture, whose resized copies would each be one still frame', async () => {
     const moving = await animatedPng(1200, 600);
     expect(chunksOf(moving).map((c) => c.type)).toContain('acTL');
     expect(await renderVariants(moving, 'image/png', 1200)).toEqual([]);
     // The same pixels as an ordinary still PNG are still resized.
     const still = await sharp(moving).png().toBuffer();
     expect(chunksOf(still).map((c) => c.type)).not.toContain('acTL');
-    expect((await renderVariants(still, 'image/png', 1200)).map((v) => v.width)).toEqual([160, 480, 960]);
+    expect(widthsOf(await renderVariants(still, 'image/png', 1200), 'image/png')).toEqual([160, 480, 960]);
+    // An animated WebP, and an AVIF sequence, are left to the browser too.
+    const frame = (r: number, b: number) => sharp({ create: { width: 1200, height: 600, channels: 3, background: { r, g: 0, b } } }).png().toBuffer();
+    const animatedWebp = await sharp([await frame(200, 0), await frame(0, 200)], { join: { animated: true } }).webp({ loop: 0 }).toBuffer();
+    expect((await sharp(animatedWebp).metadata()).pages).toBe(2);
+    expect(await renderVariants(animatedWebp, 'image/webp', 1200)).toEqual([]);
+    const sequence = Buffer.from(await photo(1200, 600, 'avif'));
+    sequence.write('avis', 8, 'latin1');
+    expect(await renderVariants(sequence, 'image/avif', 1200)).toEqual([]);
   });
 
   it('leaves an AVIF image sequence to the browser, but not an AVIF whose brands nothing knows', async () => {
@@ -130,17 +213,24 @@ describe('responsive copies', () => {
     expect(await isReadable(still, 'image/avif')).toBe(true);
   });
 
-  it('makes exactly the widths asked for, never wider than the picture', async () => {
-    const variants = await renderVariants(await halves(1000, 500, 'jpeg'), 'image/jpeg', 1000, [960, 1000, 1440]);
-    expect(variants.map((v) => v.width)).toEqual([960, 1000]);
-    expect((await sharp(variants[0].data).metadata()).width).toBe(960);
+  it('makes exactly the copies asked for, in their formats, never wider than the picture', async () => {
+    const asked = [
+      { width: 960, mime: 'image/jpeg' as const },
+      { width: 1000, mime: 'image/webp' as const },
+      { width: 480, mime: 'image/avif' as const },
+      { width: 1440, mime: 'image/webp' as const }
+    ];
+    const variants = await renderVariants(await halves(1000, 500, 'jpeg'), 'image/jpeg', 1000, asked);
+    expect(pairs(variants)).toEqual(['960 jpeg', '1000 webp', '480 avif']);
+    for (const v of variants) expect(await sharp(v.data).metadata(), `${v.width} ${v.mime}`).toMatchObject({ width: v.width, format: v.mime === 'image/avif' ? 'heif' : v.mime.slice(6) });
   });
 
   it('is deterministic, and leaves other formats alone', async () => {
-    const photo = await halves(2000, 1000, 'jpeg');
-    const [a, b] = [await renderVariants(photo, 'image/jpeg', 2000), await renderVariants(photo, 'image/jpeg', 2000)];
-    expect(a.map((v) => v.data.equals(b.find((x) => x.width === v.width)!.data))).toEqual([true, true, true, true]);
-    for (const mime of ['image/webp', 'image/gif', 'image/avif']) expect(await renderVariants(photo, mime, 2000)).toEqual([]);
+    const picture = await photo(2000, 1000);
+    const [a, b] = [await renderVariants(picture, 'image/jpeg', 2000), await renderVariants(picture, 'image/jpeg', 2000)];
+    expect(pairs(a)).toEqual(pairs(b));
+    expect(a.every((v, i) => v.data.equals(b[i].data))).toBe(true);
+    for (const mime of ['image/gif', 'image/svg+xml', 'image/heic']) expect(await renderVariants(picture, mime, 2000)).toEqual([]);
   });
 });
 
@@ -195,7 +285,7 @@ describe('media worker client', () => {
     expect(workers).toHaveLength(1);
     const [req] = workers[0].sent;
     expect([Buffer.from(req.data).toString(), req.mime, req.width]).toEqual(['photo', 'image/jpeg', 2000]);
-    workers[0].reply({ id: req.id, ok: true, variants: [{ width: 480, data: new Uint8Array([1, 2, 3]) }] });
+    workers[0].reply({ id: req.id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([1, 2, 3]) }] });
     const out = await p;
     expect(out).toHaveLength(1);
     expect(Buffer.isBuffer(out[0].data) && [...out[0].data]).toEqual([1, 2, 3]);
@@ -228,11 +318,11 @@ describe('media worker client', () => {
     expect(await slow).toEqual([]);
     expect(workers[0].killed).toBe(true);
     // A late answer from the stopped worker belongs to no request.
-    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [{ width: 480, data: new Uint8Array([9]) }] });
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([9]) }] });
     const next = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
     await vi.advanceTimersByTimeAsync(0);
     expect(workers).toHaveLength(2);
-    workers[1].reply({ id: workers[1].sent[0].id, ok: true, variants: [{ width: 480, data: new Uint8Array([7]) }] });
+    workers[1].reply({ id: workers[1].sent[0].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([7]) }] });
     expect((await next).map((v) => [...v.data])).toEqual([[7]]);
     client.stop();
   });
@@ -276,15 +366,15 @@ describe('media worker client', () => {
     expect(await createVariantClient(() => { throw new Error('no utility process'); }).inspect(Buffer.from('d'), 'image/png', 100)).toEqual({ unreadable: false, variants: [] });
   });
 
-  it('asks for exactly the widths a library image lists when making its copies again', async () => {
+  it('asks for exactly the copies a library image lists when making them again, and returns each with its format', async () => {
     const { workers, spawn } = spawner();
     const client = createVariantClient(spawn);
-    const p = client.variants(Buffer.from('a'), 'image/jpeg', 1000, [960]);
+    const p = client.variants(Buffer.from('a'), 'image/jpeg', 1000, [{ width: 960, mime: 'image/webp' }]);
     await tick();
-    expect(workers[0].sent[0]).toMatchObject({ widths: [960] });
+    expect(workers[0].sent[0]).toMatchObject({ targets: [{ width: 960, mime: 'image/webp' }] });
     expect(workers[0].sent[0].check).toBeUndefined();
-    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [] });
-    await p;
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [{ width: 960, mime: 'image/webp', data: new Uint8Array([5]) }] });
+    expect((await p).map((v) => [v.width, v.mime, [...v.data]])).toEqual([[960, 'image/webp', [5]]]);
     client.stop();
   });
 
@@ -294,7 +384,7 @@ describe('media worker client', () => {
     const sliced = client.variants(Buffer.from('a'), 'image/jpeg', 2000);
     await tick();
     const backing = new Uint8Array([0, 0, 5, 6, 7, 0]);
-    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [{ width: 480, data: backing.subarray(2, 5) }] });
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: backing.subarray(2, 5) }] });
     expect((await sliced).map((v) => [...v.data])).toEqual([[5, 6, 7]]);
     // An error event (a fatal failure in the worker) settles the request instead of being thrown.
     const failing = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
@@ -348,7 +438,7 @@ describe('media worker client', () => {
     const second = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
     await vi.advanceTimersByTimeAsync(4000);
     expect(workers[0].killed).toBe(false);
-    workers[0].reply({ id: workers[0].sent[1].id, ok: true, variants: [{ width: 480, data: new Uint8Array([1]) }] });
+    workers[0].reply({ id: workers[0].sent[1].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([1]) }] });
     expect(await second).toHaveLength(1);
     // A worker that timed out exits late, while its replacement is busy: the replacement's request is unaffected.
     const slow = client.variants(Buffer.from('c'), 'image/jpeg', 2000);
@@ -357,7 +447,7 @@ describe('media worker client', () => {
     const fresh = client.variants(Buffer.from('d'), 'image/jpeg', 2000);
     await vi.advanceTimersByTimeAsync(0);
     workers[0].exit(1);
-    workers[1].reply({ id: workers[1].sent[0].id, ok: true, variants: [{ width: 480, data: new Uint8Array([2]) }] });
+    workers[1].reply({ id: workers[1].sent[0].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([2]) }] });
     expect(await fresh).toHaveLength(1);
     client.stop();
   });

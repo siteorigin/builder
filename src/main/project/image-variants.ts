@@ -31,13 +31,14 @@ sharp.cache(false);
 
 /**
  * How each format is written: JPEG and PNG as they always were, WebP and AVIF at qualities that look like the JPEG
- * copies. AVIF's effort is a trade of import time for size: a 24-megapixel photo takes about two seconds here.
+ * copies. AVIF's effort trades import time for size: on the starter photos, effort 2 makes copies about half the size
+ * of the WebP ones in a fifth of the time effort 4 takes, which saves only 5% more.
  */
 const ENCODE: Record<CopyMime, (img: sharp.Sharp) => sharp.Sharp> = {
   'image/jpeg': (img) => img.jpeg({ quality: 82 }),
   'image/png': (img) => img.png(),
   'image/webp': (img) => img.webp({ quality: 80 }),
-  'image/avif': (img) => img.avif({ quality: 50, effort: 4 })
+  'image/avif': (img) => img.avif({ quality: 50, effort: 2 })
 };
 
 /** Formats in the order a record lists copies of one width: the picture's own first, then the modern ones. */
