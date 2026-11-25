@@ -214,7 +214,8 @@ describe('importing a HEIC photo', () => {
     expect(readFileSync(path).equals(HEIC)).toBe(true);
     // The same photo again is the same copy, so it is the same asset.
     const again = await importAsset(project, sourceFile('again.heic', HEIC), [record], undefined, { decoder: heicDecoder() });
-    expect(again).toMatchObject({ existing: true, record: { id: record.id } });
+    // And keeps the name it first arrived under.
+    expect(again).toMatchObject({ existing: true, record: { id: record.id, originalName: 'portrait-rotated.HEIC' } });
   });
 
   it('refuses a HEIC photo with a way forward where there is no converter, writing nothing', async () => {
@@ -273,7 +274,8 @@ describe('a web-sized copy of a large photo', () => {
     const credited = Buffer.concat([png.subarray(0, end), text('Author', 'Ana Field'), text('Copyright', 'Field Studio 2026'), png.subarray(end)]);
     const project = temp('project');
     const { record } = await importAsset(project, sourceFile('scan.png', credited), [], undefined, { webCopy: true });
-    expect(record.mime).toBe('image/jpeg');
+    // Named after the PNG that was read, not the JPEG copy that is stored.
+    expect(record).toMatchObject({ mime: 'image/jpeg', originalName: 'scan.png' });
     const credits = cleanPhoto(readFileSync(join(project, record.file)))?.credits.tiff?.toString('latin1');
     expect(credits).toContain('Ana Field');
     expect(credits).toContain('Field Studio 2026');

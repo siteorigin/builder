@@ -2075,7 +2075,8 @@ export class Controller {
             const name = shown.slice(0, -ext.length).replace(/[-_]+/g, ' ').trim() || 'Image';
             const { record, existing } = await importPackageImage(s.dir, { name, mime, ext, bytes }, known, this.writeFence(s), createdAt);
             if (!existing) {
-              record.originalName = originalNameOf(m.path);
+              // As the disk spells it: a post can name loaf.jpg and find Loaf.JPG where names ignore case.
+              record.originalName = originalNameOf(await fs.realpath(m.path).catch(() => m.path!));
               added.push(record);
               known.push(record);
             }
