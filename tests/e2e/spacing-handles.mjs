@@ -4,7 +4,7 @@
 // pixels with Alt held.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS: OUT, cleanup } = scratch('spacing-handles');
 const { app, win, errors } = await launch(WORK);
@@ -51,6 +51,7 @@ async function dragTopTo(to, steps = 4) {
 step('select the Split hero: its vertical padding gets handles on the page');
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('.list-item', { hasText: 'Split hero' }).first().click();
+await openInspector(win);
 await handle.waitFor();
 const handles = () => win.locator('[data-testid^="spacing-"]:not([data-testid="spacing-hud"])').evaluateAll((els) => els.map((e) => e.dataset.testid).sort());
 // The section offers Vertical padding only: no side padding or margin handles.

@@ -5,9 +5,11 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 vi.stubGlobal('window', { builder: { project: { saveLocalState: async () => undefined }, platform: 'darwin' } });
 
-let store: typeof import('../../src/renderer/src/store');
+type RightTab = 'chat' | 'inspect' | 'styles' | 'project';
+const load = (path: string) => import(/* @vite-ignore */ path);
+let store: { RIGHT_TABS: readonly RightTab[]; restoreRightTab: (saved: unknown) => RightTab; getState: () => { rightTab: RightTab } };
 beforeAll(async () => {
-  store = await import('../../src/renderer/src/store');
+  store = await load('../../src/renderer/src/store');
 });
 
 describe('right panel views', () => {
@@ -52,8 +54,9 @@ describe('the AI tab icon', () => {
   });
 
   it('has an accent in both themes', () => {
-    const light = tokens.slice(tokens.indexOf(':root {'));
-    const dark = tokens.slice(tokens.indexOf("[data-appearance='dark']"));
+    const darkAt = tokens.indexOf("[data-appearance='dark']");
+    const light = tokens.slice(tokens.indexOf(':root {'), darkAt);
+    const dark = tokens.slice(darkAt);
     expect(light).toMatch(/--accent-text: #[0-9a-f]{6};/);
     expect(dark).toMatch(/--accent-text: #[0-9a-f]{6};/);
   });

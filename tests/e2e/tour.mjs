@@ -18,6 +18,7 @@ const gridRow = win.locator('.list-item', { hasText: 'Services grid' });
 await gridRow.locator('.tree-toggle').click();
 await win.locator('.list-item', { hasText: 'Card title' }).first().click();
 await win.locator('[role="tree"] .list-item.selected', { hasText: 'Card title' }).waitFor();
+await openInspector(win);
 await shot('31-dark-part.png');
 
 step('edit a component everywhere');

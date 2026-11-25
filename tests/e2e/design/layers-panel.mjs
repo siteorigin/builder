@@ -12,6 +12,7 @@ import { _electron as electron } from 'playwright';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openInspector } from '../harness.mjs';
 
 if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('layers design capture: set DESIGN_CAPTURE=1 to run');
@@ -405,6 +406,7 @@ await previewAt('Desktop');
 // 10. Definition mode: editing a component everywhere (the panel lists the component's own layers).
 await clearSelection();
 await row('Services grid').click();
+await openInspector(win);
 await pause(400);
 const compSection = win.locator('.section-head', { hasText: 'Component' });
 if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
