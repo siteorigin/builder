@@ -207,6 +207,11 @@ describe('what the site gets in each mode', () => {
     expect(css).not.toMatch(/\t\t--so-space-md/);
     expect(css).not.toContain('--so-color-border: 12');
     expect(css).not.toContain('--so-color-nope');
+    // Each one left out is said.
+    const warnings = validateState(s).filter((d) => d.severity === 'warning' && d.message.includes('dark palette')).map((d) => d.message);
+    expect(warnings).toHaveLength(4);
+    expect(warnings.join('\n')).toMatch(/"space\.md", which is not a color/);
+    expect(warnings.join('\n')).toMatch(/"color\.muted" follows "space\.md"/);
   });
 
   it('makes again only what a change of palettes reaches, the same bytes as a full run', () => {
