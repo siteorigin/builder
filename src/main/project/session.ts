@@ -371,6 +371,10 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     case 'entry.create':
     case 'entry.remove':
       return true;
+    // A redirect's old address must be free of every page's and entry's, and where it goes must be there.
+    case 'redirect.add':
+    case 'redirect.update':
+      return true;
     // A term's change rewrites, or is refused by, the lists of entries anywhere that choose it.
     case 'collection.createTerm':
     case 'collection.renameTerm':

@@ -155,6 +155,7 @@ export type RouteOwner =
   | { kind: 'page'; route: string; pageId: string; label: string }
   | { kind: 'redirect'; route: string; pageId: string; entryId?: undefined; label: string }
   | { kind: 'redirect'; route: string; entryId: string; pageId?: undefined; label: string }
+  | { kind: 'redirect'; route: string; to: string; pageId?: undefined; entryId?: undefined; label: string }
   | { kind: 'collection'; route: string; collectionId: string; label: string }
   | { kind: 'entry'; route: string; collectionId: string; entryId: string; label: string };
 
@@ -177,10 +178,11 @@ export function collectionRoutes(state: ProjectState): RouteOwner[] {
 export function routeOwners(state: ProjectState): RouteOwner[] {
   const out: RouteOwner[] = Object.values(state.pages).map((p) => ({ kind: 'page' as const, route: p.route, pageId: p.id, label: `the page “${p.title}”` }));
   const kept: unknown = state.site.redirects;
-  for (const r of Array.isArray(kept) ? (kept as Array<{ from?: unknown; pageId?: unknown; entryId?: unknown }>) : []) {
+  for (const r of Array.isArray(kept) ? (kept as Array<{ from?: unknown; pageId?: unknown; entryId?: unknown; to?: unknown }>) : []) {
     if (typeof r?.from !== 'string') continue;
     if (typeof r.pageId === 'string') out.push({ kind: 'redirect', route: r.from, pageId: r.pageId, label: `the old address of “${state.pages[r.pageId]?.title ?? r.pageId}”` });
     else if (typeof r.entryId === 'string') out.push({ kind: 'redirect', route: r.from, entryId: r.entryId, label: `the old address of “${findEntry(state, r.entryId)?.entry.title ?? r.entryId}”` });
+    else if (typeof r.to === 'string') out.push({ kind: 'redirect', route: r.from, to: r.to, label: `a redirect to ${r.to}` });
   }
   return [...out, ...collectionRoutes(state)];
 }

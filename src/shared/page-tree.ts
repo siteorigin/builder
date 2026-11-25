@@ -118,7 +118,7 @@ export function planRouteMove(state: MoveSite, pageId: string, to: string, valid
       const old = kept.find((r): r is { from: string; pageId?: unknown; entryId?: unknown } => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === next.toLowerCase());
       if (old && old.pageId !== p.id) {
         const owner = typeof old.pageId === 'string' && Object.hasOwn(state.pages, old.pageId) ? state.pages[old.pageId] : undefined;
-        return { error: `Moving ${quoteTitle(page)} would move ${quoteTitle(p)} to ${next}, an old address kept working for ${owner ? quoteTitle(owner) : typeof old.entryId === 'string' ? 'a collection entry' : 'another page'}.` };
+        return { error: `Moving ${quoteTitle(page)} would move ${quoteTitle(p)} to ${next}, an old address kept working for ${owner ? quoteTitle(owner) : typeof old.entryId === 'string' ? 'a collection entry' : typeof (old as { to?: unknown }).to === 'string' ? `visitors going to ${(old as { to: string }).to}` : 'another page'}.` };
       }
     }
     if (next !== p.route) moves.push({ pageId: p.id, from: p.route, to: next });

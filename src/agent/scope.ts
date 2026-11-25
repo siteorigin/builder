@@ -304,6 +304,9 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'page.reorder': 'wider',
   'page.remove': 'wider',
   'page.setHome': 'wider',
+  'redirect.add': 'wider',
+  'redirect.update': 'wider',
+  'redirect.remove': 'wider',
   'node.insert': 'insert',
   'node.remove': 'node',
   // One node, whose content takes its place in the same list: checkOne keeps the selection itself from it.

@@ -1883,8 +1883,9 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
   const withheld = new Map<string, DraftTarget>([
     ...drafts.map((p): [string, DraftTarget] => [p.route.toLowerCase(), { pageId: p.id }]),
     ...draftEntries.map((e): [string, DraftTarget] => [e.route.toLowerCase(), { entryId: e.entry.id }]),
+    // Followed to where each ends, so an old address leading to a draft through others is the draft's too.
     ...liveRedirects(state).flatMap((r): Array<[string, DraftTarget]> =>
-      r.page ? (draftIds.has(r.page.id) ? [[r.from.toLowerCase(), { pageId: r.page.id }]] : []) : isDraftEntry(r.entry.entry) ? [[r.from.toLowerCase(), { entryId: r.entry.entry.id }]] : []
+      r.page ? (draftIds.has(r.page.id) ? [[r.from.toLowerCase(), { pageId: r.page.id }]] : []) : r.entry && isDraftEntry(r.entry.entry) ? [[r.from.toLowerCase(), { entryId: r.entry.entry.id }]] : []
     )
   ]);
   // A typed address an archive page answers at (a draft's, made before archive pages) leads to the archive.

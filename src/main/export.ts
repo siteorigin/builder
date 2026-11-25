@@ -22,6 +22,7 @@ import { webMcpOn } from '@shared/webmcp';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, webMcpFormFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { hasFeedEntries } from '@generator/rss';
+import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { withoutPartMarkers } from './codecheck';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
@@ -692,13 +693,30 @@ export function draftSourceNotes(state: ProjectState): string[] {
   return notes;
 }
 
-/** Content hash of everything an export reads: source, public files and the canonical documents. */
+/** Content hash of everything an export reads: source, public files, the canonical documents and Vercel's rules. */
 export async function projectFingerprint(dir: string): Promise<string> {
   const parts: string[] = [];
   for (const top of ['src', 'static', 'siteorigin']) {
     for (const f of (await listFiles(join(dir, top))).filter((n) => !n.endsWith('.tmp')).sort()) parts.push(`${top}/${f}:${sha(await fs.readFile(join(dir, top, f)))}`);
   }
+  const vercel = await fs.readFile(join(dir, VERCEL_CONFIG_FILE)).catch(() => null);
+  if (vercel) parts.push(`${VERCEL_CONFIG_FILE}:${sha(vercel)}`);
   return sha(parts.join('\n'));
+}
+
+/**
+ * Puts the staged project's vercel.json (its redirect rules for Vercel, already without the drafts) at the root of the
+ * built website, where Vercel reads it when that folder is deployed: while the site is published on Vercel. A file of
+ * the author's own already there (from static/) is never replaced: the reason the export stops is returned.
+ */
+export async function deliverVercelConfig(project: string, out: string, live: ProjectState): Promise<string | null> {
+  if (redirectHost(live.site) !== 'vercel') return null;
+  const config = await fs.readFile(join(project, VERCEL_CONFIG_FILE)).catch(() => null);
+  if (!config) return null;
+  const there = join(out, VERCEL_CONFIG_FILE);
+  if (existsSync(there)) return `static/${VERCEL_CONFIG_FILE} takes the place of the redirect rules SiteOrigin Builder writes for Vercel. Delete or rename it, or choose another host in Site settings under Redirects, then export again.`;
+  await fs.writeFile(there, config);
+  return null;
 }
 
 /** Old exported projects pinned Node more tightly than the toolchain needs, which broke hosted builds. */

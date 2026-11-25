@@ -4,6 +4,7 @@ import type { EditOperation } from '@shared/ops';
 import type { AltReview, GraphNode, ImageValue, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { pageArticle } from '@shared/articles';
+import { findEntry } from '@shared/collections';
 import { STYLE_PROPS } from '@shared/styles';
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import { declaredTokens } from '@engine/tokens';
@@ -19,7 +20,7 @@ import { shellPageLinks } from '@generator/checks';
 
 const PRIMITIVES: Record<string, string> = { richtext: 'rich text', repeat: 'repeated items', slot: 'content area' };
 const CONTENT_FIELDS: Record<string, string> = { text: 'text', link: 'link', label: 'button text', appearance: 'button style', icon: 'icon', tag: 'heading level', anchor: 'anchor', collapseEmpty: 'hiding when empty', interactionGroup: 'interaction group', appear: 'entrance', appearStagger: 'staggered entrances', webmcpToolName: 'agent tool name', webmcpToolDescription: 'agent tool description' };
-const SITE_FIELDS: Record<string, string> = { name: 'name', language: 'language', direction: 'text direction', description: 'description', baseUrl: 'web address', favicon: 'favicon', socialImage: 'sharing image', notFoundHeading: 'not-found page heading', notFoundMessage: 'not-found page message', notFoundLinkLabel: 'not-found page link', visitorText: 'visitor text', identity: 'publisher details', llmsTxt: 'llms.txt', llmsFull: 'llms-full.txt', markdownMirrors: 'Markdown copies', llmsSummary: 'llms.txt summary', webmcp: 'WebMCP tools', crawlerPolicy: 'crawler policy' };
+const SITE_FIELDS: Record<string, string> = { name: 'name', language: 'language', direction: 'text direction', description: 'description', baseUrl: 'web address', favicon: 'favicon', socialImage: 'sharing image', notFoundHeading: 'not-found page heading', notFoundMessage: 'not-found page message', notFoundLinkLabel: 'not-found page link', visitorText: 'visitor text', identity: 'publisher details', llmsTxt: 'llms.txt', llmsFull: 'llms-full.txt', markdownMirrors: 'Markdown copies', llmsSummary: 'llms.txt summary', webmcp: 'WebMCP tools', crawlerPolicy: 'crawler policy', redirectHost: 'host for redirects' };
 const PAGE_FIELDS: Record<string, string> = { title: 'title', route: 'address', navLabel: 'menu label', seoTitle: 'search title', description: 'description', noindex: 'search visibility', searchHidden: 'site search visibility', draft: 'draft status', showHeader: 'shared header', showFooter: 'shared footer', socialImage: 'sharing image', canonical: 'canonical URL', updatedAt: 'revision date', language: 'language', linkTranslationTo: 'translations', articleDate: 'publication date', byline: 'byline', excerpt: 'excerpt', newsHidden: 'news list visibility', article: 'article status', structuredData: 'structured data' };
 
 /** A property label as it reads inside a sentence: "Title" becomes "title", "CTA link" stays. */
@@ -313,6 +314,14 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Removed the site style ${quoted(tokenLabel(op.tokenId))}`);
       case 'token.replace':
         return plain(op, `Replaced the site style ${quoted(tokenLabel(op.tokenId))} with ${quoted(tokenLabel(op.withTokenId))}`);
+      case 'redirect.add':
+      case 'redirect.update': {
+        const from = typeof res.from === 'string' ? res.from : op.from;
+        const target = op.pageId !== undefined ? quoted(after.pages[op.pageId]?.title ?? op.pageId) : op.entryId !== undefined ? quoted(findEntry(after, op.entryId)?.entry.title ?? findEntry(before, op.entryId)?.entry.title ?? op.entryId) : (op.to ?? '');
+        return plain(op, `${op.type === 'redirect.add' ? 'Kept' : 'Sent'} the old address ${from} ${op.type === 'redirect.add' ? 'working, sending visitors to' : 'to'} ${target}`);
+      }
+      case 'redirect.remove':
+        return plain(op, `Stopped keeping the old address ${typeof res.from === 'string' ? res.from : op.from} working`);
       case 'site.update': {
         const render = (d: string[]) => `Changed the site ${d.length ? joinWords(d) : 'settings'}`;
         const fields = Object.keys(SITE_FIELDS).filter((f) => (op as Record<string, unknown>)[f] !== undefined);

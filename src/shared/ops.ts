@@ -282,6 +282,13 @@ const ENTRY_FIELDS = {
   searchHidden: z.boolean().optional().describe("Leave it out of the site's own Site search results. Independent of noindex.")
 };
 
+/** Where a redirect sends visitors: exactly one of these. */
+const REDIRECT_TARGET = {
+  pageId: z.string().optional().describe('A page, by ID: the redirect follows it to wherever it moves.'),
+  entryId: z.string().optional().describe('A collection entry (a post), by ID: the redirect follows it to wherever it moves.'),
+  to: z.string().max(400).optional().describe('Another address of the site, as a route ("/services/", or "/" for Home): whatever has it then.')
+};
+
 export const OPERATION_SCHEMAS = {
   'page.create': z.object({
     type: z.literal('page.create'),
@@ -589,6 +596,10 @@ export const OPERATION_SCHEMAS = {
     markdownMirrors: z.boolean().optional().describe('A Markdown copy beside each listed page. Default false.'),
     llmsSummary: limited(TEXT_LIMITS.siteDescription).optional().describe('llms.txt summary; "" uses the description.'),
     webmcp: z.boolean().optional().describe('WebMCP: declare each contact form, and site search, as tools AI agents in visitors\' browsers can use. Default false.'),
+    redirectHost: z
+      .enum(['cloudflare', 'netlify', 'vercel'])
+      .optional()
+      .describe('The host the website is published on, for its HTTP 301 redirect rules: "cloudflare" (default) writes _redirects for Cloudflare Pages, "netlify" for Netlify, "vercel" also writes vercel.json.'),
     crawlerPolicy: z
       .object({
         preset: z
@@ -648,6 +659,21 @@ export const OPERATION_SCHEMAS = {
       .optional()
       .describe('Who publishes the site, for search engines and AI answer engines. Only the fields given change; null clears one (so does "" for text, or [] for a list), and identity: null clears all of it. Opening hours, price range and geo belong to a LocalBusiness: another kind clears them.')
   }),
+  'redirect.add': z
+    .object({
+      type: z.literal('redirect.add'),
+      from: z.string().max(400).describe('The old address, as a route such as "/old-services/".'),
+      ...REDIRECT_TARGET
+    })
+    .describe('Keep an old address working: visitors and search engines are sent on with a permanent redirect (HTTP 301). Give exactly one of pageId, entryId or to.'),
+  'redirect.update': z
+    .object({
+      type: z.literal('redirect.update'),
+      from: z.string().max(400).describe('The old address of a redirect the site keeps.'),
+      ...REDIRECT_TARGET
+    })
+    .describe('Send an old address somewhere else. Give exactly one of pageId, entryId or to; it replaces where it went.'),
+  'redirect.remove': z.object({ type: z.literal('redirect.remove'), from: z.string().max(400).describe('The old address of a redirect the site keeps.') }).describe('Stop keeping an old address working: it then shows the not-found page.'),
   // Editor only: the project's private brief (#518), which never reaches the website. Only the fields given change;
   // "" clears one.
   'brief.update': z.object({

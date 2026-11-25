@@ -72,6 +72,8 @@ import { usedPackFonts } from '@catalogue/fonts';
 import { ICONS } from '@catalogue/foundation/icons';
 import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/routes';
+import { resolveRedirects, type LiveRedirect } from '@shared/redirects';
+import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from './host-redirects';
 import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { pickImagesField } from '@shared/image-lists';
@@ -4092,32 +4094,15 @@ export function pageAlternates(state: ProjectState, page: PageDoc): Array<{ lang
   return members.length < 2 || languages.size < members.length ? [] : members;
 }
 
-/** An old address kept working, with where it sends visitors: a page, or a collection entry the site has a page for. */
-export type LiveRedirect = { from: string; to: string; title: string } & ({ page: PageDoc; entry?: undefined } | { entry: SiteEntry; page?: undefined });
+export type { LiveRedirect } from '@shared/redirects';
 
 /**
- * Old addresses kept working, each with the page or entry it sends visitors to, in the order they were kept. One
- * that a page or an entry uses now, that is not a valid route, or whose page or entry is gone (or has no page on the
- * site) is left out: a page or entry always wins its route.
+ * Old addresses kept working, each followed to the page, entry or archive page it sends visitors to, in the order they
+ * were kept (see shared/redirects.ts). One that a page or an entry uses now, that is not a valid route, whose page or
+ * entry is gone, or that leads to itself, into a loop or nowhere, is left out: a page or entry always wins its route.
  */
 export function liveRedirects(state: ProjectState): LiveRedirect[] {
-  const list: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
-  if (!list.length) return [];
-  const entries = siteEntries(state);
-  const byId = new Map(entries.map((e) => [e.entry.id, e]));
-  const used = new Set([...Object.values(state.pages).map((p) => p.route.toLowerCase()), ...entries.map((e) => e.route.toLowerCase())]);
-  const out: LiveRedirect[] = [];
-  for (const item of list) {
-    const r = (item && typeof item === 'object' ? item : {}) as { from?: unknown; pageId?: unknown; entryId?: unknown };
-    if (typeof r.from !== 'string' || r.from === '/' || validateRoute(r.from) || used.has(r.from.toLowerCase())) continue;
-    const page = typeof r.pageId === 'string' && Object.hasOwn(state.pages, r.pageId) ? state.pages[r.pageId] : undefined;
-    const entry = !page && typeof r.entryId === 'string' ? byId.get(r.entryId) : undefined;
-    if (page) out.push({ from: r.from, to: page.route, title: page.title, page });
-    else if (entry) out.push({ from: r.from, to: entry.route, title: entry.entry.title, entry });
-    else continue;
-    used.add(r.from.toLowerCase());
-  }
-  return out;
+  return resolveRedirects(state).live;
 }
 
 // ---------------------------------------------------------------------------
@@ -4232,8 +4217,10 @@ export function publishedState(state: ProjectState): ProjectState {
   const entriesOf = (c: Collection | undefined) => (c?.entries && typeof c.entries === 'object' ? c.entries : {});
   const draftEntries = Object.values(state.collections ?? {}).some((c) => Object.values(entriesOf(c)).some(unpublished));
   if (!drafts.size && !draftEntries) return state;
+  // Each followed to where it ends, so one leading to a draft through other old addresses is left out with it, and kept
+  // as leading straight there: what is left of a chain still arrives.
   const redirects = liveRedirects(state).flatMap((r): SiteRedirect[] =>
-    r.page ? (drafts.has(r.page.id) ? [] : [{ from: r.from, pageId: r.page.id }]) : unpublished(r.entry.entry) ? [] : [{ from: r.from, entryId: r.entry.entry.id }]
+    r.page ? (drafts.has(r.page.id) ? [] : [{ from: r.from, pageId: r.page.id }]) : r.entry ? (unpublished(r.entry.entry) ? [] : [{ from: r.from, entryId: r.entry.entry.id }]) : [{ from: r.from, to: r.to }]
   );
   const site = { ...state.site, pageOrder: state.site.pageOrder.filter((id) => !drafts.has(id)) };
   if (redirects.length) site.redirects = redirects;
@@ -4706,14 +4693,17 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
     const cid = collection.settings.id;
     files.set(entryFile(route), file(`entry:${cid}:${entry.id}${mode}`, (s) => generateEntry(s, cid, entry.id, opts)));
   }
-  for (const { from, page, entry } of liveRedirects(state)) {
+  // Each old address goes straight to where it leads in the end, past any other old address on the way.
+  for (const { from, to, page, entry } of liveRedirects(state)) {
     if (page) files.set(redirectFile(from), file(`redirect:${page.id}:${from}`, (s) => generateRedirect(s, from, s.pages[page.id])));
-    else {
+    else if (entry) {
       const cid = entry.collection.settings.id;
       const eid = entry.entry.id;
       // The entry's address is read from the tracked state, so a later rename of the entry makes this file again.
       files.set(redirectFile(from), file(`redirect:${cid}:${eid}:${from}`, (s) => generateRedirect(s, from, { route: entryRoute(s.collections[cid], s.collections[cid].entries[eid]) })));
     }
+    // A page of a collection's archive, at an address that never moves: the address is in the key.
+    else files.set(redirectFile(from), file(`redirect:to:${from}:${to}`, (s) => generateRedirect(s, from, { route: to })));
   }
   // Each collection's index and category archives. A page of one reads its series (which entries it lists, and the
   // pages before and after it) and those entries, so a post published, backdated or turned back into a draft makes
@@ -4732,6 +4722,11 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   files.set('static/robots.txt', file('robots.txt', generateRobots));
   const sitemap = file('sitemap.xml', (s) => generateSitemap(s) ?? '');
   if (sitemap) files.set('static/sitemap.xml', sitemap);
+  // The same old addresses as HTTP 301 rules the website's host reads, ahead of their pages (see ./host-redirects).
+  const hostRedirects = file('_redirects', (s) => generateHostRedirects(s) ?? '');
+  if (hostRedirects) files.set(HOST_REDIRECTS_FILE, hostRedirects);
+  const vercelConfig = file('vercel.json', (s) => generateVercelConfig(s) ?? '');
+  if (vercelConfig) files.set(VERCEL_CONFIG_FILE, vercelConfig);
   // The RSS feed of the published posts, once the site has a public URL to give their full addresses (see ./rss).
   const rss = file('rss.xml', (s) => generateRssFeed(s) ?? '');
   if (rss) files.set(RSS_PATH, rss);

@@ -598,7 +598,7 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
   const kept = keptAddresses(state);
   const handed = kept.filter((r) => r?.entryId === entry.id && typeof r.from === 'string').map((r) => r.from);
   if (handed.length || (reclaimed && heir)) {
-    const rest = kept.flatMap((r): SiteRedirect[] => (r?.entryId !== entry.id ? [r] : heir ? [{ from: r.from, ...heir }] : []));
+    const rest = kept.flatMap((r): SiteRedirect[] => (r?.entryId !== entry.id ? [r] : heir ? [{ from: r.from, ...(r.custom ? { custom: true as const } : {}), ...heir }] : []));
     if (reclaimed && heir) {
       rest.push({ from: current, ...heir });
       handed.push(current);
@@ -752,7 +752,9 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
           ? draftEntry(o.entryId)
           : o.pageId !== undefined
             ? state.pages[o.pageId]?.draft === true || !Object.hasOwn(state.pages, o.pageId)
-            : !findEntry(state, o.entryId) || draftEntry(o.entryId);
+            : o.entryId !== undefined
+              ? !findEntry(state, o.entryId) || draftEntry(o.entryId)
+              : false;
     out.push({
       severity: 'warning',
       code: 'ARCHIVE_ADDRESS_TAKEN',
