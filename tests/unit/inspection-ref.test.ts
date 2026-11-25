@@ -205,4 +205,21 @@ describe('inspection references', () => {
       { kind: 'heading-structure', message: 'Two h1.' }
     ]);
   });
+
+  it("names the sections and headings of the page's rhythm notes as findings are named, with or without findings (#366)", () => {
+    const s = fresh();
+    const grid = placementOf(s, 'foundation.features.grid');
+    const page = { kind: 'page', id: s.site.homePageId };
+    const report = {
+      rhythm: [
+        { kind: 'repeated-layout', sections: { first: 1, last: 3 }, desc: { ctx: ctxOf(s), node: grid.id, items: '' }, with: { desc: { ctx: ctxOf(s), node: 'gone', items: '' } }, message: 'Same layout.' },
+        { kind: 'heading-scale', desc: { ctx: ctxOf(s, grid.id), node: 'heading', items: '' }, with: { desc: { ctx: ctxOf(s, grid.id), node: 'heading', items: '' }, text: 'Title' }, message: 'Large.' }
+      ]
+    };
+    attributeFindings(s, report);
+    expect(report.rhythm).toEqual([
+      { kind: 'repeated-layout', sections: { first: 1, last: 3 }, ref: { owner: page, nodeId: grid.id }, with: {}, message: 'Same layout.' },
+      { kind: 'heading-scale', ref: { owner: page, nodeId: grid.id, partId: 'heading' }, with: { ref: { owner: page, nodeId: grid.id, partId: 'heading' }, text: 'Title' }, message: 'Large.' }
+    ]);
+  });
 });

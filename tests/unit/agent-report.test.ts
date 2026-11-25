@@ -243,6 +243,19 @@ describe('check results', () => {
     expect(inspectionChecks(true, ok())).toEqual([{ status: 'pass', text: 'Fits the screen at phone width.' }]);
   });
 
+  it("leaves the rows as they are for a page with notes on its rhythm: advice, never a problem (#366)", () => {
+    const count = (checked: number) => ({ checked, failed: 0, unverified: 0 });
+    const report = { issues: [], images: { total: 1, loaded: 1, failed: 0, unverified: 0 }, checks: { contrast: count(30), overlaps: count(12), clippedText: count(0), tapTargets: count(6) } };
+    const rhythm = [
+      { kind: 'repeated-layout', sections: { first: 2, last: 4 }, message: 'Same layout.' },
+      { kind: 'crowded-actions', sections: { first: 1, last: 4 }, message: 'Buttons.' },
+      { kind: 'heading-scale', message: 'Large.' }
+    ];
+    const rows = inspectionChecks(true, { pageId: 'p', viewport: 'desktop', report });
+    expect(rows.every((r) => r.status === 'pass')).toBe(true);
+    expect(inspectionChecks(true, { pageId: 'p', viewport: 'desktop', report: { ...report, rhythm } })).toEqual(rows);
+  });
+
   it('cuts a layout report to fit a tool result without losing a count or a kind of finding', () => {
     const issue = (kind: string, i: number) => ({ kind, ref: { owner: { kind: 'page', id: 'p' }, nodeId: `n${i}` }, text: 't'.repeat(80), with: { ref: { owner: { kind: 'page', id: 'p' }, nodeId: 'm' }, text: 'w'.repeat(80) }, message: 'm'.repeat(400) });
     const report = { checks: { contrast: { checked: 200, failed: 70, unverified: 0 } }, images: { total: 1, loaded: 1, failed: 0, unverified: 0 }, issues: [...Array.from({ length: 70 }, (_, i) => issue('low-contrast', i)), issue('overlap', 99), issue('small-tap-target', 98)], runtimeErrors: ['e'.repeat(5000)] };
@@ -259,6 +272,25 @@ describe('check results', () => {
     expect(report.issues[0].text).toHaveLength(80);
     const small = { issues: [issue('overlap', 1)] };
     expect(fitInspection(envelope, small)).toBe(small);
+  });
+
+  it("keeps every note on the page's rhythm when a layout report is cut to fit, without the text they quote (#366)", () => {
+    const issue = (i: number) => ({ kind: 'low-contrast', ref: { owner: { kind: 'page', id: 'p' }, nodeId: `n${i}` }, text: 't'.repeat(80), message: 'm'.repeat(400) });
+    const ref = (nodeId: string) => ({ owner: { kind: 'page', id: 'p' }, nodeId });
+    const rhythm = [
+      { kind: 'repeated-layout', sections: { first: 2, last: 4 }, ref: ref('a'), with: { ref: ref('b') }, layout: 'three card columns', background: '#ffffff', message: 'Same layout.' },
+      { kind: 'crowded-actions', sections: { first: 1, last: 4 }, ref: ref('c'), with: { ref: ref('d') }, buttons: 4, message: 'Buttons.' },
+      { kind: 'heading-scale', ref: ref('e'), text: 'h'.repeat(80), with: { ref: ref('f'), text: 'g'.repeat(80) }, heading: 'h2', size: 48, h1Size: 48, message: 'Large.' }
+    ];
+    const report = { issues: Array.from({ length: 70 }, (_, i) => issue(i)), rhythm };
+    const envelope = { revision: 3, pageId: 'p', viewport: 'desktop', width: 1280 };
+    const fitted = fitInspection(envelope, report) as typeof report & { omittedIssues: number };
+    expect(JSON.parse(serializeResult({ ...envelope, report: fitted })).truncated).toBeUndefined();
+    expect(fitted.omittedIssues).toBeGreaterThan(0);
+    expect(fitted.rhythm).toEqual([rhythm[0], rhythm[1], { kind: 'heading-scale', ref: ref('e'), with: { ref: ref('f') }, heading: 'h2', size: 48, h1Size: 48, message: 'Large.' }]);
+    // The notes the bridge sent are left as they were.
+    expect(rhythm[2].text).toHaveLength(80);
+    expect(rhythm[2].with.text).toHaveLength(80);
   });
 
   it('says each check once, with its latest result, naming its page', () => {

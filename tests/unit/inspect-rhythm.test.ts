@@ -31,7 +31,7 @@ let browser: Browser;
 const roots: string[] = [];
 beforeAll(async () => {
   if (browserInstalled) browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
-});
+}, 60_000);
 afterAll(async () => {
   await browser?.close();
   roots.forEach((d) => rmSync(d, { recursive: true, force: true }));
