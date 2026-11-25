@@ -2,7 +2,7 @@
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
 import type { BindingRef, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, RepeatFilter, ScalarPropSchema, StateRef, TokenGroup, UiStateSchema } from '@shared/types';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, RICH_CODE_FORMS, STATE_ACTION_OPS, TEXT_TAGS, UI_STATE_TYPES, conditionRef, isBinding, isBindingRef, isComparison, isStateRef } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, OVERLAY_MODES, RICH_CODE_FORMS, STATE_ACTION_OPS, TEXT_TAGS, UI_STATE_TYPES, conditionRef, isBinding, isBindingRef, isComparison, isStateRef } from '@shared/types';
 import { feedRowFields } from '@shared/entry-feed';
 import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
@@ -686,6 +686,7 @@ export function repeatFilterProblem(def: ComponentDefinition, node: GraphNode): 
   if (!host || host.kind !== 'element' || roots.has(host.id)) return 'needs an element of its own, inside the design’s top element, to hold it: its pills go just above that element.';
   if (host.children.length !== 1) return 'shares the element holding it with other content; its pills go just above that element, so it must hold the list alone.';
   if (host.carousel) return 'is a carousel’s slides, which scroll sideways rather than filter.';
+  if (host.overlay !== undefined) return 'is held by a dialog or drawer itself, beside which its pills would stay on the page; hold the list in an element of its own inside it.';
   const inside = ancestors.slice(1);
   if (mayLink(host)) return 'is held by an element that links somewhere or opens something, which its items could not be filtered inside.';
   if (inside.some(mayLink)) return 'is inside a card that links somewhere, where its pills could not be buttons.';
@@ -705,6 +706,69 @@ export function repeatFilterProblem(def: ComponentDefinition, node: GraphNode): 
     return 'shows items that are not one element each; the filter hides an item by its element, such as a list item or a card.';
   return null;
 }
+/**
+ * The yes/no UI state a node's one condition shows it for, and the value it shows at: `when: { $state }` shows it while
+ * the state is on, `unless` while it is off, and a comparison with true or false at the value it names. Null for any
+ * other condition, two of them, or state the design does not declare as yes/no.
+ */
+export function booleanStateGuard(def: Pick<ComponentDefinition, 'state' | 'properties'>, n: GraphNode): { state: string; shows: boolean } | null {
+  if (!n.when === !n.unless) return null;
+  const c: unknown = n.when ?? n.unless;
+  const negate = !n.when;
+  const ref = conditionRef(c);
+  if (!isStateRef(ref) || typeof ref.$state !== 'string' || declaredState(def, ref.$state)?.type !== 'boolean') return null;
+  if (!isComparison(c)) return { state: ref.$state, shows: !negate };
+  const value = 'eq' in c ? c.eq : c.ne;
+  if (typeof value !== 'boolean') return null;
+  return { state: ref.$state, shows: 'eq' in c !== negate ? value : !value };
+}
+
+/**
+ * What is wrong with a container shown over the page (ElementNode.overlay), as words that follow its name, or null when
+ * it works or is no overlay. It is a plain `div` of a managed design, below the top element, shown by one yes/no UI
+ * state of its own (no other dialog or drawer reads that state, whose buttons open and close it), and rendered exactly
+ * once per placement: not inside a list, content handed to a nested component, a card that links somewhere, a carousel,
+ * or anything shown only on a condition, where its buttons could name a dialog that is not there. It keeps no anchor of
+ * its own, since each placement names its dialog. Shared by load validation, the pack loader, the editor's operation
+ * and the generator, which renders an overlay with a problem as an ordinary container with its condition.
+ */
+export function overlayProblem(def: ComponentDefinition, node: GraphNode): string | null {
+  if (!Object.hasOwn(node, 'overlay')) return null;
+  const mode: unknown = (node as { overlay?: unknown }).overlay;
+  if (mode === undefined) return null;
+  if (node.kind !== 'element') return 'shows over the page as a dialog or drawer, which only a container can.';
+  if (def.kind !== 'managed' || !def.tree) return 'shows over the page as a dialog or drawer, which only a container in a component’s design can.';
+  if (typeof mode !== 'string' || !(OVERLAY_MODES as readonly string[]).includes(mode)) return `shows over the page as ${JSON.stringify(mode)?.slice(0, 40) ?? 'nothing'}, which is not ${listed([...OVERLAY_MODES])}.`;
+  const tree = def.tree;
+  if (tree.rootIds.includes(node.id)) return 'is the component’s top element, which stays in its place; put the dialog or drawer inside it.';
+  const guard = booleanStateGuard(def, node);
+  if (!guard) return 'is a dialog or drawer that no yes/no UI state of the component opens: show it only while one is on (its one condition).';
+  if (node.tag !== 'div') return 'is a dialog or drawer, which is a plain div container (its tag is fixed).';
+  if (mayLink(node)) return 'is a dialog or drawer that links somewhere or opens something, where nothing inside it could be used.';
+  if (node.carousel !== undefined) return 'is a dialog or drawer, which cannot also be a carousel’s slides.';
+  if (node.collapseEmpty) return 'is a dialog or drawer, which stays in the page while closed and cannot hide when everything inside it is hidden.';
+  if (node.anchor !== undefined) return 'is a dialog or drawer with an anchor of its own, which each placement would share; its buttons open it instead.';
+  if (node.appear !== undefined) return 'is a dialog or drawer, which opens rather than entering as the page scrolls, so it takes no entrance.';
+  const roots = new Set(tree.rootIds);
+  const seen = new Set<string>([node.id]);
+  for (let at = findParent(tree, node.id); at?.parentId && !seen.has(at.parentId); at = findParent(tree, at.parentId)) {
+    seen.add(at.parentId);
+    const a = tree.nodes[at.parentId];
+    if (!a) continue;
+    if (a.kind === 'repeat') return 'is inside a list, where every item would share one dialog or drawer.';
+    if (a.kind === 'instance') return 'is in content placed in a nested component, which decides where (and how often) it shows; put it in the design itself.';
+    if (a.kind !== 'element') continue;
+    if (mayLink(a)) return 'is inside a card that links somewhere, where nothing inside could be used.';
+    if (a.carousel !== undefined) return 'is inside a carousel’s slides.';
+    if (!roots.has(a.id) && (a.when || a.unless || a.collapseEmpty)) return 'is inside content shown only on a condition, which can leave it out while its buttons still name it.';
+  }
+  const sharing = Object.values(tree.nodes).some(
+    (o) => o && o.id !== node.id && o.kind === 'element' && typeof o.overlay === 'string' && (OVERLAY_MODES as readonly string[]).includes(o.overlay) && booleanStateGuard(def, o)?.state === guard.state
+  );
+  if (sharing) return `is one of two dialogs or drawers opened by the UI state "${guard.state}"; each needs a yes/no state of its own.`;
+  return null;
+}
+
 /** A link value that goes somewhere, or may (a binding). */
 const linkSet = (l: unknown) => l !== undefined && l !== null && (isBinding(l) || (l as { type?: unknown }).type !== 'none');
 /**

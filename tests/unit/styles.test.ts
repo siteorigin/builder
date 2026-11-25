@@ -993,6 +993,7 @@ describe('the document format for see-through colors and backdrop blur (#353)', 
     const step = MIGRATIONS.find((m) => m.id === 'style-strength')!;
     expect(step).toBeDefined();
     expect(MIGRATIONS.indexOf(step) + 2).toBe(15);
+    expect(MIGRATIONS.indexOf(step)).toBe(MIGRATIONS.findIndex((m) => m.id === 'repeat-filters') + 1);
     expect(SCHEMA_VERSION).toBe(MIGRATIONS.length + 1);
     const s = fresh();
     const out = structuredClone(s);

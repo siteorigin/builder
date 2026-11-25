@@ -22,6 +22,7 @@ import type {
   LinkNode,
   ListProp,
   NodeTree,
+  OverlayMode,
   OwnerRef,
   PageDoc,
   ProjectState,
@@ -86,7 +87,7 @@ import { entryNeighbours, materializeTemplate } from './entry-template';
 import { archiveFile, generateArchive, siteArchives } from './archive';
 import { archivePages } from '@shared/archives';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
-import { declaredState, repeatFilterProblem, stateActionProblem } from '@engine/schema';
+import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
@@ -163,7 +164,7 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey', 'filterKey', 'filterCategories', 'so_text', 'so_fill', 'so_visitorText']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_appear', 'so_stagger', 'so_eager', 'so_pages', 'so_editing', 'globalThis', '__so', '__so_at', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'SoCarousel', 'richParagraphs', 'richList', 'thumbnail', 'stepState', 'tabKey', 'filterKey', 'filterCategories', 'so_text', 'so_fill', 'so_visitorText', 'overlayOpen', 'overlayDismissal', 'overlayClosed', 'beforeNavigate', 'so_previewing']);
 /**
  * Svelte's runes, by the name a local would hide them under: a property local named `state` would make `$state(...)`
  * read it as a store, so properties never take these names as locals either.
@@ -189,7 +190,7 @@ export function propLocals(def: ComponentDefinition): Map<string, string> {
   const taken = new Set<string>();
   for (const name of Object.keys(def.properties).sort()) {
     let local = /^[a-zA-Z_$][\w$]*$/.test(name) ? name : `_${name.replace(/[^\w$]/g, '_')}`;
-    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|variant_|so_children_|so_state_|so_filter_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
+    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|variant_|so_children_|so_state_|so_filter_|so_dialog_|so_opener_|so_overlay_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
     let unique = local;
     for (let i = 2; taken.has(unique); i++) unique = `${local}_${i}`;
     taken.add(unique);
@@ -909,12 +910,39 @@ function filterCss(global = false): string {
   ].join('\n');
 }
 
+/** Whether a design has a dialog or drawer that works (see stateWidgets). */
+function hasOverlays(def: ComponentDefinition): boolean {
+  return def.kind === 'managed' && !!def.tree && Object.values(def.tree.nodes).some((n) => n?.kind === 'element' && n.overlay !== undefined && !overlayProblem(def, n));
+}
+
+/**
+ * Components' dialogs and drawers (see emitOverlay), whatever the theme's own CSS has: hidden while closed, whatever
+ * display their own styles give them; the page behind an open one held still, its scrollbar's room kept so nothing
+ * moves; each one along its edge or in the middle (start and end follow the text's direction), scrolling inside
+ * itself; and none printed, open or closed, nor the backdrop. Placed sizes stay the design's own (zero specificity).
+ */
+const OVERLAY_CSS = `/* Components' dialogs and drawers. */
+@media not print {
+\tdialog.so-overlay:not([open]):not(#so-print) { display: none !important; }
+\thtml:has(dialog.so-overlay) { scrollbar-gutter: stable; }
+\thtml:has(dialog.so-overlay:modal) { overflow: hidden; }
+}
+:where(dialog.so-overlay:modal) { box-sizing: border-box; max-width: calc(100vw - 2rem); max-height: calc(100vh - 2rem); max-height: calc(100dvh - 2rem); overflow: auto; overscroll-behavior: contain; }
+:where(dialog.so-overlay--drawer-start:modal, dialog.so-overlay--drawer-end:modal) { width: min(26rem, 100vw - 3rem); max-width: none; height: 100vh; height: 100dvh; max-height: none; margin-block: 0; }
+:where(dialog.so-overlay--drawer-start:modal) { margin-inline: 0 auto; }
+:where(dialog.so-overlay--drawer-end:modal) { margin-inline: auto 0; }
+:where(dialog.so-overlay--drawer-bottom:modal) { width: 100%; max-width: none; max-height: 85vh; max-height: 85dvh; margin: auto 0 0; }
+@media print {
+\tdialog.so-overlay:not(#so-print), dialog.so-overlay:not(#so-print)::backdrop { display: none !important; }
+}`;
+
 export function generateComponentsCss(state: ProjectState): string {
   const parts: string[] = ['/* Component definition styles. Generated from siteorigin/components. */'];
   // A tab's panel while another tab is chosen, or a closed disclosure's content, stays in the page hidden on screen
   // only, so printing shows it with its own layout. An id no element has (#so-print) outweighs a placement's styles.
   if (sortedDefs(state).some((def) => def.kind === 'managed' && stateLocals(def).size))
     parts.push(`/* Content a component's state hides on screen. */\n@media not print {\n\t.${STATE_OFF_CLASS}:not(#so-print) { display: none !important; }\n}`);
+  if (sortedDefs(state).some(hasOverlays)) parts.push(OVERLAY_CSS);
   // Items a list's category filter hides stay in the page, hidden on screen only, so printing shows them all; the
   // row of category buttons is left out of print.
   if (sortedDefs(state).some((def) => def.kind === 'managed' && repeatFilters(def).length)) parts.push(filterCss());
@@ -1177,20 +1205,25 @@ function stateLocals(def: ComponentDefinition): Map<string, UiStateLocal> {
 
 /**
  * What a button's click does to the state, as an event handler, or null when the action names state the design
- * cannot hold or a change that state cannot make (validation reports both).
+ * cannot hold or a change that state cannot make (validation reports both). A button that opens a dialog or drawer
+ * also notes itself as the one to give the focus back to when it closes.
  */
-function stateActionHandler(ctx: EmitCtx, action: StateAction | undefined): string | null {
+function stateActionHandler(ctx: EmitCtx, action: StateAction | undefined, opens?: OverlayGen): string | null {
   const s = ctx.def ? actionState(ctx.def, ctx.states, action) : null;
   if (!action || !s) return null;
+  let change: string;
   switch (action.op) {
     case 'toggle':
-      return `() => (${s.local} = !${s.local})`;
+      change = `${s.local} = !${s.local}`;
+      break;
     case 'set':
-      return `() => (${s.local} = ${js(action.value)})`;
+      change = `${s.local} = ${js(action.value)}`;
+      break;
     default:
       useImport(ctx, '{ stepState }', `${RUNTIME_DIR}/util.js`);
-      return `() => (${s.local} = stepState(${js(s.values)}, ${s.local}, ${action.op === 'next' ? 1 : -1}, ${action.wrap === true}))`;
+      change = `${s.local} = stepState(${js(s.values)}, ${s.local}, ${action.op === 'next' ? 1 : -1}, ${action.wrap === true})`;
   }
+  return opens ? `(event) => {\n${pad(ctx)}\t${opens.opener} = event.currentTarget;\n${pad(ctx)}\t${change};\n${pad(ctx)}}` : `() => (${change})`;
 }
 
 /**
@@ -1222,12 +1255,28 @@ interface StatePanel {
 type StateButton =
   | { role: 'tab'; state: string; value: string; panel: string }
   | { role: 'disclosure'; state: string; open: boolean; panels: string[] }
-  | { role: 'pressed'; state: string; value: boolean | string };
+  | { role: 'pressed'; state: string; value: boolean | string }
+  | { role: 'dialog'; state: string; overlay: string };
+/**
+ * A container shown over the page as a dialog or drawer (ElementNode.overlay): the yes/no state that opens it and the
+ * value it is open at, how it shows, and the locals holding its <dialog>, the button that last opened it and (in the
+ * editor's variant) its content, rendered in one of two places.
+ */
+interface OverlayGen {
+  state: string;
+  shows: boolean;
+  mode: OverlayMode;
+  dialog: string;
+  opener: string;
+  snippet: string;
+}
 interface StateWidgets {
   panels: Map<string, StatePanel>;
   /** Tab lists, by node ID: the state their tabs choose. */
   lists: Map<string, string>;
   buttons: Map<string, StateButton>;
+  /** Dialogs and drawers, by node ID. */
+  overlays: Map<string, OverlayGen>;
 }
 
 /**
@@ -1239,6 +1288,10 @@ interface StateWidgets {
  *   shows them all.
  * - A disclosure: a button that toggles a yes/no state, and the elements that show only while it is on (or, failing
  *   those, only while it is off). They stay in the page the same way, and the button says whether they are expanded.
+ * - A dialog or drawer: a plain \`div\` shown by a yes/no state that works as one (see overlayProblem). It stays in the
+ *   page, closed, so its buttons always find it and what is inside it is rendered once too. A button outside it that
+ *   toggles the state, or sets it to the value that shows it, opens it and says so; one inside it (a close button) is a
+ *   command.
  * - Anything else that sets a state to one value says whether it is pressed (the state has that value), and a toggle
  *   with nothing to disclose likewise; next and previous buttons are commands.
  *
@@ -1247,7 +1300,7 @@ interface StateWidgets {
  * where one ID could not name it. Such content keeps its condition, so it is simply shown and hidden.
  */
 function stateWidgets(ctx: EmitCtx): StateWidgets {
-  const out: StateWidgets = { panels: new Map(), lists: new Map(), buttons: new Map() };
+  const out: StateWidgets = { panels: new Map(), lists: new Map(), buttons: new Map(), overlays: new Map() };
   const def = ctx.def;
   const tree = def?.tree;
   if (!def || !tree || !ctx.states?.size) return out;
@@ -1268,6 +1321,19 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
     }
   };
   tree.rootIds.forEach(reach);
+  // A dialog or drawer is always in the page, once (overlayProblem rules out every way it could not be), and so is what
+  // is inside it.
+  const hosts = Object.values(tree.nodes)
+    .filter((n): n is GraphNode & { kind: 'element'; overlay: OverlayMode } => !!n && typeof n === 'object' && n.kind === 'element' && n.overlay !== undefined && once.has(n.id) && !overlayProblem(def, n))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  hosts.forEach((n, i) => {
+    const g = booleanStateGuard(def, n)!;
+    out.overlays.set(n.id, { state: g.state, shows: g.shows, mode: n.overlay, dialog: `so_dialog_${i + 1}`, opener: `so_opener_${i + 1}`, snippet: `so_overlay_${i + 1}` });
+    for (const c of n.children) {
+      if (!parent.has(c)) parent.set(c, n.id);
+      reach(c);
+    }
+  });
   /** What a node's one condition shows it for: a yes/no state's value or one option of a choice; null for anything else. */
   const guard = (n: GraphNode): { state: string; shows: boolean | string } | null => {
     if (!n.when === !n.unless) return null;
@@ -1292,7 +1358,9 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
    * also be plain text, and keeps an anchor, though its button names only the content without one.
    */
   const panelHost = (n: GraphNode | undefined, tag?: string): n is GraphNode & { kind: 'element' | 'text' } => {
-    if (!n || !once.has(n.id) || roots.has(n.id) || (tag && n.anchor)) return false;
+    // One marked as a dialog or drawer that cannot be one stays an ordinary container with its condition: in the page
+    // only while it shows (a kept panel would print what it holds).
+    if (!n || !once.has(n.id) || roots.has(n.id) || (tag && n.anchor) || (n as { overlay?: unknown }).overlay !== undefined) return false;
     if (n.kind === 'text') return !tag && !n.rich;
     return n.kind === 'element' && !n.collapseEmpty && !rendersAsCard(ctx, n) && !isCarouselTrack(n) && (tag ? isBareTag(ctx, n, tag) : true);
   };
@@ -1305,8 +1373,27 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
     for (let at = parent.get(id), seen = 0; at && seen < 1000; at = parent.get(at), seen++) if (panels.has(at)) return true;
     return false;
   };
+  // Every node's container, slot content included, to tell a button inside a dialog from one outside it.
+  const within = new Map<string, string>();
+  for (const n of nodes) {
+    const lists = n.kind === 'element' || n.kind === 'repeat' ? [n.children] : n.kind === 'instance' ? Object.values(n.slots ?? {}) : [];
+    for (const list of lists) if (Array.isArray(list)) for (const c of list) within.set(c, n.id);
+  }
+  const inside = (id: string, host: string) => {
+    for (let at = within.get(id), seen = 0; at && seen < 1000; at = within.get(at), seen++) if (at === host) return true;
+    return false;
+  };
   for (const [name, s] of [...ctx.states].sort(([a], [b]) => a.localeCompare(b))) {
     const buttons = nodes.filter((n) => stateButton(n) && n.stateAction.state === name) as Array<GraphNode & { kind: 'link'; stateAction: StateAction }>;
+    const overlay = [...out.overlays].find(([, o]) => o.state === name);
+    if (overlay) {
+      const [host, o] = overlay;
+      for (const b of buttons) {
+        const a = b.stateAction;
+        if (!inside(b.id, host) && (a.op === 'toggle' || (a.op === 'set' && a.value === o.shows))) out.buttons.set(b.id, { role: 'dialog', state: name, overlay: host });
+      }
+      continue;
+    }
     if (s.schema.type === 'enum') {
       // One list whose children are exactly one unconditional "set" button per option, all rendered once.
       const setters = buttons.filter((b) => b.stateAction.op === 'set' && once.has(b.id) && !b.when && !b.unless && !b.anchor);
@@ -1345,17 +1432,17 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
 }
 
 /**
- * The nodes of a design kept in the page while its UI state hides them (see stateWidgets): markup the page holds
- * besides what the state shows at first, for the checks that read what a page ships.
+ * The nodes of a design kept in the page while its UI state hides them (see stateWidgets), closed dialogs and drawers
+ * included: markup the page holds besides what the state shows at first, for the checks that read what a page ships.
  */
 export function keptPanels(state: ProjectState, def: ComponentDefinition, memo: { brokenCards?: Set<string> } = {}): ReadonlySet<string> {
   const states = def.kind === 'managed' && def.tree ? stateLocals(def) : new Map<string, UiStateLocal>();
   if (!states.size) return new Set();
   // \`memo\` carries the site's card analysis from one definition to the next within a check.
   const ctx: EmitCtx = { state, file: defFile(def), imports: new Map(), instrument: false, def, tree: def.tree!, ctxExpr: '', items: [], rctx: { state }, indent: 0, locals: propLocals(def), states, brokenCards: memo.brokenCards };
-  const panels = new Set(stateWidgets(ctx).panels.keys());
+  const widgets = stateWidgets(ctx);
   memo.brokenCards = ctx.brokenCards;
-  return panels;
+  return new Set([...widgets.panels.keys(), ...widgets.overlays.keys()]);
 }
 
 /** Whether an element always renders as \`tag\` (no property chooses its tag). */
@@ -1368,7 +1455,7 @@ function isBareTag(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, tag: str
  * The ID a tab or panel is named by, unique to the placement from \`$props.id()\`. The dots keep it apart from the
  * IDs a placement's headings take (\`uid-node\`).
  */
-function widgetId(ctx: EmitCtx, nodeId: string, role: 'tab' | 'panel'): string {
+function widgetId(ctx: EmitCtx, nodeId: string, role: 'tab' | 'panel' | 'dialog'): string {
   ctx.usesUid = true;
   return `\`\${uid}.${role}.${nodeId.replace(/[^A-Za-z0-9_-]/g, '_')}\``;
 }
@@ -1397,6 +1484,10 @@ function stateButtonAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'link' }): str
     }
     case 'pressed':
       return ` aria-pressed={${stateIs(ctx, role.state, role.value)}}`;
+    case 'dialog': {
+      const o = ctx.widgets!.overlays.get(role.overlay)!;
+      return ` aria-haspopup="dialog" aria-expanded={${stateIs(ctx, role.state, o.shows)}} aria-controls={${widgetId(ctx, role.overlay, 'dialog')}}`;
+    }
   }
 }
 
@@ -1732,8 +1823,9 @@ function emitNode(ctx: EmitCtx, id: string): string {
     if (marker) ctx.usesEditing = true;
     out = `${p}{#if ${children}}\n${indentBlock(out)}\n${p}${marker ? `{:else if so_editing}\n${p}\t${marker}\n${p}` : ''}{/if}`;
   }
-  // A panel kept in the page shows and hides by its condition through a class instead (see stateWidgets).
-  if (ctx.widgets?.panels.has(node.id)) return out;
+  // A panel kept in the page shows and hides by its condition through a class instead, and a dialog or drawer opens
+  // and closes by it (see stateWidgets).
+  if (ctx.widgets?.panels.has(node.id) || ctx.widgets?.overlays.has(node.id)) return out;
   if (node.when && ctx.def) out = `${p}{#if ${conditionExpr(ctx, node.when, false)}}\n${indentBlock(out)}\n${p}{/if}`;
   if (node.unless && ctx.def) out = `${p}{#if ${conditionExpr(ctx, node.unless, true)}}\n${indentBlock(out)}\n${p}{/if}`;
   return out;
@@ -1764,7 +1856,7 @@ function indentBlock(s: string): string {
  */
 function renderCondition(ctx: EmitCtx, node: GraphNode, seen: Set<string>, present = false): string | null {
   const parts: string[] = [];
-  const kept = present && !!ctx.widgets?.panels.has(node.id);
+  const kept = present && (!!ctx.widgets?.panels.has(node.id) || !!ctx.widgets?.overlays.has(node.id));
   if (node.when && !kept) parts.push(conditionExpr(ctx, node.when, false));
   if (node.unless && !kept) parts.push(conditionExpr(ctx, node.unless, true));
   if (node.kind === 'repeat') {
@@ -1797,11 +1889,13 @@ function childrenCondition(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, 
  * shown only while its own text is set still labels the landmark whenever it is there.
  */
 function labellingHeading(ctx: EmitCtx, node: GraphNode): (GraphNode & { kind: 'text' }) | null {
-  if (!ctx.def || ctx.items.length || node.kind !== 'element' || node.tag !== 'nav') return null;
+  const overlay = !!ctx.widgets?.overlays.has(node.id);
+  if (!ctx.def || ctx.items.length || node.kind !== 'element' || (node.tag !== 'nav' && !overlay)) return null;
   const first = ctx.tree.nodes[node.children[0]];
   // A heading whose level a property chooses still labels the landmark, whichever level it renders at.
-  if (first?.kind !== 'text' || first.rich || !tagChoices(ctx, first).tags.every((t) => /^h[2-6]$/.test(t)) || first.unless) return null;
-  return !first.when || headingGuardedByOwnText(first) ? first : null;
+  if (first?.kind !== 'text' || first.rich || !tagChoices(ctx, first).tags.every((t) => /^h[1-6]$/.test(t) && (overlay || t !== 'h1')) || first.unless) return null;
+  // A dialog is named by a heading that is always there, or by its own name (see overlayLabelAttrs).
+  return !first.when || (!overlay && headingGuardedByOwnText(first)) ? first : null;
 }
 
 /** A heading whose condition is its own bound text: it renders exactly when that text is set. */
@@ -2259,6 +2353,8 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
   const ids = appearAttrs(ctx, node) + idAttrs(ctx, node.id);
   switch (node.kind) {
     case 'element': {
+      const overlay = ctx.widgets?.overlays.get(node.id);
+      if (overlay) return emitOverlay(ctx, node, overlay);
       const card = rendersAsCard(ctx, node);
       // A working action wraps the element, which keeps its own tag, in the runtime helper's one link.
       const acting = card && hasAction(node);
@@ -2346,7 +2442,8 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const appearance = bindExpr(ctx, node.appearance);
       const name = nameAttr(ctx, 'aria-label', node.ariaLabel);
       // A button that changes UI state is a real button wherever it has nowhere to go (see the Link helper).
-      const handler = ctx.def ? stateActionHandler(ctx, node.stateAction) : null;
+      const role = ctx.widgets?.buttons.get(node.id);
+      const handler = ctx.def ? stateActionHandler(ctx, node.stateAction, role?.role === 'dialog' ? ctx.widgets!.overlays.get(role.overlay) : undefined) : null;
       const click = handler ? ` so_control onclick={${handler}}${stateButtonAttrs(ctx, node)}` : '';
       return `${p}<SoLink link={${link}} appearance={${appearance}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${name}${click}${ids}>${linkContent(ctx, node, label)}</SoLink>`;
     }
@@ -2379,6 +2476,134 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
     case 'instance':
       return emitInstance(ctx, node);
   }
+}
+
+/**
+ * A dialog or drawer (see stateWidgets): a native <dialog>, closed in the page's own markup, which its state opens as a
+ * modal (overlayScript). Escape, a click on its backdrop, or a close of its own sets the state to closed, and the
+ * button that opened it gets the focus back; a jump from a link inside it to somewhere else on the page closes it too,
+ * leaving the focus where the jump puts it. A close event from a copy since replaced, or one the dialog has since
+ * reopened from, changes nothing. In the editor's variant, while editing, its content renders in a plain
+ * container in its place instead, hidden until the author shows it with a button of the editor's own beside it (the
+ * preview bridge keeps which ones are shown, through hot updates), so what is inside can be selected and edited there.
+ */
+function emitOverlay(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, o: OverlayGen): string {
+  const p = pad(ctx);
+  const util = `${RUNTIME_DIR}/util.js`;
+  useImport(ctx, '{ overlayDismissal }', util);
+  useImport(ctx, '{ overlayClosed }', util);
+  const id = widgetId(ctx, node.id, 'dialog');
+  const cls = classExpr(ctx, node, [js('so-overlay'), js(`so-overlay--${o.mode}`)]);
+  const ids = idAttrs(ctx, node.id);
+  const closed = `${ctx.states!.get(o.state)!.local} = ${js(!o.shows)}`;
+  const dialog = (q: string, inner: string) =>
+    [
+      `${q}<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->`,
+      `${q}<dialog`,
+      `${q}\tbind:this={${o.dialog}}`,
+      `${q}\tid={${id}}`,
+      `${q}\tclass=${cls}${overlayLabelAttrs(ctx, node, o)}${ids}`,
+      `${q}\toncancel={(event) => {`,
+      `${q}\t\tevent.preventDefault();`,
+      `${q}\t\t${closed};`,
+      `${q}\t}}`,
+      `${q}\tonclose={(event) => {`,
+      `${q}\t\tif (event.currentTarget !== ${o.dialog} || event.currentTarget.open) return;`,
+      `${q}\t\t${closed};`,
+      `${q}\t\t${o.opener} = overlayClosed(${o.opener});`,
+      `${q}\t}}`,
+      `${q}\tonclick={(event) => {`,
+      `${q}\t\tconst away = overlayDismissal(event);`,
+      `${q}\t\tif (away === 'link') ${o.opener} = null;`,
+      `${q}\t\tif (away) ${closed};`,
+      `${q}\t}}`,
+      `${q}>${inner}</dialog>`
+    ].join('\n');
+  ctx.indent++;
+  const children = emitNodes(ctx, node.children);
+  ctx.indent--;
+  if (!ctx.instrument) return dialog(p, children ? `\n${children}\n${p}` : '');
+  ctx.usesEditing = true;
+  const name = overlayName(ctx, o);
+  const peek = `${p}\t<button type="button" class="so-overlay-peek" data-so-editor-only="" data-so-overlay-peek="" aria-controls={${id}} aria-expanded="false">{${js(`${o.mode === 'dialog' ? 'Dialog' : 'Drawer'}: ${name}`)}}</button>`;
+  const render = `\n${p}\t\t{@render ${o.snippet}()}\n${p}\t`;
+  return [
+    `${p}{#snippet ${o.snippet}()}`,
+    ...(children ? [children] : []),
+    `${p}{/snippet}`,
+    `${p}{#if so_editing}`,
+    peek,
+    `${p}\t<div id={${id}} class=${cls} data-so-overlay=${js(o.mode)}${ids}${emptyFrameAttr(ctx, node)}>${render}</div>`,
+    `${p}{:else}`,
+    dialog(`${p}\t`, render),
+    `${p}{/if}`
+  ].join('\n');
+}
+
+/** What a dialog or drawer is called when nothing else names it: the label of the state that opens it. */
+function overlayName(ctx: EmitCtx, o: OverlayGen): string {
+  return ctx.states!.get(o.state)!.schema.label.trim() || o.state;
+}
+
+/**
+ * A dialog's accessible name: its own name while it has one, else the heading it starts with (one that is always
+ * there) while it has words (a placement can leave a bound one empty), else the label of the state that opens it, so
+ * it is never left unnamed.
+ */
+function overlayLabelAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, o: OverlayGen): string {
+  let heading = labellingHeading(ctx, node);
+  // A heading left without words names nothing.
+  if (heading && !isBinding(heading.text) && !(Array.isArray(heading.text) ? richTextToPlain(toRichText(heading.text)) : String(heading.text ?? '')).trim()) heading = null;
+  const fallback = js(overlayName(ctx, o));
+  const own = node.ariaLabel;
+  if (own !== undefined && !isBinding(own) && String(own).trim()) return ` aria-label=${attrJs(String(own).trim())}`;
+  const has = (v: unknown) => {
+    useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+    return `has(${bindExpr(ctx, v)})`;
+  };
+  const value = isBinding(own) ? bindExpr(ctx, own) : null;
+  const named = value ? has(own) : null;
+  if (!heading) return ` aria-label={${named ? `${named} ? ${value} : ${fallback}` : fallback}}`;
+  const by = headingIdExpr(ctx, heading);
+  const worded = isBinding(heading.text) ? has(heading.text) : null;
+  if (!named && !worded) return ` aria-labelledby={${by}}`;
+  const label = named ? `${named} ? ${value} : ${worded ? `${worded} ? undefined : ${fallback}` : 'undefined'}` : `${worded} ? undefined : ${fallback}`;
+  return ` aria-label={${label}} aria-labelledby={${[named && `!${named}`, worded].filter(Boolean).join(' && ')} ? ${by} : undefined}`;
+}
+
+/**
+ * The script of a design's dialogs and drawers (see emitOverlay): each one's <dialog> and the button that last opened
+ * it, and an effect opening it as a modal while its state says so. Leaving the page closes them, without taking the
+ * focus back: a header or footer stays while the page changes. In the editor's variant one opens only while the page
+ * is previewed as visitors see it (the bridge marks <html> with `data-so-bridge="preview"`), never while it is edited
+ * or before the editor has said which.
+ */
+function overlayScript(ctx: EmitCtx): string {
+  const overlays = [...(ctx.widgets?.overlays.values() ?? [])];
+  if (!overlays.length) return '';
+  useImport(ctx, '{ overlayOpen }', `${RUNTIME_DIR}/util.js`);
+  ctx.imports.set('{ beforeNavigate }', '$app/navigation');
+  const lines: string[] = [];
+  if (ctx.instrument)
+    lines.push(
+      `\tlet so_previewing = $state(false);`,
+      `\t$effect(() => {`,
+      `\t\tconst html = globalThis.document.documentElement;`,
+      `\t\tconst sync = () => (so_previewing = html.getAttribute('data-so-bridge') === 'preview');`,
+      `\t\tsync();`,
+      `\t\tconst watch = new globalThis.MutationObserver(sync);`,
+      `\t\twatch.observe(html, { attributes: true, attributeFilter: ['data-so-bridge'] });`,
+      `\t\treturn () => watch.disconnect();`,
+      `\t});`
+    );
+  for (const o of overlays) {
+    const open = stateIs(ctx, o.state, o.shows);
+    lines.push(`\tlet ${o.dialog} = $state();`, `\tlet ${o.opener} = null;`, `\t$effect(() => overlayOpen(${o.dialog}, ${ctx.instrument ? `so_previewing && ${open}` : open}));`);
+  }
+  lines.push(`\tbeforeNavigate(() => {`);
+  for (const o of overlays) lines.push(`\t\t${o.opener} = null;`, `\t\t${ctx.states!.get(o.state)!.local} = ${js(!o.shows)};`);
+  lines.push(`\t});`);
+  return lines.join('\n') + '\n';
 }
 
 /**
@@ -2927,13 +3152,14 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   if (treeRowNeeds(state, def)) propDecls.push(`\t\tso_pages = undefined,`);
   if (opts.instrument) propDecls.push(`\t\t__so = '',`, `\t\t__so_at = '',`);
   propDecls.push(`\t\tclass: className = ''`);
+  const overlays = overlayScript(ctx);
   const imports = renderImports(ctx.imports);
   const uid = ctx.usesUid ? `\tconst uid = $props.id();\n` : '';
   // Each placement holds its own UI state, starting where the design says.
   const states = [...ctx.states!.values()].map((s) => `\tlet ${s.local} = $state(${js(s.schema.initial)});\n`).join('');
   return (
     HEADER_NOTE(`siteorigin/components/${def.id}/component.json`) +
-    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}${states}${filters}${editingState(ctx)}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
+    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}${states}${filters}${editingState(ctx)}${overlays}</script>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n`
   );
 }
 
