@@ -227,6 +227,26 @@ await row('Winter hours').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
 await win.screenshot({ path: join(SHOTS, 'seo-view.png') });
 
+step('a result without a title, a description or a public URL says so (#704)');
+const before = (await snapshot()).state;
+const noteShown = view.locator('.serp-note');
+await apply(
+  [
+    { type: 'site.update', description: '' },
+    { type: 'page.update', pageId: about.id, seoTitle: '   ', description: '' }
+  ],
+  'No search text'
+);
+await panel.locator('.seo-open', { hasText: 'About' }).first().click();
+const bare = view.locator('.serp');
+await eventually(async () => assert.equal(await bare.locator('.serp-title').innerText(), 'No title: results show the address instead.'));
+assert.equal(await bare.locator('.serp-desc').innerText(), 'No description: search engines pick words from the page.');
+assert.equal(await bare.locator('.serp-url').innerText(), ['No public URL', ...about.route.split('/').filter(Boolean)].join(' › '));
+assert.match(await noteShown.innerText(), /no public URL yet/);
+assert.equal(await noteShown.getByRole('button', { name: 'Open Site details' }).count(), 1);
+assert.equal(await bare.locator('.serp-icon svg').count(), 1, 'a site without a favicon shows a globe');
+await apply([{ type: 'site.update', description: before.site.description ?? '' }], 'The site’s description back');
+
 step('the chosen document’s previews at the view’s width: each surface for a page and a post, from the surface selector (#701)');
 await apply(
   [
@@ -236,31 +256,125 @@ await apply(
   ],
   'Search settings'
 );
+const iconPath = join(WORK, 'siteicon.png');
+writeFileSync(
+  iconPath,
+  Buffer.from(
+    await win.evaluate(() => {
+      const c = document.createElement('canvas');
+      c.width = c.height = 64;
+      const g = c.getContext('2d');
+      g.fillStyle = '#b4532a';
+      g.fillRect(0, 0, 64, 64);
+      return c.toDataURL('image/png').split(',')[1];
+    }),
+    'base64'
+  )
+);
+const icon = await win.evaluate((p) => window.builder.project.importAssets([p]), iconPath);
+assert.equal(icon.ok, true, `the icon imports: ${icon.message}`);
+await apply([{ type: 'site.update', favicon: icon.assetIds[0] }], 'A favicon');
 const surface = (name) => view.getByRole('tab', { name, exact: true });
 const surfaceShown = async (name) => (await surface(name).getAttribute('aria-selected')) === 'true';
 const result = (device) => view.locator(`.serp-${device}`);
 const card = view.locator('.share-card');
 const graphShown = view.getByTestId('seo-graph');
-/** Nothing in the view scrolls sideways: not the view, not the computer's result. */
+const screen = (name) => view.getByRole('radio', { name, exact: true });
+const darkResults = view.getByRole('switch', { name: 'Dark results' });
+const resultsPage = view.locator('.serp-page');
+/** The results page as drawn: its colours, its real and shown widths, and how its title and description are set. */
+const drawn = () =>
+  view.evaluate((el) => {
+    const page = el.querySelector('.serp-page');
+    const result = page.querySelector('.serp');
+    const fit = el.querySelector('.serp-fit').getBoundingClientRect();
+    const slot = el.querySelector('.serp-slot').getBoundingClientRect();
+    const box = el.querySelector('.serp-scaled').getBoundingClientRect();
+    return {
+      theme: page.dataset.serpTheme,
+      background: getComputedStyle(page).backgroundColor,
+      width: page.offsetWidth,
+      column: result.offsetWidth,
+      scale: Number(el.querySelector('.serp-scaled').dataset.scale),
+      /* The scale the room there is now asks for. */
+      roomScale: Math.min(1, fit.width / page.offsetWidth),
+      fits: box.left >= fit.left - 0.5 && box.right <= fit.right + 0.5 && box.top >= fit.top - 0.5 && box.bottom <= fit.bottom + 0.5,
+      bezel: getComputedStyle(page).borderTopWidth,
+      search: page.querySelector('.serp-search')?.innerText.trim(),
+      /* The room the page takes is the room it is drawn in: nothing under it is covered or left far below. */
+      slotHolds: Math.abs(slot.height - box.height) <= 1 && Math.abs(slot.width - box.width) <= 1,
+      titleSize: getComputedStyle(result.querySelector('.serp-title')).fontSize,
+      descSize: getComputedStyle(result.querySelector('.serp-desc')).fontSize,
+      lines: [...result.querySelectorAll('.serp-title-line')].map((l) => ({ text: l.textContent, height: l.offsetHeight, fits: l.querySelector('.serp-title-text').getBoundingClientRect().right <= l.getBoundingClientRect().right + 0.5 })),
+      order: [...page.querySelectorAll('.serp-result')].map((r) => (r.classList.contains('serp-filler') ? 'filler' : 'document')),
+      fillers: [...page.querySelectorAll('.serp-filler .serp-url')].map((u) => u.textContent),
+      hiddenExtras: [...page.querySelectorAll('.serp-filler, .serp-search')].every((n) => n.getAttribute('aria-hidden') === 'true')
+    };
+  });
+const LIGHT = 'rgb(255, 255, 255)';
+const DARK = 'rgb(30, 31, 34)';
+/** Nothing in the view scrolls sideways, and the results page shows whole. */
 const noSidewaysScroll = async (where) => {
-  const widths = await view.evaluate((el) => [el.querySelector('.seo-scroll'), el.querySelector('.serp-frame-desktop')].map((n) => (n ? { scroll: n.scrollWidth, client: n.clientWidth } : null)));
-  for (const w of widths) assert.ok(w && w.scroll <= w.client, `${where}: nothing scrolls sideways (${JSON.stringify(widths)})`);
+  const w = await view.evaluate((el) => ({ scroll: el.querySelector('.seo-scroll').scrollWidth, client: el.querySelector('.seo-scroll').clientWidth }));
+  assert.ok(w.scroll <= w.client, `${where}: nothing scrolls sideways (${JSON.stringify(w)})`);
+  const d = await drawn();
+  assert.ok(d.fits && d.slotHolds, `${where}: the results page shows whole, in room of its own size (${JSON.stringify(d)})`);
+  assert.ok(Math.abs(d.scale - d.roomScale) < 0.002, `${where}: scaled by what the room asks for (${JSON.stringify(d)})`);
+};
+/** Both screens in both of the results page's themes, in the dark editor. */
+const bothScreensBothThemes = async (d) => {
+  for (const [name, device, width, column] of [
+    ['Computer', 'desktop', 640, 600],
+    ['Phone', 'mobile', 376, 320]
+  ]) {
+    await screen(name).click();
+    await eventually(async () => assert.equal(await result(device).locator('.serp-title').innerText(), d.seoTitle, `${d.title}’s result on ${name}`));
+    assert.equal(await view.locator('.serp').count(), 1, 'only the chosen screen’s results show');
+    for (const dark of [false, true]) {
+      if ((await darkResults.getAttribute('aria-checked')) !== String(dark)) await darkResults.click();
+      const where = `${d.title} on ${name}, ${dark ? 'dark' : 'light'}`;
+      await eventually(async () => assert.equal(await resultsPage.getAttribute('data-serp-theme'), dark ? 'dark' : 'light', where));
+      assert.equal(await win.evaluate(() => document.documentElement.dataset.appearance), 'dark', `${where}: the editor stays dark`);
+      await eventually(() => noSidewaysScroll(where));
+      const shown = await drawn();
+      assert.equal(shown.background, dark ? DARK : LIGHT, `${where}: the results page has its own colours`);
+      assert.deepEqual({ width: shown.width, column: shown.column, scale: shown.scale }, { width, column, scale: 1 }, `${where}: at its real size`);
+      assert.equal(shown.bezel, device === 'mobile' ? '8px' : '0px', `${where}: a phone’s results sit in a phone’s frame`);
+      assert.equal(shown.search, 'sample search', `${where}: under a sample search`);
+      assert.equal(await result(device).locator('.serp-title').innerText(), d.seoTitle, `${where}: the title`);
+      assert.equal(shown.fillers.length, 3, where);
+      assert.deepEqual([shown.titleSize, shown.descSize], ['20px', '14px'], where);
+      assert.deepEqual(shown.order, ['filler', 'document', 'filler', 'filler'], `${where}: the result sits among others`);
+      assert.ok(shown.fillers.every((u) => /^example\.(com|org|net)( › |$)/.test(u)) && shown.hiddenExtras, `${where}: placeholders only (${shown.fillers})`);
+      assert.ok((await result(device).locator('.serp-desc').innerText()).includes(d.description), `${where}: the description`);
+      assert.equal(await result(device).locator('.serp-url').innerText(), d.trail, `${where}: the address`);
+      assert.equal(await result(device).locator('.serp-site-name').innerText(), 'Riverside Studio', `${where}: the site’s name`);
+      await eventually(async () => assert.match((await result(device).locator('.serp-icon img').getAttribute('src')) ?? '', /siteicon/, `${where}: the site’s favicon`));
+      assert.equal(await result(device).locator('.serp-date').count(), d.dated ? 1 : 0, `${where}: the date`);
+      if (d.dated) assert.match(await result(device).locator('.serp-desc').innerText(), /^Mar 2, 2027 — Throw, /, `${where}: the post’s date`);
+      await win.screenshot({ path: join(SHOTS, `seo-view-${d.dated ? 'post' : 'page'}-${device}-${dark ? 'dark' : 'light'}.png`) });
+    }
+  }
+  await darkResults.click();
+  await screen('Computer').click();
 };
 const documents = [
   { title: 'About', seoTitle: 'About the studio · Riverside', description: 'A pottery studio by the river', url: `https://riverside.example${about.route}`, trail: `riverside.example › ${about.route.split('/').filter(Boolean).join(' › ')}` },
-  { title: 'Spring open studio', seoTitle: 'Spring open studio at Riverside', description: 'Throw, glaze and fire with us', url: 'https://riverside.example/blog/spring-open-studio/', trail: 'riverside.example › blog › spring-open-studio' }
+  { title: 'Spring open studio', dated: true, seoTitle: 'Spring open studio at Riverside', description: 'Throw, glaze and fire with us', url: 'https://riverside.example/blog/spring-open-studio/', trail: 'riverside.example › blog › spring-open-studio' }
 ];
+// The editor is dark from here on; the results page stays light until its own dark toggle is used.
+await win.evaluate(() => window.builder.app.setSettings({ appearance: 'dark' }));
+await eventually(async () => assert.equal(await win.evaluate(() => document.documentElement.dataset.appearance), 'dark'));
 for (const d of documents) {
   await row(d.title).click();
   await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), d.title));
   // Each document opens on its search result, whatever surface the one before was left on.
   await eventually(async () => assert.equal(await surfaceShown('Search result'), true, `${d.title} opens on its search result`));
   assert.equal(await graphShown.count(), 0, 'the structured data is not worked out while another surface shows');
-  await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), d.seoTitle, `${d.title}’s result on a computer`));
-  assert.equal(await result('mobile').locator('.serp-title').innerText(), d.seoTitle, `${d.title}’s result on a phone`);
-  assert.ok((await result('desktop').locator('.serp-desc').innerText()).includes(d.description), `${d.title}’s description`);
-  assert.equal(await result('desktop').locator('.serp-url').innerText(), d.trail, `${d.title}’s address`);
-  await noSidewaysScroll(`${d.title}’s search result`);
+  await eventually(async () => assert.equal(await screen('Computer').getAttribute('aria-checked'), 'true', 'a computer’s results until a phone’s are chosen'));
+  assert.equal(await darkResults.getAttribute('aria-checked'), 'false', 'light in the dark editor until the toggle is used');
+  assert.equal((await drawn()).background, LIGHT);
+  await bothScreensBothThemes(d);
   await surface('Link preview').click();
   await eventually(async () => assert.equal(await card.locator('.share-card-host').innerText(), 'riverside.example', `${d.title}’s link preview`));
   assert.ok((await card.locator('.share-card-desc').innerText()).includes(d.description), `${d.title}’s card carries its description`);
@@ -303,6 +417,65 @@ await eventually(async () => assert.equal(await win.evaluate(() => window.innerW
 assert.equal(await win.locator('#editor-dock').isVisible(), true, 'the right panel is open');
 await eventually(() => noSidewaysScroll('a 1280px window'));
 await win.screenshot({ path: join(SHOTS, 'seo-view-1280.png') });
+// A title too long for either screen is cut where it was measured: one line on a computer, two on a phone, each ending
+// where the browser can set it, with the "…" and no wrapping of its own.
+const longTitle = 'Hand-thrown pottery classes, kiln hire and open studio weekends beside the river for beginners and regulars alike';
+await apply([{ type: 'page.update', pageId: about.id, seoTitle: longTitle }], 'A long title');
+for (const [name, count, column] of [
+  ['Computer', 1, 600],
+  ['Phone', 2, 320]
+]) {
+  await screen(name).click();
+  await eventually(async () => {
+    const shown = await drawn();
+    assert.equal(shown.column, column);
+    assert.equal(shown.lines.length, count, `${name}: ${JSON.stringify(shown.lines)}`);
+    assert.match(shown.lines.at(-1).text, /…$/, `${name}: cut with an ellipsis`);
+    assert.ok(shown.lines.every((l) => l.height === 26 && l.fits), `${name}: each line is one line, inside the column (${JSON.stringify(shown.lines)})`);
+  });
+}
+await screen('Computer').click();
+// A window too narrow for a computer's results at their real size scales them down rather than scrolling them.
+await win.setViewportSize({ width: 1060, height: 800 });
+await eventually(async () => {
+  assert.ok((await drawn()).scale < 1, 'the page is scaled down');
+  assert.equal((await drawn()).width, 640, 'and still laid out at its real width');
+  await noSidewaysScroll('a narrow window');
+});
+await win.screenshot({ path: join(SHOTS, 'seo-view-narrow.png') });
+// A line the browser sets wider than it was measured (here, letters pushed apart) is narrowed to its column: still one
+// line each, and let go again once it fits. (Pressing the dark toggle draws the page again.)
+const squeezed = () => view.locator('.serp .serp-title-text').evaluateAll((els) => els.map((el) => ({ over: el.offsetWidth > el.parentElement.clientWidth, squeeze: el.style.transform })));
+const spread = await win.addStyleTag({ content: '.serp .serp-title-text { letter-spacing: 3px; }' });
+await darkResults.click();
+await eventually(async () => {
+  const lines = await squeezed();
+  assert.ok(lines.some((l) => l.over) && lines.every((l) => !l.over || /^scaleX\(0\./.test(l.squeeze)), `the wide line is narrowed: ${JSON.stringify(lines)}`);
+  assert.ok((await drawn()).lines.every((l) => l.height === 26 && l.fits), 'inside the column, on its own line');
+});
+await spread.evaluate((el) => el.remove());
+await darkResults.click();
+await eventually(async () => assert.ok((await squeezed()).every((l) => !l.over && !l.squeeze), 'a line that fits is left as set'));
+// A right-to-left title reads right to left, so its "…" falls at its end; the page around it does not turn.
+await apply([{ type: 'page.update', pageId: about.id, seoTitle: 'קורסי קדרות ליד הנהר: סדנאות סוף שבוע, השכרת תנור ושיעורים למתחילים ולוותיקים כאחד לאורך כל השנה' }], 'A Hebrew title');
+const directions = () => view.locator('.serp').evaluate((el) => [el, el.querySelector('.serp-title'), el.querySelector('.serp-url')].map((n) => getComputedStyle(n).direction));
+await eventually(async () => assert.deepEqual(await directions(), ['ltr', 'rtl', 'ltr']));
+await apply([{ type: 'page.update', pageId: about.id, seoTitle: documents[0].seoTitle }], 'The title back');
+// A dated post's title and description are cut exactly where the shared measurements cut them, on each screen.
+const longDescription = 'Throw, glaze and fire with us at the spring open studio, with free taster sessions all weekend, a kiln tour, family clay tables, and tea on the riverside deck.';
+await apply([{ type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', seoTitle: longTitle, description: longDescription }], 'Long post text');
+await row('Spring open studio').click();
+for (const [name, lines, description] of [
+  ['Computer', ['Hand-thrown pottery classes, kiln hire and open studio weekends…'], 'Throw, glaze and fire with us at the spring open studio, with free taster sessions all weekend, a kiln tour, family clay tables, and tea…'],
+  ['Phone', ['Hand-thrown pottery classes, kiln', 'hire and open studio weekends…'], 'Throw, glaze and fire with us at the spring open studio, with free taster sessions all…']
+]) {
+  await screen(name).click();
+  await eventually(async () => assert.deepEqual((await drawn()).lines.map((l) => l.text), lines, `${name}: the title’s lines`));
+  assert.equal(await view.locator('.serp .serp-desc').innerText(), `Mar 2, 2027 — ${description}`, `${name}: the description`);
+}
+await screen('Computer').click();
+await apply([{ type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', seoTitle: documents[1].seoTitle, description: 'Throw, glaze and fire with us at the spring open studio, with free taster sessions all weekend.' }], 'The post’s text back');
+await row('About').click();
 await win.setViewportSize({ width: 1440, height: 900 });
 
 step('a post’s search settings edited in the view, with no post open in the writer (#703)');
@@ -579,9 +752,16 @@ await eventually(async () => assert.equal(await holder.isVisible(), true, 'the c
 // The pill sits where the view is drawn: what is painted there is the view, never the pill (the canvas is inert, so
 // it is told apart by its own paint, not by hit-testing).
 const pillBox = await win.locator('.preview-pill').boundingBox();
-await win.locator('.seo-view-holder').evaluate((el) => (el.style.background = 'rgb(1, 2, 3)'));
+// What the view holds (a results page, white in its own colours) is hidden for the look, so its own paint shows.
+await win.locator('.seo-view-holder').evaluate((el) => {
+  el.style.background = 'rgb(1, 2, 3)';
+  el.firstElementChild.style.visibility = 'hidden';
+});
 const shot = await win.screenshot({ clip: { x: pillBox.x + pillBox.width / 2 - 1, y: pillBox.y + pillBox.height / 2 - 1, width: 2, height: 2 } });
-await win.locator('.seo-view-holder').evaluate((el) => (el.style.background = ''));
+await win.locator('.seo-view-holder').evaluate((el) => {
+  el.style.background = '';
+  el.firstElementChild.style.visibility = '';
+});
 const painted = await win.evaluate(async (b64) => {
   const img = new Image();
   img.src = `data:image/png;base64,${b64}`;
@@ -612,6 +792,42 @@ await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.equal(await panel.locator('.seo-open', { hasText: 'Winter hours' }).count(), 1, 'Undo brings the post back to the list'));
 assert.equal(await view.locator('.seo-title').innerText(), 'SEO', 'without choosing it again on its own');
 await eventually(async () => assert.equal(await ovRow('entry:posts:en_winter').count(), 1, 'and the overview lists it again'));
+
+step('the screen and the dark toggle are remembered across a reload (#704)');
+await panel.locator('.seo-open', { hasText: 'About' }).first().click();
+await screen('Phone').click();
+await darkResults.click();
+await eventually(async () => assert.equal(await resultsPage.getAttribute('data-serp-theme'), 'dark'));
+await win.reload();
+await win.waitForSelector('.editor');
+// The view may come back with the editor: pressing its rail entry then would put it away.
+if ((await rail('seo').getAttribute('aria-pressed')) !== 'true') await rail('seo').click();
+await eventually(async () => assert.equal(await holder.isVisible(), true));
+await panel.locator('.seo-open', { hasText: 'About' }).first().click();
+await eventually(async () => assert.equal(await screen('Phone').getAttribute('aria-checked'), 'true', 'the phone is still chosen'));
+assert.equal(await darkResults.getAttribute('aria-checked'), 'true', 'and the dark results');
+assert.equal((await drawn()).background, DARK);
+// The other way about, so neither choice is one the editor always comes back with; and in a light editor the dark
+// results page leaves the editor light.
+await win.evaluate(() => window.builder.app.setSettings({ appearance: 'light' }));
+await eventually(async () => assert.equal(await win.evaluate(() => document.documentElement.dataset.appearance), 'light'));
+const chrome = () => view.evaluate((el) => getComputedStyle(el.closest('.seo-view-holder')).backgroundColor);
+const lightChrome = await chrome();
+await darkResults.click();
+await eventually(async () => assert.equal((await drawn()).background, LIGHT));
+await darkResults.click();
+await eventually(async () => assert.equal((await drawn()).background, DARK));
+assert.equal(await chrome(), lightChrome, 'the toggle switches the preview alone');
+assert.equal(await win.evaluate(() => document.documentElement.dataset.appearance), 'light');
+await darkResults.click();
+await screen('Computer').click();
+await win.reload();
+await win.waitForSelector('.editor');
+if ((await rail('seo').getAttribute('aria-pressed')) !== 'true') await rail('seo').click();
+await panel.locator('.seo-open', { hasText: 'About' }).first().click();
+await eventually(async () => assert.equal(await screen('Computer').getAttribute('aria-checked'), 'true', 'the computer is chosen again'));
+assert.equal(await darkResults.getAttribute('aria-checked'), 'false', 'and the light results');
+assert.equal((await drawn()).background, LIGHT);
 await noWindowShown('the end of the run');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');

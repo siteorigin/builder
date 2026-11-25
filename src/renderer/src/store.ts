@@ -6,6 +6,7 @@ import type { SampleContactKind } from '@shared/sample-contact';
 import type { SeoSubject } from '@shared/seo';
 import { seoSubjectKey } from './lib/seo-view';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
+import { parseSerpView, SERP_VIEW_KEY, type SerpView } from './lib/serp-page';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, refusedDraftCount, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
@@ -267,6 +268,8 @@ export interface State {
   aiOutcome: AiOutcome | null;
   /** How library images are listed, in Assets and in every image picker (see setAssetSort). */
   assetSort: AssetSort;
+  /** How search results are previewed, wherever they show (see setSerpView). */
+  serpView: SerpView;
   /** What Copy style took, for Paste style in the same opening of the project (`opening`). Never saved. */
   styleCopy: (StyleCopy & { opening: string }) | null;
   /** The labels a rename left behind, offered until the author updates or keeps them. Never saved. */
@@ -284,6 +287,15 @@ function savedAssetSort(): AssetSort {
     return isAssetSort(v) ? v : 'newest';
   } catch {
     return 'newest';
+  }
+}
+
+/** Which results page is previewed (a computer's or a phone's, light or dark) is remembered the same way. */
+function savedSerpView(): SerpView {
+  try {
+    return parseSerpView(globalThis.localStorage?.getItem(SERP_VIEW_KEY));
+  } catch {
+    return parseSerpView(null);
   }
 }
 
@@ -381,11 +393,23 @@ export const useStore = create<State>((set) => ({
   heldEdits: [],
   aiOutcome: null,
   assetSort: savedAssetSort(),
+  serpView: savedSerpView(),
   styleCopy: null,
   renameOffer: null,
   copyNote: null,
   setState: (p) => set(slotFollows(oneSelection(p)))
 }));
+
+/** Changes how search results are previewed everywhere at once, and remembers it where storage allows. */
+export function setSerpView(change: Partial<SerpView>) {
+  const serpView = { ...useStore.getState().serpView, ...change };
+  useStore.setState({ serpView });
+  try {
+    globalThis.localStorage?.setItem(SERP_VIEW_KEY, JSON.stringify(serpView));
+  } catch {
+    // Not remembered: the choice still holds until the editor closes.
+  }
+}
 
 /** Lists images in this order everywhere at once, and remembers it where storage allows. */
 export function setAssetSort(sort: AssetSort) {

@@ -17,9 +17,8 @@
   .seo-doc { max-width: 720px; margin: 24px auto 64px; padding: 0 24px; font-size: 13px; color: var(--text-2); display: flex; flex-direction: column; gap: 10px; }
   .seo-doc-kind { margin: 0; font-size: 12px; color: var(--text-3); }
   .seo-doc .seo-note { margin: 0; }
-  /* The chosen document's previews (#701), at the view's width: a computer's result, laid out at the width it is
-     measured against, fits whole at normal window widths with the side panels at their usual sizes; a view narrower than
-     that scrolls it sideways, as the Inspector does, rather than cutting its line where search results wouldn't. */
+  /* The chosen document's previews (#701), at the view's width: a results page shows at its real size where there is
+     room, and is scaled to fit a narrower view. */
   .seo-preview-wide { gap: 12px; }
   .seo-preview-wide .code-view.seo-graph { max-height: 60vh; }
   /* The chosen post's Search & sharing settings (#703), under its previews: the title and description, with their
