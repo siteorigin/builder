@@ -324,7 +324,7 @@ describe('the SEO view in the editor', () => {
 
 describe('a page’s search settings in the SEO view (#702)', () => {
   it('save with the operation and history label the Inspector saves them with', async () => {
-    const { pageUpdate } = (await load('../../src/renderer/src/lib/page-settings')) as typeof import('../../src/renderer/src/lib/page-settings');
+    const { pageUpdate } = (await load('../../src/renderer/src/lib/page-settings')) as { pageUpdate: (page: { id: string; title: string }, patch: Record<string, unknown>, label?: string) => { operations: EditOperation[]; label: string } };
     const about = { id: 'pg_about', title: 'About' };
     expect(pageUpdate(about, { seoTitle: 'About us' }, 'Change browser title')).toEqual({ operations: [{ type: 'page.update', pageId: 'pg_about', seoTitle: 'About us' }], label: 'Change browser title (About)' });
     // The visibility switches say only that the page's settings changed, as they always have.
