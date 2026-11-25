@@ -16,7 +16,7 @@ import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
-import { codeNeeds } from '@engine/definitions';
+import { codeNeeds, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
@@ -2024,7 +2024,7 @@ export class ProjectSession extends EventEmitter {
             strict: opts.source === 'ai' || installed || importing,
             filename: def.sourcePath,
             // A project's own code is held to its contract: the slots it declares must render safely when left empty.
-            ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts } } : {}),
+            ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def) } } : {}),
             resolve: files ? (p: string) => (files.has(p) ? resolve(p) : undefined) : resolve,
             ...(files && built
               ? { author: 'Code in a component package', generated: (p: string) => files.has(p), modules: (p: string) => files.has(p) || (p.startsWith('src/lib/siteorigin/runtime/') && built!.has(p)) }

@@ -463,7 +463,7 @@ function registerIpc() {
   handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
   handle('project:validateSource', async (source: string) => {
     // The slots and parts the code declares by itself, as saving it declares them, so a slot it shows is checked.
-    const contract: ComponentDefinition = { kind: 'code', parts: { root: { nodeId: 'root', label: 'Root' } }, source: String(source) } as ComponentDefinition;
+    const contract: Pick<ComponentDefinition, 'kind' | 'source' | 'parts' | 'slots'> = { kind: 'code', parts: { root: { nodeId: 'root', label: 'Root' } }, source: String(source) };
     declareCodeContract(contract);
     const problems = await checkSvelteSource(String(source), { contract });
     const errors = problems.filter((p) => p.severity === 'error');

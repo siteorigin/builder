@@ -989,7 +989,22 @@ function generalFailure(read: ExplainedBuild): { message: string; warnings: stri
 
 
 /** Markup and code only the editor's preview may carry. */
-const EDITOR_MARKUP = /data-so-(ctx|node|part)|siteorigin-bridge/;
+const EDITOR_MARKUP = /data-so-(ctx|node)|siteorigin-bridge/;
+
+/** A start tag as Svelte writes one, in a page or in a script's template, with its attributes. */
+const START_TAG = /<[a-zA-Z][^\s/>]*((?:\s+[^\s"'=<>/]+(?:=(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*\/?>/g;
+const TAG_ATTRIBUTE = /\s([^\s"'=<>/]+)(?:=(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?/g;
+
+/**
+ * Whether built HTML, or a built script's templates, give an element a code component's part marker (data-so-part),
+ * which the website's build takes out of the code (see stripPartMarkers). Read as attributes of start tags, so words
+ * that only mention the marker (a title, a page's text) are the site's own.
+ */
+export function carriesPartMarker(text: string): boolean {
+  if (!text.includes('data-so-part')) return false;
+  for (const tag of text.matchAll(START_TAG)) for (const a of tag[1].matchAll(TAG_ATTRIBUTE)) if (a[1].toLowerCase() === 'data-so-part') return true;
+  return false;
+}
 
 /** Start tags as Svelte writes them, and whole scripts and styles; see NOT_FOUND_JS, which makes these addresses absolute. */
 const BUILT_PARTS = /<script(?=[\s/>])[^>]*>[\s\S]*?<\/script\s*>|<style(?=[\s/>])[^>]*>[\s\S]*?<\/style\s*>|<[a-zA-Z][^\s/>]*(?:\s+[^\s"'=<>/]+(?:="[^"]*")?)*\s*\/?>/gi;
@@ -1061,7 +1076,7 @@ export function pageRelativeAddresses(html: string): string[] {
 /** Why the built not-found page cannot be exported, or null. `html` is null when the build did not write it as a file. */
 export function notFoundPageProblem(html: string | null): string | null {
   if (html === null) return `The build is missing ${NOT_FOUND_FILE}, the page shown at addresses the site does not have.`;
-  if (EDITOR_MARKUP.test(html)) return `Editor-only markup was found in ${NOT_FOUND_FILE}. Export aborted.`;
+  if (EDITOR_MARKUP.test(html) || carriesPartMarker(html)) return `Editor-only markup was found in ${NOT_FOUND_FILE}. Export aborted.`;
   return null;
 }
 

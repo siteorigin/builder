@@ -63,18 +63,29 @@ function innermost(target) {
   return null;
 }
 /**
- * The code placement a part its author marked (`data-so-part`) belongs to: the nearest of the editor's elements
- * around it, when that is a code component's. A marker inside content placed in a slot (an element of the page's
- * own), or in no placement at all, names no part.
+ * The code placement a marked part belongs to: the nearest of the editor's elements around it, when that is a code
+ * component's. A mark inside content placed in a slot (an element of the page's own), or in no placement at all,
+ * names no part.
  */
 function partOwner(el) {
   const at = innermost(el.parentElement);
   return at && at.hasAttribute('data-so-code') ? at : null;
 }
+/** The class the editor gives a code placement's declared part through the hook its styles take (see the generator). */
+const PART_CLASS = 'so-part--';
+/**
+ * The part a code component's element is: the one its author marked with `data-so-part`, or the one whose class the
+ * placement gave it (`so-part--total`). Only attributes are read.
+ */
+function partIdOf(el) {
+  if (el.hasAttribute('data-so-part')) return el.getAttribute('data-so-part') || '';
+  for (const c of el.classList || []) if (c.startsWith(PART_CLASS)) return c.slice(PART_CLASS.length);
+  return '';
+}
 /** A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. */
 function partDesc(el) {
-  if (!el.hasAttribute('data-so-part') || el.hasAttribute('data-so-node')) return null;
-  const part = el.getAttribute('data-so-part') || '';
+  if (el.hasAttribute('data-so-node')) return null;
+  const part = partIdOf(el);
   const owner = part ? partOwner(el) : null;
   return owner ? { ...descOf(owner), part } : null;
 }
@@ -120,8 +131,8 @@ function findAll(desc) {
   if (typeof desc.part !== 'string' || !desc.part) return els;
   // A marked part of a code placement: every element of that placement's own markup carrying the marker (the
   // author's code can show one more than once), never one in another placement or in content placed in a slot.
-  const marked = `[data-so-part="${cssEscape(desc.part)}"]`;
-  return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partOwner(p) === el));
+  const marked = `[data-so-part="${cssEscape(desc.part)}"], .${cssEscape(PART_CLASS + desc.part)}`;
+  return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(marked)].filter((p) => !p.hasAttribute('data-so-node') && partIdOf(p) === desc.part && partOwner(p) === el));
 }
 /** The box an element is laid out as (with display: contents, its first child that shows), and whether its container
  *  lays its items out by CSS order: only a flex or grid container does. */

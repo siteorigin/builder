@@ -23,7 +23,7 @@ const FRAME = `<!doctype html><html><head><style>body{margin:0;font:16px/1.4 san
   </section>
 </div>
 <div style="display: contents" data-so-ctx="page:p" data-so-node="calc2" data-so-code="true">
-  <section><output id="t2" data-so-part="total">$20</output></section>
+  <section id="s2"><output id="t2" data-so-part="total">$20</output><p id="n2" class="note so-part--note">Named by its class</p></section>
 </div>
 <script type="module" src="/bridge.js"></script></body></html>`;
 
@@ -64,10 +64,17 @@ describe.skipIf(!browserInstalled)('marked parts of a code component in the prev
       { ctx: 'page:p', node: 'calc1', items: '', part: 'total', tag: 'output' },
       { ctx: 'page:p', node: 'calc1', items: '', tag: 'div', code: true }
     ]);
+    // A marker inside the content placed in the slot is that content's: the click names the Button, never the
+    // calculator's "total".
     await page.evaluate(`window.seen = []`);
-    const b1 = await boxOf('b1');
-    await page.mouse.click(b1.x + 3, b1.y + 3);
+    const stray = await boxOf('stray');
+    await page.mouse.click(stray.x + 2, stray.y + 2);
     await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.map((d) => d.part ?? d.node)).toEqual(['btn', 'extras', 'calc1']);
+    // A part named by the class its placement gave it, as the preview gives a declared part.
+    await page.evaluate(`window.seen = []`);
+    const n2 = await boxOf('n2');
+    await page.mouse.click(n2.x + 3, n2.y + 3);
+    await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.[0]).toEqual({ ctx: 'page:p', node: 'calc2', items: '', part: 'note', tag: 'p' });
   });
 
   it('outlines the selected part of one placement only, and moving between parts is news to the editor', async () => {
@@ -77,10 +84,16 @@ describe.skipIf(!browserInstalled)('marked parts of a code component in the prev
     const t1 = await boxOf('t1');
     // Only the first placement's own "total": not the second placement's, nor the marker inside its slot's content.
     await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([t1]);
+    await post('track', { selected: { ctx: 'page:p', node: 'calc2', items: '', part: 'note' } });
+    const n2 = await boxOf('n2');
+    await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([n2]);
+    // From one part to the space of the same placement around it, then to its other part: each move is news.
     await page.evaluate(`window.seen = []`);
-    await page.mouse.move(t1.x + 5, t1.y + 5);
     const t2 = await boxOf('t2');
+    const s2 = await boxOf('s2');
     await page.mouse.move(t2.x + 5, t2.y + 5);
-    await expect.poll(async () => (await messages()).filter((m) => m.type === 'hover').map((m) => m.payload.chain?.[0]?.node)).toEqual(['calc1', 'calc2']);
+    await page.mouse.move(s2.x + s2.width - 5, s2.y + s2.height - 3);
+    await page.mouse.move(n2.x + 5, n2.y + 5);
+    await expect.poll(async () => (await messages()).filter((m) => m.type === 'hover').map((m) => m.payload.chain?.[0]?.part ?? m.payload.chain?.[0]?.node)).toEqual(['total', 'calc2', 'note']);
   });
 });

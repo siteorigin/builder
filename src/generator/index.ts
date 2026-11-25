@@ -2210,19 +2210,12 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
   return `(min-width: 1024px) ${desktop}, (min-width: 768px) ${tablet}, ${phone}`;
 }
 
-/**
- * A design written as code (generateStandaloneComponent) marks each declared part but its root with `data-so-part`,
- * so the editor still finds the part on the canvas once the copy is code. The website's build leaves the marker out.
- */
-function partMarkAttr(ctx: EmitCtx, nodeId: string): string {
-  if (!ctx.standalone || !ctx.def) return '';
-  const pid = Object.keys(ctx.def.parts).find((id) => id !== 'root' && ctx.def!.parts[id].nodeId === nodeId);
-  return pid && /^[A-Za-z][\w-]{0,80}$/.test(pid) ? ` data-so-part="${pid}"` : '';
-}
+/** Part IDs the editor's preview can name in a class (see the part marks given to a code placement). */
+const PART_CLASS_ID = /^[A-Za-z][A-Za-z0-9_-]{0,80}$/;
 
 function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
   const p = pad(ctx);
-  const ids = appearAttrs(ctx, node) + idAttrs(ctx, node.id) + partMarkAttr(ctx, node.id);
+  const ids = appearAttrs(ctx, node) + idAttrs(ctx, node.id);
   switch (node.kind) {
     case 'element': {
       const card = rendersAsCard(ctx, node);
@@ -2470,11 +2463,15 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   }
   // Instance overrides at page level are applied through generated override classes. Code components get the
   // same map, and their root override also through `class`, which every code component places on its root.
-  if (!ctx.def && node.overrides && Object.keys(node.overrides).length) {
+  // The editor's preview finds each declared part of a code placement by a class of its own (`so-part--total`), given
+  // through the same hook its styles take, so a part is picked on the canvas without the code carrying any marker.
+  const partMarks = ctx.instrument && !ctx.def && def.kind === 'code' ? Object.keys(def.parts).filter((pid) => pid !== 'root' && PART_CLASS_ID.test(pid)).sort() : [];
+  if (!ctx.def && ((node.overrides && Object.keys(node.overrides).length) || partMarks.length)) {
     const map: Record<string, string> = {};
     // A code placement shows a part its code hides through classes, since its stylesheet cannot see those hides.
-    for (const partId of Object.keys(node.overrides).sort()) map[partId] = overrideClass(node.id, partId) + shownClasses(def, node.overrides[partId]);
-    attrs.push(`so_o={${js(map)}}`);
+    for (const partId of Object.keys(node.overrides ?? {}).sort()) map[partId] = overrideClass(node.id, partId) + shownClasses(def, node.overrides![partId]);
+    for (const pid of partMarks) map[pid] = map[pid] ? `${map[pid]} so-part--${pid}` : `so-part--${pid}`;
+    attrs.push(`so_o={${js(Object.fromEntries(Object.keys(map).sort().map((k) => [k, map[k]])))}}`);
     if (def.kind === 'code' && map.root && !Object.hasOwn(def.properties, 'class')) pageClasses.unshift(map.root);
   }
   if (pageClasses.length) attrs.push(`class=${attrJs(pageClasses.join(' '))}`);
