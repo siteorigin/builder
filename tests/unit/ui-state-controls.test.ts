@@ -76,6 +76,9 @@ describe('UI state controls: names and options', () => {
     // A reserved word is never a name it suggests, and the engine takes the one it does.
     expect(stateNameFor(def, 'Prototype')).toBe('prototypeState');
     expect(stateNameFor(def, 'Item')).toBe('itemState');
+    // However crowded, a free name is found, never one the component already has.
+    const crowded = { ...def, properties: Object.fromEntries(['plan', ...Array.from({ length: 998 }, (_, i) => `plan${i + 2}`)].map((n) => [n, def.properties.heading])), state: { uiState1: { type: 'boolean' as const, label: 'X', initial: false } } };
+    expect(stateNameFor(crowded, 'Plan')).toBe('uiState2');
     expect(() => applyOperations(state, [addStateOp(def, 'Prototype', 'boolean', [])])).not.toThrow();
   });
 

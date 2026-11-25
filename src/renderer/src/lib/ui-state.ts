@@ -43,7 +43,7 @@ export function stateNameFor(def: ComponentDefinition, label: string): string {
     if (free(stem)) return stem;
     for (let i = 2; i < 1000; i++) if (free(`${stem}${i}`)) return `${stem}${i}`;
   }
-  return 'uiState';
+  for (let i = 1; ; i++) if (free(`uiState${i}`)) return `uiState${i}`;
 }
 
 /** An option's stored value, from its label: lowercase words joined by hyphens, free of the others ("Pay yearly" → "pay-yearly"). */

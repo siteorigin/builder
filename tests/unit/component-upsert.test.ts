@@ -549,8 +549,9 @@ describe('component.upsert: building a managed component in one operation (#358)
     // Left out, the state of a design that uses it is refused rather than dropped unseen.
     expect(() => applyOperations(rebuilt, [{ type: 'component.upsert', definitionId: id, name: 'Plan switch', properties: {}, nodes: [{ kind: 'element', id: 'root', children: [] }] }])).toThrow(/\(plan, open\)\. Describe it again with state/);
     // At most 20 variables, as component.setState allows.
-    const many = Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`s${i}`, { type: 'boolean' as const }]));
-    expect(() => applyOperations(st, [tabs({ state: { ...many, ...tabs().state } })])).toThrow(/at most 20 UI state variables/);
+    const many = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`s${i}`, { type: 'boolean' as const }]));
+    expect(() => applyOperations(st, [tabs({ state: { ...many(18), ...tabs().state } })])).not.toThrow();
+    expect(() => applyOperations(st, [tabs({ state: { ...many(19), ...tabs().state } })])).toThrow(/at most 20 UI state variables/);
   });
 
   it('keeps unused state a rebuild leaves out: checked against the new properties, refused where a hand edit damaged it, kept as it is when the map itself is damaged (#377)', () => {

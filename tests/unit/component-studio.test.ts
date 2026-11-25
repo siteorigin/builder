@@ -247,6 +247,7 @@ describe('Component Studio: UI state (#377)', () => {
     const startsOpen = { ...def, state: { ...def.state!, open: { type: 'boolean' as const, label: 'Details', initial: true } } };
     expect(studioSpec(startsOpen, { ...NEW_STUDIO, states: { open: false } })).toEqual({ definitionId: id, states: { open: false } });
     expect(studioSpec(startsOpen, { ...NEW_STUDIO, states: { open: true } })).toEqual({ definitionId: id });
+    expect(studioStates(startsOpen, NEW_STUDIO).open).toBe(true);
     // An option or a state gone since (an Undo), or a value of the wrong kind, shows where the design starts.
     expect(studioSpec(def, { ...NEW_STUDIO, states: { plan: 'lifetime', gone: true, open: 'yes' as never } })).toEqual({ definitionId: id });
     expect(studioStates({ ...def, state: { plan: { type: 'enum', label: 'Plan', options: [], initial: 'x' } as never } }, NEW_STUDIO)).toEqual({});
