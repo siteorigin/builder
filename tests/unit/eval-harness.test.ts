@@ -46,6 +46,7 @@ describe('agent benchmark', () => {
       const { result } = await runCase(c, idle);
       expect(result.pass, c.id).toBe(false);
       expect(result.score, c.id).toBeLessThan(1);
+      expect(result.toolCalling, c.id).toBe(c.scriptedProfile === 'constrained-json' ? 'constrained-json' : 'native');
     }
   }, 120000);
 
@@ -227,7 +228,7 @@ describe('agent benchmark', () => {
   }, 120000);
 
   describe('component authoring (#365)', () => {
-    const COMPONENT_CASES = ['create-workshop-notice', 'create-repeated-workshop-cards', 'add-panel-tone-axis', 'show-booking-status-conditionally', 'style-component-with-site-tokens', 'make-panel-caption-editable', 'repair-component-on-phones'];
+    const COMPONENT_CASES = ['create-workshop-notice', 'create-repeated-workshop-cards', 'add-panel-tone-axis', 'show-booking-status-conditionally', 'style-component-with-site-tokens', 'make-panel-caption-editable', 'repair-component-on-phones', 'create-and-check-on-phones'];
     /** The case with every tool call its script makes changed by `edit` (by tool name, arguments and turn) first. */
     const editCalls = (c: EvalCase, edit: (name: string, args: any, turn: number) => void): EvalCase => ({
       ...c,
@@ -248,33 +249,53 @@ describe('agent benchmark', () => {
         )
     });
     const failing = async (c: EvalCase) => (await runCase(c, scripted)).result.checks.filter((x) => !x.pass).map((x) => x.id);
+    /** Another way of doing it passes outright: every check, and a finished, valid, compiling project. */
+    const passes = async (c: EvalCase) => {
+      const { result } = await runCase(c, scripted);
+      expect(result.checks.filter((x) => !x.pass)).toEqual([]);
+      expect(result.pass).toBe(true);
+    };
 
-    it('adds seven component cases in a new suite, played by both a cloud and a constrained local model', () => {
+    it('adds eight component cases in a new suite, played by both a cloud and a constrained local model', () => {
       expect(SUITE_VERSION).toBe(4);
       const cases = COMPONENT_CASES.map(byId);
       expect(cases.map((c) => `${c?.id}@${c?.version}:${c?.category}`)).toEqual(COMPONENT_CASES.map((id) => `${id}@1:component`));
-      expect(cases.map((c) => c.scriptedProfile)).toEqual(['cloud', 'constrained-json', 'constrained-json', 'cloud', 'constrained-json', 'constrained-json', 'cloud']);
+      expect(cases.map((c) => c.scriptedProfile)).toEqual(['cloud', 'constrained-json', 'constrained-json', 'cloud', 'constrained-json', 'constrained-json', 'cloud', 'constrained-json']);
       expect(EVAL_CASES.filter((c) => c.category === 'component').map((c) => c.id)).toEqual(COMPONENT_CASES);
     });
 
     it('sends each case as the editor would, so its model gets the tools that request gets', async () => {
-      const seen: Record<string, { tools: string[]; result: CaseResult }> = {};
+      const seen: Record<string, { tools: string[]; result: CaseResult; allowed: string; component?: string }> = {};
       for (const id of COMPONENT_CASES) {
         const c = byId(id);
         let tools: string[] = [];
+        let allowed = '';
+        let component: string | undefined;
         const spied: EvalCase = {
           ...c,
           script: (state) => {
             const [first, ...rest] = c.script(state);
-            return [(req) => ((tools = req.tools.map((t) => t.name)), first(req)), ...rest];
+            return [
+              (req) => {
+                tools = req.tools.map((t) => t.name);
+                // A constrained model is sent the context compact.
+                allowed = /"allowedScope":\s*"([^"]*)"/.exec((req.items[0] as { text: string }).text)?.[1] ?? '';
+                component = c.component?.(state()).id;
+                return first(req);
+              },
+              ...rest
+            ];
           }
         };
         const { result } = await runCase(spied, scripted);
         expect(result.pass, id).toBe(true);
-        seen[id] = { tools, result };
+        seen[id] = { tools, result, allowed, component };
       }
+      // A design edited everywhere may change only that design; anything else the whole site.
+      for (const id of ['add-panel-tone-axis', 'make-panel-caption-editable', 'repair-component-on-phones']) expect(seen[id].allowed, id).toContain(seen[id].component);
+      for (const id of ['create-workshop-notice', 'create-and-check-on-phones', 'style-component-with-site-tokens']) expect(seen[id].allowed, id).not.toContain('component');
       // Create component: the whole component in one call first, with the operations and the inspector beside it.
-      for (const id of ['create-workshop-notice', 'show-booking-status-conditionally', 'create-repeated-workshop-cards']) {
+      for (const id of ['create-workshop-notice', 'show-booking-status-conditionally', 'create-repeated-workshop-cards', 'create-and-check-on-phones']) {
         expect(seen[id].tools[0], id).toBe('upsert_managed_component');
         expect(seen[id].tools, id).toEqual(expect.arrayContaining(['apply_operations', 'inspect_component']));
         expect(seen[id].tools, id).not.toContain('upsert_page_with_sections');
@@ -313,6 +334,13 @@ describe('agent benchmark', () => {
       const blind = await runCase({ ...byId('repair-component-on-phones'), measureComponents: false }, scripted);
       expect(JSON.parse(blind.trace.turns[0].toolCalls[0].result!).message).toContain('not available here');
       expect(blind.result.checks.filter((x) => !x.pass).map((x) => x.id)).toEqual(['fits-on-phone', 'readable-on-phone']);
+      // A constrained local model building one on Create component measures it the same way, and fixes what it found.
+      const built = await runCase(byId('create-and-check-on-phones'), scripted);
+      expect(built.result).toMatchObject({ pass: true, toolCalling: 'constrained-json' });
+      const steps = built.trace.turns.flatMap((t) => t.toolCalls);
+      expect(steps.map((t) => t.name)).toEqual(['upsert_managed_component', 'inspect_component', 'apply_operations', 'inspect_component']);
+      expect(JSON.parse(steps[1].result!).findings.map((f: { kind: string; at: { nodeId: string } }) => `${f.kind}@${f.at.nodeId}`)).toEqual(['element-overflow@panel']);
+      expect(JSON.parse(steps[3].result!).findings).toBeUndefined();
     }, 60000);
 
     it('grades what a placement shows and how it is styled, so near misses fail and other ways of doing it pass', async () => {
@@ -320,18 +348,39 @@ describe('agent benchmark', () => {
       expect(await failing(editCalls(notice, (_n, a) => delete a.placeOnPage))).toEqual(['placed-last-on-home']);
       expect(await failing(editCalls(notice, (_n, a) => (a.nodes[1].text = 'Saturday workshop')))).toEqual(['heading-editable']);
       // Other node IDs, and a name in another case, are the same component.
-      expect(await failing(editCalls(notice, (_n, a) => ((a.name = 'WORKSHOP NOTICE'), (a.nodes[0].id = 'box'), (a.nodes[0].children = ['title', 'body']))))).toEqual([]);
+      await passes(editCalls(notice, (_n, a) => ((a.name = 'WORKSHOP NOTICE'), (a.nodes[0].id = 'box'), (a.nodes[0].children = ['title', 'body']))));
+      // Both texts as fields of one object property, which authors edit just the same.
+      const grouped = (_n: string, a: any) => {
+        a.properties = [{ type: 'object', name: 'copy', label: 'Copy', fields: a.properties, default: [{ field: 'heading', value: 'Saturday workshop' }, { field: 'message', value: 'Doors open at nine.' }] }];
+        a.nodes[1].text = { $prop: 'copy', field: 'heading' };
+        a.nodes[2].text = { $prop: 'copy', field: 'message' };
+      };
+      await passes(editCalls(notice, grouped));
+      // Shown in the design, but hidden by its styles.
+      expect(await failing(editCalls(notice, (_n, a) => a.nodes[2].styles = [{ property: 'hidden', value: true }]))).toEqual(['message-editable', 'placed-last-on-home']);
 
       // A room fixed in the card is shown on every card, whatever its item says.
       const cards = byId('create-repeated-workshop-cards');
-      expect(await failing(editCalls(cards, (_n, a) => (a.nodes[5].text = 'Kiln room')))).toEqual(['starts-with-two-cards', 'card-per-item']);
-      expect(await failing(editCalls(cards, (_n, a) => a.properties[0].default.pop()))).toEqual(['starts-with-two-cards']);
+      expect(await failing(editCalls(cards, (_n, a) => (a.nodes[5].text = 'Kiln room')))).toEqual(['starts-with-two-cards', 'card-per-item', 'placed-last-on-home']);
+      expect(await failing(editCalls(cards, (_n, a) => a.properties[0].default.pop()))).toEqual(['starts-with-two-cards', 'placed-last-on-home']);
+      // The titles in one repeat and the rooms in another: two runs of text, not cards.
+      const split = (_n: string, a: any) => {
+        a.nodes[1].children = ['each', 'rooms'];
+        a.nodes[3].children = ['title'];
+        a.nodes.push({ kind: 'repeat', id: 'rooms', list: 'cards', children: ['roomCard'] }, { kind: 'element', id: 'roomCard', tag: 'li', children: ['room'] });
+      };
+      expect(await failing(editCalls(cards, split))).toEqual(['starts-with-two-cards', 'card-per-item', 'placed-last-on-home']);
+      // A list an author cannot add a third card to.
+      expect(await failing(editCalls(cards, (_n, a) => (a.properties[0].max = 2)))).toEqual(['card-per-item']);
 
       // The dark colors set for every placement, a dark background behind dark text, and a raw color.
       const tone = byId('add-panel-tone-axis');
       expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && delete a.variant))).toEqual(['default-unchanged']);
       expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && a.styles.pop()))).toEqual(['inverse-text']);
       expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && (a.styles[0].value = '#14211d')))).toEqual(['inverse-background']);
+      // Dark behind the heading alone, not the panel; and an Inverse option on an axis that is not a tone.
+      expect(await failing(editCalls(tone, (n, a) => n === 'style_definition_element' && (a.nodeId = 'title')))).toEqual(['inverse-background', 'inverse-text']);
+      expect(await failing(editCalls(tone, (n, a) => (n === 'add_definition_variant' || n === 'style_definition_element') && (n === 'add_definition_variant' ? (a.axis = 'layout') : (a.variant.axis = 'layout'))))).toEqual(['inverse-option', 'inverse-background', 'inverse-text', 'placement-keeps-default']);
 
       // Both messages always shown; and the same switch written as comparisons, which passes.
       const booking = byId('show-booking-status-conditionally');
@@ -341,7 +390,10 @@ describe('agent benchmark', () => {
         delete a.nodes[2].unless;
         a.nodes[2].when = { ref: { $prop: 'open' }, ne: true };
       };
-      expect(await failing(editCalls(booking, compared))).toEqual([]);
+      await passes(editCalls(booking, compared));
+      // The whole component hidden by its styles, and the setting labelled as something else.
+      expect(await failing(editCalls(booking, (_n, a) => (a.nodes[0].styles = [{ property: 'hidden', value: true }])))).toEqual(['yes-no-setting', 'starts-off', 'open-message-editable', 'closed-message-editable']);
+      expect(await failing(editCalls(booking, (_n, a) => (a.properties[0].label = 'Archived')))).toEqual(['yes-no-setting', 'open-message-editable', 'closed-message-editable']);
 
       // The same colors and padding as raw values; padding above and below only; text left to the page's color passes.
       const tokens = byId('style-component-with-site-tokens');
@@ -354,7 +406,16 @@ describe('agent benchmark', () => {
         ]);
       expect(await failing(editCalls(tokens, raw))).toEqual(['surface-background', 'text-color', 'large-padding', 'only-site-styles']);
       expect(await failing(editCalls(tokens, (_n, a) => a.nodes[0].styles.pop()))).toEqual(['large-padding']);
-      expect(await failing(editCalls(tokens, (_n, a) => a.nodes[0].styles.splice(1, 1)))).toEqual([]);
+      // Text left to inherit, which in a dark section is not the site's text color; padding overridden by custom CSS.
+      expect(await failing(editCalls(tokens, (_n, a) => a.nodes[0].styles.splice(1, 1)))).toEqual(['text-color']);
+      expect(await failing(editCalls(tokens, (_n, a) => a.nodes[0].styles.push({ property: 'customCss', value: 'padding: 1px;' })))).toEqual(['only-site-styles']);
+      // The text color set on the line itself, and padding as four longhands, pass.
+      const longhands = (_n: string, a: any) => {
+        const [bg, color] = a.nodes[0].styles;
+        a.nodes[0].styles = [bg, ...['paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd'].map((property) => ({ property, value: { token: 'space.lg' } }))];
+        a.nodes[1].styles = [color];
+      };
+      await passes(editCalls(tokens, longhands));
 
       // A Caption field the caption never shows.
       const caption = byId('make-panel-caption-editable');
@@ -399,18 +460,26 @@ describe('agent benchmark', () => {
           ];
         }
       };
-      const viaGeneral = await runCase(general, scripted);
-      expect(viaGeneral.trace.turns[0].toolCalls[0].isError).toBe(false);
-      expect(viaGeneral.result.checks.filter((x) => !x.pass)).toEqual([]);
+      await passes(general);
 
       // Only the width fixed; the text hidden on phones rather than made readable; the panel made full width on desktop
       // too; and a cap on its width in place of a phone width, which passes.
       const repair = byId('repair-component-on-phones');
       const ops = (edit: (list: any[]) => void) => editCalls(repair, (n, a) => n === 'apply_operations' && edit(a.operations));
-      expect(await failing(ops((list) => list.pop()))).toEqual(['readable-on-phone']);
-      expect(await failing(ops((list) => Object.assign(list[1], { property: 'hidden', value: true })))).toEqual(['readable-on-phone']);
-      expect(await failing(ops((list) => (list[0].scope = 'base')))).toEqual(['desktop-kept']);
-      expect(await failing(ops((list) => Object.assign(list[0], { scope: 'base', property: 'maxWidth', value: '100%' })))).toEqual([]);
+      const line = (property: string, value: unknown) => ({ ...list0(), nodeId: 'line', property, value });
+      let owner: unknown;
+      const list0 = () => ({ type: 'node.setStyle', owner, scope: 'phone' });
+      const fixes = (edit: (list: any[]) => void) => ops((list) => ((owner = list[0].owner), edit(list)));
+      expect(await failing(fixes((list) => list.pop()))).toEqual(['readable-on-phone']);
+      // Readable once fixed, but then hidden, or faded out, on phones.
+      expect(await failing(fixes((list) => list.push(line('hidden', true))))).toEqual(['readable-on-phone']);
+      expect(await failing(fixes((list) => list.push(line('opacity', 0))))).toEqual(['readable-on-phone']);
+      // Full width on desktop too; and capped narrower than the desktop panel was.
+      expect(await failing(fixes((list) => (list[0].scope = 'base')))).toEqual(['desktop-kept']);
+      expect(await failing(fixes((list) => Object.assign(list[0], { scope: 'base', property: 'maxWidth', value: '300px' })))).toEqual(['desktop-kept']);
+      // A cap on its width in place of a phone width, and full width capped at 720px, both keep the desktop panel.
+      await passes(fixes((list) => Object.assign(list[0], { scope: 'base', property: 'maxWidth', value: '100%' })));
+      await passes(fixes((list) => list.splice(0, 1, { ...list[0], scope: 'base', value: 'fill' }, { ...list[0], scope: 'base', property: 'maxWidth', value: '720px' })));
     }, 180000);
   });
 

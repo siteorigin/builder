@@ -11,9 +11,8 @@ import { makeInstance } from '@engine/install';
 import { richTextToPlain, type RichText } from '@shared/richtext';
 import { axesOf, designStyles, selectedVariants } from '@shared/variants';
 import { renderedContent, type RenderedContent } from '@generator/checks';
-import { effectiveTokens } from '@generator/index';
 import { childLists, findParent } from '@engine/tree';
-import { lengthOf, measureComponent } from './component-diagnostics';
+import { measureComponent } from './component-diagnostics';
 import type { Check, EvalCase, ScriptTurn } from './harness';
 
 /** Bump when cases are added, removed or re-graded. */
@@ -335,10 +334,20 @@ const seedComponent = (state: ProjectState, op: Record<string, unknown>, placeme
   const placed = applyOperations(made.state, placements.map((props) => ({ type: 'node.insert', owner: { kind: 'page', id: made.state.site.homePageId }, definitionId, props }) as EditOperation));
   Object.assign(state, placed.state);
 };
-/** What one placement of a design renders with these property values and variant choices, as the generator does. */
+/**
+ * What one placement of a design renders with these property values and variant choices, as the generator does
+ * (conditions, repeats), less what its styles hide at every screen size.
+ */
 const placementShows = (s: ProjectState, def: ComponentDefinition, props: Record<string, unknown> = {}, variants?: Record<string, string>): RenderedContent[] => {
   const node = makeInstance(def, props, variants);
-  return renderedContent(s, { rootIds: [node.id], nodes: { [node.id]: node } });
+  return renderedContent(s, { rootIds: [node.id], nodes: { [node.id]: node } }).filter((c) => !c.defNodeId || !def.tree?.nodes[c.defNodeId] || !hiddenEverywhere(def, c.defNodeId, variants));
+};
+/** What one placement already on Home shows, less what its design's styles hide at every screen size. */
+const homePlacementShows = (s: ProjectState, nodeId: string) => {
+  const placed = home(s).nodes[nodeId] as InstanceNode | undefined;
+  const def = placed?.kind === 'instance' ? s.components[placed.definitionId] : undefined;
+  const variants = placed?.variants as Record<string, string> | undefined;
+  return renderedContent(s, { ...home(s), rootIds: [nodeId] }).filter((c) => !def || !c.defNodeId || !def.tree?.nodes[c.defNodeId] || !hiddenEverywhere(def, c.defNodeId, variants));
 };
 const textOf = (c: RenderedContent): string[] => (c.kind !== 'text' ? [] : typeof c.value === 'string' ? [plain(c.value)] : Array.isArray(c.value) ? richTextToPlain(c.value as RichText).split(/\n+/).map(plain) : []).filter(Boolean);
 const textsShown = (list: RenderedContent[]) => list.flatMap(textOf);
@@ -351,33 +360,49 @@ const TEXT_TYPES = new Set(['string', 'richtext']);
  */
 const editedBy = (s: ProjectState, def: ComponentDefinition, wanted: string, base: Record<string, unknown> = {}): string | undefined => {
   if (!textsShown(placementShows(s, def, base)).includes(plain(wanted))) return undefined;
-  return Object.entries(def.properties).find(([name, schema]) => {
-    if (!TEXT_TYPES.has(schema.type)) return false;
-    const marker = `Edited ${name} for the benchmark`;
-    const shown = textsShown(placementShows(s, def, { ...base, [name]: textValue(schema, marker) }));
+  // Each text property, and each text field of an object property, set on its own.
+  const edits = Object.entries(def.properties).flatMap(([name, schema]): Array<[string, (marker: string) => unknown]> => {
+    if (TEXT_TYPES.has(schema.type)) return [[name, (marker) => textValue(schema, marker)]];
+    if (schema.type !== 'object') return [];
+    return Object.entries(schema.fields)
+      .filter(([, f]) => TEXT_TYPES.has(f.type))
+      .map(([field, f]) => [`${name}.${field}`, (marker) => ({ ...((base[name] ?? schema.default) as object), [field]: textValue(f as PropSchema, marker) })]);
+  });
+  return edits.find(([path, value]) => {
+    const marker = `Edited ${path} for the benchmark`;
+    const shown = textsShown(placementShows(s, def, { ...base, [path.split('.')[0]]: value(marker) }));
     return shown.includes(plain(marker)) && !shown.includes(plain(wanted));
   })?.[0];
 };
 /** The design node that renders `wanted` with these property values. */
 const nodeShowing = (s: ProjectState, def: ComponentDefinition, wanted: string, props: Record<string, unknown> = {}) => placementShows(s, def, props).find((c) => textOf(c).includes(plain(wanted)))?.defNodeId;
-/** The texts each list item shows, by item. */
-const itemTexts = (list: RenderedContent[]) => {
+/**
+ * The texts each card shows: each list item's, as one repeat of the design renders it. Two repeats of the same list
+ * (the titles in one, the rooms in another) are two runs of text, not cards.
+ */
+const itemTexts = (def: ComponentDefinition, list: RenderedContent[]) => {
   const items = new Map<string, string[]>();
   for (const c of list) {
     if (c.source?.kind !== 'prop' || !c.source.itemId) continue;
-    const key = `${c.nodeId}|${c.source.itemId}`;
+    const repeat = c.defNodeId ? lineage(def, c.defNodeId).find((n) => def.tree?.nodes[n]?.kind === 'repeat') : undefined;
+    const key = `${c.nodeId}|${repeat ?? ''}|${c.source.itemId}`;
     items.set(key, [...(items.get(key) ?? []), ...textOf(c)]);
   }
   return [...items.values()];
 };
-/** The new definition is placed once, after Home's sections, which are all kept in order. */
-const placedLastOnHome = (before: ProjectState, after: ProjectState, def: ComponentDefinition | undefined) => {
+/**
+ * The new definition is placed once, after Home's sections, which are all kept as they were; and the placement shows
+ * what `shows` asks of it.
+ */
+const placedLastOnHome = (before: ProjectState, after: ProjectState, def: ComponentDefinition | undefined, shows: (content: RenderedContent[]) => boolean) => {
   const h = home(after);
-  const last = h.nodes[h.rootIds.at(-1) ?? ''] as InstanceNode | undefined;
-  return !!def && last?.kind === 'instance' && last.definitionId === def.id && same(home(before).rootIds, h.rootIds.slice(0, -1));
+  const lastId = h.rootIds.at(-1) ?? '';
+  const last = h.nodes[lastId] as InstanceNode | undefined;
+  const was = home(before);
+  return !!def && last?.kind === 'instance' && last.definitionId === def.id && same(was.rootIds, h.rootIds.slice(0, -1)) && Object.keys(was.nodes).every((id) => same(was.nodes[id], h.nodes[id])) && shows(homePlacementShows(after, lastId));
 };
 const tokenOf = (v: unknown) => (v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' && (v as { alpha?: unknown }).alpha === undefined ? (v as { token: string }).token : undefined);
-const SIZES = ['phone', 'desktop'] as const;
+const SIZES = ['phone', 'tablet', 'desktop'] as const;
 type Size = (typeof SIZES)[number];
 /** A style property's value on a design node at one size, as the generated CSS cascades it. */
 const styleAt = (def: ComponentDefinition, nodeId: string, size: Size, prop: string, variants?: Record<string, string>) => designStyles(def, nodeId, variants)[size]?.[prop];
@@ -395,11 +420,25 @@ const nearestStyle = (def: ComponentDefinition, nodeId: string, size: Size, prop
   }
   return undefined;
 };
-/** Padding on all four sides of a node at one size, longhands over their shorthands as the stylesheet writes them. */
-const paddingEdges = (def: ComponentDefinition, nodeId: string, size: Size) => {
-  const at = (p: string) => styleAt(def, nodeId, size, p);
-  return [at('paddingBlockStart') ?? at('paddingBlock'), at('paddingBlockEnd') ?? at('paddingBlock'), at('paddingInlineStart') ?? at('paddingInline'), at('paddingInlineEnd') ?? at('paddingInline')];
-};
+/**
+ * Whether styles hide a node, or a container around it, at every screen size. Hidden at one size only is judged where
+ * it matters, by the measurer (see phoneRepairChecks).
+ */
+const hiddenEverywhere = (def: ComponentDefinition, nodeId: string, variants?: Record<string, string>) => SIZES.every((size) => lineage(def, nodeId).some((n) => styleAt(def, n, size, 'hidden', variants) === true));
+/**
+ * Whether every side of a node is padded with `token` at one size. A side's longhand and its shorthand can both be
+ * set from different rules, and which wins depends on the order the stylesheet writes them in: both must be the token.
+ */
+const paddedWith = (def: ComponentDefinition, nodeId: string, size: Size, token: string) =>
+  [
+    ['paddingBlockStart', 'paddingBlock'],
+    ['paddingBlockEnd', 'paddingBlock'],
+    ['paddingInlineStart', 'paddingInline'],
+    ['paddingInlineEnd', 'paddingInline']
+  ].every((props) => {
+    const set = props.map((p) => styleAt(def, nodeId, size, p)).filter((v) => v !== undefined && v !== null);
+    return set.length > 0 && set.every((v) => tokenOf(v) === token);
+  });
 /** Every style value a design sets, at every size and state and in every variant option. */
 const everyStyle = (def: ComponentDefinition) => {
   const out: Array<{ nodeId: string; prop: string; value: unknown }> = [];
@@ -412,15 +451,40 @@ const everyStyle = (def: ComponentDefinition) => {
 };
 const COLOR_PROPS = new Set(['color', 'background']);
 const SPACING_PROP = /^(padding|margin|gap|rowGap|columnGap)/;
-/** A color or spacing value that is not one of the site's styles: a hex, a pixel length. */
+/** A color or spacing value that is not one of the site's styles: a hex, a pixel length, custom CSS that sets either. */
 const offToken = (prop: string, value: unknown) => {
   if (value === undefined || value === null || tokenOf(value)) return false;
+  if (prop === 'customCss') return /(padding|margin|gap|color|background)/i.test(String(value));
   if (COLOR_PROPS.has(prop)) return !['transparent', 'inherit', 'currentcolor'].includes(String(value).toLowerCase());
   if (SPACING_PROP.test(prop)) return !['0', '0px', 'auto'].includes(String(value).toLowerCase());
   return false;
 };
 const textNodes = (def: ComponentDefinition) => Object.values(def.tree?.nodes ?? {}).filter((n) => n.kind === 'text').map((n) => n.id);
 
+/**
+ * A component that fits a phone and reads there, and keeps its 720px panel on desktop: graded from the design by the
+ * benchmark's measurer, at the widths inspect_component measures. Its own editable text must be among what it
+ * measured, visible and readable: hidden, faded or cut off, it is not.
+ */
+const phoneRepairChecks = (after: ProjectState, def: ComponentDefinition | undefined, message: string): Check[] => {
+  const line = def && nodeShowing(after, def, message);
+  const measure = (width: number) => {
+    const m = def ? measureComponent(after, { definitionId: def.id }, width) : { error: 'gone' };
+    return 'error' in m ? null : m;
+  };
+  const phone = measure(390);
+  const desktop = measure(1280);
+  const readable = (m: ReturnType<typeof measure>) => !!m && !!line && (m.texts.find((t) => t.nodeId === line)?.ratio ?? 0) >= 4.5 && !m.findings.some((f) => f.kind === 'low-contrast');
+  const fits = (m: ReturnType<typeof measure>) => !!m && m.widths.checked > 0 && !m.widths.unmeasured.length && !m.findings.some((f) => f.kind === 'element-overflow');
+  const root = def?.tree?.rootIds[0] ?? '';
+  return [
+    check('message-editable', !!def && !!editedBy(after, def, message)),
+    check('fits-on-phone', fits(phone), JSON.stringify(phone ? { findings: phone.findings, unmeasured: phone.widths.unmeasured } : 'not measured')),
+    check('readable-on-phone', readable(phone), JSON.stringify(phone?.texts)),
+    // The panel still renders 720px wide on its desktop background, with its text readable.
+    check('desktop-kept', fits(desktop) && readable(desktop) && desktop?.boxes[root] === 720 && !!line && tokenOf(nearestStyle(def, line, 'desktop', 'background')) === 'color.surface', String(desktop?.boxes[root]))
+  ];
+};
 const intro = (heading: string) => ({ componentId: 'intro.page', props: { heading, lead: `${heading}, explained simply.` } });
 const closing = { componentId: 'cta.banner', props: { heading: 'Ready when you are', primaryLabel: 'Get in touch', primaryLink: '/contact/' } };
 
@@ -860,7 +924,7 @@ export const EVAL_CASES: EvalCase[] = [
         check('managed', def?.kind === 'managed', def?.kind),
         check('heading-editable', !!heading),
         check('message-editable', !!message && message !== heading),
-        check('placed-last-on-home', placedLastOnHome(before, after, def)),
+        check('placed-last-on-home', placedLastOnHome(before, after, def, (c) => ['Saturday workshop', 'Doors open at nine.'].every((t) => textsShown(c).includes(plain(t))))),
         check('rest-untouched', shellUntouched(before, after) && Object.keys(before.pages).every((id) => id === before.site.homePageId || same(before.pages[id], after.pages[id])))
       ];
     },
@@ -894,21 +958,24 @@ export const EVAL_CASES: EvalCase[] = [
     grade: ({ before, after }) => {
       const def = madeNamed(before, after, 'Workshop cards');
       const lists = def ? Object.entries(def.properties).filter(([, p]) => p.type === 'list' && !p.feed) : [];
-      const starts = def ? itemTexts(placementShows(after, def)) : [];
-      const card = (title: string, room: string) => starts.some((t) => t.includes(plain(title)) && t.includes(plain(room)));
-      // A third item in the list shows a third card, with each of its fields in it: the card repeats per item.
-      const repeats = !!def && lists.some(([name, p]) => {
-        const fields = Object.entries(p.type === 'list' ? p.fields : {}).filter(([, f]) => TEXT_TYPES.has(f.type));
-        const items = [1, 2, 3].map((i) => Object.fromEntries(fields.map(([f, schema]) => [f, textValue(schema as PropSchema, `${f} ${i} for the benchmark`)])));
-        const shown = itemTexts(placementShows(after, def, { [name]: items }));
-        return shown.length === 3 && [1, 2, 3].every((i) => shown.some((t) => fields.filter(([f]) => t.includes(plain(`${f} ${i} for the benchmark`))).length >= 2));
-      });
+      const twoCards = (cards: string[][]) => cards.length === 2 && [['Glazing', 'Kiln room'], ['Weaving', 'Loom room']].every(([title, room]) => cards.some((t) => t.includes(plain(title)) && t.includes(plain(room))));
+      const starts = def ? itemTexts(def, placementShows(after, def)) : [];
+      // A third item in the list, which an author may add, shows a third card with each of its fields in it.
+      const repeats =
+        !!def &&
+        lists.some(([name, p]) => {
+          if (p.type !== 'list' || (p.max !== undefined && p.max < 3)) return false;
+          const fields = Object.entries(p.fields).filter(([, f]) => TEXT_TYPES.has(f.type));
+          const items = [1, 2, 3].map((i) => Object.fromEntries(fields.map(([f, schema]) => [f, textValue(schema as PropSchema, `${f} ${i} for the benchmark`)])));
+          const shown = itemTexts(def, placementShows(after, def, { [name]: items }));
+          return shown.length === 3 && [1, 2, 3].every((i) => shown.some((t) => fields.filter(([f]) => t.includes(plain(`${f} ${i} for the benchmark`))).length >= 2));
+        });
       return [
         check('component-created', !!def),
         check('one-list', lists.length >= 1),
-        check('starts-with-two-cards', starts.length === 2 && card('Glazing', 'Kiln room') && card('Weaving', 'Loom room'), JSON.stringify(starts)),
+        check('starts-with-two-cards', twoCards(starts), JSON.stringify(starts)),
         check('card-per-item', repeats),
-        check('placed-last-on-home', placedLastOnHome(before, after, def))
+        check('placed-last-on-home', placedLastOnHome(before, after, def, (c) => !!def && twoCards(itemTexts(def, c))))
       ];
     },
     script: () => [
@@ -968,14 +1035,24 @@ export const EVAL_CASES: EvalCase[] = [
     grade: ({ before, after }) => {
       const was = defNamed(before, 'Studio panel')!;
       const def = after.components[was.id];
-      const found = def && axesOf(def).flatMap(([axis, a]) => Object.entries(a.options).filter(([id, o]) => /inverse/i.test(`${id} ${o.label}`)).map(([option]) => ({ axis, option, isDefault: a.default === option })))[0];
+      // An Inverse option on a Tone axis, whatever their IDs.
+      const found =
+        def &&
+        axesOf(def)
+          .filter(([axis, a]) => /tone/i.test(`${axis} ${a.label ?? ''}`))
+          .flatMap(([axis, a]) => Object.entries(a.options).filter(([, o]) => /inverse/i.test(o.label ?? '')).map(([option]) => ({ axis, option, isDefault: a.default === option })))[0];
       const inverse = found ? { [found.axis]: found.option } : undefined;
       const texts = def ? textNodes(def) : [];
+      const root = def?.tree?.rootIds[0] ?? '';
+      // How it looks: the panel's background, and each text's color and what it sits on.
+      const look = (d: ComponentDefinition, variants?: Record<string, string>) =>
+        JSON.stringify([SIZES.map((size) => styleAt(d, d.tree!.rootIds[0], size, 'background', variants)), textNodes(d).map((n) => SIZES.map((size) => [nearestStyle(d, n, size, 'color', variants), nearestStyle(d, n, size, 'background', variants)]))]);
       const placement = Object.values(home(after).nodes).find((n) => n.kind === 'instance' && n.definitionId === was.id) as InstanceNode | undefined;
       return [
         check('inverse-option', !!found),
-        check('default-unchanged', !!def && !found?.isDefault && Object.keys(was.tree!.nodes).every((n) => same(designStyles(def, n, undefined), designStyles(was, n, undefined)))),
-        check('inverse-background', !!inverse && texts.length > 0 && texts.every((n) => SIZES.every((size) => tokenOf(nearestStyle(def, n, size, 'background', inverse)) === 'color.inverse'))),
+        check('default-unchanged', !!def && !found?.isDefault && look(def) === look(was), def && look(def)),
+        // The whole panel is dark, and so is what every text sits on.
+        check('inverse-background', !!inverse && texts.length > 0 && SIZES.every((size) => tokenOf(styleAt(def, root, size, 'background', inverse)) === 'color.inverse' && texts.every((n) => tokenOf(nearestStyle(def, n, size, 'background', inverse)) === 'color.inverse'))),
         check('inverse-text', !!inverse && texts.length > 0 && texts.every((n) => SIZES.every((size) => tokenOf(nearestStyle(def, n, size, 'color', inverse)) === 'color.on-inverse'))),
         check('placement-keeps-default', !!found && !!placement && selectedVariants(def, placement.variants)[found.axis] !== found.option),
         check('rest-untouched', shellUntouched(before, after) && same(Object.keys(before.components).sort(), Object.keys(after.components).sort()))
@@ -1006,7 +1083,7 @@ export const EVAL_CASES: EvalCase[] = [
     scriptedProfile: 'cloud',
     grade: ({ before, after }) => {
       const def = madeNamed(before, after, 'Booking status');
-      const switches = def ? Object.entries(def.properties).filter(([, p]) => p.type === 'boolean').map(([name]) => name) : [];
+      const switches = def ? Object.entries(def.properties).filter(([, p]) => p.type === 'boolean' && plain(p.label ?? '') === 'bookings open').map(([name]) => name) : [];
       const shows = (props: Record<string, unknown>) => (def ? textsShown(placementShows(after, def, props)) : []);
       const only = (props: Record<string, unknown>, yes: string, no: string) => shows(props).includes(plain(yes)) && !shows(props).includes(plain(no));
       // The setting that switches between the two messages, whatever it is called.
@@ -1052,14 +1129,14 @@ export const EVAL_CASES: EvalCase[] = [
       const def = madeNamed(before, after, 'Collection notice');
       const line = def && nodeShowing(after, def, 'Collect at reception');
       // The container around the line (or the line itself) that carries the padding.
-      const padded = def && line && lineage(def, line).find((n) => SIZES.every((size) => paddingEdges(def, n, size).every((v) => tokenOf(v) === 'space.lg')));
+      const padded = def && line && lineage(def, line).find((n) => SIZES.every((size) => paddedWith(def, n, size, 'space.lg')));
       const off = def ? everyStyle(def).filter((x) => offToken(x.prop, x.value)) : [];
       return [
         check('component-created', !!def),
         check('line-editable', !!def && !!editedBy(after, def, 'Collect at reception')),
         check('surface-background', !!line && SIZES.every((size) => tokenOf(nearestStyle(def, line, size, 'background')) === 'color.surface')),
-        // Set to the token, or left to the page's own text color, which is that token.
-        check('text-color', !!line && SIZES.every((size) => ((v) => v === undefined || tokenOf(v) === 'color.text')(nearestStyle(def, line, size, 'color')))),
+        // Set on the component itself: placed in a dark section, the color it would inherit is not the site's text color.
+        check('text-color', !!line && SIZES.every((size) => tokenOf(nearestStyle(def, line, size, 'color')) === 'color.text')),
         check('large-padding', !!padded),
         check('only-site-styles', !!def && off.length === 0, off.map((x) => `${x.nodeId}.${x.prop}=${JSON.stringify(x.value)}`).join(', ')),
         check('site-styles-untouched', same(before.tokens, after.tokens))
@@ -1120,14 +1197,19 @@ export const EVAL_CASES: EvalCase[] = [
       const caption = def && nodeShowing(after, def, 'Ask at reception');
       const placements = Object.values(home(before).nodes).filter((n): n is InstanceNode => n.kind === 'instance' && n.definitionId === was.id);
       const now = placements.map((p) => home(after).nodes[p.id] as InstanceNode | undefined);
-      const shownOnHome = textsShown(renderedContent(after, home(after)));
+      // Each placement shows its own heading, not the other's, and the caption.
+      const headings = placements.map((p) => plain(String(p.props.heading)));
+      const eachShows = placements.length === 2 && placements.every((p, i) => {
+        const shown = textsShown(homePlacementShows(after, p.id));
+        return shown.includes(headings[i]) && !shown.includes(headings[1 - i]) && shown.includes(plain('Ask at reception'));
+      });
       return [
         check('caption-editable', !!field),
         // Editable, and showing the words to start with: so they are its default.
-        check('caption-field', !!schema && /caption/i.test(schema.label ?? ''), schema?.label),
+        check('caption-field', !!schema && plain(schema.label ?? '') === 'caption', schema?.label),
         check('caption-part', !!caption && Object.entries(def.parts ?? {}).some(([id, part]) => id !== 'root' && part.nodeId === caption)),
         check('placements-kept', placements.length === 2 && now.every((n, i) => n?.kind === 'instance' && n.definitionId === was.id && same(n.props.heading, placements[i].props.heading))),
-        check('placements-show-caption', shownOnHome.filter((t) => t === plain('Ask at reception')).length === 2 && ['repairs', 'fittings'].every((h) => shownOnHome.includes(h))),
+        check('placements-show-caption', eachShows),
         check('rest-untouched', shellUntouched(before, after) && Object.keys(before.pages).every((id) => id === before.site.homePageId || same(before.pages[id], after.pages[id])))
       ];
     },
@@ -1158,26 +1240,7 @@ export const EVAL_CASES: EvalCase[] = [
     scriptedProfile: 'cloud',
     grade: ({ before, after }) => {
       const was = defNamed(before, 'Counter hours')!;
-      const def = after.components[was.id];
-      const line = def && nodeShowing(after, def, 'Counter closes at four');
-      const measure = (width: number) => {
-        const m = def ? measureComponent(after, { definitionId: def.id }, width) : { error: 'gone' };
-        return 'error' in m ? null : m;
-      };
-      const phone = measure(390);
-      const desktop = measure(1280);
-      // Its own text, shown and readable: a hidden line, or another copy of it, does not count.
-      const readable = (m: ReturnType<typeof measure>) => !!m && !!line && (m.texts.find((t) => t.nodeId === line)?.ratio ?? 0) >= 4.5 && !m.findings.some((f) => f.kind === 'low-contrast');
-      const fits = (m: ReturnType<typeof measure>) => !!m && m.widths.checked > 0 && !m.widths.unmeasured.length && !m.findings.some((f) => f.kind === 'element-overflow');
-      const root = def?.tree?.rootIds[0];
-      const desktopWidth = root ? lengthOf(effectiveTokens(after), styleAt(def, root, 'desktop', 'width')) : 'unknown';
-      return [
-        check('message-editable', !!def && !!editedBy(after, def, 'Counter closes at four')),
-        check('fits-on-phone', fits(phone), JSON.stringify(phone?.findings ?? phone?.widths)),
-        check('readable-on-phone', readable(phone), JSON.stringify(phone?.texts)),
-        check('desktop-kept', fits(desktop) && readable(desktop) && typeof desktopWidth === 'object' && desktopWidth.px === 720 && !!line && tokenOf(nearestStyle(def, line, 'desktop', 'background')) === 'color.surface', JSON.stringify(desktopWidth)),
-        check('site-styles-untouched', shellUntouched(before, after))
-      ];
+      return [...phoneRepairChecks(after, after.components[was.id], 'Counter closes at four'), check('site-styles-untouched', shellUntouched(before, after))];
     },
     script: (state) => {
       const id = () => defNamed(state(), 'Counter hours')!.id;
@@ -1202,6 +1265,56 @@ export const EVAL_CASES: EvalCase[] = [
         },
         () => [call('inspect_component', { definitionId: id() })],
         (req) => finish((lastResult(req) as Inspected)?.findings?.length ? 'Counter hours still has problems on phones.' : 'Counter hours now fills a phone screen and its text is readable there; desktop is unchanged.')(req)
+      ];
+    }
+  },
+  {
+    id: 'create-and-check-on-phones',
+    version: 1,
+    category: 'component',
+    prompt: 'Create a component called "Opening hours": a panel 720px wide on the site\'s Cards and panels background, holding an editable line that starts as "Open nine to five". Then inspect it at phone and desktop width and fix anything that does not fit or is hard to read on phones, keeping it 720px wide on desktop.',
+    task: 'component',
+    measureComponents: true,
+    scriptedProfile: 'constrained-json',
+    grade: ({ before, after }) => {
+      const def = madeNamed(before, after, 'Opening hours');
+      return [check('component-created', !!def), ...phoneRepairChecks(after, def, 'Open nine to five'), check('site-styles-untouched', shellUntouched(before, after))];
+    },
+    // Built as asked, 720px for every size; measured; the phone width fixed from what was found; measured again.
+    script: (state) => {
+      const id = () => defNamed(state(), 'Opening hours')!.id;
+      type Inspected = { revision?: number; findings?: Array<{ kind: string; at?: { nodeId?: string } }> } | null;
+      return [
+        () => [
+          call('upsert_managed_component', {
+            name: 'Opening hours',
+            properties: [{ type: 'string', name: 'hours', label: 'Hours', default: 'Open nine to five' }],
+            nodes: [
+              {
+                kind: 'element',
+                id: 'panel',
+                tag: 'aside',
+                children: ['line'],
+                styles: [
+                  { property: 'width', value: '720px' },
+                  { property: 'background', value: { token: 'color.surface' } },
+                  { property: 'color', value: { token: 'color.text' } },
+                  { property: 'paddingBlock', value: { token: 'space.lg' } },
+                  { property: 'paddingInline', value: { token: 'space.lg' } }
+                ]
+              },
+              { kind: 'text', id: 'line', tag: 'p', text: { $prop: 'hours' } }
+            ]
+          } satisfies ManagedComponentArgs)
+        ],
+        () => [call('inspect_component', { definitionId: id() })],
+        (req) => {
+          const r = lastResult(req) as Inspected;
+          if (!r?.findings?.some((f) => f.kind === 'element-overflow' && f.at?.nodeId === 'panel')) return finish('The inspection found nothing to fix.')(req);
+          return [call('apply_operations', { expectedRevision: r.revision, operations: [{ type: 'node.setStyle', owner: { kind: 'component', id: id() }, nodeId: 'panel', scope: 'phone', property: 'width', value: 'fill' }] })];
+        },
+        () => [call('inspect_component', { definitionId: id() })],
+        (req) => finish((lastResult(req) as Inspected)?.findings?.length ? 'Opening hours still has problems on phones.' : 'Made Opening hours; on phones it now fills the screen, and it stays 720px wide on desktop.')(req)
       ];
     }
   }
