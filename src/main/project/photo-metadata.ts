@@ -1324,7 +1324,14 @@ export function creditText(credits: PhotoCredits): CreditText {
   // The photo's own credit properties, each as written (already XML text), and its artist, copyright and credit line
   // from elsewhere for any of those it does not say.
   const own = credits.xmp?.toString('utf8') ?? '';
-  const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  // XML text: its markup escaped, and the control characters no XML document may hold left out.
+  const esc = (v: string) =>
+    v
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   const filled: Record<string, string | undefined> = { 'dc:creator': artist, 'dc:rights': copyright, 'photoshop:Credit': iptc.credit };
   const ns = new Set<string>();
   const props: string[] = [];

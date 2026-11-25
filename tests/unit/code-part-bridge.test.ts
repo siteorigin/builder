@@ -28,6 +28,9 @@ const FRAME = `<!doctype html><html><head><style>body{margin:0;font:16px/1.4 san
 <div style="display: contents" data-so-ctx="page:p" data-so-node="photo" data-so-code="true">
   <picture style="display: contents"><source type="image/webp" srcset="data:image/gif;base64,R0lGODlhAQABAAAAACw= 1w" /><img id="pic" alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" style="display:block;width:120px;height:60px" /></picture>
 </div>
+<div style="display: contents" data-so-ctx="page:p" data-so-node="formy" data-so-code="true">
+  <form style="display: contents"><input name="children" id="formy-input" style="display:block;width:80px;height:20px" /></form>
+</div>
 <script type="module" src="/bridge.js"></script></body></html>`;
 
 let browser: Browser;
@@ -112,5 +115,17 @@ describe.skipIf(!browserInstalled)('marked parts of a code component in the prev
     const pic = await boxOf('pic');
     expect(pic.width).toBe(120);
     await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([pic]);
+  });
+
+  it('measures a placement through boxless wrappers, even a form whose control is named "children"', async () => {
+    await page.evaluate(`window.seen = []`);
+    await post('measure', { requestId: 'm1', descs: [{ ctx: 'page:p', node: 'photo', items: '' }, { ctx: 'page:p', node: 'formy', items: '' }] });
+    const [pic, input] = [await boxOf('pic'), await boxOf('formy-input')];
+    await expect
+      .poll(async () => ((await messages()).find((m) => m.type === 'measured')?.payload as { rects?: unknown[] } | undefined)?.rects)
+      .toEqual([
+        { ...pic, order: 0 },
+        { ...input, order: 0 }
+      ]);
   });
 });

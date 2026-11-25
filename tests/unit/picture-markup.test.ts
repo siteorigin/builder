@@ -245,6 +245,30 @@ describe('the hero’s preload', () => {
     expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
   });
 
+  it('asks for a picture the page gives a design that shows it inside its list, which the page loads eagerly', async () => {
+    const s = site(picture('hero'));
+    // A design repeating a row per item, each row showing the content the page puts in its slot.
+    const tree = {
+      rootIds: ['root'],
+      nodes: {
+        root: { id: 'root', kind: 'element', tag: 'section', children: ['rows'] },
+        rows: { id: 'rows', kind: 'repeat', list: { $prop: 'items' }, children: ['row'] },
+        row: { id: 'row', kind: 'element', tag: 'div', children: ['media'] },
+        media: { id: 'media', kind: 'slot', slot: 'media' }
+      }
+    };
+    s.components['project.rows'] = { schemaVersion: 2, id: 'project.rows', componentId: 'project.rows', contractVersion: 1, kind: 'managed', owner: 'project', name: 'Rows', description: '', category: 'custom', tags: [], icon: 'component', properties: { items: { type: 'list', label: 'Items', fields: {}, default: [] } }, parts: { root: { nodeId: 'root', label: 'Root' } }, slots: { media: { label: 'Media' } }, tree, provenance: { createdBy: 'user' }, license: 'Project' } as unknown as (typeof s.components)[string];
+    const home = homeOf(s);
+    home.nodes.rows = { id: 'rows', kind: 'instance', definitionId: 'project.rows', props: { items: [{ id: 'r1' }] }, slots: { media: ['slotted'] } } as InstanceNode;
+    home.nodes.slotted = { id: 'slotted', kind: 'image', image: { assetId: 'a_hero', alt: 'Slotted' } };
+    home.rootIds = ['rows', ...home.rootIds.filter((id) => id !== 'rows')];
+    const { head, body } = await renderHome(s);
+    const pic = body.match(/<picture\b[^>]*>[\s\S]*?<\/picture>/)![0];
+    expect(attrs(pic.match(/<img\b[^>]*>/)![0])).toMatchObject({ alt: 'Slotted', loading: 'eager' });
+    const first = attrs(pic.match(/<source\b[^>]*>/)![0]);
+    expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
+  });
+
   it('asks for an entry’s featured picture where its layout shows it first, and nothing for an entry without one', () => {
     const { state } = seoSite();
     state.assets.assets.img_bowls = { ...picture('bowls'), id: 'img_bowls' };

@@ -147,7 +147,8 @@ function layoutItem(el) {
   };
   // The first child that lays out, through children that lay out no box either (an image's <picture>).
   const laid = (box) => {
-    for (const c of box.children) {
+    // Through the prototype: a form's control named "children" would hide the form's own.
+    for (const c of Object.getOwnPropertyDescriptor(Element.prototype, 'children').get.call(box)) {
       if (getComputedStyle(c).display !== 'contents') {
         if (shows(c)) return c;
       } else {

@@ -195,6 +195,12 @@ describe('responsive copies', () => {
     expect(merged.xmp).not.toContain('Ana Field');
     expect(merged.xmp).toContain('<dc:rights><rdf:Alt><rdf:li xml:lang="x-default">© Zoë</rdf:li></rdf:Alt></dc:rights>');
     expect(merged.xmp).toContain('<photoshop:Credit>Agence Zoë</photoshop:Credit>');
+    // Text no XML document may hold is left out, so the packet stays one a reader can parse.
+    const control = Buffer.concat([Buffer.from([0x1c, 1, 90, 0, 3, 0x1b, 0x25, 0x47]), dataset(110, 'Agence\u000b Zoë'), dataset(80, 'A<B>\u0001')]);
+    const cleanXmp = creditText({ iptc: Buffer.concat([Buffer.from('8BIM', 'latin1'), Buffer.from([4, 4, 0, 0]), u32(control.length), control]) }).xmp!;
+    expect(cleanXmp).not.toMatch(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/);
+    expect(cleanXmp).toContain('<photoshop:Credit>Agence Zoë</photoshop:Credit>');
+    expect(cleanXmp).toContain('<rdf:li>A&lt;B&gt;</rdf:li>');
     // EXIF first, IPTC where EXIF has nothing; IPTC is UTF-8 only when its character set says so.
     const exifArtist = textCreditsAsTiff([Buffer.from('tEXtAuthor\0Ana Field', 'latin1')])!;
     const mixed = creditText({ tiff: exifArtist, iptc: block });

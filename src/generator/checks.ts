@@ -593,10 +593,25 @@ export function firstSectionImages(
     return [hiddenInDesign(def, n.id, scope, false)[0] ?? new Set(), hiddenInDesign(def, n.id, scope)[0] ?? new Set()];
   };
   const hidden = (k: 0 | 1) => hiddenEverySize(hiding.map((h) => h[k]));
+  // Only content slotted into a list can load eagerly there: a list holding no slot is never walked, however long.
+  const slotsUnder = new Map<string, boolean>();
+  const holdsSlot = (t: NodeTree, id: string, seen = new Set<string>()): boolean => {
+    const n = t.nodes[id];
+    if (!n || seen.has(id)) return false;
+    seen.add(id);
+    if (n.kind === 'slot') return true;
+    const kids = n.kind === 'element' || n.kind === 'repeat' ? n.children : n.kind === 'instance' ? Object.keys(n.slots ?? {}).flatMap((k) => slotChildren(n, k)) : [];
+    return kids.some((k) => holdsSlot(t, k, seen));
+  };
+  const listHoldsSlot = (def: ComponentDefinition, id: string) => {
+    const key = `${def.id}\n${id}`;
+    if (!slotsUnder.has(key)) slotsUnder.set(key, !!def.tree && holdsSlot(def.tree, id));
+    return slotsUnder.get(key)!;
+  };
   walkRendered(state, tree, {
     roots: [first],
     ...(entry ? { entry } : {}),
-    prune: (n) => done || (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed'),
+    prune: (n, _scope, _reportId, def) => done || (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed') || (n.kind === 'repeat' && (!def || !listHoldsSlot(def, n.id))),
     node: (n, scope, _reportId, _inDef, def) => {
       hiding.push(own(n, scope, def));
       if (done || n.kind !== 'image' || (scope.repeats ?? 0) > 0 || (hidden(0) && hidden(1))) return;
