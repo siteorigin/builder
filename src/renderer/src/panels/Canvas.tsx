@@ -5,6 +5,7 @@ import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, C
 import { findParent } from '@engine/tree';
 import { newId } from '@shared/ids';
 import { applyOps, commitOps } from '../store';
+import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { treeFor } from '../lib/model';
 import { editLabel } from '../lib/edit-label';
@@ -80,8 +81,9 @@ const siteNow = () => siteAddresses(Object.values(getState().snapshot?.state.pag
 
 /** Back and Forward through a visitor's journey in Preview, for the keyboard (see App and Editor). */
 let visitorStep: ((dir: 'back' | 'forward') => boolean) | null = null;
-/** Step back or forward in Preview; false when there is no such step. */
+/** Step back or forward in Preview; false when there is no such step, or while a workspace covers the canvas (#700). */
 export function stepVisitor(dir: 'back' | 'forward'): boolean {
+  if (canvasCovered(activeWorkspace(getState()))) return false;
   return visitorStep?.(dir) ?? false;
 }
 

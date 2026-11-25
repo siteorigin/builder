@@ -8,11 +8,12 @@ import { Toolbar } from './panels/Toolbar';
 import { Canvas, showEditedPage, stepVisitor, visitAddress } from './panels/Canvas';
 import { entryRoute } from '@shared/collections';
 import { saveOpenPost } from './lib/post-draft';
-import { postWorkspace } from './lib/posts';
+import { activeWorkspace, canvasCovered } from './lib/workspace';
 import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
 import { PostsPanel } from './panels/PostsPanel';
 import { PostWriter } from './panels/PostWriter';
+import { SeoPanel, SeoView } from './panels/SeoView';
 import { LayersPanel } from './panels/LayersPanel';
 import { InsertPanel } from './panels/InsertPanel';
 import { AssetsPanel } from './panels/AssetsPanel';
@@ -91,17 +92,17 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     void saveNow();
     return true;
   }
-  // What is selected on the page under the post writer is out of sight: no key changes it, copies it or asks the AI about
-  // it until that page shows again (#578).
-  const writing = postWorkspace(s) === 'write';
+  // What is selected on the page under the post writer or the SEO view is out of sight: no key changes it, copies it or
+  // asks the AI about it until that page shows again (#578, #700).
+  const covered = canvasCovered(activeWorkspace(s));
   // Duplicate, delete and move act on every layer selected together in Layers, or on the selection alone.
   if (mod && key.toLowerCase() === 'd') {
-    if (!writing) void duplicateLayers();
+    if (!covered) void duplicateLayers();
     return true;
   }
   // Wrap them in a Stack (Group), and Ungroup a container, the same way (#386). Only while editing: Preview selects nothing.
   if (mod && key.toLowerCase() === 'g') {
-    if (!writing && s.mode === 'edit') void (shift ? ungroupLayers() : wrapLayers('stack'));
+    if (!covered && s.mode === 'edit') void (shift ? ungroupLayers() : wrapLayers('stack'));
     return true;
   }
   // Copy and paste sections and elements, also between pages. Only while editing, with no dialog or menu open: a key
@@ -109,12 +110,12 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   // paste. Selected text keeps the ordinary copy, and a copy is taken from a page, never from inside a component edited
   // everywhere. A paste goes where the author is editing (a page, or the component edited everywhere), whatever text
   // is selected: the editor's own fields never get here (see Editor's key handler).
-  if (mod && !shift && s.mode === 'edit' && !writing && !s.modal && !openDialogs.length && !openMenus.count) {
+  if (mod && !shift && s.mode === 'edit' && !covered && !s.modal && !openDialogs.length && !openMenus.count) {
     if (key.toLowerCase() === 'c' && !textSelected() && !s.definitionMode) return copySelection();
     if (key.toLowerCase() === 'v') return pasteCopy();
   }
   if (mod && key.toLowerCase() === 'j') {
-    askAiAbout(writing ? null : s.selection);
+    askAiAbout(covered ? null : s.selection);
     return true;
   }
   // With Shift held, macOS reports the backslash key as "|".
@@ -127,7 +128,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     setState({ modal: { kind: 'export' } });
     return true;
   }
-  if (!mod && (key === 'Delete' || key === 'Backspace') && s.selection && !writing) {
+  if (!mod && (key === 'Delete' || key === 'Backspace') && s.selection && !covered) {
     void deleteLayers();
     return true;
   }
@@ -135,8 +136,8 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     const dm = s.definitionMode;
     const inDef = !!dm && !!s.selection;
     if (s.modal) setState({ modal: null });
-    // The page's selection under the writer is kept for when the page shows again.
-    else if (writing) return true;
+    // The page's selection under the writer or the SEO view is kept for when the page shows again.
+    else if (covered) return true;
     // Several layers selected together: the first Escape keeps only the one everything follows.
     else if (planLayers(s)?.several) setState({ layerSet: null });
     // While editing a component everywhere, Escape steps to the component overview, then leaves the mode;
@@ -150,7 +151,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     return true;
   }
   if (mod && shift && (key === 'ArrowUp' || key === 'ArrowDown')) {
-    if (!writing) void moveLayers(key === 'ArrowUp' ? -1 : 1);
+    if (!covered) void moveLayers(key === 'ArrowUp' ? -1 : 1);
     return true;
   }
   return false;
@@ -371,8 +372,12 @@ export function Editor() {
   // they give way, and get the room back when it grows.
   const prefs: PanelPrefs = { left: leftTab ? leftWidth : null, right: dockOpen ? rightWidth : null };
   const shown = fitPanels(windowWidth, prefs);
-  // The Posts panel's writer takes the canvas's place, except while its post is previewed there.
-  const writing = useStore((s) => s.leftTab === 'posts' && s.postView === 'write');
+  // The Posts panel's writer takes the canvas's place, except while its post is previewed there, and so does the SEO
+  // view while its panel shows (#700). The canvas stays loaded under either, out of reach.
+  const workspace = useStore(activeWorkspace);
+  const writing = workspace === 'write';
+  const seoing = workspace === 'seo';
+  const covered = canvasCovered(workspace);
   const aiBusy = useStore((s) => !!s.runStatus);
   const aiPhase = useStore((s) => runPhase(s.runStatus));
   const aiReading = useStore((s) => s.runMode === 'ask');
@@ -428,7 +433,7 @@ export function Editor() {
       // Back and Forward through the visitor's journey in Preview, as a browser's keys do, outside text fields and
       // never for a key a control already used (a panel divider takes Alt+Left and Alt+Right to resize).
       const dir = visitorStepKey({ key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey }, api.platform === 'darwin');
-      if (dir && getState().mode === 'preview' && !isTyping(e) && !e.defaultPrevented) {
+      if (dir && getState().mode === 'preview' && !canvasCovered(activeWorkspace(getState())) && !isTyping(e) && !e.defaultPrevented) {
         e.preventDefault();
         if (!getState().leaving) stepVisitor(dir);
         return;
@@ -573,9 +578,12 @@ export function Editor() {
     e.currentTarget.querySelector<HTMLElement>(`[data-rail="${id}"]`)?.focus();
   };
 
-  const defining = useStore((s) => s.definitionMode);
+  // The band names the component edited on the canvas, so it goes while the SEO view covers the canvas: its buttons
+  // would act on what is out of sight. The mode itself is kept for when the canvas shows again.
+  const definitionMode = useStore((s) => s.definitionMode);
+  const defining = seoing ? null : definitionMode;
   // The page row is outlined only while the page itself is what the inspector shows, on screen.
-  const pageInspected = useStore((s) => s.mode === 'edit' && !s.selection && !s.definitionMode && s.dockOpen && s.rightTab === 'inspect' && !postWorkspace(s));
+  const pageInspected = useStore((s) => s.mode === 'edit' && !s.selection && !s.definitionMode && s.dockOpen && s.rightTab === 'inspect' && !activeWorkspace(s));
   const defName = useStore((s) => (s.definitionMode ? s.snapshot?.state.components[s.definitionMode.definitionId]?.name ?? 'component' : null));
   // Where the component is used, by page name, bounded so the band stays one line: "Home and About", "4 pages".
   const defPlaces = useStore((s) => {
@@ -673,23 +681,27 @@ export function Editor() {
         </div>
         {/* Panels stay mounted while hidden, so a search, expanded layers or scroll position survive switching. */}
         <aside id="editor-sidebar" className={`side-panel${shown.left < 250 ? ' narrow' : ''}`} style={{ width: shown.left, display: leftTab ? undefined : 'none' }} aria-label="Sidebar">
-          {(['pages', 'posts', 'layers', 'insert', 'assets'] as const).map((t) => (
+          {LEFT_TABS.map(({ id: t }) => (
             <div key={t} className="side-panel-view" hidden={leftTab !== t}>
               {t === 'pages' && <PagesPanel />}
               {t === 'posts' && <PostsPanel />}
               {t === 'layers' && <LayersPanel />}
               {t === 'insert' && <InsertPanel />}
               {t === 'assets' && <AssetsPanel narrow={shown.left < 240} />}
+              {t === 'seo' && <SeoPanel />}
             </div>
           ))}
         </aside>
         <Seam side="left" width={shown.left} max={panelMax('left', windowWidth, prefs)} at={RAIL_WIDTH + shown.left} restore={() => setState({ leftTab: lastLeftTab.current })} />
-        {/* While a post is being written, the canvas stays loaded under the writer, ready for Preview in site. */}
-        <div className="canvas-holder" inert={writing || undefined}>
+        {/* While a post is being written, or the SEO view is open, the canvas stays loaded under it, as it was. */}
+        <div className="canvas-holder" inert={covered || undefined}>
           <Canvas />
         </div>
         <div className="post-writer-holder" style={{ left: RAIL_WIDTH + shown.left, right: shown.right }} hidden={!writing}>
           <PostWriter hidden={!writing} />
+        </div>
+        <div className="seo-view-holder" style={{ left: RAIL_WIDTH + shown.left, right: shown.right }} hidden={!seoing}>
+          <SeoView />
         </div>
         <Seam side="right" width={shown.right} max={panelMax('right', windowWidth, prefs)} at={shown.right} restore={() => setState({ dockOpen: true })} />
         <aside id="editor-dock" className="dock" style={{ width: shown.right, display: dockOpen ? undefined : 'none' }} aria-label="Right panel">

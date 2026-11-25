@@ -16,6 +16,8 @@ import { auditOnce } from '../lib/seo-health';
 import { headroomWarning, replayedWords, smallToolsCover } from '../lib/chatHeadroom';
 import { openPost, selectPage } from '../lib/actions';
 import { postShown, postWorkspace } from '../lib/posts';
+import { activeWorkspace } from '../lib/workspace';
+import { seoDocument } from '../lib/seo-view';
 import { saveOpenPost } from '../lib/post-draft';
 import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
@@ -199,6 +201,8 @@ export function Chat() {
   const postView = useStore((s) => s.postView);
   const editorMode = useStore((s) => s.mode);
   const postPreviewAt = useStore((s) => s.postPreviewAt);
+  // The document the SEO view has chosen: while the view covers the canvas, the next message is about it (#700).
+  const seoSubject = useStore((s) => s.seoSubject);
   const snap = useStore((s) => s.snapshot);
   const viewport = useStore((s) => s.viewport);
   const ctxOn = useStore((s) => s.chatContextEnabled);
@@ -490,14 +494,17 @@ export function Chat() {
   const st = snap.state;
   // What the next message is about: the page, or the component edited everywhere, and the element within it.
   // While the Posts workspace is in front, the element or design behind it is never the target: the post it shows, or
-  // the page its preview went on to, is.
-  const workspace = postWorkspace({ leftTab, postView, mode: editorMode, post: openPostRef });
-  const shownPost = workspace ? postShown(st, workspace, openPostRef, postPreviewAt) : null;
+  // the page its preview went on to, is. While the SEO view is, the page or post it has chosen is (#700); with none
+  // chosen, the page under it, as the writer with no post open leaves it.
+  const workspace = activeWorkspace({ leftTab, postView, mode: editorMode, post: openPostRef });
+  const shownPost = workspace === 'write' || workspace === 'preview' ? postShown(st, workspace, openPostRef, postPreviewAt) : null;
+  const seoChosen = workspace === 'seo' ? seoDocument(st, seoSubject)?.subject : undefined;
+  const seoPage = seoChosen?.kind === 'page' ? seoChosen.pageId : null;
   const scope = composerScope(st, {
-    pageId: shownPost?.kind === 'page' ? shownPost.pageId : pageId,
+    pageId: seoPage ?? (shownPost?.kind === 'page' ? shownPost.pageId : pageId),
     selection: workspace ? null : selection,
     definitionMode: workspace ? null : definitionMode,
-    post: shownPost?.kind === 'post' ? shownPost.ref : null
+    post: seoChosen?.kind === 'entry' ? { collectionId: seoChosen.collectionId, entryId: seoChosen.entryId } : shownPost?.kind === 'post' ? shownPost.ref : null
   });
   const { page, component } = scope;
   const selLabel = scope.selectionLabel;
@@ -527,7 +534,7 @@ export function Chat() {
             `Which parts of the “${page.title}” page are shared with other pages?`
           ].map((text) => ({ text, kind: 'ask' }))
         : []
-      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: { page: ctxOn.page, selection: toSelection }, seoFindings: dockOpen && rightTab === 'chat' ? seoFindingsOf(st) : undefined });
+      : chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId: seoPage ?? pageId, selection: workspace ? null : selection, context: { page: ctxOn.page, selection: toSelection }, seoFindings: dockOpen && rightTab === 'chat' ? seoFindingsOf(st) : undefined });
   const stepNow = currentStep(working?.activities);
   // The run strip is the one place that says what a run is doing now: an edit's current step, or its phase. A question
   // is always "Reading the site", as the dock tab and the canvas say it, followed by its current step.
@@ -712,7 +719,7 @@ export function Chat() {
     if (!configured) return (openSettings(), false);
     // The assistant has no tools for collection layouts: an edit sent from one would land on the page behind it. A post
     // open in the Posts workspace, or the page its preview went on to, is a target of its own instead.
-    const ownTarget = context ? !!context.post : !!scope.post || shownPost?.kind === 'page';
+    const ownTarget = context ? !!context.post : !!scope.post || shownPost?.kind === 'page' || !!seoPage;
     if (getState().templateMode && !ownTarget && (context ? context.mode !== 'ask' : !askMode))
       return (toast('The assistant can’t change a collection’s layout yet. Click Done to go back to the page, or ask it a question.', 'info'), false);
     // A code component open in Component Studio is not one the AI edits: an edit sent now would reach the page behind
@@ -1863,12 +1870,13 @@ function ResultCard({
       // Anything written into the box while the open post was saving is the author's own: it is never replaced unasked.
       if (view?.post && (draftFor(getState().chatDrafts, conv.id).trim() !== typed || imagesFor(getState().chatImages, conv.id).join('\n') !== attached.join('\n')))
         return void toast('The post is open. What you wrote meanwhile is kept, so the earlier request was not put back.', 'info');
-      // A request about a page leaves the Posts workspace, and a collection's layout behind it, whose post or layout
-      // would otherwise stay in front of the page it is about.
-      const covering = postWorkspace(getState());
+      // A request about a page leaves the Posts workspace or the SEO view, and a collection's layout behind it, whose
+      // post, view or layout would otherwise stay in front of the page it is about.
+      const covering = activeWorkspace(getState());
+      const previewing = postWorkspace(getState()) === 'preview';
       const leavePosts =
         ctx?.post === undefined && covering
-          ? { ...(getState().leftTab === 'posts' ? { leftTab: 'pages' as const } : {}), ...(covering === 'preview' ? { mode: 'edit' as const } : {}), ...(getState().templateMode && !view?.definitionMode ? { templateMode: null } : {}) }
+          ? { ...(getState().leftTab === 'posts' || getState().leftTab === 'seo' ? { leftTab: 'pages' as const } : {}), ...(previewing ? { mode: 'edit' as const } : {}), ...(getState().templateMode && !view?.definitionMode ? { templateMode: null } : {}) }
           : {};
       setState({
         ...leavePosts,

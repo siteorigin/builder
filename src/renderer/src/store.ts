@@ -3,6 +3,7 @@ import type { AiEvent, AppSettings, ChatContext, ChatEditScope, ChatMessage, Cha
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
+import type { SeoSubject } from '@shared/seo';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
@@ -19,7 +20,7 @@ import type { ChatFocusRequest } from './lib/page-start';
 
 export const api = window.builder;
 
-export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets';
+export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets' | 'seo';
 export type { PostRef };
 export type RightTab = 'chat' | 'inspect' | 'styles' | 'project';
 /** Every view of the right panel, in the order the dock shows them: the AI first, as the view a new window opens on. */
@@ -151,6 +152,11 @@ export interface State {
   postPreviewAt: string | null;
   /** A picture of the open post's text to bring into view once the writer shows it (Show in Assets). */
   postReveal: { entryId: string; picture: number; seq: number } | null;
+  /**
+   * The page or post the SEO view has chosen (shown while the SEO panel is), kept while other panels are. Null with none
+   * chosen, and once the project no longer has it (see App). Never saved: each opening starts with none.
+   */
+  seoSubject: SeoSubject | null;
   selection: ElementRef | null;
   /** Sibling layers selected in Layers together with `selection`, which is always one of them (lib/layer-set). */
   layerSet: LayerSet | null;
@@ -304,6 +310,7 @@ export const useStore = create<State>((set) => ({
   postView: 'write',
   postPreviewAt: null,
   postReveal: null,
+  seoSubject: null,
   selection: null,
   layerSet: null,
   pagePlaces: {},

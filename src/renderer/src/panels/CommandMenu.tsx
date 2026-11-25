@@ -8,7 +8,7 @@ import { api, projectHistory, setState, setViewport, toast, useStore } from '../
 import { pageShowing, partName } from '@shared/page-shell';
 import { insert, pageOutOfSight, selectPage, askAiAbout, setMode, openSiteStyles, openOutline, openComponentStudio, planLayers, currentOwner } from '../lib/actions';
 import { copiedHere, copySelection, pasteFromMenu } from '../lib/clipboard';
-import { postWorkspace } from '../lib/posts';
+import { activeWorkspace } from '../lib/workspace';
 import { platformKeys } from './CopyPaste';
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
 import { VIEWPORT_PRESETS } from '@shared/styles';
@@ -316,14 +316,15 @@ export function CommandMenu() {
   const editing = useStore((s) => s.mode === 'edit');
   const copyable = useStore((s) => s.mode === 'edit' && !s.definitionMode && planLayers(s)?.group.owner.kind === 'page');
   const pasteable = useStore((s) => !!copiedHere(s));
-  // The page under the post writer, or behind a post's preview, is out of sight: nothing is copied from it, pasted into
-  // it or inserted on it (#578).
-  const posting = useStore(postWorkspace);
+  // The page under the post writer or the SEO view, or behind a post's preview, is out of sight: nothing is copied from
+  // it, pasted into it or inserted on it (#578, #700). The SEO view also keeps the canvas's mode as it was.
+  const workspace = useStore(activeWorkspace);
   const readOnly = !!snap?.readOnly;
   const unavailable = (c: Cmd) => {
     if (c.id === 'undo') return history?.canUndo ? undefined : 'Nothing to undo';
     if (c.id === 'redo') return history?.canRedo ? undefined : 'Nothing to redo';
-    if (posting && (c.id === 'copy' || c.id === 'paste' || c.inserts)) return posting === 'write' ? 'Not while writing a post' : 'Not while previewing a post';
+    if (workspace === 'seo' && (c.id === 'copy' || c.id === 'paste' || c.inserts || c.id === 'preview')) return 'Not in the SEO view';
+    if (workspace && (c.id === 'copy' || c.id === 'paste' || c.inserts)) return workspace === 'write' ? 'Not while writing a post' : 'Not while previewing a post';
     if (c.inserts) return readOnly ? 'Read-only' : c.refused;
     if (c.id === `panel:${leftTab}`) return 'Already open';
     if (c.id === 'copy') return !editing ? 'Edit mode only' : copyable ? undefined : 'Nothing to copy';

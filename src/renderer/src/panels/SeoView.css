@@ -1,0 +1,32 @@
+@layer components {
+  /* The SEO view (#700): its list in the sidebar, and the chosen document in the canvas's place. */
+  .seo-view-holder { position: absolute; top: 0; bottom: 0; z-index: 3; display: flex; min-width: 0; background: var(--bg); }
+  .seo-view-holder[hidden] { display: none; }
+  .seo-view { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .seo-bar { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--panel); flex: none; min-width: 0; }
+  .seo-bar > svg { width: 16px; height: 16px; color: var(--text-3); flex: none; }
+  .seo-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); min-width: 0; }
+  .seo-address { font-size: 12px; color: var(--text-3); min-width: 0; }
+  .seo-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+  .seo-none { margin: 64px auto; max-width: 36ch; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--text-3); text-align: center; padding: 24px; font-size: 13px; }
+  .seo-none svg { width: 28px; height: 28px; }
+  .seo-doc { max-width: 72ch; margin: 28px auto 64px; padding: 0 24px; font-size: 13px; color: var(--text-2); }
+  .seo-doc-kind { margin: 0 0 10px; font-size: 12px; color: var(--text-3); }
+  .seo-doc-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 12px; }
+  .seo-doc-facts dt { color: var(--text-3); }
+  .seo-doc-facts dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+
+  .seo-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .seo-group { padding: 0 6px 10px; }
+  .seo-group-head { margin: 4px 8px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-3); }
+  .seo-list { list-style: none; margin: 0; padding: 0; }
+  .seo-row { border-radius: var(--r-sm); }
+  .seo-row:hover, .seo-row:focus-within { background: var(--hover); }
+  .seo-row.current { background: var(--accent-soft); }
+  .seo-open { width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; border: 0; background: transparent; text-align: left; color: var(--text); border-radius: var(--r-sm); }
+  .seo-row-title { max-width: 100%; min-width: 0; font-weight: 500; display: flex; align-items: center; gap: 5px; }
+  .seo-row-title svg { width: 13px; height: 13px; flex: none; color: var(--text-3); }
+  .seo-row-meta { display: flex; align-items: center; gap: 6px; max-width: 100%; font-size: 11px; color: var(--text-3); }
+  .seo-row-address { min-width: 0; }
+  .seo-note { margin: 4px 8px; font-size: 12px; color: var(--text-3); }
+}
