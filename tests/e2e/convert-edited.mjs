@@ -55,8 +55,8 @@ await eventually(async () => assert.deepEqual((await snapshot()).conflicts.map((
 
 step('only the design file’s row offers the conversion, and without Developer mode it says why');
 let health = await openHealth();
-const heroRow = health.locator('.health-row', { hasText: 'Split Hero component file' });
-const aboutRow = health.locator('.health-row', { hasText: 'About website file' });
+const heroRow = health.locator('.health-row.danger', { hasText: 'Split Hero component file' });
+const aboutRow = health.locator('.health-row.danger', { hasText: 'About website file' });
 const convert = heroRow.getByRole('button', { name: 'Convert to code component' });
 await convert.waitFor();
 assert.equal(await heroRow.getByRole('button', { name: 'Use SiteOrigin Builder’s version' }).count(), 1, 'Restore is still there beside it');
@@ -64,7 +64,8 @@ assert.equal(await aboutRow.getByRole('button', { name: 'Convert to code compone
 assert.equal(await aboutRow.getByRole('button', { name: 'Use SiteOrigin Builder’s version' }).count(), 1);
 assert.equal(await convert.getAttribute('aria-disabled'), 'true', 'held without Developer mode');
 assert.match(await heroRow.innerText(), /Custom code needs Developer mode\./);
-await convert.click();
+// Held, not disabled (focus stays on it): pressed anyway, it does nothing.
+await convert.click({ force: true });
 assert.equal((await snapshot()).conflicts.length, 2, 'pressing it without Developer mode changes nothing');
 await closeDialog();
 
@@ -91,7 +92,7 @@ const code = Object.values(done.state.components).find((d) => d.kind === 'code' 
 assert.ok(code, 'the code component was made from the design');
 assert.equal(code.source, edited, 'its code is the edited file');
 assert.equal(readFileSync(join(dir, HERO), 'utf8'), generated, 'the design’s file is SiteOrigin Builder’s again');
-assert.equal(await heroRow.count(), 0, 'its row is gone');
+await eventually(async () => assert.equal(await heroRow.count(), 0, 'its conflict row is gone'));
 await health.locator('.health-row', { hasText: 'The file as edited outside SiteOrigin Builder' }).filter({ hasText: 'Split Hero component file' }).waitFor();
 await closeDialog();
 await eventually(async () => assert.equal(await frame.locator('.hand-badge').first().innerText(), 'Made by hand'), 60000);
