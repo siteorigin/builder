@@ -5019,3 +5019,230 @@ describe('the earlier conversation as a summary (#745)', () => {
     expect(sent.at(-1)).toContain('Shorter please');
   });
 });
+
+describe('source patches bound to a revision and a scope (#740)', () => {
+  const resultOf = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const homeOf = (s: ProjectState) => s.pages[s.site.homePageId];
+  const hero = (s: ProjectState) => homeOf(s).rootIds[0];
+  const owner = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
+  const sourceOf = (s: ProjectState, id: string) => s.components[id]?.source ?? '';
+  const selected = (s: ProjectState, nodeId = hero(s)): Partial<ChatContext> => ({ selection: { owner: owner(s), instancePath: [], nodeId }, selectionLabel: 'Split hero' });
+  // A change any converted hero's source takes: a comment after it.
+  const tidied = (src: string) => `${src}\n<!-- tidied -->\n`;
+  /** The home hero turned into code by the author before the run: a code component placed once. */
+  async function heroInCode(session: ProjectSession) {
+    const r = await session.apply({ operations: [{ type: 'component.convertToCode', owner: owner(session.state), nodeId: hero(session.state) }] }, { label: 'To code', source: 'user' });
+    expect(r.ok).toBe(true);
+    return (r.results![0] as { definitionId: string }).definitionId;
+  }
+
+  it('reports the revision read_source read at, and refuses a patch written against an older one though its hash still matches', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let read = { hash: '', revision: -1 };
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        read = resultOf(req);
+        // The component's page changes after the read; its source does not.
+        return [call('c1', 'apply_operations', { expectedRevision: read.revision, operations: [{ type: 'page.update', pageId: session.state.site.homePageId, title: 'Start' }] })];
+      },
+      () => [call('p1', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, source: tidied(sourceOf(session.state, id)) })],
+      () => finish('Done.')
+    ]);
+    session = env.session;
+    id = await heroInCode(session);
+    const before = sourceOf(session.state, id);
+    const { result } = await env.run('Tidy the hero code');
+    expect(read.revision).toBe(1);
+    const refused = resultOf(env.adapter.requests[3]);
+    expect(JSON.stringify(refused)).toContain('STALE_REVISION');
+    expect(JSON.stringify(refused)).toMatch(/read_source/);
+    expect(sourceOf(session.state, id)).toBe(before);
+    expect(homeOf(session.state).title).toBe('Start');
+    expect(result?.status).toBe('completed');
+  });
+
+  it('refuses a stale-revision patch after its own earlier one, a current revision with a changed hash, and a patch with no revision', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let read = { hash: '', revision: -1 };
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        read = resultOf(req);
+        return [call('p1', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, source: tidied(sourceOf(session.state, id)) })];
+      },
+      // Both written against the first read.
+      () => [call('p2', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, source: `${sourceOf(session.state, id)}<!-- again -->\n` })],
+      () => [call('p3', 'apply_source_patch', { definitionId: id, expectedRevision: session.revision, expectedHash: read.hash, source: `${sourceOf(session.state, id)}<!-- again -->\n` })],
+      () => [call('p4', 'apply_source_patch', { definitionId: id, expectedHash: read.hash, source: `${sourceOf(session.state, id)}<!-- again -->\n` })],
+      () => finish('Done.')
+    ]);
+    session = env.session;
+    id = await heroInCode(session);
+    const before = sourceOf(session.state, id);
+    const { result } = await env.run('Tidy the hero code');
+    expect(resultOf(env.adapter.requests[2])).toMatchObject({ ok: true, revision: 2 });
+    const stale = JSON.stringify(resultOf(env.adapter.requests[3]));
+    expect(stale).toContain('STALE_REVISION');
+    expect(stale).toMatch(/read_source/);
+    // The revision matches, but the source is not the one that was read.
+    expect(JSON.stringify(resultOf(env.adapter.requests[4]))).toContain('STALE_REVISION');
+    expect(JSON.stringify(resultOf(env.adapter.requests[5]))).toMatch(/INVALID_ARGUMENT.*expectedRevision/);
+    expect(sourceOf(session.state, id)).toBe(tidied(before));
+    expect(result?.status).toBe('completed');
+  });
+
+  it('refuses a requested scope wider than the run may change, and lets a narrower one limit the call', async () => {
+    let session: ProjectSession;
+    const heading = (value: string) => ({ type: 'instance.setProp', owner: owner(session.state), nodeId: hero(session.state), prop: 'heading', value });
+    const env = await setup([
+      // The change is inside the selection, but the call asks for the whole site.
+      () => [call('w1', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [heading('Wide')] })],
+      () => [call('w2', 'apply_operations', { expectedRevision: 0, scope: { kind: 'page', targetIds: [session.state.site.homePageId] }, operations: [heading('Page')] })],
+      () => [call('w3', 'apply_operations', { expectedRevision: 0, scope: { kind: 'selection', targetIds: [hero(session.state)] }, operations: [heading('Mine')] })],
+      () => finish('Done.')
+    ]);
+    session = env.session;
+    const { result } = await env.run('Change this heading', selected(session.state));
+    for (const i of [1, 2]) {
+      const refused = resultOf(env.adapter.requests[i]);
+      expect(refused.error?.code).toBe('SCOPE_MISMATCH');
+      expect(refused.error?.message).toMatch(/Nothing in this batch was applied/);
+    }
+    expect(resultOf(env.adapter.requests[3])).toMatchObject({ ok: true, revision: 1 });
+    expect((homeOf(session.state).nodes[hero(session.state)] as InstanceNode).props.heading).toBe('Mine');
+    expect(result?.status).toBe('completed');
+  });
+
+  it('limits a call to the narrower scope it asks for, inside a run that may change the whole site', async () => {
+    let session: ProjectSession;
+    const second = (s: ProjectState) => homeOf(s).rootIds[1];
+    const about = (s: ProjectState) => Object.values(s.pages).find((p) => p.id !== s.site.homePageId)!.id;
+    const env = await setup([
+      // Asks for the hero alone, then changes the next section.
+      () => [call('n1', 'apply_operations', { expectedRevision: 0, scope: { kind: 'selection', targetIds: [hero(session.state)] }, operations: [{ type: 'node.rename', owner: owner(session.state), nodeId: second(session.state), name: 'Elsewhere' }] })],
+      // Asks for another page, then changes the home page.
+      () => [call('n2', 'apply_operations', { expectedRevision: 0, scope: { kind: 'page', targetIds: [about(session.state)] }, operations: [{ type: 'page.update', pageId: session.state.site.homePageId, title: 'Start' }] })],
+      () => [call('n3', 'apply_operations', { expectedRevision: 0, scope: { kind: 'page', targetIds: [session.state.site.homePageId] }, operations: [{ type: 'page.update', pageId: session.state.site.homePageId, title: 'Start' }] })],
+      () => finish('Done.')
+    ]);
+    session = env.session;
+    const { result } = await env.run('Rename the home page');
+    for (const i of [1, 2]) expect(resultOf(env.adapter.requests[i]).error?.code).toBe('SCOPE_MISMATCH');
+    expect(resultOf(env.adapter.requests[3])).toMatchObject({ ok: true, revision: 1 });
+    expect(homeOf(session.state).nodes[second(session.state)].name).not.toBe('Elsewhere');
+    expect(homeOf(session.state).title).toBe('Start');
+    expect(result?.status).toBe('completed');
+  });
+
+  it('lets a selection convert its placement to code and then patch that copy (§13.4)', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let read = { hash: '', revision: -1 };
+    const scope = () => ({ kind: 'selection', targetIds: [hero(session.state)] });
+    const env = await setup([
+      () => [call('c1', 'apply_operations', { expectedRevision: 0, scope: scope(), operations: [{ type: 'component.convertToCode', owner: owner(session.state), nodeId: hero(session.state) }] })],
+      (req) => {
+        id = resultOf(req).results[0].definitionId;
+        return [call('r1', 'read_source', { definitionId: id })];
+      },
+      (req) => {
+        read = resultOf(req);
+        return [call('p1', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, scope: scope(), source: tidied(sourceOf(session.state, id)) })];
+      },
+      () => finish('Done.')
+    ]);
+    session = env.session;
+    const { result } = await env.run('Turn this into code and tidy it', selected(session.state));
+    expect(read.revision).toBe(1);
+    expect(resultOf(env.adapter.requests[3])).toMatchObject({ ok: true, revision: 2 });
+    expect(sourceOf(session.state, id)).toMatch(/<!-- tidied -->\n$/);
+    expect((homeOf(session.state).nodes[hero(session.state)] as InstanceNode).definitionId).toBe(id);
+    expect(result?.status).toBe('completed');
+  });
+
+  it('refuses a patch from a selection to a code component placed outside it', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let read = { hash: '', revision: -1 };
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        read = resultOf(req);
+        return [call('p1', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, scope: { kind: 'selection', targetIds: [hero(session.state)] }, source: tidied(sourceOf(session.state, id)) })];
+      },
+      () => finish('Could not.')
+    ]);
+    session = env.session;
+    id = await heroInCode(session);
+    // A second placement of the same code, beside the selected one.
+    expect((await session.apply({ operations: [{ type: 'node.duplicate', owner: owner(session.state), nodeId: hero(session.state) }] }, { label: 'Duplicate', source: 'user' })).ok).toBe(true);
+    const before = sourceOf(session.state, id);
+    const { result } = await env.run('Tidy this code', selected(session.state));
+    const refused = resultOf(env.adapter.requests[2]);
+    expect(refused.error?.code).toBe('SCOPE_MISMATCH');
+    expect(sourceOf(session.state, id)).toBe(before);
+    expect(result?.status).toBe('no-changes');
+  });
+
+  it('keeps the source of a patch refused by validation, names it on the result and leaves the project unchanged (§14.3)', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let attempted = '';
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        const read = resultOf(req);
+        attempted = `<script>fetch('https://example.com/collect');</script>\n${sourceOf(session.state, id)}`;
+        return [call('p1', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, source: attempted })];
+      },
+      () => finish('That code was refused.')
+    ]);
+    session = env.session;
+    id = await heroInCode(session);
+    const before = sourceOf(session.state, id);
+    const revision = session.revision;
+    const { result, runId } = await env.run('Add tracking to the hero');
+    expect(JSON.stringify(resultOf(env.adapter.requests[2]))).toContain('VALIDATION_FAILED');
+    expect(sourceOf(session.state, id)).toBe(before);
+    expect(session.revision).toBe(revision);
+    expect(result?.status).toBe('no-changes');
+    expect(result?.drafts).toEqual([expect.objectContaining({ definitionId: id, reason: 'rejected' })]);
+    const path = result!.drafts![0].path;
+    expect(path).toContain(runId);
+    expect(readFileSync(join(session.dir, path), 'utf8')).toBe(attempted);
+  });
+
+  it('restores the pre-run source when a run that patched it is stopped, and keeps what it wrote (§12.5)', async () => {
+    let session: ProjectSession;
+    let orchRef: Orchestrator | null = null;
+    let id = '';
+    let patched = '';
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        const read = resultOf(req);
+        patched = tidied(sourceOf(session.state, id));
+        return [call('p1', 'apply_source_patch', { definitionId: id, expectedRevision: read.revision, expectedHash: read.hash, source: patched })];
+      },
+      async () => {
+        orchRef!.stop();
+        await new Promise((r) => setTimeout(r, 5));
+        return [call('r2', 'read_project', {})];
+      }
+    ]);
+    session = env.session;
+    orchRef = env.orch;
+    id = await heroInCode(session);
+    const before = sourceOf(session.state, id);
+    const { result, runId } = await env.run('Tidy the hero code');
+    expect(result?.status).toBe('cancelled');
+    expect(sourceOf(session.state, id)).toBe(before);
+    expect(result?.drafts).toEqual([expect.objectContaining({ definitionId: id, reason: 'reverted' })]);
+    const path = result!.drafts![0].path;
+    expect(path).toContain(runId);
+    expect(readFileSync(join(session.dir, path), 'utf8')).toBe(patched);
+  });
+});
