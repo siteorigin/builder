@@ -189,7 +189,8 @@ const NEVER_OFFERED = new Set<OperationType>([
  */
 const NOT_YET_OFFERED = new Set<OperationType>(['component.setState', 'component.removeState', 'node.setStateAction']);
 /** Whether an operation authors UI state: one of those, or a binding that reads state. */
-const authorsState = (op: EditOperation) => NOT_YET_OFFERED.has(op.type) || (op.type === 'node.setBinding' && !!op.binding && '$state' in op.binding);
+const authorsState = (op: EditOperation) =>
+  NOT_YET_OFFERED.has(op.type) || (op.type === 'node.setBinding' && !!op.binding && '$state' in op.binding) || (op.type === 'node.setContent' && op.field === 'overlay');
 /** Operations that need Developer mode, shown only to runs that have it. */
 export { CODE_OPERATIONS };
 

@@ -16,7 +16,7 @@ import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
 import { nestingChecker } from './semantic-tags';
-import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
+import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, overlayProblem, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
 import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { darkValue } from '@shared/color-scheme';
@@ -244,6 +244,9 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         const problem = n.kind !== 'link' ? 'changes UI state, which only a button can.' : stateActionProblem(def, action);
         if (problem) out.push({ severity: 'error', code: 'STATE_ACTION_INVALID', message: `${def.name}: ${nodeLabel(n)} ${problem}`, owner, nodeId: id, site: `${id}|stateAction` });
       }
+      // A dialog or drawer that cannot work would show as an ordinary container in its place, so it is refused.
+      const overlay = overlayProblem(def, n);
+      if (overlay) out.push({ severity: 'error', code: 'OVERLAY_INVALID', message: `${def.name}: ${nodeLabel(n)} ${overlay}`, owner, nodeId: id, site: `${id}|overlay` });
       // A filter that does not work leaves the items as a plain list, every one showing. Reported, never blocking: a
       // design keeps its filter while it is off, and an edit to it (a card made a component of its own) still saves.
       const filter = Object.hasOwn(n, 'filter') && n.kind !== 'repeat' ? 'has a category filter, which only a repeat can.' : repeatFilterProblem(def, n);
@@ -877,6 +880,9 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
         out.push({ severity: 'error', code: 'CAROUSEL_INVALID', message: `${label}: ${nodeLabel(n)} is marked as a carousel, which only a bulleted list (ul) that is not itself a link can be.`, owner, nodeId: n.id });
       if (n.kind === 'text' && n.datetime !== undefined && (n.rich || (!isBinding(n.datetime) && (typeof n.datetime !== 'string' || (n.datetime.trim() !== '' && !isArticleDate(n.datetime.trim()))))))
         out.push({ severity: 'error', code: 'DATETIME_INVALID', message: `${label}: ${nodeLabel(n)} ${n.rich ? 'is rich text, which cannot state a date' : 'states a date that is not written YYYY-MM-DD'}.`, owner, nodeId: n.id });
+      // A page or the shared header and footer has no UI state to open a dialog with (a design's are checked with its state).
+      if (!def && (n as { overlay?: unknown }).overlay !== undefined)
+        out.push({ severity: 'error', code: 'OVERLAY_INVALID', message: `${label}: ${nodeLabel(n)} shows over the page as a dialog or drawer, which only a container in a component’s design can.`, owner, nodeId: n.id, site: `${n.id}|overlay` });
       if (n.kind === 'slot' && !def) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: slots can only be placed inside a component definition.`, owner, nodeId: n.id });
       // Properties and list items belong to a component: a page or the shared header and footer has none to show.
       else if (n.kind === 'repeat' && !def) out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: a repeat shows a component's list, so it can only be placed inside a component definition.`, owner, nodeId: n.id, site: n.id });

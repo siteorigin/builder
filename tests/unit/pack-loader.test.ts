@@ -270,6 +270,10 @@ describe('loading a theme pack release', () => {
       const def = m.components.find((c) => c.componentId === 'media.carousel')!;
       (def.tree!.nodes.caption as { carousel?: boolean }).carousel = true;
     }), /node "caption" is marked as a carousel/],
+    ['a dialog mark on text (issue #378)', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.componentId === 'media.carousel')!;
+      (def.tree!.nodes.caption as { overlay?: string }).overlay = 'dialog';
+    }), /node "caption" shows over the page as a dialog or drawer, which only a container can/],
     ['a WOFF2 file cut short', (d) => {
       const f = firstFont(d);
       replaceListed(d, f, readFileSync(join(d, f)).subarray(0, 200));

@@ -542,6 +542,103 @@ export function tabKey(event) {
 }
 
 /**
+ * Opens a component's dialog or drawer (a native <dialog> its UI state opens) as a modal while \`open\`, which makes the
+ * rest of the page inert and keeps the focus inside it, and closes it otherwise. A modal nobody can see would leave the
+ * page unusable: one whose placement is not on screen (inside a tab panel not chosen) opens once it shows, and one that
+ * cannot be seen (its own styles hide it, or make it transparent, at this screen width) closes, which its close
+ * handler turns into the state closing. Printing hides it on purpose and changes neither. It opens once per call, so a close of its own (a form
+ * that closes it) is never undone. Returns what stops the watching, for the effect that calls it.
+ */
+export function overlayOpen(dialog, open) {
+	if (!dialog?.isConnected) return;
+	if (!open) {
+		if (dialog.open) dialog.close();
+		return;
+	}
+	const print = matchMedia('print');
+	// Already open (the state changed and changed back): this call watches it, and has nothing to open.
+	let opened = dialog.open;
+	let place = null;
+	const watch = new ResizeObserver(() => check());
+	if (opened) watch.observe(dialog);
+	const check = () => {
+		if (!dialog.isConnected || print.matches) return;
+		// The box the placement is in, found again each time: a parent shown as its contents alone, or inline, has none
+		// to watch. Its parent is watched too, which changes size when it starts to show.
+		let box = dialog.parentElement;
+		while (box && ['contents', 'inline'].includes(getComputedStyle(box).display)) box = box.parentElement;
+		if (box !== place) {
+			watch.disconnect();
+			if (dialog.open) watch.observe(dialog);
+			for (const el of [box, box?.parentElement]) if (el) watch.observe(el);
+			place = box;
+		}
+		if (!opened && !dialog.open && (!box || box.getClientRects().length > 0)) {
+			opened = true;
+			watch.observe(dialog);
+			dialog.showModal();
+		}
+		if (opened && dialog.open && !overlayShows(dialog)) dialog.close();
+	};
+	check();
+	addEventListener('resize', check);
+	print.addEventListener('change', check);
+	return () => {
+		watch.disconnect();
+		removeEventListener('resize', check);
+		print.removeEventListener('change', check);
+	};
+}
+
+/**
+ * Whether an open dialog can be seen: it has a box, and its own styles neither hide it nor make it fully transparent,
+ * other than on its way in (a fade from nothing). Its own only: in the top layer, the opacity of the elements around it
+ * does not reach it (a section still to enter).
+ */
+function overlayShows(dialog) {
+	const style = getComputedStyle(dialog);
+	if (!dialog.getClientRects().length || style.visibility !== 'visible') return false;
+	return parseFloat(style.opacity) > 0 || dialog.getAnimations().some((a) => a.playState === 'running');
+}
+
+/**
+ * What a click on an open dialog or drawer does to it: 'backdrop' for one beside it (on its backdrop), 'link' for one
+ * following a link to somewhere else on this page (a menu's jump to a section, or to the top), which leaves it, or
+ * null. Either closes it. A click inside it (its padding included), or on a link to a place inside it, leaves it open;
+ * a link to another page closes it as the page changes.
+ */
+export function overlayDismissal(event) {
+	const dialog = event.currentTarget;
+	if (!dialog.open) return null;
+	if (event.target === dialog) {
+		const box = dialog.getBoundingClientRect();
+		return event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom ? 'backdrop' : null;
+	}
+	const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+	if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || (link.target && link.target !== '_self')) return null;
+	try {
+		const url = new URL(link.href, location.href);
+		const at = url.href.indexOf('#');
+		if (at < 0 || url.origin !== location.origin || url.pathname !== location.pathname || url.search !== location.search) return null;
+		const fragment = decodeURIComponent(url.href.slice(at + 1));
+		// An empty fragment, or "top" naming no element, jumps to the top of the page.
+		const place = document.getElementById(fragment) ?? (fragment === '' || fragment.toLowerCase() === 'top' ? document.documentElement : null);
+		return place && !dialog.contains(place) ? 'link' : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Gives the focus back to the button that opened a dialog or drawer once it has closed, while the visitor is still on
+ * this page, and returns null: the next opening names its own button. One opened with the page has none.
+ */
+export function overlayClosed(opener) {
+	if (opener?.isConnected && document.hasFocus()) opener.focus();
+	return null;
+}
+
+/**
  * The category an item names for a list's category filter (RepeatNode.filter), as the key its pill goes by: a choice
  * field's value while it is one of \`options\`, or text by its trimmed, lower-case words, so "Commercial" and
  * " commercial" are one category. '' when it names none.

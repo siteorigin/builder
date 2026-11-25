@@ -5,13 +5,9 @@
  * every panel with its own layout, under its tab's label. In the editor, with the real preview bridge, a click on a
  * tab in Edit selects it and changes nothing, nor do the arrow keys, while Preview runs the tabs as visitors do.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, posix, resolve } from 'node:path';
-import { compile } from 'svelte/compiler';
-import { render } from 'svelte/server';
-import type { Component } from 'svelte';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { chromium, type Browser, type Frame, type Page } from 'playwright';
-import { build, type Rolldown } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ProjectState, UiStateSchema } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
@@ -19,12 +15,12 @@ import { makeInstance } from '@engine/install';
 import { generateProject } from '@generator/index';
 import { eq, uiState } from '@catalogue/dsl';
 import { FOUNDATION } from '@catalogue/foundation/pack';
+import { bundle, removeRendered, serverHtml } from './generated-site';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
 const ORIGIN = 'http://tabs.test';
 const SESSION = 'so-test';
-const GEN = '\0gen:';
 const NONE = { type: 'none' as const, target: '' };
 const PLAN: UiStateSchema = { type: 'enum', label: 'Plan', options: [{ value: 'a', label: 'Starter' }, { value: 'b', label: 'Team' }, { value: 'c', label: 'Studio' }], initial: 'b' };
 
@@ -67,82 +63,7 @@ function project(): ProjectState {
   return s;
 }
 
-const roots: string[] = [];
-afterAll(() => roots.forEach((d) => rmSync(d, { recursive: true, force: true })));
-
-/** The exported Home page rendered on the server, hydration markers and all, as the static site ships it. */
-async function serverHtml(files: Map<string, string>): Promise<string> {
-  mkdirSync(resolve('.tmp'), { recursive: true });
-  const dir = mkdtempSync(join(resolve('.tmp'), 'ui-state-browser-'));
-  roots.push(dir);
-  const paths = join(dir, 'app-paths.js');
-  writeFileSync(paths, 'export const resolve = (p) => p; export const asset = (p) => "/" + p; export const base = "";\n');
-  const navigation = join(dir, 'app-navigation.js');
-  writeFileSync(navigation, 'export const beforeNavigate = () => {}; export const afterNavigate = () => {};\n');
-  for (const [path, source] of files) {
-    if (!path.startsWith('src/') || !/\.(svelte|js)$/.test(path)) continue;
-    const out = join(dir, path.endsWith('.svelte') ? `${path}.js` : path);
-    mkdirSync(dirname(out), { recursive: true });
-    const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'server', runes: true }).js.code : source;
-    writeFileSync(
-      out,
-      code
-        .replace(/(["'])([^"'\n]+?\.svelte)\1/g, '$1$2.js$1')
-        .replace(/(["'])\$app\/paths\1/g, JSON.stringify(paths))
-        .replace(/(["'])\$app\/navigation\1/g, JSON.stringify(navigation))
-    );
-  }
-  const Page = (await import(/* @vite-ignore */ join(dir, 'src/routes/+page.svelte.js'))).default as Component<Record<string, unknown>>;
-  return render(Page, { props: {} }).body;
-}
-
-/** The site's page and the editor's variant of it, compiled for the browser into one script. */
-async function bundle(clean: Map<string, string>, dev: Map<string, string>): Promise<string> {
-  const files = new Map<string, string>([
-    ...[...clean].map(([p, src]) => [`clean/${p}`, src] as [string, string]),
-    ...[...dev].map(([p, src]) => [`dev/${p}`, src] as [string, string]),
-    ['app/paths.js', 'export const resolve = (p) => p; export const asset = (p) => "/" + p; export const base = "";'],
-    ['app/navigation.js', 'export const beforeNavigate = () => {}; export const afterNavigate = () => {};']
-  ]);
-  const entry = [
-    "import { hydrate, mount } from 'svelte';",
-    `import Clean from ${JSON.stringify(GEN + 'clean/src/routes/+page.svelte')};`,
-    `import Dev from ${JSON.stringify(GEN + 'dev/src/routes/+page.svelte')};`,
-    "window.startSite = (variant) => (variant === 'dev' ? mount(Dev, { target: document.getElementById('app'), props: {} }) : hydrate(Clean, { target: document.getElementById('app'), props: {} }));"
-  ].join('\n');
-  const out = (await build({
-    configFile: false,
-    logLevel: 'silent',
-    plugins: [
-      {
-        name: 'generated-site',
-        enforce: 'pre',
-        resolveId(id, importer) {
-          if (id === '\0entry' || id.startsWith(GEN)) return id;
-          if (id === '$app/paths' || id === '$app/navigation') return GEN + id.slice(1) + '.js';
-          if (importer?.startsWith(GEN) && id.startsWith('.')) {
-            const path = posix.join(posix.dirname(importer.slice(GEN.length)), id);
-            if (files.has(path)) return GEN + path;
-          }
-          return null;
-        },
-        load(id) {
-          if (id === '\0entry') return entry;
-          if (!id.startsWith(GEN)) return null;
-          const path = id.slice(GEN.length);
-          const source = files.get(path);
-          if (source === undefined) throw new Error(`Not generated: ${path}`);
-          const code = path.endsWith('.svelte') ? compile(source, { filename: path, generate: 'client', runes: true }).js.code : source;
-          return { code, moduleType: 'js' };
-        }
-      }
-    ],
-    build: { write: false, minify: false, rolldownOptions: { input: '\0entry', output: { format: 'esm', codeSplitting: false } } }
-  })) as Rolldown.RolldownOutput | Rolldown.RolldownOutput[];
-  const chunk = (Array.isArray(out) ? out[0] : out).output.find((o) => o.type === 'chunk');
-  if (!chunk || chunk.type !== 'chunk') throw new Error('The site did not bundle');
-  return chunk.code;
-}
+afterAll(removeRendered);
 
 describe.skipIf(!browserInstalled)('generated tabs and disclosures in a browser', () => {
   let browser: Browser;
@@ -153,7 +74,7 @@ describe.skipIf(!browserInstalled)('generated tabs and disclosures in a browser'
     const s = project();
     const clean = generateProject(s);
     const dev = generateProject(s, { instrument: true });
-    ssr = await serverHtml(clean);
+    ssr = await serverHtml(clean, 'ui-state-browser-');
     css = ['tokens', 'theme', 'components', 'site'].map((f) => clean.get(`src/lib/siteorigin/styles/${f}.css`) ?? '').join('\n');
     script = await bundle(clean, dev);
     browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });

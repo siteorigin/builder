@@ -17,7 +17,7 @@ const ctaPanel = (tone: string) => `${ends(`-cta-banner--tone-${tone}`)} ${ends(
  */
 const SURFACES = `:where(
   [class*='--tone-']:not(${ends('-cta-banner__panel')} *), li[class^='so-']:is(${ends('__card')}, ${ends('__plan')}, ${ends('__method')}),
-  .so-header, .so-form, .so-search, .so-table, .so-video-section
+  .so-header, .so-form, .so-search, .so-table, .so-video-section, .so-overlay
 ) { --so-surface-ink: initial; --so-surface-ink-text: initial; --so-surface-ink-hover: initial; }
 :where(
   ${ends('--tone-inverse')}:not(${ends('-cta-banner__root')}), ${ctaPanel('inverse')}, ${ends('-shell-footer--tone-default')},
@@ -108,6 +108,16 @@ ${SURFACES}
   pointer-events: none; transition: background-color 160ms ease;
 }
 .so-action--image:hover::after { background-color: rgb(15 15 18 / 0.82); }
+
+/* A component's dialog or drawer (where each one sits is the generated components stylesheet's): the page's own
+   colours and type on a raised surface over a dimmed page, whatever section it sits in (see SURFACES). A drawer runs to
+   the screen's edge, so only a dialog is rounded. A component's own styles for it win. */
+.so-overlay {
+  padding: var(--so-space-lg); border: 0; border-radius: var(--so-radius-md);
+  background: var(--so-color-background); color: var(--so-color-text); box-shadow: var(--so-shadow-lg);
+}
+.so-overlay:where(.so-overlay--drawer-start, .so-overlay--drawer-end, .so-overlay--drawer-bottom) { border-radius: 0; }
+.so-overlay::backdrop { background: rgb(12 12 14 / 0.55); }
 
 /* The full-size image viewer: the whole screen, the image as large as it fits, and Close and the arrows in easy reach.
    The page behind it does not scroll while it is open. */

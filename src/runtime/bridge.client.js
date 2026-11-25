@@ -539,6 +539,47 @@ window.addEventListener('keydown', (e) => {
 }, { capture: true, passive: true });
 
 // ---------------------------------------------------------------------------
+// Dialogs and drawers shown in place while editing (#378)
+// ---------------------------------------------------------------------------
+// In Edit a component's dialog or drawer renders in its place, hidden, beside a button of the editor's own
+// ([data-so-overlay-peek]) that shows it so what is inside can be selected and edited. Which ones are shown is kept
+// here, by where they are on the page (see overlayKey), so a hot update that renders one afresh keeps it shown, and
+// every other placement of the same design stays as it is.
+
+/** Dialogs and drawers the author shows in place, by overlayKey. */
+const overlaysShown = new Set();
+/**
+ * Where a dialog or drawer is on the page: its occurrence, and the items its placement, and each placement around it,
+ * is rendered for. Copies of one placement in each row of a list share the occurrence of every element below their
+ * root, which alone carries the item; copies inside copies share the inner item too.
+ */
+function overlayKey(host) {
+  const items = [];
+  for (let at = host.parentElement && host.parentElement.closest('[data-so-items]'); at; at = at.parentElement && at.parentElement.closest('[data-so-items]')) items.push(at.getAttribute('data-so-items'));
+  return occurrence(host) + '\n' + items.join('\n');
+}
+/** Brings each dialog or drawer, and its button, in line with what the author chose. Safe to repeat. */
+function applyOverlaysShown() {
+  for (const button of document.querySelectorAll('[data-so-overlay-peek]')) {
+    const host = document.getElementById(button.getAttribute('aria-controls') || '');
+    if (!host || !host.hasAttribute('data-so-overlay')) continue;
+    const on = mode === 'edit' && overlaysShown.has(overlayKey(host));
+    if (host.hasAttribute('data-so-peek') !== on) host.toggleAttribute('data-so-peek', on);
+    if (button.getAttribute('aria-expanded') !== String(on)) button.setAttribute('aria-expanded', String(on));
+  }
+}
+/** The author's press on a dialog's button: shows it in place, or hides it again. */
+function toggleOverlayShown(button) {
+  const host = document.getElementById(button.getAttribute('aria-controls') || '');
+  if (!host || !host.hasAttribute('data-so-overlay')) return;
+  const key = overlayKey(host);
+  if (overlaysShown.has(key)) overlaysShown.delete(key);
+  else overlaysShown.add(key);
+  applyOverlaysShown();
+  scheduleRects();
+}
+
+// ---------------------------------------------------------------------------
 // The list item open in the editor's inspector, revealed while it is edited
 // ---------------------------------------------------------------------------
 
@@ -903,6 +944,12 @@ document.addEventListener(
     e.preventDefault();
     e.stopPropagation();
     if (editing) commitEdit();
+    // A dialog or drawer's button of the editor's own shows it in place, or hides it, and selects nothing.
+    const overlayButton = e.target.closest && e.target.closest('[data-so-overlay-peek]');
+    if (overlayButton) {
+      toggleOverlayShown(overlayButton);
+      return;
+    }
     // A disclosure (an FAQ question) still opens and closes while editing, so what is inside can be reached.
     const summary = e.target.closest && e.target.closest('summary');
     const details = summary && summary.parentElement;
@@ -4062,6 +4109,7 @@ window.addEventListener('message', async (e) => {
       pointerEl = null;
       // Preview shows the disclosures as visitors find them; editing reveals the item again.
       reconcileReveal();
+      applyOverlaysShown();
       scheduleRects();
       break;
     case 'track':
@@ -4321,6 +4369,8 @@ new MutationObserver(() => {
   // An update re-rendered the page: a revealed item comes back closed, and without the text being typed. Brought up
   // to date once per frame, however many changes arrive.
   if (reveal || revealOpened.size || drafts.size) revealDirty = true;
+  // A dialog the author shows in place, rendered afresh, shows again before the frame is drawn.
+  if (overlaysShown.size) applyOverlaysShown();
   // Outlines are measured again only while there is one to keep in place, or an element a scroll waits for. With
   // nothing selected, hovered while editing or revealed, the editor already has none, so a change to the page is
   // neither measured nor reported.
@@ -4408,7 +4458,14 @@ style.textContent =
   ' html[data-so-editing] [data-so-empty-layout] { outline: 1px dashed color-mix(in srgb, currentColor 55%, transparent); outline-offset: -1px; column-rule: 1px dashed color-mix(in srgb, currentColor 50%, transparent); column-rule-break: none; }' +
   ' html[data-so-editing] [data-so-empty-layout]::before { content: attr(data-so-empty-layout) / ""; display: block; grid-column: 1 / -1; flex: 1 1 auto; align-self: stretch; box-sizing: border-box; min-block-size: 72px; min-inline-size: 0; padding: 6px 10px; color: color-mix(in srgb, currentColor 80%, transparent); font: 600 12px/1.35 system-ui, -apple-system, sans-serif; letter-spacing: normal; text-align: start; text-transform: none; }' +
   // Edit shows every section as designed: an entrance the site's observer armed (it arms nothing in Edit) never hides one.
-  ' html[data-so-editing] [data-appear-state]:not(#so-editor) { animation: none !important; }';
+  ' html[data-so-editing] [data-appear-state]:not(#so-editor) { animation: none !important; }' +
+  // A component's dialog or drawer in Edit: hidden in its place until the author shows it with the button beside it,
+  // then framed, so it reads as content visitors see over the page.
+  ' html[data-so-editing] [data-so-overlay]:not([data-so-peek]):not(#so-editor) { display: none !important; }' +
+  ' html[data-so-editing] [data-so-overlay][data-so-peek] { outline: 2px dashed rgba(100, 116, 139, 0.6); outline-offset: 3px; }' +
+  ' html[data-so-editing] .so-overlay-peek { display: flex; align-items: center; gap: 8px; box-sizing: border-box; width: 100%; margin: 4px 0; padding: 6px 10px; border: 1px dashed rgba(100, 116, 139, 0.7); border-radius: 6px; background: #f8fafc; color: #334155; font: 600 12px/1.35 system-ui, -apple-system, sans-serif; letter-spacing: normal; text-align: start; text-transform: none; cursor: pointer; }' +
+  ' html[data-so-editing] .so-overlay-peek::after { content: "Show to edit"; margin-inline-start: auto; font-weight: 500; opacity: 0.75; }' +
+  ' html[data-so-editing] .so-overlay-peek[aria-expanded="true"]::after { content: "Hide"; }';
 document.head.appendChild(style);
 document.documentElement.toggleAttribute('data-so-editing', true);
 const previewAtStart = previewState();

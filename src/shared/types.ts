@@ -167,6 +167,13 @@ export const ICON_POSITIONS: IconPosition[] = ['start', 'end'];
 /** What clicking a container does (`ElementNode.action`): nothing, open its image full size, or follow its link. */
 export type ElementAction = 'none' | 'image' | 'link';
 export const ELEMENT_ACTIONS: ElementAction[] = ['none', 'image', 'link'];
+/**
+ * How a container a component's yes/no UI state opens shows over the page (`ElementNode.overlay`): a dialog in the
+ * middle, or a drawer sliding in from the start or end side (left or right, following the text's direction) or the
+ * bottom.
+ */
+export type OverlayMode = 'dialog' | 'drawer-start' | 'drawer-end' | 'drawer-bottom';
+export const OVERLAY_MODES: readonly OverlayMode[] = ['dialog', 'drawer-start', 'drawer-end', 'drawer-bottom'];
 
 /**
  * How a section or container enters the first time it scrolls into view (`appear`). Content is always visible until
@@ -414,6 +421,14 @@ export interface ElementNode extends NodeBase {
    * page's script runs. Without it the list still scrolls, and it prints as a plain stack.
    */
   carousel?: true;
+  /**
+   * Inside a component's design: shows the container over the page, as a modal dialog or a drawer (a native
+   * `<dialog>`), while the yes/no UI state its one condition reads says so, instead of in its place. The design's
+   * buttons that set or toggle that state open and close it; Escape and a click beside it close it, giving focus back
+   * to the button that opened it. It stays in the page while closed, and never prints. Only a plain `div` rendered once
+   * per placement can be one (see engine/schema `overlayProblem`); otherwise it is an ordinary container.
+   */
+  overlay?: OverlayMode;
 }
 export interface TextNode extends NodeBase {
   kind: 'text';

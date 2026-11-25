@@ -389,7 +389,9 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
         const slots = [...new Set([...(from.frame.scope.slots ?? []), ...(frame.scope.slots ?? []), slot])];
         // A slot handed on into another design's slot shows its content in that other design (the innermost one).
         const shownIn = frame.scope.shownIn ?? (frame.def?.tree ? { instances: frame.scope.instances ?? [], repeats: repeatsAbove(frame.def.tree, n.id), path: frame.scope.path ?? [] } : undefined);
-        const target = { ...from.frame, origin: supplier, scope: { ...from.frame.scope, multiple, slots, ...(shownIn ? { shownIn } : {}) } };
+        // Shown where the slot is: inside a panel or dialog its state keeps hidden, the content is hidden with it.
+        const keptHidden = from.frame.scope.keptHidden || frame.scope.keptHidden;
+        const target = { ...from.frame, origin: supplier, scope: { ...from.frame.scope, multiple, slots, ...(shownIn ? { shownIn } : {}), ...(keptHidden ? { keptHidden } : {}) } };
         for (const c of slotChildren({ slots: from.content }, n.slot)) walk(target, c, inner);
         break;
       }

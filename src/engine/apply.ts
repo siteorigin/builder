@@ -27,7 +27,7 @@ import type {
   VariantAxis
 } from '@shared/types';
 import type { Binding, EntryDoc } from '@shared/types';
-import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type TextTag } from '@shared/types';
+import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, canonicalStyleValue, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
@@ -2143,6 +2143,15 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       else if (node.kind === 'instance') node.appear = a as AppearPreset | 'none';
       else if (a === 'none') delete node.appear;
       else node.appear = a as AppearPreset;
+      return {};
+    }
+    case 'overlay': {
+      // Whether it can be one (its condition, where it sits) is judged once the whole batch is applied (overlayProblem),
+      // so the state, its buttons and the condition can be set in the same batch.
+      if (!def || def.kind !== 'managed' || node.kind !== 'element') fail('Only a container in a component’s design can show over the page as a dialog or drawer.');
+      if (v === null || v === undefined || v === '') delete node.overlay;
+      else if (typeof v === 'string' && (OVERLAY_MODES as readonly string[]).includes(v)) node.overlay = v as OverlayMode;
+      else fail(`A dialog or drawer is ${OVERLAY_MODES.join(', ')}, or null to show the container in its place again.`);
       return {};
     }
     case 'appearStagger': {
