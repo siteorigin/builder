@@ -29,7 +29,7 @@ import { changedComponents, introducedReusability, reusabilityNudge } from './re
 import { modelInfo } from './models';
 import { hasBrief, withBrief } from './brief';
 import { MAX_REPLAYED_ANSWER, readRecipient, turnModelText, type Recipient } from '@shared/turn-model';
-import { planReplay, summarizeEarlier, summaryText, type EarlierSummary } from '@shared/earlier-summary';
+import { planReplay, replayStart, summarizeEarlier, summaryText, type EarlierSummary } from '@shared/earlier-summary';
 
 /**
  * Budgets for one run. They are sized for building a whole multi-page site in one request; a run that
@@ -1216,7 +1216,7 @@ export class Orchestrator {
     const wanted: WantedPage[] = [];
     // "Continue" after an unfinished request still owes the pages that one never created.
     /** Where the messages replayed in full start; anything before it reaches the model through the summary. */
-    let replayFrom = summary?.covered ?? 0;
+    let replayFrom = replayStart(earlier);
     const before = [...earlier.slice(replayFrom)].reverse().find((h) => h.role === 'assistant');
     const previousTurn = before ? turnState(before, steps) : null;
     const previous = previousTurn?.result;
@@ -1235,6 +1235,8 @@ export class Orchestrator {
       // Its standing is read from History now, so a turn undone after it was summarised says so.
       if (summary) items.push({ kind: 'user', text: summaryText(summary, steps) });
       for (const h of earlier.slice(replayFrom)) {
+        // A transcript is read back from disk: an entry that is not a message is left out.
+        if (!h || typeof h !== 'object') continue;
         if (h.role === 'user') {
           // A transcript is read back from disk: only text is replayed, never anything else a malformed one holds.
           const said = withAttachments(typeof h.text === 'string' ? h.text : '', h.images);
@@ -1713,12 +1715,19 @@ export class Orchestrator {
     const foldForRefusal = (system: string, tools: ToolDefinition[], reported?: ContextOverflow): boolean => {
       const size = () => estimateRequestTokens(system, tools, items, constrainedJson);
       const start = size();
-      const counted = reported?.promptTokens && reported.windowTokens && reported.promptTokens > reported.windowTokens ? reported : null;
-      const earlierTokens = estimateRequestTokens('', [], items.slice(0, items.indexOf(requestItem)), constrainedJson);
-      const excess = counted ? Math.ceil(((counted.promptTokens! - counted.windowTokens! + MIN_OUTPUT_TOKENS) * start) / counted.promptTokens!) : Math.ceil(earlierTokens / 2);
+      // The first refusal's earlier conversation, which the small tools get back if they are tried after it.
+      if (turns === 1) beforeRefusals ??= { replayFrom, summary };
+      const prompt = reported?.promptTokens;
+      const window = reported?.windowTokens;
+      // Over the window, or inside it with too little room left for a reply.
+      const short = prompt && window ? Math.max(1, prompt - window + MIN_OUTPUT_TOKENS) : 0;
+      const earlierTokens = estimateRequestTokens('', [], items.slice(0, items.indexOf(requestItem)));
+      const excess = short ? Math.ceil((short * start) / prompt!) : Math.ceil(earlierTokens / 2);
       while (start - size() < excess && foldHistory());
       return size() < start;
     };
+    /** The earlier conversation before the server first refused this run's first request as too long. */
+    let beforeRefusals: { replayFrom: number; summary: EarlierSummary | null } | null = null;
 
     /**
      * Whether a run may be sent back to make a component reusable: only one that may change that component's whole
@@ -1909,6 +1918,9 @@ export class Orchestrator {
           // The first request of a run, refused by the server's own count: the small tools may still fit. The same
           // turn is asked again, so it does not count against the step limit, and nothing it showed is kept.
           if (tooLong && failed.context && turns === 1 && narrowTools()) {
+            // The small tools may hold what the general ones could not: they start from the earlier conversation as
+            // it was before the refusals, summarised again only as far as they need.
+            if (beforeRefusals) restoreHistory(beforeRefusals);
             turns--;
             current = runTools();
             requestItem.text = requestMessage();

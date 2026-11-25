@@ -221,8 +221,8 @@ export function sentMessages(messages: readonly ChatMessage[], replay: Replay = 
 
 /** Where an earlier turn's change stands, in words, read from History now. */
 function standingText(t: SummaryTurn, history: TurnHistory | null | undefined): string {
-  // A file changed outside the app while it ran: what it changed was kept for the author to review, not undone.
-  if (t.ended === 'conflicted') return 'A file was changed outside the app while it ran, so its changes were kept for the author to review.';
+  // A file changed outside the app while it ran: some of its changes may have been rolled back, others left to review.
+  if (t.ended === 'conflicted') return 'It ran into a file changed outside the app, so which of its changes remain is not known.';
   const how = t.ended === 'failed' ? 'It failed' : t.ended === 'cancelled' ? 'It was stopped' : t.unfinished ? 'It stopped before it was finished' : '';
   if (!t.changed) return how ? `${how}, and changed nothing.` : t.said || t.changes ? 'It changed nothing.' : '';
   const standing = runStanding(t.runId, history);

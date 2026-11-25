@@ -64,16 +64,16 @@ describe('the summary of the earlier conversation', () => {
     // A turn that changed nothing says how it ended.
     expect(summaryText(summarizeEarlier(exchange('Try', { result: result({ status: 'failed', summary: 'It failed.' }) }), 2)!)).toContain('It failed, and changed nothing.');
     expect(summaryText(summarizeEarlier(exchange('Look', { result: result({ status: 'no-changes', summary: 'Looked.' }) }), 2)!)).toContain('Reply: Looked. It changed nothing.');
-    // One that met a file changed outside the app kept its changes for review: never said to have changed nothing.
+    // One that met a file changed outside the app is never said to have changed nothing, nor to have kept it all.
     const conflicted = summaryText(summarizeEarlier(exchange('Edit', { result: result({ status: 'conflicted', summary: 'Kept for review.' }) }), 2)!);
-    expect(conflicted).toContain('its changes were kept for the author to review.');
+    expect(conflicted).toContain('It ran into a file changed outside the app, so which of its changes remain is not known.');
     expect(conflicted).not.toContain('changed nothing');
   });
 
   it('keeps no more of an answer than a replay in full sends, and an image chosen by its ID', () => {
     const answer = `${'a'.repeat(MAX_REPLAYED_ANSWER)}PRIVATE TAIL`;
     const long = summarizeEarlier(exchange('Paste it', { questions: [{ id: 'q', text: 'The copy?', choices: [], answered: answer }] }), 2)!;
-    expect(long.turns[0].answers![0].a).not.toContain('PRIVATE TAIL');
+    expect(long.turns[0].answers![0].a).toMatch(/^[a… ]+$/);
     const images = [{ assetId: 'as_1', name: 'hero' }, { assetId: 'as_2', name: 'hero' }];
     const picked = summarizeEarlier(exchange('Pick one', { questions: [{ id: 'q', text: 'Which image?', choices: [], images, answered: 'hero', answeredAssetId: 'as_2' }] }), 2)!;
     expect(summaryText(picked)).toContain('the author answered "image "hero" (assetId: as_2)"');
@@ -83,6 +83,8 @@ describe('the summary of the earlier conversation', () => {
     const changes = Array.from({ length: 11 }, (_, i) => ({ label: `Change ${i}` }) as never);
     const turn = summarizeEarlier(exchange('Many', { result: result({ status: 'completed', changes, canUndo: true }) }), 2)!.turns[0];
     expect(turn.changes).toEqual([...Array.from({ length: 8 }, (_, i) => `Change ${i}`), '3 more']);
+    const eight = summarizeEarlier(exchange('Eight', { result: result({ status: 'completed', changes: changes.slice(0, 8), canUndo: true }) }), 2)!.turns[0];
+    expect(eight.changes).toEqual(Array.from({ length: 8 }, (_, i) => `Change ${i}`));
   });
 
   it('keeps the start and the end of a long message', () => {
