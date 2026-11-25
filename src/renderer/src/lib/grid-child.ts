@@ -8,7 +8,7 @@ import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { cascadeStyles, type StyleLayer, type StylePropDef } from '@shared/styles';
 import { designLayers, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
-import { enclosingRepeatProp, findParent } from '@engine/tree';
+import { findParent } from '@engine/tree';
 import { isCardLink, isCarouselTrack } from '@generator/card-links';
 import { treeFor } from './model';
 
@@ -31,8 +31,8 @@ export type EditedLook = { axis: string; variant: string };
 interface Walk {
   state: ProjectState;
   look?: EditedLook;
-  /** The selected list item, outermost list first, whose own part styles and fields shape the boxes around it. */
-  itemPath?: string[];
+  /** The selected list item, whose own part styles apply to the boxes around it. */
+  itemId?: string;
 }
 
 const MAX_DEPTH = 64;
@@ -45,31 +45,12 @@ function inside(walk: Walk, outer: Frame, placement: InstanceNode): Frame | null
   return def?.kind === 'managed' && def.tree ? { tree: def.tree, def, placement, outer } : null;
 }
 
-/** How many lists repeat the placement a frame shows, those around the designs holding it included. */
-function listsAround(frame: Frame): number {
-  const { placement, outer } = frame;
-  if (!placement || !outer) return 0;
-  let count = listsAround(outer);
-  let at = findParent(outer.tree, placement.id)?.parentId;
-  for (let depth = 0; at && depth < MAX_DEPTH; depth++, at = findParent(outer.tree, at)?.parentId) if (nodeOf(outer.tree, at)?.kind === 'repeat') count++;
-  return count;
-}
-
 /**
- * What a binding on a frame's placement reads: a property of the design around it, or a field of the selected item of
- * the list repeating it there. Undefined where that cannot be told here, as a collection entry's own field.
+ * What a binding on a frame's placement reads from a property of the design around it. A list item's or a collection
+ * entry's field differs wherever it renders, so it is not told here and reads as undefined.
  */
 function boundIn(walk: Walk, frame: Frame, binding: Binding, depth: number): unknown {
-  const { placement, outer } = frame;
-  if (!placement || !outer) return undefined;
-  if ('$prop' in binding) return propIn(walk, outer, binding, depth + 1);
-  if (!('$item' in binding) || !outer.def) return undefined;
-  const list = enclosingRepeatProp(outer.def, placement.id);
-  const rows = list ? propIn(walk, outer, { $prop: list }, depth + 1) : undefined;
-  // Item IDs are unique only within their list: the path names one for each list, outermost first.
-  const id = walk.itemPath?.[listsAround(frame) - 1];
-  const row = Array.isArray(rows) ? (rows as Array<Record<string, unknown>>).find((r) => r.id === id) : undefined;
-  return row?.[binding.$item];
+  return '$prop' in binding && frame.outer ? propIn(walk, frame.outer, binding, depth + 1) : undefined;
 }
 
 /** What a property of a design holds here: the placement's value, bound or its own, or the property's default. */
@@ -117,10 +98,9 @@ function placementLayers(walk: Walk, frame: Frame, nodeId: string): StyleLayer[]
     const target = partId === 'root' ? def.tree?.rootIds[0] : def.parts[partId]?.nodeId;
     if (target === nodeId) out.push({ styles, strength: base, wideColumns: true });
   }
-  const itemId = walk.itemPath?.[walk.itemPath.length - 1];
-  if (itemId) {
+  if (walk.itemId) {
     for (const [partId, part] of Object.entries(def.parts)) {
-      const styles = part.nodeId === nodeId ? itemStylesOf(def, placement, partId, itemId) : undefined;
+      const styles = part.nodeId === nodeId ? itemStylesOf(def, placement, partId, walk.itemId) : undefined;
       if (styles) out.push({ styles, strength: base + 1, wideColumns: true });
     }
   }
@@ -195,7 +175,7 @@ function wrapped(state: ProjectState, tree: NodeTree, node: GraphNode, depth = 0
 export function isGridChild(state: ProjectState, ref: ElementRef, scope: ResponsiveScope, look?: EditedLook): boolean {
   const tree = treeFor(state, ref.owner);
   if (!tree) return false;
-  const walk: Walk = { state, look, itemPath: ref.itemPath };
+  const walk: Walk = { state, look, itemId: ref.itemPath?.[ref.itemPath.length - 1] };
   const owner = ref.owner.kind === 'component' && Object.hasOwn(state.components, ref.owner.id) ? state.components[ref.owner.id] : undefined;
   let frame: Frame = { tree, def: owner };
   for (const id of ref.instancePath) {
@@ -211,13 +191,11 @@ export function isGridChild(state: ProjectState, ref: ElementRef, scope: Respons
 
 /**
  * What to ask `isGridChild` about for a node of a design being edited. Edited through a placement on the canvas, it
- * is the box that placement shows; in Component Studio, or in a look (shown on its own), the design's, with the list
- * item that is selected.
+ * is the box that placement shows; in Component Studio, or in a look (shown on its own), the design's.
  */
 export function designGridRef(selection: ElementRef | null, design: OwnerRef, nodeId: string, standalone: boolean): ElementRef {
-  const selected = selection?.nodeId === nodeId ? selection : null;
-  if (!standalone && selected?.instancePath.length === 1) return selected;
-  return { owner: design, instancePath: [], nodeId, itemPath: selected?.itemPath };
+  if (!standalone && selection?.nodeId === nodeId && selection.instancePath.length === 1) return selection;
+  return { owner: design, instancePath: [], nodeId };
 }
 
 /** The style controls a grid item offers: a design's own list, with the spans added so the first one can be set. */
