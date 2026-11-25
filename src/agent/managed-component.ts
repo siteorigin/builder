@@ -188,7 +188,12 @@ const NODE = z.discriminatedUnion('kind', [
     .strict()
 ]);
 
-const PROP_HEAD = { name: NAME.describe('camelCase, such as "heading".'), label: z.string().min(1).max(80), description: z.string().max(300).optional() };
+const PROP_HEAD = {
+  name: NAME.describe('camelCase, such as "heading".'),
+  label: z.string().min(1).max(80),
+  description: z.string().max(300).optional(),
+  required: z.boolean().optional().describe('true only when the design cannot render without a value (a question’s text, a quote): no placement may leave it empty, so give it a non-empty default.')
+};
 /** The single-value property types: a component property, or a field of a list item or of an object. */
 const scalarProps = () =>
   [

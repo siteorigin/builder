@@ -186,7 +186,7 @@ export const faq = managed({
     items: P.list(
       'Questions',
       'Question',
-      { question: P.str('Question', 'Question?'), answer: P.text('Answer', 'Answer.') },
+      { question: P.required(P.str('Question', 'Question?')), answer: P.required(P.text('Answer', 'Answer.')) },
       [
         { question: 'How long does a typical project take?', answer: 'Most design projects take six to ten weeks from the first meeting to final drawings. We agree a schedule with you at the start.' },
         { question: 'Do you work outside the local area?', answer: 'Yes. We regularly work across the region and can arrange remote consultations for early planning.' },

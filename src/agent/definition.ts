@@ -19,6 +19,7 @@ import { applySelected, nodeFields, STYLE_VALUE } from './selection';
 import type { Authority, PartAuthority } from './scope';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
+import { isEmptyPropValue, requiredHint } from '@shared/required';
 
 /** The design a run is about: a component edited everywhere, or one of its nodes selected there. */
 export interface DefinitionTarget {
@@ -103,7 +104,8 @@ export const DEFINITION_ARGS = {
             label: z.string().min(1).max(80),
             type: z.enum(ADDED_TYPES),
             options: z.array(z.string()).max(50).optional(),
-            default: scalar.optional()
+            default: scalar.optional(),
+            required: z.boolean().optional()
           })
           .strict(),
         z.object({ action: z.literal('set_default'), prop: z.string(), value: scalar }).strict(),
@@ -316,7 +318,8 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
       label: { type: 'string', minLength: 1, maxLength: 80 },
       type: { type: 'string', enum: [...ADDED_TYPES] },
       options: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 60 }, description: 'enum only: its option values, in order.' },
-      default: { ...SCALAR, description: "Optional: what placements start with, for a text, number, yes/no, enum or link, or an image's assetId." }
+      default: { ...SCALAR, description: "Optional: what placements start with, for a text, number, yes/no, enum or link, or an image's assetId." },
+      required: { type: 'boolean', description: 'true only when the design cannot render without a value: no placement may leave it empty, so give it a non-empty default.' }
     },
     ['action', 'prop', 'label', 'type']
   );
@@ -525,9 +528,17 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
       const raw: Record<string, unknown> = { type: change.type, label: change.label, ...(change.options ? { options: change.options } : {}) };
       let schema: PropSchema;
       try {
+        // Checked without the flag first: a required property's default is given below.
         schema = normalizePropSchema(raw, state, change.prop);
       } catch (e) {
         return fieldError([{ field: 'change', message: (e as Error).message }], NOTHING_APPLIED);
+      }
+      if (change.required) {
+        // Without a default, the one a property of its type starts with (a number's 0, an enum's first option).
+        if (change.default === undefined && isEmptyPropValue(schema, schema.default))
+          return fieldError([{ field: 'change.default', message: `a required property needs a default every placement starts with: ${requiredHint(schema)}` }], NOTHING_APPLIED);
+        schema.required = true;
+        raw.required = true;
       }
       if (change.default !== undefined) {
         if (!PLAIN_DEFAULTS.has(schema.type)) return fieldError([{ field: 'change.default', message: `a ${schema.type} property starts empty: leave default out` }], NOTHING_APPLIED);

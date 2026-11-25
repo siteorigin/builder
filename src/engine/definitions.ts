@@ -15,6 +15,8 @@ import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, getTree, instancesOf, subtreeIds } from './tree';
 import { clone, placedDefaultItems, placedItemId } from './install';
+import { bindingSource } from './required';
+import { requiredGap } from '@shared/required';
 import { normalizeProp } from './values';
 import { releaseKept } from '@shared/site-name';
 import {
@@ -226,6 +228,10 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
       const parent = owner.kind === 'component' ? state.components[owner.id] : undefined;
       const from = parent ? boundSchema(parent, node.id, v) : undefined;
       if (from && from.type !== schema.type) fail(`"${parent!.name}" passes its ${from.type} property to "${name}". Change both together, or unbind it there first.`);
+      // What arrives through the binding must never be empty where the property now requires a value.
+      const source = from ?? bindingSource(state, owner, node, v);
+      const gap = source ? requiredGap(source, schema) : null;
+      if (gap) fail(`${label}: ${describeNode(node)} takes “${source!.label}” as “${schema.label}”: ${gap}. Make it required there first, or unbind it.`);
       continue;
     }
     // Placements start with every default filled in; an untouched default is not content to keep.

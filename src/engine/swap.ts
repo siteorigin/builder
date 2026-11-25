@@ -434,9 +434,10 @@ function carryList(state: ProjectState, from: ListProp, to: ListProp, fields: Ma
     for (const [k, f] of Object.entries(from.fields)) if (!usedFrom.has(k) && CONTENT_TYPES.has(f.type) && it && hasContent(f, Object.hasOwn(it, k) ? it[k] : f.default)) lose(k);
     return item;
   });
-  // A list that needs more items than it was given starts the rest from its own defaults.
+  // A list that needs more items than it was given (a required list needs one) starts the rest from its own defaults.
   const defaults = Array.isArray(to.default) ? to.default : [];
-  while (to.min !== undefined && out.length < to.min) {
+  const least = Math.max(to.min ?? 0, to.required ? 1 : 0);
+  while (out.length < least) {
     const d = defaults[out.length % Math.max(defaults.length, 1)];
     out.push({ ...(d ? clone(d) : Object.fromEntries(Object.entries(to.fields).map(([k, f]) => [k, clone(f.default)]))), id: newId('i') } as ListItem);
   }

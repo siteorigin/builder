@@ -22,6 +22,7 @@ import { codeImports, directDependencies } from './definitions';
 import { childLists, fail } from './tree';
 import { FORM_DESTINATIONS, readsFormServices } from '@catalogue/foundation/form';
 import { clone, installComponent } from './install';
+import { definitionRequiredProblems } from './required';
 
 type OpResult = Record<string, unknown>;
 
@@ -265,7 +266,12 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
     if (hit) fail(`The code of ${quoted(def.name)} shows ${quoted(hit.name)} from this site's library by its address, which a package can't carry. Give the component an image property for it instead.`);
   }
   const notes: string[] = [];
+  // A required link left with nowhere to go would make a package that no site can take; a problem the definitions
+  // already had is not the package's.
+  const had = new Set(definitionRequiredProblems(state, defs).map((p) => p.key));
   const links = defs.reduce((n, d) => n + siteLinks(d, true), 0);
+  const emptied = links ? definitionRequiredProblems(state, defs).find((p) => !had.has(p.key)) : undefined;
+  if (emptied) fail(`${emptied.message} It goes to this site's own page or document, which a package can't carry. Give it a web address first, or make it optional.`);
   if (links) notes.push(`${links === 1 ? 'A link' : `${links} links`} to this site's pages or documents ${links === 1 ? 'was' : 'were'} left out, as another site doesn't have them.`);
   // Images: every one shown must be a picture still in the library.
   const images = new Map<string, AssetRecord>();

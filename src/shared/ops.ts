@@ -792,7 +792,7 @@ export const OPERATION_SCHEMAS = {
       .record(z.string(), z.unknown())
       .optional()
       .describe(
-        'Property schema: { propName: { type, label, default } }. Types: string, richtext, number, boolean, enum (options), link, image, icon, choices, list (itemLabel, fields), table (default { columns, rows }). A richtext property or list field reaches the code as one string per paragraph or list item with **bold** and *italic*, unless it declares codeForm: "blocks", which passes structured blocks to render with <RichText value={...} /> imported from "../runtime/RichText.svelte" (links, lists and headings included).'
+        'Property schema: { propName: { type, label, default } }. Types: string, richtext, number, boolean, enum (options), link, image, icon, choices, list (itemLabel, fields), table (default { columns, rows }). required: true marks a value the component cannot render without: neither its default nor any placement may leave it empty. A richtext property or list field reaches the code as one string per paragraph or list item with **bold** and *italic*, unless it declares codeForm: "blocks", which passes structured blocks to render with <RichText value={...} /> imported from "../runtime/RichText.svelte" (links, lists and headings included).'
       )
   }),
   'component.updateSource': z.object({

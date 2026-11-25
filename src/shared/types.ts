@@ -231,6 +231,11 @@ interface PropBase {
   label: string;
   description?: string;
   group?: string;
+  /**
+   * The component cannot render without a value here: it can never be empty, whether it comes from the default, a
+   * placement or a binding. What counts as empty for each type is set out in shared/required.ts.
+   */
+  required?: boolean;
 }
 export interface StringProp extends PropBase {
   type: 'string';

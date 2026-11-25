@@ -4,9 +4,10 @@
 import type { BindingRef, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, RepeatFilter, ScalarPropSchema, StateRef, TokenGroup, UiStateSchema } from '@shared/types';
 import { DIVIDER_SHAPES, ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, OVERLAY_MODES, RICH_CODE_FORMS, STATE_ACTION_OPS, TEXT_TAGS, UI_STATE_TYPES, conditionRef, isBinding, isBindingRef, isComparison, isStateRef } from '@shared/types';
 import { feedRowFields } from '@shared/entry-feed';
-import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
+import { PAGE_TEASER_TYPES, PAGE_TEASER_VALUES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
+import { requiredGap } from '@shared/required';
 import { fail, findParent } from './tree';
 import { normalizeProp } from './values';
 import { declaredTokens } from './tokens';
@@ -51,10 +52,11 @@ const count = (v: unknown, label: string): number | undefined => {
  * A page list's mapping: a link field, and distinct fields of the right type for the page's title, description and
  * image. Deleting a page removes the items linked to it, so the list must be allowed to have none.
  */
-function pageTeaserSchema(raw: unknown, fields: Record<string, ScalarPropSchema>, min: number | undefined, label: string): PageTeaser {
+function pageTeaserSchema(raw: unknown, fields: Record<string, ScalarPropSchema>, min: number | undefined, label: string, required: boolean): PageTeaser {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(`${label}: pageTeaser needs an object naming the item's link field and the fields the page fills.`);
   const r = raw as Record<string, unknown>;
   if (min) fail(`${label}: a page list cannot have a minimum, since deleting a page removes its items.`);
+  if (required) fail(`${label}: a page list cannot be required, since deleting a page removes its items.`);
   const used = new Set<string>();
   const pick = (key: 'link' | PageTeaserValue, type: ScalarPropSchema['type'], required: boolean): string | undefined => {
     if (r[key] === undefined && !required) return undefined;
@@ -70,6 +72,11 @@ function pageTeaserSchema(raw: unknown, fields: Record<string, ScalarPropSchema>
     const f = pick(what, PAGE_TEASER_TYPES[what], false);
     if (f) out[what] = f;
   }
+  // Left empty, such a field shows the linked page's own value: being empty is how it follows the page.
+  for (const what of PAGE_TEASER_VALUES) {
+    const f = out[what];
+    if (f && fields[f].required) fail(`${label}: the field "${f}" shows the linked page's ${what} while it is empty, so it cannot be required.`);
+  }
   return out;
 }
 
@@ -78,9 +85,13 @@ function pageTeaserSchema(raw: unknown, fields: Record<string, ScalarPropSchema>
  * the right type for the row values it fills by name. Its items come and go with the site's pages and entries, so it
  * cannot ask for a minimum.
  */
-function feedSchema(raw: unknown, fields: Record<string, ScalarPropSchema>, min: number | undefined, label: string): ListFeed {
+function feedSchema(raw: unknown, fields: Record<string, ScalarPropSchema>, min: number | undefined, label: string, required: boolean): ListFeed {
   if (typeof raw !== 'string' || !(LIST_FEEDS as readonly string[]).includes(raw)) fail(`${label}: feed must be one of ${LIST_FEEDS.map((f) => `"${f}"`).join(', ')}.`);
   if (min) fail(`${label}: a computed list cannot have a minimum, since its items come from the site's pages.`);
+  // Its items and what they hold come from the site's pages or entries, which may have none or leave a value empty.
+  if (required) fail(`${label}: a computed list cannot be required, since its items come from the site's pages.`);
+  const req = Object.keys(fields).find((f) => fields[f].required);
+  if (req) fail(`${label}: the field "${req}" of a computed list cannot be required, since the site's pages fill it.`);
   const filled = feedRowFields(raw);
   for (const [f, type] of Object.entries(filled)) {
     if (Object.hasOwn(fields, f) && fields[f].type !== type) fail(`${label}: the field "${f}" of a computed list must be a ${type} field.`);
@@ -107,6 +118,8 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
   const group = text(r.group, 40);
   if (group) out.group = group;
   const label = `Property "${name}"`;
+  if (r.required !== undefined && typeof r.required !== 'boolean') fail(`${label}: required must be true or false.`);
+  if (r.required) out.required = true;
   switch (type) {
     case 'string': {
       if (r.multiline !== undefined) out.multiline = !!r.multiline;
@@ -200,9 +213,9 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
       if (min !== undefined && max !== undefined && min > max) fail(`${label}: min is greater than max.`);
       if (min !== undefined) out.min = min;
       if (max !== undefined) out.max = max;
-      if (r.pageTeaser !== undefined) out.pageTeaser = pageTeaserSchema(r.pageTeaser, fields, min, label);
+      if (r.pageTeaser !== undefined) out.pageTeaser = pageTeaserSchema(r.pageTeaser, fields, min, label, !!out.required);
       if (r.feed !== undefined) {
-        out.feed = feedSchema(r.feed, fields, min, label);
+        out.feed = feedSchema(r.feed, fields, min, label, !!out.required);
         if (out.pageTeaser) fail(`${label}: a list is either computed from the site's pages (feed) or a page list (pageTeaser), not both.`);
         // A computed list stores nothing: whatever default was sent would never show.
         out.default = [];
@@ -419,6 +432,13 @@ export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'nod
       return `passes "${schema.label}" to "${to.label}" of "${nested!.name}", whose fields differ (${fieldShape(to) || 'none'}).`;
     if (to?.type === 'token' && schema.type === 'token' && to.tokenGroup !== schema.tokenGroup)
       return `passes the ${schema.tokenGroup} token "${schema.label}" to "${to.label}" of "${nested!.name}", which takes a ${to.tokenGroup} token.`;
+  }
+  // A required property of the nested component must never receive an empty value, on any placement.
+  if (field === 'prop' && node.kind === 'instance') {
+    const nested = state.components[node.definitionId];
+    const to = nested && site.prop !== undefined && Object.hasOwn(nested.properties, site.prop) ? nested.properties[site.prop] : undefined;
+    const gap = to ? requiredGap(schema, to) : null;
+    if (gap) return `passes “${schema.label}” to “${to!.label}” of “${nested!.name}”: ${gap}. Make it required too, or unbind it.`;
   }
   // A whole list passed on: its token fields must take tokens of the same group as the fields they arrive in.
   if (field === 'prop' && node.kind === 'instance' && schema.type === 'list') {
