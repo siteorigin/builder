@@ -789,7 +789,7 @@ export class Controller {
   }
 
   /** Both versions of a file in conflict, for the author to compare before choosing. */
-  async compareConflict(path: string): Promise<{ ok: boolean; builder?: FileText; disk?: FileText; message?: string }> {
+  async compareConflict(path: string): Promise<{ ok: boolean; builder?: FileText; disk?: FileText; attempted?: FileText; message?: string }> {
     const s = this.session;
     if (!s) return { ok: false, message: 'No project is open.' };
     return s.compareConflict(path);

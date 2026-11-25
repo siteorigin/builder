@@ -265,12 +265,17 @@ export interface SavedCopy {
   path: string;
   /** canonical: a project document; generated: a file SiteOrigin Builder makes from the pages. */
   kind: 'canonical' | 'generated';
-  /** external: the file as it was edited outside the app; builder: SiteOrigin Builder's version. */
-  side: 'external' | 'builder';
+  /**
+   * external: the file as it was edited outside the app; builder: SiteOrigin Builder's version; attempted: the version
+   * an AI request tried to save before it was rolled back around the external edit.
+   */
+  side: 'external' | 'builder' | 'attempted';
   /** When it was saved, in milliseconds since 1970. */
   savedAt: number;
   /** Where the copy is, relative to the project folder. */
   file: string;
+  /** The version had no file (an AI request that removed it): nothing was written to `file`. */
+  removed?: boolean;
 }
 
 /** A version of a file as text to show, or why it is not shown as text. */
@@ -291,7 +296,7 @@ export interface ProjectSnapshot {
   /** Library images whose files are missing from the project folder, as last checked. */
   missingAssets: MissingAssetFiles[];
   /** Files changed outside the app. canonical: a project document (keep or restore); generated: a derived file (restore). */
-  conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated'; builderMissing?: boolean }>;
+  conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated'; builderMissing?: boolean; aiRun?: boolean }>;
   /** Copies of the versions the author chose against when settling conflicts, newest first. */
   savedCopies?: SavedCopy[];
   /** Set when the project is open for inspection only (a newer format, or another app is editing it). */
@@ -1070,8 +1075,11 @@ export interface BuilderApi {
     generatedSource(kind: 'component' | 'page', id: string): Promise<string>;
     restoreGenerated(path: string): Promise<void>;
     resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }>;
-    /** Both versions of a file in conflict, to compare before choosing: SiteOrigin Builder's and the one on disk. */
-    compareConflict(path: string): Promise<{ ok: boolean; builder?: FileText; disk?: FileText; message?: string }>;
+    /**
+     * The versions of a file in conflict, to compare before choosing: SiteOrigin Builder's and the one on disk, and
+     * for a conflict an AI request's rollback left (`aiRun`), the version that request tried to save.
+     */
+    compareConflict(path: string): Promise<{ ok: boolean; builder?: FileText; disk?: FileText; attempted?: FileText; message?: string }>;
     /** What a saved copy (`SavedCopy.id`) holds. */
     readSavedCopy(id: string): Promise<{ ok: boolean; content?: FileText; message?: string }>;
     /** Take a saved copy off the list in Project health. The file itself stays in the project's recovery folder. */
