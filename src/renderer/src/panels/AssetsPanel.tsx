@@ -22,6 +22,7 @@ import { altChecks } from '../lib/alt-review';
 import { imageUseRows, type ImageUseRow, type PlaceLabel, type UseField } from '../lib/asset-uses';
 import { defaultEditorNode } from '../lib/design-content';
 import type { MissingAssetFiles } from '@shared/api';
+import './AssetsPanel.css';
 
 /** Whether a library file is still in the project, for text kept for its fields (see DraftInput's keepWhile). */
 const assetAlive = (id: string) => () => Object.hasOwn(getState().snapshot?.state.assets.assets ?? {}, id);

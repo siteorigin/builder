@@ -1,0 +1,149 @@
+@layer components {
+  /* Pages panel (PagesPanel.tsx). Scoped to .pages-panel so the shared list rows elsewhere keep their look.
+     The list is the site's page order drawn as an outline: a page sits one indent step under the section page before
+     it whose address contains its own, with a straight guide per level (the Layers panel's step and guide). Each row
+     is the title over a quieter line with the page's status and address; a long address shortens its parent folders
+     first and keeps the page's own segment. The current page's glyph sits in a filled accent tile, which marks it
+     whether or not the page itself is selected (it also takes the selection ring then). The … shows on the current,
+     hovered, focused and menu-open rows, in a slot every row reserves so text never shifts. */
+  .pages-panel { --pages-pad: 8px; --pages-indent: 14px; display: flex; flex-direction: column; flex: 1; min-height: 0; container: pages / inline-size; }
+  .pages-head-add, .pages-head-menu { flex: none; color: var(--text-2); }
+  .pages-head-add:hover:not(:disabled), .pages-head-menu:hover { color: var(--text); }
+  .pages-head-add[aria-expanded='true'] { color: var(--accent-text); }
+  /* The header's buttons sit against the panel edge, so their focus ring is drawn inside them. */
+  .pages-panel .panel-head .btn:focus-visible { outline-offset: -2px; }
+  .pages-find.has-query .input { padding-right: 30px; }
+  .pages-find .pages-find-clear { position: absolute; right: 3px; top: 3px; color: var(--text-3); }
+  .pages-find .pages-find-clear svg { position: static; width: 14px; height: 14px; color: inherit; }
+  .pages-list-wrap { position: relative; }
+  .pages-list.list { gap: 2px; }
+  .pages-list.list[hidden] { display: none; }
+  .pages-list .page-row { align-items: flex-start; gap: 8px; min-height: 41px; padding: 3px 4px 3px calc(var(--pages-pad) + var(--depth, 0) * var(--pages-indent)); }
+  .pages-list .page-row.selected { font-weight: 400; }
+  .pages-list .page-row .actions { align-self: center; }
+  /* The glyph says what the page is (home, draft, article, page); on the current page it sits in a filled tile. */
+  .page-glyph { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-xs); color: var(--text-3); }
+  .pages-list .page-glyph svg { width: 15px; height: 15px; color: inherit; }
+  .pages-list .page-row.selected .page-glyph { background: var(--accent-fill); color: var(--on-accent); }
+  .pages-list .page-row.selected .page-glyph svg { width: 14px; height: 14px; }
+  .pages-list .page-row[draggable='true'] .page-glyph { cursor: grab; }
+  .page-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .page-title { line-height: 20px; }
+  .pages-list .page-row.selected .page-title { font-weight: 600; }
+  /* The second line: Draft, the address, then a note (Home page, an article's date). The address gives way first. */
+  .page-meta { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 11.5px; line-height: 15px; color: var(--text-3); }
+  .pages-list .page-row.selected .page-meta { color: var(--text-2); }
+  .page-route { display: flex; flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+  /* Right-to-left so the folders shorten from their start; any slack then falls before them, never between the two. */
+  .page-route-dir { flex: 0 1 auto; min-width: min(2.4em, calc(var(--dir-ch, 3) * 1ch)); overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+  .page-route-leaf { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .page-route-dir + .page-route-leaf { max-width: calc(100% - min(2.4em, calc(var(--dir-ch, 3) * 1ch))); }
+  /* Found pages are few, so they show their whole title and address, wrapped: what matched is always in view. */
+  .pages-list.finding .page-title { white-space: normal; overflow-wrap: anywhere; }
+  .pages-list.finding .page-meta { align-items: flex-start; }
+  .pages-list.finding .page-route { display: block; white-space: normal; overflow-wrap: anywhere; }
+  .pages-list.finding :is(.page-route-dir, .page-route-leaf) { display: inline; overflow: visible; max-width: none; direction: ltr; }
+  .page-note { flex: none; white-space: nowrap; }
+  .page-note::before { content: '·'; margin-right: 5px; }
+  /* An article's date is its own line, so the address keeps its room. */
+  .page-date { font-size: 11.5px; line-height: 15px; color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pages-list .page-row.selected .page-date { color: var(--text-2); }
+  .page-aside { font-size: 11.5px; line-height: 15px; color: var(--text-3); overflow-wrap: anywhere; }
+  .pages-list .page-row.selected .page-aside { color: var(--text-2); }
+  .page-draft.badge { flex: none; height: 15px; padding: 0 5px; border-radius: var(--r-sm); font-size: 10.5px; }
+  /* On the selected row's tint the badge keeps a solid fill, so its small text stays readable. */
+  .pages-list .page-row.selected .page-draft { background: var(--panel); box-shadow: inset 0 0 0 1px currentColor; }
+  .pages-list mark { background: none; color: inherit; font-weight: 600; text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 2px; }
+  /* A row draws one guide per level it sits under, from --from to --to: the levels that go on past it run its full
+     height and meet the next row's across the 2px gap without overlapping; a section's guide stops halfway down its last
+     page. The current, menu-open, dragged and focused rows break them, as a selected row does in Layers. */
+  .pages-list { --guide: color-mix(in srgb, var(--text-3) 55%, transparent); }
+  .page-guides { position: absolute; top: -1px; bottom: -1px; left: calc(var(--pages-pad) + 9px + var(--from, 0) * var(--pages-indent)); width: calc((var(--to, 1) - var(--from, 0) - 1) * var(--pages-indent) + 1px); background: repeating-linear-gradient(to right, var(--guide) 0 1px, transparent 1px var(--pages-indent)); pointer-events: none; }
+  .page-guides.end { bottom: 50%; }
+  .pages-list .page-row:is(.selected, .menu-open, .dragging, :focus-visible) .page-guides { display: none; }
+  .pages-list .page-row.selected .actions .icon-btn.hover-only,
+  .pages-list .page-row.menu-open .actions .icon-btn.hover-only { opacity: 1; }
+  /* While the page itself is not selected (something on its canvas is), the current page drops the ring and keeps
+     its tile, fill and weight. */
+  .editor.page-quiet .pages-list .page-row.selected { box-shadow: none; }
+  /* Focus on the current row: the 2px focus outline, a 1px gap of panel, then the fill (as in Layers). */
+  .pages-list .page-row.selected:focus-visible { box-shadow: inset 0 0 0 3px var(--panel); }
+  /* The dragged row keeps its text readable; a quiet dashed ring marks it as the one moving. A drop between rows is
+     Layers' line with a leading dot, at the depth the page will sit in the outline once it lands. */
+  .pages-list .page-row.dragging { box-shadow: none; background: var(--panel-2); outline: 1px dashed var(--border-control); outline-offset: -1px; }
+  .pages-list .page-row.drop-before::before, .pages-list .page-row.drop-after::after {
+    left: calc(var(--pages-pad) + var(--drop-depth, 0) * var(--pages-indent) + 5px); right: 6px; height: 8px; border-radius: 0;
+    background: radial-gradient(circle at 4px 4px, var(--accent) 0 3px, transparent 3.5px) no-repeat, linear-gradient(var(--accent), var(--accent)) 6px 3px / calc(100% - 6px) 2px no-repeat;
+  }
+  .pages-list .page-row.drop-before::before { top: -5px; }
+  .pages-list .page-row.drop-after::after { bottom: -5px; }
+  .pages-list .page-row:is(.drop-before, .drop-after) { z-index: 2; }
+  /* The dragged rows go quiet, except the current page, which keeps its tile and colour. */
+  .pages-list .page-row.dragging:not(.selected) { color: var(--text-2); }
+  /* A page just added (or duplicated) is ringed for a moment, so the eye finds where it landed. */
+  /* It settles into the row's own ring (or none): the last keyframe is left to the row. */
+  @keyframes pages-added { 0%, 55% { box-shadow: inset 0 0 0 2px var(--accent); } }
+  .pages-list .page-row.just-added { animation: pages-added 1.6s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .pages-list .page-row.just-added { animation: none; } }
+  .pages-list .page-row.renaming { box-shadow: none; }
+  .pages-list .page-row.renaming .page-title, .pages-list .page-row.renaming .actions, .pages-list .page-row.dragging .actions { visibility: hidden; }
+  .pages-rename.inline-edit { position: absolute; z-index: 1; height: 24px; }
+  /* While a component definition is edited the page row keeps its own blue, without the ring. */
+  .editor.defining .pages-list .page-row.selected { background: var(--accent-soft); color: var(--accent-text); box-shadow: none; }
+  .pages-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 6px 14px 12px; }
+  .pages-empty p { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
+  .pages-empty .btn { max-width: 100%; min-width: 0; }
+  .pages-empty .btn .ellipsis { min-width: 0; }
+  .pages-empty .btn svg { width: 14px; height: 14px; flex: none; }
+  /* The Add page form opens at the top, under the button that opened it, and says where the page will go. */
+  .pages-add-form { display: flex; flex-direction: column; gap: 7px; margin: 2px 6px 8px; padding: 8px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); scroll-margin: 8px; }
+  .pages-add-heading { padding: 0 2px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .pages-add-form .input.inline-edit { height: 30px; padding: 0 9px; }
+  .pages-add-route { font-size: 11.5px; line-height: 15px; color: var(--text-3); overflow-wrap: anywhere; padding: 0 2px; }
+  .pages-add-route .value { color: var(--text); font-weight: 500; }
+  .pages-add-route .value.empty { color: var(--text-3); font-weight: 400; }
+  .pages-add-field { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px 8px; font-size: 12px; color: var(--text-2); padding: 0 2px; }
+  .pages-add-field :is(.input, .select) { min-width: 0; height: 28px; }
+  .pages-add-field.stack { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .pages-add-field .note { grid-column: 1 / -1; font-size: 11.5px; line-height: 15px; color: var(--text-3); }
+  .pages-add-field .note.error { color: var(--red); }
+  .pages-add-check { display: flex; align-items: flex-start; gap: 6px; min-height: 24px; padding: 4px 2px 0; font-size: 12px; line-height: 16px; color: var(--text-2); }
+  .pages-add-check input { flex: none; margin: 1px 0 0; accent-color: var(--accent); }
+  .pages-add-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pages-order-note { display: flex; flex-direction: column; gap: 6px; margin: 0 6px 12px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; line-height: 16px; color: var(--text-2); }
+  .pages-order-note p { margin: 0; overflow-wrap: anywhere; }
+  .pages-order-note strong { color: var(--text); font-weight: 600; }
+  .pages-order-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+  /* Keyboard focus on a row cut short shows its whole title and address in a card under it (Escape hides it). */
+  .pages-peek { position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); pointer-events: none; }
+  .pages-peek-title { font-weight: 500; overflow-wrap: anywhere; }
+  .pages-peek-route { font-size: 11.5px; line-height: 15px; color: var(--text-2); overflow-wrap: anywhere; }
+  /* The header (title, Edit menu, Add page) needs about 270px with the label, so the menu's icon form starts at 280.
+     Below 232px the titles get more room too: a tighter indent and a stacked add form. The header menu is its icon (its name stays in the
+     label and tooltip). The … keeps its reserved slot, so a title never changes length as the pointer reaches it. */
+  @container pages (max-width: 280px) {
+    .pages-head-label { display: none; }
+    .pages-head-menu.btn { width: 26px; padding: 0; justify-content: center; }
+  }
+  @container pages (max-width: 232px) {
+    .pages-panel .pages-list { --pages-pad: 6px; --pages-indent: 11px; padding-inline: 4px; }
+    .pages-add-field { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  }
+
+  /* Collections under the pages: each with Edit layout, which opens the layout its entries share on the canvas. */
+  .pages-collections { margin: 8px 6px 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .pages-collections h4 { margin: 0 6px 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3, var(--text-2)); }
+  .pages-collections ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .pages-collection { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 6px; border-radius: var(--r-sm); }
+  .pages-collection.open { background: var(--panel-2); }
+  .pages-collection > svg { flex: none; width: 15px; height: 15px; color: var(--text-2); }
+  .pages-collection-text { display: flex; flex-direction: column; min-width: 0; }
+  .pages-collection-name { font-size: 13px; color: var(--text); }
+  .pages-collection-meta { font-size: 11px; color: var(--text-2); }
+  .pages-collection { flex-wrap: wrap; }
+  .pages-collection-archive { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding-left: 23px; font-size: 12px; color: var(--text-2); }
+  .pages-collection-size { display: inline-flex; align-items: center; gap: 6px; }
+  .pages-collection-size .select { width: auto; }
+  .pages-collection-check { display: inline-flex; align-items: center; gap: 6px; }
+  .pages-collection-archive .btn { margin-left: auto; }
+}

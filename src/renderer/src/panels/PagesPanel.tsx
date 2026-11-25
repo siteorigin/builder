@@ -1,3 +1,4 @@
+import './PagesPanel.css';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, LayoutTemplate, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
 import { suggestRoute } from '@shared/routes';

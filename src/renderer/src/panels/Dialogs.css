@@ -1,0 +1,146 @@
+@layer components {
+  /* ---------- Component authoring (Dialogs.tsx: Create component, Rename, Make unique, Edit definition) ----------
+     The dialogs follow the confirmation family's order (.confirm-*): a badge for the action, the component or element
+     it acts on set apart, a line for each thing that changes or stays safe, then the one field it asks for. Plum marks
+     only Edit everywhere, the one action that changes every placement at once. */
+  .authoring-badge[data-tone='definition'] { background: var(--plum-soft); color: var(--plum); }
+  .authoring-badge[data-tone='caution'] { background: var(--panel-2); color: var(--red); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .authoring-form { display: flex; flex-direction: column; gap: 12px; }
+  .authoring-form > .field { margin-top: 4px; }
+  .authoring-subject[data-tone='definition'] { background: var(--plum-soft); border-color: color-mix(in srgb, var(--plum) 32%, transparent); }
+  .authoring-subject[data-tone='definition'] > svg { color: var(--plum); }
+  .authoring-details li { overflow-wrap: anywhere; }
+  .authoring-details li[data-kind='change'] { color: var(--text); }
+  .authoring-details strong { font-weight: 600; color: var(--text); }
+  .authoring-count { flex: none; font-size: 12px; font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .authoring-count[data-full] { font-weight: 600; color: var(--text); }
+  .authoring-optional { font-weight: 400; color: var(--text-2); }
+  /* A hint and the error that replaces it take the same height, so nothing below moves. */
+  .authoring-form :is(.field-hint, .field-error) { min-height: 17px; line-height: 1.4; text-wrap: pretty; }
+  .authoring-gone { padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--red) 28%, transparent); text-wrap: pretty; }
+  .authoring-gone > svg { width: 15px; height: 15px; margin-top: 2px; }
+  .authoring-gone strong { overflow-wrap: anywhere; }
+  /* Where a shared design is used: one row per page, part or component, each with its kind and its count. */
+  .placement-block { display: flex; flex-direction: column; gap: 6px; }
+  .placement-list { list-style: none; margin: 0; padding: 0; max-height: 180px; overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--raised); }
+  .placement-list:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .placement-list li { display: flex; align-items: flex-start; gap: 9px; min-height: 32px; padding: 6px 11px; line-height: 1.45; }
+  .placement-list li + li { border-top: 1px solid var(--border); }
+  .placement-icon { display: grid; flex: none; margin-top: 2px; color: var(--text-2); }
+  .placement-icon svg { width: 15px; height: 15px; }
+  .placement-count { flex: none; margin-top: 1px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .placement-list li .grow { overflow-wrap: anywhere; }
+  .placement-reach { color: var(--text-2); }
+  /* Errors in these forms carry the danger glyph with their words (the shared .field-error) and mark the field they
+     belong to, focused or not (the shared invalid border, inside the focus outline). */
+  @media (forced-colors: active) {
+    .authoring-form .field-error::before { forced-color-adjust: none; background: CanvasText; }
+    .authoring-gone { border-color: CanvasText; }
+  }
+
+
+  /* Changes: each row is a button that steps History to it; the action it takes shows on hover and focus. */
+  .history-steps li { padding: 0; }
+  .history-step { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 0 12px; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; outline-offset: -2px; }
+  .history-step:hover { background: var(--hover); }
+  .history-step:focus-visible { outline: 2px solid var(--focus); }
+  .history-step[aria-disabled='true'] { cursor: progress; }
+  .history-step > svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+  .history-step .step-action { font-size: 12px; font-weight: 500; color: var(--accent-text); white-space: nowrap; opacity: 0; }
+  .history-step:hover .step-action, .history-step:focus-visible .step-action { opacity: 1; }
+  .history-start { color: var(--text-3); }
+  .history-said { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); }
+  .history-said.failed { color: var(--red-ink); }
+  .history-tabs { margin-bottom: 12px; }
+  /* An AI turn reviewed in History (issue 164): what it changed, what came after it, and the two ways back. */
+  .turn-review { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); font-size: 13px; }
+  .turn-review h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 600; outline-offset: 2px; }
+  .turn-review h3:focus-visible { outline: 2px solid var(--focus); border-radius: var(--r-sm); }
+  .turn-review h3 svg { width: 14px; height: 14px; flex: none; color: var(--plum); }
+  .turn-review h4 { margin: 4px 0 0; font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .turn-review p { margin: 0; }
+  .turn-review ul, .turn-review ol { margin: 0; padding-inline-start: 18px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+  .turn-review-later { list-style: none; padding-inline-start: 0 !important; gap: 8px !important; }
+  .turn-review-later > li { display: flex; flex-direction: column; gap: 2px; }
+  .turn-review-label { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+  .turn-review-label > svg { width: 13px; height: 13px; flex: none; color: var(--text-3); }
+  .turn-review-later ul { color: var(--text-2); padding-inline-start: 39px; }
+  .turn-review-reason { color: var(--text-2); font-size: 12px; }
+  .turn-review-later .turn-review-reason { padding-inline-start: 21px; }
+  .turn-review-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .turn-review-action { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 4px 10px; }
+  .turn-review-action > p { align-self: center; color: var(--text-2); font-size: 12px; }
+  .turn-review-action > ol { grid-column: 2; color: var(--text-2); font-size: 12px; }
+  .turn-review-standing { font-size: 12px; }
+  .version-save { display: flex; gap: 8px; margin: 0 0 12px; }
+  .version-save .input { flex: 1; min-width: 0; }
+  .version-save + .scope-note { margin-bottom: 12px; }
+  .versions-list li { min-height: 48px; padding: 6px 8px 6px 12px; }
+  .version-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .version-text small { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .version-total { margin: 8px 0 0; font-size: 12px; }
+
+  /* ---------- Page dialogs (Dialogs.tsx: Delete page, Make home page) ----------
+     Members of the confirmation family (.confirm-*): the page set apart with its address, then the decision the action
+     needs, then one line for each thing that changes, goes, stays and can be undone. Addresses and section IDs are in
+     the code face. Header and footer rows carry the shared parts' glyph in their green; link lists are bounded and
+     scroll by keyboard, as the placement list does. */
+  .page-dialog { overflow-wrap: anywhere; }
+  .page-dialog .field-hint { line-height: 1.45; text-wrap: pretty; }
+  .page-dialog-address { font-family: var(--mono); font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+  .page-dialog-address[data-old] { color: var(--text-2); }
+  /* In the subject's quiet note the address keeps the note's ink. */
+  .confirm-subject-note .page-dialog-address { color: inherit; }
+  /* A select still showing its prompt reads as unset, not as a choice. */
+  .page-dialog .select[data-unset] { color: var(--text-3); }
+  .page-dialog-heading { font-weight: 600; color: var(--text); }
+  /* The choices a deletion still needs are grouped in one tray, ahead of what it changes. */
+  .page-dialog-sections { display: flex; flex-direction: column; gap: 10px; padding: 11px 12px 12px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border-strong); }
+  .page-dialog-sections .field > label { color: var(--text); }
+  .page-dialog .confirm-details > li > span { flex: 1; min-width: 0; }
+  .page-dialog-list { list-style: none; margin: 6px 0 0; padding: 0; max-height: 196px; overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--raised); font-weight: 400; color: var(--text-2); }
+  .page-dialog-list:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .page-dialog-list li { display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; line-height: 1.45; }
+  .page-dialog-list li + li { border-top: 1px solid var(--border); }
+  .page-dialog-list li > svg, .page-dialog-moves li > svg { width: 14px; height: 14px; flex: none; margin-top: 2px; color: var(--text-2); }
+  /* A list sits closer to its own line than to the next one. */
+  .page-dialog .confirm-details .page-dialog-list { margin-bottom: 5px; }
+  /* A list inside a detail line keeps its own glyph colours, whatever the line's kind. */
+  .page-dialog .confirm-details .page-dialog-list li > svg { width: 14px; height: 14px; color: var(--text-2); }
+  .page-dialog .page-dialog-list li > svg[data-shared] { color: var(--green); }
+  .page-dialog-where { flex: 0 1 auto; min-width: 52px; max-width: 34%; font-size: 12px; line-height: 1.6; color: var(--text-2); }
+  .page-dialog-label { flex: 1; min-width: 0; font-weight: 500; color: var(--text); }
+  /* Where a link will land: one left-aligned column, so the arrows and addresses line up row to row. */
+  .page-dialog-dest { flex: none; width: 44%; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; font-size: 12px; line-height: 1.6; }
+  .page-dialog-links .page-dialog-dest { width: 28%; flex-wrap: nowrap; }
+  .page-dialog-dest > .page-dialog-address { min-width: 0; }
+  .page-dialog-landing { font-size: 12px; color: var(--text); }
+  .page-dialog-landing[data-pending] { color: var(--text-3); }
+  .page-dialog-quiet { color: var(--text-2); }
+  .page-dialog-arrow { flex: none; color: var(--text-3); }
+  /* Make home page: both moves in one list, each page's old address quiet and its new one plain. */
+  .page-dialog-moves { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--raised); }
+  .page-dialog-moves li { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 9px; row-gap: 1px; padding: 8px 11px; }
+  .page-dialog-moves li + li { border-top: 1px solid var(--border); }
+  .page-dialog-moves li > svg { grid-row: span 2; }
+  .page-dialog-move-title { font-weight: 600; color: var(--text); }
+  .page-dialog-move-path { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; }
+  .page-dialog-option { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border-strong); }
+  .page-dialog-option[data-off] { border-color: color-mix(in srgb, var(--red) 32%, transparent); }
+  .page-dialog-option label { display: flex; align-items: flex-start; gap: 8px; font-weight: 600; color: var(--text); }
+  .page-dialog-option input { margin: 3px 0 0; flex: none; accent-color: var(--accent); }
+  .page-dialog-option-note { margin: 0 0 0 21px; display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+  .page-dialog-option-note svg { width: 13px; height: 13px; flex: none; margin-top: 2px; }
+  .page-dialog-option[data-off] .page-dialog-option-note { color: var(--text); }
+  .page-dialog-option[data-off] .page-dialog-option-note svg { color: var(--red); }
+  .page-dialog-block { display: flex; flex-direction: column; }
+  .page-dialog-block-note { margin: 2px 0 0; font-size: 12px; color: var(--text-2); }
+  /* Why the action cannot be taken yet, beside the action itself. */
+  .page-dialog-status { margin-right: auto; display: flex; align-items: flex-start; gap: 6px; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); text-wrap: pretty; }
+  .page-dialog-status svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--text-3); }
+  /* Takes the author to the choice that unblocks the action. */
+  .page-dialog-status-action { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); cursor: pointer; }
+  .page-dialog-status-action:hover { color: var(--accent-hover); text-decoration-color: currentColor; }
+  .page-dialog-status-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+  @media (forced-colors: active) { .page-dialog-option[data-off] { border-color: CanvasText; } }
+}

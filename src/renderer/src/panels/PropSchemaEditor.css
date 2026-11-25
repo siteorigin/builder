@@ -1,0 +1,116 @@
+@layer components {
+  /* ---------- Property table (PropSchemaEditor.tsx) ----------
+     A list, not a grid of cards: one row per property separated by hairlines, read across as label, code name, type
+     (with its glyph) and what its settings hold. Values in the summary are full-strength and what they are is quiet, so
+     set defaults stand out down the column and unset ones recede. A row opens into a raised panel of its settings. */
+  .schema-editor { display: flex; flex-direction: column; padding: 2px 4px 8px; }
+  .schema-head { position: sticky; top: 0; z-index: 5; display: flex; flex-direction: column; gap: 8px; padding: 2px 0 0; background: var(--panel); }
+  .schema-bar { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+  .schema-intro { flex: 1; min-width: 0; margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
+  .schema-intro strong { font-weight: 600; color: var(--text); }
+  .schema-code { padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--r-xs); background: var(--panel-2); font-family: var(--mono); font-size: 11.5px; color: var(--text); white-space: nowrap; }
+  .schema-problems { flex: none; border-color: var(--red); background: var(--red-soft); color: var(--red); }
+  .schema-problems:hover:not(:disabled) { background: var(--raised); }
+  .schema-add { flex: none; }
+  .schema-undo { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 3px 4px 3px 12px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; color: var(--text); }
+  .schema-grid { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 0.8fr) 140px minmax(0, 1.7fr); align-items: center; gap: 8px; }
+  /* A row's label, code name and type join into one strip with shared seams, so each row reads as one property
+     rather than three loose boxes. Every field keeps its own 3:1 edge; a hovered, invalid or focused one sits on top. */
+  .schema-row > .schema-grid { column-gap: 0; isolation: isolate; }
+  .schema-row > .schema-grid > .schema-row-toggle { margin-left: 8px; width: calc(100% - 8px); }
+  .schema-row > .schema-grid > .schema-label { position: relative; border-radius: var(--r-sm) 0 0 var(--r-sm); }
+  .schema-row > .schema-grid > .schema-name { position: relative; margin-left: -1px; width: calc(100% + 1px); border-radius: 0; }
+  .schema-row > .schema-grid > .schema-type { margin-left: -1px; }
+  .schema-row > .schema-grid > .schema-type .select { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+  .schema-row > .schema-grid :is(.input, .select):hover { z-index: 1; }
+  .schema-row > .schema-grid :is(.input, .select)[aria-invalid='true'] { z-index: 2; }
+  .schema-row > .schema-grid :is(.input, .select):focus { z-index: 3; }
+  .schema-row > .schema-grid > .schema-type .select { position: relative; }
+  .schema-type > svg { z-index: 4; }
+  .schema-cols { column-gap: 0; }
+  .schema-cols > span:last-child { margin-left: 8px; }
+  .schema-cols { padding: 0 8px 6px; border-bottom: 1px solid var(--border-strong); font-size: 12px; font-weight: 500; line-height: 18px; color: var(--text-2); }
+  .schema-cols > span { padding-left: 10px; }
+  .schema-row { min-width: 0; margin: 0; padding: 6px 8px; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); border-radius: 0; background: transparent; transition: background-color 120ms; }
+  /* The open panel draws its own edge, so the row above it drops its divider. */
+  .schema-row:has(+ .schema-row.open) { border-bottom-color: transparent; }
+  .schema-row:hover { background: var(--hover); }
+  .schema-row:has(:focus-visible) { background: var(--accent-soft); }
+  .schema-row.open { margin: 8px -4px; padding: 7px 11px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--panel-2); box-shadow: var(--shadow-sm); }
+  .schema-row.open:has(:focus-visible) { background: color-mix(in srgb, var(--accent) 4%, var(--panel-2)); }
+  /* A row with a problem keeps its place in the list and carries a red edge, so it is found by scanning down. Open,
+     the whole panel takes the red edge, since a partial bar would bend round its corners. */
+  .schema-row.invalid { box-shadow: inset 3px 0 0 var(--red); background: color-mix(in srgb, var(--red) 4%, transparent); }
+  .schema-row.open.invalid { border-color: var(--red); box-shadow: var(--shadow-sm); background: var(--panel-2); }
+  .schema-grid > :is(.input, .select), .schema-type .select { height: 28px; }
+  .schema-grid > .schema-label { font-size: 13px; font-weight: 500; }
+  .schema-name { font-size: 12px; }
+  .schema-name:not(:focus) { color: var(--text-2); }
+  .schema-type { position: relative; display: block; min-width: 0; }
+  .schema-type > svg { position: absolute; top: 50%; left: 9px; width: 14px; height: 14px; transform: translateY(-50%); color: var(--text-2); pointer-events: none; }
+  .schema-type .select { width: 100%; padding-left: 29px; font-size: 12px; }
+  .schema-row-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 28px; padding: 0 6px 0 10px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; font-size: 12px; color: var(--text); text-align: left; }
+  .schema-row-toggle:hover:not(:disabled), .schema-row-toggle[aria-expanded='true'] { background: var(--active); }
+  /* Parts sit on one line; only a free-text default gives way when the column is narrow, so settings stay readable. */
+  .schema-summary { display: flex; flex: 1; min-width: 0; margin-right: 4px; overflow: hidden; white-space: nowrap; }
+  .schema-sum-part { display: inline-flex; flex: none; min-width: 0; }
+  .schema-sum-part.long { flex: 0 1 auto; }
+  .schema-sum-part.long .schema-sum-value { overflow: hidden; text-overflow: ellipsis; }
+  .schema-sum-key { margin-right: 4px; color: var(--text-2); }
+  .schema-sum-sep { margin: 0 6px; color: var(--text-3); }
+  .schema-sum-part.quiet { color: var(--text-3); }
+  .schema-sum-part.error { font-weight: 500; color: var(--text); }
+  .schema-chevron { width: 14px; height: 14px; flex: none; color: var(--text-2); transition: transform 120ms; }
+  .schema-row-toggle[aria-expanded='true'] .schema-chevron { transform: rotate(180deg); }
+  .schema-toggle-alert { width: 13px; height: 13px; flex: none; color: var(--red); }
+  /* Messages about a code name sit under the code name column. */
+  .schema-row-msg { margin-top: 5px; }
+  .schema-row-msg > * { grid-column: 2 / -1; }
+  .schema-row-error, .schema-row-note { display: flex; align-items: flex-start; gap: 6px; padding: 0 2px; font-size: 12px; line-height: 18px; color: var(--text); }
+  .schema-row-note { color: var(--text-2); }
+  .schema-row-error > svg, .schema-row-note > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+  .schema-row-error > svg, .schema-row-note.warn > svg { color: var(--red); }
+  .schema-row-note.warn { color: var(--text); }
+  .schema-fix { display: inline-flex; align-items: center; gap: 4px; height: 22px; margin: -2px 0 0 4px; padding: 0 7px; border: 1px solid var(--border-control); border-radius: var(--r-xs); background: var(--raised); color: var(--text); font-size: 12px; font-weight: 500; vertical-align: middle; }
+  .schema-fix .mono { font-size: 11.5px; }
+  .schema-fix:hover:not(:disabled) { background: var(--panel-2); }
+  .schema-row-settings:not([hidden]) { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; padding: 12px 0 0; border-top: 1px solid var(--border); }
+  .schema-row-settings .textarea { min-height: 54px; font-size: 12px; }
+  .schema-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .schema-grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .schema-numbers { grid-template-columns: repeat(4, minmax(0, 180px)); }
+  /* Settings are as wide as what they hold: a long text gets room, a single word or number does not. */
+  .schema-pair { display: grid; gap: 8px; }
+  .schema-pair-choice { grid-template-columns: minmax(0, 440px) minmax(0, 220px); }
+  .schema-pair-list { grid-template-columns: minmax(0, 260px) minmax(0, 200px); }
+  .schema-narrow { max-width: 240px; }
+  .schema-pair-icon { grid-template-columns: minmax(0, 240px); }
+  .schema-check { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; min-height: 26px; font-size: 12px; color: var(--text); }
+  .schema-check input { margin: 0; accent-color: var(--accent); }
+  .schema-row-foot { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  .schema-remove { flex: none; }
+  /* A neutral hover keeps the red label above 4.5:1. */
+  .schema-remove:hover:not(:disabled) { background: var(--hover); }
+  /* A list's item fields: a nested table of their own, under their own head. */
+  .schema-fields { display: flex; flex-direction: column; padding: 8px 0 2px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); }
+  .schema-fields-head { display: flex; align-items: center; gap: 8px; min-height: 28px; margin-bottom: 4px; padding: 0 8px; font-size: 12px; font-weight: 600; color: var(--text); }
+  .schema-list-problem { margin: 0 0 8px; padding: 0 10px; outline-offset: 2px; }
+  .schema-field.open { margin: 6px 0; padding: 7px 7px 9px; }
+  .schema-fields-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 5px; padding: 0 5px; border-radius: 9px; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); font-size: 11px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; vertical-align: 1px; }
+  .schema-fields > .schema-row:last-child { border-bottom: 0; }
+  .schema-field.open { background: var(--panel-2); }
+  .schema-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 48px 24px; text-align: center; }
+  .schema-empty-icon { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 6px; border-radius: 50%; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border-strong); color: var(--text-2); }
+  .schema-empty-icon svg { width: 18px; height: 18px; }
+  .schema-empty-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+  .schema-empty-text { max-width: 380px; margin: 0 0 8px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+  .schema-empty .btn svg { width: 15px; height: 15px; }
+  /* A schema row's error reads in body ink; its glyph keeps the danger red. */
+  .schema-row .field-error::before { background: var(--red); }
+  .schema-row .field-error { color: var(--text); }
+  @media (forced-colors: active) {
+    .schema-row .field-error::before { forced-color-adjust: none; background: CanvasText; }
+    .schema-row-toggle { border-color: ButtonText; }
+    .schema-row.invalid { border-left: 3px solid CanvasText; }
+  }
+}

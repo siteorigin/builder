@@ -1,0 +1,167 @@
+@layer components {
+  /* ---------- Style controls (StyleControls.tsx) ----------
+     Rows are label | value. A value changed here reads at full strength with a reset in the label rail; a value
+     showing through (from the design or from All sizes) is quiet text. A row only says where its value comes
+     from when that is not obvious: an All sizes value seen from one size, or a size with its own value. */
+  .style-controls { display: flex; flex-direction: column; }
+  .style-scope { position: sticky; top: var(--style-scope-top, 0px); z-index: 1; display: flex; flex-direction: column; gap: 6px; margin: 0 -14px; padding: 8px 14px 10px; background: var(--panel); border-bottom: 1px solid var(--border-strong); }
+  .style-scope-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+  .style-scope-label { font-size: 12px; font-weight: 500; color: var(--text-2); }
+  /* What the canvas is showing, always in view beside the scope, so the two are read together. */
+  .style-scope-now { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-3); white-space: nowrap; }
+  .style-scope-now svg { width: 13px; height: 13px; flex: none; }
+  .style-scope-picker { display: flex; padding: 2px; gap: 2px; border-radius: 8px; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border-control); }
+  .style-scope-picker button { position: relative; flex: 1 0 auto; height: 26px; padding: 0 6px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-2); font-size: 12px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
+  .style-scope-picker button:hover { color: var(--text); background: var(--hover); }
+  .style-scope-picker button[aria-checked='true'] { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
+  .style-scope-picker button:focus-visible { outline-offset: 0; }
+  /* One size picked: the selection takes the accent, so editing a single size never looks like editing them all. */
+  .style-scope-picker.one-size button[aria-checked='true'] { background: color-mix(in srgb, var(--accent) 12%, var(--raised)); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent), var(--shadow-sm); }
+  .editor.defining .style-scope-picker.one-size button[aria-checked='true'] { background: color-mix(in srgb, var(--plum) 12%, var(--raised)); color: var(--plum); box-shadow: inset 0 0 0 1px var(--plum), var(--shadow-sm); }
+  .style-scope-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+  .editor.defining .style-scope-dot { background: var(--plum); }
+  .style-scope-note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .style-scope-note strong { color: var(--text); font-weight: 600; }
+  .style-scope-preview { display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: start; gap: 6px; margin: 0; font-size: 12px; line-height: 1.35; color: var(--text-2); }
+  /* Changes being made where the canvas can't show them: the one case that is boxed. */
+  .style-scope-preview.hides { padding: 5px 8px; border-radius: var(--r-sm); background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-control); color: var(--text); font-weight: 500; }
+  .style-scope-preview > svg { width: 14px; height: 14px; color: var(--text-2); margin-top: 1px; }
+  .style-scope-preview.hides > svg { color: var(--text); }
+  .style-scope-link { border: 0; background: none; padding: 0; color: var(--accent-text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+  .style-scope-link:hover { text-decoration-color: currentColor; }
+  .editor.defining .style-scope-link { color: var(--plum); }
+  /* The state picker sits under the sizes, in the same sticky band; a chosen state is marked like one size alone. */
+  .style-state { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+  /* With its group's two states the picker holds six choices: they wrap onto a second row rather than overflow the dock. */
+  .style-state-picker { flex-wrap: wrap; }
+  .style-state-picker.in-state button[aria-checked='true'] { background: color-mix(in srgb, var(--accent) 12%, var(--raised)); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent), var(--shadow-sm); }
+  .editor.defining .style-state-picker.in-state button[aria-checked='true'] { background: color-mix(in srgb, var(--plum) 12%, var(--raised)); color: var(--plum); box-shadow: inset 0 0 0 1px var(--plum), var(--shadow-sm); }
+  /* Groups are separated by a straight rule; a group with more options than it shows opens from its heading. */
+  .style-group { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; }
+  .style-group + .style-group { border-top: 1px solid var(--border); }
+  .style-scope + .style-group { padding-top: 12px; }
+  /* A closed group is one band, its heading centred between the rules and clickable across it. */
+  .style-group:has(> .style-group-body:empty) { padding: 4px 0; }
+  /* With no footer after it, the section's own padding ends the list. */
+  .style-group:not(:has(> .style-group-body:empty)):last-child { padding-bottom: 0; }
+  .style-group-body { display: flex; flex-direction: column; gap: 6px; }
+  .style-group-body:empty { display: none; }
+  .style-group-title { display: flex; align-items: center; min-height: 24px; font-size: 12px; font-weight: 600; color: var(--text); }
+  .style-group-toggle { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; margin: 0 -6px; padding: 0 6px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text); font-size: 12px; font-weight: 600; text-align: left; }
+  .style-group-toggle:hover { background: var(--hover); }
+  .style-group-count { display: inline-flex; align-items: center; gap: 2px; font-weight: 500; color: var(--text-2); }
+  .style-group-count svg { width: 14px; height: 14px; flex: none; transition: transform 120ms; }
+  .style-group-toggle[aria-expanded='true'] .style-group-count svg { transform: rotate(90deg); }
+  .style-row { display: grid; grid-template-columns: 124px minmax(0, 1fr); align-items: start; column-gap: 8px; row-gap: 3px; min-height: 28px; }
+  .style-row > .style-label { font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 2px; min-width: 0; min-height: 26px; line-height: 1.25; }
+  .style-row > .style-label > span { min-width: 0; overflow-wrap: anywhere; }
+  .style-row.set > .style-label { color: var(--text); font-weight: 500; }
+  /* The reset sits at the end of the label rail, so every reset lines up whatever the label's length. */
+  .style-row .reset-dot { margin: -4px -4px -4px auto; border-radius: var(--r-sm); }
+  .style-row .reset-dot:focus-visible { outline-offset: 0; }
+  .style-control { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+  .style-control .input, .style-control .select { min-width: 0; }
+  .style-source { grid-column: 2; display: flex; flex-direction: column; gap: 2px; font-size: 12px; line-height: 1.35; color: var(--text-3); }
+  .style-source .previewed { display: grid; grid-template-columns: 12px minmax(0, 1fr); align-items: start; gap: 4px; color: var(--text); font-weight: 500; }
+  .style-source .previewed > svg { width: 12px; height: 12px; margin-top: 2px; color: var(--text-2); }
+  .style-row:has(> .style-source), .style-row:has(.style-custom) { margin-bottom: 4px; }
+  .style-field { position: relative; display: flex; flex: 1; min-width: 0; }
+  .style-field > .select { flex: 1; }
+  .style-field.has-lead > .select { padding-left: 27px; }
+  .style-field > .input { flex: 1; }
+  .style-unit { position: absolute; left: 10px; top: 50%; translate: 0 -50%; font-size: 12px; white-space: pre; color: var(--text-2); pointer-events: none; }
+  .style-unit.is-set { font-weight: 500; }
+  .style-unit-digits { visibility: hidden; }
+  .style-field.has-unit:focus-within .style-unit { visibility: hidden; }
+  .style-lead { position: absolute; left: 8px; top: 50%; translate: 0 -50%; width: 14px; height: 14px; pointer-events: none; color: var(--text-3); }
+  /* The app's swatch ring (as in Site styles), so a white or near-black colour keeps a 3:1 edge. */
+  /* Round, so it never reads as a checkbox inside the picker. */
+  .style-lead.swatch { width: 12px; height: 12px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 1px var(--border-control); }
+  .style-select.is-inherited, .style-input.is-inherited::placeholder { color: var(--text-3); }
+  .style-select.is-inherited, .style-input.is-inherited { background-color: transparent; }
+  .style-select.is-set, .style-input.is-set { color: var(--text); font-weight: 500; background-color: color-mix(in srgb, var(--accent) 10%, var(--raised)); }
+  .style-field:has(> .is-set) > .style-lead:not(.swatch) { color: var(--text-2); }
+  /* A custom value being drafted over a stored one: the stored one still applies, so the picker is not tinted. */
+  .style-select.is-drafting { color: var(--text); background-color: var(--raised); }
+  .editor.defining .style-select.is-set, .editor.defining .style-input.is-set { background-color: color-mix(in srgb, var(--plum) 10%, var(--raised)); }
+  /* In dark, a quieter changed fill and a lighter chevron keep the picker's arrow at 3:1 or better. */
+  :where(:root[data-appearance='dark']) {
+    .style-select.is-set, .style-input.is-set { background-color: color-mix(in srgb, var(--accent) 7%, var(--raised)); }
+    .editor.defining .style-select.is-set, .editor.defining .style-input.is-set { background-color: color-mix(in srgb, var(--plum) 7%, var(--raised)); }
+    .style-select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
+  }
+  .panel-body .style-controls :is(input, select, textarea, button) { scroll-margin-top: var(--style-scroll-top, 150px); }
+  /* A linked colour's strength, on its own line under the picker: a short number field with its % after it. */
+  .style-strength { display: flex; align-items: center; gap: 6px; flex: 1 0 100%; min-width: 0; font-size: 12px; color: var(--text-2); }
+  .style-strength > .style-field { flex: 0 0 64px; }
+  .style-media { display: flex; flex-direction: column; gap: 6px; flex: 1 0 100%; min-width: 0; }
+  .style-media-options { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px 8px; font-size: 12px; color: var(--text-2); }
+  .style-media-options > .input:last-child { grid-column: 2; }
+  .style-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 0 100%; min-width: 0; }
+  .style-custom > .input { flex: 1; }
+  .style-custom .color-pick.md { width: 24px; height: 24px; margin: 1px; }
+  .style-custom-hint { flex: 1 0 100%; margin: 0; font-size: 12px; line-height: 1.35; color: var(--text-3); }
+  .style-custom-keeps { display: block; margin-bottom: 3px; color: var(--text); font-weight: 500; }
+  .style-input.mono { font-family: var(--mono); font-size: 12px; }
+  /* Image focus: the whole picture with the crop it gets at the chosen size, and the point that stays in view. */
+  .focus-editor { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 2px 0 8px; }
+  .focus-caption { display: flex; align-items: flex-start; gap: 6px; margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .focus-caption > svg { flex: none; width: 13px; height: 13px; margin-top: 2px; color: var(--text-2); }
+  .focus-hint { margin: -2px 0 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .focus-hint strong { font-weight: 600; color: var(--text); }
+  /* The picture sits on a quiet card, its corners concentric with the card's. */
+  .focus-stage { display: flex; flex-direction: column; align-items: center; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
+  .focus-pad { position: relative; max-width: 100%; max-height: 184px; border-radius: var(--r-xs); background: var(--canvas); touch-action: none; user-select: none; }
+  /* The picture and its crop are clipped to its shape. The point sits outside this, so it stays whole at an edge. */
+  .focus-clip { position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: inherit; }
+  /* The picture's edge, drawn over it so a dark or pale photo never melts into the card (the crop's own edge sits above). */
+  .focus-clip::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--border-strong); pointer-events: none; }
+  .focus-pad img { display: block; width: 100%; height: 100%; max-height: 184px; object-fit: fill; pointer-events: none; }
+  /* What the crop cuts off is the same picture, dimmed and drained of colour: no tint of its own, in either theme. */
+  .focus-pad.is-cropped .focus-clip > img { filter: brightness(0.5) saturate(0.4); }
+  .focus-pad.is-cropped { border-radius: var(--r-sm); cursor: crosshair; }
+  /* As a control, the picture takes the 3:1 control edge, firmer under the pointer, as a field does. */
+  .focus-pad.is-cropped .focus-clip::after { box-shadow: inset 0 0 0 1px var(--border-control); }
+  .focus-pad.is-cropped:hover .focus-clip::after { box-shadow: inset 0 0 0 1px var(--text-3); }
+  .focus-pad.is-dragging { cursor: grabbing; }
+  /* These sit on the author's photo, so they use the mark's light sky and ink, a pair that holds on any picture in either theme. */
+  .focus-window { position: absolute; z-index: 1; overflow: hidden; pointer-events: none; }
+  .focus-window > img { position: absolute; max-width: none; max-height: none; }
+  /* The crop's edge: ink outside, light sky inside, both drawn within the crop so all four sides stay whole at the
+     picture's edge. */
+  .focus-window::after { content: ''; position: absolute; inset: 0; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 70%, transparent), inset 0 0 0 2.5px var(--sky-1); --guide: linear-gradient(color-mix(in srgb, var(--sky-1) 70%, transparent), color-mix(in srgb, var(--sky-1) 70%, transparent)); --guide-ink: linear-gradient(color-mix(in srgb, var(--ink) 50%, transparent), color-mix(in srgb, var(--ink) 50%, transparent)); }
+  /* While dragging, thirds guide the composition: light lines with an ink shadow, so they show on any photo. */
+  .focus-pad.is-dragging .focus-window::after { background: var(--guide) 33.33% 0 / 1px 100% no-repeat, var(--guide) 66.67% 0 / 1px 100% no-repeat, var(--guide) 0 33.33% / 100% 1px no-repeat, var(--guide) 0 66.67% / 100% 1px no-repeat, var(--guide-ink) calc(33.33% + 1px) 0 / 1px 100% no-repeat, var(--guide-ink) calc(66.67% + 1px) 0 / 1px 100% no-repeat, var(--guide-ink) 0 calc(33.33% + 1px) / 100% 1px no-repeat, var(--guide-ink) 0 calc(66.67% + 1px) / 100% 1px no-repeat; }
+  /* The point: hollow while it shows through from another size or is the default, solid once it is set here. */
+  .focus-mark { position: absolute; z-index: 3; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; border: 2px solid var(--sky-1); background: transparent; box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ink) 82%, transparent), inset 0 0 0 1.5px color-mix(in srgb, var(--ink) 82%, transparent), 0 1px 3px color-mix(in srgb, var(--ink) 50%, transparent); pointer-events: none; transition: transform 120ms; }
+  .focus-mark.is-set { background: var(--select); box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--ink) 82%, transparent), 0 1px 3px color-mix(in srgb, var(--ink) 50%, transparent); }
+  .focus-pad.is-cropped:hover .focus-mark { transform: scale(1.1); }
+  .focus-pad.is-dragging .focus-mark { transform: scale(1.25); }
+  /* Nothing to choose: a small reference picture beside the reason and what would change it. */
+  .focus-idle { display: flex; flex-direction: column; gap: 8px; }
+  .focus-idle.has-picture { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 10px; }
+  .focus-idle .focus-stage { padding: 6px; }
+  .focus-idle .focus-pad, .focus-idle .focus-pad img { max-height: 64px; }
+  .focus-fields { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+  .focus-saved { flex-basis: 100%; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .focus-saved strong { font-weight: 600; color: var(--text); }
+  .focus-field { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); }
+  /* The unit sits inside the field, right after the digits. */
+  .focus-number { position: relative; display: inline-flex; }
+  .focus-field .input { width: 54px; padding: 0 18px 0 6px; text-align: right; font-variant-numeric: tabular-nums; }
+  .focus-unit { position: absolute; right: 7px; top: 50%; translate: 0 -50%; font-size: 12px; color: var(--text-2); pointer-events: none; }
+  .focus-center { margin-left: auto; padding: 0 8px; }
+  .focus-error { margin: -2px 0 0; }
+  /* A refused value is an error, not a change: the field drops the changed tint while it is marked. */
+  .focus-field .input[aria-invalid='true'] { background-color: var(--raised); }
+  /* A value shown through from elsewhere: its unit is as quiet as its digits. */
+  .focus-number > .is-inherited + .focus-unit { color: var(--text-3); }
+  .style-input.is-set::placeholder { color: var(--text-2); }
+  .editor.defining .style-row .reset-dot:hover { background: var(--plum-soft); }
+  .style-footer { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .style-footer-hint { font-size: 12px; color: var(--text-3); }
+  .style-footer .btn svg { width: 13px; height: 13px; }
+  /* The wider reset is the quieter one: it reaches work at other sizes. */
+  .style-footer .style-footer-every { margin-top: 4px; font-size: 12px; min-height: 24px; color: var(--text-2); }
+  .style-footer .style-footer-every:hover { color: var(--text); }
+}

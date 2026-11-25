@@ -1,0 +1,22 @@
+@layer components {
+  /* Categories and tags: a post's checkboxes in the writer, and the manager's list of a grouping's terms. */
+  .post-terms { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
+  .post-terms-label { font-size: 12px; font-weight: 500; color: var(--text-2); }
+  .post-terms-list { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .post-term { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
+  .post-term input { margin: 0; }
+  .post-terms-add { max-width: 240px; }
+  .terms-panel { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; min-height: 220px; }
+  .terms-add { display: flex; gap: 6px; }
+  .terms-add .input { flex: 1; }
+  .terms-list { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; }
+  .term-row { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 6px; border-radius: var(--r-sm); }
+  .term-row:hover, .term-row:focus-within { background: var(--hover); }
+  .term-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .term-label { font-weight: 500; }
+  .term-meta { font-size: 11px; color: var(--text-3); }
+  .term-actions { display: flex; gap: 2px; }
+  .term-rename { flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+  .term-rename .input { flex: 1; min-width: 0; }
+  .term-moves { flex-basis: 100%; margin: 2px 0 0; font-size: 12px; color: var(--text-3); }
+}

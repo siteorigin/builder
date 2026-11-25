@@ -21,6 +21,7 @@ import { pageShowing, partName } from '@shared/page-shell';
 import { usePackPreview, usePreviewExtent } from '../components/PackPreview';
 import { ComponentThumb } from '../components/ComponentThumb';
 import { axesOf } from '@shared/variants';
+import './InsertPanel.css';
 
 export function LucideIcon({ name, size = 15 }: { name?: string; size?: number }) {
   const key = (name ?? 'box')

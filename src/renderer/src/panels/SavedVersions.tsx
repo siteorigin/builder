@@ -1,3 +1,4 @@
+import './SavedVersions.css';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ArchiveRestore, ArrowLeft, Bookmark, BookmarkPlus, History, Trash2 } from 'lucide-react';
 import type { SavedVersionInfo, VersionReview } from '@shared/api';

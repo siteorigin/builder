@@ -32,6 +32,7 @@ import { checkPublicUrl, publicUrl } from '@shared/public-url';
 import { LANGUAGE_CODE_ERROR, languageDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
 import { siteNameNote } from '@shared/site-name';
 import { ENTITY_KIND_LABELS, ENTITY_KINDS, IDENTITY_LIMITS, checkCoordinates, checkEmail, checkHoursList, checkProfileUrl, checkProfiles, checkTelephone, checkTwitterHandle, coordinatesText, isEntityKind, type Checked, type IdentityPatch } from '@shared/site-identity';
+import './SiteStyles.css';
 
 /**
  * What the Foundation theme uses each colour for, checked against its base CSS and component styles, so an

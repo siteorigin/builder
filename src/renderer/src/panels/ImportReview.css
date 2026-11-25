@@ -1,0 +1,25 @@
+@layer components {
+  .import-review-lead { margin: 0 0 10px; }
+  .import-review-group + .import-review-group, .import-review-rest + .import-review-group, .import-review-all + .import-review-group { margin-top: 14px; }
+  .import-review-group h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+  /* A file left out is not a card to act on: no fill, a dashed outline. */
+  .import-review-row.refuse { background: transparent; border-style: dashed; border-color: var(--border-control); }
+  .import-review { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+  .import-review-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
+  .import-review-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 13px; }
+  .import-review-name b { overflow-wrap: anywhere; font-weight: 600; color: var(--text); }
+  .import-review-name .muted { font-size: 12px; font-variant-numeric: tabular-nums; }
+  .import-review-what { display: flex; align-items: flex-start; gap: 6px; margin: 6px 0 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .import-review-what svg { flex: none; width: 13px; height: 13px; margin-top: 2px; }
+  .import-review-what input { flex: none; margin: 2px 0 0; }
+  /* The one choice in a row reads as a choice, not as its quieter explanation. */
+  label.import-review-what { color: var(--text); cursor: pointer; }
+  .import-review-all { margin: 4px 0 0; font-size: 12px; color: var(--text-2); }
+  .import-review-all summary { cursor: pointer; color: var(--accent-text); font-weight: 500; }
+  .import-review-all ul { margin: 4px 0 0; padding-left: 18px; columns: 2; overflow-wrap: anywhere; }
+  .import-review-refused { color: var(--text); }
+  .import-review-refused svg { color: var(--red); }
+  .import-review-rest { margin: 10px 0 0; font-size: 12px; }
+  .post-import-notes { margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .post-import-missing ul { columns: 1; }
+}

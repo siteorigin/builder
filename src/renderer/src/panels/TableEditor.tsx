@@ -4,6 +4,7 @@ import type { TableProp } from '@shared/types';
 import type { TableEdit } from '@engine/table';
 import { DraftInput, Field } from '../components/ui';
 import { announcementText } from '../lib/announce';
+import './TableEditor.css';
 import {
   addColumnNote,
   addRowNote,

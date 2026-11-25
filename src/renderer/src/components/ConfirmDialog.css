@@ -1,0 +1,28 @@
+@layer components {
+  /* Confirmation questions (ConfirmDialog.tsx) answer, in order: what happens, to what, what is lost and what stays
+     safe, and whether it can be taken back. The badge's hue carries the stakes (red when work is lost or at risk, the
+     accent otherwise) and its glyph names the action; every detail line has its own icon shape and its own words, so
+     nothing rests on colour alone. */
+  .confirm-icon { width: 28px; height: 28px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 24%, transparent); }
+  .confirm-icon[data-tone='danger'] { background: var(--red-soft); color: var(--red); }
+  /* Unsaved or recoverable loss: the red glyph without the tinted disc, a step down from danger. */
+  .confirm-icon[data-tone='caution'] { background: var(--panel-2); color: var(--red); box-shadow: inset 0 0 0 1px var(--border-strong); }
+  .confirm-icon svg { width: 15px; height: 15px; }
+  .confirm { display: flex; flex-direction: column; gap: 12px; }
+  .confirm-lead { margin: 0; line-height: 1.5; overflow-wrap: anywhere; text-wrap: pretty; }
+  .confirm-subject { display: flex; align-items: flex-start; gap: 9px; padding: 9px 11px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border-strong); }
+  .confirm-subject > svg { width: 15px; height: 15px; flex: none; margin-top: 2px; color: var(--text-2); }
+  .confirm-subject-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .confirm-subject-name { font-weight: 600; overflow-wrap: anywhere; }
+  .confirm-subject-address { font-family: var(--mono); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; user-select: text; }
+  .confirm-subject-address strong { font-weight: 600; color: var(--text); }
+  .confirm-subject-quiet { color: var(--text-2); }
+  .confirm-subject-note { font-size: 12px; color: var(--text-2); }
+  .confirm-details { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 7px; }
+  .confirm-details li { display: flex; align-items: flex-start; gap: 9px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+  .confirm-details svg { width: 15px; height: 15px; flex: none; margin-top: 2px; }
+  .confirm-details li:is([data-kind='lose'], [data-kind='risk'], [data-kind='final']) { color: var(--text); }
+  .confirm-details li:is([data-kind='lose'], [data-kind='risk'], [data-kind='final']) svg { color: var(--red); }
+  .confirm-details li[data-kind='final'] { font-weight: 600; }
+  @media (forced-colors: active) { .confirm-icon { box-shadow: none; border: 1px solid CanvasText; } }
+}

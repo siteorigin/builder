@@ -7,6 +7,7 @@ import { contentFields, contentTarget, findContent, planReplace, sampleContactMa
 import type { SampleContactKind } from '@shared/sample-contact';
 import { pagesShowing } from '@shared/page-shell';
 import { refKey, type ElementRef } from '@shared/types';
+import './FindReplace.css';
 
 /** The reveal waiting for the inspector, so a newer one replaces it. */
 let pendingReveal = 0;

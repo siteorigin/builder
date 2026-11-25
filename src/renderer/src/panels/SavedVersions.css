@@ -1,0 +1,6 @@
+@layer components {
+  .version-review h3 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+  .version-review > .muted:first-of-type { margin-top: 0; }
+  .version-review .scope-note { margin-top: 12px; }
+  .version-loading { display: flex; align-items: center; gap: 8px; color: var(--text-2); }
+}

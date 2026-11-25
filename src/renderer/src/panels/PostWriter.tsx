@@ -1,3 +1,4 @@
+import './PostsPanel.css';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Bold, Eye, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Send, Unlink, Undo2 } from 'lucide-react';
 import type { AssetRecord, EntryDoc, EntrySeo, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';

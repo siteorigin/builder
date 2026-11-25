@@ -1,8 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const css = readFileSync("src/renderer/src/styles.css", "utf8");
-const rule = (sel: string) => css.split("\n").find((l) => l.startsWith(sel + " {")) ?? "";
+const css =
+  readFileSync("src/renderer/src/styles/primitives.css", "utf8") +
+  "\n" +
+  readFileSync("src/renderer/src/panels/Canvas.css", "utf8");
+const rule = (sel: string) =>
+  css
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.startsWith(sel + " {")) ?? "";
 const px = (decl: string, prop: string) => Number(new RegExp(`${prop}: (\\d+)px`).exec(decl)?.[1]);
 
 describe("toasts while previewing (#562)", () => {

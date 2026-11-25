@@ -1,3 +1,4 @@
+import './Toolbar.css';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, Moon, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Sparkles, Sun, SunMoon, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { hasDarkPalette } from '@shared/color-scheme';

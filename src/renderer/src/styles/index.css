@@ -1,0 +1,10 @@
+/*
+ * Renderer stylesheet entry: declares the cascade order once so primitives, layout,
+ * and colocated component stylesheets compose predictably without !important wars.
+ */
+@layer tokens, reset, base, primitives, layout, components;
+
+@import './tokens.css';
+@import './reset.css';
+@import './primitives.css';
+@import './layout.css';

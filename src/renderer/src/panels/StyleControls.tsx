@@ -1,3 +1,4 @@
+import './StyleControls.css';
 import { Fragment, useEffect, useId, useRef, useState } from 'react';
 import { ChevronRight, EyeOff, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
 import type { ReactNode } from 'react';

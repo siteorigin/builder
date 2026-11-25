@@ -8,6 +8,7 @@ import { recentGroups, whereLabels } from './lib/recent-places';
 import { SettingsModal } from './panels/SettingsModal';
 import { AppMark, MARK_COLORS } from './components/AppMark';
 import { switchScheme, useEditorScheme } from './lib/appearance';
+import './Welcome.css';
 
 export function BrandMark() {
   return (
@@ -355,7 +356,7 @@ export function Welcome() {
         </div>
         <div className="welcome-actions no-drag">
           {/* With recent projects this is the screen's one primary action; on first run the main pane's button is. */}
-          <button className={`welcome-action${recents?.length ? ' primary' : ' secondary'}`} disabled={!!opening} aria-keyshortcuts={keys.newProject.aria} onClick={() => setCreating(true)}>
+          <button className={`action-card welcome-action${recents?.length ? ' primary' : ' secondary'}`} disabled={!!opening} aria-keyshortcuts={keys.newProject.aria} onClick={() => setCreating(true)}>
             <span className="ico">
               <Plus size={18} />
             </span>
@@ -370,7 +371,7 @@ export function Welcome() {
             </span>
           </button>
           {/* One project opens at a time: a second open while one is on its way would not close the first. */}
-          <button className="welcome-action secondary" disabled={!!opening} aria-busy={opening === 'dialog' || undefined} aria-keyshortcuts={keys.open.aria} onClick={() => void open()}>
+          <button className="action-card welcome-action secondary" disabled={!!opening} aria-busy={opening === 'dialog' || undefined} aria-keyshortcuts={keys.open.aria} onClick={() => void open()}>
             <span className="ico">{opening === 'dialog' ? <Spinner decorative /> : <FolderOpen size={18} />}</span>
             <span className="grow">
               <span className="title">
@@ -384,7 +385,7 @@ export function Welcome() {
           </button>
           {/* Windows and Linux pickers take files or folders, not both: a project folder has its own. */}
           {!pickerTakesFolders && (
-            <button className="welcome-action secondary" disabled={!!opening} aria-busy={opening === 'folder-dialog' || undefined} onClick={() => void open(undefined, { folder: true })}>
+            <button className="action-card welcome-action secondary" disabled={!!opening} aria-busy={opening === 'folder-dialog' || undefined} onClick={() => void open(undefined, { folder: true })}>
               <span className="ico">{opening === 'folder-dialog' ? <Spinner decorative /> : <Folder size={18} />}</span>
               <span className="grow">
                 <strong>Open project folder…</strong>

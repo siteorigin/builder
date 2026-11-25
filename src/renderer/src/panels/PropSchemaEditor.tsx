@@ -3,6 +3,7 @@ import { Braces, ChevronDown, CircleAlert, CircleDot, Hash, Image, Info, Link2, 
 import { checkPropName } from '@engine/schema';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { DraftInput, Field } from '../components/ui';
+import './PropSchemaEditor.css';
 import {
   MAX_ITEM_FIELDS,
   addItemField,

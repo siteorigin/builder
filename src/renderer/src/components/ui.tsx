@@ -544,7 +544,7 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
   }, [id, key]);
   return (
     <div className="section" ref={rootRef}>
-      <div className="row" style={{ paddingRight: 8 }} role={level ? 'heading' : undefined} aria-level={level}>
+      <div className="row" role={level ? 'heading' : undefined} aria-level={level}>
         <button
           className="section-head grow"
           aria-expanded={open}

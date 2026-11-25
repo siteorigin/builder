@@ -1,3 +1,4 @@
+import './PostTerms.css';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Check, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { Collection, EntryDoc } from '@shared/types';

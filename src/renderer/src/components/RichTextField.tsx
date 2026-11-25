@@ -9,6 +9,7 @@ import { appliesLanded, isSettling, reportRefused } from '../lib/pending';
 import { DraftInput, type DraftHandle } from './ui';
 import { LinkRelControls } from './LinkRelControls';
 import { markDraft, type PendingEdit } from '../store';
+import './RichTextField.css';
 
 type Command = 'link' | 'ul' | 'ol' | 'add' | 'remove' | 'up' | 'down';
 const COMMANDS: Array<{ cmd: Command; label: string; icon: React.ReactNode; gap?: boolean }> = [

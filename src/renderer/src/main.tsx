@@ -1,5 +1,5 @@
 import { createRoot } from 'react-dom/client';
-import './styles.css';
+import './styles/index.css';
 import { App } from './App';
 import { registerPacks } from '@catalogue/index';
 import { api, setState } from './store';

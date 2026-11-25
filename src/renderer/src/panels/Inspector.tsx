@@ -1,3 +1,4 @@
+import './Inspector.css';
 import { axesOf, designLayers, designStyles, selectedVariants, selectedVariantStyles, startingVariants } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
 import { Children, Fragment, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -1601,7 +1602,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                     </p>
                   );
                 return (
-                  <div key={i} data-field={b.prop} style={{ display: 'contents' }}>
+                  <div key={i} data-field={b.prop}>
                   <PropField
                     name={b.prop}
                     schema={schema}
@@ -1636,7 +1637,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 // An item without its own value for the field shows the field's default, on the site and here.
                 const value = Object.hasOwn(item, b.item!) ? item[b.item!] : field.default;
                 return (
-                  <div key={`${itemId}:${b.item}`} data-field={b.item} style={{ display: 'contents' }} {...reveal.handlers}>
+                  <div key={`${itemId}:${b.item}`} data-field={b.item} {...reveal.handlers}>
                     {/* The same place as this row's field in the section's own list, so text kept there is found here too. */}
                     <FieldHome part={`prop:${listProp}|item:${itemId}:${b.item}`} alive={rowAlive(instOwner, instNodeId, listProp, itemId, b.item!)}>
                       <ScalarField schema={field} value={value} state={state} onChange={edit} hint={teaser?.hint ?? (mixedReach ? `This ${itemLabel} only.` : undefined)} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
@@ -1935,7 +1936,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
         {node.kind === 'text' && !node.rich && !isBinding(node.tag) && <TagField state={state} owner={owner} node={node} onChange={(v) => content('tag', v)} />}
         {node.kind === 'text' && !isBinding(node.text) && (
           <>
-            <div data-field="text" style={{ display: 'contents' }}>
+            <div data-field="text">
               {node.rich && !isBinding(node.text) ? (
                 <Field label="Text" hint="Or double-click the text on the page to edit it there." controlId={`${node.id}-text`}>
                   <RichTextField id={`${node.id}-text`} describedBy={`${node.id}-text-note`} value={richTextToMarkdown(toRichText(node.text), state.pages)} onCommit={(v, edit) => content('text', v, edit)} pages={state.pages} />
@@ -1960,7 +1961,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
             {isBinding(node.label) ? (
               <EntryBoundNote state={state} owner={owner} value={node.label} label="Label" />
             ) : (
-              <div data-field="label" style={{ display: 'contents' }}>
+              <div data-field="label">
                 <Field label="Label">
                   <DraftInput value={String(node.label)} onCommit={(v) => content('label', v)} />
                 </Field>
@@ -2152,7 +2153,7 @@ const FIELD_NAME: Record<ContentField, string> = { text: 'text', label: 'button 
 /** A property default's field: its editor, then which placements show it. `content`: the node's field it fills in. */
 function DefaultField({ state, def, prop, schema, onChange, label, content }: { state: ProjectState; def: ComponentDefinition; prop: string; schema: ScalarPropSchema; onChange: (v: unknown, edit?: PendingEdit) => void; label?: string; content?: ContentField }) {
   return (
-    <div data-field={prop} data-content={content} style={{ display: 'contents' }}>
+    <div data-field={prop} data-content={content}>
       <FieldHome root={`default:${def.id}:${prop}`} alive={() => Object.hasOwn(getState().snapshot?.state.components[def.id]?.properties ?? {}, prop)}>
         <ScalarField schema={schema} value={schema.default} state={state} label={label ?? schema.label} hint={`Each placement fills this in. ${reachText(defaultReach(state, def.id, prop))}`} onChange={onChange} everywhere />
       </FieldHome>
@@ -2231,7 +2232,7 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
     switch (f.field) {
       case 'text':
         return (
-          <div key={f.field} data-field="text" style={{ display: 'contents' }}>
+          <div key={f.field} data-field="text">
             {node.kind === 'text' && node.rich ? (
               <Field label="Text" hint={hint} controlId={`${def.id}-${node.id}-text`}>
                 <RichTextField id={`${def.id}-${node.id}-text`} describedBy={hint ? `${def.id}-${node.id}-text-note` : undefined} value={richTextToMarkdown(toRichText(f.value), state.pages)} onCommit={(v, edit) => void applyWith(edit, [designContentOp(def, node.id, 'text', v)], editLabel(state, 'Edit', here), `${def.id}:${node.id}:text`)} pages={state.pages} />
@@ -2245,7 +2246,7 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
         );
       case 'label':
         return (
-          <div key={f.field} data-field="label" style={{ display: 'contents' }}>
+          <div key={f.field} data-field="label">
             <Field label={`${kind} text`} hint={hint}>
               <DraftInput value={String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'label', v)], editLabel(state, 'Edit', here), `${def.id}:${node.id}:label`)} />
             </Field>
@@ -2273,7 +2274,7 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
         );
       case 'icon':
         return (
-          <div key={f.field} data-field="icon" style={{ display: 'contents' }}>
+          <div key={f.field} data-field="icon">
             <Field label="Icon" controlId={iconId} hint={hint}>
               <IconPicker id={iconId} value={String(f.value ?? '')} onChange={set(f, fieldLabel(state, 'icon', here, true))} />
             </Field>
