@@ -310,7 +310,7 @@ describe('draft entries and the website export', () => {
 });
 
 describe('a renamed entry in a cached run', () => {
-  it('makes its page, its old address, the pages linking to it, the layout, the sitemap and llms.txt again, and nothing else', () => {
+  it('makes its page, its old address, the pages linking to it, the layout, the sitemap, the RSS feed and llms.txt again, and nothing else', () => {
     let s = blog();
     const cache = new GenerationCache();
     const made = () => {
@@ -335,6 +335,8 @@ describe('a renamed entry in a cached run', () => {
       // llms.txt lists the entry at its address.
       'llms.txt',
       'redirect:posts:en_winter:/blog/winter-workshop/',
+      // The RSS feed links to the entry at its address (#398).
+      'rss.xml',
       'sitemap.xml'
     ]);
     // A change to its text afterwards reaches its own page alone, not its old address.

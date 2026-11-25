@@ -431,7 +431,7 @@ await eventually(() => assert.equal(savedSeo().title, 'Raku firing notes from th
 await seoTab('Structured data').click();
 await eventually(async () => assert.match(await seoBox.locator('.seo-graph-none').innerText(), /Public URL/, 'without a public URL the post carries no structured data, and says why'));
 assert.equal(await seoBox.locator('[data-status="search"] dd').innerText(), 'May list it');
-assert.equal(await seoBox.locator('[data-status="siteSearch"] dd').innerText(), 'Posts aren’t in site search yet');
+assert.equal(await seoBox.locator('[data-status="siteSearch"] dd').innerText(), 'May find it', 'Site search finds a published post');
 const setUrl = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'site.update', baseUrl: 'https://studio.example' }] }, { label: 'Set public URL' }));
 assert.ok(setUrl.ok, JSON.stringify(setUrl));
 const postGraph = async () => JSON.parse(await seoBox.getByTestId('seo-graph').innerText());
