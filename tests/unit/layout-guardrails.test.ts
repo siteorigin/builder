@@ -327,7 +327,7 @@ describe('a grid child spanning more columns than its grid has', () => {
       el('n_root', 'Cards', { base: { layout: 'grid', columns: 2 } }, ['n_each']),
       { id: 'n_each', kind: 'repeat', list: { $prop: 'items' }, children: ['n_item'] } as GraphNode,
       el('n_item', 'Card', { base: { columnSpan: '3' } })
-    ], { parts: {}, slots: {}, properties: { items: { type: 'list', label: 'Items', fields: {}, default: [{ id: 'i_one' }] } } as ComponentDefinition['properties'] });
+    ], { parts: {}, slots: {}, properties: { items: { type: 'list', label: 'Items', itemLabel: 'Item', fields: {}, default: [{ id: 'i_one' }] } } as unknown as ComponentDefinition['properties'] });
     expect(guardrails(s).map((d) => [d.code, d.owner, d.nodeId])).toEqual([[SPAN, { kind: 'component', id: def.id }, 'n_item']]);
   });
 });
