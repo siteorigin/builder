@@ -9,6 +9,21 @@ import { basename, join } from 'node:path';
 import sharp from 'sharp';
 import { createProject, eventually, launch, openInspector, scratch, step, withTimeout } from './harness.mjs';
 
+/** A record's copies in one format, as their widths. */
+const widthsIn = (record, ext) => (record.variants ?? []).filter((v) => v.file.endsWith(`.${ext}`)).map((v) => v.width);
+/**
+ * A picture's copies, exactly: `smaller` in its own format, a WebP set to its `full` width, and an AVIF set of those
+ * widths or none, narrowest first and nothing else.
+ */
+function assertCopies(record, ext, smaller, full, what) {
+  assert.deepEqual(widthsIn(record, ext), smaller, `${what}: its smaller ${ext} copies`);
+  assert.deepEqual(widthsIn(record, 'webp'), [...smaller, full], `${what}: its WebP set`);
+  const avif = JSON.stringify(widthsIn(record, 'avif'));
+  assert.ok(avif === '[]' || avif === JSON.stringify([...smaller, full]), `${what}: its AVIF set is whole or left out (${avif})`);
+  assert.equal(record.variants.length, widthsIn(record, ext).length + widthsIn(record, 'webp').length + widthsIn(record, 'avif').length, `${what}: no copy in any other format`);
+  assert.deepEqual(record.variants.map((v) => v.width), [...record.variants.map((v) => v.width)].sort((a, b) => a - b), `${what}: narrowest first`);
+}
+
 /**
  * The longest the main process may go without answering the window. With the pictures decoded in the media
  * worker it answers within about 10 ms throughout; decoding them on the main thread stalled it for 280 ms.
@@ -76,7 +91,7 @@ const snap = await win.evaluate(() => window.builder.project.snapshot());
 const preview = new URL(await win.locator('.frame-box iframe').getAttribute('src'));
 for (const id of run.result.assetIds) {
   const asset = snap.state.assets.assets[id];
-  assert.deepEqual(asset.variants?.map((v) => v.width), [160, 480, 960, 1440], `${id} has its copies`);
+  assertCopies(asset, asset.mime === 'image/png' ? 'png' : 'jpg', [160, 480, 960, 1440], asset.width, `${id} has its copies`);
   for (const v of asset.variants) {
     const res = await fetch(new URL(`/${v.file.replace(/^static\//, '')}`, preview.origin), { signal: AbortSignal.timeout(30000) });
     const data = Buffer.from(await res.arrayBuffer());
@@ -84,7 +99,8 @@ for (const id of run.result.assetIds) {
     assert.equal(res.headers.get('content-security-policy'), 'frame-ancestors app://editor http://127.0.0.1:* http://localhost:*', `${v.file} carries the development frame policy`);
     const meta = await sharp(data).metadata();
     assert.equal(meta.width, v.width, `${v.file} decodes at its width`);
-    assert.equal(meta.format, asset.mime === 'image/png' ? 'png' : 'jpeg', `${v.file} keeps its format`);
+    const ext = v.file.split('.').pop();
+    assert.equal(meta.format, { jpg: 'jpeg', png: 'png', webp: 'webp', avif: 'heif' }[ext], `${v.file} is the format its name says`);
   }
 }
 
@@ -141,16 +157,19 @@ const diskBytes = () => onDisk().reduce((n, f) => n + statSync(join(assetDir, f)
 const imported = onDisk();
 const importedBytes = diskBytes();
 const mb = (b) => `${(b / (1024 * 1024)).toFixed(1)} MB`;
-assert.equal(imported.length, PHOTOS * 5, 'each photo is an original and four responsive copies');
+// Each photo is its original and its copies: four smaller JPEGs, a WebP set and an AVIF set (when it is the smaller).
+const recordedFiles = run.result.assetIds.flatMap((id) => [snap.state.assets.assets[id].file, ...snap.state.assets.assets[id].variants.map((v) => v.file)]).map((f) => basename(f));
+const FILES = recordedFiles.length;
+assert.deepEqual([...imported].sort(), [...recordedFiles].sort(), 'the folder holds each photo’s original and the copies its record lists, and nothing else');
 
 step('remove every unused image: the files stay, and the Assets panel says they are kept for Undo');
 await win.getByRole('button', { name: 'Assets', exact: true }).click();
 const storage = win.getByTestId('asset-storage');
-await storage.getByText(`${PHOTOS * 5} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
+await storage.getByText(`${FILES} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
 await win.getByRole('button', { name: /^Unused/ }).click();
 await win.getByRole('button', { name: `Remove all ${PHOTOS}` }).click();
 await storage.getByText('Kept for Undo').waitFor({ timeout: 15000 });
-await storage.getByText(`${PHOTOS * 5} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
+await storage.getByText(`${FILES} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
 await storage.getByText('0 files · 0 bytes').waitFor();
 assert.deepEqual(onDisk().sort(), imported.sort(), 'removing keeps every file for Undo');
 
@@ -173,7 +192,7 @@ const { plan, refused } = await win.evaluate(async () => {
   return { plan: info.reclaim, refused: await window.builder.project.reclaimStorage(info.reclaim.key, `${key}-another-opening`) };
 });
 assert.equal(refused.ok, false, 'a plan is only carried out in the opening it was made for');
-assert.deepEqual(plan.files, { files: PHOTOS * 5, bytes: importedBytes }, 'the plan frees every removed file');
+assert.deepEqual(plan.files, { files: FILES, bytes: importedBytes }, 'the plan frees every removed file');
 assert.deepEqual(onDisk().sort(), imported.sort(), 'nothing is deleted before the author confirms');
 await win.getByRole('button', { name: `Free ${mb(plan.files.bytes + plan.historyBytes)}`, exact: true }).click();
 await dialog.waitFor({ state: 'detached', timeout: 15000 });
@@ -244,13 +263,13 @@ const arrived = Object.values(now.state.assets.assets).filter((a) => !before.has
 const byName = Object.fromEntries(arrived.map((a) => [a.name, a]));
 assert.deepEqual(Object.keys(byName).sort(), [...(CONVERTS ? ['IMG 0042'] : []), 'field scan', 'plain'].sort(), 'the photos and the plain picture arrive; the text file does not');
 assert.deepEqual([byName['field scan'].mime, byName['field scan'].width, byName['field scan'].height], ['image/jpeg', 2560, 1707], 'the large PNG arrives as its web-sized JPEG');
-assert.deepEqual(byName['field scan'].variants.map((v) => v.width), [160, 480, 960, 1440], 'the web-sized copy has its responsive copies');
+assertCopies(byName['field scan'], 'jpg', [160, 480, 960, 1440], 2560, 'the web-sized copy has its responsive copies');
 assert.equal(byName.plain.mime, 'image/jpeg');
 const first = CONVERTS ? byName['IMG 0042'] : byName['field scan'];
 assert.equal(await win.locator('.asset-detail h4').innerText(), first.name, 'the first picture made opens in Assets');
 if (CONVERTS) {
   assert.deepEqual([first.mime, first.width, first.height], ['image/jpeg', 1200, 1600], 'the HEIC photo arrives as an upright JPEG');
-  assert.deepEqual(first.variants.map((v) => v.width), [160, 480, 960], 'the converted photo has its responsive copies');
+  assertCopies(first, 'jpg', [160, 480, 960], 1200, 'the converted photo has its responsive copies');
 }
 
 step('the inspector image picker: Choose image → Import reviews the photo and places it at once');
@@ -294,7 +313,8 @@ await copyButton.click();
 await eventually(async () => assert.equal(await win.locator('.asset-detail h4').innerText(), 'camera (web-sized)'), 60000);
 now = await win.evaluate(() => window.builder.project.snapshot());
 const copy = Object.values(now.state.assets.assets).find((a) => a.name === 'camera (web-sized)');
-assert.deepEqual([copy.mime, copy.width, copy.height, copy.variants.map((v) => v.width)], ['image/jpeg', 2560, 1920, [160, 480, 960, 1440]], 'the copy is web-sized with its responsive copies');
+assert.deepEqual([copy.mime, copy.width, copy.height], ['image/jpeg', 2560, 1920], 'the copy is web-sized');
+assertCopies(copy, 'jpg', [160, 480, 960, 1440], 2560, 'the web-sized copy has its responsive copies');
 assert.ok(copy.bytes < original.bytes, 'the copy is lighter than the original');
 assert.ok(now.state.assets.assets[original.id], 'the original stays in Assets');
 

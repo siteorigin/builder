@@ -1300,6 +1300,83 @@ export function textCreditsAsTiff(text: Buffer[], tiff?: Buffer): Buffer | null 
   return Buffer.concat([Buffer.from([0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8]), dir, ...tail]);
 }
 
+/** A photo's credits as the words a new file is written with: its artist, its copyright and its XMP credit packet. */
+export interface CreditText {
+  artist?: string;
+  copyright?: string;
+  xmp?: string;
+}
+
+/**
+ * A photo's credits as words, for a copy in a format they cannot be copied into byte for byte (a WebP or AVIF copy of
+ * a JPEG, which the encoder writes them into). The artist and copyright come from its EXIF, else its PNG Author and
+ * Copyright text, else its IPTC by-line and copyright notice. The XMP holds the photo's own credit properties, and its
+ * artist, copyright and IPTC credit line where those say nothing of them, so the copy holds every credit exactly as
+ * written, in any script (an encoder may write EXIF text as ASCII only).
+ */
+export function creditText(credits: PhotoCredits): CreditText {
+  const tiff = textCreditsAsTiff(credits.text ?? [], credits.tiff);
+  const values = tiff ? tiffCreditValues(tiff) : new Map<number, Buffer>();
+  const word = (b: Buffer | undefined) => (b ? b.toString('utf8').replace(/\0/g, '').trim() : '');
+  const iptc = credits.iptc ? iptcCredits(credits.iptc) : {};
+  const artist = word(values.get(TAG.artist)) || iptc.artist;
+  const copyright = word(values.get(TAG.copyright)) || iptc.copyright;
+  // The photo's own credit properties, each as written (already XML text), and its artist, copyright and credit line
+  // from elsewhere for any of those it does not say.
+  const own = credits.xmp?.toString('utf8') ?? '';
+  // XML text: its markup escaped, and the control characters no XML document may hold left out.
+  const esc = (v: string) =>
+    v
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  const filled: Record<string, string | undefined> = { 'dc:creator': artist, 'dc:rights': copyright, 'photoshop:Credit': iptc.credit };
+  const ns = new Set<string>();
+  const props: string[] = [];
+  for (const p of XMP_CREDITS) {
+    const qname = `${p.prefix}:${p.name}`;
+    let items = own ? nsValues(own, p.prefix, p.name) : [];
+    if (!items.length && filled[qname]) items = [{ text: esc(filled[qname]!) }];
+    if (!items.length) continue;
+    ns.add(p.prefix);
+    if (p.kind === 'text') props.push(`<${qname}>${items[0].text}</${qname}>`);
+    else props.push(`<${qname}><rdf:${p.kind}>${items.map((i) => (p.kind === 'Alt' ? `<rdf:li xml:lang="${i.lang ?? 'x-default'}">${i.text}</rdf:li>` : `<rdf:li>${i.text}</rdf:li>`)).join('')}</rdf:${p.kind}></${qname}>`);
+  }
+  const xmp = props.length ? packet(ns, '', props.join('')).toString('utf8') : undefined;
+  return { ...(artist ? { artist } : {}), ...(copyright ? { copyright } : {}), ...(xmp ? { xmp } : {}) };
+}
+
+/**
+ * The by-line (2:80), credit line (2:110) and copyright notice (2:116) of a filtered Photoshop IPTC block (see
+ * filterPhotoshop), first of each. Text is UTF-8 when the block's character set (1:90) says so, and Latin-1 otherwise.
+ */
+function iptcCredits(block: Buffer): { artist?: string; credit?: string; copyright?: string } {
+  const out: { artist?: string; credit?: string; copyright?: string } = {};
+  // Its one resource: "8BIM", the IPTC resource ID, an empty name and its size, then the datasets (5-byte heads).
+  if (block.length < 12 || block.toString('latin1', 0, 4) !== '8BIM' || block.readUInt16BE(4) !== 0x0404) return out;
+  const end = Math.min(block.length, 12 + block.readUInt32BE(8));
+  const datasets: Array<[string, Buffer]> = [];
+  for (let p = 12; p + 5 <= end && block[p] === 0x1c; ) {
+    const len = block.readUInt16BE(p + 3);
+    if (len & 0x8000 || p + 5 + len > end) break;
+    datasets.push([`${block[p + 1]}:${block[p + 2]}`, block.subarray(p + 5, p + 5 + len)]);
+    p += 5 + len;
+  }
+  // ESC % G: UTF-8.
+  const utf8 = datasets.some(([id, v]) => id === '1:90' && v.equals(Buffer.from([0x1b, 0x25, 0x47])));
+  const text = (v: Buffer) => v.toString(utf8 ? 'utf8' : 'latin1').replace(/\0/g, '').trim();
+  for (const [id, v] of datasets) {
+    const value = text(v);
+    if (!value) continue;
+    if (id === '2:80') out.artist ??= value;
+    if (id === '2:110') out.credit ??= value;
+    if (id === '2:116') out.copyright ??= value;
+  }
+  return out;
+}
+
 /** The text of an iTXt chunk, inflated when it is compressed. */
 function pngItxtText(data: Buffer, nul: number): Buffer {
   const compressed = data[nul + 1] === 1;
@@ -1363,6 +1440,7 @@ function cleanWebp(buf: Buffer): Omit<CleanedPhoto, 'changed'> | null {
     } else if (c.type === 'EXIF') {
       const r = filterExif(startsWith(c.data, EXIF_HEADER) ? c.data.subarray(EXIF_HEADER.length) : c.data);
       merge(found, r);
+      if (r.credits) found.credits.tiff ??= r.credits;
       if (r.tiff) {
         chunks.push(riffChunk('EXIF', r.tiff));
         exif = true;
@@ -1370,6 +1448,7 @@ function cleanWebp(buf: Buffer): Omit<CleanedPhoto, 'changed'> | null {
     } else if (c.type === 'XMP ') {
       const r = filterXmp(c.data);
       merge(found, r);
+      if (r.credits) found.credits.xmp ??= r.credits;
       if (r.packet) {
         chunks.push(riffChunk('XMP ', r.packet));
         xmp = true;

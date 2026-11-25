@@ -145,7 +145,20 @@ function layoutItem(el) {
     const r = c.getBoundingClientRect();
     return r.width > 0 || r.height > 0;
   };
-  const item = getComputedStyle(el).display === 'contents' ? [...el.children].find(shows) || el : el;
+  // The first child that lays out, through children that lay out no box either (an image's <picture>).
+  const laid = (box) => {
+    // Through the prototype: a form's control named "children" would hide the form's own.
+    for (const c of Object.getOwnPropertyDescriptor(Element.prototype, 'children').get.call(box)) {
+      if (getComputedStyle(c).display !== 'contents') {
+        if (shows(c)) return c;
+      } else {
+        const inner = laid(c);
+        if (inner) return inner;
+      }
+    }
+    return null;
+  };
+  const item = getComputedStyle(el).display === 'contents' ? laid(el) || el : el;
   let parent = item.parentElement;
   while (parent && getComputedStyle(parent).display === 'contents') parent = parent.parentElement;
   return { item, ordered: !!parent && /(^|-)(flex|grid)$/.test(getComputedStyle(parent).display) };
@@ -162,10 +175,11 @@ function rectOf(el) {
   let r = Element.prototype.getBoundingClientRect.call(el);
   if (getComputedStyle(el).display === 'contents') {
     let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    // A child that lays out no box either (an image's <picture>) is measured by what is inside it.
     for (const c of Object.getOwnPropertyDescriptor(Element.prototype, 'children').get.call(el)) {
-      const cr = Element.prototype.getBoundingClientRect.call(c);
-      if (!cr.width && !cr.height) continue;
-      x1 = Math.min(x1, cr.left); y1 = Math.min(y1, cr.top); x2 = Math.max(x2, cr.right); y2 = Math.max(y2, cr.bottom);
+      const cr = rectOf(c);
+      if (!cr) continue;
+      x1 = Math.min(x1, cr.x); y1 = Math.min(y1, cr.y); x2 = Math.max(x2, cr.x + cr.width); y2 = Math.max(y2, cr.y + cr.height);
     }
     if (x1 === Infinity) return null;
     return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };

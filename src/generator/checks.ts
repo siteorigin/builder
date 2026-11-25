@@ -126,6 +126,10 @@ export function shown(v: unknown, state: ProjectState): boolean {
 }
 
 export interface Visit {
+  /** The tree's top-level nodes to walk, in order (all of them when absent): `[rootIds[0]]` walks its first section. */
+  roots?: readonly string[];
+  /** The entry whose page the tree is, for its feeds (see generateEntry); otherwise as these checks registered the tree. */
+  entry?: { collectionId: string; entryId: string };
   /**
    * Walk what a visitor can reach by changing a component's UI state too (a tab not chosen at first, a closed
    * disclosure), not only what shows at first.
@@ -357,7 +361,7 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
   const treeId = (tree as Partial<PageDoc>).id;
   const pageId = typeof treeId === 'string' && 'route' in tree && Object.hasOwn(state.pages, treeId) ? treeId : undefined;
   // An entry's page: its feeds default to its collection and leave it out, as the generator writes them.
-  const entry = entryTrees.get(tree);
+  const entry = visit.entry ?? entryTrees.get(tree);
   // A slot a definition renders once per list item shows the same content, in the same frame, each time: it is
   // walked once per frame, which keeps nested placements of such a component from multiplying the walk.
   const slotsWalked = new WeakMap<Frame, Set<string>>();
@@ -495,7 +499,7 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
     if (page) visit.leave?.(n);
   };
   const top: Frame = { tree, scope: { props: {} }, n: 0, defs: new Set() };
-  for (const r of tree.rootIds) walk(top, r, new Set());
+  for (const r of visit.roots ?? tree.rootIds) walk(top, r, new Set());
 }
 
 /** A question and its answer, as an FAQ on a page shows them. */
@@ -581,6 +585,62 @@ function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope, 
  */
 export function hiddenInDesignEverywhere(def: ComponentDefinition, nodeId: string, scope: Scope): boolean {
   return hiddenEverySize(hiddenInDesign(def, nodeId, scope, false)) && hiddenEverySize(hiddenInDesign(def, nodeId, scope));
+}
+
+/**
+ * The images the first section of a page (or an entry's page, `entry`) renders where its markup loads them eagerly, in
+ * the order the page renders them, until `each` returns true. Left out: images authored inside a list, which load
+ * lazily (an image the page supplies to a slot a design shows inside its list is not one of those), images inside a
+ * code component, whose markup is its own, whatever a component's starting state does not render, and images hidden
+ * at every size by themselves or what is around them. `def` is the design the image belongs to (none for the page's).
+ */
+export function firstSectionImages(
+  state: ProjectState,
+  tree: NodeTree,
+  entry: { collectionId: string; entryId: string } | undefined,
+  each: (n: GraphNode & { kind: 'image' }, scope: Scope, def: ComponentDefinition | undefined) => boolean
+): void {
+  const first = tree.rootIds[0];
+  if (!first) return;
+  let done = false;
+  // The sizes each node on the way down hides what renders inside it at, as the page renders it (a design that shows
+  // slotted content is on the way), read with and without the options its placement chose: where those decide it,
+  // the image counts as shown, as hiddenInDesignEverywhere has it.
+  const hiding: Array<[Set<Size>, Set<Size>]> = [];
+  const own = (n: GraphNode, scope: Scope, def: ComponentDefinition | undefined): [Set<Size>, Set<Size>] => {
+    if (!def) {
+      const page = hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]);
+      return [page, page];
+    }
+    return [hiddenInDesign(def, n.id, scope, false)[0] ?? new Set(), hiddenInDesign(def, n.id, scope)[0] ?? new Set()];
+  };
+  const hidden = (k: 0 | 1) => hiddenEverySize(hiding.map((h) => h[k]));
+  // Only content slotted into a list can load eagerly there: a list holding no slot is never walked, however long.
+  const slotsUnder = new Map<string, boolean>();
+  const holdsSlot = (t: NodeTree, id: string, seen = new Set<string>()): boolean => {
+    const n = t.nodes[id];
+    if (!n || seen.has(id)) return false;
+    seen.add(id);
+    if (n.kind === 'slot') return true;
+    const kids = n.kind === 'element' || n.kind === 'repeat' ? n.children : n.kind === 'instance' ? Object.keys(n.slots ?? {}).flatMap((k) => slotChildren(n, k)) : [];
+    return kids.some((k) => holdsSlot(t, k, seen));
+  };
+  const listHoldsSlot = (def: ComponentDefinition, id: string) => {
+    const key = `${def.id}\n${id}`;
+    if (!slotsUnder.has(key)) slotsUnder.set(key, !!def.tree && holdsSlot(def.tree, id));
+    return slotsUnder.get(key)!;
+  };
+  walkRendered(state, tree, {
+    roots: [first],
+    ...(entry ? { entry } : {}),
+    prune: (n, _scope, _reportId, def) => done || (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed') || (n.kind === 'repeat' && (!def || !listHoldsSlot(def, n.id))),
+    node: (n, scope, _reportId, _inDef, def) => {
+      hiding.push(own(n, scope, def));
+      if (done || n.kind !== 'image' || (scope.repeats ?? 0) > 0 || (hidden(0) && hidden(1))) return;
+      done = each(n, scope, def);
+    },
+    done: () => void hiding.pop()
+  });
 }
 
 /**
@@ -1272,7 +1332,7 @@ export function showsWithSoImage(source: string, prop: string): boolean {
     // Settings added to a copy of it, never its picture: no other source, and nothing spread in that could be one.
     const m = e.match(copy);
     const keys = (m?.[1] ?? '').split(',').map((part) => part.trim()).filter(Boolean);
-    return !!m && keys.every((part) => !part.startsWith('...') && !/^['"]?(?:src|srcset)['"]?\s*(?::|$)/.test(part));
+    return !!m && keys.every((part) => !part.startsWith('...') && !/^['"]?(?:src|srcset|sources)['"]?\s*(?::|$)/.test(part));
   };
   return outcomes(source.slice(at + 'image={'.length, i)).every(shows);
 }

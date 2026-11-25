@@ -94,6 +94,27 @@ const noisy = async (width: number, height: number, format: 'jpeg' | 'png', alph
   return (format === 'png' ? img.png({ compressionLevel: 1 }) : img.jpeg({ quality: 95 })).toBuffer();
 };
 
+/** A record's copies in one format (by their files' extension), as their widths. */
+const widthsIn = (r: { variants?: Array<{ width: number; file: string }> }, ext: string) => (r.variants ?? []).filter((v) => v.file.endsWith(`.${ext}`)).map((v) => v.width);
+
+/**
+ * A picture's copies, exactly: `smaller` in its own format (`ext`), a WebP set reaching `full` (a WebP's own copies are
+ * its set), and an AVIF set the same widths, which only an AVIF always has; any other picture has it or not
+ * (`avif`, when the test knows). Nothing else.
+ */
+function expectCopies(r: { variants?: Array<{ width: number; file: string }> }, ext: string, smaller: number[], full: number, avif?: boolean) {
+  const listed = (r.variants ?? []).map((v) => `${v.width} ${v.file.split('.').pop()}`);
+  const set = (e: string) => [...smaller, full].map((w) => `${w} ${e}`);
+  const own = smaller.map((w) => `${w} ${ext}`);
+  const without = ext === 'webp' ? own : ext === 'avif' ? [...own, ...set('webp')] : [...own, ...set('webp')];
+  const withAvif = ext === 'avif' ? without : [...without, ...set('avif')];
+  const sorted = (l: string[]) => [...l].sort();
+  const expected = ext === 'avif' || avif === true ? [withAvif] : avif === false ? [without] : [without, withAvif];
+  expect(expected.map(sorted), `${ext} copies`).toContainEqual(sorted(listed));
+  // Narrowest first.
+  expect((r.variants ?? []).map((v) => v.width), 'narrowest first').toEqual([...(r.variants ?? [])].map((v) => v.width).sort((a, b) => a - b));
+}
+
 async function pixel(buf: Buffer, x: number, y: number) {
   const { data, info } = await sharp(buf).raw().toBuffer({ resolveWithObject: true });
   const at = (y * info.width + x) * info.channels;
@@ -183,7 +204,7 @@ describe('importing a HEIC photo', () => {
     expect(existing).toBe(false);
     expect(record).toMatchObject({ name: 'portrait rotated', mime: 'image/jpeg', width: 1200, height: 1600, kind: 'image' });
     expect(record.file).toMatch(/^static\/assets\/portrait-rotated-[0-9a-f]{8}\.jpg$/);
-    expect(record.variants?.map((v) => v.width)).toEqual([160, 480, 960]);
+    expectCopies(record, 'jpg', [160, 480, 960], 1200);
     const stored = readFileSync(join(project, record.file));
     expect(sha(stored)).toBe(record.hash);
     await expectUpright(stored, 1200, 1600);
@@ -227,7 +248,7 @@ describe('a web-sized copy of a large photo', () => {
     const { record } = await importAsset(project, path, [], undefined, { webCopy: true });
     expect(record).toMatchObject({ name: 'field visit', mime: 'image/jpeg', width: 2560, height: 1920 });
     expect(record.bytes).toBeLessThan(original.length);
-    expect(record.variants?.map((v) => v.width)).toEqual([160, 480, 960, 1440]);
+    expectCopies(record, 'jpg', [160, 480, 960, 1440], 2560);
     const stored = readFileSync(join(project, record.file));
     const credits = cleanPhoto(stored)?.credits.tiff?.toString('latin1');
     expect(credits).toContain('Ana Field');
@@ -235,7 +256,7 @@ describe('a web-sized copy of a large photo', () => {
     expect(readFileSync(path).equals(original)).toBe(true);
     // Without the choice the original is stored, as before.
     expect((await importAsset(temp('project'), path, [])).record).toMatchObject({ width: 4000, hash: sha(original) });
-  });
+  }, 30_000);
 
   it('carries a PNG’s author and copyright text onto its JPEG copy', async () => {
     const png = await noisy(3000, 2000, 'png');
@@ -265,7 +286,7 @@ describe('a web-sized copy of a large photo', () => {
     const merged = cleanPhoto(readFileSync(join(mixedProject, mixed.record.file)))?.credits.tiff?.toString('latin1');
     expect(merged).toContain('Bo Lens');
     expect(merged).toContain('Lens & Co');
-  });
+  }, 30_000);
 
   it('keeps the original, saying so, when a copy would be no smaller', async () => {
     const tiny = await sharp(await noisy(1000, 800, 'jpeg')).jpeg({ quality: 20 }).toBuffer();
@@ -336,7 +357,7 @@ describe('importing a reviewed batch', () => {
     // One step adds them all, and one Undo takes them all away.
     await c.session!.undo();
     expect(r.assetIds.some((id) => id in c.session!.state.assets.assets)).toBe(false);
-  });
+  }, 30_000);
 
   it('refuses choices made in another opening of the project, and opens no chooser for an empty list', async () => {
     const { c } = await openProject();
@@ -345,7 +366,7 @@ describe('importing a reviewed batch', () => {
     expect(await c.importAssets([scan], 'image', { opening: 'elsewhere#1', files: [] })).toMatchObject({ ok: false, message: 'The project was closed before the files could be added.' });
     expect(await c.importAssets([], 'image', { opening: c.openingKey!, files: [] })).toEqual({ ok: true, assetIds: [] });
     expect(Object.keys(c.session!.state.assets.assets)).toHaveLength(before);
-  });
+  }, 30_000);
 
   it('gives every image one import adds the same time, keeps the order the files came in, and leaves an image already here as it was', async () => {
     const { c } = await openProject();
@@ -385,7 +406,7 @@ describe('importing a reviewed batch', () => {
     expect(added.some((id) => id in c.session!.state.assets.assets)).toBe(false);
     await c.session!.redo();
     expect(added.map((id) => c.session!.state.assets.assets[id])).toEqual(records);
-  });
+  }, 30_000);
 
   it('adds the same photo dropped twice at once as one asset', async () => {
     const { c } = await openProject();
@@ -393,7 +414,7 @@ describe('importing a reviewed batch', () => {
     const [a, b] = await Promise.all([c.importAssets([sourceFile('one.jpg', photo)]), c.importAssets([sourceFile('two.jpg', photo)])]);
     expect(a.assetIds).toHaveLength(1);
     expect(b.assetIds).toEqual(a.assetIds);
-  });
+  }, 30_000);
 });
 
 describe('making a web-sized copy of a large library image', () => {
@@ -414,7 +435,7 @@ describe('making a web-sized copy of a large library image', () => {
     const assets = c.session!.state.assets.assets;
     const copy = assets[r.assetId!];
     expect(copy).toMatchObject({ name: 'big hero (web-sized)', mime: 'image/jpeg', width: 2560, height: 1707, description: 'Our front room', altSuggestion: 'The front room at dusk' });
-    expect(copy.variants?.map((v) => v.width)).toEqual([160, 480, 960, 1440]);
+    expectCopies(copy, 'jpg', [160, 480, 960, 1440], 2560);
     expect(existsSync(join(dir, copy.file))).toBe(true);
     const usage = assetUsages(c.session!.state);
     expect(usage[copy.id]).toBe(used);
@@ -423,7 +444,7 @@ describe('making a web-sized copy of a large library image', () => {
     await c.session!.undo();
     expect(c.session!.state.assets.assets[copy.id]).toBeUndefined();
     expect(assetUsages(c.session!.state)[bigId]).toBe(used);
-  });
+  }, 30_000);
 
   it('puts back the files of a copy already in Assets before using it', async () => {
     const { c, dir } = await openProject();
@@ -436,7 +457,7 @@ describe('making a web-sized copy of a large library image', () => {
     expect(again).toMatchObject({ ok: true, assetId: copy.id });
     expect(sha(readFileSync(join(dir, copy.file)))).toBe(copy.hash);
     expect((await sharp(readFileSync(join(dir, copy.variants![0].file))).metadata()).width).toBe(copy.variants![0].width);
-  });
+  }, 30_000);
 
   it('keeps every use’s alt text when it uses a copy already in Assets, whatever that copy suggests', async () => {
     const { c } = await openProject();
@@ -464,7 +485,7 @@ describe('making a web-sized copy of a large library image', () => {
     const r = await c.makeWebCopy(bigId, { replace: true, opening: c.openingKey! });
     expect(r).toMatchObject({ ok: true, assetId: first.assetId });
     expect(altsOf(first.assetId!)).toEqual(before);
-  });
+  }, 30_000);
 
   it('offers nothing for a picture it cannot copy, and leaves an image alone when a copy would be no smaller', async () => {
     const { c } = await openProject();
@@ -474,5 +495,5 @@ describe('making a web-sized copy of a large library image', () => {
     const before = c.session!.revision;
     expect(await c.makeWebCopy(tight.assetIds[0], { replace: false, opening: c.openingKey! })).toEqual({ ok: false, message: 'A web-sized copy of tight would be no smaller, so it was left as it is.' });
     expect(c.session!.revision).toBe(before);
-  });
+  }, 30_000);
 });

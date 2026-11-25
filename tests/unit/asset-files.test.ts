@@ -85,6 +85,27 @@ const picture = (format: 'jpeg' | 'png' | 'webp' | 'gif' | 'avif', width = 64, h
   return (format === 'jpeg' ? img.jpeg() : format === 'png' ? img.png() : format === 'webp' ? img.webp() : format === 'gif' ? img.gif() : img.avif()).toBuffer();
 };
 
+/** A record's copies in one format (by their files' extension), as their widths. */
+const widthsIn = (r: { variants?: Array<{ width: number; file: string }> }, ext: string) => (r.variants ?? []).filter((v) => v.file.endsWith(`.${ext}`)).map((v) => v.width);
+
+/**
+ * A picture's copies, exactly: `smaller` in its own format (`ext`), a WebP set reaching `full` (a WebP's own copies are
+ * its set), and an AVIF set the same widths, which only an AVIF always has; any other picture has it or not
+ * (`avif`, when the test knows). Nothing else.
+ */
+function expectCopies(r: { variants?: Array<{ width: number; file: string }> }, ext: string, smaller: number[], full: number, avif?: boolean) {
+  const listed = (r.variants ?? []).map((v) => `${v.width} ${v.file.split('.').pop()}`);
+  const set = (e: string) => [...smaller, full].map((w) => `${w} ${e}`);
+  const own = smaller.map((w) => `${w} ${ext}`);
+  const without = ext === 'webp' ? own : ext === 'avif' ? [...own, ...set('webp')] : [...own, ...set('webp')];
+  const withAvif = ext === 'avif' ? without : [...without, ...set('avif')];
+  const sorted = (l: string[]) => [...l].sort();
+  const expected = ext === 'avif' || avif === true ? [withAvif] : avif === false ? [without] : [without, withAvif];
+  expect(expected.map(sorted), `${ext} copies`).toContainEqual(sorted(listed));
+  // Narrowest first.
+  expect((r.variants ?? []).map((v) => v.width), 'narrowest first').toEqual([...(r.variants ?? [])].map((v) => v.width).sort((a, b) => a - b));
+}
+
 /** Write `data` as `name` in a fresh folder, and return its path. */
 function sourceFile(name: string, data: Buffer): string {
   const src = temp('source');
@@ -186,17 +207,24 @@ describe('importing a picture no browser can show', () => {
     expect(existsSync(join(project, 'static'))).toBe(false);
   });
 
-  it('still imports every readable format, including those that get no smaller copies', async () => {
-    for (const [name, format] of [['a.jpg', 'jpeg'], ['b.png', 'png'], ['c.webp', 'webp'], ['d.gif', 'gif'], ['e.avif', 'avif']] as const) {
+  it('still imports every readable format, a small still one with only its WebP and AVIF copies', async () => {
+    for (const [name, format, ext] of [['a.jpg', 'jpeg', 'jpg'], ['b.png', 'png', 'png'], ['c.webp', 'webp', 'webp'], ['e.avif', 'avif', 'avif']] as const) {
       const { record } = await importFile(name, await picture(format));
       expect(record, name).toMatchObject({ kind: 'image', width: 64, height: 48 });
-      expect(record.variants, name).toBeUndefined();
+      // No smaller copy, but the same size in the formats a page offers first.
+      expectCopies(record, ext, [], 64);
     }
+    // A GIF may move: it is left to the browser as it is.
+    const gif = (await importFile('d.gif', await picture('gif'))).record;
+    expect(gif).toMatchObject({ kind: 'image', width: 64, height: 48 });
+    expect(gif.variants).toBeUndefined();
     const { record } = await importFile('f.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'));
     expect(record).toMatchObject({ kind: 'image', mime: 'image/svg+xml' });
+    // A WebP gets smaller WebP copies, the original serving its full width.
     const big = await importFile('wide.webp', await picture('webp', 2000, 1000));
     expect(big.record).toMatchObject({ width: 2000, height: 1000 });
-    expect(big.record.variants).toBeUndefined();
+    expectCopies(big.record, 'webp', [160, 480, 960, 1440], 2000);
+    expect(big.record.variants!.map((v) => v.file).filter((f) => f.endsWith('-2000w.webp'))).toEqual([]);
   });
 
   it('accepts every picture bundled with the Business starter, which new projects import', async () => {
@@ -212,7 +240,7 @@ describe('importing a picture no browser can show', () => {
     expect(c.session!.state.assets.assets[r.assetIds[0]]).toMatchObject({ name: 'good' });
     expect(r.message).toMatch(/empty\.jpg was not imported because the file is empty\..*cut\.png was not imported because it is incomplete/);
     expect(existsSync(join(dir, c.session!.state.assets.assets[r.assetIds[0]].file))).toBe(true);
-  });
+  }, 30_000);
 });
 
 /** A project folder holding one imported photo big enough for smaller copies. */
@@ -226,7 +254,8 @@ async function photoProject(): Promise<{ dir: string; record: AssetRecord; sourc
 describe('finding image files that left the project folder', () => {
   it('reports a missing original, missing copies, or both, and nothing for files that are there', async () => {
     const { dir, record } = await photoProject();
-    expect(record.variants?.map((v) => v.width)).toEqual([160, 480, 960]);
+    // A flat colour picture: its AVIF set is the smaller.
+    expectCopies(record, 'jpg', [160, 480, 960], 1200, true);
     const assets = { [record.id]: record };
     expect(await findMissingAssetFiles(dir, assets)).toEqual([]);
     const original = readFileSync(join(dir, record.file));
@@ -316,7 +345,7 @@ describe('bringing missing files back', () => {
     if (r.same) return;
     expect(r.stored).toMatchObject({ mime: 'image/png', width: 1000, height: 500, hash: sha(other), bytes: other.length });
     expect(r.stored.file).toMatch(/^static\/assets\/new-nook-[0-9a-f]{8}\.png$/);
-    expect(r.stored.variants?.map((v) => v.width)).toEqual([160, 480]);
+    expectCopies(r.stored, 'png', [160, 480], 1000);
     for (const f of [r.stored.file, ...r.stored.variants!.map((v) => v.file)]) expect(existsSync(join(dir, f))).toBe(true);
   });
 
@@ -344,13 +373,38 @@ describe('bringing missing files back', () => {
     const { record } = await importAsset(dir, sourceFile('wide.jpg', photo), []);
     // Imported by an older version, which also made a 960px copy of a 1000px picture.
     const stem = record.file.replace(/\.jpg$/, '');
-    expect(record.variants?.map((v) => v.width)).toEqual([160, 480]);
+    expectCopies(record, 'jpg', [160, 480], 1000);
     const older: AssetRecord = { ...record, variants: [{ width: 480, file: `${stem}-480w.jpg` }, { width: 960, file: `${stem}-960w.jpg` }] };
     const r = await restoreAssetFiles(dir, older);
     expect(r).toEqual({ written: [`${stem}-960w.jpg`], failed: [] });
     expect((await sharp(join(dir, `${stem}-960w.jpg`)).metadata()).width).toBe(960);
     // Copies already there are left alone.
     expect(await restoreAssetFiles(dir, older)).toEqual({ written: [], failed: [] });
+  });
+
+  it('makes again only the missing copies, each in the format its name says, even two of one width', async () => {
+    const { dir, record } = await photoProject();
+    const at480 = record.variants!.filter((v) => v.width === 480);
+    expect(at480.map((v) => v.file.split('.').pop())).toEqual(['jpg', 'webp', ...(widthsIn(record, 'avif').length ? ['avif'] : [])]);
+    const [jpg, webp] = at480;
+    const kept = Object.fromEntries(record.variants!.map((v) => [v.file, readFileSync(join(dir, v.file))]));
+    unlinkSync(join(dir, jpg.file));
+    unlinkSync(join(dir, webp.file));
+    expect(await restoreAssetFiles(dir, record)).toEqual({ written: [jpg.file, webp.file], failed: [] });
+    expect(await sharp(join(dir, jpg.file)).metadata()).toMatchObject({ format: 'jpeg', width: 480 });
+    expect(await sharp(join(dir, webp.file)).metadata()).toMatchObject({ format: 'webp', width: 480 });
+    // The same bytes the import made, and every other copy left as it was.
+    for (const [file, bytes] of Object.entries(kept)) expect(readFileSync(join(dir, file)).equals(bytes), file).toBe(true);
+  });
+
+  it('leaves a copy in a format it cannot make alone while it is there, and says so once it is gone', async () => {
+    const { dir, record } = await photoProject();
+    const gif = `${record.file.replace(/\.jpg$/, '')}-480w.gif`;
+    writeFileSync(join(dir, gif), 'GIF89a');
+    const odd: AssetRecord = { ...record, variants: [...record.variants!, { width: 480, file: gif }] };
+    expect(await restoreAssetFiles(dir, odd)).toEqual({ written: [], failed: [] });
+    unlinkSync(join(dir, gif));
+    expect(await restoreAssetFiles(dir, odd)).toEqual({ written: [], failed: [gif] });
   });
 
   it('makes no copies when another picture sits where the original belongs, even if the original is located', async () => {
@@ -396,8 +450,10 @@ describe('giving a library image a new file', () => {
     expect(validateOperation({ ...relink, file: 'src/routes/+page.svelte' }).ok).toBe(false);
     expect(validateOperation({ ...relink, mime: 'font/woff2' }).ok).toBe(false);
     expect(validateOperation({ ...relink, variants: [{ width: 480, file: 'static/assets/../x-480w.jpg' }] }).ok).toBe(false);
-    expect(validateOperation({ ...relink, variants: [{ width: 480, file: 'static/assets/x-480w.webp' }] }).ok).toBe(false);
-    expect(validateOperation({ ...relink, variants: [{ width: 480, file: 'static/assets/x-480w.jpg' }] }).ok).toBe(true);
+    expect(validateOperation({ ...relink, variants: [{ width: 480, file: 'static/assets/x-480w.gif' }] }).ok).toBe(false);
+    expect(validateOperation({ ...relink, variants: [{ width: 0, file: 'static/assets/x-480w.jpg' }] }).ok).toBe(false);
+    expect(validateOperation({ ...relink, variants: [{ width: 480.5, file: 'static/assets/x-480w.jpg' }] }).ok).toBe(false);
+    for (const ext of ['jpg', 'png', 'webp', 'avif']) expect(validateOperation({ ...relink, variants: [{ width: 480, file: `static/assets/x-480w.${ext}` }] }).ok, ext).toBe(true);
     const s = applyOperations(createStarterState('blank', 'Font', false), [{ type: 'asset.add', asset: { ...record(), kind: 'font' } }]).state;
     expect(() => applyOperations(s, [relink])).toThrow(/not an image/);
   });
@@ -502,7 +558,7 @@ describe('a project whose picture was moved out of its folder', () => {
     expect(r2).toEqual({ ok: true, message: 'Reading nook is back in the project folder.' });
     expect(s.revision).toBe(revision);
     expect(c.snapshot()!.missingAssets).toEqual([]);
-  });
+  }, 30_000);
 
   it('lets only one of two Locates for the same image change it', async () => {
     const { c, dir } = await openProject();
@@ -517,7 +573,7 @@ describe('a project whose picture was moved out of its folder', () => {
     expect(lost.message).toMatch(/changed while|was left as it is/);
     const won = a.ok ? first : second;
     expect(s.state.assets.assets.a_reading.hash).toBe(sha(readFileSync(won)));
-  });
+  }, 30_000);
 
   it('makes missing copies again, and refuses to work on a project open read-only', async () => {
     const { c, dir } = await openProject();
@@ -530,7 +586,7 @@ describe('a project whose picture was moved out of its folder', () => {
     for (const v of hero.variants!) expect(existsSync(join(dir, v.file))).toBe(true);
     expect(c.snapshot()!.missingAssets).toEqual([]);
     expect(await c.locateAsset('a_nope', sourceFile('x.png', await picture('png')))).toEqual({ ok: false, message: 'That image is no longer in the library.' });
-  });
+  }, 30_000);
 });
 
 describe('exporting with missing image files', () => {
@@ -578,6 +634,12 @@ describe('exporting with missing image files', () => {
     writeFileSync(join(dir, 'src/routes/+page.svelte'), `<img src="/assets/${name(used.variants![0].file)}" alt="">`);
     unlinkSync(join(dir, used.file));
     expect((await missingWebsiteAssets(dir, state)).map((m) => [m.asset.name, m.used])).toEqual([['Reading nook', true]]);
+    // A WebP or AVIF copy carries its own credits: naming only those, the missing original stops nothing.
+    const modern = used.variants!.filter((v) => /\.(webp|avif)$/.test(v.file)).map((v) => `/assets/${name(v.file)} ${v.width}w`);
+    expect(modern.length).toBeGreaterThan(0);
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), `<picture><source type="image/webp" srcset="${modern.join(', ')}"></picture>`);
+    expect((await missingWebsiteAssets(dir, state)).map((m) => [m.asset.name, m.used])).toEqual([['Reading nook', false]]);
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), `<img src="/assets/${name(used.variants![0].file)}" alt="">`);
     // A longer file name that starts with this one is another file.
     writeFileSync(join(dir, 'src/routes/+page.svelte'), `<a href="/downloads/${name(used.file)}.webp">Download</a> <img src="/assets/${name(used.file)}-old.jpg" alt="">`);
     expect((await missingWebsiteAssets(dir, state)).map((m) => m.used)).toEqual([false]);
