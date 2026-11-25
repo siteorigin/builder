@@ -298,10 +298,9 @@ describe('update_theme_component', () => {
     expect(offered(small, { route: '/' })).toBeNull();
     expect(offered(big)).toContain(HERO);
     expect(offered(small)).toBeNull();
-    // Widened from the nested hero itself, a small run keeps its style tool for it, and so may update it.
+    // Widened from the nested hero, a small run keeps only its style tool for it: no tool of its sets what an update adds.
     const widened = toolsForRun({ state: nested, selection: null, widened: { owner: { kind: 'page', id: home }, nodeId: heroNode }, capabilities: small, codeEnabled: false, definitionOps: false });
-    expect(names(widened.tools)).toContain('style_selected_element');
-    expect(enumOf(widened.tools.find((x) => x.name === 'update_theme_component'))).toEqual([HERO]);
+    expect(enumOf(widened.tools.find((x) => x.name === 'update_theme_component'))).toBeNull();
   });
 
   it('offers no update to a part of a placement, as the run’s authority reads it', () => {

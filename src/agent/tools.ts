@@ -525,10 +525,8 @@ export function toolsForRun(opts: {
   const kept = focused && opts.widened ? (selectionTools(state, opts.widened, { widened: true }) ?? []).filter((t) => t.name === 'style_selected_element') : [];
   // A small run asked for a component reads a design whole, which a rebuild has to describe again in full.
   const reads = (t: ToolDefinition) => (opts.componentRequest && t.name === 'read_component' ? t : contractRead(t));
-  // A small model's page tool changes top-level sections alone: it may update only what it can then change, and the
-  // element it was widened from, which its style tool still changes.
-  const widenedFrom = kept.length && opts.widened ? placedDefinition(state, opts.widened) : undefined;
-  return { tools: [...macros, ...kept, ...update(focused ? { kind: 'sections', ...(widenedFrom ? { also: widenedFrom } : {}) } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
+  // A small model's page tool changes top-level sections alone: it may update only what it can then change.
+  return { tools: [...macros, ...kept, ...update(focused ? { kind: 'sections' } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
 }
 
 /**
@@ -539,16 +537,6 @@ export function toolsForRun(opts: {
 export const asksForComponent = (text: string): boolean => /\b(?:components?|reusable|re-usable)\b/i.test(text);
 
 const managedComponentTool = (): ToolDefinition => ({ name: 'upsert_managed_component', ...describe('upsert_managed_component'), parameters: managedComponentSchema() });
-
-/** The component a selected placement places, if it is one. */
-function placedDefinition(state: ProjectState, target: SelectionTarget): string | undefined {
-  try {
-    const n = getTree(state, target.owner).nodes[target.nodeId];
-    return n?.kind === 'instance' ? n.definitionId : undefined;
-  } catch {
-    return undefined;
-  }
-}
 
 /** The theme update tool, while the project has an installed theme component this run can update. */
 const themeUpdateTools = (state: ProjectState, reach: UpdateReach): ToolDefinition[] => {
