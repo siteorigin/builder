@@ -173,13 +173,13 @@ describe('the result card after a check of chosen elements', () => {
     expect(before[0].status).toBe('issue');
     // The hero was fixed and checked on its own: the page is not thereby checked.
     log.invalidate(new Set([home]));
-    log.record(home, 'phone', true, { viewport: 'phone', scope: 'elements', report: { issues: [] } }, true);
-    log.record(home, 'phone', false, { error: 'INVALID_ARGUMENT', viewport: 'phone' }, true);
+    log.record(home, 'phone', true, { viewport: 'phone', scope: 'elements', report: { issues: [] } }, undefined, true);
+    log.record(home, 'phone', false, { error: 'INVALID_ARGUMENT', viewport: 'phone' }, undefined, true);
     expect(log.checks(state)).toEqual(before.map((c) => ({ status: 'unverified', text: `${c.text.replace(/\.$/, '')}, before later changes.` })));
     // A page only ever checked element by element has no row, whether the checks passed or failed.
     const other = new InspectionLog();
-    other.record(home, 'desktop', true, { viewport: 'desktop', scope: 'elements', report: { issues: [] } }, true);
-    other.record(home, 'tablet', false, { error: 'INVALID_ARGUMENT', viewport: 'tablet' }, true);
+    other.record(home, 'desktop', true, { viewport: 'desktop', scope: 'elements', report: { issues: [] } }, undefined, true);
+    other.record(home, 'tablet', false, { error: 'INVALID_ARGUMENT', viewport: 'tablet' }, undefined, true);
     expect(other.checks(state)).toEqual([]);
     // Measured whole again, the page's latest result stands.
     log.record(home, 'phone', true, { viewport: 'phone', report: { issues: [] } });

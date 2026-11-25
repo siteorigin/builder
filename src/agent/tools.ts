@@ -1010,20 +1010,20 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       }
       if (!targets) return measurePage((pageId, width) => host.inspectLayout(pageId, width), resolved, a.viewport, host.revision());
       try {
-        const report = (await (targets ? host.inspectLayout(a.pageId, WIDTHS[a.viewport], targets) : host.inspectLayout(a.pageId, WIDTHS[a.viewport]))) as { error?: unknown; targets?: unknown } | null;
+        const report = (await host.inspectLayout(a.pageId, WIDTHS[a.viewport], targets)) as { error?: unknown; targets?: unknown } | null;
         // One measurement per element asked for, each saying whether it shows and where it rendered.
         // An element the preview could not measure is no answer, never one that does not show.
         const answered = (t: unknown) => {
           const m = t as { visible?: unknown; elements?: unknown } | null;
           return !!m && typeof m === 'object' && typeof m.visible === 'boolean' && Array.isArray(m.elements) && !m.elements.some((e) => !e || typeof e !== 'object' || (e as { measured?: unknown }).measured === false);
         };
-        const measured = targets && Array.isArray(report?.targets) && report.targets.length === targets.length && report.targets.every(answered) ? (report.targets as Array<Record<string, unknown>>) : null;
+        const measured = Array.isArray(report?.targets) && report.targets.length === targets.length && report.targets.every(answered) ? (report.targets as Array<Record<string, unknown>>) : null;
         // A preview that is not running or did not load is a failed check, never a clean result; nor is a narrowed
         // check that did not say what it found for each element.
-        if (!report || typeof report !== 'object' || report.error || (targets && !measured))
+        if (!report || typeof report !== 'object' || report.error || !measured)
           return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${String(report?.error ?? (report ? 'the elements were not measured' : 'no report'))}` } };
-        const envelope = { revision: host.revision(), pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport], ...(a.refs ? { scope: 'elements' as const } : {}) };
-        const shaped = measured ? { ...report, targets: measured.map((t, i) => ({ ref: targetRef(a.refs![i]), ...t })) } : report;
+        const envelope = { revision: host.revision(), pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport], scope: 'elements' as const };
+        const shaped = { ...report, targets: measured.map((t, i) => ({ ref: targetRef(a.refs![i]), ...t })) };
         return { ok: true, content: { ...envelope, report: fitInspection(envelope, shaped) } };
       } catch (e) {
         return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
