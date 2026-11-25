@@ -257,7 +257,8 @@ function targetLayers(state: ProjectState, target: SpacingTarget): StyleLayer[] 
   const part = Object.hasOwn(def.parts, target.partId) ? def.parts[target.partId] : undefined;
   const nodeId = part?.nodeId ?? (target.partId === 'root' ? def.tree?.rootIds[0] : undefined);
   const layers: StyleLayer[] = nodeId ? designLayers(def, nodeId, inst.variants) : [];
-  layers.push({ styles: inst.overrides?.[target.partId], strength: 3, wideColumns: true });
+  // One card's own styles beat the placement's for every card.
+  layers.push({ styles: target.itemId ? inst.overrides?.[target.partId] : target.styles, strength: 3, wideColumns: true });
   if (target.itemId) layers.push({ styles: target.styles, strength: 4, wideColumns: true });
   return layers;
 }

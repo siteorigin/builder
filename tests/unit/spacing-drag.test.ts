@@ -416,7 +416,7 @@ describe('the frame\u2019s spacing report', () => {
   const sides = { top: 1, right: 2, bottom: 3, left: 4 };
   const desc = { ctx: 'page:p', node: 'n', items: '' };
   it('reads padding, border and margin with what it measured, and drops anything malformed', () => {
-    expect(spacingOf({ padding: sides, border: sides, margin: { ...sides, top: -8 }, rtl: true, ...desc })).toEqual({ padding: sides, border: sides, margin: { ...sides, top: -8 }, rtl: true, desc });
+    expect(spacingOf({ padding: sides, border: sides, margin: { ...sides, top: -8 }, rtl: true, ...desc })).toEqual({ padding: sides, border: sides, margin: { ...sides, top: -8 }, rtl: true, desc, layout: null });
     expect(spacingOf({ padding: sides, border: sides, margin: sides, ...desc })?.rtl).toBe(false);
     expect(spacingOf({ padding: { ...sides, top: 0 }, border: sides, margin: sides, ...desc })?.padding.top).toBe(0);
     expect(spacingOf({ padding: { ...sides, top: -1 }, border: sides, margin: sides, ...desc })).toBeNull();
