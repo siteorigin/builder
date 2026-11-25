@@ -1320,14 +1320,18 @@ function instanceSwap(state: ProjectState, op: Op<'instance.swapComponent'>): Op
   const named = `“${node.name ?? def.name}”`;
   if (first.dropped.length && !op.allowDrops) {
     const lost = first.dropped.map((d) => (d.reason ? `${d.label} (${d.reason})` : d.label));
-    fail(`Changing ${named} to “${found.name}” would drop ${lost.join('; ')}: the new design has no place for ${lost.length === 1 ? 'it' : 'them'}. Pick another design, or send allowDrops: true if the user agreed to lose ${lost.length === 1 ? 'it' : 'them'}.`);
+    fail(`Changing ${named} to “${found.name}” would drop ${lost.join('; ')}: the new design has no place for ${lost.length === 1 ? 'it' : 'them'}. Pick another design, or remove that content first if it should go.`);
   }
   const target = op.componentId !== undefined ? state.components[installComponent(state, op.componentId)] : found;
   // Planned again against the definition as installed, which a catalogue component may have brought dependencies with.
   const plan = target === found ? first : planSwap(state, op.owner, tree, node, target);
   if (plan.problems.length) fail(plan.problems[0]);
+  // A form's fields keep the keys their answers were sent under, and fields new to the form get keys of their own.
+  if (namesFormFields(target) && Array.isArray(plan.props.fields))
+    plan.props.fields = settleFormKeys(namesFormFields(def) && Array.isArray(node.props.fields) ? (node.props.fields as ListItem[]) : [], plan.props.fields as ListItem[], new Set(), formDefaults(target));
   node.definitionId = target.id;
   node.props = plan.props;
+  if (plan.anchor) node.anchor = plan.anchor;
   if (plan.variants) node.variants = plan.variants;
   else delete node.variants;
   if (plan.overrides) node.overrides = plan.overrides;
@@ -1339,7 +1343,7 @@ function instanceSwap(state: ProjectState, op: Op<'instance.swapComponent'>): Op
   if (!plan.keepAppear) delete node.appear;
   // Brand text kept through a site rename belongs to the shared header and footer, which are never swapped.
   delete node.keepsText;
-  return { nodeId: node.id, definitionId: target.id, kept: plan.kept.map((k) => k.to), dropped: plan.dropped.map((d) => d.label), restyled: plan.restyled };
+  return { nodeId: node.id, from: node.name ?? def.name, definitionId: target.id, kept: plan.kept.map((k) => k.to), dropped: plan.dropped.map((d) => d.label), restyled: plan.restyled };
 }
 
 /** Slots and repeats belong to component definitions: a slot renders a declared slot, a repeat a list property. */

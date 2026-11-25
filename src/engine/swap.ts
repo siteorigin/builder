@@ -10,9 +10,10 @@ import { repeatedPartList } from '@shared/item-styles';
 import { newId } from '@shared/ids';
 import { catalogueComponent } from '@catalogue/index';
 import { EngineError, anchorCapable, findParent } from './tree';
-import { clone, placedDefaultItems } from './install';
+import { clone } from './install';
 import { normalizeProp, normalizeScalar } from './values';
 import { restrictsKinds, slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
+import { shownSlots } from './theme-updates';
 
 /** A property (or list field) whose content carries over, by its label in the old design and in the new. */
 export interface SwapCarry {
@@ -38,6 +39,8 @@ export interface SwapPlan {
   slots?: Record<string, string[]>;
   /** Whether the placement's own entrance stays (only a design built in the editor shows one). */
   keepAppear: boolean;
+  /** The anchor its old design gave it, which the placement now keeps itself so in-page links still find it. */
+  anchor?: string;
   /** Content that carries over. */
   kept: SwapCarry[];
   /** Content that would be lost. The change is refused unless it is allowed to drop it. */
@@ -67,6 +70,8 @@ const groupOf = (name: string) => GROUP_OF.get(name.toLowerCase());
 /** Kinds that hold what a visitor reads or follows. Yes/no, number, choice and token settings are design choices, not content. */
 const CONTENT_TYPES: ReadonlySet<string> = new Set(['string', 'richtext', 'link', 'image', 'icon', 'choices', 'table', 'list', 'object']);
 
+const FEED_WORDS: Record<NonNullable<ListProp['feed']>, string> = { articles: 'dated articles', currentPage: 'page it is on', entries: 'published posts' };
+
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 
 /** Whether a value holds something a visitor would miss if it went. */
@@ -88,8 +93,8 @@ export function hasContent(schema: PropSchema, v: unknown): boolean {
     case 'choices':
       return Array.isArray(v) && v.length > 0;
     case 'table': {
-      const rows = (v as { rows?: unknown }).rows;
-      return Array.isArray(rows) && rows.length > 0;
+      const t = v as { rows?: unknown; columns?: unknown };
+      return (Array.isArray(t.rows) && t.rows.length > 0) || (Array.isArray(t.columns) && t.columns.length > 0);
     }
     case 'list':
       return !schema.feed && Array.isArray(v) && v.length > 0;
@@ -123,7 +128,7 @@ function matchNames<S extends PropSchema>(from: Record<string, S>, to: Record<st
   for (const k of Object.keys(to)) {
     const g = groupOf(k);
     if (out.has(k) || g === undefined) continue;
-    const src = Object.keys(from).find((f) => !used.has(f) && !own(to, f) && groupOf(f) === g && fits(from[f], to[k]));
+    const src = Object.keys(from).find((f) => !used.has(f) && groupOf(f) === g && fits(from[f], to[k]));
     if (src === undefined) continue;
     out.set(k, src);
     used.add(src);
@@ -135,12 +140,14 @@ function matchNames<S extends PropSchema>(from: Record<string, S>, to: Record<st
 function listFields(from: ListProp, to: ListProp): Map<string, string> | null {
   if (from.feed || to.feed || !!from.pageTeaser !== !!to.pageTeaser) return null;
   const map = matchNames<ScalarPropSchema>(from.fields, to.fields, scalarFits);
+  // Cards of pages show the linked page's own title while theirs is empty: only where both lists read the same fields so.
+  if (from.pageTeaser && to.pageTeaser && (map.get(to.pageTeaser.link) !== from.pageTeaser.link || map.get(to.pageTeaser.title) !== from.pageTeaser.title)) return null;
   return [...map.keys()].some((k) => CONTENT_TYPES.has(to.fields[k].type)) ? map : null;
 }
 
 function propFits(from: PropSchema, to: PropSchema): boolean {
   if (from.type === 'list' || to.type === 'list') return from.type === 'list' && to.type === 'list' && listFields(from, to) !== null;
-  if (from.type === 'object' || to.type === 'object') return from.type === 'object' && to.type === 'object' && JSON.stringify(Object.keys(from.fields).sort()) === JSON.stringify(Object.keys(to.fields).sort());
+  if (from.type === 'object' || to.type === 'object') return sameShape(from, to);
   return scalarFits(from, to);
 }
 
@@ -150,20 +157,21 @@ function propFits(from: PropSchema, to: PropSchema): boolean {
  */
 function sameShape(from: PropSchema, to: PropSchema): boolean {
   if (from.type !== to.type) return false;
-  if (from.type === 'list' && to.type === 'list') return JSON.stringify(Object.entries(from.fields).map(([k, f]) => [k, f.type]).sort()) === JSON.stringify(Object.entries(to.fields).map(([k, f]) => [k, f.type]).sort());
+  const fields = (f: Record<string, ScalarPropSchema>) => JSON.stringify(Object.entries(f).map(([k, x]) => [k, x.type, x.type === 'token' ? x.tokenGroup : '']).sort());
+  if ((from.type === 'list' && to.type === 'list') || (from.type === 'object' && to.type === 'object')) return fields(from.fields) === fields(to.fields);
   if (from.type === 'token' && to.type === 'token') return from.tokenGroup === to.tokenGroup;
-  if (from.type === 'object' && to.type === 'object') return JSON.stringify(Object.keys(from.fields).sort()) === JSON.stringify(Object.keys(to.fields).sort());
   return true;
 }
 
 const reasonOf = (e: unknown) => (e instanceof EngineError || e instanceof Error ? e.message : String(e));
 
 /** Rich text as plain text, when nothing but the words is in it (and only one paragraph, unless the text takes several). */
-function plainFromRich(v: unknown, multiline: boolean): string | null {
-  const blocks: RichText = toRichText(v);
+function plainFromRich(from: ScalarPropSchema, v: unknown, multiline: boolean): string | null {
+  const blocks: RichText = toRichText(v, from.type === 'richtext' ? from.plainAs : undefined);
   if (!blocks.every((b) => b.type === 'p' && b.spans.every((s) => !s.strong && !s.em && !s.link))) return null;
-  if (blocks.length > 1 && !multiline) return null;
-  return blocks.map((b) => ('spans' in b ? b.spans.map((s) => s.text).join('') : '')).join('\n\n');
+  const text = blocks.map((b) => ('spans' in b ? b.spans.map((s) => s.text).join('') : '')).join('\n\n');
+  // One line of text keeps no line break, so a paragraph broken over lines (an address) has no plain form there.
+  return !multiline && text.includes('\n') ? null : text;
 }
 
 /**
@@ -181,7 +189,7 @@ function carryScalar(state: ProjectState, from: ScalarPropSchema, to: ScalarProp
       .filter((p) => p.trim())
       .map((p) => ({ type: 'p', spans: [{ text: p }] }));
   } else if (from.type === 'richtext' && to.type === 'string') {
-    const plain = plainFromRich(v, !!to.multiline);
+    const plain = plainFromRich(from, v, !!to.multiline);
     if (plain === null) return { reason: 'its formatting, links or paragraphs would be lost in plain text' };
     value = plain;
   }
@@ -198,11 +206,19 @@ function freshDefault(schema: PropSchema): unknown {
   return schema.type === 'list' && Array.isArray(v) ? (v as ListItem[]).map((it) => ({ ...it, id: newId('i') })) : v;
 }
 
-/** What the placement holds for a property: its own value, or its design's default (list items under its own IDs). */
-function effectiveValue(owner: OwnerRef, node: InstanceNode, key: string, schema: PropSchema): unknown {
+/**
+ * What the placement holds for a property: its own value, or its design's default. Default list items keep their IDs,
+ * as a placement's first list edit (and its item styles) keeps them.
+ */
+function effectiveValue(node: InstanceNode, key: string, schema: PropSchema): unknown {
   if (Object.hasOwn(node.props, key)) return node.props[key];
-  if (schema.type === 'list') return schema.feed ? [] : placedDefaultItems(owner, node, schema.default);
-  return clone(schema.default);
+  return schema.type === 'list' && schema.feed ? [] : clone(schema.default);
+}
+
+/** The anchor a managed design gives its own root, which every placement of it renders. */
+function rootAnchor(def: ComponentDefinition): string | undefined {
+  const root = def.kind === 'managed' && def.tree ? own(def.tree.nodes, def.tree.rootIds[0] ?? '') : undefined;
+  return root && typeof root.anchor === 'string' && root.anchor ? root.anchor : undefined;
 }
 
 /**
@@ -250,7 +266,7 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
       props[key] = freshDefault(schema);
       continue;
     }
-    const v = effectiveValue(owner, node, from, fromSchema);
+    const v = effectiveValue(node, from, fromSchema);
     const label = `${target.name} → ${schema.label}`;
     const content = hasContent(fromSchema, v);
     if (isBinding(v)) {
@@ -290,9 +306,15 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
     }
   }
   for (const [key, schema] of Object.entries(source.properties)) {
-    if (carried.has(key) || !CONTENT_TYPES.has(schema.type)) continue;
-    const v = effectiveValue(owner, node, key, schema);
-    if (hasContent(schema, v)) dropped.push({ label: schema.label });
+    if (carried.has(key)) continue;
+    if (schema.type === 'list' && schema.feed) {
+      // A list the site fills (its articles, this page, a collection's posts) goes unless the new design fills one the same way.
+      if (!Object.values(target.properties).some((t) => t.type === 'list' && t.feed === schema.feed)) dropped.push({ label: schema.label, reason: `the new design does not fill it from the site's ${FEED_WORDS[schema.feed]}` });
+      continue;
+    }
+    const v = effectiveValue(node, key, schema);
+    // A setting (a yes/no, a number, a choice) is the design's; one connected to the enclosing design is content.
+    if (CONTENT_TYPES.has(schema.type) ? hasContent(schema, v) : isBinding(v)) dropped.push({ label: schema.label });
   }
 
   // Style choices the new design also offers stay chosen (a tone it has by the same name); the rest go.
@@ -304,6 +326,12 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
     if (fits) variants[axis] = clone(v);
     else if (typeof v !== 'string' || v !== from?.default) restyled.push(`${from?.label ?? axis}: ${typeof v === 'string' ? (own(from?.options, v)?.label ?? v) : 'connected'}`);
   }
+  // A choice left at the old design's default keeps that look where the new design defaults to another option.
+  for (const [axis, from] of Object.entries(source.variantAxes ?? {})) {
+    const to = own(target.variantAxes, axis);
+    if (node.variants && Object.hasOwn(node.variants, axis)) continue;
+    if (to && to.default !== from.default && own(to.options, from.default)) variants[axis] = from.default;
+  }
   if (Object.keys(variants).length) plan.variants = variants;
 
   // Styles set on the whole section stay; styles on a part stay where the new design has a part of that name.
@@ -314,8 +342,11 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
   }
   for (const [part, entry] of Object.entries(node.itemOverrides ?? {})) {
     const list = entry && typeof entry === 'object' && typeof entry.list === 'string' ? listTo.get(entry.list) : undefined;
-    if (list && own(target.parts, part) && repeatedPartList(target, part) === list) (plan.itemOverrides ??= {})[part] = { list, items: clone(entry.items) };
-    else restyled.push(`Styles of single ${partLabel(part)} items`);
+    const present = new Set(Array.isArray(props[list ?? '']) ? (props[list!] as ListItem[]).map((it) => it.id) : []);
+    const items = list && entry.items && typeof entry.items === 'object' ? Object.fromEntries(Object.entries(entry.items).filter(([id]) => present.has(id))) : {};
+    if (list && own(target.parts, part) && repeatedPartList(target, part) === list) {
+      if (Object.keys(items).length) (plan.itemOverrides ??= {})[part] = { list, items: clone(items) };
+    } else restyled.push(`Styles of single ${partLabel(part)} items`);
   }
 
   // Content placed in its slots moves to the new design's slot of the same name, which must take all of it.
@@ -333,6 +364,9 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
     else if (decl.max !== undefined && fill.count > decl.max) problems.push(`The “${decl.label}” slot of “${target.name}” holds at most ${decl.max === 1 ? 'one item' : `${decl.max} items`}.`);
     (plan.slots ??= {})[slot] = [...ids];
   }
+  // A design built in the editor may place the slot inside a list this placement leaves empty, which shows nothing.
+  const shown = target.kind === 'managed' && target.tree && plan.slots ? shownSlots(target, { ...node, definitionId: target.id, props }) : undefined;
+  for (const slot of Object.keys(plan.slots ?? {})) if (shown && !shown.has(slot)) problems.push(`“${target.name}” would not show the content in its “${own(target.slots, slot)?.label ?? slot}” slot here.`);
   // The slot it sits in must take the new design too.
   const at = findParent(tree, node.id);
   const parent = at?.parentId ? own(tree.nodes, at.parentId) : undefined;
@@ -344,8 +378,11 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
 
   // In-page links reach the section by its anchor, which only a design built in the editor renders.
   const anchors = anchorCapable(state, target);
-  if (node.anchor && !anchors) problems.push(`“${target.name}” can’t take the anchor #${node.anchor} that in-page links use. Clear the anchor first, or pick another design.`);
+  const anchor = node.anchor ?? rootAnchor(source);
+  if (anchor && !anchors) problems.push(`“${target.name}” can’t take the anchor #${anchor} that in-page links use. Clear the anchor first, or pick another design.`);
+  else if (!node.anchor && anchor && rootAnchor(target) !== anchor) plan.anchor = anchor;
   plan.keepAppear = anchors;
+  if (node.appear && !anchors) restyled.push('Entrance');
   return plan;
 }
 
@@ -367,7 +404,8 @@ function carryList(state: ProjectState, from: ListProp, to: ListProp, fields: Ma
     for (const [k, f] of Object.entries(to.fields)) {
       const src = fields.get(k);
       const fromField = src === undefined ? undefined : from.fields[src];
-      const raw = src !== undefined && it && Object.hasOwn(it, src) ? it[src] : undefined;
+      // A field an item never stored shows the old field's default, which is what carries.
+      const raw = src !== undefined && fromField && it ? (Object.hasOwn(it, src) ? it[src] : clone(fromField.default)) : undefined;
       if (src === undefined || !fromField || raw === undefined) {
         item[k] = clone(f.default);
         continue;
@@ -379,7 +417,7 @@ function carryList(state: ProjectState, from: ListProp, to: ListProp, fields: Ma
         if (hasContent(fromField, raw)) lose(src, r.reason);
       }
     }
-    for (const [k, f] of Object.entries(from.fields)) if (!usedFrom.has(k) && CONTENT_TYPES.has(f.type) && it && hasContent(f, it[k])) lose(k);
+    for (const [k, f] of Object.entries(from.fields)) if (!usedFrom.has(k) && CONTENT_TYPES.has(f.type) && it && hasContent(f, Object.hasOwn(it, k) ? it[k] : f.default)) lose(k);
     return item;
   });
   // A list that needs more items than it was given starts the rest from its own defaults.

@@ -158,6 +158,7 @@ describe('agent orchestrator', () => {
 
   it('changes a section to another design keeping its copy, and is refused a change that would lose some (#374)', async () => {
     let refused = '';
+    let dropsRefused = '';
     const homeOf = (st: ProjectState) => st.pages[st.site.homePageId];
     const byComponent = (st: ProjectState, componentId: string) => homeOf(st).rootIds.find((id) => st.components[(homeOf(st).nodes[id] as InstanceNode).definitionId]?.componentId === componentId)!;
     const { session, run } = await setup([
@@ -168,6 +169,11 @@ describe('agent orchestrator', () => {
       (req) => {
         refused = JSON.stringify(req.items.at(-1));
         const owner = { kind: 'page', id: session.state.site.homePageId };
+        return [call('s1b', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'instance.swapComponent', owner, nodeId: byComponent(session.state, 'testimonials.grid'), componentId: 'stats.row', allowDrops: true }] })];
+      },
+      (req) => {
+        dropsRefused = JSON.stringify(req.items.at(-1));
+        const owner = { kind: 'page', id: session.state.site.homePageId };
         return [call('s2', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'instance.swapComponent', owner, nodeId: byComponent(session.state, 'hero.split'), componentId: 'hero.centered' }] })];
       },
       () => finish('Changed the hero to a centered one.')
@@ -176,6 +182,7 @@ describe('agent orchestrator', () => {
     const hero = byComponent(before, 'hero.split');
     const { runId, result } = await run('Make the hero centered');
     expect(refused).toMatch(/would drop Eyebrow; Testimonials/);
+    expect(dropsRefused).toMatch(/does not take allowDrops/);
     expect(result?.status).toBe('completed');
     const now = homeOf(session.state).nodes[hero] as InstanceNode;
     expect(now.definitionId).toBe('foundation.hero.centered');
@@ -632,6 +639,7 @@ describe('page scope (#513)', () => {
     allow({ type: 'node.remove', owner: own, nodeId: first });
     allow({ type: 'component.detachInstance', owner: own, nodeId: first });
     allow({ type: 'instance.swapComponent', owner: own, nodeId: first, componentId: 'cta.banner' });
+    deny(/outside the About page/, { type: 'instance.swapComponent', owner: { kind: 'page', id: home }, nodeId: state.pages[home].rootIds[0], componentId: 'hero.centered' });
     allow({ type: 'node.insert', owner: own, newNodeId: 'n_fresh1', componentId: 'cta.banner' }, { type: 'instance.setProp', owner: own, nodeId: 'n_fresh1', prop: 'heading', value: 'New' });
     // A section copied in from another page; never one copied out of it.
     allow({ type: 'node.copy', owner: { kind: 'page', id: home }, nodeId: state.pages[home].rootIds[0], toOwner: own });

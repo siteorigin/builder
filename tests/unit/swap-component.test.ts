@@ -46,7 +46,8 @@ describe('instance.swapComponent', () => {
     node.anchor = 'welcome';
     node.name = 'Opening';
     node.variants = { tone: 'muted', layout: 'media-start' };
-    node.overrides = { root: { base: { paddingBlock: { token: 'space.lg' } } } };
+    node.overrides = { root: { base: { paddingBlock: { token: 'space.lg' } } }, media: { base: { radius: { token: 'radius.lg' } } } };
+    node.props.headingLevel = 'h2';
     const was = structuredClone(node.props);
     const at = home(s).rootIds.indexOf(id);
     expect(s.components['foundation.hero.centered']).toBeUndefined();
@@ -61,8 +62,11 @@ describe('instance.swapComponent', () => {
     expect(now.props).not.toHaveProperty('image');
     expect(now).toMatchObject({ anchor: 'welcome', name: 'Opening', variants: { tone: 'muted' }, overrides: { root: { base: { paddingBlock: { token: 'space.lg' } } } } });
     // Its layout option has no counterpart in the new design.
-    expect(now.variants).not.toHaveProperty('layout');
-    expect(r.results[0]).toMatchObject({ nodeId: id, definitionId: 'foundation.hero.centered', dropped: [], restyled: ['Layout: Image first'] });
+    expect(now.variants).toEqual({ tone: 'muted' });
+    expect(now.props.headingLevel).toBe('h2');
+    // Styles of the section stay; those of its picture have no part to go to.
+    expect(now.overrides).toEqual({ root: { base: { paddingBlock: { token: 'space.lg' } } } });
+    expect(r.results[0]).toMatchObject({ nodeId: id, from: 'Opening', definitionId: 'foundation.hero.centered', dropped: [], restyled: ['Layout: Image first', 'Styles of Image'] });
     expect(r.results[0].kept).toEqual(expect.arrayContaining(['Eyebrow', 'Heading', 'Supporting text', 'Primary button label', 'Primary button link']));
     // The new design was installed and locked, as inserting it would.
     expect(r.state.components['foundation.hero.centered']).toBeDefined();
@@ -78,6 +82,7 @@ describe('instance.swapComponent', () => {
     node.props.body = [{ type: 'p', spans: [{ text: 'We plan every room with you.' }] }];
     node.props.actionLabel = 'Book a visit';
     node.props.actionLink = { type: 'url', target: 'https://example.com/book', newTab: true };
+    node.variants = { tone: 'inverse', layout: 'media-end' };
 
     const r = swap(s, id, { componentId: 'hero.split' });
     const now = inst(r.state, id);
@@ -87,19 +92,26 @@ describe('instance.swapComponent', () => {
     expect(now.props.primaryLabel).toBe('Book a visit');
     expect(now.props.primaryLink).toEqual({ type: 'url', target: 'https://example.com/book', newTab: true });
     expect(now.props.heading).toBe(node.props.heading);
-    // Its layout (image at the end) is an option the split hero names differently.
-    expect(now.variants ?? {}).not.toHaveProperty('layout');
+    // Its tone stays; its layout (image at the end) is an option the split hero names differently.
+    expect(now.variants).toEqual({ tone: 'inverse' });
+    expect(r.results[0].restyled).toEqual(['Layout: Image last']);
     expect(newErrors(s, r.state)).toEqual([]);
   });
 
   it('turns plain text into literal rich text, reading nothing in it as formatting', () => {
     const { s, find } = project();
     const id = find('hero.split');
-    inst(s, id).props.lead = 'Two *stars* and a [bracket](here)';
+    const def = s.components[inst(s, id).definitionId].properties.lead;
+    if (def.type === 'string') def.multiline = true;
+    inst(s, id).props.lead = 'Two *stars* and a [bracket](here)\n\n- not a list';
     const r = swap(s, id, { componentId: 'content.text' }, true);
     expect(r.results[0].dropped).toEqual(['Eyebrow', 'Primary button label', 'Primary button link', 'Secondary button label', 'Secondary button link']);
     const now = inst(r.state, id);
-    expect(now.props.body).toEqual([{ type: 'p', spans: [{ text: 'Two *stars* and a [bracket](here)' }] }]);
+    expect(now.definitionId).toBe('foundation.content.text');
+    expect(now.props.body).toEqual([
+      { type: 'p', spans: [{ text: 'Two *stars* and a [bracket](here)' }] },
+      { type: 'p', spans: [{ text: '- not a list' }] }
+    ]);
     expect(now.props.heading).toBe(inst(s, id).props.heading);
   });
 
@@ -107,7 +119,7 @@ describe('instance.swapComponent', () => {
     const { s, find } = project();
     const id = find('hero.split');
     inst(s, id).props.image = { assetId: 'a1', alt: 'Living room' };
-    expect(() => swap(s, id, { componentId: 'hero.centered' })).toThrow(/would drop Image.*allowDrops/);
+    expect(() => swap(s, id, { componentId: 'hero.centered' })).toThrow(/would drop Image: the new design has no place for it\. Pick another design, or remove that content first/);
     const r = swap(s, id, { componentId: 'hero.centered' }, true);
     expect(inst(r.state, id).definitionId).toBe('foundation.hero.centered');
     expect(r.results[0].dropped).toEqual(['Image']);
@@ -115,6 +127,16 @@ describe('instance.swapComponent', () => {
     const media = find('content.media');
     inst(s, media).props.body = [{ type: 'p', spans: [{ text: 'Bold', strong: true }, { text: ' claim' }] }];
     expect(() => swap(s, media, { componentId: 'hero.centered' })).toThrow(/Text \(its formatting/);
+    inst(s, media).props.body = [{ type: 'p', spans: [{ text: 'See ' }, { text: 'us', link: { type: 'url', target: 'https://example.com' } }] }];
+    expect(() => swap(s, media, { componentId: 'hero.centered' })).toThrow(/Text \(its formatting, links/);
+    // A paragraph broken over lines (an address) keeps its break in text that takes several lines, and has no plain
+    // form in text of one line.
+    inst(s, media).props.body = [{ type: 'p', spans: [{ text: '1 Main St\nCape Town' }] }];
+    expect(inst(swap(s, media, { componentId: 'hero.centered' }).state, media).props.lead).toBe('1 Main St\nCape Town');
+    const oneLine = applyOperations(s, [{ type: 'node.insert', owner: owner(s), componentId: 'hero.centered' }]).state;
+    const lead = oneLine.components['foundation.hero.centered'].properties.lead;
+    if (lead.type === 'string') lead.multiline = false;
+    expect(() => swap(oneLine, media, { componentId: 'hero.centered' })).toThrow(/Text \(its formatting/);
   });
 
   it('moves list items to the list of the same meaning, keeping their IDs and matching fields', () => {
@@ -136,12 +158,16 @@ describe('instance.swapComponent', () => {
   it('names item fields that would be lost, and fills the new fields from defaults', () => {
     const { s, find } = project();
     const id = find('features.grid');
-    const items = inst(s, id).props.items as ListItem[];
-    expect(() => swap(s, id, { componentId: 'pricing.plans' })).toThrow(/would drop Cards → Icon/);
+    const first = (inst(s, id).props.items as ListItem[])[0];
+    // Eight cards, two more than a pricing table holds.
+    const items = Array.from({ length: 8 }, (_, i) => ({ ...first, id: `i_card${i}`, title: `Card ${i}`, description: `About ${i}`, linkLabel: `More ${i}`, link: { type: 'url', target: `https://example.com/${i}` } }));
+    inst(s, id).props.items = items;
+    expect(() => swap(s, id, { componentId: 'pricing.plans' })).toThrow(/would drop Cards \(2 items past the new limit of 6\); Cards → Icon/);
     const r = swap(s, id, { componentId: 'pricing.plans' }, true);
     const plans = inst(r.state, id).props.plans as ListItem[];
-    expect(plans.map((p) => p.id)).toEqual(items.map((it) => it.id));
-    expect(plans[0]).toMatchObject({ name: items[0].title, description: items[0].description });
+    expect(plans.map((p) => p.id)).toEqual(items.slice(0, 6).map((it) => it.id));
+    for (const [i, p] of plans.entries()) expect(p).toMatchObject({ name: `Card ${i}`, description: `About ${i}`, actionLabel: `More ${i}`, actionLink: { type: 'url', target: `https://example.com/${i}` } });
+    expect(r.results[0].dropped).toEqual(['Cards', 'Cards → Icon']);
     const field = catalogueComponent(s.site.themeId, 'pricing.plans')!.properties.plans;
     expect(plans[0].price).toEqual(field.type === 'list' ? field.fields.price.default : undefined);
     expect(newErrors(s, r.state)).toEqual([]);
@@ -153,9 +179,11 @@ describe('instance.swapComponent', () => {
     const copy = applyOperations(s, [{ type: 'component.duplicate', definitionId: 'foundation.hero.split', name: 'Studio hero' }]);
     const defId = copy.results[0].definitionId as string;
     const centered = swap(copy.state, id, { componentId: 'hero.centered' }).state;
+    inst(centered, id).props.heading = 'Edited while centered';
+    inst(centered, id).props.secondaryLink = { type: 'url', target: 'https://example.com/tour' };
     const r = swap(centered, id, { definitionId: defId });
     expect(inst(r.state, id).definitionId).toBe(defId);
-    expect(inst(r.state, id).props.heading).toBe(inst(s, id).props.heading);
+    expect(inst(r.state, id).props).toMatchObject({ heading: 'Edited while centered', secondaryLink: { type: 'url', target: 'https://example.com/tour' } });
     expect(() => swap(r.state, id, { definitionId: 'proj.missing' })).toThrow(/is not installed/);
     expect(() => swap(r.state, id, { definitionId: defId })).toThrow(/already shows “Studio hero”/);
   });
@@ -175,11 +203,71 @@ describe('instance.swapComponent', () => {
       { type: 'node.insert', owner: owner(s), parentId: 'n_wrapper', slot: 'content', primitive: 'heading', text: 'Inside' }
     ]).state;
     expect(() => swap(withSlot, 'n_wrapper', { componentId: 'hero.centered' })).toThrow(/has no “Content” slot/);
+    expect(withSlot.components['foundation.hero.centered']).toBeUndefined();
     // A code component cannot render the anchor links on the page go to.
     inst(s, hero).anchor = 'top';
     expect(() => swap(s, hero, { componentId: 'media.video' }, true)).toThrow(/can’t take the anchor #top/);
-    // Nothing changed on a refusal: not even the component it would have installed.
-    expect(s.components['foundation.hero.centered']).toBeUndefined();
+  });
+
+  it('moves slot content to the new design’s slot of the same name, which must take it, and fits the slot it sits in', () => {
+    const { s } = project();
+    const st = applyOperations(s, [
+      { type: 'node.insert', owner: owner(s), newNodeId: 'n_wrapper', componentId: 'layout.section' },
+      { type: 'node.insert', owner: owner(s), parentId: 'n_wrapper', slot: 'content', newNodeId: 'n_inside', componentId: 'hero.centered' },
+      { type: 'component.duplicate', definitionId: 'foundation.layout.section', name: 'Band' }
+    ]);
+    const band = st.results[2].definitionId as string;
+    const r = swap(st.state, 'n_wrapper', { definitionId: band });
+    expect(inst(r.state, 'n_wrapper')).toMatchObject({ definitionId: band, slots: { content: ['n_inside'] } });
+    expect(newErrors(st.state, r.state)).toEqual([]);
+    // A slot that takes only heroes keeps a hero in it from becoming a call to action.
+    r.state.components[band].slots!.content.categories = ['hero'];
+    expect(() => swap(r.state, 'n_inside', { componentId: 'cta.banner' })).toThrow(/The “Content” slot of “Band” takes hero components, not “Call to action”/);
+    expect(() => swap(r.state, 'n_inside', { componentId: 'hero.split' })).not.toThrow();
+  });
+
+  it('keeps the anchor and the default look its old design gave it, and says when a list the site fills goes', () => {
+    const { s, find } = project();
+    const id = find('hero.split');
+    const copy = applyOperations(s, [{ type: 'component.duplicate', definitionId: 'foundation.hero.split', name: 'Studio hero' }]);
+    const defId = copy.results[0].definitionId as string;
+    const def = copy.state.components[defId];
+    def.tree!.nodes[def.tree!.rootIds[0]].anchor = 'studio';
+    def.variantAxes!.tone.default = 'inverse';
+    inst(copy.state, id).definitionId = defId;
+    delete inst(copy.state, id).variants;
+    const r = swap(copy.state, id, { componentId: 'hero.centered' });
+    // Links to #studio still land, and the hero stays dark although the centered hero defaults to light.
+    expect(inst(r.state, id)).toMatchObject({ anchor: 'studio', variants: { tone: 'inverse' } });
+    // A news list the site fills from its articles has no place in a services grid.
+    const news = applyOperations(s, [{ type: 'node.insert', owner: owner(s), newNodeId: 'n_news', componentId: 'content.news' }]).state;
+    expect(() => swap(news, 'n_news', { componentId: 'features.grid' })).toThrow(/would drop Articles \(the new design does not fill it from the site's dated articles\)/);
+    expect(() => swap(news, 'n_news', { componentId: 'blog.list' })).toThrow(/would drop Articles/);
+  });
+
+  it('gives form fields keys of their own when a list becomes a form’s fields', () => {
+    const { s } = project();
+    const copy = applyOperations(s, [
+      { type: 'node.insert', owner: owner(s), newNodeId: 'n_methods', componentId: 'contact.details' },
+      { type: 'component.duplicate', definitionId: 'foundation.contact.details', name: 'Signup' }
+    ]);
+    const defId = copy.results[1].definitionId as string;
+    const def = copy.state.components[defId];
+    def.properties.fields = def.properties.items;
+    delete def.properties.items;
+    const node = inst(copy.state, 'n_methods');
+    node.definitionId = defId;
+    delete node.props.items;
+    node.props.fields = [
+      { id: 'i_f1', icon: 'mail', label: 'Email', value: '', link: { type: 'none', target: '' } },
+      { id: 'i_f2', icon: 'mail', label: 'Email', value: '', link: { type: 'none', target: '' } }
+    ];
+    const r = swap(copy.state, 'n_methods', { componentId: 'contact.form' }, true);
+    const fields = inst(r.state, 'n_methods').props.fields as ListItem[];
+    expect(fields.map((f) => f.label)).toEqual(['Email', 'Email']);
+    const names = fields.map((f) => f.name);
+    expect(names.every((n) => typeof n === 'string' && n !== '')).toBe(true);
+    expect(new Set(names).size).toBe(2);
   });
 
   it('plans the same change it makes, before the new design is installed', () => {
@@ -207,11 +295,10 @@ describe('instance.swapComponent', () => {
     expect(choices.filter((c) => c.group === 'Similar sections').map((c) => c.def.componentId)).toEqual(expect.arrayContaining(['hero.centered', 'intro.page']));
     expect(choices.findIndex((c) => c.group !== 'Similar sections')).toBeGreaterThan(choices.findLastIndex((c) => c.group === 'Similar sections'));
     expect(choices.find((c) => c.def.componentId === 'hero.centered')?.spec).toEqual({ componentId: 'hero.centered' });
-    // A project component is offered by its definition ID; code components only in Developer mode.
+    // A project component is offered by its definition ID.
     const copy = applyOperations(s, [{ type: 'component.duplicate', definitionId: 'foundation.hero.split', name: 'Studio hero' }]);
     const defId = copy.results[0].definitionId as string;
     expect(swapChoices(copy.state, hero).find((c) => c.def.id === defId)).toMatchObject({ group: 'Your components', spec: { definitionId: defId } });
-    expect(swapChoices(s, inst(s, find('hero.split')), false).some((c) => c.def.kind === 'code' && c.def.owner === 'project')).toBe(false);
   });
 
   it('undoes in one step, the component it installed included, and redoes the same change', async () => {
@@ -225,7 +312,7 @@ describe('instance.swapComponent', () => {
     const r = await session.apply({ operations: [{ type: 'instance.swapComponent', owner: owner(s), nodeId: id, componentId: 'hero.centered' }] }, { label: 'Change section design' });
     expect(r.ok).toBe(true);
     const swapped = structuredClone(session.state);
-    expect(inst(swapped, id).definitionId).toBe('foundation.hero.centered');
+    expect(inst(swapped, id)).toMatchObject({ definitionId: 'foundation.hero.centered', anchor: 'welcome', props: { heading: inst(before, id).props.heading, lead: inst(before, id).props.lead } });
     expect(session.historyInfo().undoLabel).toBe('Change section design');
     await session.undo();
     expect(home(session.state)).toEqual(home(before));
@@ -234,6 +321,7 @@ describe('instance.swapComponent', () => {
     await session.redo();
     expect(home(session.state)).toEqual(home(swapped));
     expect(session.state.components).toEqual(swapped.components);
+    expect(session.state.themeLock).toEqual(swapped.themeLock);
   });
 });
 

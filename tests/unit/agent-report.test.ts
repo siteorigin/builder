@@ -133,6 +133,13 @@ describe('change descriptions', () => {
     ]);
     expect(changes.at(-1)).toMatchObject({ label: 'Changed Split hero on Home to “Centered hero”, dropping “Image”', pageId: home.id, nodeId: hero });
     for (const c of changes) expect(c.label).not.toMatch(RAW);
+    // Each change names the design it left, though an earlier one in the run chose it.
+    const twice = run(state, [
+      () => [{ type: 'instance.swapComponent', owner: home, nodeId: hero, componentId: 'hero.centered', allowDrops: true }],
+      () => [{ type: 'instance.swapComponent', owner: home, nodeId: hero, componentId: 'intro.page', allowDrops: true }]
+    ]);
+    expect(twice.changes.map((c) => c.label)).toEqual(expect.arrayContaining(['Changed Centered hero on Home to “Page introduction”, dropping “Primary button label”, “Primary button link”, “Secondary button label” and “Secondary button link”']));
+    expect((twice.after.pages[home.id].nodes[hero] as { definitionId: string }).definitionId).toBe('foundation.intro.page');
   });
 
   it('keeps one entry per element when two elements have the same name, and links a copy to the copy', () => {

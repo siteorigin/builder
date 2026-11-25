@@ -450,7 +450,7 @@ export const OPERATION_SCHEMAS = {
       allowDrops: z
         .boolean()
         .optional()
-        .describe('Change it even though some of its content has no place in the new design; without it, such a change is refused and the refusal names that content. Only when the user agreed to lose it.')
+        .describe('Let go of content the new design has no place for, as the Inspector does once the author confirms its preview. Without it, such a change is refused and the refusal names that content.')
     })
     .describe(
       'Change a placed component to another design where it is, keeping its content: text, links, images and list items carry over to properties of the same name or meaning (heading/title, lead/body, items/cards/plans), and its anchor, styles and options the new design also has (such as tone) stay.'

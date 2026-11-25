@@ -2544,6 +2544,10 @@ describe('a run limited to one page (#513)', () => {
     for (const t of ['page.create', 'page.remove', 'page.reorder', 'page.setHome', 'page.duplicate', 'token.set', 'site.update', 'theme.apply', 'asset.update', 'component.makeUnique', 'component.convertToCode', 'component.createFromNode', 'component.setPropSchema', 'node.paste'])
       expect(PAGE_OPERATIONS.has(t as never), t).toBe(false);
     for (const t of ['node.insert', 'node.move', 'node.remove', 'node.copy', 'node.setStyle', 'instance.setProp', 'instance.listInsert', 'page.update', 'component.detachInstance']) expect(types(cloud.tools), t).toContain(t);
+    // A section changes design keeping its content; letting content go is the author's, from the Inspector's preview (#374).
+    const swapOp = offered(cloud.tools).find((o) => (o.type as { const: string }).const === 'instance.swapComponent')!;
+    expect(Object.keys(swapOp)).toEqual(expect.arrayContaining(['owner', 'nodeId', 'componentId', 'definitionId']));
+    expect(Object.keys(swapOp)).not.toContain('allowDrops');
     const pageUpdate = offered(cloud.tools).find((o) => (o.type as { const: string }).const === 'page.update')!;
     expect(Object.keys(pageUpdate)).toEqual(expect.arrayContaining(['title', 'navLabel', 'description', 'showHeader', 'showFooter', 'draft']));
     expect(Object.keys(pageUpdate)).not.toContain('route');

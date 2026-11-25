@@ -609,6 +609,7 @@ const carryText = (k: SwapCarry) => `${k.from === k.to ? k.from : `${k.from} →
 export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: OwnerRef; nodeId: string; definitionId: string }) {
   const st = useStore((s) => s.snapshot?.state);
   const revision = useStore((s) => s.snapshot?.revision);
+  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   const dev = useStore((s) => !!s.settings?.developerMode);
   const tree = st ? treeFor(st, owner) : undefined;
   const node = tree && Object.hasOwn(tree.nodes, nodeId) ? tree.nodes[nodeId] : undefined;
@@ -618,19 +619,23 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
   const [opened] = useState(() => (def && current ? { name: current.name ?? def.name, top: !!tree?.rootIds.includes(nodeId) } : null));
   const choices = useMemo(() => (st && current ? swapChoices(st, current, dev) : []), [st, current, dev]);
   const [key, setKey] = useState(() => choices[0]?.key ?? '');
-  const choice = choices.find((c) => c.key === key) ?? choices[0];
+  // Only the design picked: one that has gone since (an Undo, the AI) is never swapped for another without a word.
+  const choice = choices.find((c) => c.key === key);
   const plan = useMemo(() => (st && tree && current && choice ? planSwap(st, owner, tree, current, choice.def) : null), [st, tree, current, choice, owner]);
-  // What the dialog showed when the change was sent: the placement shows the new design as it lands.
-  const [sent, setSent] = useState<{ plan: SwapPlan; choice: SwapChoice } | null>(null);
-  const shown = sent ?? (plan && choice ? { plan, choice } : null);
+  // What the dialog showed when the change was sent: the placement shows the new design as it lands, before the reply.
+  const [sent, setSent] = useState<{ plan: SwapPlan; choice: SwapChoice; choices: SwapChoice[]; name: string } | null>(null);
   const busy = !!sent;
-  const close = useCloseOwn();
+  const offered = sent?.choices ?? choices;
+  const designName = sent?.name ?? def?.name;
   const id = useId();
+  const close = useCloseOwn();
   const title = opened?.top === false ? 'Change design' : 'Change section design';
-  const ready = !!shown && !shown.plan.problems.length && !busy;
+  const ready = !!plan && !plan.problems.length && !busy && !readOnly;
+  // A collection's layout is shared by every entry shown with it.
+  const where = st ? (owner.kind === 'template' ? `In the layout of ${st.collections?.[owner.id]?.settings.name ?? 'a collection'}, shown for every entry` : placeOf(st, owner)) : undefined;
   const change = async () => {
-    if (!ready || !plan || !choice) return;
-    setSent({ plan, choice });
+    if (!ready || !plan || !choice || !def) return;
+    setSent({ plan, choice, choices, name: def.name });
     // Checked against the revision previewed, so a change on its way (an Undo, the AI) can't alter what was shown.
     let r: Awaited<ReturnType<typeof applyOps>> = null;
     try {
@@ -640,6 +645,7 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
     }
     if (r) close();
   };
+  const shown = sent ?? (plan && choice ? { plan, choice } : null);
   const dropped = shown?.plan.dropped ?? [];
   const details: Detail[] = shown
     ? [
@@ -659,9 +665,9 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
       icon={<Badge icon={<ArrowRightLeft />} tone={def ? 'neutral' : 'caution'} />}
       onClose={close}
       busy={busy}
-      describedBy={def || busy ? `${id}-lead ${id}-details` : GONE_ID}
+      describedBy={(def || busy) && offered.length ? `${id}-lead${shown ? ` ${id}-details` : ''}` : GONE_ID}
       footer={
-        (def || busy) && choices.length ? (
+        (def || busy) && offered.length ? (
           <>
             <button className="btn" onClick={close} disabled={busy}>
               Cancel
@@ -675,17 +681,22 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
         )
       }
     >
-      {(def || busy) && shown ? (
+      {(def || busy) && offered.length ? (
         <div className="authoring-form" data-testid="swap-component-dialog">
-          <FormStatus text={busy ? `Changing to ${shown.choice.def.name}` : undefined} />
+          <FormStatus text={busy && shown ? `Changing to ${shown.choice.def.name}` : undefined} />
           <p id={`${id}-lead`} className="confirm-lead">
             Show {opened?.name ?? 'it'} as another design, in the same place. Its content moves to the fields of the same name or meaning.
           </p>
-          {st && def && <Subject icon={<Component />} name={def.name} note={placeOf(st, owner)} />}
-          <Field label="New design">
-            <select className="select" value={shown.choice.key} disabled={busy} onChange={(e) => setKey(e.target.value)}>
+          {designName && <Subject icon={<Component />} name={designName} note={where} />}
+          <Field label="New design" hint={shown ? undefined : 'The design picked is no longer available. Pick another.'}>
+            <select className="select" value={shown?.choice.key ?? ''} disabled={busy} onChange={(e) => setKey(e.target.value)}>
+              {!shown && (
+                <option value="" disabled>
+                  Pick a design
+                </option>
+              )}
               {['Similar sections', 'Your components', 'Other sections'].map((group) => {
-                const list = choices.filter((c) => c.group === group);
+                const list = offered.filter((c) => c.group === group);
                 return list.length ? (
                   <optgroup key={group} label={group}>
                     {list.map((c) => (
@@ -698,18 +709,18 @@ export function SwapComponentModal({ owner, nodeId, definitionId }: { owner: Own
               })}
             </select>
           </Field>
-          {shown.plan.problems.length ? (
-            <div className="scope-note danger" role="alert">
+          {shown?.plan.problems.length ? (
+            <div id={`${id}-details`} className="scope-note danger" role="alert">
               <CircleAlert />
               <span>{shown.plan.problems[0]}</span>
             </div>
-          ) : (
+          ) : shown ? (
             <Details id={`${id}-details`} items={details} />
-          )}
+          ) : null}
         </div>
       ) : (
         <GoneNotice>
-          {def && !choices.length
+          {def && !offered.length
             ? `No other design can stand here in place of ${def.name}.`
             : node?.kind === 'instance'
               ? 'This placement now shows a different design. Select it again to change it.'
