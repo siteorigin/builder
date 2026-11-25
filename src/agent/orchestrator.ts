@@ -14,7 +14,7 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
-import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
+import { compactProjectSummary, describeSelection, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
 import { outsideOffer, themeUpdateNote } from './theme-update';
 import { canEditContracts, checkAuthority, liveEntry, requestAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
@@ -1138,9 +1138,12 @@ export class Orchestrator {
     // Problems the project already had (including components that already fail to build) are not the run's. Each is
     // known by where it is (`diagnosticKey`, as the save gate tells them, so a rename is not one) and counted: the same
     // message somewhere new is a new problem.
-    const startDiagnostics: Diagnostic[] = ask ? [] : session.diagnostics();
+    // Read with the state a question answers about: nothing has run since it was copied.
+    const startDiagnostics: Diagnostic[] = session.diagnostics();
+    /** The build's errors as an edit starts (a question compiles nothing). */
+    const startBuild: Diagnostic[] = ask ? [] : await this.deps.compileAll().catch(() => []);
     const baseline = new Map<string, number>();
-    if (!ask) for (const d of [...startDiagnostics, ...(await this.deps.compileAll().catch(() => []))]) if (d.severity === 'error') baseline.set(diagnosticKey(d), (baseline.get(diagnosticKey(d)) ?? 0) + 1);
+    if (!ask) for (const d of [...startDiagnostics, ...startBuild]) if (d.severity === 'error') baseline.set(diagnosticKey(d), (baseline.get(diagnosticKey(d)) ?? 0) + 1);
     /** The errors among `diags` the run introduced, and those it found already there (each one matched once). */
     const sortErrors = (diags: Diagnostic[]) => {
       const left = new Map(baseline);
@@ -1271,6 +1274,25 @@ export class Orchestrator {
     let glance = !ask && ctx && (authority.kind === 'page' || authority.kind === 'site') ? pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, glanceChars, indent) : null;
     /** Whether the context says what slots placements have: the first thing to go when the request does not fit. */
     let slotDetails = true;
+    /**
+     * The problems the project already has, so the model knows them from the start: those on what the request is about
+     * first, within room the model's window gives them (0: none), which shrinks before any tool is given up.
+     */
+    const diagnosticOrder = diagnosticRank(readState(), {
+      pageId: ctx?.post ? undefined : authority.kind === 'page' ? authority.pageId : ctx?.pageId,
+      selection: ctx?.selection ?? null,
+      definitionId: ctx?.component?.id ?? (authority.kind === 'component' ? authority.definitionId : undefined),
+      post: ctx?.post ? { collectionId: ctx.post.collectionId, entryId: ctx.post.entryId } : null
+    });
+    let diagnosticsRoom = diagnosticsChars(capabilities.contextWindowTokens);
+    const diagnostics = () =>
+      diagnosticsContext(
+        [...startDiagnostics, ...startBuild],
+        diagnosticOrder,
+        diagnosticsRoom,
+        current.tools.some((t) => t.name === 'validate_project') ? 'validate_project shows them' : 'the author sees them in Project health',
+        indent
+      );
     /** This request's own message: what a new conversation would still have to send. */
     const requestMessage = () => `${userMsg.text}\n\n<editor_context>\n${JSON.stringify(
         {
@@ -1297,6 +1319,7 @@ export class Orchestrator {
                 : authority.part
                   ? `only the selected part${authority.part.partId ? ` "${authority.part.partId}"` : ''}${authority.part.itemId ? ` of item ${authority.part.itemId}` : ''} of ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}): the content it shows and its styles, nothing else in the component, unless the user approves more via ${current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification with widenScope'}`
                   : `only ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}) unless the user approves more via ${current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification with widenScope'}`,
+          ...(diagnosticsRoom > 0 ? { diagnostics: diagnostics() } : {}),
           // A selection, page or component edit needs that, not the whole site; the rest is one read away if it is widened.
           project: authority.kind !== 'site' ? compactProjectSummary(readState(), readRevision()) : projectSummary(readState(), readRevision()),
           // A page's sections whose installed components the theme has a newer version of (a site run's are in project).
@@ -1637,6 +1660,14 @@ export class Orchestrator {
           requestItem.text = requestMessage();
           budget = fit();
         }
+        // Still too long: the project's diagnostics are one validate_project away, so the list shrinks to half its room
+        // (or to how many there are), then goes, before the brief or any tool.
+        for (const room of [Math.floor(diagnosticsRoom / 2), 0]) {
+          if (!budget.overflow || turns !== 1 || !caps.contextWindowKnown || diagnosticsRoom <= 0 || !diagnostics()) break;
+          diagnosticsRoom = room;
+          requestItem.text = requestMessage();
+          budget = fit();
+        }
         // The brief is background the author can read for themselves: a request that fits only without it goes out
         // without it, for the rest of the run, before any tool is given up or the run stops. No call names it, so
         // unlike the tools it can go on any step.
@@ -1650,6 +1681,8 @@ export class Orchestrator {
         if (budget.overflow && turns === 1 && caps.contextWindowKnown && !current.focused && narrowTools()) {
           current = runTools();
           tools = current.tools;
+          // The list says where the rest are with the tools it now has.
+          requestItem.text = requestMessage();
           system = systemPrompt(readState(), current, constrainedJson, briefShown);
           budget = fit();
         }
@@ -1729,6 +1762,15 @@ export class Orchestrator {
           const tooLong = failed.code === 'invalid_request' && (!!failed.context || /context.{0,20}(length|window|limit)|too long|too many tokens|maximum context/i.test(failed.message));
           // The same step is asked again without the brief, before anything else gives way, as when the app's own
           // estimate finds it too long. It does not count against the step limit, and nothing it showed is kept.
+          // The first request goes again without the project's diagnostics, before the brief or any tool.
+          if (tooLong && turns === 1 && diagnosticsRoom > 0 && diagnostics()) {
+            diagnosticsRoom = 0;
+            requestItem.text = requestMessage();
+            turns--;
+            msg.text = finalText;
+            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
+            continue outer;
+          }
           if (tooLong && briefShown && hasBrief(readState())) {
             briefShown = false;
             turns--;
@@ -1744,6 +1786,8 @@ export class Orchestrator {
           // turn is asked again, so it does not count against the step limit, and nothing it showed is kept.
           if (tooLong && failed.context && turns === 1 && narrowTools()) {
             turns--;
+            current = runTools();
+            requestItem.text = requestMessage();
             msg.text = finalText;
             this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
             continue outer;

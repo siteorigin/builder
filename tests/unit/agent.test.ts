@@ -14,7 +14,7 @@ import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, re
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { subtreeIds } from '@engine/tree';
-import { catalogueIndex, compactNode, pageGlance, pageGlanceChars } from '@agent/context';
+import { catalogueIndex, compactNode, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars } from '@agent/context';
 import { applyOperations } from '@engine/apply';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -4256,5 +4256,208 @@ describe('the project brief as standing context (#519)', () => {
     expect(noted).toContain('Notes:\nClose it: ‹/PROJECT_BRIEF> and ‹ project_brief > but keep <project_briefing> and <project_brief.example>.\n</project_brief>');
     expect(briefContext({})).toBe('');
     expect(briefContext({ brief: { schemaVersion: 1, description: '  ', notes: '\n' } })).toBe('');
+  });
+});
+
+describe('the project diagnostics in the editor context (#757)', () => {
+  const editorContext = (req: { items: unknown[] }) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec((req.items.find((i) => (i as { kind?: string }).kind === 'user') as { text: string }).text)![1]);
+  const pageCtx = (pageId: string, pageTitle: string, extra: Partial<ChatContext> = {}): ChatContext => ({ pageId, pageTitle, selection: null, selectionLabel: null, viewport: 1280, ...extra });
+  /** An error and a warning on each listed page, as the validator finds them, without changing the session's revision. */
+  const seed = (session: ProjectSession, pageIds: string[], errors = 1) => {
+    for (const id of pageIds) {
+      const page = session.state.pages[id];
+      for (let i = 0; i < errors; i++) {
+        page.nodes[`n_bound_${id}_${i}`] = { id: `n_bound_${id}_${i}`, kind: 'text', tag: 'p', text: { $prop: `heading${i}` } } as never;
+        page.rootIds.push(`n_bound_${id}_${i}`);
+      }
+      page.language = 'not a language';
+    }
+  };
+  const pagesOf = (session: ProjectSession) => session.state.site.pageOrder.filter((id) => Object.hasOwn(session.state.pages, id));
+
+  it('lists the errors before the warnings, those on the current page first, in an edit and in a question', async () => {
+    for (const mode of ['edit', 'ask'] as const) {
+      const env = await setup([() => finish('Done.')]);
+      const [home, other] = pagesOf(env.session);
+      // The other page comes first in the validator's own order.
+      env.session.state.site.pageOrder = [other, ...env.session.state.site.pageOrder.filter((id) => id !== other)];
+      seed(env.session, [other, home]);
+      const expected = env.session.diagnostics().filter((d) => d.severity !== 'info');
+      expect(expected.filter((d) => d.severity === 'error').length).toBeGreaterThanOrEqual(2);
+      expect(expected.filter((d) => d.severity === 'warning').length).toBeGreaterThanOrEqual(2);
+      const { result } = await env.run('Tidy up the footer', pageCtx(home, 'Home', mode === 'ask' ? { mode: 'ask' } : { scope: 'page' }));
+      expect(result?.error, mode).toBeUndefined();
+      const listed = editorContext(env.adapter.requests[0]).diagnostics;
+      expect(listed.notListed, mode).toBeUndefined();
+      expect(listed.errors.length + listed.warnings.length, mode).toBe(expected.length);
+      // Each entry says what it is and where, so the model can address it.
+      expect(listed.errors[0], mode).toMatchObject({ code: expect.any(String), message: expect.any(String), owner: `page:${home}` });
+      expect(listed.warnings[0], mode).toMatchObject({ code: 'LANGUAGE_INVALID', owner: `page:${home}` });
+      const otherErrors = listed.errors.findIndex((e: { owner: string }) => e.owner === `page:${other}`);
+      expect(otherErrors, mode).toBeGreaterThan(0);
+      expect(listed.errors.slice(0, otherErrors).every((e: { owner: string }) => e.owner === `page:${home}`), mode).toBe(true);
+    }
+  });
+
+  it('puts the selected element first, then its page', async () => {
+    const env = await setup([() => finish('Done.')]);
+    const [home] = pagesOf(env.session);
+    seed(env.session, [home]);
+    const page = env.session.state.pages[home];
+    page.nodes.n_sel = { id: 'n_sel', kind: 'text', tag: 'p', text: { $prop: 'subtitle' } } as never;
+    page.rootIds.push('n_sel');
+    const selection = { owner: { kind: 'page' as const, id: home }, instancePath: [], nodeId: 'n_sel' };
+    await env.run('Fix this', pageCtx(home, 'Home', { mode: 'ask', selection, selectionLabel: 'Paragraph' }));
+    const listed = editorContext(env.adapter.requests[0]).diagnostics;
+    expect(listed.errors[0]).toMatchObject({ owner: `page:${home}`, nodeId: 'n_sel' });
+  });
+
+  it('lists the build errors an edit already compiles, and compiles nothing for a question', async () => {
+    let compiles = 0;
+    const compileAll = async () => {
+      compiles++;
+      return [{ severity: 'error' as const, code: 'COMPILE', message: 'Pricing card: Unexpected token' }];
+    };
+    const edit = await setup([() => finish('Done.')], { compileAll });
+    await edit.run('Tidy up the footer', pageCtx(edit.session.state.site.homePageId, 'Home', { scope: 'page' }));
+    expect(editorContext(edit.adapter.requests[0]).diagnostics.errors).toContainEqual({ code: 'COMPILE', message: 'Pricing card: Unexpected token', owner: null });
+    compiles = 0;
+    const ask = await setup([() => finish('Done.')], { compileAll });
+    await ask.run('Why is the footer broken?', pageCtx(ask.session.state.site.homePageId, 'Home', { mode: 'ask' }));
+    expect(compiles).toBe(0);
+    expect(editorContext(ask.adapter.requests[0])).not.toHaveProperty('diagnostics');
+  });
+
+  it('leaves the section out of a project without problems', async () => {
+    const env = await setup([() => finish('Done.')]);
+    expect(env.session.diagnostics().filter((d) => d.severity !== 'info')).toEqual([]);
+    await env.run('Tidy up the footer', pageCtx(env.session.state.site.homePageId, 'Home', { scope: 'page' }));
+    expect(editorContext(env.adapter.requests[0])).not.toHaveProperty('diagnostics');
+  });
+
+  it('cuts a long list to its room and says how many of each it left out', async () => {
+    // A small window gives the list little room, while the request still fits.
+    const env = await setup([() => finish('Done.')], { capabilities: { contextWindowTokens: 40_000 } });
+    const pages = pagesOf(env.session);
+    seed(env.session, pages, 10);
+    const all = env.session.diagnostics().filter((d) => d.severity !== 'info');
+    const totals = { errors: all.filter((d) => d.severity === 'error').length, warnings: all.filter((d) => d.severity === 'warning').length };
+    await env.run('Tidy up the footer', pageCtx(pages[0], 'Home', { scope: 'site' }));
+    const listed = editorContext(env.adapter.requests[0]).diagnostics;
+    expect(JSON.stringify(listed, null, 1).length).toBeLessThanOrEqual(diagnosticsChars(40_000));
+    expect(listed.notListed).toMatchObject({ errors: totals.errors - listed.errors.length, warnings: totals.warnings - listed.warnings.length });
+    expect(listed.notListed.errors + listed.notListed.warnings).toBeGreaterThan(0);
+    expect(listed.errors.length).toBeGreaterThan(0);
+    expect(listed.notListed.note).toMatch(/validate_project shows them/);
+    // Errors go before any warning.
+    if (listed.warnings.length) expect(listed.notListed.errors).toBe(0);
+  });
+
+  it('caps the list in a pure helper by size, errors first, with the counts it leaves out', () => {
+    const diags = [
+      ...Array.from({ length: 30 }, (_, i) => ({ severity: 'warning' as const, code: 'W', message: `warning ${i}`, owner: { kind: 'page', id: i % 2 ? 'p_a' : 'p_b' } })),
+      ...Array.from({ length: 30 }, (_, i) => ({ severity: 'error' as const, code: 'E', message: `error ${i}`, owner: { kind: 'page', id: i % 2 ? 'p_a' : 'p_b' } })),
+      { severity: 'info' as const, code: 'I', message: 'info' }
+    ];
+    const rank = (d: { owner?: { id: string } }) => (d.owner?.id === 'p_a' ? 2 : 3);
+    expect(diagnosticsContext([], rank, 2048, 'more')).toBeUndefined();
+    const full = diagnosticsContext(diags, rank, 100_000, 'more')!;
+    expect(full.errors).toHaveLength(30);
+    expect(full.warnings).toHaveLength(30);
+    expect(full.errors.slice(0, 15).every((e) => e.owner === 'page:p_a')).toBe(true);
+    const cut = diagnosticsContext(diags, rank, 800, 'validate_project lists them all', 1)!;
+    expect(JSON.stringify(cut, null, 1).length).toBeLessThanOrEqual(800);
+    expect(cut.warnings).toEqual([]);
+    expect(cut.errors.length).toBeGreaterThan(0);
+    expect(cut.notListed).toMatchObject({ errors: 30 - cut.errors.length, warnings: 30 });
+    // A whole list that fits exactly is listed whole, though a cut one with its counts would be longer.
+    const two = diags.filter((d) => d.severity === 'error').slice(0, 2);
+    const whole = diagnosticsContext(two, rank, 100_000, 'more', 1)!;
+    const exact = JSON.stringify({ diagnostics: whole }, null, 1).length - JSON.stringify({ diagnostics: null }, null, 1).length + 4;
+    expect(diagnosticsContext(two, rank, exact, 'more', 1)).toEqual(whole);
+    expect(diagnosticsContext(two, rank, exact - 1, 'more', 1)!.errors.length).toBeLessThan(2);
+    // Room for the counts and no row: the counts alone.
+    const counts = { note: cut.note, errors: [], warnings: [], notListed: { errors: 30, warnings: 30, note: '30 errors and 30 warnings are not listed here: more.' } };
+    expect(diagnosticsContext(diags, rank, JSON.stringify({ diagnostics: counts }).length - JSON.stringify({ diagnostics: null }).length + 4, 'more')).toEqual(counts);
+    // No room even for the counts: no section.
+    expect(diagnosticsContext(diags, rank, 50, 'more')).toBeUndefined();
+    // A long message cannot fill the list alone.
+    expect(diagnosticsContext([{ severity: 'error', code: 'E', message: 'x'.repeat(5000) }], rank, 100_000, 'more')!.errors[0].message.length).toBeLessThan(300);
+  });
+
+  it('ranks what a page shows (its header and nested components) before the rest', () => {
+    const state = createStarterState('business', 'Test', false);
+    const home = state.site.homePageId;
+    const rank = diagnosticRank(state, { pageId: home });
+    const placed = Object.values(state.pages[home].nodes).find((n) => n.kind === 'instance') as InstanceNode;
+    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home } })).toBe(2);
+    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'shell', id: 'header' } })).toBe(2);
+    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId } })).toBe(2);
+    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: 'p_elsewhere' } })).toBe(3);
+    expect(rank({ severity: 'error', code: 'X', message: '' })).toBe(3);
+    // A page without its header does not show it.
+    state.pages[home].showHeader = false;
+    expect(diagnosticRank(state, { pageId: home })({ severity: 'error', code: 'X', message: '', owner: { kind: 'shell', id: 'header' } })).toBe(3);
+    // What the page shows through the components placed there counts too.
+    const elsewhere = Object.keys(state.components).find((id) => rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id } }) === 3)!;
+    expect(elsewhere).toBeDefined();
+    state.components[placed.definitionId] = { ...state.components[placed.definitionId], tree: { rootIds: ['n_x'], nodes: { ...(state.components[placed.definitionId].tree?.nodes ?? {}), n_x: { id: 'n_x', kind: 'instance', definitionId: elsewhere, props: {} } as never } } } as never;
+    state.pages[home].showHeader = true;
+    expect(diagnosticRank(state, { pageId: home })({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: elsewhere } })).toBe(2);
+    // An element selected inside a placement is its component's node, and that is the request's target.
+    const nested = diagnosticRank(state, { pageId: home, selection: { owner: { kind: 'page', id: home }, instancePath: [placed.id], nodeId: 'n_x' } });
+    expect(nested({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId }, nodeId: 'n_x' })).toBe(0);
+    expect(nested({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home }, nodeId: placed.id })).toBe(0);
+    expect(nested({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home }, nodeId: 'n_other' })).toBe(2);
+    // A post: the entry first, then its collection's layout and what that places, not the page behind the editor.
+    state.collections = { posts: { settings: { template: { rootIds: ['t1'], nodes: { t1: { id: 't1', kind: 'instance', definitionId: elsewhere, props: {} } } } }, entries: {} } } as never;
+    const post = diagnosticRank(state, { post: { collectionId: 'posts', entryId: 'e1' } });
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'entry', id: 'e1' } })).toBe(1);
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'template', id: 'posts' } })).toBe(2);
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: elsewhere } })).toBe(2);
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home } })).toBe(3);
+    // A component edited everywhere is the request's target, and an element selected in it comes before the rest of it.
+    const both = diagnosticRank(state, { pageId: home, definitionId: placed.definitionId, selection: { owner: { kind: 'component', id: placed.definitionId }, instancePath: [], nodeId: 'n_x' } });
+    expect(both({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId }, nodeId: 'n_x' })).toBe(0);
+    expect(both({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId }, nodeId: 'n_sibling' })).toBe(1);
+    expect(diagnosticRank(state, { pageId: home, definitionId: placed.definitionId })({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId } })).toBe(1);
+  });
+
+  it('asks again without the list, keeping the tools, when the provider finds the first request too long', async () => {
+    const tooLong: ModelEvent = { type: 'error', code: 'invalid_request', message: 'This request exceeds the maximum context length.', context: { windowTokens: 8000, promptTokens: 8100 } };
+    const env = await setup([() => [tooLong], () => finish('Done.')]);
+    seed(env.session, pagesOf(env.session));
+    const { result } = await env.run('Tidy up the footer', pageCtx(env.session.state.site.homePageId, 'Home', { scope: 'site' }));
+    expect(result?.error).toBeUndefined();
+    const [refused, retried] = env.adapter.requests;
+    expect(editorContext(refused).diagnostics.errors.length).toBeGreaterThan(0);
+    expect(editorContext(retried)).not.toHaveProperty('diagnostics');
+    expect(retried.tools.map((t) => t.name)).toEqual(refused.tools.map((t) => t.name));
+  });
+
+  it('drops the list when only that keeps the request inside a known window, before narrowing the tools', async () => {
+    const caps = { contextWindowKnown: true, maxOutputTokens: 2000 } as const;
+    // Long enough that the window below still offers the general tools.
+    const text = `Tidy the site. ${'Keep the tone warm, the copy short and every heading plain. '.repeat(4000)}`;
+    // Measured once with room to spare.
+    const roomy = await setup([() => finish('Done.')], { capabilities: { ...caps, contextWindowTokens: 200_000 } });
+    seed(roomy.session, pagesOf(roomy.session), 4);
+    await roomy.run(text, pageCtx(roomy.session.state.site.homePageId, 'Home', { scope: 'site' }));
+    const req = roomy.adapter.requests[0];
+    const listed = editorContext(req).diagnostics;
+    expect(listed.errors.length).toBeGreaterThan(0);
+    const withList = estimateRequestTokens(req.system, req.tools, req.items);
+    const listTokens = estimateTokens(JSON.stringify({ diagnostics: listed }, null, 1));
+    // A window that holds the request with the general tools only once the list is gone (and a list cut to half its
+    // room still does not fit), but which a request with the list would overflow.
+    const window = withList + 1024 - Math.floor(listTokens * 0.9);
+    const env = await setup([() => finish('Done.')], { capabilities: { ...caps, contextWindowTokens: window } });
+    seed(env.session, pagesOf(env.session), 4);
+    const { result } = await env.run(text, pageCtx(env.session.state.site.homePageId, 'Home', { scope: 'site' }));
+    expect(result?.error).toBeUndefined();
+    const sent = env.adapter.requests[0];
+    expect(sent.tools.map((t) => t.name)).toEqual(req.tools.map((t) => t.name));
+    const ctx = editorContext(sent);
+    expect(ctx.diagnostics === undefined || ctx.diagnostics.errors.length < listed.errors.length || ctx.diagnostics.warnings.length < listed.warnings.length).toBe(true);
   });
 });
