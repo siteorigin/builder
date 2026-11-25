@@ -84,6 +84,17 @@ describe('exported-site previews', () => {
     await expectProof(second, 'Client proof 2');
   });
 
+  it('issue 584: serves the web app manifest as one, under the base path', async () => {
+    const p = previews();
+    const at = site('Installable');
+    writeFileSync(join(at, 'manifest.webmanifest'), '{"name":"Installable"}');
+    const url = await p.serve(at, '/docs');
+    const r = await fetch(`${url}manifest.webmanifest`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toBe('application/manifest+json');
+    expect(await r.json()).toEqual({ name: 'Installable' });
+  });
+
   it('serves each proof under the base path it was exported with', async () => {
     const p = previews();
     const plain = await p.serve(site('At the root'));

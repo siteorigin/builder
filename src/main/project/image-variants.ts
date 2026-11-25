@@ -4,8 +4,9 @@
  */
 import { readFile } from 'node:fs/promises';
 import sharp from 'sharp';
-import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type VariantReply, type VariantRequest } from './media-client';
+import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type IconSpec, type VariantReply, type VariantRequest } from './media-client';
 import { isAnimatedPng } from './media';
+import { sanitizeSvg } from './svg';
 
 /**
  * Widths of the smaller copies, each made only when it is meaningfully smaller than the picture. The 160px copy
@@ -115,11 +116,52 @@ export async function isOpaque(buf: Buffer): Promise<boolean> {
   return (await img.stats()).isOpaque;
 }
 
+/**
+ * The website's square PNG icons from a picture (the favicon, or the monogram's SVG), one for each of `icons`: turned
+ * the way its orientation says, its first frame if it moves, fitted whole inside the square (enlarged when it is
+ * smaller) and centred. An icon with a background has every see-through pixel filled with it, as the one iOS shows
+ * must be; the others keep their transparency. An SVG is drawn at the size of the largest icon, never enlarged from a
+ * small raster. Written as sRGB without metadata; the same picture always makes the same bytes here. An `untrusted`
+ * SVG (a file of the project's, maybe replaced outside the app since it was imported) is cleaned first, as an import
+ * cleans one: here, in the worker, so a file that takes long to clean never holds up the editor.
+ */
+export async function renderSiteIcons(buf: Buffer, mime: string, icons: IconSpec[], opts: { untrusted?: boolean } = {}): Promise<Buffer[]> {
+  if (opts.untrusted && mime === 'image/svg+xml') buf = Buffer.from(sanitizeSvg(buf));
+  let density: number | undefined;
+  if (mime === 'image/svg+xml') {
+    const meta = await sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error' }).metadata();
+    const edge = Math.max(meta.width ?? 0, meta.height ?? 0);
+    const largest = Math.max(...icons.map((i) => i.size));
+    // 72 dpi draws the SVG at its own size; librsvg takes no more than this.
+    if (edge > 0) density = Math.min(2400, Math.max(72, Math.ceil((72 * largest) / edge)));
+  }
+  const out: Buffer[] = [];
+  for (const icon of icons) {
+    const clear = { r: 0, g: 0, b: 0, alpha: 0 };
+    let img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', pages: 1, page: 0, ...(density ? { density } : {}) })
+      .autoOrient()
+      .resize(icon.size, icon.size, { fit: 'contain', position: 'centre', background: icon.background ?? clear });
+    if (icon.background) img = img.flatten({ background: icon.background });
+    out.push(await img.toColourspace('srgb').png().toBuffer());
+  }
+  return out;
+}
+
 /** What the media worker does with one request; the worker process only carries messages to and from it. */
 export async function handleVariantRequest(m: VariantRequest): Promise<VariantReply> {
   try {
     const buf = m.path ? await readFile(m.path) : Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength);
     if (m.kind === 'opaque') return { id: m.id, ok: true, variants: [], opaque: await isOpaque(buf) };
+    if (m.kind === 'icons') {
+      // Whatever stops the drawing here (a picture the decoder refuses, or too many pixels to decode) is the picture's
+      // doing, and would be the same every time: the icons are then made from the monogram instead.
+      const unreadable = (e?: unknown) => ({ id: m.id, ok: false as const, error: e ? (e as Error).message : 'The picture could not be decoded.', unreadable: true });
+      // An SVG is cleaned before anything decodes it, so it is checked as it is drawn.
+      if (!(m.untrusted && m.mime === 'image/svg+xml') && !(await isReadable(buf, m.mime))) return unreadable();
+      const icons = await renderSiteIcons(buf, m.mime, m.icons ?? [], { untrusted: m.untrusted }).catch((e: unknown) => e as Error);
+      if (icons instanceof Error) return unreadable(icons);
+      return { id: m.id, ok: true, variants: [], icons: icons.map((d) => new Uint8Array(d.buffer, d.byteOffset, d.byteLength)) };
+    }
     if (m.kind === 'web') {
       // A picture the decoder refuses is said to be unreadable; anything failing after that is the copy failing.
       if (!(await isReadable(buf, m.path ? 'image/tiff' : m.mime))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };

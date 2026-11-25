@@ -29,6 +29,7 @@ import { sendsFormMessages, type ComponentImport } from '@engine/component-packa
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
+import { SITE_ICON_PATHS, SiteIconMaker } from './site-icons';
 import { ownServerHook } from './server-hook';
 import { checkSvelteSource, codeContractNames, componentSources } from '../codecheck';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
@@ -479,6 +480,18 @@ export class ProjectSession extends EventEmitter {
   private untouched = new Set<string>();
   /** The hash of each generated file's latest content, by absolute path, so unchanged content is not hashed again. */
   private contentHashes = new Map<string, { content: string | Buffer; hash: string }>();
+  /**
+   * The website's PNG icons, made from the favicon or the monogram, kept while nothing they are made from changes. A
+   * set a save stopped waiting for is published on its own once it is ready, while this app holds the project's lock
+   * (a new project's session has none until the app takes it; the set is then published as the project opens).
+   */
+  private siteIcons = new SiteIconMaker(() => {
+    if (this.lockState === 'held') void this.refreshSiteIcons().catch(() => null);
+  });
+  /** The icons the last finished publication carried (what they were made from, and which drawing made them). */
+  private iconsPublished: { key: string; id: number | null } | null = null;
+  /** What the icons the last publication asked for are made from. */
+  private iconsAsked: string | null = null;
   /**
    * How long a file must have been left alone before its stat alone is trusted to show a later change: well past the
    * coarsest timestamps (two seconds on FAT), so a change in the same tick as the last one is never missed.
@@ -1156,11 +1169,64 @@ export class ProjectSession extends EventEmitter {
     return all;
   }
 
-  /** What SiteOrigin Builder generates for a file now: the clean source, or a theme file copied from its pack. */
+  /**
+   * What SiteOrigin Builder generates for a file now: the clean source, a theme file copied from its pack, or one of
+   * the website's icons (undefined while they cannot be made).
+   */
   private async generatedContent(path: string): Promise<string | Buffer | undefined> {
     const clean = this.generate(this.state, false);
     const copy = packFileCopies(this.state).find((c) => c.path === path);
+    if (!clean.has(path) && !copy && SITE_ICON_PATHS.includes(path)) return (await this.siteIcons.make(this.dir, this.state)).files?.get(path);
     return clean.get(path) ?? (copy ? await readPackFile(copy.pack, copy.file) : undefined);
+  }
+
+  /**
+   * Make the website's icons again when what they are made from changed with no document changing (a favicon file put
+   * back or replaced in the folder, or a set a save stopped waiting for now ready), publishing them as any save does.
+   * Gives the key of what the publication made them from, whether it carried them and, when not, whether they are
+   * still being drawn (rather than impossible to make now), or null when the project is not this app's to write.
+   */
+  refreshSiteIcons(): Promise<{ key: string; published: boolean; drawing: boolean } | null> {
+    return this.serialize(async () => {
+      if (this.readOnly || this.unsettled || !(await this.stillOwner())) return null;
+      const key = await this.siteIconSource();
+      // Published already, unless a newer drawing of the same input has been made since (a picture tried again after
+      // the monogram stood in for it).
+      const made = this.siteIcons.madeId(key);
+      if (this.iconsPublished?.key === key && (made === null || made === this.iconsPublished.id)) return { key, published: true, drawing: false };
+      const before = JSON.stringify(this.conflicts);
+      const changedFiles = await this.publishInstalled();
+      if (changedFiles.length || JSON.stringify(this.conflicts) !== before) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles, label: 'Update site icons', source: 'system' } satisfies SessionEvent);
+      const asked = this.iconsAsked ?? key;
+      const published = asked === this.iconsPublished?.key;
+      return { key: asked, published, drawing: !published && this.siteIcons.drawing(asked) };
+    });
+  }
+
+  /**
+   * Wait, without holding the project's lock, until the website's icons for the project as it is now are made or
+   * cannot be: an export then finds them ready rather than going out with icons a save stopped waiting for.
+   */
+  async prepareSiteIcons(): Promise<void> {
+    if (!this.readOnly) await this.siteIcons.make(this.dir, this.state, Infinity);
+  }
+
+  /** The key naming what the website's icons are made from now, read from the project or from a copy of it in `dir`. */
+  async siteIconSource(dir = this.dir): Promise<string> {
+    return (await this.siteIcons.input(dir, this.state)).key;
+  }
+
+  /** What the icons the last finished publication carried are made from, or null before any could be made. */
+  get siteIconsPublished(): string | null {
+    return this.iconsPublished?.key ?? null;
+  }
+
+  /** Whether the icons made from `key` are being drawn, or waiting to be; or cannot be made now. */
+  siteIconsDrawing(key: string): boolean {
+    return this.siteIcons.drawing(key);
+  }
+  siteIconsUnmakeable(key: string): boolean {
+    return this.siteIcons.unmakeable(key);
   }
 
   /**
@@ -1623,6 +1689,38 @@ export class ProjectSession extends EventEmitter {
         else if (ours(c.path, h) && h === packFileInfo(c.pack, c.file)?.sha256) nextFiles[c.path] = h;
       }
     }
+    // The website's icons are drawn from the favicon (or the monogram) beside the generated text, under the same rules.
+    // A set that cannot be made now costs the icons' update, not the save: icons already claimed stay, still claimed,
+    // so they are neither replaced nor removed as obsolete. A file of someone else's at an icon's path is still named.
+    const icons = await this.siteIcons.make(this.dir, this.state);
+    this.iconsAsked = icons.key;
+    for (const path of SITE_ICON_PATHS) {
+      if (authored.has(path) || clean.has(path)) continue;
+      const made = icons.files?.get(path);
+      if (made) {
+        copies.set(path, made);
+        continue;
+      }
+      // A file there that this app never wrote is someone else's, whatever it holds: named, never read.
+      const abs = safeJoin(this.dir, path);
+      if (!known(path)) {
+        // Anything there but nothing at all, including what cannot be looked at, counts as there.
+        const there = await fs.lstat(abs).then(
+          () => true,
+          (e: NodeJS.ErrnoException) => e.code !== 'ENOENT'
+        );
+        if (!initial && there) this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
+        continue;
+      }
+      // One of this app's is kept as it is: claimed as whichever of its own versions is there (a publication that
+      // stopped part way may have left the newer one), named when it is neither, and still claimed when it has gone.
+      const { hash } = await this.readHash(abs);
+      if (hash !== null && ours(path, hash)) nextFiles[path] = hash;
+      else {
+        nextFiles[path] = prev[path] ?? inflight[path];
+        if (hash !== null) this.conflicts.push({ path, reason: hash === UNREADABLE ? UNREADABLE_REASON : 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
+      }
+    }
     // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.
     const project = [...copies, ...clean].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(this.dir, path) }));
     const seen = await inBatches(project, (f) => this.seenHash(f.abs));
@@ -1771,6 +1869,8 @@ export class ProjectSession extends EventEmitter {
       }
     }
     await this.writeManifest(nextFiles);
+    // The icons count as published only now, once every file and the manifest claiming them are in place.
+    if (icons.files) this.iconsPublished = { key: icons.key, id: icons.id };
     this.contentHashes = hashes;
     // Only files still generated are worth remembering.
     for (const abs of this.seenOnDisk.keys()) if (!hashes.has(abs)) this.seenOnDisk.delete(abs);
@@ -1811,6 +1911,7 @@ export class ProjectSession extends EventEmitter {
     const content = await this.generatedContent(path);
     if (content === undefined) {
       if (publishesWords(path) && this.generated.files[path]) return this.retireGeneratedLocked(path);
+      if (SITE_ICON_PATHS.includes(path)) throw new Error('The site’s icons could not be made just now, so it was not restored. Try again in a moment.');
       throw new Error('That file is no longer generated.');
     }
     const abs = safeJoin(this.dir, path);
@@ -3835,6 +3936,7 @@ export class ProjectSession extends EventEmitter {
     this.generation.clear();
     this.seenOnDisk.clear();
     this.contentHashes.clear();
+    this.siteIcons.clear();
   }
 }
 

@@ -100,6 +100,8 @@ import { ogLocale, twitterHandle, type EffectiveSeo } from '@shared/seo';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
 import { THEME_TOGGLE_CSS, THEME_TOGGLE_FILE, themeBootstrap, themeStorageKey, themeToggleJs, usesThemeToggle } from './color-scheme';
+import { generateWebManifest, siteColors, siteIconLinks, themeColorMeta } from './site-icons';
+import { WEB_MANIFEST } from '@shared/site-icons';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { notFoundSectionRoutes } from './checks';
@@ -3396,8 +3398,9 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   // The website also applies a remembered choice before anything is drawn; the editor's preview remembers none.
   const toggle = usesThemeToggle(state);
   const toggleImport = toggle ? `\n\timport { startThemeToggle } from '../lib/siteorigin/runtime/${THEME_TOGGLE_FILE}';` : '';
+  // The browser's own colour (theme-color) follows the visitor's choice too, on every page, header or not.
   const toggleStart = toggle
-    ? `\n\t// The visitor's Light/Dark switch, in the shared header while the page shows it.\n\t$effect(() => {\n\t\tif (!showHeader) return;\n\t\treturn startThemeToggle(() => text().themeToggle);\n\t});`
+    ? `\n\t// The visitor's Light/Dark switch, in the shared header while the page shows it.\n\t$effect(() => {\n\t\tif (!showHeader) return;\n\t\treturn startThemeToggle(() => text().themeToggle);\n\t});\n\t// The colour the browser shows around the page follows the visitor's choice, not only the device's setting.\n\tlet chosenScheme = $state(null);\n\t$effect(() => {\n\t\tconst root = document.documentElement;\n\t\tconst read = () => (chosenScheme = root.dataset.soTheme ?? null);\n\t\tread();\n\t\tconst watch = new MutationObserver(read);\n\t\twatch.observe(root, { attributes: true, attributeFilter: ['data-so-theme'] });\n\t\treturn () => watch.disconnect();\n\t});`
     : '';
   const bootstrap = toggle && !opts.instrument ? `\n\t${themeBootstrap(themeStorageKey(state))}` : '';
   const devBridge = opts.instrument
@@ -3429,6 +3432,8 @@ ${editing}</script>
 
 <svelte:head>${bootstrap}
 	<link rel="icon" href={asset(${js(iconHref)})} type=${js(iconType)} />
+	${siteIconLinks()}
+	${themeColorMeta(state, toggle ? 'chosenScheme' : undefined)}
 	<meta property="og:site_name" content={${js(state.site.name)}} />${feedTag}${noAi}
 </svelte:head>
 
@@ -4066,16 +4071,16 @@ export function handle({ event, resolve }) {
 /** Served path of the generated favicon used until a favicon image is chosen. */
 export const DEFAULT_FAVICON = 'favicon.svg';
 
-/** A simple monogram favicon in the site's brand colours, so browsers never request a missing /favicon.ico. */
-export function generateFaviconSvg(state: ProjectState): string {
-  const tokens = effectiveTokens(state);
-  const color = (id: string, fallback: string) => {
-    const v = tokens.find((t) => t.id === id)?.value;
-    return typeof v === 'string' && /^#[0-9a-f]{3,8}$/i.test(v) ? v : fallback;
-  };
-  const letter = ([...state.site.name.trim()][0] ?? 'S').toUpperCase();
+/**
+ * A simple monogram favicon in the site's brand colours, so browsers never request a missing /favicon.ico. `square`
+ * leaves its corners square, for the home-screen icons made from it (see site-icons.ts), which home screens round.
+ */
+export function generateFaviconSvg(state: ProjectState, opts: { square?: boolean } = {}): string {
+  const { brand, onBrand } = siteColors(effectiveTokens(state));
+  // The documents can be edited by hand: a name that is not text gives the default letter.
+  const letter = ([...(typeof state.site.name === 'string' ? state.site.name.trim() : '')][0] ?? 'S').toUpperCase();
   const esc = letter.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="${color('color.brand', '#1f5a4c')}"/><text x="32" y="43" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="34" font-weight="600" fill="${color('color.on-brand', '#ffffff')}">${esc}</text></svg>\n`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64"${opts.square ? '' : ' rx="14"'} fill="${brand}"/><text x="32" y="43" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="34" font-weight="600" fill="${onBrand}">${esc}</text></svg>\n`;
 }
 
 /** Sub-path the site is published under, from the public URL ("https://example.com/my-site" -> "/my-site"). */
@@ -4210,7 +4215,9 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   files.set(`${NOT_FOUND_DIR}/+page.js`, NOT_FOUND_PAGE_JS);
   files.set(SERVER_HOOK_FILE, file('hooks.server.js', generateServerHook));
   files.set(`${GEN_ROOT}/paths.json`, file('paths.json', generatePathsJson));
-  if (!state.site.favicon || !state.assets.assets[state.site.favicon]) files.set(`static/${DEFAULT_FAVICON}`, file('favicon', generateFaviconSvg));
+  if (!state.site.favicon || !state.assets.assets[state.site.favicon]) files.set(`static/${DEFAULT_FAVICON}`, file('favicon', (s) => generateFaviconSvg(s)));
+  // The web app manifest; the PNG icons it names are pictures the editor renders (siteIconSet).
+  files.set(`static/${WEB_MANIFEST}`, file('manifest.webmanifest', generateWebManifest));
   files.set('static/robots.txt', file('robots.txt', generateRobots));
   const sitemap = file('sitemap.xml', (s) => generateSitemap(s) ?? '');
   if (sitemap) files.set('static/sitemap.xml', sitemap);

@@ -866,6 +866,8 @@ export class Controller {
     this.watchExternalChanges(session);
     // Project health lists missing image files from the first moment the project shows.
     await session.refreshAssetFiles().catch(() => false);
+    // Icons a save stopped waiting for before this app held the project's lock (a new project's) are published now.
+    void session.refreshSiteIcons().catch(() => null);
     this.broadcast();
     if (runtimeError) this.send('runtime:status', runtimeError);
     else await this.startRuntime();
@@ -1105,6 +1107,8 @@ export class Controller {
   private async checkAssetFiles(session: ProjectSession): Promise<void> {
     const changed = await session.refreshAssetFiles().catch(() => false);
     if (changed && this.session === session) this.broadcast();
+    // The website's icons follow a favicon file put back or replaced in the folder.
+    await session.refreshSiteIcons().catch(() => null);
   }
 
   /**
@@ -2463,8 +2467,18 @@ export class Controller {
    * build configuration the user trusted, because the build runs the copy. The state returned is the one the
    * files were copied from, so everything said about the export describes this snapshot.
    */
-  private snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
+  private async snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
     const stop = (message: string) => ({ ok: false as const, message });
+    // The website's icons follow a favicon file changed with no document changing (put back by Locate, replaced in the
+    // folder), so the export never carries icons of another picture than its favicon. They are drawn without holding
+    // the project's lock, then published under it.
+    // A set a save stopped waiting for, or one for a change made meanwhile, is waited for again, a few times at most.
+    let icons: Awaited<ReturnType<ProjectSession['refreshSiteIcons']>> = null;
+    for (let tries = 0; tries < 3; tries++) {
+      await s.prepareSiteIcons();
+      icons = await s.refreshSiteIcons();
+      if (!icons?.drawing) break;
+    }
     return s.exclusive(async () => {
       // The native dialog and the queue for the lock both give the project time to change.
       if (this.session !== s) return stop('The project was closed before the export started.');
@@ -2479,6 +2493,15 @@ export class Controller {
       const rival = await rivalHookStop(s.dir, publishedState(s.state));
       if (rival) return stop(rival);
       await copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) });
+      // The icons go out with the favicon they were made from: one replaced since would go out beside icons of the
+      // picture it replaced. Only while icons cannot be made at all do those the project has go out as they are.
+      const iconSource = await s.siteIconSource(dest);
+      if (iconSource !== s.siteIconsPublished) {
+        // Being drawn again by now (a save meanwhile tried once more): the icons are ready to export in a moment.
+        if (s.siteIconsDrawing(iconSource)) return stop('The site’s icons are still being made. Export again in a moment.');
+        const unmade = iconSource === icons?.key && s.siteIconsUnmakeable(iconSource);
+        if (!unmade) return stop('The project changed on disk while it was being exported. Export again.');
+      }
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
       await leaveOutDrafts(dest, s.state);
       if (opts.forBuild) {

@@ -22,7 +22,8 @@ import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
 import { listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
-import { stopMediaWorker } from './project/assets';
+import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
+import { setSiteIconRenderer } from './project/site-icons';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
 import { playerFrameAllowed, sameOrigin } from './player-frames';
@@ -920,6 +921,8 @@ app.whenReady().then(async () => {
   // Deny unsolicited permission requests (camera, notifications, etc.).
   electronSession.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'clipboard-sanitized-write'));
   electronSession.defaultSession.on('will-download', (e) => e.preventDefault());
+  // The website's icons are drawn in the media worker, from before any project opens.
+  setSiteIconRenderer(renderSiteIconsInWorker);
   // Theme packs are loaded before anything can open a project or ask for the catalogue.
   await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData')));
   registerIpc();
