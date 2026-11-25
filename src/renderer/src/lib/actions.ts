@@ -17,7 +17,8 @@ import { storedEdit } from './richtext';
 import { showAsset } from './place';
 import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
-import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, whereFor, whereText, type InsertAt, type InsertRole, type Where } from './insert-at';
+import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, slotInsertAt, whereFor, whereText, type InsertAt, type InsertRole, type Where } from './insert-at';
+import { SLOT_NO_PLACE } from './slot-contract';
 import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
@@ -481,8 +482,15 @@ export function insertionPoint(kind: InsertRole, from: ElementRef | null = getSt
   return insertAt(snapshot.state, owner, kind, from, definitionId);
 }
 
-/** Where `spec` goes when its tile is clicked now: how it is placed, and the place. */
+/**
+ * Where `spec` goes when its tile is clicked now: how it is placed, and the place. A slot's placeholder goes where
+ * the Slots section puts a new one (see slotInsertAt), in the design being edited only.
+ */
 export function insertPlan(spec: InsertSpec, snapshot: ProjectSnapshot | null = getState().snapshot): { role: InsertRole; at: InsertAt | null } {
+  if (spec.primitive === 'slot') {
+    const owner = currentOwner();
+    return { role: 'element', at: snapshot && owner?.kind === 'component' ? slotInsertAt(snapshot.state, owner.id, getState().selection) : null };
+  }
   const role = snapshot ? insertRole(snapshot.state, spec) : spec.primitive ? 'element' : 'section';
   return { role, at: insertionPoint(role, getState().selection, snapshot, spec.definitionId) };
 }
@@ -494,6 +502,8 @@ export function insertPlan(spec: InsertSpec, snapshot: ProjectSnapshot | null = 
 export async function insert(spec: InsertSpec, label: string): Promise<string | undefined> {
   const { role, at } = insertPlan(spec);
   const st = getState().snapshot?.state;
+  // A slot's placeholder has a place only in some of the design: said, rather than nothing happening.
+  if (!at && st && spec.primitive === 'slot') toast(SLOT_NO_PLACE, 'info');
   if (!at || !st) return;
   // Named here, so what is selected is the thing inserted (or a new Grid's first column), not the last node the
   // change made.

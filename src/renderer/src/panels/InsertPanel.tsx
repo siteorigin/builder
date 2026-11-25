@@ -12,6 +12,7 @@ import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
 import { elementWhere, nodeLabel, sectionWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } from '../lib/insert-search';
+import { SLOT_NO_PLACE, unplacedSlots } from '../lib/slot-contract';
 import { exportComponentFile, insertSaved, removeFromLibrary, saveToLibrary } from '../lib/saved-components';
 import { beginInsertDrag } from '../lib/insert-drag';
 import { placementMap } from '../lib/placement-map';
@@ -630,6 +631,7 @@ const peekable = (kind?: string) => kind === 'section' || kind === 'component';
 
 /** The group of column layouts, offered above the theme's sections. */
 const COLUMN_LAYOUTS = 'Column layouts';
+const SLOTS = 'Slots';
 const KIND_SUBJECT: Record<Kind, string> = { section: 'Sections go', element: 'Elements go', component: 'Components go', saved: 'Saved components go' };
 /** The personal library's group (#372): components saved from any project, for every project. */
 const SAVED_GROUP = 'Saved across projects';
@@ -914,7 +916,7 @@ export function InsertPanel() {
   // Read so the destinations below follow the selection, the page and component editing.
   const selection = useStore((s) => s.selection);
   useStore((s) => s.pageId);
-  useStore((s) => s.definitionMode);
+  const editing = useStore((s) => s.definitionMode?.definitionId);
   useStore((s) => s.templateMode);
   const dev = useStore((s) => !!s.settings?.developerMode);
   const open = useStore((s) => s.leftTab === 'insert');
@@ -1150,6 +1152,18 @@ export function InsertPanel() {
     return [shipped, ...options];
   });
   const elements: Item[] = BASICS.map((b) => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: basicHay(b), group: b.layout ? COLUMN_LAYOUTS : 'Basic elements', spec: basicSpec(b), icon: b.icon }));
+  // While a component of the project's own is edited everywhere: the slots it declares that its design does not show
+  // yet, each placed in the design as an element (see slotInsertAt).
+  const editedDef = editing && Object.hasOwn(st.components, editing) ? st.components[editing] : undefined;
+  const slotItems: Item[] =
+    editedDef?.owner === 'project' && editedDef.kind === 'managed' && editedDef.tree
+      ? unplacedSlots(editedDef).map((slot) => {
+          const d = editedDef.slots![slot];
+          // A label a hand edit damaged falls back to the slot's name, as the Slots section shows it.
+          const label = typeof d?.label === 'string' && d.label.trim() ? d.label : slot;
+          return { key: `slot:${editedDef.id}:${slot}`, kind: 'element', name: `${label} slot`, description: '', hay: `${label} ${typeof d?.description === 'string' ? d.description : ''} slot placeholder ${slot}`.toLowerCase(), group: SLOTS, spec: { primitive: 'slot', bind: slot }, icon: 'square-dashed' };
+        })
+      : [];
   // Code components show only in Developer mode, as its setting promises. The library reads by name, and a separate
   // copy (Make unique) sits under the component it was copied from, so a family stays together.
   const defs = projectInsertDefinitions(st, dev);
@@ -1227,13 +1241,13 @@ export function InsertPanel() {
       saved: c
     }));
 
-  const byKey = new Map([...mine, ...savedItems, ...sections, ...elements].map((it) => [it.key, it]));
+  const byKey = new Map([...mine, ...savedItems, ...sections, ...slotItems, ...elements].map((it) => [it.key, it]));
 
   const query = q.toLowerCase().trim();
   // A section in Variants is ranked by the name it shows ("Centered hero Dark"), and by its own name, so typing the
   // section's name still finds it first.
   const shown = (it: Item) => ((it.kind === 'section' && showVariants) || it.variant ? `${it.name} ${optionLabel(it)}` : it.name);
-  const results = searchItems([...mine, ...savedItems, ...sections, ...elements], query, shown);
+  const results = searchItems([...mine, ...savedItems, ...sections, ...slotItems, ...elements], query, shown);
   const current = results[Math.min(active, results.length - 1)];
 
   const sectionAt = insertionPoint('section');
@@ -1247,7 +1261,8 @@ export function InsertPanel() {
     let p = plans.get(it.key);
     if (!p) {
       // A saved component goes in as it went in where it was saved: among the sections, or into the selected layout.
-      const as = it.kind === 'saved' ? it.saved!.role : it.kind;
+      // A slot's placeholder goes where the Slots section puts one, not where other elements go (see insertPlan).
+      const as = it.kind === 'saved' ? it.saved!.role : it.spec.primitive === 'slot' ? 'slot' : it.kind;
       const { role, at } = as === 'section' ? { role: 'section' as const, at: sectionAt } : as === 'element' ? { role: 'element' as const, at: elementAt } : insertPlan(it.spec, snap);
       p = { role, at, where: as === 'section' ? sectionTo : as === 'element' ? elementTo : whereFor(st, at, role) };
       plans.set(it.key, p);
@@ -1469,7 +1484,8 @@ export function InsertPanel() {
     }
   });
   const descId = (it: Item) => `${id}-d-${it.key}`;
-  const describedBy = (it: Item) => `${id}-to-${it.kind === 'component' || it.kind === 'saved' ? it.key : it.kind}${it.description || it.usage ? ` ${descId(it)}` : ''}`;
+  // Components, saved ones and slots each say where they go; other items share their group's line.
+  const describedBy = (it: Item) => `${id}-to-${it.kind === 'component' || it.kind === 'saved' || it.spec.primitive === 'slot' ? it.key : it.kind}${it.description || it.usage ? ` ${descId(it)}` : ''}`;
   // A saved component's description also says, in full, where it is used: the row shows only the start of it.
   const usageText = (u?: Usage) => (!u ? '' : u.status === 'used' ? `${u.short}: ${u.places.join(', ')}.` : u.status === 'needed' ? 'Not placed, but needed by code.' : 'Not used anywhere.');
   const description = (it: Item) =>
@@ -1663,6 +1679,8 @@ export function InsertPanel() {
         ? { verb: `Next: ${nextTo.lead.replace(/^in a new section /, 'new section ')}`, target: placeText(nextTo), full: `The next one goes ${nextTo.lead} ${placeText(nextTo)}` }
         : aimItem && aimTo
           ? { name: fullName(aimItem), verb: placeLead(aimTo.lead), target: placeText(aimTo), full: `${fullName(aimItem)} goes ${aimTo.lead} ${placeText(aimTo)}` }
+          : aimItem?.spec.primitive === 'slot'
+            ? { verb: SLOT_NO_PLACE }
           : where[fallback]
             ? { verb: `${KIND_SUBJECT[fallback]} ${where[fallback]!.lead}`, target: placeText(where[fallback]!) }
             : fallback === 'component' && mine.length
@@ -1743,7 +1761,7 @@ export function InsertPanel() {
   const libraryWho = (it: Item) =>
     [it.code ? 'code component' : 'component', it.variant ? `${it.variant.axis.toLowerCase()} option of ${it.name}` : '', it.copyOf ? `copy of ${it.copyOf}` : '', it.themeCopy ? `copy of the theme's ${it.themeCopy} section` : ''].filter(Boolean).join(', ');
   // Basic elements, and the column layouts offered near the top of the panel: a Grid with its columns ready to fill.
-  const elementGroup = (group: 'columns' | 'basics', label: string, list: Item[]) => (
+  const elementGroup = (group: 'columns' | 'basics' | 'slots', label: string, list: Item[]) => (
     <section className="insert-group" data-kind="element" data-group={group} aria-labelledby={`${id}-${group}`}>
       <h4 className="insert-head" id={`${id}-${group}`}>
         {label}
@@ -1985,11 +2003,11 @@ export function InsertPanel() {
           {where[k] ? `${KIND_SUBJECT[k]} ${where[k]!.lead} ${placeText(where[k]!)}` : ''}
         </span>
       ))}
-      {[...mine, ...savedItems].map((it) => {
+      {[...mine, ...savedItems, ...slotItems].map((it) => {
         const w = whereOf(it);
         return (
           <span key={it.key} id={`${id}-to-${it.key}`} hidden>
-            {w ? `Goes ${w.lead} ${placeText(w)}` : ''}
+            {w ? `Goes ${w.lead} ${placeText(w)}` : it.spec.primitive === 'slot' ? SLOT_NO_PLACE : ''}
           </span>
         );
       })}
@@ -2074,6 +2092,7 @@ export function InsertPanel() {
           )
         ) : (
           <>
+            {slotItems.length > 0 && elementGroup('slots', SLOTS, slotItems)}
             {lead && yours}
             {lead && savedGroup}
             {elementGroup('columns', COLUMN_LAYOUTS, elements.filter((it) => it.group === COLUMN_LAYOUTS))}

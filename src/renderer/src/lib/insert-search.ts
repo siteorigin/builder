@@ -4,14 +4,15 @@
 import type { ComponentDefinition, DividerShape, ProjectState } from '@shared/types';
 
 /** A basic element Insert adds. */
-export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'richtext' | 'image' | 'button' | 'icon' | 'divider' | 'badge' | 'figure';
+export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'richtext' | 'image' | 'button' | 'icon' | 'divider' | 'badge' | 'figure' | 'slot';
 
 /**
  * What Insert adds. An element can start with its own text: a list's first items, in the rich text form. A Grid can
  * start with `columns` empty columns (Stacks), each ready to take content on the canvas. A divider can start as one
- * of the decorative shapes.
+ * of the decorative shapes. A slot's placeholder, in the design of the component being edited, names the declared
+ * slot it shows (`bind`).
  */
-export type InsertSpec = { componentId?: string; definitionId?: string; primitive?: Primitive; text?: string; columns?: number; shape?: DividerShape; variants?: Record<string, string> };
+export type InsertSpec = { componentId?: string; definitionId?: string; primitive?: Primitive; bind?: string; text?: string; columns?: number; shape?: DividerShape; variants?: Record<string, string> };
 
 export interface Basic {
   id: string;

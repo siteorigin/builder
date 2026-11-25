@@ -3,12 +3,13 @@
  * saying where it goes, and a drop on the canvas all read it from here, so they agree on the place.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ElementNode, ElementRef, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import type { ElementNode, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
 import { childLists, findParent } from '@engine/tree';
 import { ownerLabel, refLabel, treeFor } from './model';
 import type { InsertSpec } from './insert-search';
 import { definitionRole, type InsertRole } from '@engine/insert-role';
+import { insertsInline } from '@engine/semantic-tags';
 
 /** How a new thing is placed (as one of a page's sections, or as an element inside a layout), and how a component is. */
 export { definitionRole, type InsertRole };
@@ -202,6 +203,55 @@ export function insideComponent(state: ProjectState, at: InsertAt | null): Inser
   const slot = node?.kind === 'instance' ? slotFor(state, node.definitionId) : undefined;
   if (slot) return { owner: at.owner, parentId: node!.id, slot };
   return node?.kind === 'repeat' || node?.kind === 'slot' ? at : null;
+}
+
+/**
+ * Where a slot's placeholder goes in the design of `definitionId`: inside what `sel` picks of that design, else inside
+ * the design's root. A container takes it among its children; a component placed in the design takes it in the first
+ * slot it shows once, which passes the new slot's content on to it. Only somewhere that shows once wherever the design
+ * shows: never in a repeat (once per item, or not at all), nor in a placed component's slot it does not show once,
+ * nor in a paragraph or span container, which holds only inline content. Null when neither the pick nor the root is
+ * such a place.
+ */
+export function slotInsertAt(state: ProjectState, definitionId: string, sel: ElementRef | null): InsertAt | null {
+  const def = own(state.components, definitionId);
+  const tree = def?.kind === 'managed' ? def.tree : undefined;
+  if (!def || !tree) return null;
+  const owner: OwnerRef = { kind: 'component', id: def.id };
+  const holder = (node: GraphNode | undefined): InsertAt | null => {
+    if (!node || !shownOnceIn(state, tree, node.id)) return null;
+    if (node.kind === 'element') return insertsInline(state, owner, node.id) ? null : { owner, parentId: node.id, ...beforeCaption(tree, node) };
+    if (node.kind !== 'instance') return null;
+    // A new slot takes anything, any number: only a slot of the placed component that does too can pass it on.
+    const inner = own(state.components, node.definitionId)?.slots ?? {};
+    const slot = shownOnceSlots(state, node.definitionId).find((name) => {
+      const d = own(inner, name);
+      return !!d && d.categories === undefined && d.primitives === undefined && d.max === undefined && !insertsInline(state, owner, node.id, name);
+    });
+    return slot ? { owner, parentId: node.id, slot } : null;
+  };
+  const picked = sel && sel.owner.kind === 'component' && sel.owner.id === def.id && !sel.instancePath.length ? own(tree.nodes, sel.nodeId) : undefined;
+  return holder(picked) ?? (tree.rootIds.length === 1 ? holder(own(tree.nodes, tree.rootIds[0])) : null);
+}
+
+/**
+ * Whether a node of a design shows once wherever the design does: it hangs from the design's root, no repeat holds it,
+ * and every component it sits in shows the slot it sits in once.
+ */
+function shownOnceIn(state: ProjectState, tree: NodeTree, nodeId: string): boolean {
+  const seen = new Set<string>();
+  for (let id = nodeId; ; ) {
+    const at = findParent(tree, id);
+    // Nothing holds it: left over in the design, never shown.
+    if (!at) return false;
+    if (at.parentId === null) return true;
+    if (seen.has(at.parentId)) return false;
+    seen.add(at.parentId);
+    const parent = own(tree.nodes, at.parentId);
+    if (!parent || parent.kind === 'repeat') return false;
+    if (parent.kind === 'instance' && !(at.slot && shownOnceSlots(state, parent.definitionId).includes(at.slot))) return false;
+    id = at.parentId;
+  }
 }
 
 /**

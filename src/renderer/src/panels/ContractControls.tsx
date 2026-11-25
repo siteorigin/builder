@@ -5,18 +5,38 @@
  * project that has moved on since is refused rather than misapplied. Every change is one Undo.
  */
 import { useId, useState, type KeyboardEvent } from 'react';
-import { ArrowDown, ArrowUp, Paintbrush, Plus, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Paintbrush, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { ProjectSnapshot } from '@shared/api';
-import type { ComponentDefinition, GraphNode, PropSchema } from '@shared/types';
+import type { ComponentCategory, ComponentDefinition, GraphNode, ProjectState, PropSchema, SlotDef, SlotPrimitive } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { isBinding } from '@shared/types';
+import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES, isBinding } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
 import { axesOf, selectedVariants } from '@shared/variants';
 import { instancesOf } from '@engine/tree';
-import { applyOps, confirmDialog, getState, setState, useStore } from '../store';
-import { DraftInput, Field, Section } from '../components/ui';
+import { slotAccepts, slotDeclProblem } from '@engine/slots';
+import { applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
+import { DraftInput, Field, Section, Segmented } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { designContent, type DesignContent } from '../lib/design-content';
+import { nodeLabel, slotInsertAt, type InsertAt } from '../lib/insert-at';
+import {
+  SLOT_CATEGORY_LABELS,
+  SLOT_DESCRIPTION_MAX,
+  SLOT_LABEL_MAX,
+  SLOT_NO_PLACE,
+  SLOT_PRIMITIVE_LABELS,
+  createSlotOps,
+  declaredSlot,
+  editSlotOp,
+  placedSlots,
+  rebaseSlotDraft,
+  removeSlotOp,
+  slotDraft,
+  slotDraftProblem,
+  slotFilledIn,
+  slotLimitWords,
+  type SlotDraft
+} from '../lib/slot-contract';
 import {
   MAX_PROPERTIES,
   addVariantGroupOp,
@@ -504,6 +524,214 @@ export function VariantsSection({ def, level, onStyle }: { def: ComponentDefinit
         <p className="insp-note faint">Placements keep their look: each starts on Default until it picks another.</p>
       </div>
     </Section>
+  );
+}
+
+/** A design node as a selection of the component's own design, for where a new slot goes. */
+const designRef = (def: ComponentDefinition, node: GraphNode | undefined) => (node ? { owner: { kind: 'component' as const, id: def.id }, instancePath: [], nodeId: node.id } : null);
+
+/**
+ * The places where each placement puts content of its own: declare one (with its placeholder inside the selected
+ * container, or the whole design, in one Undo), change its name, what it takes and how many, and remove one no
+ * placement fills. The engine refuses a contract that content placements already hold no longer fits, or removing a
+ * slot that holds content, and says where; the form keeps what the author chose until it saves.
+ */
+export function SlotsSection({ def, node, level }: { def: ComponentDefinition; node?: GraphNode; level: number }) {
+  const state = useStore((s) => s.snapshot?.state);
+  if (def.kind !== 'managed' || !def.tree || !state) return null;
+  const names = Object.keys(def.slots ?? {});
+  const placed = placedSlots(def);
+  return (
+    <Section title="Slots" id="def-slots" level={level} keepMounted scope={names.length ? (names.length === 1 ? '1 slot' : `${names.length} slots`) : undefined}>
+      <p className="insp-note muted">Places where each placement puts content of its own, such as a card’s body or a hero’s buttons. Choose what each takes and how many.</p>
+      {names.map((name) => (
+        <SlotGroup key={name} def={def} name={name} decl={def.slots![name]} placedAt={placed.get(name)} filledIn={slotFilledIn(state, def, name)} />
+      ))}
+      <NewSlot def={def} node={node} />
+    </Section>
+  );
+}
+
+function SlotGroup({ def, name, decl, placedAt, filledIn }: { def: ComponentDefinition; name: string; decl: SlotDef; placedAt?: string; filledIn: string[] }) {
+  const [editing, setEditing] = useState(false);
+  // A declaration damaged by a hand edit says so, and can still be removed; validation reports it too.
+  const damaged = slotDeclProblem(decl);
+  const places = [...new Set(filledIn)];
+  const shown = placedAt ? 'In the design' : 'Not in the design yet: add it from Insert';
+  const filled = places.length ? `Holds content on ${places.join(', ')}` : 'Empty on every placement';
+  const remove = () => {
+    const now = current(def.id);
+    // Sent even while it holds content: the engine then says which placements hold it.
+    if (now && declaredSlot(now.def, name)) void apply([removeSlotOp(now.def, name)], `Remove ${typeof decl.label === 'string' && decl.label.trim() ? decl.label : name} slot`, now.snap);
+  };
+  if (damaged)
+    return (
+      <div className="contract-group" role="group" aria-label={name} data-slot={name}>
+        <div className="field-error">
+          The slot “{name}” {damaged}. Remove it, or undo the change that damaged it.
+        </div>
+        <button className="btn btn-sm" onClick={remove}>
+          <Trash2 aria-hidden="true" /> Remove
+        </button>
+      </div>
+    );
+  return (
+    <div className="contract-group" role="group" aria-label={decl.label} data-slot={name}>
+      <div className="contract-row">
+        <div className="contract-row-main">
+          <strong className="slot-name">{decl.label}</strong>
+          {decl.description && <span className="faint contract-meta">{decl.description}</span>}
+          <span className="faint contract-meta" data-slot-accepts>
+            Takes {slotAccepts(decl)} · {slotLimitWords(decl)}
+          </span>
+          <span className="faint contract-meta">
+            {shown} · {filled}
+          </span>
+        </div>
+        <button className="icon-btn sm" aria-expanded={editing} aria-label={`Edit ${decl.label}`} title="Change what it takes" onClick={() => setEditing((o) => !o)}>
+          <Pencil />
+        </button>
+        <button className="icon-btn sm" aria-label={`Remove ${decl.label}`} title={places.length ? `${filled}. Move or remove that content first.` : 'Remove, with its place in the design'} onClick={remove}>
+          <Trash2 />
+        </button>
+      </div>
+      {editing && <SlotForm def={def} name={name} decl={decl} onDone={() => setEditing(false)} />}
+    </div>
+  );
+}
+
+const SLOT_CATEGORIES = COMPONENT_CATEGORIES.filter((c): c is ComponentCategory => !!SLOT_CATEGORY_LABELS[c]);
+
+/**
+ * One slot's contract, changed together and saved once, so checking several kinds never sends a contract on the way
+ * that content would refuse. A refused save keeps the form as the author left it, beside the engine's reason.
+ */
+function SlotForm({ def, name, decl, onDone }: { def: ComponentDefinition; name: string; decl: SlotDef; onDone: () => void }) {
+  const id = useId();
+  // What the slot was when the form opened: a save after it changed elsewhere (an Undo) asks the author to look again.
+  const [base, setBase] = useState<SlotDef>(decl);
+  const [draft, setDraft] = useState<SlotDraft>(() => slotDraft(decl));
+  const [tried, setTried] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const problem = slotDraftProblem(draft);
+  const set = (patch: Partial<SlotDraft>) => setDraft((d) => ({ ...d, ...patch }));
+  const toggle = <T extends string>(list: T[], value: T, on: boolean) => (on ? [...list.filter((x) => x !== value), value] : list.filter((x) => x !== value));
+  const save = async () => {
+    setTried(true);
+    if (problem || saving) return;
+    const now = current(def.id);
+    const d = now && declaredSlot(now.def, name);
+    if (!now || !d) return void toast(`The “${base.label}” slot has been removed, so there is nothing to save. Undo brings it back.`, 'error');
+    // Changed elsewhere since the form opened: what the author left alone follows it, and a part both changed is shown
+    // to the author before anything is saved.
+    const moved = rebaseSlotDraft(draft, base, d);
+    setBase(d);
+    setDraft(moved.draft);
+    if (moved.clash) return void toast(`“${d.label}” changed while you were editing it. Check the form, then save again.`, 'info');
+    const op = editSlotOp(now.def, name, moved.draft);
+    if (!op) return onDone();
+    setSaving(true);
+    const done = await apply([op], `Change ${d.label} slot`, now.snap);
+    setSaving(false);
+    if (done) onDone();
+  };
+  const kindBox = <T extends string>(legend: string, all: readonly T[], words: Partial<Record<T, string>>, chosen: T[], key: 'categories' | 'primitives') => (
+    <fieldset className="slot-kinds">
+      <legend className="field-label">{legend}</legend>
+      {all.map((k) => (
+        <label key={k}>
+          <input type="checkbox" checked={chosen.includes(k)} onChange={(e) => set({ [key]: toggle(chosen, k, e.target.checked) } as Partial<SlotDraft>)} />
+          <span>{words[k] ?? k}</span>
+        </label>
+      ))}
+    </fieldset>
+  );
+  return (
+    <div className="contract-box" role="group" aria-labelledby={`${id}-title`} data-slot-form={name}>
+      <p className="insp-note" id={`${id}-title`}>
+        <strong>What “{base.label}” takes</strong>
+      </p>
+      <Field label="Name">
+        <input className="input" value={draft.label} maxLength={SLOT_LABEL_MAX} onChange={(e) => set({ label: e.target.value })} onKeyDown={keys({ enter: () => void save(), escape: onDone })} autoFocus />
+      </Field>
+      <Field label="What belongs there" hint="For you and the AI, when filling it in.">
+        <textarea className="textarea" rows={2} value={draft.description} maxLength={SLOT_DESCRIPTION_MAX} onChange={(e) => set({ description: e.target.value })} />
+      </Field>
+      <Field label="Takes">
+        <Segmented
+          radio
+          label="What it takes"
+          value={draft.restricted ? 'some' : 'any'}
+          options={[
+            { value: 'any', label: 'Anything' },
+            { value: 'some', label: 'Only what’s checked' }
+          ]}
+          onChange={(v) => set({ restricted: v === 'some' })}
+        />
+      </Field>
+      {draft.restricted && (
+        <>
+          {kindBox<ComponentCategory>('Components', SLOT_CATEGORIES, SLOT_CATEGORY_LABELS, draft.categories, 'categories')}
+          {kindBox<SlotPrimitive>('Elements', SLOT_PRIMITIVES, SLOT_PRIMITIVE_LABELS, draft.primitives, 'primitives')}
+          {!draft.categories.length && !draft.primitives.length && <p className="insp-note muted">Nothing checked: the slot takes nothing.</p>}
+        </>
+      )}
+      <Field label="Holds at most" hint="Blank for no limit. 0 keeps it empty.">
+        <input className="input" inputMode="numeric" placeholder="No limit" value={draft.max} maxLength={4} onChange={(e) => set({ max: e.target.value })} onKeyDown={keys({ enter: () => void save(), escape: onDone })} />
+      </Field>
+      {tried && problem && (
+        <p className="field-error" role="alert">
+          {problem}
+        </p>
+      )}
+      <div className="contract-actions">
+        <button className="btn btn-sm btn-primary" disabled={saving} onClick={() => void save()}>
+          Save
+        </button>
+        <button className="btn btn-sm" onClick={onDone}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Where a new slot's placeholder goes, in words: "Body", or "Section’s Content" when it is passed on to a component placed in the design. */
+function slotPlaceWords(state: ProjectState, at: InsertAt): string {
+  const holder = nodeLabel(state, at.owner, at.parentId!);
+  if (!at.slot) return holder;
+  const inst = state.components[at.owner.id]?.tree?.nodes[at.parentId!];
+  const inner = inst?.kind === 'instance' ? state.components[inst.definitionId]?.slots?.[at.slot]?.label : undefined;
+  return `${holder}’s ${inner ?? at.slot}`;
+}
+
+/** Declare a new slot, with its placeholder where slotInsertAt puts it for the node the Inspector shows. */
+function NewSlot({ def, node }: { def: ComponentDefinition; node?: GraphNode }) {
+  const [label, setLabel] = useState('');
+  const state = useStore((s) => s.snapshot?.state);
+  const at = state ? slotInsertAt(state, def.id, designRef(def, node)) : null;
+  const where = state && at?.parentId ? slotPlaceWords(state, at) : null;
+  const add = async () => {
+    const now = current(def.id, node?.id);
+    // Planned where the project has it now: the node may have gone, and the design's root then takes the slot.
+    const place = now && slotInsertAt(now.snap.state, def.id, designRef(now.def, now.node));
+    const plan = place && createSlotOps(now.snap.state, now.def, label, place);
+    if (!now || !plan) return;
+    if (await apply(plan.operations, `Add ${label.trim()} slot`, now.snap)) setLabel('');
+  };
+  return (
+    <div className="contract-group" role="group" aria-label="New slot">
+      <div className="field-label">{Object.keys(def.slots ?? {}).length ? 'Another slot' : 'New slot'}</div>
+      <div className="contract-add">
+        <input className="input sm" value={label} placeholder="Slot, e.g. Buttons" aria-label="Name of the new slot" maxLength={SLOT_LABEL_MAX} disabled={!at} onChange={(e) => setLabel(e.target.value)} onKeyDown={keys({ enter: () => void add() })} />
+        <button className="btn btn-sm" disabled={!at || !label.trim()} onClick={() => void add()}>
+          <Plus aria-hidden="true" /> Add slot
+        </button>
+      </div>
+      <p className="insp-note faint" data-slot-where>
+        {where ? `It goes inside ${where}, and takes anything until you choose.` : SLOT_NO_PLACE}
+      </p>
+    </div>
   );
 }
 
