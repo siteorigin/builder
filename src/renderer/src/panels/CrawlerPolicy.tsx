@@ -26,6 +26,7 @@ import {
 import { publicUrl } from '@shared/public-url';
 import type { Checked } from '@shared/site-identity';
 import { DraftInput, Field, SwitchRow, openSection, type DraftProblem } from '../components/ui';
+import { useStore } from '../store';
 import { openSiteStyles } from '../lib/actions';
 
 const PRESET_HINTS: Record<CrawlerPreset, string> = {
@@ -116,9 +117,11 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
     const c = part === 'alsoBlock' ? checkCrawlerTokenLines(text) : checkCrawlerPathLines(text);
     return c.ok ? { ok: true, value: { [part]: c.value } } : c;
   };
+  // While the AI works, an edit is held and checked against the project once it finishes: only its lines are checked here.
+  const aiBusy = useStore((s) => !!s.snapshot?.aiBusy);
   const linesPatch = (part: 'alsoBlock' | 'disallowPaths', text: string): Checked<CrawlerPolicyPatch> => {
     const patch = lines(part, text);
-    if (!patch.ok) return patch;
+    if (!patch.ok || aiBusy) return patch;
     const next = patchCrawlerPolicy(site.crawlerPolicy, patch.value);
     return next.ok ? patch : next;
   };

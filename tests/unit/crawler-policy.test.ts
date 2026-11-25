@@ -158,16 +158,20 @@ describe('Custom', () => {
   it('lets a crawler named under a sub-path into that site alone, once merged into its domain’s robots.txt', () => {
     const host = 'User-agent: Googlebot\nDisallow: /\n\nUser-agent: *\nDisallow: /members/\n\n';
     const site = robots(policy(seoSite().state, { preset: 'custom', overrides: { Googlebot: 'allow' } }))!;
-    expect(site).toContain('\nUser-agent: Googlebot\nAllow: /studio/\n');
+    expect(site).toContain('\nUser-agent: Googlebot\nAllow: /studio$\nAllow: /studio/\nAllow: /studio?\n');
     const merged = host + site;
-    expect(mayFetch(merged, 'Googlebot', '/studio/about/')).toBe(true);
+    for (const p of ['/studio', '/studio?q=1', '/studio/', '/studio/about/']) expect(mayFetch(merged, 'Googlebot', p), p).toBe(true);
     expect(mayFetch(merged, 'Googlebot', '/members/')).toBe(false);
     expect(mayFetch(merged, 'Googlebot', '/studio-next/')).toBe(false);
     // Its paths still close, and a path closing the whole site keeps it out.
     const closed = robots(policy(seoSite().state, { preset: 'custom', overrides: { Googlebot: 'allow' }, disallowPaths: ['/private/', '/$'] }))!;
-    expect(closed).toContain('\nUser-agent: Googlebot\nAllow: /studio/\nDisallow: /studio$\nDisallow: /studio/$\nDisallow: /studio/private/\n');
+    expect(closed).toContain('\nUser-agent: Googlebot\nAllow: /studio/\nAllow: /studio?\nDisallow: /studio$\nDisallow: /studio/$\nDisallow: /studio/private/\n');
     expect(mayFetch(host + closed, 'Googlebot', '/studio/private/a')).toBe(false);
-    expect(mayFetch(host + closed, 'Googlebot', '/studio/')).toBe(false);
+    for (const p of ['/studio', '/studio/']) expect(mayFetch(host + closed, 'Googlebot', p), p).toBe(false);
+    for (const p of ['/studio?q=1', '/studio/about/']) expect(mayFetch(host + closed, 'Googlebot', p), p).toBe(true);
+    const query = robots(policy(seoSite().state, { preset: 'custom', overrides: { Googlebot: 'allow' }, disallowPaths: ['/?'] }))!;
+    expect(mayFetch(host + query, 'Googlebot', '/studio?q=1')).toBe(false);
+    expect(mayFetch(host + query, 'Googlebot', '/studio')).toBe(true);
     const all = robots(policy(seoSite().state, { preset: 'custom', overrides: { Googlebot: 'allow' }, disallowPaths: ['/'] }))!;
     expect(all).toContain('\nUser-agent: Googlebot\nDisallow: /studio$\nDisallow: /studio/\nDisallow: /studio?\n');
   });
@@ -234,7 +238,9 @@ describe('Custom', () => {
         'Disallow: /studio/private/',
         '',
         'User-agent: GPTBot',
+        'Allow: /studio$',
         'Allow: /studio/',
+        'Allow: /studio?',
         'Disallow: /studio/private/',
         '',
         ...TRAINING.filter((t) => t !== 'GPTBot').map((t) => `User-agent: ${t}`),
@@ -342,6 +348,11 @@ describe('checking what is typed', () => {
     // A hand edit past the limits is read whole, up to far more than an edit may save, keeping out first.
     const many = (n: number) => Array.from({ length: n }, (_, i) => `Bot${'x'.repeat(i % 100)}${'y'.repeat(Math.floor(i / 100))}`);
     expect(crawlerRules({ crawlerPolicy: { preset: 'custom', disallowPaths: ['/private/', ...Array.from({ length: 64 }, (_, i) => `/a${i}/`)] } as never }).paths).toContain('/private/');
+    // A pattern closing the whole site is never the one left out.
+    const wide = crawlerRules({ crawlerPolicy: { preset: 'custom', disallowPaths: [...Array.from({ length: 256 }, (_, i) => `/!${i}/`), '/*'] } as never });
+    expect(wide.paths).toHaveLength(256);
+    expect(wide.paths).toContain('/*');
+    expect(runSeoAudit(damaged({ preset: 'custom', disallowPaths: [...Array.from({ length: 256 }, (_, i) => `/!${i}/`), '/*'] })).map((f) => f.code)).toContain('SEO_SEARCH_CRAWLERS_BLOCKED');
     const flooded = crawlerRules({ crawlerPolicy: { preset: 'custom', disallowPaths: Array.from({ length: 1100 }, (_, i) => `/p${i}/`), overrides: { ...Object.fromEntries(many(200).map((t) => [t, 'allow'])), ZedBot: 'disallow', ZooBot: 'disallow' } } as never });
     expect(flooded.paths).toHaveLength(256);
     expect(flooded.overrides.size).toBe(202);
@@ -478,7 +489,7 @@ describe('the editor and the AI', () => {
     expect(robotsTxt(crawlerRules(s.site), { mount: '/studio', sitemap: 'https://example.com/studio/sitemap.xml' })).toBe(robots(s));
     const change = { disallowPaths: ['/y/'], alsoBlock: ['ExampleBot'], overrides: { GPTBot: 'allow' as const } };
     const preview = siteRobotsTxt(s.site, patchedCrawlerRules(s.site, change)!);
-    expect(preview).toMatch(/^User-agent: \*\nDisallow: \/studio\/y\/\n\nUser-agent: GPTBot\nAllow: \/studio\/\nDisallow: \/studio\/y\/\n\n/);
+    expect(preview).toMatch(/^User-agent: \*\nDisallow: \/studio\/y\/\n\nUser-agent: GPTBot\nAllow: \/studio\$\nAllow: \/studio\/\nAllow: \/studio\?\nDisallow: \/studio\/y\/\n\n/);
     expect(preview).toContain('User-agent: ExampleBot\n');
     expect(preview).toBe(robots(policy(s, change)));
     expect(patchedCrawlerRules(s.site, { disallowPaths: ['nope'] })).toBeNull();

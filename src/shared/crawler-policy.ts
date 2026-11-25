@@ -282,7 +282,12 @@ export function crawlerRules(site: Pick<SiteDoc, 'crawlerPolicy'>): CrawlerRules
       const c = typeof p === 'string' ? checkCrawlerPath(p) : null;
       if (c?.ok) found.add(c.value);
     }
-  const paths = [...found].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).slice(0, READ_LIMITS.paths);
+  // Past the limit, a pattern closing the whole site comes first.
+  const ascii = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  const paths = [...found]
+    .sort((a, b) => Number(isWholeSitePattern(b)) - Number(isWholeSitePattern(a)) || ascii(a, b))
+    .slice(0, READ_LIMITS.paths)
+    .sort(ascii);
   const set = typeof raw.noAiMeta === 'boolean';
   return { preset, base, overrides, paths, noAiMeta: set ? (raw.noAiMeta as boolean) : presetNoAiMeta(base), noAiMetaSet: set };
 }
@@ -418,8 +423,10 @@ export function robotsTxt(rules: CrawlerRules, opts: { mount?: string; sitemap?:
   const lines = ['User-agent: *', ...(closed.length ? closed : ['Allow: /'])];
   const allowed = allowedCrawlers(rules);
   // A crawler let in by name is let into this site alone: merged into its domain's robots.txt, a group under a
-  // sub-path never reopens the domain's other addresses to it. A path closing the whole site keeps it out all the same.
-  const letIn = mount ? (rules.paths.some(isWholeSitePattern) ? [] : [`Allow: ${mount}/`]) : closed.length ? [] : ['Allow: /'];
+  // sub-path never reopens the domain's other addresses to it. A path closing the whole site keeps it out all the same,
+  // and one closing the same address as an allow would (the home page alone, "/studio$") wins that address.
+  const shut = new Set(closed.map((l) => l.slice('Disallow: '.length)));
+  const letIn = mount ? (rules.paths.some(isWholeSitePattern) ? [] : wholeSite(mount).filter((p) => !shut.has(p)).map((p) => `Allow: ${p}`)) : closed.length ? [] : ['Allow: /'];
   if (allowed.length) lines.push('', ...allowed.map((t) => `User-agent: ${t}`), ...letIn, ...closed);
   const blocked = blockedCrawlers(rules);
   if (blocked.length) {
