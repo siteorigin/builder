@@ -515,6 +515,76 @@ export function refExists(state: ProjectState, ref: ElementRef): boolean {
   return !items || items.includes(itemId!);
 }
 
+/**
+ * For a part picked in one repeated item (one card of three): which item it is ("2 of 3") in the innermost list
+ * repeating it, read as the placement shows it (its own items, the design's while it has none, a list passed down from
+ * the component around it, or the pages a computed list shows; `sample` is the entry a collection's layout is shown on),
+ * and the same part in every item of that list, which the selection chip's Previous and Next item step through (see
+ * stepItem). Items further out stay as they are. Naming another item never changes the list.
+ */
+export function itemStep(state: ProjectState, ref: ElementRef, sample?: { entryId: string | null }): { n: number; count: number; parts: Array<ElementRef | null> } | null {
+  const path = ref.itemPath ?? [];
+  const itemId = path[path.length - 1];
+  if (!itemId || !ref.instancePath.length) return null;
+  // The placements on the way to the part, outermost first, with the designs they place.
+  const placed: Array<{ props: Record<string, unknown>; def: ComponentDefinition }> = [];
+  for (let k = 0; k < ref.instancePath.length; k++) {
+    const node = resolveRef(state, { owner: ref.owner, instancePath: ref.instancePath.slice(0, k), nodeId: ref.instancePath[k] }).node;
+    const def = node?.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
+    if (!def || node?.kind !== 'instance') return null;
+    placed.push({ props: (node.props ?? {}) as Record<string, unknown>, def });
+  }
+  // The innermost repeat around the part is in the deepest design on the way that repeats it (or the component holding it).
+  let k = placed.length - 1;
+  let key: string | undefined;
+  for (; k >= 0 && !key; k--) key = listPropFor(placed[k].def, k + 1 < placed.length ? ref.instancePath[k + 1] : ref.nodeId);
+  if (!key) return null;
+  k++;
+  const schema = own(placed[k].def.properties ?? {}, key) as ListProp;
+  let list: unknown;
+  if (schema.feed) {
+    // A computed list's rows are the pages it shows where it is placed: known only for a placement on the page itself.
+    if (k > 0) return null;
+    list = placedFeedRows(state, schema, ref.owner, placed[0].def.properties, placed[0].props, ref.owner.kind === 'template' && sample ? { entryId: sample.entryId, nodeId: ref.instancePath[0] } : undefined);
+  } else {
+    // A list passed down from the component around it is read where it is set.
+    let at = k;
+    let name = key;
+    let value = placed[at].props[name];
+    while (isBinding(value) && '$prop' in value && at > 0) {
+      const from = value;
+      at--;
+      name = from.$prop;
+      const outer = placed[at].props[name] ?? (own(placed[at].def.properties ?? {}, name) as { default?: unknown } | undefined)?.default;
+      value = propBindingValue(outer, from);
+    }
+    list = value === undefined || value === null ? (at === k ? schema.default : undefined) : value;
+  }
+  if (!Array.isArray(list)) return null;
+  // An item's ID as the preview names it (a hand-edited 42 is "42"); one without an ID can't be selected.
+  const idAt = (i: number) => {
+    const id = (list as Array<{ id?: unknown } | null>)[i]?.id;
+    return (typeof id === 'string' && id) || typeof id === 'number' ? String(id) : null;
+  };
+  const n = list.findIndex((_, i) => idAt(i) === itemId);
+  if (n < 0) return null;
+  const parts = list.map((_, i) => {
+    const id = idAt(i);
+    return id ? { ...ref, itemPath: [...path.slice(0, -1), id] } : null;
+  });
+  return { n: n + 1, count: list.length, parts };
+}
+
+/**
+ * The part a Previous (-1) or Next (1) item step from item `n` (1-based) selects: the same part in the nearest item that
+ * way the page shows it in. `shown` says whether the page shows the part in an item (undefined while unknown, which
+ * counts as shown): a rule can hide it in some (a button whose link is left empty). Null at either end: never wraps.
+ */
+export function stepItem(parts: Array<ElementRef | null>, n: number, dir: -1 | 1, shown?: ReadonlyArray<boolean | undefined>): ElementRef | null {
+  for (let i = n - 1 + dir; i >= 0 && i < parts.length; i += dir) if (parts[i] && shown?.[i] !== false) return parts[i];
+  return null;
+}
+
 type View = { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode; templateMode?: TemplateMode | null };
 
 /**

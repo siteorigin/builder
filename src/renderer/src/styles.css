@@ -1252,6 +1252,12 @@ iframe { color-scheme: light dark; }
 /* At narrow widths the parent link keeps a 24px target and "2 of 3" never clips: the part's name gives way. */
 .ov-chip .name .of.link { min-width: 24px; }
 .ov-chip .name .of:not(.link) { flex: none; }
+/* Previous and Next item sit tight around "2 of 3", so the three read as one control. It never shrinks: the name
+   beside it gives way first. */
+.ov-chip .chip-step { display: inline-flex; flex: none; align-items: center; gap: 6px; height: 24px; padding-right: 4px; font-size: 12px; }
+.ov-chip .chip-step .sep, .ov-chip .chip-step .of { font-weight: 400; opacity: 0.88; }
+.ov-chip .chip-step .icon-btn.step { width: 20px; margin: 0 -3px; }
+.ov-chip .chip-step .icon-btn.step svg { width: 14px; height: 14px; }
 .ov-chip .chip-text + .chip-text, .ov-chip .icon-btn + .chip-text { margin-left: 3px; }
 /* A text button's focus ring steps outside its resting rim, so focus is as plain a change as on the icon buttons. */
 .ov-chip .chip-text:focus-visible { outline-offset: 1px; background: rgb(16 24 40 / 0.42); }

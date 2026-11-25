@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { newId } from '@shared/ids';
 import { applyOps, commitOps } from '../store';
@@ -26,7 +26,7 @@ import { ARRIVAL_MS, arrivalShown, takeArrival } from '../lib/arrival';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { hasDarkPalette } from '@shared/color-scheme';
-import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
+import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
@@ -196,6 +196,11 @@ export function Canvas() {
   const [editing, setEditing] = useState(false);
   /** Said to screen readers after a move, since the drop line and the new order are visual only. */
   const [announcement, setAnnouncement] = useState('');
+  /** Ways the selection chip's Previous or Next item found no item showing the part in, for the selection and page as
+   *  they were (see stepItemSelection). */
+  const [stepBlocked, setStepBlocked] = useState<{ key: string; prev: boolean; next: boolean } | null>(null);
+  // What the page shows can change without a new version of the project (an answer opened): a new pick asks again.
+  useEffect(() => setStepBlocked(null), [selection && refKey(selection)]); // eslint-disable-line react-hooks/exhaustive-deps
   const menu = useMenu();
   /** The inline edit the editor started; the preview cannot commit text on its own. */
   /** Inline text edits in progress, with the project and the AI's activity when each began. */
@@ -1587,6 +1592,62 @@ export function Canvas() {
       )
     ).then(() => out);
   }
+  /**
+   * Previous (-1) or Next (1) item from the selection chip: the same part in the nearest item that way the page shows
+   * it in, measured when asked, so a part a rule hides in some items (a button whose link is left empty) is never
+   * selected where it has no outline. A way with no item showing it is then marked as one there is nothing to step
+   * to. A page that doesn't answer leaves the plain neighbour. Presses take turns, each from where the last one went,
+   * so a held key steps once per press. Only the selection changes; the new position is announced.
+   */
+  /** Presses waiting their turn, and what the next one steps from: where the press that started them was, then where
+   *  each step went. Another selection meanwhile (a click, an Undo) drops the rest. */
+  const stepping = useRef({ chain: Promise.resolve(), waiting: 0, from: '' });
+  const onStep = (dir: -1 | 1) => {
+    const q = stepping.current;
+    if (!q.waiting) q.from = stepKey(getState());
+    q.waiting++;
+    q.chain = q.chain
+      .then(() => stepItemSelection(dir))
+      .catch(() => {})
+      .finally(() => q.waiting--);
+  };
+  async function stepItemSelection(dir: -1 | 1) {
+    const q = stepping.current;
+    const s = getState();
+    const st = s.snapshot?.state;
+    const from = s.selection;
+    const asked = stepKey(s);
+    if (asked !== q.from) return;
+    const info = st && from ? itemStep(st, from, s.templateMode ?? undefined) : null;
+    if (!st || !from || !info || !stepItem(info.parts, info.n, dir)) return;
+    // A page still showing an older version of the project tells nothing, and one that catches up while it answers may
+    // have answered part of it from the older one.
+    const current = shownRevision.current >= (s.snapshot?.revision ?? 0);
+    const requests: string[] = [];
+    const descs = info.parts.map((p) => (p && descFor(p)) ?? { ctx: '', node: '', items: '' });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let measured: Array<Measured | null> | null;
+    try {
+      measured = await Promise.race([measureDescs(descs, requests), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), 1500)))]);
+    } finally {
+      clearTimeout(timer);
+      for (const id of requests) measureWaiters.current.delete(id);
+    }
+    // A step answered after the selection, the project or what the page shows moved on (another click, an Undo, another
+    // entry for a layout) is dropped.
+    const now = getState();
+    if (stepKey(now) !== asked) return;
+    if (!current) measured = null;
+    const to = stepItem(info.parts, info.n, dir, measured?.map((m) => !!m));
+    if (!to) {
+      if (measured) setStepBlocked((b) => ({ key: asked, prev: dir === -1 || (b?.key === asked && b.prev), next: dir === 1 || (b?.key === asked && b.next) }));
+      return;
+    }
+    setState({ selection: to });
+    q.from = stepKey(getState());
+    const at = itemStep(st, to, s.templateMode ?? undefined);
+    if (at) setAnnouncement(`${refLabel(st, to)}, ${at.n} of ${at.count}.`);
+  }
   /** The elements the page shows for nodes of `owner`'s own tree (a drop's lists), one that shows none named so. */
   const listDescs = (owner: OwnerRef, ids: string[]): BridgeDesc[] => ids.map((id) => descFor({ owner, instancePath: [], nodeId: id }) ?? { ctx: '', node: '', items: '' });
 
@@ -2759,7 +2820,7 @@ export function Canvas() {
                   icon={kindIcon(state, selection)}
                   parent={isPart && !definitionMode ? chromeLabel(state, { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] }) : null}
                   repeats={selBoxes.length}
-                  item={itemOf(state, selection)}
+                  item={itemStep(state, selection, templateMode ?? undefined)}
                   repeatsLabel={selLabel ? `${selLabel.toLowerCase()}${/s$/.test(selLabel) ? '' : 's'}` : 'items'}
                   sib={siblings(state, structuralTarget(selection))}
                   onWidth={setChipW}
@@ -2769,6 +2830,8 @@ export function Canvas() {
                   editing={editing}
                   onDone={() => post('commitTextEdit')}
                   onMove={(dir) => void announcedMove(() => moveLayers(dir))}
+                  onStep={onStep}
+                  stepBlocked={stepBlocked && stepBlocked.key === stepKey(getState()) ? stepBlocked : null}
                   onEditText={canInlineEdit(selection) && descFor(selection) ? () => startTextEditFromChrome(selection) : null}
                   onReveal={
                     selShown
@@ -2861,18 +2924,9 @@ function kindIcon(state: ProjectState, ref: ElementRef) {
   }
 }
 
-/** For a part picked in one repeated item (one card of three), which item it is: "2 of 3". */
-function itemOf(state: ProjectState, ref: ElementRef): { n: number; count: number } | null {
-  const itemId = ref.itemPath?.[0];
-  if (!itemId || !ref.instancePath.length) return null;
-  const inst = resolveRef(state, { owner: ref.owner, instancePath: [], nodeId: ref.instancePath[0] }).node;
-  if (inst?.kind !== 'instance') return null;
-  for (const [key, prop] of Object.entries(state.components[inst.definitionId]?.properties ?? {})) {
-    const list = prop.type === 'list' ? (inst.props as Record<string, unknown> | undefined)?.[key] : null;
-    const n = Array.isArray(list) ? list.findIndex((it) => !!it && typeof it === 'object' && (it as { id?: unknown }).id === itemId) : -1;
-    if (n >= 0) return { n: n + 1, count: (list as unknown[]).length };
-  }
-  return null;
+/** What a step of the selection chip is taken from: the selection, the project, and what the page shows. */
+function stepKey(s: ReturnType<typeof getState>): string {
+  return JSON.stringify([s.selection ? refKey(s.selection) : null, s.snapshot?.revision ?? null, s.pageId, s.templateMode ?? null, s.definitionMode?.definitionId ?? null, s.viewport]);
 }
 
 const CHIP_H = 28;
@@ -2899,7 +2953,7 @@ function chipPlacement(box: { top: number; height: number }, topLevel: boolean, 
  * (WAI-ARIA APG toolbar); the drag handle is pointer-only, with Move up and Move down as its keyboard
  * equivalent. Delete is not here: it lives at the end of More actions, in red, and on the Delete key.
  */
-function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: { n: number; count: number } | null; sib: { index: number; count: number } | null; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
+function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
   // With the inspector out of sight (dock closed, or AI / Site styles showing), the chip offers the way back.
@@ -2928,8 +2982,11 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
     if (width && width !== w) (setW(width), onWidth(width));
     const nameEl = ref.current?.querySelector<HTMLElement>('.name');
     if (!compact && nameEl && nameEl.scrollWidth > nameEl.clientWidth + 1) setCompact(true);
-    // Roving tab stop: exactly one button is in the Tab order, the last one used.
+    // Roving tab stop: exactly one button is in the Tab order, the last one used. A control that keeps focus while
+    // the selection changes under it (Previous or Next item) keeps the Tab stop, wherever the chip's controls now are.
     const list = buttons();
+    const focused = list.indexOf(document.activeElement as HTMLElement);
+    if (focused >= 0) current.current = focused;
     const keep = Math.min(current.current, list.length - 1);
     list.forEach((b, i) => (b.tabIndex = i === keep ? 0 : -1));
     if (orphaned()) list[keep]?.focus();
@@ -2955,6 +3012,8 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
   const canReorder = structural && !!sib && sib.count > 1;
   const canUp = group ? group.indexes[0] > 0 : !!sib && sib.index > 0;
   const canDown = group ? group.indexes[group.indexes.length - 1] < group.list.length - 1 : !!sib && sib.index < sib.count - 1;
+  const canPrev = !!item && !stepBlocked?.prev && !!stepItem(item.parts, item.n, -1);
+  const canNext = !!item && !stepBlocked?.next && !!stepItem(item.parts, item.n, 1);
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const list = buttons();
@@ -3031,9 +3090,27 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
             <span className="ellipsis">in {parent}</span>
           </button>
         )}
-        {/* One card picked on the page vs the part in every card (picked in Layers): say which. */}
-        {item ? <span className="of">· {item.n} of {item.count}</span> : repeats > 1 && <span className="of">· all {repeats} {repeatsLabel}</span>}
+        {/* The part in every card (picked in Layers): say so. One card picked on the page says which, beside it. */}
+        {!item && repeats > 1 && <span className="of">· all {repeats} {repeatsLabel}</span>}
       </span>
+      {item && (
+        // The same part in the card before or after: the selection moves, the list never changes. Outside the name,
+        // which gives way first, so the steps are never clipped while they can be focused.
+        <span className="chip-step">
+          <span className="sep" aria-hidden="true">
+            ·
+          </span>
+          <button className="icon-btn step" title="Previous item" aria-label="Previous item" aria-disabled={!canPrev || undefined} onClick={guard(canPrev, () => onStep(-1))}>
+            <ChevronLeft />
+          </button>
+          <span className="of" data-testid="chip-item-pos">
+            {item.n} of {item.count}
+          </span>
+          <button className="icon-btn step" title="Next item" aria-label="Next item" aria-disabled={!canNext || undefined} onClick={guard(canNext, () => onStep(1))}>
+            <ChevronRight />
+          </button>
+        </span>
+      )}
       <span className="chip-sep" aria-hidden="true" />
       <button className="icon-btn" title={`Ask AI about this (${keys('⌘J')})`} aria-label="Ask AI about this" aria-keyshortcuts={ariaKeys('Meta+J')} onClick={() => askAiAbout(selection)}>
         <Sparkles />
