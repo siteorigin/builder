@@ -21,7 +21,7 @@ const legacy = () => {
 };
 const BUNDLED_FONTS = () => getTheme('foundation').fonts;
 const font = (name: string) => BUNDLED_FONTS().find((f) => f.name === name)!;
-const PACKAGES = ['inter', 'fraunces', 'plus-jakarta-sans', 'dm-sans', 'space-grotesk', 'playfair-display', 'lora'].map((n) => `@fontsource-variable/${n}`);
+const PACKAGES = ['inter', 'fraunces', 'plus-jakarta-sans', 'dm-sans', 'space-grotesk', 'playfair-display', 'lora', 'sora', 'jetbrains-mono'].map((n) => `@fontsource-variable/${n}`);
 
 describe('bundled fonts', () => {
   it('ship with the theme, so the website template installs none', () => {

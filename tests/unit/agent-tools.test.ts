@@ -741,6 +741,56 @@ describe('update_site_brand', () => {
     expect(session.state.tokens).toEqual(before);
   });
 
+  it("switches a small model's site to another theme with a new brand color, in one undoable step (#391)", async () => {
+    const small = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'native' as const };
+    // JetBrains Mono comes with Signal only: the rest of the call is worked out against the theme it switches to.
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'signal', brandColor: '#0f766e', headingFont: 'JetBrains Mono' })], () => finish()], small);
+    const before = structuredClone(session.state);
+    const { result } = await run('Make the site look like a modern software product, in teal');
+    // A small site run ends with its one macro call.
+    expect(result?.status).toBe('completed');
+    const schema = adapter.requests[0].tools.find((t) => t.name === 'update_site_brand')!.parameters as { properties: Record<string, { enum?: string[]; description?: string }> };
+    // The shipped themes it can switch to, each described so the model can choose.
+    expect(schema.properties.theme.enum).toEqual(['editorial', 'signal']);
+    expect(schema.properties.theme.description).toContain('signal: Geometric and crisp');
+    const s = session.state;
+    expect(s.site.themeId).toBe('signal');
+    expect(s.tokens.overrides['color.brand']).toBe('#0f766e');
+    expect(String(s.tokens.overrides['font.display'])).toContain('JetBrains Mono Variable');
+    // The pages hold what they did; only their sections now come from Signal.
+    expect(JSON.parse(JSON.stringify(s.pages).replace(/"definitionId":"signal\./g, '"definitionId":"foundation.'))).toEqual(before.pages);
+    expect(await compileProject(s)).toEqual([]);
+    await session.undo();
+    expect(session.state.site.themeId).toBe('foundation');
+    expect(session.state.tokens).toEqual(before.tokens);
+    expect(session.state.pages).toEqual(before.pages);
+  });
+
+  it('refuses a theme that is not offered, naming the field, and changes nothing else in the call', async () => {
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'foundation-alt', siteName: 'Kept Out' })], () => finish()]);
+    await run('Use the other theme');
+    const r = lastResult(adapter.requests[1]);
+    expect(r.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('Use one of: editorial, signal') })]);
+    expect(session.state.site.themeId).toBe('foundation');
+    expect(session.state.site.name).toBe('Test Studio');
+  });
+
+  it('applies nothing in the call when the switch itself is refused', async () => {
+    // On Signal, an eyebrow style the author edited keeps its JetBrains Mono, which Foundation does not ship.
+    const eyebrow = { family: "'JetBrains Mono Variable', ui-monospace, monospace", size: '0.8rem', lineHeight: '1.4', weight: 500, tracking: '0.08em', transform: 'uppercase' };
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'foundation', siteName: 'Kept Out', brandColor: '#0b5cad' })], () => finish()], {}, 'business', (s) => {
+      Object.assign(s, applyOperations(s, [{ type: 'theme.apply', themeId: 'signal' }, { type: 'token.set', tokenId: 'text.eyebrow', value: eyebrow }]).state);
+    });
+    expect(session.state.site.themeId).toBe('signal');
+    const tokens = structuredClone(session.state.tokens);
+    await run('Go back to the classic look and rename the site');
+    const r = lastResult(adapter.requests[1]);
+    expect(r.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('JetBrains Mono: your site uses this font') })]);
+    expect(session.state.site.themeId).toBe('signal');
+    expect(session.state.site.name).toBe('Test Studio');
+    expect(session.state.tokens).toEqual(tokens);
+  });
+
   it('derives readable colors for both dark and light brand colors', () => {
     const hex = (h: string): [number, number, number] => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
     for (const brand of ['#0b5cad', '#f5c518', '#1f5a4c', '#ffffff', '#000000', '#e11d48']) {

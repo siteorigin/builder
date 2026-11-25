@@ -33,9 +33,12 @@ const SURFACES = `:where(
   --so-surface-ink-hover: color-mix(in srgb, var(--so-color-on-brand) 88%, var(--so-color-brand));
 }`;
 
-/** Foundation base stylesheet: reset, document defaults and shared primitive styles. */
-export const FOUNDATION_BASE_CSS = `/* Foundation theme base styles */
-*, *::before, *::after { box-sizing: border-box; }
+/**
+ * The reset, document defaults and primitive styles every built-in theme shares: the buttons, links and check lists,
+ * the colours drawn on dark and brand grounds, the image viewer, the carousel controls, reduced motion and print.
+ * A theme's stylesheet starts with its own title line, then this, then any rules of its own.
+ */
+export const SHARED_BASE_CSS = `*, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-behavior: smooth; }
 /* A placement's styles for a code component are important; ":not(#so-motion)" (an id no element has) gives the
    reduced-motion rule an id's weight, so it still wins over them. */
@@ -280,3 +283,7 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
   li, details, figure, .so-form__inner, .so-form__form, .so-form__field { break-inside: avoid; }
 }
 `;
+
+/** Foundation base stylesheet: reset, document defaults and shared primitive styles. */
+export const FOUNDATION_BASE_CSS = `/* Foundation theme base styles */
+${SHARED_BASE_CSS}`;

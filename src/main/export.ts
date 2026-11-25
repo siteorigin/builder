@@ -11,6 +11,7 @@ import { documentFormat } from '@shared/document-files';
 import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameLanguage } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
+import { getTheme, listThemes } from '@catalogue/index';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
@@ -708,7 +709,7 @@ export const NODE_ENGINES = '>=22.17.0';
 export async function finishExportedSource(dest: string, state: ProjectState, noticePath: string) {
   const readmePath = join(dest, 'README.md');
   const readme = await readIfExists(readmePath);
-  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, NOTICE, siteEntries(state).some((e) => isDraftEntry(e.entry))));
+  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, themeNotice(getTheme(state.site.themeId)), siteEntries(state).some((e) => isDraftEntry(e.entry))));
   const usesSamples = STARTER_ASSETS.some((a) => state.assets.assets[a.id]);
   if (usesSamples && !existsSync(join(dest, 'NOTICE.md')) && existsSync(noticePath)) await fs.copyFile(noticePath, join(dest, 'NOTICE.md'));
   for (const [file, at] of [['package.json', (j: Record<string, any>) => j], ['package-lock.json', (j: Record<string, any>) => j.packages?.['']]] as const) {
@@ -741,13 +742,11 @@ export function isGeneratedReadme(text: string): boolean {
   const normalized = text.replace(/\r\n/g, '\n');
   const title = normalized.match(/^# (.*)\n/)?.[1];
   if (title === undefined) return false;
+  // The notices name the site's theme: one written for any installed theme, word for word, is still the app's. An
+  // owner's change to them (another licence, say) makes the README theirs.
+  const notices = [...new Set([NOTICE, NPM_FONTS_NOTICE, ...listThemes().map(themeNotice)])];
   return [
-    projectReadme(title),
-    projectReadme(title, true),
-    projectReadme(title, false, NOTICE, true),
-    projectReadme(title, true, NOTICE, true),
-    projectReadme(title, false, NPM_FONTS_NOTICE),
-    projectReadme(title, true, NPM_FONTS_NOTICE),
+    ...notices.flatMap((n) => [projectReadme(title, false, n), projectReadme(title, true, n), projectReadme(title, false, n, true), projectReadme(title, true, n, true)]),
     legacyReadme(title)
   ].includes(normalized);
 }
@@ -766,8 +765,12 @@ This project has draft collection entries. Their documents are in \`siteorigin/c
 
 `;
 
-const NOTICE =
-  'The Foundation theme is licensed under GPL-3.0-or-later. Icons come from Lucide (ISC licence). The fonts come with the theme, in `src/lib/siteorigin/fonts/`, whose NOTICE.txt gives their licences. Sample images from the Business starter, where still used, are described in NOTICE.md.';
+/** The notices of a site with this theme: its name and licence, the icons' and the fonts' (whose own notice travels with them). */
+export function themeNotice(theme: { name: string; license: string }): string {
+  return `The ${theme.name} theme is licensed under ${theme.license}. Icons come from Lucide (ISC licence). The fonts come with the theme, in \`src/lib/siteorigin/fonts/\`, whose NOTICE.txt gives their licences. Sample images from the Business starter, where still used, are described in NOTICE.md.`;
+}
+/** The notices of a site on Foundation, the theme every new project starts with. */
+const NOTICE = themeNotice({ name: 'Foundation', license: 'GPL-3.0-or-later' });
 /** The notices from before fonts came with the theme, recognised so that exports can bring them up to date. */
 const NPM_FONTS_NOTICE =
   'The Foundation theme is licensed under GPL-3.0-or-later. Icons come from Lucide (ISC licence). Fonts are licensed under the SIL Open Font License 1.1 and are installed from npm (@fontsource-variable). Sample images from the Business starter, where still used, are described in NOTICE.md.';
