@@ -121,7 +121,7 @@ describe('state rules in the style map', () => {
     // A state the builder does not know is refused by the operation's schema.
     expect(validateOperation({ type: 'node.setStyle', ...at(s), scope: 'base', state: 'visited', property: 'color', value: '#000000' }).ok).toBe(false);
     // A backdrop blur is how it looks, so every state may change it (#353).
-    for (const state of ['hover', 'focus', 'active']) expect(box(set(s, 'phone', state, 'backdropBlur', '8px')).styles?.[`phone:${state}`]).toEqual({ backdropBlur: '8px' });
+    for (const state of ['hover', 'focus', 'active'] as const) expect(box(set(s, 'phone', state, 'backdropBlur', '8px')).styles?.[`phone:${state}`]).toEqual({ backdropBlur: '8px' });
     // A site style that does not exist is refused in a state as it is on the resting style.
     rejects(() => set(s, 'base', 'hover', 'background', { token: 'color.nope' }), /does not exist|unknown|no site style/i);
   });
