@@ -30,7 +30,7 @@ export function makeSignalPack(foundation: AuthoredPack): AuthoredPack {
     id: 'signal',
     name: 'Signal',
     version: '0.1.0',
-    license: 'GPL-3.0-or-later',
+    license: 'MIT-0',
     description: 'Geometric and crisp, for product teams, consultancies and modern trades.',
     tokens: SIGNAL_TOKENS,
     contrastPairs: SIGNAL_CONTRAST_PAIRS,

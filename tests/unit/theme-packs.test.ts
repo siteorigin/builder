@@ -89,7 +89,7 @@ describe('authoring a pack', () => {
     }
     const altHero = FOUNDATION_ALT_PACK.components.find((c) => c.componentId === 'hero.split')!;
     expect(altHero.tree!.nodes.grid.styles?.base).toMatchObject({ layout: 'stack', textAlign: 'center' });
-    for (const c of FOUNDATION_PACK.components) expect([c.id, c.provenance?.pack, c.provenance?.packVersion, c.license]).toEqual([`foundation.${c.componentId}`, 'foundation', '0.1.0', 'GPL-3.0-or-later']);
+    for (const c of FOUNDATION_PACK.components) expect([c.id, c.provenance?.pack, c.provenance?.packVersion, c.license]).toEqual([`foundation.${c.componentId}`, 'foundation', '0.1.0', 'MIT-0']);
     for (const [i, c] of FOUNDATION_ALT_PACK.components.entries()) {
       expect(c.id).toBe(`foundation-alt.${c.componentId}`);
       expect(c.provenance?.pack).toBe('foundation-alt');
@@ -159,7 +159,7 @@ describe('the Editorial pack (#390)', () => {
     expect(EDITORIAL_PACK.components.map((c) => c.componentId)).toEqual(FOUNDATION_PACK.components.map((c) => c.componentId));
     const state = createStarterState('business', 'Contracts', false);
     for (const [f, e] of pairs()) {
-      expect([e.id, e.provenance?.pack, e.provenance?.packVersion, e.license]).toEqual([`editorial.${e.componentId}`, 'editorial', '0.1.0', 'GPL-3.0-or-later']);
+      expect([e.id, e.provenance?.pack, e.provenance?.packVersion, e.license]).toEqual([`editorial.${e.componentId}`, 'editorial', '0.1.0', 'MIT-0']);
       // Same properties and defaults, parts, slots, variant options, UI state and nodes: only styles differ.
       expect(JSON.stringify(shape(e)), e.componentId).toBe(JSON.stringify(shape(f)));
       expect(contractConflicts(state, f, e), e.componentId).toEqual([]);

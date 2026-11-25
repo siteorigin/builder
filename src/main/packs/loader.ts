@@ -43,7 +43,7 @@ export const LIMITS = {
 };
 
 /** Licences that allow the components and fonts to be copied into, and published with, a person's website. */
-const COMPONENT_LICENSES = new Set(['GPL-3.0-or-later', 'GPL-3.0-only', 'GPL-2.0-or-later', 'LGPL-3.0-or-later', 'MPL-2.0', 'Apache-2.0', 'MIT', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'CC0-1.0', 'Unlicense']);
+const COMPONENT_LICENSES = new Set(['MIT-0', 'GPL-3.0-or-later', 'GPL-3.0-only', 'GPL-2.0-or-later', 'LGPL-3.0-or-later', 'MPL-2.0', 'Apache-2.0', 'MIT', 'BSD-2-Clause', 'BSD-3-Clause', 'ISC', 'CC0-1.0', 'Unlicense']);
 const FONT_LICENSES = new Set(['OFL-1.1', 'Apache-2.0', 'MIT', 'CC0-1.0', 'Unlicense', 'UFL-1.0']);
 
 class Refused extends Error {}

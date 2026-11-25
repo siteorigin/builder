@@ -770,7 +770,7 @@ export function themeNotice(theme: { name: string; license: string }): string {
   return `The ${theme.name} theme is licensed under ${theme.license}. Icons come from Lucide (ISC licence). The fonts come with the theme, in \`src/lib/siteorigin/fonts/\`, whose NOTICE.txt gives their licences. Sample images from the Business starter, where still used, are described in NOTICE.md.`;
 }
 /** The notices of a site on Foundation, the theme every new project starts with. */
-const NOTICE = themeNotice({ name: 'Foundation', license: 'GPL-3.0-or-later' });
+const NOTICE = themeNotice({ name: 'Foundation', license: 'MIT-0' });
 /** The notices from before fonts came with the theme, recognised so that exports can bring them up to date. */
 const NPM_FONTS_NOTICE =
   'The Foundation theme is licensed under GPL-3.0-or-later. Icons come from Lucide (ISC licence). Fonts are licensed under the SIL Open Font License 1.1 and are installed from npm (@fontsource-variable). Sample images from the Business starter, where still used, are described in NOTICE.md.';

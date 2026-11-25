@@ -3,7 +3,7 @@
   "productName": "SiteOrigin Builder",
   "version": "0.1.0",
   "description": "A desktop website builder that creates portable SvelteKit projects.",
-  "license": "GPL-3.0-or-later",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "main": "./out/main/index.js",
