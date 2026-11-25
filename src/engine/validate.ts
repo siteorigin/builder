@@ -3,8 +3,8 @@ import { isArticleDate, pageArticle } from '@shared/articles';
 import { storedCanonical } from '@shared/seo';
 import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
-import type { GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
-import { STYLE_PROP_MAP, isStateStyleProp, stateStyleError } from '@shared/styles';
+import type { GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
+import { STYLE_PROP_MAP, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
 import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldSchema } from '@shared/entry-fields';
@@ -828,6 +828,15 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
         if (at?.state && !isStateStyleProp(prop))
           out.push({ severity: 'error', code: 'STYLE_STATE_PROPERTY', message: `${label}: ${stateStyleError(prop)}`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}|${prop}` });
         const token = v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' ? (v as { token: string }).token : undefined;
+        // What the stylesheet writes nothing for, from a document edited or imported outside the editor: a link holding
+        // more than its token that the property cannot take, or a backdrop blur outside its grammar.
+        const unwritten =
+          token !== undefined && Object.keys(v as object).length > 1 && Object.hasOwn(STYLE_PROP_MAP, prop)
+            ? linkShapeError(prop, v as StyleTokenRef)
+            : prop === 'backdropBlur' && token === undefined
+              ? validateStyleValue(prop, v as StyleValue)
+              : null;
+        if (unwritten) out.push({ severity: 'error', code: 'STYLE_VALUE_INVALID', message: `${label}: ${unwritten} Nothing is written for it until it is fixed.`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}|${prop}` });
         if (token === undefined) continue;
         if (!tokenIds.has(token)) {
           out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `${label}: a style uses the site style "${token}", which does not exist.`, owner, nodeId });

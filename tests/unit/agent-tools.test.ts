@@ -1037,6 +1037,7 @@ describe('selection tools', () => {
 
   it('makes a part frosted glass, then sets its color back to full strength and clears the blur (#353)', async () => {
     let seen: unknown;
+    let refused: unknown;
     const { session, adapter, run } = await setup(
       [
         () => [call('g1', 'style_selected_element', { partId: 'root', scope: 'base', styles: [{ property: 'background', value: { token: 'color.surface', alpha: 0.7 } }, { property: 'backdropBlur', value: '12px' }] })],
@@ -1044,7 +1045,10 @@ describe('selection tools', () => {
           seen = JSON.parse(JSON.stringify(nodeAt(session.state, 0).overrides?.root?.base ?? null));
           return [call('g2', 'style_selected_element', { partId: 'root', scope: 'base', styles: [{ property: 'background', value: { token: 'color.surface', alpha: 7 } }] })];
         },
-        () => [call('g3', 'style_selected_element', { partId: 'root', scope: 'base', styles: [{ property: 'background', value: { token: 'color.surface' } }, { property: 'backdropBlur', value: null }] })],
+        () => {
+          refused = JSON.parse(JSON.stringify(nodeAt(session.state, 0).overrides?.root?.base ?? null));
+          return [call('g3', 'style_selected_element', { partId: 'root', scope: 'base', styles: [{ property: 'background', value: { token: 'color.surface' } }, { property: 'backdropBlur', value: null }] })];
+        },
         () => finish()
       ],
       focused
@@ -1052,8 +1056,11 @@ describe('selection tools', () => {
     await run('Make it frosted glass', heroRef(session.state));
     const tool = adapter.requests[0].tools.find((t) => t.name === 'style_selected_element');
     expect(tool?.description).toContain('{"token":"color.surface","alpha":0.7}');
+    expect(JSON.stringify(tool?.parameters)).toContain('"alpha":{"type":"number","minimum":0,"maximum":1');
     expect(seen).toEqual({ background: { token: 'color.surface', alpha: 0.7 }, backdropBlur: '12px' });
+    // A strength out of range is refused and changes nothing.
     expect(JSON.stringify(lastResult(adapter.requests[2]))).toContain('from 0 to 1');
+    expect(refused).toEqual(seen);
     expect(nodeAt(session.state, 0).overrides?.root?.base).toEqual({ background: { token: 'color.surface' } });
   });
 

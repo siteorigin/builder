@@ -749,13 +749,15 @@ function Control({
   const strength = def.kind === 'color' && lead ? lead : undefined;
   const setStrength = (t: string) => {
     const text = t.trim().replace(/\s*%$/, '');
+    if (text && !/^(\d+(\.\d+)?|\.\d+)$/.test(text)) return false;
+    // In tenths of a percent, as the field shows it.
+    const n = text ? Math.round(Number(text) * 10) / 10 : 100;
+    if (n > 100) return false;
     // Empty or 100 is full strength: the plain link, kept here only if a strength was set here.
-    if (!text || Number(text) === 100) {
+    if (n === 100) {
       if (linked && partStrength(value)) onSet({ token: value.token });
       return;
     }
-    const n = /^(\d+(\.\d+)?|\.\d+)$/.test(text) ? Number(text) : NaN;
-    if (!(n >= 0 && n <= 100)) return false;
     onSet({ token: strength!.token, alpha: Math.round(n * 10) / 1000 });
   };
   return (

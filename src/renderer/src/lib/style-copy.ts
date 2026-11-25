@@ -171,7 +171,9 @@ export function captureStyle(state: ProjectState, ref: ElementRef): StyleCopy | 
   return { kind: sel.kind, label: sel.label, sets, vars: effectiveTokens(state).map((t) => tokenVar(t.id)) };
 }
 
-const sameValue = (a: StyleValue | undefined, b: StyleValue | undefined) => (a && typeof a === 'object') || (b && typeof b === 'object') ? JSON.stringify(a) === JSON.stringify(b) : a === b;
+/** Links compare as stored (token first, a strength only below full), so key order and a full strength of 1 are no change. */
+const sameValue = (a: StyleValue | undefined, b: StyleValue | undefined) =>
+  (a && typeof a === 'object') || (b && typeof b === 'object') ? JSON.stringify(a && canonicalStyleValue(a)) === JSON.stringify(b && canonicalStyleValue(b)) : a === b;
 
 /** The site style a value links to, also in the older bare "text.h2" spelling of a text style. */
 function tokenRef(property: string, v: StyleValue): string | null {

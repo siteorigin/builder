@@ -427,6 +427,12 @@ export const MIGRATIONS: Migration[] = [
     description:
       'A repeat in a managed component can filter its items by category (filter: { field, when? }), with a row of category buttons above them. Nothing in the documents changes; the new version only keeps an older editor, which would show every item without the buttons and drop the filter from designs it rebuilds, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'style-strength',
+    description:
+      'A color or background can paint its site color at part strength ({ token, alpha }), and an element can blur what shows through it (backdropBlur). Nothing in the documents changes; the new version only keeps an older editor, which would paint those colors at full strength, write no blur, and put a link back at full strength when its site style is replaced or kept as a value, from opening the project for editing.',
+    migrate() {}
   }
 ];
 

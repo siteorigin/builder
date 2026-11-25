@@ -29,7 +29,7 @@ function atStrengthOf(link: unknown, next: unknown): unknown {
   if (typeof alpha !== 'number' || !(alpha < 1)) return next;
   const ref = refOf(next);
   if (ref) return { token: ref, alpha };
-  return typeof next === 'string' ? colorAtStrength(next, alpha) : next;
+  return typeof next === 'string' ? colorAtStrength(next.trim(), alpha) : next;
 }
 
 /**

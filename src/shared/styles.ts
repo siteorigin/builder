@@ -843,6 +843,23 @@ export const TRANSLATE_DECL = `translate: var(${TRANSLATE_VARS.translateX}, 0px)
 /** Named easing curves beyond the CSS keywords. */
 const EASING_CURVES: Record<string, string> = { smooth: 'cubic-bezier(0.2, 0, 0, 1)', overshoot: 'cubic-bezier(0.34, 1.56, 0.64, 1)' };
 
+/**
+ * Why a token link cannot be written for a property as it is shaped: a key other than `token` and `alpha`, a
+ * strength on anything but a colour, or a strength outside 0 to 1. Null for a link that fits (which token it names
+ * is checked elsewhere).
+ */
+export function linkShapeError(propId: string, value: StyleTokenRef): string | null {
+  const def = Object.hasOwn(STYLE_PROP_MAP, propId) ? STYLE_PROP_MAP[propId] : undefined;
+  if (!def) return `Unknown style property "${propId}".`;
+  const extra = Object.keys(value).find((k) => k !== 'token' && k !== 'alpha');
+  if (extra !== undefined) return `A token reference holds "token"${def.kind === 'color' ? ' and "alpha"' : ''} only, not "${extra.slice(0, 40)}".`;
+  if (value.alpha === undefined) return null;
+  if (def.kind !== 'color') return `${def.label} takes its token at full strength: only a color can be see-through.`;
+  if (typeof value.alpha !== 'number' || !Number.isFinite(value.alpha) || value.alpha < 0 || value.alpha > 1)
+    return `${def.label} strength ("alpha") must be a number from 0 to 1, such as 0.7 for 70%.`;
+  return null;
+}
+
 /** Validate a literal style value. Returns an error message or null. */
 export function validateStyleValue(propId: string, value: StyleValue): string | null {
   const def = STYLE_PROP_MAP[propId];
@@ -852,13 +869,7 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
     if (!def.tokenGroup) return `${def.label} cannot use a token.`;
     const groups = Array.isArray(def.tokenGroup) ? def.tokenGroup : [def.tokenGroup];
     if (!groups.some((g) => value.token.startsWith(g + '.'))) return `${def.label} needs a ${groups.join(' or ')} token, not "${value.token}".`;
-    const extra = Object.keys(value).find((k) => k !== 'token' && k !== 'alpha');
-    if (extra !== undefined) return `A token reference holds "token"${def.kind === 'color' ? ' and "alpha"' : ''} only, not "${extra.slice(0, 40)}".`;
-    if (value.alpha === undefined) return null;
-    if (def.kind !== 'color') return `${def.label} takes its token at full strength: only a color can be see-through.`;
-    if (typeof value.alpha !== 'number' || !Number.isFinite(value.alpha) || value.alpha < 0 || value.alpha > 1)
-      return `${def.label} strength ("alpha") must be a number from 0 to 1, such as 0.7 for 70%.`;
-    return null;
+    return linkShapeError(propId, value);
   }
   const s = String(value).trim();
   if (def.kind === 'css') return typeof value === 'string' ? parseCustomCss(s).error : `${def.label} must be text.`;
@@ -936,8 +947,8 @@ const CHECKED_AT_OUTPUT = new Set([
 export function styleToCss(propId: string, raw: StyleValue): string[] {
   if (typeof raw === 'object' && raw !== null && typeof raw.token !== 'string') return [];
   // A link holding more than its token (a strength) is read again: a hand-edited one on a property that cannot
-  // take it, or with a strength out of range, writes nothing.
-  if (typeof raw === 'object' && raw !== null && Object.keys(raw).length > 1 && validateStyleValue(propId, raw)) return [];
+  // take it, or with a strength out of range, writes nothing. Which token it names is not: a theme's may have any ID.
+  if (typeof raw === 'object' && raw !== null && Object.keys(raw).length > 1 && linkShapeError(propId, raw)) return [];
   const value = typeof raw === 'string' ? raw.trim() : raw;
   if (CHECKED_AT_OUTPUT.has(propId) && validateStyleValue(propId, value)) return [];
   const v = cssValue(value);

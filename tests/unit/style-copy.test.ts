@@ -352,8 +352,14 @@ describe('paste style', () => {
     const after = applyOperations(s, plan.operations).state;
     expect(after.pages[homeId(s)].nodes[to.nodeId].styles?.base).toMatchObject({ background: { token: 'color.surface', alpha: 0.7 }, backdropBlur: '12px' });
     expect(planStylePaste(after, captureStyle(s, from)!, to, 'every').operations).toEqual([]);
-    // A strength written the other way round in a hand-edited document is the same value.
+    // A strength written the other way round in a hand-edited document is the same value, on either side, and so is
+    // a full strength of 1 beside a plain link.
     (after.pages[homeId(s)].nodes[from.nodeId].styles!.base as Record<string, unknown>).background = { alpha: 0.7, token: 'color.surface' };
+    expect(planStylePaste(after, captureStyle(after, from)!, to, 'every').operations).toEqual([]);
+    (after.pages[homeId(s)].nodes[to.nodeId].styles!.base as Record<string, unknown>).background = { alpha: 0.7, token: 'color.surface' };
+    expect(planStylePaste(after, captureStyle(s, from)!, to, 'every').operations).toEqual([]);
+    (after.pages[homeId(s)].nodes[from.nodeId].styles!.base as Record<string, unknown>).background = { token: 'color.surface' };
+    (after.pages[homeId(s)].nodes[to.nodeId].styles!.base as Record<string, unknown>).background = { token: 'color.surface', alpha: 1 };
     expect(planStylePaste(after, captureStyle(after, from)!, to, 'every').operations).toEqual([]);
   });
 

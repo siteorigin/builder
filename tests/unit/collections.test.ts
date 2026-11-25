@@ -558,19 +558,19 @@ describe('collections format', () => {
   it('is format 8, which stamps collection and entry documents like any other', () => {
     // Released as the seventh migration, upgrading format 7 to 8; the later UI state (8 to 9), style state (9 to 10)
     // and entry address (10 to 11) steps only change the version, collection templates (11 to 12) give a
-    // collection without a layout the one its entries had, and entry articles (12 to 13) and repeat filters (13 to 14)
-    // only change the version.
+    // collection without a layout the one its entries had, and entry articles (12 to 13), repeat filters (13 to 14)
+    // and style strength (14 to 15) only change the version.
     expect(MIGRATIONS.findIndex((m) => m.id === 'collections') + 1).toBe(7);
-    expect(MIGRATIONS.slice(7).map((m) => m.id)).toEqual(['ui-state', 'style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters']);
-    expect(SCHEMA_VERSION).toBe(14);
+    expect(MIGRATIONS.slice(7).map((m) => m.id)).toEqual(['ui-state', 'style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters', 'style-strength']);
+    expect(SCHEMA_VERSION).toBe(15);
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['**Bold** [link](entry:en_winter)'], terms: {}, author: 'Ana' });
     for (const d of [s.manifest, s.site, s.tokens, s.assets, s.themeLock, ...Object.values(s.pages), ...Object.values(s.components)]) d.schemaVersion = 7;
     s.collections.posts.settings.schemaVersion = 7;
     s.collections.posts.entries.en_spring.schemaVersion = 7;
     const r = migrateProject(s)!;
-    expect(r).toMatchObject({ from: 7, to: 14, applied: ['collections', 'ui-state', 'style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters'] });
-    expect(r.state.collections.posts.settings.schemaVersion).toBe(14);
-    expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(14);
+    expect(r).toMatchObject({ from: 7, to: 15, applied: ['collections', 'ui-state', 'style-states', 'entry-addresses', 'collection-templates', 'entry-articles', 'repeat-filters', 'style-strength'] });
+    expect(r.state.collections.posts.settings.schemaVersion).toBe(15);
+    expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(15);
     // Nothing else changes.
     expect({ ...r.state.collections.posts.entries.en_spring, schemaVersion: 7 }).toEqual(s.collections.posts.entries.en_spring);
     expect({ ...r.state.collections.posts.settings, schemaVersion: 7 }).toEqual(s.collections.posts.settings);

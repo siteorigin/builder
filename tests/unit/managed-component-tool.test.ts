@@ -306,6 +306,10 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     const bad = await call(glass(1.5));
     expect(bad.ok).toBe(false);
     expect(JSON.stringify(bad.content)).toContain('from 0 to 1');
+    // A link holds its token and strength only: another key is refused by the tool, not dropped.
+    const extra = pricing() as { nodes: Array<{ id: string; styles?: unknown[] }> };
+    extra.nodes.find((n) => n.id === 'card')!.styles!.push({ property: 'background', value: { token: 'color.surface', alpha: 0.5, opacity: 0.5 } });
+    expect((await call(extra)).ok).toBe(false);
   });
 
   it('names each problem by its path, in the arguments as sent, and applies nothing', async () => {
