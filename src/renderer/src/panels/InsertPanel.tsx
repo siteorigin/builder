@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload, LayoutTemplate, SquareDashed, Library, BookmarkPlus } from 'lucide-react';
+import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload, LayoutTemplate, SquareDashed, Library, BookmarkPlus, Copy } from 'lucide-react';
 import type { ComponentDefinition, GraphNode, OwnerRef, ProjectState } from '@shared/types';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
 import type { ComponentImportResult, SavedComponent } from '@shared/api';
@@ -10,6 +10,7 @@ import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from 
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { acceptMessage, newSessionId, postToFrame, viewAfter, type FrameView } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
+import { canDuplicate } from '../lib/duplicate-component';
 import { catalogueRole, elementWhere, nodeLabel, sectionWhere, slotRefusal, slotWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } from '../lib/insert-search';
 import { SLOT_NO_PLACE, unplacedSlots } from '../lib/slot-contract';
@@ -1670,6 +1671,7 @@ export function InsertPanel() {
       { heading: def.name },
       ...(source ? [{ heading: source }] : []),
       { label: 'Rename', icon: <Pencil />, onSelect: () => setState({ modal: { kind: 'rename-component', definitionId: def.id } }) },
+      ...(canDuplicate(def, dev) ? [{ label: 'Duplicate…', icon: <Copy />, onSelect: () => setState({ modal: { kind: 'duplicate-component', definitionId: def.id, workspaceKey: getState().snapshot?.workspaceKey } }) }] : []),
       ...edit,
       { label: 'Save to personal library', icon: <BookmarkPlus />, hint: 'For every project', onSelect: () => void saveToLibrary(def) },
       { label: 'Export component…', icon: <Download />, hint: 'As a file', onSelect: () => void exportComponentFile(def) },

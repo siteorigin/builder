@@ -29,7 +29,7 @@ import { CommandMenu } from './panels/CommandMenu';
 import { LEFT_TABS } from './panels/LeftTabs';
 import { FindReplaceModal } from './panels/FindReplace';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
-import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal, SwapComponentModal } from './panels/Dialogs';
+import { CreateComponentModal, DeletePageModal, DuplicateComponentModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal, SwapComponentModal } from './panels/Dialogs';
 import { RemovalReviewModal } from './panels/RemovalReview';
 import { RepeatAsListModal } from './panels/RepeatAsList';
 import { TurnIntoSlotModal } from './panels/TurnIntoSlot';
@@ -762,6 +762,7 @@ export function Editor() {
       {modal?.kind === 'make-unique' && <MakeUniqueModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
       {modal?.kind === 'swap-component' && <SwapComponentModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
       {modal?.kind === 'rename-component' && <RenameComponentModal definitionId={modal.definitionId} />}
+      {modal?.kind === 'duplicate-component' && <DuplicateComponentModal definitionId={modal.definitionId} openedIn={modal.workspaceKey} />}
       {modal?.kind === 'delete-page' && <DeletePageModal pageId={modal.pageId} />}
       {modal?.kind === 'set-home' && <SetHomeModal pageId={modal.pageId} />}
       {modal?.kind === 'edit-definition' && <EditDefinitionModal target={modal.ref} />}

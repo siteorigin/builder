@@ -1249,6 +1249,19 @@ export const INTERACTIONS: Interaction[] = [
     ]
   },
   {
+    id: 'components.duplicate',
+    area: 'components',
+    intent: 'Copy a component under a new name to make a variant, without moving any placement onto the copy',
+    start: 'Blank site with a project component, Insert › Your components or the Inspector of a placed one',
+    routes: ['item:Insert:Duplicate…', 'item:Inspector:Duplicate component…'],
+    outcome: 'The copy takes the chosen name (or the next free "copy" name), every placement stays on the original, the announcement opens the copy in Component Studio, and one Undo takes the copy back',
+    scenario: 'Blank starter · none',
+    proof: [
+      { test: 'tests/e2e/component-library.mjs', kind: 'e2e', step: 'Duplicate copies a component under a new name, leaves every placement on it, and one Undo takes it back (#746)' },
+      { test: 'tests/unit/duplicate-component.test.ts', kind: 'unit' }
+    ]
+  },
+  {
     id: 'components.variant',
     area: 'components',
     intent: 'Make one placement its own component, or swap it for another design',
