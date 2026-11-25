@@ -38,6 +38,11 @@ const containingDecl = (prop: string, value: string) => {
 
 /** The most selectors one is read as once its `:is(…)` and `:where(…)` alternatives are apart. */
 const MAX_BRANCHES = 32;
+/**
+ * The longest selector whose alternatives are read apart: each step of that rewrites the whole selector, so a longer
+ * one (far longer than any a theme writes by hand) is read as reaching any box.
+ */
+const MAX_EXPANDED = 1000;
 
 /**
  * Walk a text outside quoted strings: `visit` sees each character's index and whether it is quoted (or escaped).
@@ -247,7 +252,8 @@ export function themeLayoutRules(css: string): ThemeLayoutRules {
     const containing = decls.some((d) => containingDecl(d.prop, d.value));
     for (const one of splitTop(selector, ',')) {
       // Too many alternatives to read apart: it may reach any box, and the page.
-      const each = branches(withoutConditions(one));
+      const plain = withoutConditions(one);
+      const each = plain.length > MAX_EXPANDED ? null : branches(plain);
       if (!each) {
         tags.add('*');
         if (containing) page = true;
