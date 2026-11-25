@@ -71,12 +71,12 @@ const readsStateRef = (c: unknown) => isStateRef(c) || (!!c && typeof c === 'obj
 
 /**
  * Whether a node takes part in what the component's UI state shows (a tab, a panel, a button that opens something):
- * the generator recognises those only where they render once per placement, never in a list.
+ * the generator recognises those only where they render once per placement, never in a list. A nested component's
+ * look chosen by the state reads it the same way in every item, so it repeats.
  */
 function readsState(n: GraphNode): boolean {
   if (readsStateRef(n.when) || readsStateRef(n.unless)) return true;
-  if (n.kind === 'link' && n.stateAction) return true;
-  return n.kind === 'instance' && Object.values(n.variants ?? {}).some(readsStateRef);
+  return n.kind === 'link' && !!n.stateAction;
 }
 
 /**
@@ -107,31 +107,33 @@ function ancestors(tree: NodeTree, nodeId: string): Array<{ node: GraphNode; slo
 }
 
 /**
- * Whether a node of a tree is shown inside a card that links somewhere: one of the elements around it is, or it is
- * content of a nested component's slot that the nested design shows inside one. Content of a slot the nested design
- * doesn't show is shown nowhere.
+ * Where a node of a tree is shown: inside a card that links somewhere (one of the elements around it is, or it is
+ * content of a nested component's slot that the nested design shows inside one), elsewhere, or nowhere (content of a
+ * slot the nested design doesn't show).
  */
-function insideCard(state: ProjectState, tree: NodeTree, nodeId: string, seen = new Set<string>()): boolean {
+function cardPlace(state: ProjectState, tree: NodeTree, nodeId: string, seen = new Set<string>()): 'card' | 'shown' | 'unshown' {
   for (const { node, slot } of ancestors(tree, nodeId)) {
-    if (isCardLink(node)) return true;
+    if (isCardLink(node)) return 'card';
     if (node.kind !== 'instance' || slot === undefined) continue;
     const inner = own(state.components, node.definitionId)?.tree;
     const shownBy = Object.values(inner?.nodes ?? {}).filter((n) => n.kind === 'slot' && n.slot === slot);
-    if (!shownBy.length) return false;
+    if (!shownBy.length) return 'unshown';
     if (seen.has(node.definitionId)) continue;
     seen.add(node.definitionId);
-    if (shownBy.some((n) => insideCard(state, inner!, n.id, seen))) return true;
+    if (shownBy.some((n) => cardPlace(state, inner!, n.id, seen) === 'card')) return 'card';
   }
-  return false;
+  return 'shown';
 }
 
-/** Whether a component's design is shown inside a card that links somewhere, wherever it is placed. */
+/** Whether a component's design is shown inside a card that links somewhere, wherever it is placed and shown. */
 function placedInCard(state: ProjectState, defId: string, seen = new Set<string>()): boolean {
   if (seen.has(defId)) return false;
   seen.add(defId);
   return instancesOf(state, defId).some(({ owner, node }) => {
     const tree = treeFor(state, owner);
-    return (!!tree && insideCard(state, tree, node.id)) || (owner.kind === 'component' && placedInCard(state, owner.id, seen));
+    const place = tree ? cardPlace(state, tree, node.id) : 'shown';
+    // A placement in a slot its component never shows is shown nowhere, wherever that component is placed.
+    return place === 'card' || (place === 'shown' && owner.kind === 'component' && placedInCard(state, owner.id, seen));
   });
 }
 
@@ -163,8 +165,10 @@ export function repeatAsListProblem(state: ProjectState, def: ComponentDefinitio
     if (readsState(n)) return `${name} holds tabs, panels or buttons that change what the component shows, which only work outside a list.`;
   }
   // A container that opens its image full size finds it among its own elements (not in a nested component's slot), never
-  // inside a list.
-  const viewer = holdsImage(tree, nodeId) ? around.find((a) => a.kind === 'element' && (a.action === 'image' || isBinding(a.action))) : undefined;
+  // inside a list: only the elements around the card up to the first nested component's slot can be looking for it.
+  const edge = around.findIndex((a) => a.kind !== 'element');
+  const elementsAround = edge < 0 ? around : around.slice(0, edge);
+  const viewer = holdsImage(tree, nodeId) ? elementsAround.find((a) => a.kind === 'element' && (a.action === 'image' || isBinding(a.action))) : undefined;
   if (viewer) return `${name} holds the image that “${viewer.name?.trim() || nodeWord(viewer)}” opens full size, which it can’t find inside a list.`;
   const parent = own(tree.nodes, at.parentId);
   // A group that hides when empty would test whether the list has items instead of the container's own conditions.
@@ -218,7 +222,7 @@ function itemFields(state: ProjectState, def: ComponentDefinition, nodeId: strin
   // design, in a nested design's slot, or around a placement of this one), it stays in the design. Worked out only
   // when the container holds rich text, since it reads every placement.
   let card: boolean | undefined;
-  const inCard = () => (card ??= insideCard(state, def.tree!, nodeId) || placedInCard(state, def.id));
+  const inCard = () => (card ??= cardPlace(state, def.tree!, nodeId) === 'card' || placedInCard(state, def.id));
   const walk = (id: string, linkedAbove: boolean) => {
     const node = own(def.tree!.nodes, id);
     if (!node || seen.has(id)) return;
