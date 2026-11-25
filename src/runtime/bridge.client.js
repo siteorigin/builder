@@ -179,14 +179,10 @@ function layoutItem(el) {
   while (parent && getComputedStyle(parent).display === 'contents') parent = parent.parentElement;
   return { item, ordered: !!parent && /(^|-)(flex|grid)$/.test(getComputedStyle(parent).display) };
 }
-/** The CSS order the page lays an element out by among its siblings (see layoutItem). */
-function layoutOrder(el) {
-  return layoutItem(el).ordered ? ownOrder(el) : 0;
-}
-/** The CSS order an element's own styles give it, whether or not its container lays items out by it: a flex or grid
- *  container it is moved into would. */
-function ownOrder(el) {
-  const order = Number.parseInt(getComputedStyle(layoutItem(el).item).order, 10);
+/** The CSS order a layout item's own styles give it, whether or not its container lays items out by it: a flex or
+ *  grid container it is moved into would. */
+function ownOrder(item) {
+  const order = Number.parseInt(getComputedStyle(item).order, 10);
   return Number.isSafeInteger(order) ? order : 0;
 }
 function rectOf(el) {
@@ -4644,9 +4640,10 @@ window.addEventListener('message', async (e) => {
         const el = all[first];
         const r = boxes[first];
         const shown = boxes.filter(Boolean).length;
-        const out = { ...r, order: layoutOrder(el) };
-        if (layoutItem(el).ordered) out.ordered = true;
-        const own = ownOrder(el);
+        const laid = layoutItem(el);
+        const own = ownOrder(laid.item);
+        const out = { ...r, order: laid.ordered ? own : 0 };
+        if (laid.ordered) out.ordered = true;
         if (own !== out.order) out.cssOrder = own;
         if (shown > 1) out.many = true;
         return out;

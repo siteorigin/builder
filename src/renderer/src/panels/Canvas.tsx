@@ -272,7 +272,8 @@ export function Canvas() {
    *  and what dropping there does (in page pixels, the gap's line and the outline of the container it goes into;
    *  `refused` says why it can't go there). */
   const [insertDrop, setInsertDrop] = useState<{ name: string; moving?: boolean; x: number; y: number; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null; surfaces: SlotSurface[] } | null>(null);
-  const insertDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void } | null>(null);
+  /** The drag onto the page that is running (see startCanvasDrop); `source`: the selection a move drags. */
+  const insertDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void; source?: string } | null>(null);
   /** What the page measured the selected and hovered boxes for, so an Add button is drawn only on the box of what it
    *  belongs to, never on one measured for the selection before. */
   const rectsFor = useRef<{ selected: BridgeDesc | null; hovered: BridgeDesc | null }>({ selected: null, hovered: null });
@@ -1569,7 +1570,8 @@ export function Canvas() {
 
   /** The chip's grip: the selection moves anywhere on the page a drop can take it, or else among its siblings. */
   const onGrip = (e: React.PointerEvent) => {
-    if (!startMoveDrag(e)) void startReorder(e);
+    const started = startMoveDrag(e);
+    if (started === 'unsupported') void startReorder(e);
   };
 
   /**
@@ -1578,46 +1580,52 @@ export function Canvas() {
    * drag from Insert is (see startCanvasDrop). A place the project would refuse (a slot's contract, a place inside
    * itself, a link inside a card that is a link) says why while the pointer is on it, and on release. The release
    * moves it there as one node.move, planned on the project as the drag found it; let go where it was picked up, on its
-   * own place, or off the page, nothing changes, and Escape cancels. False when the selection is not one this drag
-   * moves (a component's own design, one of a repeated list's items, content the page's lists don't hold), for the grip
-   * to keep it among its siblings.
+   * own place, or off the page, nothing changes, and Escape (or another selection) cancels. 'unsupported' when the
+   * selection is not one this drag moves (a component's own design, one of a repeated list's items, content the page's
+   * lists don't hold), for the grip to keep it among its siblings; 'blocked' when nothing can move now.
    */
-  function startMoveDrag(e: React.PointerEvent): boolean {
+  function startMoveDrag(e: React.PointerEvent): 'started' | 'blocked' | 'unsupported' {
     const s = getState();
     const snap = s.snapshot;
+    if (!snap || snap.readOnly || snap.aiBusy || s.mode !== 'edit' || !s.frameReady || dragging || insertDrag.current || assetDrag.current || resizeDrag.current) return 'blocked';
     const t = structuralTarget(s.selection);
-    if (!snap || !t || !s.selection || snap.readOnly || snap.aiBusy || s.mode !== 'edit' || s.definitionMode || !s.pageId || !s.frameReady) return false;
-    if (dragging || insertDrag.current || assetDrag.current || resizeDrag.current || s.selection.itemPath?.length || s.selection.instancePath.length) return false;
+    if (!t || !s.selection || s.definitionMode || !s.pageId || s.selection.itemPath?.length || s.selection.instancePath.length) return 'unsupported';
     const owner: OwnerRef = s.templateMode ? templateOwner(s.templateMode) : { kind: 'page', id: s.pageId };
-    if (t.owner.kind !== owner.kind || t.owner.id !== owner.id) return false;
+    if (t.owner.kind !== owner.kind || t.owner.id !== owner.id) return 'unsupported';
     const st = snap.state;
     const dest = moveDestination(st, owner, t.nodeId);
-    if (!dest) return false;
+    if (!dest) return 'unsupported';
+    const source = refKey(s.selection);
     e.preventDefault();
     // Keys reach this window, not the page, while dragging: Escape cancels.
     canvasRef.current?.focus({ preventScroll: true });
     const name = chromeLabel(st, t);
     const label = editLabel(st, 'Move', t);
     const from = { x: e.clientX, y: e.clientY };
+    // Let go where it was picked up (the grip can sit over another place on the page): nothing moves.
+    const still = (point: { x: number; y: number }) => Math.hypot(point.x - from.x, point.y - from.y) < 4;
     startCanvasDrop<{ op: NonNullable<MoveAim['op']>; where: Where }>(
       {
         owner,
         name,
         moving: true,
+        source,
+        still,
         specs: dest.specs,
         lists: dest.lists,
         surfaces: dest.surfaces,
         idle: () => `Moving ${name}`,
         aim: (lists, x, y, z, point) => {
-          // Let go where it was picked up (the grip can sit over another place on the page): nothing moves.
-          if (Math.hypot(point.x - from.x, point.y - from.y) < 4) return null;
+          if (still(point)) return null;
           const a = dest.aim(lists, x, y, z);
           return a && { at: a.op && { op: a.op, where: a.where }, refused: a.refused, line: a.line, outline: a.outline, label: a.refused ? `Can’t move ${name} here` : a.where ? `${name} ${whereText(a.where)}` : null };
         },
         drop: ({ op, where }) =>
           void (async () => {
-            // Planned on the project as the drag found it: a project that has moved on since takes none of it.
-            if (getState().snapshot?.workspaceKey !== snap.workspaceKey) return;
+            // Planned on the project as the drag found it, for what was selected then: a project that has moved on since,
+            // or another selection, takes none of it.
+            const now = getState();
+            if (now.snapshot?.workspaceKey !== snap.workspaceKey || !now.selection || refKey(now.selection) !== source) return;
             const r = await applyOps([op], label, undefined, snap.revision);
             if (r && where) setAnnouncement(`${name} moved ${whereText(where)}.`);
           })(),
@@ -1626,7 +1634,7 @@ export function Canvas() {
       },
       { x: e.clientX, y: e.clientY, pointerId: e.pointerId }
     );
-    return true;
+    return 'started';
   }
 
   /** Each site style's size as padding on the box `desc` finds (null where it has none), a percentage taken of the
@@ -1784,6 +1792,10 @@ export function Canvas() {
       owner: OwnerRef;
       name: string;
       moving?: boolean;
+      /** The selection it moves (see refKey): another selection meanwhile cancels it. */
+      source?: string;
+      /** Let go at this point, nothing is dropped, whether or not the page has been measured. */
+      still?: (point: { x: number; y: number }) => boolean;
       specs: ListSpec[];
       lists: (measured: Map<string, Measured | null>) => DropList[];
       surfaces: (lists: DropList[]) => SlotSurface[];
@@ -1897,6 +1909,7 @@ export function Canvas() {
     const up = (ev: PointerEvent) => {
       if (!mine(ev)) return;
       point = { x: ev.clientX, y: ev.clientY };
+      if (d.still?.(point)) return end(false);
       show();
       if (lists || !aim.over) return end(true);
       // Released on the page before it was measured: dropped where it was let go, once it is.
@@ -1931,6 +1944,7 @@ export function Canvas() {
     // Measured again, what was drawn from the old measures goes until the new ones land.
     insertDrag.current = {
       end,
+      ...(d.source !== undefined ? { source: d.source } : {}),
       remeasure: () => {
         measure();
         show();
@@ -1947,6 +1961,12 @@ export function Canvas() {
   // A drag in progress ends with the canvas, and with the page, project or editing it was planned on.
   useEffect(() => () => insertDrag.current?.end(false), []);
   useEffect(() => insertDrag.current?.end(false), [view?.key, mode, session, snapshot?.workspaceKey, !!definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A move ends with the selection it drags: another one meanwhile (in Layers, say) is not what it would move.
+  const selectedKey = selection ? refKey(selection) : '';
+  useEffect(() => {
+    const d = insertDrag.current;
+    if (d?.source !== undefined && d.source !== selectedKey) d.end(false);
+  }, [selectedKey]);
 
   /**
    * Open an Add button's list (#387), for the place it stands for in the project as it is now: what fits there, as the
@@ -2519,7 +2539,7 @@ export function Canvas() {
   // Whether the grip can drag the selection to another place on the page (see startMoveDrag): an element of the page's
   // own tree, inside a section, as the page shows it once.
   const canMoveSelection = (() => {
-    const t = state && mode === 'edit' && !definitionMode && addOwner && selection && !selection.itemPath?.length && !selection.instancePath.length ? structuralTarget(selection, { state }) : null;
+    const t = state && mode === 'edit' && !definitionMode && !snapshot?.readOnly && !snapshot?.aiBusy && addOwner && selection && !selection.itemPath?.length && !selection.instancePath.length ? structuralTarget(selection, { state }) : null;
     if (!t || t.owner.kind !== addOwner!.kind || t.owner.id !== addOwner!.id) return false;
     const tree = treeFor(state!, t.owner);
     return !!tree && !!findParent(tree, t.nodeId)?.parentId;

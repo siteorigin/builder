@@ -5,7 +5,7 @@
  * slot, or between sections in a new Section of their own.
  */
 import type { EditOperation } from '@shared/ops';
-import type { OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles } from '@shared/types';
+import type { GraphNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles } from '@shared/types';
 import { CONTAINER_SCOPES } from '@shared/types';
 import { applyOperations } from '@engine/apply';
 import { childLists, findParent, subtreeIds } from '@engine/tree';
@@ -441,6 +441,10 @@ export const INSIDE_ITSELF = 'It can’t go inside itself.';
 /** Why an element can't be moved between the page's sections: a move takes no new Section around it. */
 export const MOVE_TOP = 'Only sections go between sections. Drop it into a section, a container or a component’s slot.';
 
+/** Why a node the page shows more than once (content a component repeats), or not at all here, is not dragged on the
+ *  canvas: a move would take every copy, from a place the drag can't show. */
+export const MOVE_UNSHOWN = 'It doesn’t show once on the page at this size, so a drag can’t move it. Use Layers instead.';
+
 /** Where the node being moved is, for a drag of it: its list, everything inside it (and itself), and its own CSS order
  *  (null: it changes with the width of the container it would land in, so no gap in another list is known to show it). */
 export interface MoveSource {
@@ -510,15 +514,16 @@ export function moveDestination(state: ProjectState, owner: OwnerRef, nodeId: st
   if (!all.some((l) => l.parentId === info.parentId && l.slot === info.slot && !l.refused)) return null;
   const specs = role === 'section' ? all.filter((l) => l.parentId === null) : all;
   const inside = new Set(subtreeIds(tree, nodeId));
-  const node = own(tree.nodes, nodeId);
-  const styles = node && 'styles' in node && node.styles ? (node.styles as ResponsiveStyles) : {};
   // An Order for a width of the container around it changes with where it lands: not known.
-  const varies = CONTAINER_SCOPES.some((scope) => styles[scope] && Object.hasOwn(styles[scope]!, 'order'));
+  const varies = rootStyles(state, own(tree.nodes, nodeId)).some((styles) => CONTAINER_SCOPES.some((scope) => styles[scope] && Object.hasOwn(styles[scope]!, 'order')));
   const lists = (measured: Map<string, Measured | null>) => measuredLists(specs, measured, IN_LAYERS);
-  const source = (lists: DropList[]): MoveSource => {
-    const at = lists.find((l) => l.parentId === info.parentId && l.slot === info.slot)?.children[info.index];
-    return { nodeId, parentId: info.parentId, ...(info.slot !== undefined ? { slot: info.slot } : {}), inside, own: varies ? null : (at?.cssOrder ?? at?.order ?? 0) };
+  // Where the page shows it: once, or the drag refuses everywhere (see MOVE_UNSHOWN).
+  const shownAt = (lists: DropList[]): Measured | null => {
+    const list = lists.find((l) => l.parentId === info.parentId && l.slot === info.slot);
+    const at = list?.children[info.index];
+    return list && !list.refused && at && !at.many ? at : null;
   };
+  const source = (at: Measured): MoveSource => ({ nodeId, parentId: info.parentId, ...(info.slot !== undefined ? { slot: info.slot } : {}), inside, own: varies ? null : (at.cssOrder ?? at.order) });
   const checked = new Map<string, { refused: string | null; where: Where }>();
   let problems: Diagnostic[] | null = null;
   const check = (op: NonNullable<MoveAim['op']>) => {
@@ -534,7 +539,9 @@ export function moveDestination(state: ProjectState, owner: OwnerRef, nodeId: st
   };
   const moveOp = (parentId: string | null, slot: string | undefined, index: number): NonNullable<MoveAim['op']> => ({ type: 'node.move', owner, nodeId, parentId, ...(slot !== undefined ? { slot } : {}), index });
   const aim = (lists: DropList[], x: number, y: number, scale: number): MoveAim | null => {
-    const t = moveTarget(lists, role, source(lists), x, y, INSERT_EDGE / scale);
+    const at = shownAt(lists);
+    if (!at) return { op: null, refused: MOVE_UNSHOWN, line: null, outline: null, where: null };
+    const t = moveTarget(lists, role, source(at), x, y, INSERT_EDGE / scale);
     if (!t) return null;
     const box = t.list.box;
     const outline = box && box.height * scale < 4 ? { ...box, y: box.y - 2 / scale, height: 4 / scale } : box;
@@ -545,7 +552,7 @@ export function moveDestination(state: ProjectState, owner: OwnerRef, nodeId: st
     return { op, refused: null, line: t.line, outline, where };
   };
   const surfaces = (lists: DropList[]): SlotSurface[] =>
-    role !== 'element'
+    role !== 'element' || !shownAt(lists)
       ? []
       : lists.flatMap((l) => {
           if (!l.byPlaceholder || !l.box || l.refused || !l.parentId || l.slot === undefined || inside.has(l.parentId)) return [];
@@ -553,4 +560,24 @@ export function moveDestination(state: ProjectState, owner: OwnerRef, nodeId: st
           return [{ key: slotKey(l.parentId, l.slot), box: l.box, label: slotLabel(state, owner, l.parentId, l.slot) }];
         });
   return { role, specs, lists, aim, surfaces };
+}
+
+/** The styles that reach what a node lays out as: its own, and for a placement its component's root, each of that
+ *  root's variant options, and the placement's overrides of it. */
+function rootStyles(state: ProjectState, node: GraphNode | undefined): ResponsiveStyles[] {
+  if (!node) return [];
+  const out: ResponsiveStyles[] = 'styles' in node && node.styles ? [node.styles as ResponsiveStyles] : [];
+  if (node.kind !== 'instance') return out;
+  const def = own(state.components, node.definitionId);
+  const rootId = def?.kind === 'managed' && def.tree ? def.tree.rootIds[0] : undefined;
+  const root = rootId ? own(def!.tree!.nodes, rootId) : undefined;
+  if (root && 'styles' in root && root.styles) out.push(root.styles as ResponsiveStyles);
+  for (const axis of Object.values(def?.variantAxes ?? {}))
+    for (const option of Object.values(axis.options ?? {})) {
+      const styles = rootId ? own(option.styles, rootId) : undefined;
+      if (styles) out.push(styles);
+    }
+  const over = own(node.overrides, 'root');
+  if (over) out.push(over);
+  return out;
 }

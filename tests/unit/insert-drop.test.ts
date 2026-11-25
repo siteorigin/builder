@@ -4,7 +4,7 @@ import type { ElementNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { AssetRecord, InstanceNode } from '@shared/types';
-import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertDestination, insertIndex, INSIDE_ITSELF, measuredLists, measureIds, MOVE_TOP, moveDestination, savingProblems, slotKey, slotOfKey, type Measured } from '../../src/renderer/src/lib/insert-drop';
+import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, insertDestination, insertIndex, INSIDE_ITSELF, measuredLists, measureIds, MOVE_TOP, MOVE_UNSHOWN, moveDestination, savingProblems, slotKey, slotOfKey, type Measured } from '../../src/renderer/src/lib/insert-drop';
 import { imageInsertOps } from '../../src/renderer/src/lib/image-drop';
 import { insertOps, nodeLabel, type InsertAt } from '../../src/renderer/src/lib/insert-at';
 
@@ -680,6 +680,11 @@ describe('dragging an existing element across columns and slots (#658)', () => {
     expect(aim.refused).toMatch(/inside a card that links somewhere/);
     // A plain container still takes it.
     expect(dest.aim(lists, 300, 150, 1)).toMatchObject({ op: { parentId: p.grid }, refused: null });
+    // A problem the project already has is not this move's: with a button already in the linked row, a move elsewhere is taken.
+    const blocked = inserted(state, [{ type: 'node.insert', owner: p.owner, parentId: p.row, primitive: 'button' }]).state;
+    expect(savingProblems(blocked).length).toBeGreaterThan(0);
+    const again = moveDestination(blocked, p.owner, button)!;
+    expect(again.aim(again.lists(new Map(p.measured).set(button, box(100, 450, 200, 40))), 300, 150, 1)).toMatchObject({ op: { parentId: p.grid }, refused: null });
   });
 
   it('lands in another list by its own Order, even one its block container ignores', () => {
@@ -696,6 +701,64 @@ describe('dragging an existing element across columns and slots (#658)', () => {
     // Between the cards the grid would show it after both: refused there, taken after them.
     expect(dest.aim(lists, 495, 150, 1)).toMatchObject({ op: null, refused: expect.stringMatching(/Order style/) });
     expect(dest.aim(lists, 800, 150, 1)).toMatchObject({ op: { parentId: p.grid, index: 2 }, refused: null });
+  });
+
+  it('names the place by the node it lands after, never by itself', () => {
+    const p = page();
+    const { state, ids } = inserted(p.state, [{ type: 'node.insert', owner: p.owner, parentId: p.grid, index: 0, primitive: 'heading', text: 'Artists' }]);
+    const [heading] = ids;
+    expect(nodeLabel(state, p.owner, heading)).not.toBe(nodeLabel(state, p.owner, p.a));
+    // The heading, Ada and Bo side by side in the grid.
+    const measured = new Map(p.measured).set(heading, box(100, 50, 250, 200)).set(p.a, box(370, 50, 250, 200)).set(p.b, box(640, 50, 250, 200));
+    const dest = moveDestination(state, p.owner, heading)!;
+    const lists = dest.lists(measured);
+    const afterAda = dest.aim(lists, 600, 150, 1)!;
+    expect(afterAda).toMatchObject({ op: { parentId: p.grid, index: 1 }, where: { lead: 'after', target: nodeLabel(state, p.owner, p.a) } });
+    // A second gap in the same drag is its own move, not the first one's from the cache.
+    expect(dest.aim(lists, 850, 150, 1)).toMatchObject({ op: { parentId: p.grid, index: 2 } });
+  });
+
+  it('refuses everywhere a node the page shows more than once, or not at all here', () => {
+    const p = page();
+    const dest = moveDestination(p.state, p.owner, p.a)!;
+    const many = dest.lists(new Map(p.measured).set(p.a, { ...box(100, 50, 390, 200), many: true }));
+    expect(dest.aim(many, 500, 320, 1)).toMatchObject({ op: null, refused: MOVE_UNSHOWN });
+    const hidden = dest.lists(new Map(p.measured).set(p.a, null));
+    expect(dest.aim(hidden, 500, 320, 1)).toMatchObject({ op: null, refused: MOVE_UNSHOWN });
+    expect(dest.surfaces(hidden)).toEqual([]);
+  });
+
+  it('counts a placement whose component sets Order for a container width as of no known Order elsewhere', () => {
+    const p = page();
+    const made = applyOperations(p.state, [{ type: 'component.createFromNode', owner: p.owner, nodeId: p.row, name: 'Badge row' }]);
+    const def = made.results[0].definitionId as string;
+    const tree = made.state.components[def].tree!;
+    const root = tree.nodes[tree.rootIds[0]] as ElementNode;
+    root.styles = { ...(root.styles ?? {}), 'cq-narrow': { order: 2 } } as ElementNode['styles'];
+    const row = Object.values(made.state.pages[p.owner.id].nodes).find((n) => n.kind === 'instance' && n.definitionId === def)!;
+    const measured = new Map(p.measured)
+      .set(p.a, { ...box(100, 50, 390, 200), ordered: true })
+      .set(p.b, { ...box(510, 50, 390, 200), ordered: true })
+      .set(row.id, box(100, 280, 800, 80));
+    const dest = moveDestination(made.state, p.owner, row.id)!;
+    const lists = dest.lists(measured);
+    // Between the grid's cards, where an Order it would take in a narrow container could put it elsewhere: refused.
+    expect(dest.aim(lists, 495, 150, 1)).toMatchObject({ op: null, refused: expect.stringMatching(/Order style/) });
+  });
+
+  it('moves the last section to the top of the page', () => {
+    const p = page();
+    const dest = moveDestination(p.state, p.owner, p.second)!;
+    const lists = dest.lists(p.measured);
+    expect(dest.aim(lists, 500, 100, 1)).toMatchObject({ op: { parentId: null, index: 0 }, refused: null, where: { lead: 'at the top of' } });
+  });
+
+  it('refuses a list inside itself before what that list refuses of its own', () => {
+    const p = page();
+    // The grid's first card shows more than once: its own list would refuse with that, but it is inside the section moved.
+    const dest = moveDestination(p.state, p.owner, p.grid)!;
+    const lists = dest.lists(new Map(p.measured).set(p.b, { ...box(510, 50, 390, 200), many: true }));
+    expect(dest.aim(lists, 300, 150, 1)).toMatchObject({ op: null, refused: INSIDE_ITSELF });
   });
 
   it('is none for a node whose list a drop never finds, such as a component’s own design', () => {
