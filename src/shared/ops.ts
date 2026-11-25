@@ -446,8 +446,19 @@ export const OPERATION_SCHEMAS = {
     value: z
       .unknown()
       .nullable()
-      .describe('New value; { "token": "group.name" } to follow another style of the same kind (not for text styles); or null to go back to the theme default (theme styles only).')
+      .describe('New value; { "token": "group.name" } to follow another style of the same kind (not for text styles); or null to go back to the theme default (theme styles only).'),
+    scheme: z
+      .literal('dark')
+      .optional()
+      .describe('Colors only, on a site with a dark palette (token.setColorScheme): sets the color in the dark palette instead of the light one. null there makes it show its light color again.')
   }),
+  'token.setColorScheme': z
+    .object({
+      type: z.literal('token.setColorScheme'),
+      mode: z.enum(['single', 'system', 'toggle']).describe('"single": one palette. "system": a dark palette beside it, shown when the visitor\'s device asks for dark. "toggle": that, plus a Light/Dark switch in the shared header that the browser remembers.'),
+      regenerate: z.boolean().optional().describe('Make the dark palette afresh from the light one, replacing its colors. It is made automatically the first time it is turned on.')
+    })
+    .describe('Choose whether the website has a dark palette for visitors. Edit its colors with token.set and scheme "dark".'),
   'token.create': z.object({
     type: z.literal('token.create'),
     group: z.enum(['color', 'font', 'text', 'space', 'container', 'radius', 'shadow', 'border']),

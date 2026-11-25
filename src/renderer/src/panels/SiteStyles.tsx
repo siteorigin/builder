@@ -4,12 +4,14 @@ import { ChevronDown, ChevronRight, Globe, Link2, RotateCcw } from 'lucide-react
 import type { EntityKind, ProjectState, SiteIdentity, TextStyleValue, TokenDef } from '@shared/types';
 import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
+import { hasDarkPalette, type PaletteScheme } from '@shared/color-scheme';
+import { ColorSchemeControls } from './ColorSchemeControls';
 import { getTheme, listThemes } from '@catalogue/index';
 import { installedFonts } from '@catalogue/fonts';
 import { activePairing, activeTypeScale, availablePairings, pairingOps, scaleRoles, sizeAtWidth, typeScale, typeScaleOps, TYPE_SCALE_CHOICES, type TypeScaleChoice } from '@shared/type-scale';
 import { allTrees, instancesOf } from '@engine/tree';
 import { forEachTokenPropRef } from '@engine/tokens';
-import { api, applyOps, useStore } from '../store';
+import { api, applyOps, setState, useStore } from '../store';
 import { openSiteStyles } from '../lib/actions';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field, Section, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
@@ -395,13 +397,17 @@ function NameWithReset({ label, reset }: { label: string; reset: ReactNode }) {
 }
 
 /** The reset control on a changed value: the mark is the action, and it names what it puts back. */
-function ResetDot({ label, theme, onReset }: { label: string; theme: string; onReset: () => unknown }) {
+/** Where a changed value goes back to: the theme's default, or (in the dark palette) the colour of the light one. */
+const RESET_FROM = { theme: ['the theme', "the theme's"], light: ['the light colors', "the light colors'"] } as const;
+
+function ResetDot({ label, theme, onReset, from = 'theme' }: { label: string; theme: string; onReset: () => unknown; from?: keyof typeof RESET_FROM }) {
   const say = useContext(SayContext);
+  const [origin, whose] = RESET_FROM[from];
   return (
     <button
       className="reset-dot"
-      title={`Changed from the theme. Click to go back to the theme's ${theme}.`}
-      aria-label={`Set ${label} back to the theme's ${theme}`}
+      title={`Changed from ${origin}. Click to go back to ${whose} ${theme}.`}
+      aria-label={`Set ${label} back to ${whose} ${theme}`}
       onClick={(e) => {
         const row = e.currentTarget.closest('[data-ss-row]');
         const item = e.currentTarget.closest('li');
@@ -410,7 +416,7 @@ function ResetDot({ label, theme, onReset }: { label: string; theme: string; onR
         const panel = e.currentTarget.closest('.ss');
         const trigger = e.currentTarget;
         // Said once the change has saved, never before: a refused reset says nothing.
-        void Promise.resolve(onReset()).then((ok) => ok !== null && ok !== false && say(`${label} is back to the theme's ${theme}.`));
+        void Promise.resolve(onReset()).then((ok) => ok !== null && ok !== false && say(`${label} is back to ${whose} ${theme}.`));
         refocus(trigger, row, next, () => panel?.querySelector<HTMLElement>('.ss-changes button, .ss-theme-switch, .ss-color.compact input.ss-hex') ?? panel?.querySelector<HTMLElement>('.insp-jump button') ?? null);
       }}
     >
@@ -591,8 +597,17 @@ export function SiteStyles() {
   const [openText, setOpenText] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const uid = useId();
-  // Which paired colours the theme sets against each other, and whether they are readable as they stand.
-  const contrast = useMemo(() => buildContrastModel(tokens, snap ? getTheme(snap.state.site.themeId).contrastPairs : []), [tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // On a site with a dark palette, Colors shows and edits one palette at a time; the canvas previews the same one.
+  const [paletteChoice, setPaletteChoice] = useState<PaletteScheme>('light');
+  const dual = hasDarkPalette(snap?.state.tokens);
+  const palette: PaletteScheme = dual ? paletteChoice : 'light';
+  const darkTokens = useMemo(() => (snap ? effectiveTokens(snap.state, 'dark') : []), [snap?.state.tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownTokens = palette === 'dark' ? darkTokens : tokens;
+  // Which paired colours the theme sets against each other, and whether they are readable as they stand, in the
+  // palette shown; and in the other one, so a pair spoiled there is never out of sight.
+  const pairs = snap ? getTheme(snap.state.site.themeId).contrastPairs : undefined;
+  const contrast = useMemo(() => buildContrastModel(shownTokens, pairs), [shownTokens, pairs]);
+  const otherContrast = useMemo(() => (dual ? buildContrastModel(palette === 'dark' ? tokens : darkTokens, pairs) : null), [dual, palette, tokens, darkTokens, pairs]);
   const contrastStatus = useContrastStatus(contrast);
   const refusedPacks = useStore((s) => s.packs.refused);
   const packsDir = useStore((s) => s.packs.userDir);
@@ -635,13 +650,13 @@ export function SiteStyles() {
     // The offer goes once it is taken, so focus moves to the colour's own row, or to Brand in Basics.
     const row = trigger.closest('[data-ss-row]');
     const panel = trigger.closest('.ss');
-    void applyOps([{ type: 'token.set', tokenId: s.token, value: s.value }], `Use a readable ${label}`, undefined, snap.revision);
+    void applyOps([{ type: 'token.set', tokenId: s.token, value: s.value, ...(palette === 'dark' ? { scheme: 'dark' as const } : {}) }], `Use a readable ${label}${palette === 'dark' ? ' (dark colors)' : ''}`, undefined, snap.revision);
     // Brand's value is plain text while it follows another colour: then its "Use its own color" button is what can take focus.
     refocus(trigger, row, null, () => panel?.querySelector<HTMLElement>('.ss-color.compact input.ss-hex, .ss-color.compact .ss-follows .link-btn') ?? null);
   };
   /** Open a colour's row in Colors and put focus on its value, or on its details when it follows another colour. */
   const jumpTo = (id: string) => {
-    const linked = !!refOf(byId(id)?.value);
+    const linked = !!refOf(shownById(id)?.value);
     openSection('tok-color', { focus: `[data-token-id="${CSS.escape(id)}"] ${linked ? '.ss-disclose' : 'input.ss-hex'}` });
   };
   /** Open where a changed style is edited, from its line in the review: its row, its text style, or its font in Basics. */
@@ -673,6 +688,22 @@ export function SiteStyles() {
   const themes = listThemes().filter((t) => !t.devOnly || dev || t.id === theme.id);
   const hex = (id: string) => resolveColor(tokens, byId(id)?.value);
   const themeHex = (id: string) => resolveColor(theme.tokens, themeValue(id));
+  // Colours as the palette shown has them. In the dark palette a colour is changed when it has a dark value of its
+  // own, and going back shows its light colour again.
+  const darkOwn = st.tokens.darkOverrides ?? {};
+  const shownById = (id: string) => shownTokens.find((t) => t.id === id);
+  const shownHex = (id: string) => resolveColor(shownTokens, shownById(id)?.value);
+  const shownChanged = (id: string) => (palette === 'dark' ? Object.hasOwn(darkOwn, id) : changed(id));
+  const setShown = (id: string, value: unknown, by?: 'picker') =>
+    palette === 'dark'
+      ? applyOps([{ type: 'token.set', tokenId: id, value, scheme: 'dark' }], `Change ${byId(id)?.label ?? id} (dark colors)`, by ? `token:dark:${id}:${by}` : `token:dark:${id}`)
+      : set(id, value, by);
+  const relinkShown = (id: string, value: unknown) => (palette === 'dark' ? applyOps([{ type: 'token.set', tokenId: id, value, scheme: 'dark' }], `Change ${byId(id)?.label ?? id} (dark colors)`) : relink(id, value));
+  /** Show and edit one palette, and preview it on the canvas. */
+  const choosePalette = (p: PaletteScheme) => {
+    setPaletteChoice(p);
+    setState({ previewScheme: p });
+  };
   const fontStack = (id: string) => resolvedText(tokens, id);
   const colors = group('color');
   const colorIds = colors.map((t) => t.id);
@@ -685,7 +716,8 @@ export function SiteStyles() {
     let grew = true;
     while (grew) {
       grew = false;
-      for (const c of colors) {
+      for (const c of shownTokens) {
+        if (c.group !== 'color') continue;
         const r = refOf(c.value);
         if (r && (r === id || out.has(r)) && !out.has(c.id)) (out.add(c.id), (grew = true));
       }
@@ -757,28 +789,37 @@ export function SiteStyles() {
     return [{ what: '', now: show(t.group, null, t.value), was: show(t.group, null, themeValue(id)), ...colorsOf }];
   };
 
-  const colorRow = (t: TokenDef, compact = false) => {
-    const value = hex(t.id);
+  const colorRow = (light: TokenDef, compact = false) => {
+    // The colour as the palette shown has it: its own dark value, or its light one shown again.
+    const t = shownById(light.id) ?? light;
+    const value = shownHex(t.id);
     const ref = refOf(t.value);
     // A link to a colour that is gone (renamed, removed with its pack) says so, rather than naming an ID.
     const follows = ref ? (byId(ref) && value ? byId(ref)!.label : 'a color that is no longer available') : null;
     // Gone, or followed through a chain that ends nowhere: either way there is no colour to show.
     const lost = !!ref && (!byId(ref) || !value);
+    const darkShown = palette === 'dark';
     const desc = (theme.id.startsWith('foundation') ? FOUNDATION_USES[t.id] : undefined) ?? t.description;
     const open = !compact && openDetail === t.id;
     const detailId = `${uid}-detail-${t.id}`;
     const loops = followers(t.id);
     return (
-      <div className={`ss-color${changed(t.id) ? ' set' : ''}${open ? ' open' : ''}${compact ? ' compact' : ''}${follows ? ' linked' : ''}`} key={t.id} data-ss-row data-token-id={compact ? undefined : t.id}>
+      <div className={`ss-color${shownChanged(t.id) ? ' set' : ''}${open ? ' open' : ''}${compact ? ' compact' : ''}${follows ? ' linked' : ''}`} key={t.id} data-ss-row data-token-id={compact ? undefined : t.id}>
         {!compact && (
           <button className="ss-disclose" title="Linking, contrast and where it is used" aria-expanded={open} aria-controls={detailId} aria-label={`${t.label}: linking, contrast and where it is used`} onClick={() => setOpenDetail(open ? null : t.id)}>
             <ChevronRight />
           </button>
         )}
-        <ColorPick value={value} disabled={!!follows} onPick={(next) => set(t.id, next, 'picker')} label={`${t.label} color`} />
+        <ColorPick value={value} disabled={!!follows} onPick={(next) => setShown(t.id, next, 'picker')} label={`${t.label}${darkShown ? ' dark' : ''} color`} />
         <div className="ss-color-text">
           <div className="ss-name">
-            <NameWithReset label={compact ? `${t.label} color` : t.label} reset={changed(t.id) && <ResetDot label={t.label} theme={`color, ${themeHex(t.id)}`} onReset={() => set(t.id, null)} />} />
+            <NameWithReset
+              label={compact ? `${t.label} color` : t.label}
+              reset={
+                shownChanged(t.id) &&
+                (darkShown ? <ResetDot label={`${t.label} (dark colors)`} from="light" theme={`color, ${hex(t.id)}`} onReset={() => setShown(t.id, null)} /> : <ResetDot label={t.label} theme={`color, ${themeHex(t.id)}`} onReset={() => set(t.id, null)} />)
+              }
+            />
           </div>
           {desc && <div className="ss-desc">{desc}</div>}
         </div>
@@ -787,7 +828,7 @@ export function SiteStyles() {
             {value || '—'}
           </span>
         ) : (
-          <DraftInput className="input sm mono ss-hex" value={value} onCommit={(v) => (v.trim() ? set(t.id, v.trim()) : false)} ariaLabel={`${t.label} color value`} />
+          <DraftInput className="input sm mono ss-hex" value={value} onCommit={(v) => (v.trim() ? setShown(t.id, v.trim()) : false)} ariaLabel={`${t.label}${darkShown ? ' dark' : ''} color value`} />
         )}
         {/* Below the row, under the name: what it follows, and what is unreadable. Never squeezed beside the value. */}
         {follows && (
@@ -831,7 +872,7 @@ export function SiteStyles() {
                   onClick={(e) => {
                     const row = e.currentTarget.closest('[data-ss-row]');
                     const trigger = e.currentTarget;
-                    relink(t.id, value);
+                    relinkShown(t.id, value);
                     refocus(trigger, row, null, () => null);
                   }}
                 >
@@ -851,7 +892,7 @@ export function SiteStyles() {
             {open && (
               <>
                 <Field label="Link to another color" hint={lost ? 'The color it followed is no longer available. Choose another, or give it its own color.' : 'Follows another color, and changes when it does.'}>
-                  <select className="select sm" value={ref ?? ''} onChange={(e) => relink(t.id, e.target.value ? { token: e.target.value } : value || themeHex(t.id) || '#000000')}>
+                  <select className="select sm" value={ref ?? ''} onChange={(e) => relinkShown(t.id, e.target.value ? { token: e.target.value } : value || themeHex(t.id) || '#000000')}>
                     {lost && (
                       <option value={ref!} disabled>
                         No longer available
@@ -859,7 +900,7 @@ export function SiteStyles() {
                     )}
                     <option value="">Its own color</option>
                     {colorIds
-                      .filter((id) => id !== t.id && !loops.has(id) && !!hex(id))
+                      .filter((id) => id !== t.id && !loops.has(id) && !!shownHex(id))
                       .map((id) => (
                         <option key={id} value={id}>
                           {byId(id)?.label}
@@ -1332,7 +1373,7 @@ export function SiteStyles() {
           {brand && colorRow(brand, true)}
           {brand?.id === 'color.brand' && <BrandContrast model={contrast} onUse={chooseReadable} onJump={jumpTo} />}
           {/* A new brand colour with the theme's hover colour left as it was: buttons would hover to a colour from another palette. */}
-          {brand?.id === 'color.brand' && changed('color.brand') && byId('color.brand-strong') && !changed('color.brand-strong') && !refOf(byId('color.brand-strong')?.value) && (
+          {palette === 'light' && brand?.id === 'color.brand' && changed('color.brand') && byId('color.brand-strong') && !changed('color.brand-strong') && !refOf(byId('color.brand-strong')?.value) && (
             <p className="ss-hover-note">
               <span className="ss-chip" style={{ background: hex('color.brand-strong') }} aria-hidden="true" />
               <span>
@@ -1371,6 +1412,7 @@ export function SiteStyles() {
       </Section>
 
       <Section title="Colors" id="tok-color" scope={changedNote(colorIds)}>
+        <ColorSchemeControls state={st} palette={palette} onPalette={choosePalette} contrast={contrast} otherContrast={otherContrast} say={say} />
         {[...COLOR_GROUPS, { label: 'Other colors', ids: colorIds.filter((id) => !COLOR_GROUPS.some((g) => g.ids.includes(id))) }]
           .map((g) => ({ ...g, list: g.ids.map(byId).filter((t): t is TokenDef => !!t && t.group === 'color') }))
           .filter((g) => g.list.length)

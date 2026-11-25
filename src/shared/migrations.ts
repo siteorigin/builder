@@ -433,6 +433,12 @@ export const MIGRATIONS: Migration[] = [
     description:
       'A color or background can paint its site color at part strength ({ token, alpha }), and an element can blur what shows through it (backdropBlur). Nothing in the documents changes; the new version only keeps an older editor, which would paint those colors at full strength, write no blur, and put a link back at full strength when its site style is replaced or kept as a value, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'color-schemes',
+    description:
+      'Site styles can give visitors a dark palette beside the light one (colorSchemeMode and darkOverrides in tokens.json), following their device or switched from the header. Nothing in the documents changes; the new version only keeps an older editor, which would export the site with its light palette alone, from opening the project for editing.',
+    migrate() {}
   }
 ];
 

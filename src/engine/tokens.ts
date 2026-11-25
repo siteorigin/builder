@@ -5,6 +5,7 @@ import { getTheme } from '@catalogue/index';
 import { colorAtStrength, linkOf } from '@shared/styles';
 import { allTrees } from './tree';
 import { itemStyleRecords } from '@shared/item-styles';
+import { darkValue } from '@shared/color-scheme';
 
 export interface TokenRefSite {
   /** Where the reference is, in words ("Home", "Feature card", "Site styles"). */
@@ -13,6 +14,10 @@ export interface TokenRefSite {
   kind: 'style' | 'token' | 'prop';
   /** Style property ID for style references. */
   property?: string;
+  /** Token references: the style whose value holds it. */
+  tokenId?: string;
+  /** Token references: the palette the value is in. A colour's value in the dark palette is `dark`. */
+  scheme?: 'light' | 'dark';
   /** Point the reference somewhere else, or replace it with a literal value. */
   replace: (next: unknown) => void;
 }
@@ -35,7 +40,8 @@ function atStrengthOf(link: unknown, next: unknown): unknown {
 /**
  * Visit every `{ token }` reference held in project-owned data: page and shell node styles, instance overrides
  * (shared and per item), project component trees and variant rules, token overrides and custom token values
- * (including text-style families). Theme-owned definitions and theme defaults are fixed data, so they are not visited.
+ * (including text-style families), and the dark palette's colours. Theme-owned definitions and theme defaults are
+ * fixed data, so they are not visited.
  */
 export function forEachTokenRef(state: ProjectState, fn: (tokenId: string, site: TokenRefSite) => void) {
   const styles = (rs: ResponsiveStyles | undefined, label: string) => {
@@ -63,15 +69,22 @@ export function forEachTokenRef(state: ProjectState, fn: (tokenId: string, site:
     const v = holder[key];
     // A stray `token` beside a text style's metrics is not a link; the metrics are its value.
     const ref = linkOf(v, groups.get(id));
-    if (ref) return fn(ref, { label: 'Site styles', kind: 'token', replace: (next) => (holder[key] = next) });
+    if (ref) return fn(ref, { label: 'Site styles', kind: 'token', tokenId: id, scheme: 'light', replace: (next) => (holder[key] = next) });
     if (v && typeof v === 'object' && 'family' in (v as object)) {
       const fam = v as Record<string, unknown>;
       const fref = refOf(fam.family);
-      if (fref) fn(fref, { label: 'Site styles', kind: 'token', replace: (next) => (fam.family = next) });
+      if (fref) fn(fref, { label: 'Site styles', kind: 'token', tokenId: id, scheme: 'light', replace: (next) => (fam.family = next) });
     }
   };
   for (const id of Object.keys(state.tokens.overrides)) tokenValue(state.tokens.overrides as Record<string, unknown>, id, id);
   for (const t of state.tokens.custom) tokenValue(t as unknown as Record<string, unknown>, 'value', t.id);
+  // The dark palette's links, kept while it is turned off too, so turning it back on finds them still pointing somewhere.
+  const dark = state.tokens.darkOverrides;
+  if (dark && typeof dark === 'object')
+    for (const id of Object.keys(dark)) {
+      const ref = refOf(dark[id]);
+      if (ref) fn(ref, { label: 'Site styles (dark colors)', kind: 'token', tokenId: id, scheme: 'dark', replace: (next) => (dark[id] = next as never) });
+    }
   forEachTokenPropRef(state, (id, site) => fn(id, { label: site.label, kind: 'prop', replace: site.replace }));
 }
 
@@ -146,11 +159,26 @@ export function declaredTokens(state: ProjectState): TokenDef[] {
   return [...getTheme(state.site.themeId).tokens, ...state.tokens.custom];
 }
 
-/** The first token that refers back to itself through the styles it links to, or null. */
+/**
+ * The first token that refers back to itself through the styles it links to, or null. The dark palette is checked
+ * as well (whether or not it is turned on): there a colour's own dark value replaces its light one, so links that are
+ * harmless in each map apart can loop once laid over each other.
+ */
 export function findTokenCycle(state: ProjectState): string | null {
+  return findTokenCycleIn(state, 'light') ?? findTokenCycleIn(state, 'dark');
+}
+
+/** The first token that refers back to itself in one palette. */
+export function findTokenCycleIn(state: ProjectState, scheme: 'light' | 'dark'): string | null {
   const declared = declaredTokens(state);
   const byId = new Map(declared.map((t) => [t.id, t]));
-  const value = (id: string) => (Object.hasOwn(state.tokens.overrides, id) ? state.tokens.overrides[id] : byId.get(id)?.value);
+  const dark = scheme === 'dark' ? state.tokens.darkOverrides : undefined;
+  if (scheme === 'dark' && (!dark || typeof dark !== 'object')) return null;
+  const light = (id: string) => (Object.hasOwn(state.tokens.overrides, id) ? state.tokens.overrides[id] : byId.get(id)?.value);
+  const value = (id: string) => {
+    const own = dark && byId.get(id)?.group === 'color' && Object.hasOwn(dark, id) ? darkValue(dark[id]) : null;
+    return own ?? light(id);
+  };
   for (const t of declared) {
     const seen = new Set<string>();
     for (let cur: string | null = t.id; cur; cur = linkOf(value(cur), byId.get(cur)?.group)) {

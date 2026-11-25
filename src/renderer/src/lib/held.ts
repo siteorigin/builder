@@ -249,6 +249,8 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       // A custom style is read whole: one deleted and created again under the same ID is not the same style.
       const custom = state.tokens.custom.find((t) => t.id === op.tokenId);
       if (!custom && !getTheme(state.site.themeId).tokens.some((t) => t.id === op.tokenId)) return gone('site style');
+      // A colour of the dark palette is its own field: its dark value over the light one, read whole.
+      if (op.scheme === 'dark') return found({ themeId: state.site.themeId, scheme: 'dark', override: has(state.tokens.darkOverrides ?? {}, op.tokenId), light: has(state.tokens.overrides, op.tokenId), custom });
       return found({ themeId: state.site.themeId, override: has(state.tokens.overrides, op.tokenId), custom });
     }
     case 'token.rename': {
@@ -345,7 +347,7 @@ export function tableRowNameEdit(operations: EditOperation[], base: unknown[], c
 }
 
 /** Keys that say which field an operation writes; every other key is the value written. */
-const TARGET_KEYS = new Set(['owner', 'nodeId', 'pageId', 'collectionId', 'entryId', 'prop', 'itemId', 'field', 'partId', 'variant', 'axis', 'scope', 'state', 'property', 'tokenId', 'assetId', 'definitionId', 'action', 'rowId', 'columnId']);
+const TARGET_KEYS = new Set(['owner', 'nodeId', 'pageId', 'collectionId', 'entryId', 'prop', 'itemId', 'field', 'partId', 'variant', 'axis', 'scope', 'state', 'property', 'tokenId', 'scheme', 'assetId', 'definitionId', 'action', 'rowId', 'columnId']);
 
 /** Identifies the fields a batch writes, so a newer edit of the same fields replaces an older held one. */
 export function fieldKey(operations: EditOperation[]): string {

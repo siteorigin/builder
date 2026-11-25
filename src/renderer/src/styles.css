@@ -2322,6 +2322,12 @@ iframe { color-scheme: light dark; }
 .ss-scale-choices { flex-wrap: wrap; }
 .ss-scale-choices button { flex: 1 0 auto; }
 .ss-scale-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+/* Which palettes visitors get, and which one Colors shows. */
+.ss-schemes { gap: 8px; }
+.ss-palette-switch button svg { width: 14px; height: 14px; }
+.ss-palette-contrast { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; list-style: none; }
+.ss-palette-contrast .ss-verdict { grid-column: auto; grid-row: auto; }
+.ss-palette-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
 .ss-type-specimen { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; border-radius: var(--r-sm); background: var(--border); box-shadow: 0 0 0 1px var(--border-strong); overflow: hidden; }
 .ss-type-col { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 10px 10px; background: var(--raised); color: var(--text); }
 .ss-type-head { padding-bottom: 2px; font-size: 12px; font-weight: 600; color: var(--text-2); }

@@ -25,6 +25,7 @@ import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { ARRIVAL_MS, arrivalShown, takeArrival } from '../lib/arrival';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
+import { hasDarkPalette } from '@shared/color-scheme';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
@@ -108,6 +109,9 @@ export function Canvas() {
   const pageId = useStore((s) => s.pageId);
   const templateMode = useStore((s) => s.templateMode);
   const viewport = useStore((s) => s.viewport);
+  // On a site with a dark palette, the canvas can show either palette whatever this computer's setting: the frame's
+  // own color scheme is what the page's prefers-color-scheme reads (see styles.css), never the editor's Appearance.
+  const frameScheme = useStore((s) => (s.previewScheme !== 'system' && hasDarkPalette(s.snapshot?.state.tokens) ? s.previewScheme : undefined));
   const zoomSetting = useStore((s) => s.zoom);
   const mode = useStore((s) => s.mode);
   const selection = useStore((s) => s.selection);
@@ -2591,7 +2595,7 @@ export function Canvas() {
                 src={initialSrc}
                 sandbox="allow-scripts allow-same-origin allow-forms"
                 // While a drag runs, and while another page is on its way, picks on the page would act on what is leaving.
-                style={{ pointerEvents: dragging || staleFrame ? 'none' : undefined }}
+                style={{ pointerEvents: dragging || staleFrame ? 'none' : undefined, colorScheme: frameScheme }}
                 tabIndex={staleFrame ? -1 : undefined}
               />
             </div>

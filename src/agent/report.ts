@@ -284,7 +284,10 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return add(op, `${op.type}:${op.action}:${ownerKey(op.owner)}:${op.nodeId}:${op.prop}`, (_d, n) => `${what(n)} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
       }
       case 'token.set':
+        if (op.scheme === 'dark') return plain(op, `${op.value === null ? 'Reset' : 'Changed'} the dark palette's ${quoted(tokenLabel(op.tokenId))}`);
         return plain(op, `${op.value === null ? 'Reset' : 'Changed'} the site style ${quoted(tokenLabel(op.tokenId))}`);
+      case 'token.setColorScheme':
+        return plain(op, op.mode === 'single' ? 'Gave the site one color palette' : `Gave the site a dark palette${op.mode === 'toggle' ? ' with a Light/Dark switch in the header' : ' that follows the visitor\'s device'}${op.regenerate ? ', made afresh' : ''}`);
       case 'token.create':
         return plain(op, `Added the site style ${quoted(op.label)}`);
       case 'token.rename':

@@ -7,6 +7,7 @@ import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtex
 import { childLists, displayName, enclosingRepeatProp, getTree } from '@engine/tree';
 import { TABLE_LIMITS } from '@engine/table';
 import { effectiveTokens, isDraftPage } from '@generator/index';
+import { hasDarkPalette } from '@shared/color-scheme';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { hasCollections } from '@shared/entry-feed';
 import { teaserFields } from '@shared/page-teasers';
@@ -590,8 +591,21 @@ export function catalogueIndex(themeId: string) {
   });
 }
 
+/**
+ * The site's tokens as the assistant reads them. On a site with a dark palette, each colour also says its value
+ * there (`darkValue`) and whether that is its own (`darkOverridden`) or its light value shown again.
+ */
 export function tokensSummary(state: ProjectState) {
-  return effectiveTokens(state).map((t) => ({ id: t.id, label: t.label, value: t.value, overridden: t.id in state.tokens.overrides }));
+  const dual = hasDarkPalette(state.tokens);
+  const dark = dual ? new Map(effectiveTokens(state, 'dark').map((t) => [t.id, t.value])) : null;
+  const own = state.tokens.darkOverrides ?? {};
+  return effectiveTokens(state).map((t) => ({
+    id: t.id,
+    label: t.label,
+    value: t.value,
+    overridden: t.id in state.tokens.overrides,
+    ...(dark && t.group === 'color' ? { darkValue: dark.get(t.id), darkOverridden: Object.hasOwn(own, t.id) } : {})
+  }));
 }
 
 /** The selected element's own content is shown whole up to this size (as JSON), and summarized beyond it. */

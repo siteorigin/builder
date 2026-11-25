@@ -145,6 +145,7 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     runtime: snap.runtime,
     pageId,
     viewport: restoreViewport(local.viewport),
+    previewScheme: 'system',
     zoom: restoreZoom(local.zoom),
     leftTab: (local.leftTab as never) ?? 'pages',
     rightTab: (local.rightTab as never) ?? 'inspect',

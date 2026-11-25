@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Sparkles, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
+import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, FolderSearch, History, House, LogOut, Monitor, Moon, MousePointer2, Newspaper, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Sparkles, Sun, SunMoon, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
+import { hasDarkPalette } from '@shared/color-scheme';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { projectDisplayName } from '@shared/project-name';
 import { api, editRunStatus, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
@@ -19,6 +20,7 @@ export function Toolbar() {
   const pageId = useStore((s) => s.pageId);
   const viewport = useStore((s) => s.viewport);
   const zoom = useStore((s) => s.zoom);
+  const previewScheme = useStore((s) => s.previewScheme);
   const mode = useStore((s) => s.mode);
   const leftTab = useStore((s) => s.leftTab);
   // The Posts workspace in front: the toolbar names the post (or where its preview's visitor went), not the page under
@@ -183,6 +185,15 @@ export function Toolbar() {
     const v = Number(raw.trim());
     return raw.trim() !== '' && Number.isInteger(v) && v >= VIEWPORT_LIMITS.min && v <= VIEWPORT_LIMITS.max ? v : null;
   };
+  // A site with a dark palette previews either palette, whatever this computer's setting and the editor's Appearance.
+  const dualPalette = hasDarkPalette(snap?.state.tokens);
+  const SCHEMES = [
+    ['system', 'This computer’s setting', <SunMoon key="system" />],
+    ['light', 'Light colors', <Sun key="light" />],
+    ['dark', 'Dark colors', <Moon key="dark" />]
+  ] as const;
+  const schemeItems: MenuItem[] = SCHEMES.map(([id, label, icon]) => ({ label, icon, checked: previewScheme === id, onSelect: () => setState({ previewScheme: id }) }));
+  const schemeLabel = SCHEMES.find(([id]) => id === previewScheme)![1];
   const zoomItems: MenuItem[] = [
     { label: 'Fit to window', checked: zoom === 'fit', disabled: covered, onSelect: () => setZoom('fit') },
     ...ZOOM_LEVELS.map((z) => ({ label: `${Math.round(z * 100)}%`, checked: zoom === z, disabled: covered, onSelect: () => setZoom(z) }))
@@ -374,6 +385,18 @@ export function Toolbar() {
             </span>
           )}
         </label>
+        {dualPalette && tier !== 'overflow' && (
+          <button
+            className="icon-btn scheme-btn"
+            aria-haspopup="menu"
+            aria-expanded={false}
+            title={`Preview colors: ${schemeLabel.toLowerCase()}`}
+            aria-label={`Preview colors: ${schemeLabel.toLowerCase()}`}
+            onClick={(e) => menu.openAt(e.currentTarget, schemeItems, 'Preview colors')}
+          >
+            {SCHEMES.find(([id]) => id === previewScheme)![2]}
+          </button>
+        )}
         {tier !== 'overflow' && (
           <button
             className="btn btn-sm btn-ghost zoom-btn"
@@ -422,7 +445,7 @@ export function Toolbar() {
             aria-expanded={false}
             title={`More: zoom (${zoom === 'fit' ? 'fit to window' : `${Math.round(zoom * 100)}%`}) and settings`}
             aria-label="More"
-            onClick={(e) => menu.openAt(e.currentTarget, [{ heading: 'Zoom' }, ...zoomItems, { separator: true }, { label: 'Settings…', icon: <Settings />, onSelect: openSettings }], 'More')}
+            onClick={(e) => menu.openAt(e.currentTarget, [{ heading: 'Zoom' }, ...zoomItems, ...(dualPalette ? [{ heading: 'Preview colors' }, ...schemeItems] : []), { separator: true }, { label: 'Settings…', icon: <Settings />, onSelect: openSettings }], 'More')}
           >
             <Ellipsis />
           </button>

@@ -72,6 +72,7 @@ import { publicUrl } from '@shared/public-url';
 import { siteVisitorText, visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
+import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
@@ -95,6 +96,7 @@ import { createSeoResolver, entryMetadata, pageMetadata, type SeoMetadata } from
 import { ogLocale, twitterHandle, type EffectiveSeo } from '@shared/seo';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
+import { THEME_BOOTSTRAP, THEME_TOGGLE_CSS, THEME_TOGGLE_FILE, themeToggleJs, usesThemeToggle } from './color-scheme';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
 import { notFoundSectionRoutes } from './checks';
@@ -412,10 +414,15 @@ export function resolveInstanceProps(def: ComponentDefinition, node: InstanceNod
 // Tokens
 // ---------------------------------------------------------------------------
 
-export function effectiveTokens(state: ProjectState): TokenDef[] {
+/**
+ * The site's tokens: the theme's and the project's own, with the project's values. The dark palette (see
+ * shared/color-scheme.ts) lays its own colours over them, whether or not visitors can see it.
+ */
+export function effectiveTokens(state: ProjectState, scheme: PaletteScheme = 'light'): TokenDef[] {
   const theme = getTheme(state.site.themeId);
   const list: TokenDef[] = [...theme.tokens, ...state.tokens.custom];
-  return list.map((t) => (t.id in state.tokens.overrides ? { ...t, value: state.tokens.overrides[t.id] } : t));
+  const light = list.map((t) => (t.id in state.tokens.overrides ? { ...t, value: state.tokens.overrides[t.id] } : t));
+  return scheme === 'dark' ? withDarkPalette(light, state.tokens.darkOverrides) : light;
 }
 
 function tokenCssValue(v: TokenValue | unknown): string {
@@ -499,9 +506,40 @@ export function generateTokensCss(state: ProjectState): string {
       lines.push(`\t${name}: ${tokenCssValue(t.value)};`);
     }
   }
+  // A site with a dark palette says which palette each rule paints, so the browser's own controls and scrollbars match.
+  const mode = colorSchemeMode(state.tokens);
+  if (mode !== 'single') lines.push('\tcolor-scheme: light;');
   lines.push('}', '');
   // Values come from validated documents, but a hand-edited document must still not break out of :root.
-  return lines.filter((l) => !l.startsWith('\t--') || safeDecl(l.slice(1, -1))).join('\n');
+  const css = lines.filter((l) => !l.startsWith('\t--') || safeDecl(l.slice(1, -1))).join('\n');
+  return mode === 'single' ? css : css + darkPaletteCss(state, mode, tokens);
+}
+
+/**
+ * The dark palette's rules: its colours on screen while the visitor's device asks for dark (`system`), or while it
+ * does and the visitor has not switched to light, and whenever they have switched to dark (`toggle`, from the
+ * `data-so-theme` attribute the header's switch sets). Print always takes the light palette, which every theme
+ * prints in; a dark section keeps its own colours there as it always has.
+ */
+function darkPaletteCss(state: ProjectState, mode: 'system' | 'toggle', light: TokenDef[]): string {
+  const dark = state.tokens.darkOverrides ?? {};
+  const decls = ['\t\tcolor-scheme: dark;'];
+  for (const t of light) {
+    if (t.group !== 'color' || !Object.hasOwn(dark, t.id)) continue;
+    const v = darkValue(dark[t.id]);
+    // A link must name a colour token, as the light palette's do; anything else (a hand edit) is left out.
+    const target = v && typeof v === 'object' ? light.find((x) => x.id === v.token) : null;
+    if (v === null || (typeof v === 'object' && target?.group !== 'color')) continue;
+    const decl = `${tokenVar(t.id)}: ${tokenCssValue(v)}`;
+    if (safeDecl(decl)) decls.push(`\t\t${decl};`);
+  }
+  const block = decls.join('\n');
+  const rules =
+    mode === 'system'
+      ? ['@media screen and (prefers-color-scheme: dark) {', '\t:root {', block, '\t}', '}']
+      : ['@media screen and (prefers-color-scheme: dark) {', '\t:root:not([data-so-theme="light"]) {', block, '\t}', '}', '@media screen {', '\t:root[data-so-theme="dark"] {', block, '\t}', '}'];
+  const print = ['@media print {', '\t:root {', '\t\tcolor-scheme: light;', '\t}', ...(mode === 'toggle' ? ['\t.so-theme-toggle {', '\t\tdisplay: none !important;', '\t}'] : []), '}'];
+  return `/* The dark palette, from siteorigin/tokens.json. Print always uses the palette above. */\n${[...rules, ...print].join('\n')}\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1046,7 +1084,9 @@ export function generateSiteCss(state: ProjectState): string {
   }
   // The entrance rules, while the site has entrances: they only ever animate what the entrance observer arms.
   const appear = derived(state, 'usesAppear', usesAppear) ? `\n${APPEAR_CSS}` : '';
-  return `/* Page content styles and instance overrides. Generated from siteorigin/pages and siteorigin/site.json. */\n${emitRules(rules)}\n${appear}`;
+  // The visitor's Light/Dark switch, while the site has one.
+  const toggle = usesThemeToggle(state) ? `\n${THEME_TOGGLE_CSS}` : '';
+  return `/* Page content styles and instance overrides. Generated from siteorigin/pages and siteorigin/site.json. */\n${emitRules(rules)}\n${appear}${toggle}`;
 }
 
 /** The cards that must render as their plain container, in a stable order so an unchanged answer compares equal. */
@@ -3085,6 +3125,14 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const appear = derived(state, 'usesAppear', usesAppear);
   const appearImport = appear ? `${opts.instrument ? '' : `\n\timport { onMount } from 'svelte';`}\n\timport { observeAppear } from '../lib/siteorigin/runtime/${APPEAR_FILE}';` : '';
   const appearStart = appear ? `\n\t// Sections and containers with an entrance fade or lift in as they first scroll into view.\n\tonMount(observeAppear);` : '';
+  // The visitor's Light/Dark switch goes in the shared header while the page shows it (see generator/color-scheme.ts).
+  // The website also applies a remembered choice before anything is drawn; the editor's preview remembers none.
+  const toggle = usesThemeToggle(state);
+  const toggleImport = toggle ? `\n\timport { startThemeToggle } from '../lib/siteorigin/runtime/${THEME_TOGGLE_FILE}';` : '';
+  const toggleStart = toggle
+    ? `\n\t// The visitor's Light/Dark switch, in the shared header while the page shows it.\n\t$effect(() => {\n\t\tif (!showHeader) return;\n\t\treturn startThemeToggle(() => text().themeToggle);\n\t});`
+    : '';
+  const bootstrap = toggle && !opts.instrument ? `\n\t${THEME_BOOTSTRAP}` : '';
   const devBridge = opts.instrument
     ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tif (typeof window !== 'undefined' && !window.__siteoriginBridge && !window.__siteoriginHold) {\n\t\twindow.__siteoriginHold = (e) => (e.preventDefault(), e.stopImmediatePropagation());\n\t\tdocument.addEventListener('submit', window.__siteoriginHold, true);\n\t}\n\tonMount(() => {\n\t\timport('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => window.dispatchEvent(new CustomEvent('siteorigin:navigated')));`
     : '';
@@ -3097,7 +3145,7 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
 	import '../lib/siteorigin/styles/site.css';
 	import { page } from '$app/state';
 	import { asset } from '$app/paths';
-	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';${appearImport}
+	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';${appearImport}${toggleImport}
 	import { ${languages ? 'speak, ' : ''}visitorText } from '../lib/siteorigin/runtime/visitor-text.js';
 ${imports}${languages}${devBridge}
 
@@ -3109,10 +3157,10 @@ ${imports}${languages}${devBridge}
 	const pagesWithoutHeader = new Set(${js(without('header'))});
 	const pagesWithoutFooter = new Set(${js(without('footer'))});
 	const showHeader = $derived(!pagesWithoutHeader.has(page.route.id ?? ''));
-	const showFooter = $derived(!pagesWithoutFooter.has(page.route.id ?? ''));
+	const showFooter = $derived(!pagesWithoutFooter.has(page.route.id ?? ''));${toggleStart}
 ${editing}</script>
 
-<svelte:head>
+<svelte:head>${bootstrap}
 	<link rel="icon" href={asset(${js(iconHref)})} type=${js(iconType)} />
 	<meta property="og:site_name" content={${js(state.site.name)}} />
 </svelte:head>
@@ -3212,10 +3260,14 @@ export const VISITOR_TEXT_FILE = 'visitor-text.js';
  * below it which language that is (speak); a component shown without the layout, as in the editor's preview of one
  * component, speaks the site's language.
  */
+const withoutKeys = <T extends object>(o: T, keys: string[]): Partial<T> => (keys.length ? (Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k))) as Partial<T>) : o);
+
 export function generateVisitorTextJs(state: ProjectState): string {
   const site = siteLanguage(state.site);
   const codes = [...new Set([site, ...languagesByRoute(state).map(([, language]) => language)].map(visitorTextLanguage))].sort();
-  const text = Object.fromEntries(codes.map((code) => [code, visitorTextFor(state.site, code)]));
+  // The Light/Dark switch's name goes only to a site that has the switch.
+  const toggle = usesThemeToggle(state);
+  const text = Object.fromEntries(codes.map((code) => [code, withoutKeys(visitorTextFor(state.site, code), toggle ? [] : ['themeToggle'])]));
   return `// Generated by SiteOrigin Builder from siteorigin/site.json and siteorigin/pages/*.json. What the site says on its
 // own, around its content, in each language its pages are in. Site styles > Visitor text changes the wording.
 import { getContext, setContext } from 'svelte';
@@ -3816,6 +3868,8 @@ function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, 
   // The entrance observer, while a page of the site can show an entrance (see generator/appear.ts); the layout that
   // starts it is written after it. Like search, asked of the plain state: it decides only whether the file exists.
   if (usesAppear(state)) files.set(`${RUNTIME_DIR}/${APPEAR_FILE}`, appearJs(!!opts.instrument));
+  // The visitor's Light/Dark switch, while the site's palettes have one; the layout that starts it is written after it.
+  if (usesThemeToggle(state)) files.set(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`, themeToggleJs(!!opts.instrument));
   files.set(`${RUNTIME_DIR}/not-found.js`, NOT_FOUND_JS);
   files.set(`${STYLES_DIR}/tokens.css`, file('tokens.css', generateTokensCss));
   const fontNotice = file('fonts/NOTICE.txt', (s) => generateFontNotice(s) ?? '');
