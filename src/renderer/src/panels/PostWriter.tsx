@@ -283,8 +283,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   /**
    * Change fields of the post, followed so Publish and Save draft know whether it was saved. `held`: the change asks
    * for what the post had when it began (only an image imported again, which is checked and never written), so
-   * having nothing to write is no refusal. Its check fails only when the field was edited meanwhile; that later edit
-   * is the one saved, and the import says itself that its image was not placed.
+   * having nothing to write is no refusal. The check writes nothing either way: when it fails (the field edited
+   * meanwhile, the post or project gone, the AI busy) the post keeps what it has, and the import says itself why.
    */
   const update = (fields: Record<string, unknown>, label: string, held = false) => {
     const p = applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label).then((r) => {
