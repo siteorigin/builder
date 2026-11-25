@@ -1268,7 +1268,8 @@ export function InsertPanel() {
       // A slot's placeholder goes where the Slots section puts one, not where other elements go (see insertPlan).
       const as = it.kind === 'saved' ? it.saved!.role : it.spec.primitive === 'slot' ? 'slot' : it.kind;
       const { role, at } = as === 'section' ? { role: 'section' as const, at: sectionAt } : as === 'element' ? { role: 'element' as const, at: elementAt } : insertPlan(it.spec, snap);
-      p = { role, at, where: as === 'section' ? sectionTo : as === 'element' ? elementTo : (slotTo ?? whereFor(st, at, role)) };
+      // A picked slot takes components too; a slot's placeholder keeps its own place.
+      p = { role, at, where: as === 'section' ? sectionTo : as === 'element' ? elementTo : as === 'slot' ? whereFor(st, at, role) : (slotTo ?? whereFor(st, at, role)) };
       plans.set(it.key, p);
     }
     return p;
