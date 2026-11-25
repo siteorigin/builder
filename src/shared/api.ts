@@ -324,6 +324,8 @@ export interface CreateProjectOptions {
   parentDir: string;
   starter: 'business' | 'blank';
   sampleImages: boolean;
+  /** The theme the site starts with; without one, the default theme. It can be changed any time in Site styles. */
+  themeId?: string;
   /** Names this attempt in its progress events, so a dialog follows only its own (another may still be running). */
   attempt?: string;
 }

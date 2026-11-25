@@ -2,7 +2,7 @@ import type { GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, PageDoc,
 import { SCHEMA_VERSION, GENERATOR_VERSION } from '@shared/types';
 import { installComponent, makeInstance } from '@engine/install';
 import { newId } from '@shared/ids';
-import { getTheme, themeLockEntry } from './index';
+import { defaultTheme, getTheme, themeLockEntry } from './index';
 import { canonicalRich } from './dsl';
 import { TEMPLATE_VERSION } from './fonts';
 
@@ -45,9 +45,9 @@ function page(id: string, title: string, route: string, nodes: GraphNode[], seo:
   return { schemaVersion: SCHEMA_VERSION, id, title, route, seo, showHeader: true, showFooter: true, rootIds, nodes: map };
 }
 
-function emptyState(name: string, themeId = 'foundation'): ProjectState {
+function emptyState(name: string, themeId?: string): ProjectState {
   // The theme the site records is the one it is made with, even when the one asked for is not installed here.
-  const theme = getTheme(themeId);
+  const theme = themeId === undefined ? defaultTheme() : getTheme(themeId);
   return {
     manifest: {
       schemaVersion: SCHEMA_VERSION,
@@ -88,8 +88,9 @@ function tree(node: InstanceNode): NodeTree {
   return { rootIds: [node.id], nodes: { [node.id]: node } };
 }
 
-export function createStarterState(starter: StarterId, siteName: string, withSampleImages: boolean): ProjectState {
-  const s = emptyState(siteName);
+/** A new project's state from a starter, on `themeId` (the default theme when it is not given or not installed). */
+export function createStarterState(starter: StarterId, siteName: string, withSampleImages: boolean, themeId?: string): ProjectState {
+  const s = emptyState(siteName, themeId);
   const A = (id: string) => (withSampleImages ? id : null);
   const alt = (id: string) => STARTER_ASSETS.find((a) => a.id === id)?.alt ?? '';
 

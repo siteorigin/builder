@@ -111,8 +111,11 @@ export interface AuthoredPack extends PackMeta {
   components: ComponentDefinition[];
 }
 
-/** IDs of the packs that ship with the app, which an installed pack can never take, even when a release is missing. */
-export const BUNDLED_PACK_IDS = ['foundation', 'foundation-alt'];
+/**
+ * IDs of the packs that ship with the app, which an installed pack can never take, even when a release is missing.
+ * Listed in the order the app loads them: the first that is not a development fixture is the default theme.
+ */
+export const BUNDLED_PACK_IDS = ['foundation', 'editorial', 'foundation-alt'];
 
 /** The release format this version of the app reads. */
 export const PACK_FORMAT = 1;

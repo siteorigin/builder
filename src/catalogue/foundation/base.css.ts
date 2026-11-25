@@ -1,5 +1,5 @@
 /** A class ending in `suffix` anywhere in an element's class list (a component's scoped class may follow it). */
-const ends = (suffix: string) => `:is([class$='${suffix}'], [class*='${suffix} '])`;
+export const ends = (suffix: string) => `:is([class$='${suffix}'], [class*='${suffix} '])`;
 
 /** The brand panel of a Call to action, in the panel's own tone. */
 const ctaPanel = (tone: string) => `${ends(`-cta-banner--tone-${tone}`)} ${ends('-cta-banner__panel')}`;

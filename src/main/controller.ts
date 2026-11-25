@@ -9,6 +9,7 @@ import type { AiTurnReview, ComponentExportResult, ComponentImportResult, SavedC
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
+import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
 import { sourceHash } from '@engine/apply';
 import { websiteFormNotes } from '@engine/validate';
@@ -386,6 +387,8 @@ export class Controller {
     const progress = (p: ProgressEvent) => this.progress({ ...p, attempt: opts.attempt });
     const name = opts.name.trim();
     if (!name) return { ok: false, message: 'Enter a project name.' };
+    // A theme chosen in the dialog must be one this app has: the project would otherwise open on another one.
+    if (opts.themeId !== undefined && !findTheme(opts.themeId)) return { ok: false, message: `The theme "${opts.themeId}" is not installed. Choose another theme.` };
     let dir = join(opts.parentDir, slugify(name) || 'website');
     if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: `${dir} already exists and is not empty. Choose another name or folder.` };
     // Asked before the new project is made, so keeping editing costs no setup, and again at the switch, for anything
@@ -458,7 +461,7 @@ export class Controller {
       const notice = starterNotice();
       const assetsDir = join(resourcesDir(), 'resources', 'starter-assets');
       const withImages = opts.starter === 'business' && opts.sampleImages && existsSync(assetsDir);
-      const state = createStarterState(opts.starter, name, withImages);
+      const state = createStarterState(opts.starter, name, withImages, opts.themeId);
       if (withImages) {
         own('static');
         for (const a of STARTER_ASSETS) {
