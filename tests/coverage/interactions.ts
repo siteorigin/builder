@@ -540,7 +540,24 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/sharing.test.ts', kind: 'unit' },
       { test: 'tests/unit/serp.test.ts', kind: 'unit' }
     ],
-    gaps: [{ missing: 'The search and sharing previews live in each page’s settings; a dedicated SEO view is still to come', owner: 'pages', issue: 699 }]
+    gaps: [{ missing: 'The search and sharing previews still live in each page’s settings; moving them into the SEO view is still to come', owner: 'pages', issue: 699 }]
+  },
+  {
+    id: 'pages.seo-view',
+    area: 'pages',
+    intent: 'Look over every page and post for search in one place',
+    start: 'Business site with a blog post and a draft, a section of Home selected',
+    routes: ['tab:seo', 'command:panel:*', 'panel:SEO › document list'],
+    outcome: 'The view opens in the canvas’s place and lists the pages in the site’s page order, then the posts by collection, drafts included; choosing one shows it as the view’s document; no key or command acts on the covered canvas; leaving by the rail entry, another panel or a page chosen in the toolbar brings the canvas back with the same preview and selection; a chosen post deleted meanwhile leaves nothing chosen',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'the rail entry opens the SEO view over the canvas, which stays loaded out of reach' },
+      { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'the list: pages in the site’s page order, then posts by collection, drafts included' },
+      { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'no key acts on the section selected under the view' },
+      { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'the rail entry again leaves the view: the canvas is back as it was, the same preview and the same selection' },
+      { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'the chosen post deleted while the view is open: the view falls back to nothing chosen' }
+    ],
+    gaps: [{ missing: 'The view lists and chooses documents; their previews, search settings and a site-wide overview there are still to come', owner: 'pages', issue: 699 }]
   },
   {
     id: 'pages.seo-health',
@@ -732,6 +749,22 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/conditions.mjs', kind: 'e2e', step: 'a layer the preview shows nowhere stays selectable, with its rule' }
     ],
     gaps: [{ missing: 'No e2e script presses the eye in Layers or chooses Select <what hides it>', owner: 'layers' }]
+  },
+  {
+    id: 'layers.slots',
+    area: 'layers',
+    intent: 'Fill an empty slot of a placed component from Layers',
+    start: 'Blank site: a Section holding a Split with an empty Main and a Sidebar that takes one text or button, and paragraphs beside it',
+    routes: ['tab:layers', 'panel:Layers › slot row', 'panel:Layers › drag onto a slot row', 'panel:Insert › tile'],
+    outcome: 'Layers lists the slots in the order the component declares them, each marked empty; a picked slot is where an Insert tile goes, one Undo empties it, and Escape lets it go; a drop the slot’s contract refuses changes nothing, an allowed one moves in as one change, in order; the arrow keys reach the slot rows',
+    scenario: 'Blank starter · none',
+    proof: [
+      { test: 'tests/e2e/layers-slots.mjs', kind: 'e2e', step: 'expanding the Split lists both slots in the order it declares them, each marked empty' },
+      { test: 'tests/e2e/layers-slots.mjs', kind: 'e2e', step: 'clicking the empty Sidebar row picks it, and a Paragraph tile clicked in Insert goes into it' },
+      { test: 'tests/e2e/layers-slots.mjs', kind: 'e2e', step: 'two paragraphs dragged together onto the empty Sidebar, which takes one, are refused whole' },
+      { test: 'tests/e2e/layers-slots.mjs', kind: 'e2e', step: 'a paragraph dragged alone onto the empty Sidebar row moves into it, as one change' },
+      { test: 'tests/e2e/layers-slots.mjs', kind: 'e2e', step: 'the slot rows are tree items the keys reach: Up/Down pick them, Left goes back to the Split' }
+    ]
   },
   {
     id: 'layers.item-step',
