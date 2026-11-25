@@ -1227,7 +1227,14 @@ function sectionsOnReplacement(state: ProjectState, page: PageDoc, replacementId
 
 function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   const page = own(state.pages, op.pageId) ?? fail(`Page "${op.pageId}" does not exist.`);
-  if (state.site.pageOrder.length <= 1) fail('A site needs at least one page.');
+  const isHome = page.id === state.site.homePageId;
+  if (op.newHome) {
+    if (!isHome) fail('Only the Home page leaves a new blank Home page behind.');
+    if (op.replacementPageId !== undefined) fail('Choose a replacement page or a new blank Home page, not both.');
+    if (op.sectionReplacements !== undefined) fail('Links to the Home page open the top of the new blank Home page: no sections can be chosen.');
+  }
+  // A blank Home takes the removed Home's place, so even the only page can go.
+  if (state.site.pageOrder.length <= 1 && !op.newHome) fail('A site needs at least one page.');
   const all = pageLinkUses(state, page.id);
   // Page lists' cards for this page go with it; every other link is pointed at the replacement.
   const cards = all.filter((u) => u.card);
@@ -1235,7 +1242,7 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   const refs = uses.length;
   if (op.replacementPageId && !own(state.pages, op.replacementPageId)) fail('The replacement page does not exist.');
   if (op.replacementPageId === page.id) fail('The replacement must be a different page.');
-  if (refs && !op.replacementPageId)
+  if (refs && !op.replacementPageId && !op.newHome)
     throw new EngineError('VALIDATION_FAILED', `${refs} link${refs === 1 ? '' : 's'} point to "${page.title}". Choose a replacement page for them.`, { references: refs });
   if (op.sectionReplacements?.length && !op.replacementPageId) fail('Sections for links can only be chosen on a replacement page.');
   // The cards go first: a section on the replacement page that only they kept showing is gone for the links too.
@@ -1245,11 +1252,19 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   }
   // Sections are looked up before anything else moves: the replacement page's IDs do not depend on the page going.
   const section = op.replacementPageId ? sectionsOnReplacement(state, page, op.replacementPageId, uses, op.sectionReplacements) : null;
-  if (page.id === state.site.homePageId) {
+  // The new blank Home, made in the removed Home's place: every link and kept address follows to it, at its top.
+  const blank = op.newHome ? blankHome(state) : undefined;
+  const heir = op.replacementPageId ?? blank?.id;
+  if (blank) {
+    for (const { link } of uses) {
+      link.target = blank.id;
+      delete link.anchor;
+    }
+  } else if (isHome) {
     // The page replacing Home moves to "/". Its old address is not kept: this removes a page, it moves none.
     // Home is never a draft, so the first published page takes over unless another is chosen.
     const next = op.replacementPageId ?? state.site.pageOrder.find((id) => id !== page.id && state.pages[id]?.draft !== true);
-    if (!next) fail('Every other page is a draft. Publish one before removing the Home page.');
+    if (!next) fail('Every other page is a draft. Publish one before removing the Home page, or leave a new blank Home page.');
     if (state.pages[next].draft === true) fail(`"${state.pages[next].title}" is a draft and cannot become the Home page. Publish it first, or choose a published page.`);
     state.pages[next].route = '/';
     state.site.homePageId = next;
@@ -1263,15 +1278,28 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
     }
   // Old addresses kept for the removed page follow its links to the replacement, or go with it.
   if (Array.isArray(state.site.redirects)) {
-    state.site.redirects = state.site.redirects.flatMap((r) => (r.pageId !== page.id ? [r] : op.replacementPageId ? [{ ...r, pageId: op.replacementPageId }] : []));
+    state.site.redirects = state.site.redirects.flatMap((r) => (r.pageId !== page.id ? [r] : heir ? [{ ...r, pageId: heir }] : []));
     if (!state.site.redirects.length) delete state.site.redirects;
   }
   // Its translations stay linked to each other; they are never handed to the replacement page.
   delete state.pages[page.id];
   leaveTranslations(state, page);
-  state.site.pageOrder = state.site.pageOrder.filter((id) => id !== page.id);
+  // The blank Home stands where the removed Home stood in the list.
+  state.site.pageOrder = state.site.pageOrder.flatMap((id) => (id !== page.id ? [id] : blank ? [blank.id] : []));
   // Where each removed card was, for the change summary: what this removal did, not what the batch started with.
-  return cards.length ? { removedCards: cards.map((u) => u.where) } : {};
+  return { ...(cards.length ? { removedCards: cards.map((u) => u.where) } : {}), ...(blank ? { newHomePageId: blank.id } : {}) };
+}
+
+/**
+ * An empty, published Home page at "/" with the header and footer shown, made Home in place of the Home page being
+ * removed. No kept address can use "/", so there is none to claim.
+ */
+function blankHome(state: ProjectState): PageDoc {
+  const id = newId('pg');
+  const page: PageDoc = { schemaVersion: SCHEMA_VERSION, id, title: 'Home', route: '/', seo: {}, showHeader: true, showFooter: true, rootIds: [], nodes: {} };
+  state.pages[id] = page;
+  state.site.homePageId = id;
+  return page;
 }
 
 export type { RouteMove };

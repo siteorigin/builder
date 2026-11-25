@@ -756,7 +756,7 @@ export function PagesPanel() {
           ]
         : []),
       { separator: true },
-      { label: 'Delete page…', icon: <Trash2 />, danger: true, disabled: order.length <= 1, onSelect: () => setState({ modal: { kind: 'delete-page', pageId: id } }) }
+      { label: 'Delete page…', icon: <Trash2 />, danger: true, disabled: order.length <= 1 && id !== st.site.homePageId, onSelect: () => setState({ modal: { kind: 'delete-page', pageId: id } }) }
     ], `${st.pages[id].title} options`);
   };
 

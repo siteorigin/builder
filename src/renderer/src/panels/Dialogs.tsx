@@ -19,7 +19,7 @@ import { isImeComposing } from '../lib/ime';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
 import { goToShellPart, insertionPoint, selectPage, setMode } from '../lib/actions';
 import { componentRequest, componentRequestContext, newComponentPlace, startBlankOps } from '../lib/new-component';
-import { planPageRemoval, reviewPageRemoval, withoutCards } from '../lib/page-removal';
+import { NEW_HOME, planPageRemoval, reviewPageRemoval, withoutCards, type PageReplacement } from '../lib/page-removal';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { HistoryTabs, SavedVersionsModal } from './SavedVersions';
 import { appliedCount, historyStep } from '../lib/history-steps';
@@ -898,20 +898,32 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   // The Home page is always published: a draft is never offered to replace it.
   const others = st.site.pageOrder.filter((id) => id !== pageId && !(isHome && st.pages[id] && isDraftPage(st, st.pages[id])));
   const [picked, setPicked] = useState(isHome ? others[0] : st.site.homePageId);
+  // Home can leave a new blank Home in its place instead: the choice made when no other page can take over, and
+  // the only one while none can.
+  const [blankChosen, setBlankChosen] = useState(isHome && !others.length);
+  const blank = isHome && (blankChosen || !others.length);
+  // Once it is the only choice it stays chosen: a page published again later (an undo, the assistant) never
+  // brings back a page pick the author can no longer see.
+  useEffect(() => {
+    if (isHome && !others.length) setBlankChosen(true);
+  }, [isHome, others.length]);
+  const homeChoice = useId();
   // A replacement that has gone since it was picked (an undo, the assistant) is never swapped for another page
-  // without asking: the author chooses again.
-  const replacement = picked && picked !== pageId && Object.hasOwn(st.pages, picked) && !(isHome && isDraftPage(st, st.pages[picked])) ? picked : undefined;
+  // without asking: the author chooses again. So too when the blank Home was chosen and this page has since
+  // stopped being Home: the page picked before that is never used without asking.
+  const pagePicked = !blank && !blankChosen && picked && picked !== pageId && Object.hasOwn(st.pages, picked) && !(isHome && isDraftPage(st, st.pages[picked])) ? picked : undefined;
+  const replacement: PageReplacement = blank ? NEW_HOME : pagePicked;
   // Section choices hold only for the replacement and the project they were made for: a new replacement or any
   // change to the project (an undo, the assistant) asks again.
   const [sections, setSections] = useState<{ key: string; choices: Map<string, string> }>({ key: '', choices: new Map() });
-  const key = [snap?.workspaceKey, pageId, replacement, snap?.revision].join('\u0000');
+  const key = [snap?.workspaceKey, pageId, pagePicked, snap?.revision].join('\u0000');
   const choices = sections.key === key ? sections.choices : new Map<string, string>();
   const [busy, setBusy] = useState(false);
   const body = useRef<HTMLDivElement>(null);
   const review = reviewPageRemoval(st, pageId, replacement);
   const refs = review.uses.length;
   const plan = planPageRemoval(st, pageId, replacement, choices);
-  const target = replacement ? st.pages[replacement] : undefined;
+  const target = pagePicked ? st.pages[pagePicked] : undefined;
   const aiBusy = !!snap?.aiBusy;
   // A page deleted some other way (the assistant) takes its dialog with it, so an undo never brings the dialog back.
   useEffect(() => {
@@ -920,9 +932,10 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   }, [page, busy, pageId]);
   const close = () => !busy && setState({ modal: null });
   if (!page) return null;
+  const pick = (id: string) => (setBlankChosen(false), setPicked(id));
   const choose = (fragment: string, value: string) => setSections({ key, choices: new Map(choices).set(fragment, value) });
   // The replacement page's sections as they will be once this page's cards have left their lists.
-  const { options } = sectionOptions(review.cards.length ? withoutCards(st, pageId) : st, replacement);
+  const { options } = sectionOptions(review.cards.length ? withoutCards(st, pageId) : st, pagePicked);
   const remove = async () => {
     if (!plan.operations || busy || aiBusy) return;
     const workspaceKey = snap?.workspaceKey;
@@ -939,7 +952,8 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
     if (now.modal?.kind === 'delete-page' && now.modal.pageId === pageId) setState({ modal: null });
     // Only leave the current page when it is the one that went.
     const current = getState().pageId;
-    if (current === pageId || !getState().snapshot?.state.pages[current ?? '']) selectPage(replacement ?? st.site.homePageId);
+    // A new blank Home is the Home page the deletion left.
+    if (current === pageId || !getState().snapshot?.state.pages[current ?? '']) selectPage(pagePicked ?? getState().snapshot?.state.site.homePageId ?? st.site.homePageId);
     // The row that opened this is gone: keyboard focus goes to the current page's row.
     setTimeout(() => document.querySelector<HTMLElement>('[role="listbox"][aria-label="Pages"] [role="option"][aria-selected="true"]')?.focus(), 0);
   };
@@ -949,16 +963,14 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   const open = missing.filter((m) => !choices.has(m.fragment)).length;
   const under = pagesUnder(st, pageId);
   const linkWord = (n: number) => `${n} link${n === 1 ? '' : 's'}`;
-  // Home with only drafts beside it: nothing can take its place until another page is published.
-  const noHome = isHome && !others.length;
+  // What the blank Home choice means, said under it: and, when it is the only choice, why.
+  const blankNote = !blank
+    ? undefined
+    : `An empty page at /, with the header and footer, becomes the home page. No other page changes address.${others.length ? '' : st.site.pageOrder.length > 1 ? ' Every other page is a draft, so none can be the home page.' : ''}`;
   // What the replacement choice means, said under it where it needs saying: a page still to choose, a draft that
   // would stop the export, or the new home page's move. A published page needs nothing: the line below says it.
   const outcome = !target ? (
-    noHome ? (
-      'Every other page is a draft. Publish one to make it the home page.'
-    ) : (
-      `Choose the page ${isHome ? 'that becomes the home page' : `its ${linkWord(refs)} open instead`}.`
-    )
+    `Choose the page ${isHome ? 'that becomes the home page' : `its ${linkWord(refs)} open instead`}.`
   ) : isHome ? (
     <>
       “{target.title}” moves from <span className="page-dialog-address">{target.route}</span> to <span className="page-dialog-address">/</span>, the home page’s address.
@@ -988,9 +1000,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
     !asks || plan.operations
       ? null
       : !target
-        ? noHome
-          ? { text: 'Publish another page to delete this one.' }
-          : { text: isHome ? 'The site needs a new home page.' : 'Its links need a page to go to.', act: 'Choose' }
+        ? { text: isHome ? 'The site needs a new home page.' : 'Its links need a page to go to.', act: 'Choose' }
         : open
           ? { text: `${open === 1 ? 'A section still needs' : `${open} sections still need`} a place on “${target.title}”.`, act: 'Choose' }
           : plan.lost.length
@@ -1030,12 +1040,12 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
       text: (
         <>
           <span>
-            {linkWord(refs)} on your site {target ? <>will open <strong>“{target.title}”</strong></> : 'will open the page you choose'}.{' '}
+            {linkWord(refs)} on your site {blank ? <>will open the top of the new blank Home</> : target ? <>will open <strong>“{target.title}”</strong></> : 'will open the page you choose'}.{' '}
             <span className="page-dialog-quiet">{refs === 1 ? 'Its' : 'Their'} words stay as they are.</span>
           </span>
           <ScrollList className="page-dialog-list" labelledBy="delete-page-links">
             {review.uses.map((u, i) => (
-              <RemovedPageLink key={i} use={u} landing={u.link.anchor && target ? (landings.get(u.link.anchor) ?? { text: 'same section' }) : undefined} />
+              <RemovedPageLink key={i} use={u} landing={u.link.anchor ? (blank ? { text: 'top of page' } : target ? (landings.get(u.link.anchor) ?? { text: 'same section' }) : undefined) : undefined} />
             ))}
           </ScrollList>
         </>
@@ -1118,10 +1128,30 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
             </>
           }
         />
-        {asks && (
-          <Field label={isHome ? 'New home page' : `Send its ${linkWord(refs)} to`} hint={outcome}>
-            <select className="select" aria-required="true" data-unset={(!replacement && !noHome) || undefined} value={replacement ?? NO_PAGE} disabled={busy || noHome} onChange={(e) => setPicked(e.target.value)}>
-              {!replacement && (
+        {isHome && (
+          <div className="page-dialog-home" role="radiogroup" aria-labelledby={`${homeChoice}-label`}>
+            <div className="page-dialog-heading" id={`${homeChoice}-label`}>
+              New home page
+            </div>
+            {others.length > 0 && (
+              <label className="page-dialog-choice">
+                <input type="radio" name={homeChoice} checked={!blank} disabled={busy} onChange={() => setBlankChosen(false)} /> Make another page Home
+              </label>
+            )}
+            <label className="page-dialog-choice">
+              <input type="radio" name={homeChoice} checked={blank} disabled={busy} aria-describedby={blankNote ? `${homeChoice}-note` : undefined} onChange={() => setBlankChosen(true)} /> Leave a new blank Home
+            </label>
+            {blankNote && (
+              <p className="page-dialog-block-note" id={`${homeChoice}-note`}>
+                {blankNote}
+              </p>
+            )}
+          </div>
+        )}
+        {asks && !blank && (
+          <Field label={isHome ? 'Page that becomes Home' : `Send its ${linkWord(refs)} to`} hint={outcome}>
+            <select className="select" aria-required="true" data-unset={!pagePicked || undefined} value={pagePicked ?? NO_PAGE} disabled={busy} onChange={(e) => pick(e.target.value)}>
+              {!pagePicked && (
                 <option value={NO_PAGE} disabled>
                   Choose a page…
                 </option>
@@ -1195,7 +1225,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
           </div>
         )}
         <span id="delete-page-links" hidden>
-          {`Links that will open ${target?.title ?? 'the page you choose'}`}
+          {`Links that will open ${blank ? 'the new blank Home' : (target?.title ?? 'the page you choose')}`}
         </span>
         <Details items={details} />
       </div>

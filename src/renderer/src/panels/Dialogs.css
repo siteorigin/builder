@@ -96,6 +96,9 @@
   /* A select still showing its prompt reads as unset, not as a choice. */
   .page-dialog .select[data-unset] { color: var(--text-3); }
   .page-dialog-heading { font-weight: 600; color: var(--text); }
+  /* Home's choice: another page takes over, or a new blank Home is left in its place. */
+  .page-dialog-home { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  .page-dialog-choice { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
   /* The choices a deletion still needs are grouped in one tray, ahead of what it changes. */
   .page-dialog-sections { display: flex; flex-direction: column; gap: 10px; padding: 11px 12px 12px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border-strong); }
   .page-dialog-sections .field > label { color: var(--text); }
