@@ -11,7 +11,8 @@ import { treeFor } from '../lib/model';
 import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';
+import { aiActivity, api, commitDraft, confirmDialog, errorText, getState, markDraft, saveLocal, setState, setViewport, stepHistory, toast, useStore, type Rect } from '../store';
+import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type FrameView } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
@@ -162,6 +163,42 @@ export function Canvas() {
   const [retrying, setRetrying] = useState(false);
   /** The problem shown is the canvas's own "took too long" report, which a late arrival of the page clears. */
   const timedOut = useRef(false);
+  /**
+   * What the page's own error can be put down to (#738), for the message it came with: the component it was thrown in
+   * (Open source) and the change that could have caused it (Revert). Either may be unknown.
+   */
+  const [issueCause, setIssueCause] = useState<{ message: string; definitionId: string | null; revert: { id: string; label: string; key: string } | null } | null>(null);
+  /** The change the page had been told of when its error happened: showing that same change again does not mend it. */
+  const errorAt = useRef<number | null>(null);
+  /** History's applied steps when the page was last seen working, in the project it was seen in (see notePageWorking). */
+  const healthy = useRef<{ workspaceKey: string; steps: string[] } | null>(null);
+  const healthyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * The page loaded, or showed a change, with nothing wrong: once it has gone a moment without an error it counts as
+   * working with the project as it is now, for Revert to name what changed after. The moment matters, because a
+   * change's error can arrive after the page says the change is shown, and a page's own error after it says it loaded.
+   * `revision` is the change the page says it shows: one the editor has already moved past vouches for nothing.
+   */
+  const notePageWorking = (revision?: number) => {
+    if (healthyTimer.current) clearTimeout(healthyTimer.current);
+    healthyTimer.current = null;
+    const snap = getState().snapshot;
+    if (!snap || (revision !== undefined && revision !== snap.revision)) return;
+    const { workspaceKey, revision: at } = snap;
+    const steps = appliedSteps(snap.history);
+    healthyTimer.current = setTimeout(() => {
+      healthyTimer.current = null;
+      const now = getState();
+      if (now.previewIssue || now.snapshot?.workspaceKey !== workspaceKey || now.snapshot.revision !== at) return;
+      healthy.current = { workspaceKey, steps };
+    }, 1500);
+  };
+  useEffect(
+    () => () => {
+      if (healthyTimer.current) clearTimeout(healthyTimer.current);
+    },
+    []
+  );
   const [slowPage, setSlowPage] = useState(false);
   /** Counts the changes the page has finished showing, so measurements of it can follow. */
   const [applied, setApplied] = useState(0);
@@ -704,6 +741,8 @@ export function Canvas() {
             setFrameError(null);
             setRetrying(false);
             markTimedOut(false);
+            errorAt.current = null;
+            notePageWorking();
           }
           frameAt.current = path;
           // A page loaded in full while the frame was already up (Try again, a load that could not go in place) shows the
@@ -1022,18 +1061,44 @@ export function Canvas() {
           }).then((ok) => ok === true && void api.app.openExternal(link.href));
           break;
         }
-        case 'runtimeError':
+        case 'runtimeError': {
+          // The page has not been seen working with the project as it is now.
+          if (healthyTimer.current) clearTimeout(healthyTimer.current);
+          healthyTimer.current = null;
+          const message = String(p.message).slice(0, 400);
+          const snap = s.snapshot;
+          const text = (v: unknown) => (typeof v === 'string' ? v : undefined);
+          const seen = healthy.current && healthy.current.workspaceKey === snap?.workspaceKey ? healthy.current.steps : null;
+          setIssueCause(
+            snap
+              ? {
+                  message,
+                  definitionId: errorComponent([text(p.file), text(p.stack), message], snap.state.components),
+                  revert: revertStep(snap.history, seen)
+                }
+              : null
+          );
+          errorAt.current = typeof p.revision === 'number' && Number.isSafeInteger(p.revision) ? p.revision : null;
           markTimedOut(false);
-          setFrameError(String(p.message).slice(0, 400));
+          setFrameError(message);
           setRetrying(false);
           break;
-        case 'revisionApplied':
-          if (typeof p.revision === 'number' && Number.isSafeInteger(p.revision)) shownRevision.current = p.revision;
-          // A change shown by the page clears its own error, not the canvas's report that a page never arrived.
-          if (!timedOut.current) setFrameError(null);
+        }
+        case 'revisionApplied': {
+          const at = typeof p.revision === 'number' && Number.isSafeInteger(p.revision) ? p.revision : undefined;
+          if (at !== undefined) shownRevision.current = at;
+          // A change shown by the page clears its own error, not the canvas's report that a page never arrived, and not
+          // an error the page had while showing this same change (the change that broke it, shown a moment later).
+          const sameChange = at !== undefined && errorAt.current !== null && at <= errorAt.current;
+          if (!timedOut.current && !sameChange) {
+            setFrameError(null);
+            errorAt.current = null;
+            notePageWorking(at);
+          }
           // The page now shows the latest change (a last section deleted): what is measured on it is measured again.
           setApplied((n) => n + 1);
           break;
+        }
         case 'forms':
           setForms(formsOf(p.forms));
           break;
@@ -2537,6 +2602,34 @@ export function Canvas() {
   const opening = staleFrame && !frameError;
   // While editing, a page that is showing but threw is not "couldn't be previewed": something on it went wrong.
   // Preview's own wording is left as it is.
+  // What the page's error can be put down to, while it still holds: the same error, the change still History's newest
+  // and undoable (not while the AI works), the component still in the project.
+  const cause = issueCause && issueCause.message === frameError && !slowPage ? issueCause : null;
+  const revertOffered = cause?.revert && snapshot?.history.canUndo && stillNewest(snapshot.history, cause.revert.key) ? cause.revert : null;
+  const sourceOffered = cause?.definitionId && snapshot?.state.components[cause.definitionId] ? cause.definitionId : null;
+  /** Load the page again, as Try again does. In Component Studio the preview is prepared again, from the project as it is now. */
+  const restartPreview = () => {
+    setRetrying(true);
+    if (getState().definitionMode?.studio) setStudioRetry((n) => n + 1);
+    else setSession(newSessionId());
+  };
+  /** Undo the change the page broke after, then load the page again so it comes back without it. */
+  const revertIssue = () => {
+    const snap = getState().snapshot;
+    if (retrying || !revertOffered || !snap) return;
+    setRetrying(true);
+    void stepHistory(revertOffered.id, 'undo', 1, snap).then(
+      (r) => {
+        if (r.ok) return restartPreview();
+        setRetrying(false);
+        toast(r.error?.message ?? 'That change couldn’t be reverted.', 'error');
+      },
+      (e: unknown) => {
+        setRetrying(false);
+        toast(errorText(e), 'error');
+      }
+    );
+  };
   const issueText = mode !== 'edit' ? 'This page couldn’t be previewed.' : slowPage && frameError ? frameError : frameReady ? 'Something on this page didn’t work.' : 'This page couldn’t be previewed.';
   const z = zoom;
   const frameW = viewport * z;
@@ -2753,19 +2846,26 @@ export function Canvas() {
             <strong>{retrying ? 'Restarting preview…' : issueText}</strong> Your work is safe.
           </span>
           {/* Not natively disabled, so focus stays here while the page restarts. */}
+          {revertOffered && (
+            <button className="btn btn-sm" aria-disabled={retrying || undefined} aria-label={`Revert “${revertOffered.label}”`} title={`Undo “${revertOffered.label}”, the change made before this problem started`} onClick={revertIssue}>
+              Revert
+            </button>
+          )}
           <button
             className="btn btn-sm"
             aria-disabled={retrying || undefined}
             onClick={() => {
               if (retrying) return;
-              setRetrying(true);
-              // In Component Studio the preview is prepared again, from the project as it is now.
-              if (getState().definitionMode?.studio) setStudioRetry((n) => n + 1);
-              else setSession(newSessionId());
+              restartPreview();
             }}
           >
             Try again
           </button>
+          {sourceOffered && (
+            <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'source', definitionId: sourceOffered } })}>
+              Open source
+            </button>
+          )}
           <button className="btn btn-sm btn-ghost" onClick={() => setState({ modal: { kind: 'health' } })}>
             Details
           </button>

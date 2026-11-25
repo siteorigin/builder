@@ -4975,13 +4975,25 @@ new MutationObserver(() => {
   // The element held in a state was re-rendered (an update arrived): the new one is marked before it is painted.
   if (forced) markForced();
 }).observe(document.body, { childList: true, subtree: true, characterData: true });
+/**
+ * A page error, with where it came from so the editor can name the component that threw (#738): the stack, the
+ * file it was thrown in, and the change the page had been told of when it happened.
+ */
+function reportError(message, stack, file) {
+  send('runtimeError', {
+    message,
+    ...(typeof stack === 'string' && stack ? { stack: stack.slice(0, 4000) } : {}),
+    ...(typeof file === 'string' && file ? { file: file.slice(0, 500) } : {}),
+    revision
+  });
+}
 window.addEventListener('error', (e) => {
   errors.push(String(e.message));
-  send('runtimeError', { message: String(e.message) });
+  reportError(String(e.message), e.error && e.error.stack, e.filename);
 });
 window.addEventListener('unhandledrejection', (e) => {
   errors.push(String(e.reason));
-  send('runtimeError', { message: String(e.reason) });
+  reportError(String(e.reason), e.reason && e.reason.stack);
 });
 
 function reportNav() {
@@ -5037,7 +5049,10 @@ if (import.meta.hot) {
       })
     );
   });
-  import.meta.hot.on('vite:error', (data) => send('runtimeError', { message: data?.err?.message || 'Build error' }));
+  import.meta.hot.on('vite:error', (data) => {
+    const err = data?.err;
+    reportError(err?.message || 'Build error', err?.stack, err?.loc?.file || err?.id);
+  });
 }
 
 const style = document.createElement('style');

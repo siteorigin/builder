@@ -3099,7 +3099,7 @@ export class ProjectSession extends EventEmitter {
       canRedo: h.cursor < h.entries.length && !this.activeRun,
       undoLabel: h.entries[h.cursor - 1]?.label,
       redoLabel: h.entries[h.cursor]?.label,
-      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, applied: i < h.cursor, runId: e.runId, ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}) })),
+      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, revision: e.revision, applied: i < h.cursor, runId: e.runId, ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}) })),
       ...(h.droppedRuns ? { droppedRuns: { ...h.droppedRuns } } : {})
     };
   }

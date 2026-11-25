@@ -118,6 +118,8 @@ export interface HistoryInfo {
     label: string;
     source: string;
     time: string;
+    /** The revision the step last changed the project at: a step that later edits joined has a newer one. */
+    revision: number;
     applied: boolean;
     runId?: string;
     /** The AI run this step took back on its own, keeping the edits made after it (issue 164). */
