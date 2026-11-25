@@ -61,9 +61,10 @@ export const diagnosticKey = (d: Diagnostic): string => {
 
 /**
  * Errors in what the site shows that an edit may still introduce: the author fixes them later (a link to a section
- * that was just deleted, say), so they never stop a change from being saved or a file from being loaded.
+ * that was just deleted, say, or a placement still missing a value its component now requires), so they never stop a
+ * change from being saved or a file from being loaded.
  */
-const CONTENT_ERRORS = new Set(['LINK_SECTION_MISSING']);
+const CONTENT_ERRORS = new Set(['LINK_SECTION_MISSING', 'PROP_REQUIRED_EMPTY']);
 
 /** Whether a diagnostic leaves the project inconsistent enough that a change introducing it is refused. */
 export const blocksSaving = (d: Diagnostic) => d.severity === 'error' && !CONTENT_ERRORS.has(d.code);

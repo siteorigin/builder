@@ -61,13 +61,14 @@ export function bindingSource(state: ProjectState, owner: OwnerRef, node: GraphN
 }
 
 /**
- * Every required value the project leaves empty, or could leave empty through a binding. `bindings: false` leaves
- * bindings out, for a caller that checks them with the other binding problems (`bindingProblem`).
+ * Every required value a placement leaves empty, or could leave empty through a binding: its own value, or the default
+ * it shows without one. A default may be empty (filled in once placed), so it is reported at each placement that still
+ * shows it, not at the component. `bindings: false` leaves bindings out, for a caller that checks them with the other
+ * binding problems (`bindingProblem`).
  */
 export function requiredProblems(state: ProjectState, { bindings = true } = {}): RequiredProblem[] {
   const out: RequiredProblem[] = [];
   const defs = Object.values(state.components).filter((d): d is ComponentDefinition => !!d && typeof d === 'object' && hasRequiredProps(d));
-  for (const def of defs) out.push(...defaultProblems(def));
   if (!defs.length) return out;
   const required = new Set(defs.map((d) => d.id));
   for (const { owner, tree, label } of allTrees(state))
@@ -98,8 +99,9 @@ function placementProblems(state: ProjectState, owner: OwnerRef, n: InstanceNode
   const def = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
   if (!def || !n.props || typeof n.props !== 'object') return out;
   for (const [k, s] of Object.entries(def.properties ?? {})) {
-    if (!s || typeof s !== 'object' || !hasRequired(s) || !Object.hasOwn(n.props, k)) continue;
-    const v = n.props[k];
+    if (!s || typeof s !== 'object' || !hasRequired(s)) continue;
+    // Without a value of its own, a placement shows the default.
+    const v = Object.hasOwn(n.props, k) ? n.props[k] : s.default;
     const key = `${owner.kind}|${owner.id}|${n.id}|${k}`;
     if (isBinding(v)) {
       if (!bindings) continue;

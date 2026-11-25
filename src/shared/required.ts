@@ -119,6 +119,19 @@ export function guaranteesValue(from: PropSchema | ScalarPropSchema): boolean {
   }
 }
 
+/**
+ * `schema` with no value required, its fields' included: what a default, or a value a placement already holds, is
+ * checked against. Either may be empty, and is reported (`requiredProblems`) rather than refused; only an edit that
+ * empties a value is refused.
+ */
+export function optionalSchema<T extends PropSchema | ScalarPropSchema>(schema: T): T {
+  if (!hasRequired(schema as PropSchema)) return schema;
+  const { required: _required, ...rest } = schema as T & { required?: boolean };
+  if ((rest.type === 'list' || rest.type === 'object') && rest.fields && typeof rest.fields === 'object')
+    return { ...rest, fields: Object.fromEntries(Object.entries(rest.fields).map(([k, f]) => [k, f && typeof f === 'object' ? optionalSchema(f) : f])) } as unknown as T;
+  return rest as unknown as T;
+}
+
 /** Whether a property or any of its fields is required. */
 export const hasRequired = (schema: PropSchema): boolean =>
   !!schema.required || ((schema.type === 'list' || schema.type === 'object') && fieldsOf(schema).some(([, f]) => !!f?.required));

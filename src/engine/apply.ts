@@ -2747,7 +2747,7 @@ function tableEdit(state: ProjectState, op: Op<'instance.editTable'>): OpResult 
   refuseBound(state, op.owner, node.props[op.prop], schema.label);
   const current = Object.hasOwn(node.props, op.prop) ? node.props[op.prop] : clone(schema.default);
   const r = editTable(current, op, `${def.name} → ${schema.label}`);
-  node.props[op.prop] = requireValue(schema, r.value, `${def.name} → ${schema.label}`);
+  node.props[op.prop] = requireValue(schema, r.value, `${def.name} → ${schema.label}`, current);
   return r.rowId ? { rowId: r.rowId } : r.columnId ? { columnId: r.columnId } : {};
 }
 

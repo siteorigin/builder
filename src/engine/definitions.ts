@@ -16,7 +16,7 @@ import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, getTree, instancesOf, subtreeIds } from './tree';
 import { clone, placedDefaultItems, placedItemId } from './install';
 import { bindingSource } from './required';
-import { requiredGap } from '@shared/required';
+import { optionalSchema, requiredGap } from '@shared/required';
 import { normalizeProp } from './values';
 import { releaseKept } from '@shared/site-name';
 import {
@@ -243,7 +243,8 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
     try {
       // Rich text kept as a plain string keeps its words.
       const kept = retyped && prev!.type === 'richtext' && schema.type === 'string' ? richTextToPlain(toRichText(v)) : v;
-      node.props[name] = normalizeProp(schema, kept, state, `${def.name} → ${schema.label}`);
+      // A value left empty stays: a property made required now reports each placement still missing it, never refusing the change.
+      node.props[name] = normalizeProp(optionalSchema(schema), kept, state, `${def.name} → ${schema.label}`);
     } catch (e) {
       if (!(e instanceof EngineError)) throw e;
       fail(`${label}: ${e.message} Change that content first, or remove the property and add it again.`);
