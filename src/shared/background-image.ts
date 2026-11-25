@@ -31,7 +31,7 @@ export function backgroundImageError(v: unknown, scrimOk: (s: string) => boolean
   if (b.size !== undefined && !(BACKGROUND_SIZES as readonly unknown[]).includes(b.size)) return 'Background image size must be "cover" (fill the box, cropping) or "contain" (show the whole picture).';
   if (b.position !== undefined && parseFocus(b.position) === null) return 'Background image position must be center, top, bottom, left, right, or two percentages across and down such as "50% 20%".';
   if (b.scrim !== undefined && (typeof b.scrim !== 'string' || b.scrim.trim().length > MAX_SCRIM || (b.scrim.trim() !== '' && !scrimOk(b.scrim.trim()))))
-    return 'Background image scrim must be a color such as rgba(0, 0, 0, 0.55) or #0008, or one linear-, radial- or conic-gradient().';
+    return 'Background image scrim must be a color such as rgba(0, 0, 0, 0.55) or #0008, or one linear-gradient() or radial-gradient() of such colors.';
   return null;
 }
 

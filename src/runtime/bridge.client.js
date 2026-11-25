@@ -2950,7 +2950,9 @@ function scrimCovers(s) {
   const size = first(s.backgroundSize, 'auto');
   const at = first(s.backgroundPosition, '0% 0%');
   const clip = first(s.backgroundClip, 'border-box');
-  return /^(100% 100%|auto|auto auto)$/.test(size) && /^-?[\d.]+% -?[\d.]+%$/.test(at) && /^(border-box|padding-box)$/.test(clip) && first(s.backgroundBlendMode, 'normal') === 'normal';
+  // Sized to the padding box or the border box: one sized to the content box leaves the padding uncovered.
+  const origin = first(s.backgroundOrigin, 'padding-box');
+  return /^(100% 100%|auto|auto auto)$/.test(size) && /^-?[\d.]+% -?[\d.]+%$/.test(at) && /^(border-box|padding-box)$/.test(clip) && /^(border-box|padding-box)$/.test(origin) && first(s.backgroundBlendMode, 'normal') === 'normal';
 }
 
 /**
@@ -3276,6 +3278,12 @@ function textContrast(el, read, layerOf, pictures) {
   // as white. See-through text over one is colours of the picture too.
   const scrimmed = layers.some((l, i) => shows(i) && l.image.kind === 'scrim');
   if (scrimmed && fill.a < 1) return { unknown: 'image' };
+  // A scrim covers its own box: text moved or overflowing out of it sits on whatever is there instead.
+  for (let i = 0; i < layers.length; i++) {
+    if (!shows(i) || layers[i].image.kind !== 'scrim') continue;
+    const b = boxOf(boxRect(chain[i]));
+    if (rects.some((r) => r.x < b.x - 0.5 || r.y < b.y - 0.5 || r.x + r.width > b.x + b.width + 0.5 || r.y + r.height > b.y + b.height + 0.5)) return { unknown: 'image' };
+  }
   const BLACK = { r: 0, g: 0, b: 0, a: 1 };
   const WHITE = { r: 1, g: 1, b: 1, a: 1 };
   const paint = (withText, picture = BLACK) => {

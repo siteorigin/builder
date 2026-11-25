@@ -587,9 +587,24 @@ function darkPaletteCss(state: ProjectState, mode: 'system' | 'toggle', light: T
  * `wide` holds rules for tablet and desktop together (everything above phone width); `reduced`, the rules for
  * visitors who ask for reduced motion; `states`, the rules for each interactive state at each size.
  */
-type RuleSet = { base: string[]; wide: string[]; phone: string[]; tablet: string[]; desktop: string[]; reduced: string[]; states: Record<StyleState, Record<ResponsiveScope, string[]>> };
+type RuleSet = {
+  base: string[];
+  wide: string[];
+  phone: string[];
+  tablet: string[];
+  desktop: string[];
+  reduced: string[];
+  states: Record<StyleState, Record<ResponsiveScope, string[]>>;
+  /**
+   * The copy of a picture a phone's or tablet's screen takes, for a rule written for every size (see
+   * addBackgroundImage): first in that size's block, so it beats every rule for all sizes, as later layers' own copies
+   * beat it, and never a rule written for that size.
+   */
+  copies: Record<StyleState | 'rest', { phone: string[]; tablet: string[] }>;
+};
 const sizeLists = (): Record<ResponsiveScope, string[]> => ({ base: [], phone: [], tablet: [], desktop: [] });
-const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], reduced: [], states: { hover: sizeLists(), focus: sizeLists(), active: sizeLists() } });
+const copyLists = () => ({ phone: [] as string[], tablet: [] as string[] });
+const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], reduced: [], states: { hover: sizeLists(), focus: sizeLists(), active: sizeLists() }, copies: { rest: copyLists(), hover: copyLists(), focus: copyLists(), active: copyLists() } });
 const WIDE_QUERY = '(min-width: 768px)';
 /**
  * Where each interactive state applies. `:where()` adds no weight, so a state rule is exactly as strong as the rule it
@@ -726,7 +741,7 @@ function addBackgroundImage(rules: RuleSet, selector: string, value: StyleValue,
   if (scope !== 'base') return;
   for (const size of ['phone', 'tablet'] as const) {
     const at = backgroundImageAt(value, media.assets, RANGE_WIDTHS[size], media.files);
-    if (at) (state ? rules.states[state][size] : rules[size]).push(`${selector} {\n\t${strong ? important(at) : at};\n}`);
+    if (at) rules.copies[state ?? 'rest'][size].push(`${selector} {\n\t${strong ? important(at) : at};\n}`);
   }
 }
 
@@ -845,15 +860,16 @@ function emitRules(rules: RuleSet): string {
   const block = (query: string, list: string[]) => `@media ${query} {\n${list.map((r) => r.replace(/^/gm, '\t')).join('\n')}\n}`;
   if (rules.wide.length) out.push(block(WIDE_QUERY, rules.wide));
   for (const scope of ['phone', 'tablet', 'desktop'] as const) {
-    if (!rules[scope].length) continue;
-    out.push(block(MEDIA_QUERIES[scope], rules[scope]));
+    const list = scope === 'desktop' ? rules[scope] : [...rules.copies.rest[scope], ...rules[scope]];
+    if (!list.length) continue;
+    out.push(block(MEDIA_QUERIES[scope], list));
   }
   // Every state after every resting rule, so a state beats the resting style at every size, as hand-written `:hover`
   // does; within a state, a size's own rule after the rule for all sizes; and active after focus after hover, so the
   // state a visitor is in last wins while several hold.
   for (const state of STYLE_STATES)
     for (const scope of RESPONSIVE_SCOPES) {
-      const list = rules.states[state][scope];
+      const list = scope === 'phone' || scope === 'tablet' ? [...rules.copies[state][scope], ...rules.states[state][scope]] : rules.states[state][scope];
       if (!list.length) continue;
       const query = [scope === 'base' ? null : MEDIA_QUERIES[scope], state === 'hover' ? HOVER_QUERY : null].filter(Boolean).join(' and ');
       if (query) out.push(block(query, list));

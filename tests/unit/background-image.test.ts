@@ -9,7 +9,7 @@ import { compile } from 'svelte/compiler';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import type { AssetRecord, ComponentDefinition, ElementNode, ElementRef, InstanceNode, ProjectState, TextNode } from '@shared/types';
-import { canonicalStyleValue, partStyleControls, styleSetFor, styleToCss, validateStyleValue } from '@shared/styles';
+import { canonicalStyleValue, flattenStates, partStyleControls, styleSetFor, styleToCss, validateStyleValue } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION } from '@catalogue/foundation/pack';
 import { prop } from '@catalogue/dsl';
@@ -134,9 +134,17 @@ describe('the backgroundImage value', () => {
       'linear-gradient(90deg in hsl longer hue, #f00, #00f)',
       'linear-gradient(#000 /* x */, #fff)',
       'linear-gradient(#000)',
+      'linear-gradient(#000,, #fff)',
+      'rgb(0, 0 0)',
+      'rgb(0 0 0, 0.5)',
+      'conic-gradient(#000, #fff)',
       'red; color: blue'
     ])
       expect(validateStyleValue('backgroundImage', { assetId: 'a_hero', scrim }), scrim).toMatch(/scrim/);
+    // A long malformed colour is refused at once, not after trying every way to split its digits.
+    const started = performance.now();
+    expect(validateStyleValue('backgroundImage', { assetId: 'a_hero', scrim: `rgb(${'1'.repeat(380)})` })).toMatch(/scrim/);
+    expect(performance.now() - started).toBeLessThan(50);
     // No other property takes one, and url() stays out of every text value.
     expect(validateStyleValue('background', { assetId: 'a_hero' })).not.toBeNull();
     expect(validateStyleValue('background', 'url(/x.jpg)')).not.toBeNull();
@@ -340,6 +348,22 @@ describe('the stylesheet', () => {
     expect(css).toContain(`.${pageNodeClass('n_box')} {\n\tbackground: #ffffff;\n}`);
   });
 
+  it('lets a size’s own picture on an earlier axis win over a later axis’s picture for every size, as the cascade says', () => {
+    const s = studio();
+    const def = toned(s);
+    // Tone (first) gives phones a scrimmed picture; Layout (second) gives every size another, with no scrim.
+    def.variantAxes = {
+      tone: { label: 'Tone', default: 'dark', options: { dark: { label: 'Dark', styles: { root: { phone: { backgroundImage: { assetId: 'a_hero', scrim: '#0008' } } } } } } },
+      layout: { label: 'Layout', default: 'wide', options: { wide: { label: 'Wide', styles: { root: { base: { backgroundImage: { assetId: 'a_other' } } } } } } }
+    };
+    const css = generateComponentsCss(s);
+    const phone = css.slice(css.indexOf('@media (max-width: 767.98px)'));
+    const copy = phone.indexOf(`.${variantClass(def, 'layout', 'wide')}.${nodeClass(def, 'root')} {\n\t\t--so-bg-image: var(${fileVar('a_other', 768)});`);
+    const own = phone.indexOf(`.${variantClass(def, 'tone', 'dark')}.${nodeClass(def, 'root')} {\n\t\t--so-bg-image: linear-gradient(#0008, #0008), var(${fileVar('a_hero', 768)});`);
+    expect(copy).toBeGreaterThan(-1);
+    expect(own).toBeGreaterThan(copy);
+  });
+
   it('falls back on what the element’s own gradient paints, without its colour, and never on text the stylesheet refuses', () => {
     let s = setBg(studio(), { assetId: 'a_other' }, { scope: 'phone' });
     s = apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: 'n_band', scope: 'base', property: 'background', value: 'linear-gradient(#ff0000, #0000ff), #112233' }]).state;
@@ -412,6 +436,16 @@ describe('the stylesheet', () => {
     // A design with no picture keeps its file as it was.
     const plain = Object.values(s.components).find((d) => d.kind === 'managed' && d.id !== def.id)!;
     expect(files.get(defFile(plain))).not.toContain('<style>');
+  });
+});
+
+describe('detaching a placement with a background image', () => {
+  it('folds a design’s hover picture under a placement’s background colour, which never undoes it', () => {
+    const folded = flattenStates([
+      { styles: { 'base:hover': { backgroundImage: { assetId: 'a_hero' } } }, strength: 1 },
+      { styles: { base: { background: '#ffffff' } }, strength: 2 }
+    ]);
+    expect(folded).toEqual({ 'base:hover': { backgroundImage: { assetId: 'a_hero' } } });
   });
 });
 

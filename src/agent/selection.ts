@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { DIVIDER_ICON, DIVIDER_SHAPES, STYLE_STATES, TEXT_TAGS, isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import { BACKGROUND_IMAGE, STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
 import { STYLE_PROPS, isStateStyleProp, placementStyleControls, stateStyleError } from '@shared/styles';
-import { getTree } from '@engine/tree';
+import { codeTakesOverrides, getTree } from '@engine/tree';
 import { TABLE_ACTIONS, TABLE_LIMITS, type TableAction } from '@engine/table';
 import { checkProps, chooseVariants, fieldError, variantsJsonSchema, type FieldIssue } from './macros';
 import { propJsonSchema, propsJsonSchema, type JsonSchema } from './propschema';
@@ -251,7 +251,7 @@ function emptiedBy(field: PropSchema, v: unknown): string | null {
 export function selectionTakesBackground(state: ProjectState, target: SelectionTarget | null): boolean {
   const r = target && !target.nested && target.owner.kind !== 'component' ? resolve(state, target) : null;
   if (!r?.def) return false;
-  const list = placementStyleControls(r.def, target!.partId ?? 'root', false);
+  const list = placementStyleControls(r.def, target!.partId ?? 'root', codeTakesOverrides(r.def));
   return list === undefined || !!list?.includes('backgroundImage');
 }
 

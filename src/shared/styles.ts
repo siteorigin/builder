@@ -881,6 +881,8 @@ export function isScrim(raw: string): boolean {
   if (s.length > 400 || !isSafeCssValue(s)) return false;
   const m = /^(linear|radial)-gradient\((.*)\)$/is.exec(s);
   if (!m) return isScrimColor(s);
+  // An empty argument (two commas together, or one at either end) is no gradient a browser draws.
+  if (/(^|,)\s*(,|$)/.test(m[2])) return false;
   const parts = splitTop(m[2], (ch) => ch === ',');
   // A direction or shape first, when there is one; then two colour stops or more, each at up to two places.
   const words = (p: string) => splitTop(p, (ch) => /\s/.test(ch));
@@ -897,8 +899,22 @@ export function isScrim(raw: string): boolean {
  * keywords. No variable, which could name nothing (or the picture itself) and make the browser drop the picture, and
  * nothing a colour function would only read at run time.
  */
-const SCRIM_COLOR_RE = /^(#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|(?:rgba?|hsla?)\((?:[\s,/]*-?(?:\d+(?:\.\d+)?|\.\d+)(?:%|deg)?){3,4}[\s]*\)|transparent|black|white)$/i;
-const isScrimColor = (c: string) => SCRIM_COLOR_RE.test(c.replace(/\s+/g, ' ').replace(/\(\s+/g, '(').trim());
+const SCRIM_NUMBER_RE = /^-?(?:\d{1,4}(?:\.\d{1,6})?|\.\d{1,6})(?:%|deg)?$/;
+function isScrimColor(raw: string): boolean {
+  const c = raw.trim();
+  if (/^(#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|transparent|black|white)$/i.test(c)) return true;
+  const m = /^(?:rgba?|hsla?)\(([^()]*)\)$/i.exec(c);
+  if (!m) return false;
+  const nums = (list: string[]) => list.every((x) => SCRIM_NUMBER_RE.test(x));
+  // Commas between every channel, or spaces with the alpha after a slash: never the two mixed.
+  if (m[1].includes(',')) {
+    const parts = m[1].split(',').map((x) => x.trim());
+    return !m[1].includes('/') && (parts.length === 3 || parts.length === 4) && nums(parts);
+  }
+  const [rgb, alpha, ...more] = m[1].split('/');
+  const channels = rgb.trim().split(/\s+/);
+  return !more.length && channels.length === 3 && nums(channels) && (alpha === undefined || nums([alpha.trim()]));
+}
 const SCRIM_DIRECTION_RE = /^(to (top|bottom|left|right)( (top|bottom|left|right))?|-?(\d+(\.\d+)?|\.\d+)(deg|turn|rad|grad))$/i;
 const SCRIM_SHAPE_RE = /^((circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner)( (circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner))?)?( ?at( (center|top|bottom|left|right|\d+(\.\d+)?%)){1,2})?$/i;
 const SCRIM_STOP_RE = /^(0|(\d+(\.\d+)?|\.\d+)(%|px))$/;
@@ -1450,6 +1466,12 @@ function covers(short: string, long: string): boolean {
   return long.startsWith(`${short}-`);
 }
 
+/**
+ * A background colour and a background image never undo each other: wherever an element can carry a picture, its
+ * background shorthand paints the picture's longhands again from the picture's variables (generator/background.ts).
+ */
+const paintedApart = (a: string, b: string) => (a === 'background' && b === 'backgroundImage') || (a === 'backgroundImage' && b === 'background');
+
 /** Whether two sets of CSS properties set any property in common. */
 const overlap = (a: string[], b: string[]) => a.some((x) => b.some((y) => x === y || covers(x, y) || covers(y, x)));
 
@@ -1529,8 +1551,8 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
     const ownWins = named.filter(own);
     const ownCustom = custom.filter(own);
     for (const q of named.filter((d) => !own(d))) {
-      if (!ownWins.some((p) => p !== q && overlap(names(p), names(q)) && beats(q, p))) continue;
-      if ([...ownWins, ...ownCustom].some((r) => overlap(names(r), names(q)) && beats(r, q))) continue;
+      if (!ownWins.some((p) => p !== q && !paintedApart(p.prop, q.prop) && overlap(names(p), names(q)) && beats(q, p))) continue;
+      if ([...ownWins, ...ownCustom].some((r) => !paintedApart(r.prop, q.prop) && overlap(names(r), names(q)) && beats(r, q))) continue;
       best.set(q.prop, { ...q, index: beneath });
     }
     // Display: every declaration that sets it at this size, ranked as the stylesheets rank them. A show writes its
@@ -1625,7 +1647,7 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
   // Whether two rules can set something in common. Borders and corners are compared as families, so a side, a
   // colour or a physical edge never slips past its shorthand.
   const family = (n: string) => (n.includes('radius') ? 'radius' : n.startsWith('border') ? 'border' : n);
-  const touch = (a: Decl, b: Decl) => overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y)));
+  const touch = (a: Decl, b: Decl) => !paintedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y))));
   const order = (d: Decl) => STYLE_STATES.indexOf(d.state!);
   const own = (d: Decl) => d.index >= beneath;
   for (const a of states) {
