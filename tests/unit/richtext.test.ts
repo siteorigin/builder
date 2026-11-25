@@ -750,6 +750,18 @@ describe('rich text round trip: document, HTML, inline edit, document', () => {
     expect(roundTrip(value)).toEqual(value);
   });
 
+  it('gives a link a new tab’s tokens however it was given the new tab, each token once (#582)', async () => {
+    const LinkView = (await import(/* @vite-ignore */ join(dir, 'Link.js'))).default as Component<Record<string, unknown>>;
+    const rel = (link: Record<string, unknown>) => render(LinkView, { props: { link } }).body.match(/<a [^>]*>/)![0].match(/ rel="([^"]*)"/)?.[1];
+    const href = 'https://shop.example/';
+    // A code component that opens a resolved link in a new tab ({ ...link, newTab: true }).
+    expect(rel({ href, newTab: true, rel: 'sponsored' })).toBe('noopener noreferrer sponsored');
+    expect(rel({ href, newTab: true, rel: 'noopener noreferrer ugc' })).toBe('noopener noreferrer ugc');
+    expect(rel({ href, rel: 'nofollow' })).toBe('nofollow');
+    expect(rel({ href, newTab: true })).toBe('noopener noreferrer');
+    expect(rel({ href })).toBeUndefined();
+  });
+
   it('keeps an edit to the words, with the marks and links around it', () => {
     const value = normalizeRichText(`Read **our** [story](${about.route}).`, s, 'Body');
     const dom = edited(html(value)) as Array<Exclude<RichDomNode, string>>;

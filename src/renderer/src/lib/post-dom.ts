@@ -5,55 +5,14 @@
  * around: they are chosen and described in a dialog, never typed into.
  */
 import type { LinkValue, ProjectState, RichBlock, RichImageBlock, RichSpan, RichText } from '@shared/types';
-import { ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, linkFromTarget, linkToTarget } from '@shared/richtext';
-import { findEntry } from '@shared/collections';
-import { linkRels, relsFromAttribute, withRels } from '@shared/link-rel';
-import { blocksFromDom, type ArticleRead, type RichDomNode } from './richtext';
+import { isImageBlock, isListBlock, isRichBlock, linkToTarget } from '@shared/richtext';
+import { linkRels, relsFromAttribute } from '@shared/link-rel';
+import { blocksFromDom, type RichDomNode } from './richtext';
+import { articleLinks, KEPT_LINK } from './article-links';
 import { assetUrl } from './model';
 
 /** The class a check list carries, as the site's own lists do. */
 const CHECK_CLASS = 'so-rich--check';
-
-/**
- * A link the writer shows carries the destination it was stored with (`data-link`) beside the address it showed for it
- * (`data-href`): a page whose address changes since is still that page, and a link to an address another page has
- * taken since never moves to it. Read back as `so-link:` and the stored link. What a web address says about its
- * site is its anchor's own rel, which the link dialog changes, so that is read from the anchor every time.
- */
-const KEPT_LINK = 'so-link:';
-
-function keptLink(json: string, state: ProjectState): LinkValue | null {
-  let l: unknown;
-  try {
-    l = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (!l || typeof l !== 'object') return null;
-  const { type, target } = l as LinkValue;
-  if (typeof target !== 'string') return null;
-  if (type === 'page') return Object.hasOwn(state.pages, target) ? (l as LinkValue) : null;
-  if (type === 'entry') return findEntry(state, target) ? (l as LinkValue) : null;
-  return type === 'url' || type === 'email' || type === 'tel' || type === 'anchor' ? (l as LinkValue) : null;
-}
-
-/** How the writer reads a link it shows: a page or post of this project, or an address of anywhere else. */
-export function articleLinks(state: ProjectState): ArticleRead {
-  return {
-    link: (href, newTab, rel) => {
-      const t = href.trim();
-      if (t.startsWith(KEPT_LINK)) {
-        const kept = keptLink(t.slice(KEPT_LINK.length), state);
-        return kept && withRels(kept, rel);
-      }
-      if (t.startsWith(ENTRY_LINK_PREFIX)) {
-        const id = t.slice(ENTRY_LINK_PREFIX.length);
-        return findEntry(state, id) ? { type: 'entry', target: id, ...(newTab ? { newTab: true } : {}) } : null;
-      }
-      return linkFromTarget(t, state.pages, newTab, rel);
-    }
-  };
-}
 
 /** Where a link the writer shows goes, as its href. */
 export const linkHref = (link: LinkValue, state: ProjectState) => linkToTarget(link, state.pages);

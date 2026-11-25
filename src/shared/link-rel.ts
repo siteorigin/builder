@@ -3,20 +3,21 @@ import { LINK_RELS, type LinkRel, type LinkValue } from './types';
 /**
  * A link's authored relationships (`nofollow`, `sponsored`, `ugc`): how they are read from anything a document, a
  * page's HTML or the text form holds, and how they are written back out. Anything else is ignored, so a hand-edited
- * value never fails a build or an edit that does not touch it.
+ * value never fails a build or an edit that does not touch it, and one written as an attribute's words
+ * (`"sponsored nofollow"`) still says what it meant.
  */
 
 const KNOWN: ReadonlySet<string> = new Set(LINK_RELS);
 
-/** The known tokens of a list, each once, in LINK_RELS order; none for anything that is not a list. */
+/** The known tokens of a list or of words (spaces or commas between them), each once, in LINK_RELS order. */
 export function canonicalRels(v: unknown): LinkRel[] {
-  if (!Array.isArray(v)) return [];
-  const has = new Set(v.filter((t): t is string => typeof t === 'string' && KNOWN.has(t)));
-  return LINK_RELS.filter((t) => has.has(t));
+  const words = typeof v === 'string' ? v.split(/[ \t\n\f\r,]+/) : Array.isArray(v) ? v : [];
+  const has = new Set(words.filter((t): t is string => typeof t === 'string').map((t) => t.toLowerCase()));
+  return LINK_RELS.filter((t) => KNOWN.has(t) && has.has(t));
 }
 
 /** The authored tokens of an HTML rel attribute (`noopener`, `noreferrer` and the rest left out). */
-export const relsFromAttribute = (attr: string | null | undefined): LinkRel[] => (attr ? canonicalRels(attr.toLowerCase().split(/[ \t\n\f\r]+/)) : []);
+export const relsFromAttribute = (attr: string | null | undefined): LinkRel[] => canonicalRels(attr ?? '');
 
 /** The relationships a link carries: only a web address has any. */
 export const linkRels = (link: unknown): LinkRel[] => (link && typeof link === 'object' && (link as LinkValue).type === 'url' ? canonicalRels((link as LinkValue).rel) : []);

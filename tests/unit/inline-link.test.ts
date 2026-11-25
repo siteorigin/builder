@@ -52,7 +52,7 @@ const field = () =>
     return { open: true, value: input.value, invalid: input.getAttribute('aria-invalid'), error: error.textContent, errorShown: !error.hidden };
   })()`);
 const hrefs = () => frame.evaluate<string[]>(`[...document.querySelectorAll('[data-so-node="r"] a')].map((a) => a.getAttribute('href'))`);
-const rels = () => frame.evaluate<Array<[string | null, string | null]>>(`[...document.querySelectorAll('[data-so-node="r"] a')].map((a) => [a.getAttribute('href'), a.getAttribute('rel')])`);
+const rels = () => frame.evaluate<Array<[string | null, string | null, string | null]>>(`[...document.querySelectorAll('[data-so-node="r"] a')].map((a) => [a.getAttribute('href'), a.getAttribute('rel'), a.getAttribute('target')])`);
 
 /** Edit the rich text with the caret in the linked words, then open the link field. */
 async function openField(rich = RICH, shown = '/about/') {
@@ -147,10 +147,42 @@ describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
       await expect.poll(async () => (await field()).open).toBe(false);
       return rels();
     };
-    // The browser makes a new link for the words; the author's relationships go on it, never the site's own tokens.
-    expect(await pointAt('https://shop.example/b')).toEqual([['https://shop.example/b', 'nofollow sponsored']]);
+    // The browser makes a new link for the words; the author's relationships and new tab go on it, never the site's
+    // own tokens.
+    expect(await pointAt('https://shop.example/b')).toEqual([['https://shop.example/b', 'nofollow sponsored', '_blank']]);
     await page.keyboard.press('Escape');
-    expect(await pointAt('/about/')).toEqual([['/about/', null]]);
+    expect(await pointAt('/about/')).toEqual([['/about/', null, '_blank']]);
+    await page.keyboard.press('Escape');
+    expect(await pointAt('hi@example.com')).toEqual([['mailto:hi@example.com', null, null]]);
+  });
+
+  it('re-points only the link the caret is in when its neighbour goes to the same address but says something else (#582)', async () => {
+    const pair = '<p><a href="https://shop.example/" rel="sponsored"><strong>Paid</strong></a><a href="https://shop.example/" rel="ugc"><em>review</em></a> today</p>';
+    edits++;
+    await page.evaluate(`window.seen = []`);
+    await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(pair)}`);
+    await page.evaluate(`document.querySelector('iframe').focus()`);
+    await toFrame('beginTextEdit', { desc: { ctx: 'page:p', node: 'r', items: '' }, editId: `e${edits}` });
+    await expect.poll(async () => (await messages()).some((m) => m.type === 'textEditStarted')).toBe(true);
+    await frame.evaluate(`(() => {
+      const t = document.querySelectorAll('[data-so-node="r"] a')[1].querySelector('em').firstChild;
+      const r = document.createRange();
+      r.setStart(t, 2);
+      r.collapse(true);
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+    })()`);
+    await page.keyboard.press(`${MOD}+k`);
+    await expect.poll(async () => (await field()).open).toBe(true);
+    await page.keyboard.type('https://reviews.example/');
+    await page.keyboard.press('Enter');
+    const { check } = await nextCheck(0);
+    await toFrame('linkChecked', { check });
+    await expect.poll(async () => (await field()).open).toBe(false);
+    expect(await rels()).toEqual([
+      ['https://shop.example/', 'sponsored', null],
+      ['https://reviews.example/', 'ugc', null]
+    ]);
   });
 
   it('acts only on the answer about what the field holds now', async () => {

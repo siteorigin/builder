@@ -1,5 +1,4 @@
 import type { ChoiceOption, ImageValue, LinkRel, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
-import { LINK_RELS } from '@shared/types';
 import { canonicalRels } from '@shared/link-rel';
 import { cleanBlocks, ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText, spanRuns } from '@shared/richtext';
 import { collectionRoutes, findEntry } from '@shared/collections';
@@ -46,9 +45,6 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
   }
   if (typeof v !== 'object') fail(`${label}: expected a link object.`);
   const l = v as Partial<LinkValue>;
-  // Only the relationships an author declares are stored: a new tab's security tokens are the site's to add.
-  if (l.rel !== undefined && (!Array.isArray(l.rel) || l.rel.some((t) => !(LINK_RELS as readonly unknown[]).includes(t))))
-    fail(`${label}: rel is a list of ${LINK_RELS.map((t) => `"${t}"`).join(', ')}.`);
   const type = l.type ?? 'none';
   const target = String(l.target ?? '').trim();
   switch (type) {
@@ -88,7 +84,9 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
     if (!/^[A-Za-z][\w-]*$/.test(out.anchor)) fail(`${label}: "${out.anchor.slice(0, 40)}" is not a valid anchor.`);
   }
   if (l.newTab) out.newTab = true;
-  // A relationship describes another site: kept on a web address only, so a change of link type lets it go.
+  // A relationship describes another site: kept on a web address only, so a change of link type lets it go. Only the
+  // three an author declares are stored, as a list; anything else (a new tab's security tokens, the site's to add, or
+  // a hand edit) is read for what it can say and never refuses the edit, which may not even be about this link.
   const rels = type === 'url' ? canonicalRels(l.rel) : [];
   if (rels.length) out.rel = rels;
   return out;

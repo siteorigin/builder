@@ -293,7 +293,7 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
 
     it('keeps what each link says about its site, two links to one address apart, and none of a new tab’s tokens (#582)', async () => {
       const paid = '<a href="https://shop.example/" target="_blank" rel="Sponsored noopener noreferrer"><b>Paid</b></a><a href="https://shop.example/" target="_blank" rel="ugc"><i>review</i></a>';
-      await copy(`<meta charset="utf-8"><p>${paid} and <a href="https://plain.example/" target="_blank" rel="noopener">plain</a></p>`, 'Paid review and plain');
+      await copy(`<meta charset="utf-8"><p>${paid} and <a href="https://plain.example/" target="_blank" rel="noopener">plain</a> or <a href="https://cite.example/" rel="nofollow">cited</a></p>`, 'Paid review and plain or cited');
       await editAt('r', 'Fourth');
       await page.keyboard.press('ControlOrMeta+A');
       await command('paste');
@@ -302,7 +302,9 @@ describe.skipIf(!browserInstalled)('writing in site copy on the canvas', () => {
           { text: 'Paid', strong: true, link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['sponsored'] } },
           { text: 'review', em: true, link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['ugc'] } },
           ' and ',
-          { text: 'plain', link: { type: 'url', target: 'https://plain.example/', newTab: true } }
+          { text: 'plain', link: { type: 'url', target: 'https://plain.example/', newTab: true } },
+          ' or ',
+          { text: 'cited', link: { type: 'url', target: 'https://cite.example/', rel: ['nofollow'] } }
         )
       ]);
     });

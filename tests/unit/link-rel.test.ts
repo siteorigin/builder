@@ -14,11 +14,11 @@ import { linkFromTarget, linkTokens, parseRichText, richTextToMarkdown } from '@
 import { blocksFromDom } from '@shared/richtext-tree';
 import { createStarterState } from '@catalogue/starters';
 import { normalizeLink, normalizeRichText } from '@engine/values';
-import { resolveLink } from '@generator/index';
+import { defFile, generateProject, resolveLink, withAuthoredRel } from '@generator/index';
 import { linkAt, setLink, typedLink } from '../../src/renderer/src/lib/richtext-commands';
 import { richDom } from '../../src/renderer/src/lib/richtext';
 import { emptyReport, htmlToRichText } from '../../src/main/posts-import/html';
-import { articleLinks } from '../../src/renderer/src/lib/post-dom';
+import { articleLinks } from '../../src/renderer/src/lib/article-links';
 import { ProjectSession } from '../../src/main/project/session';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -46,12 +46,13 @@ describe('a link’s relationships in a project', () => {
     expect(cta()).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored'] });
     await s.redo();
     expect(cta()).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored', 'ugc'] });
-    // A refused value changes nothing.
-    expect((await set({ type: 'url', target: SHOP, rel: ['noopener'] })).ok).toBe(false);
+    // Tokens the site adds itself are never stored: the new tab's are added to every export anyway.
+    expect((await set({ type: 'url', target: SHOP, newTab: true, rel: ['noopener', 'ugc', 'sponsored'] })).ok).toBe(true);
     expect(cta()).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored', 'ugc'] });
     await s.close();
     const again = await ProjectSession.open(dir, 'test');
     expect((again.state.site.shell.header.nodes[nodeId] as InstanceNode).props.ctaLink).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored', 'ugc'] });
+    await again.undo();
     await again.undo();
     await again.undo();
     expect((again.state.site.shell.header.nodes[nodeId] as InstanceNode).props.ctaLink).toEqual(before);
@@ -62,8 +63,12 @@ describe('a link’s relationships in a project', () => {
 describe('the stored relationships', () => {
   it('reads only the three it knows, each once, in their own order', () => {
     expect(canonicalRels(['ugc', 'nofollow', 'ugc', 'sponsored'])).toEqual(['nofollow', 'sponsored', 'ugc']);
-    expect(canonicalRels(['noopener', 'NOFOLLOW', 'external', 7, null])).toEqual([]);
-    expect(canonicalRels('nofollow')).toEqual([]);
+    expect(canonicalRels(['noopener', 'external', 7, null])).toEqual([]);
+    expect(canonicalRels(['UGC', 'noopener', 'sponsored'])).toEqual(['sponsored', 'ugc']);
+    // Written as an attribute's words, by hand: what it meant is still read.
+    expect(canonicalRels('sponsored nofollow')).toEqual(['nofollow', 'sponsored']);
+    expect(canonicalRels('ugc,nofollow')).toEqual(['nofollow', 'ugc']);
+    expect(canonicalRels({ nofollow: true })).toEqual([]);
     expect(canonicalRels(undefined)).toEqual([]);
     // An HTML attribute: any case, any whitespace, the security tokens left to the site.
     expect(relsFromAttribute(' UGC\tnoopener  Sponsored noreferrer\n')).toEqual(['sponsored', 'ugc']);
@@ -76,6 +81,7 @@ describe('the stored relationships', () => {
     expect(withRels({ type: 'url', target: SHOP }, ['ugc', 'nofollow'])).toEqual({ type: 'url', target: SHOP, rel: ['nofollow', 'ugc'] });
     expect(withRels({ type: 'url', target: SHOP, rel: ['ugc'] }, [])).toEqual({ type: 'url', target: SHOP });
     expect(withRels({ type: 'email', target: 'a@b.example', rel: ['ugc'] } as LinkValue, ['ugc'])).toEqual({ type: 'email', target: 'a@b.example' });
+    expect(withRels({ type: 'page', target: 'pg_x', anchor: 'team' }, ['ugc'])).toEqual({ type: 'page', target: 'pg_x', anchor: 'team' });
   });
 
   it('render after a new tab’s security tokens, and are written after the destination in the text form', () => {
@@ -87,6 +93,7 @@ describe('the stored relationships', () => {
     expect(linkTitle(true, [])).toBe(' "new tab"');
     expect(linkTitle(false, ['nofollow', 'sponsored'])).toBe(' "rel=nofollow,sponsored"');
     expect(linkTitle(true, ['ugc'])).toBe(' "new tab rel=ugc"');
+    expect(linkTitle(true, ['nofollow', 'sponsored', 'ugc'])).toBe(' "new tab rel=nofollow,sponsored,ugc"');
   });
 });
 
@@ -97,11 +104,21 @@ describe('a link’s relationships as an edit sends them', () => {
     expect(normalizeLink({ type: 'url', target: SHOP, rel: ['ugc', 'sponsored', 'ugc'] }, s, 'Link')).toEqual({ type: 'url', target: SHOP, rel: ['sponsored', 'ugc'] });
     expect(normalizeLink({ type: 'url', target: SHOP, newTab: true, rel: ['nofollow'] }, s, 'Link')).toEqual({ type: 'url', target: SHOP, newTab: true, rel: ['nofollow'] });
     expect(normalizeLink({ type: 'url', target: SHOP, rel: [] }, s, 'Link')).toEqual({ type: 'url', target: SHOP });
+    expect(normalizeLink(`${SHOP}#deals`, s, 'Link')).toEqual({ type: 'url', target: `${SHOP}#deals` });
   });
 
-  it('refuse anything but a list of the three, naming them', () => {
-    for (const rel of ['nofollow', ['noopener'], ['Nofollow'], [null], { nofollow: true }, null])
-      expect(() => normalizeLink({ type: 'url', target: SHOP, rel }, s, 'Button link'), JSON.stringify(rel)).toThrow(/Button link: rel is a list of "nofollow", "sponsored", "ugc"/);
+  it('keep what they can say from anything else, and never refuse the edit over it', () => {
+    // A stored link edited by hand goes back through here with every edit of what holds it, which may be about
+    // something else entirely: it is read, never refused.
+    const cases: Array<[unknown, string[] | undefined]> = [
+      ['sponsored nofollow', ['nofollow', 'sponsored']],
+      [['noopener', 'noreferrer'], undefined],
+      [['Nofollow', 'bogus', 'ugc'], ['nofollow', 'ugc']],
+      [[null, 7], undefined],
+      [{ nofollow: true }, undefined],
+      [null, undefined]
+    ];
+    for (const [rel, want] of cases) expect(normalizeLink({ type: 'url', target: SHOP, rel }, s, 'Link'), JSON.stringify(rel)).toEqual(want ? { type: 'url', target: SHOP, rel: want } : { type: 'url', target: SHOP });
   });
 
   it('go when the link no longer goes to another site', () => {
@@ -109,6 +126,8 @@ describe('a link’s relationships as an edit sends them', () => {
     expect(normalizeLink({ type: 'page', target: about.id, rel: ['sponsored'] }, s, 'Link')).toEqual({ type: 'page', target: about.id });
     expect(normalizeLink({ type: 'email', target: 'hi@example.com', rel: ['ugc'] }, s, 'Link')).toEqual({ type: 'email', target: 'hi@example.com' });
     expect(normalizeLink({ type: 'none', target: '', rel: ['ugc'] }, s, 'Link')).toEqual({ type: 'none', target: '' });
+    expect(normalizeLink({ type: 'tel', target: '+1 555 0100', rel: ['ugc'] }, s, 'Link')).toEqual({ type: 'tel', target: '+1 555 0100' });
+    expect(normalizeLink({ type: 'page', target: about.id, anchor: 'team', newTab: true, rel: ['ugc'] }, s, 'Link')).toEqual({ type: 'page', target: about.id, anchor: 'team', newTab: true });
   });
 
   it('survive an operation’s own validation, which keeps only the fields it declares', () => {
@@ -146,7 +165,10 @@ describe('relationships in the text form', () => {
   });
 
   it('leave anything else written there as text, as before', () => {
-    for (const v of [`[shop](${SHOP} "rel=noopener")`, `[shop](${SHOP} "sponsored")`, `[shop](${SHOP} "rel=")`, `[shop](${SHOP} "rel=nofollow new tab")`, `[shop](${SHOP} "")`]) expect(norm(v), v).toEqual([p({ text: v })]);
+    for (const v of [`[shop](${SHOP} "rel=noopener")`, `[shop](${SHOP} "sponsored")`, `[shop](${SHOP} "rel=")`, `[shop](${SHOP} "rel=nofollow,")`, `[shop](${SHOP} "rel=nofollow ugc")`, `[shop](${SHOP} "rel=nofollow new tab")`, `[shop](${SHOP} "")`])
+      expect(norm(v), v).toEqual([p({ text: v })]);
+    // All three, in any order.
+    expect(norm(`[shop](${SHOP} "new tab rel=ugc,sponsored,nofollow")`)).toEqual([p({ text: 'shop', link: { type: 'url', target: SHOP, newTab: true, rel: ['nofollow', 'sponsored', 'ugc'] } })]);
     // Links without any read exactly as they always did.
     expect(norm(`[shop](${SHOP})`)).toEqual([p({ text: 'shop', link: { type: 'url', target: SHOP } })]);
     expect(norm(`[shop](${SHOP} "new tab")`)).toEqual([p({ text: 'shop', link: { type: 'url', target: SHOP, newTab: true } })]);
@@ -160,13 +182,15 @@ describe('relationships in the text form', () => {
     expect(normalizeRichText(richTextToMarkdown(blocks, s.pages), s, 'Body')).toEqual(blocks);
     // A stored value with tokens out of order, or a hand-edited string, writes only what it means.
     expect(richTextToMarkdown([p({ text: 'x', link: { type: 'url', target: SHOP, rel: ['ugc', 'nofollow', 'bogus'] } })] as never, s.pages)).toBe(`[x](${SHOP} "rel=nofollow,ugc")`);
-    expect(richTextToMarkdown([p({ text: 'x', link: { type: 'url', target: SHOP, rel: 'nofollow' } })] as never, s.pages)).toBe(`[x](${SHOP})`);
+    expect(richTextToMarkdown([p({ text: 'x', link: { type: 'url', target: SHOP, rel: 'nofollow' } })] as never, s.pages)).toBe(`[x](${SHOP} "rel=nofollow")`);
+    expect(richTextToMarkdown([p({ text: 'x', link: { type: 'url', target: SHOP, rel: { nofollow: true } } })] as never, s.pages)).toBe(`[x](${SHOP})`);
   });
 
   it('are found in a line as the parser reads them', () => {
-    const tokens = linkTokens(`a [b](${SHOP} "rel=ugc") [c](${SHOP} "rel=bad")`, (t, n, r) => linkFromTarget(t, s.pages, n, r));
-    expect(tokens).toHaveLength(1);
+    const tokens = linkTokens(`a [b](${SHOP} "rel=ugc") [c](${SHOP} "rel=bad") [d](${SHOP} "new tab rel=nofollow")`, (t, n, r) => linkFromTarget(t, s.pages, n, r));
+    expect(tokens).toHaveLength(2);
     expect(tokens[0]).toMatchObject({ target: SHOP, newTab: false, rel: ['ugc'] });
+    expect(tokens[1]).toMatchObject({ target: SHOP, newTab: true, rel: ['nofollow'] });
     expect(parseRichText(`[b](${SHOP} "rel=ugc")`, { markdown: true })).toEqual([p({ text: `[b](${SHOP} "rel=ugc")` })]);
   });
 });
@@ -232,7 +256,7 @@ describe('relationships read back from a page', () => {
 
   it('come with an imported post’s links to other sites', () => {
     const report = emptyReport();
-    const read = (html: string) => htmlToRichText(html, { link: (href, newTab, rel) => linkFromTarget(href, {}, newTab, rel) }, report);
+    const read = (html: string) => htmlToRichText(html, { link: (href, newTab, rel) => linkFromTarget(href, {}, newTab, rel), image: () => null }, report);
     expect(read(`<p><a href="${SHOP}" target="_blank" rel="Sponsored noopener nofollow">deal</a> <a href="${SHOP}" rel="noopener">plain</a></p>`)).toEqual([
       { type: 'p', spans: [{ text: 'deal', link: { type: 'url', target: SHOP, newTab: true, rel: ['nofollow', 'sponsored'] } }, { text: ' ' }, { text: 'plain', link: { type: 'url', target: SHOP } }] }
     ]);
@@ -246,9 +270,37 @@ describe('a link as the site renders it', () => {
     expect(resolveLink({ type: 'url', target: SHOP }, { state: s })).toEqual({ href: SHOP });
     expect(resolveLink({ type: 'url', target: SHOP, newTab: true }, { state: s })).toEqual({ href: SHOP, newTab: true });
     expect(resolveLink({ type: 'url', target: SHOP, rel: ['ugc', 'nofollow', 'ugc'] }, { state: s })).toEqual({ href: SHOP, rel: 'nofollow ugc' });
-    expect(resolveLink({ type: 'url', target: SHOP, newTab: true, rel: ['sponsored'] }, { state: s })).toEqual({ href: SHOP, newTab: true, rel: 'noopener noreferrer sponsored' });
-    // A hand edit that holds something else, or a link to this site, says nothing.
-    expect(resolveLink({ type: 'url', target: SHOP, rel: 'nofollow' } as never, { state: s })).toEqual({ href: SHOP });
+    expect(resolveLink({ type: 'url', target: SHOP, newTab: true, rel: ['ugc', 'sponsored'] }, { state: s })).toEqual({ href: SHOP, newTab: true, rel: 'noopener noreferrer sponsored ugc' });
+    // A hand edit is read for what it can say; a link to this site says nothing.
+    expect(resolveLink({ type: 'url', target: SHOP, rel: 'nofollow external' } as never, { state: s })).toEqual({ href: SHOP, rel: 'nofollow' });
+    expect(resolveLink({ type: 'url', target: SHOP, rel: ['noopener'] } as never, { state: s })).toEqual({ href: SHOP });
     expect(resolveLink({ type: 'page', target: aboutOf(s).id, rel: ['nofollow'] } as LinkValue, { state: s })).toEqual({ href: '/about/' });
+  });
+});
+
+describe('a theme header installed before links had relationships', () => {
+  const old = JSON.parse(readFileSync('tests/unit/fixtures/v1-project/siteorigin/components/foundation.shell.header/component.json', 'utf8')).source as string;
+
+  it('renders them from the link it is given, and what it always did for a link without', () => {
+    expect(old).toContain("rel={ctaLink.newTab ? 'noopener noreferrer' : undefined}");
+    const now = withAuthoredRel(old);
+    expect(now).toContain("rel={ctaLink.rel ?? (ctaLink.newTab ? 'noopener noreferrer' : undefined)}");
+    expect(now).toContain("rel={item.link?.rel ?? (item.link?.newTab ? 'noopener noreferrer' : undefined)}");
+    expect(now).not.toMatch(/rel=\{[\w$.?]+\.newTab \?/);
+    // Nothing else in it changes, and the current header is left as it is.
+    expect(now.replace(/[\w.?]+\.rel \?\? \(([^)]*)\)/g, '$1')).toBe(old);
+    expect(withAuthoredRel(now)).toBe(now);
+  });
+
+  it('is given them when the site is generated, while a component of the author’s own is left as written', () => {
+    const s = fresh();
+    const header = s.components['foundation.shell.header'];
+    expect(header).toMatchObject({ kind: 'code', owner: 'theme' });
+    header.source = old;
+    const own = { ...header, id: 'cmp_own_header', owner: 'project' as const, source: old };
+    s.components[own.id] = own;
+    const files = generateProject(s);
+    expect(files.get(defFile(header))).toContain("rel={ctaLink.rel ?? (ctaLink.newTab ? 'noopener noreferrer' : undefined)}");
+    expect(files.get(defFile(own))).toBe(old);
   });
 });

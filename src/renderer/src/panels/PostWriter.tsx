@@ -99,7 +99,7 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   );
 }
 
-type Dialog = null | { kind: 'image'; fig: HTMLElement | null; value: ImageValue; caption: string; at: HTMLElement | null } | { kind: 'link'; range: Range | null; text: string; to: 'page' | 'post' | 'url'; page: string; entry: string; url: string; rel: LinkRel[]; error?: string };
+type Dialog = null | { kind: 'image'; fig: HTMLElement | null; value: ImageValue; caption: string; at: HTMLElement | null } | { kind: 'link'; range: Range | null; text: string; to: 'page' | 'post' | 'url'; page: string; entry: string; url: string; rel: LinkRel[]; newTab: boolean; error?: string };
 
 function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const snap = useStore((s) => s.snapshot)!;
@@ -389,8 +389,10 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       page: pageLink?.type === 'page' ? pageLink.target : firstPage,
       entry: entryLink || posts[0]?.id || '',
       url: pageLink || entryLink ? '' : kept ? linkToTarget(kept, state.pages) : href,
-      // The anchor's own rel, which is what the post keeps (see post-dom).
-      rel: a && root.current?.contains(a) ? relsFromAttribute(a.getAttribute('rel')) : []
+      // The anchor's own rel, which is what the post keeps (see post-dom), and whether it opens a new tab, which the
+      // browser's new link for the words would otherwise lose.
+      rel: a && root.current?.contains(a) ? relsFromAttribute(a.getAttribute('rel')) : [],
+      newTab: !!a && !!root.current?.contains(a) && a.getAttribute('target') === '_blank'
     });
   };
   const applyLink = (d: Extract<Dialog, { kind: 'link' }>) => {
@@ -406,6 +408,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       if (link.type === 'url') rels = d.rel;
     }
     if (!href) return setDialog({ ...d, error: 'Choose where the link goes.' });
+    // A link that opened a new tab still does, to a page, a post or a web address: an email or a call opens its app.
+    const newTab = d.newTab && !/^(mailto|tel):/i.test(href);
     const words = d.range && !d.range.collapsed ? '' : d.text.trim();
     if (d.range?.collapsed !== false && !words) return setDialog({ ...d, error: 'Type the words the link is on.' });
     afterDialog(d.range, () => {
@@ -413,15 +417,21 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
         const a = document.createElement('a');
         a.setAttribute('href', href);
         if (rels.length) a.setAttribute('rel', rels.join(' '));
+        if (newTab) a.setAttribute('target', '_blank');
         a.textContent = words;
         document.execCommand('insertHTML', false, a.outerHTML);
         return;
       }
       document.execCommand('createLink', false, href);
-      // The browser makes new links for the words, without a rel: the ticked relationships go on each of them.
+      // The browser makes new links for the words, with nothing but the address: the ticked relationships and the new
+      // tab go on each of them.
       const sel = document.getSelection();
-      const now = rels.length && sel?.rangeCount ? sel.getRangeAt(0) : null;
-      if (now) root.current?.querySelectorAll('a[href]').forEach((a) => a.getAttribute('href') === href && now.intersectsNode(a) && a.setAttribute('rel', rels.join(' ')));
+      const now = (rels.length || newTab) && sel?.rangeCount ? sel.getRangeAt(0) : null;
+      root.current?.querySelectorAll('a[href]').forEach((a) => {
+        if (!now || a.getAttribute('href') !== href || !now.intersectsNode(a)) return;
+        if (rels.length) a.setAttribute('rel', rels.join(' '));
+        if (newTab) a.setAttribute('target', '_blank');
+      });
     });
   };
 

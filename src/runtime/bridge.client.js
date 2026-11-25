@@ -1786,7 +1786,7 @@ function linkRun(anchor) {
     }
     return [...kinds].sort().join();
   };
-  const same = (n, beside) => n && n.nodeType === 1 && n.tagName === 'A' && n.getAttribute('href') === anchor.getAttribute('href') && n.getAttribute('target') === anchor.getAttribute('target') && marks(n) !== marks(beside);
+  const same = (n, beside) => n && n.nodeType === 1 && n.tagName === 'A' && n.getAttribute('href') === anchor.getAttribute('href') && n.getAttribute('target') === anchor.getAttribute('target') && authoredRels(n).join() === authoredRels(anchor).join() && marks(n) !== marks(beside);
   const next = (n, dir) => {
     let m = dir < 0 ? n.previousSibling : n.nextSibling;
     // The page's own markers (comments) and spaces sit between the parts of one link.
@@ -1900,15 +1900,24 @@ function linkChecked(payload) {
   ed.check = null;
   if (typeof payload.problem === 'string') return linkProblem(payload.problem.slice(0, 300));
   if (!linkRangeLive()) return linkProblem('The words to link have changed. Close this and select them again.');
-  // The browser replaces the link it re-points, attributes and all: what the author said about a web address stays
-  // with it while it still goes to one.
-  const was = /^https?:/i.test(href) ? [...editing.el.querySelectorAll('a[href]')].find((a) => /^https?:/i.test(a.getAttribute('href')) && ed.range.intersectsNode(a)) : null;
-  const rels = was ? authoredRels(was) : [];
+  // The browser replaces the link it re-points, attributes and all. When the words were one link (every link they
+  // touch goes to the same place and says the same), the new one still opens a new tab if that one did, to a page
+  // or a web address, and keeps what the author said about a web address while it still goes to one.
+  const touched = [...editing.el.querySelectorAll('a[href]')].filter((a) => ed.range.intersectsNode(a));
+  const was = touched[0];
+  const one = !!was && touched.every((a) => a.getAttribute('href') === was.getAttribute('href') && a.getAttribute('target') === was.getAttribute('target') && authoredRels(a).join() === authoredRels(was).join());
+  const newTab = one && was.getAttribute('target') === '_blank' && /^(https?:|\/)/i.test(href);
+  const rels = one && /^https?:/i.test(href) && /^https?:/i.test(was.getAttribute('href')) ? authoredRels(was) : [];
   closeLinkEditor(true);
   document.execCommand('createLink', false, href);
   const sel = getSelection();
-  const now = rels.length && sel.rangeCount ? sel.getRangeAt(0) : null;
-  if (now) for (const a of editing.el.querySelectorAll('a[href]')) if (a.getAttribute('href') === href && now.intersectsNode(a)) a.setAttribute('rel', rels.join(' '));
+  const now = (newTab || rels.length) && sel.rangeCount ? sel.getRangeAt(0) : null;
+  if (now)
+    for (const a of editing.el.querySelectorAll('a[href]')) {
+      if (a.getAttribute('href') !== href || !now.intersectsNode(a)) continue;
+      if (newTab) a.setAttribute('target', '_blank');
+      if (rels.length) a.setAttribute('rel', rels.join(' '));
+    }
 }
 /** Whether the words the field links are still there to link (the text can change underneath the field). */
 function linkRangeLive() {
