@@ -6,9 +6,9 @@ import { z } from 'zod';
 import type { InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { importedFontStack, projectFontFamilies } from '@shared/fonts';
-import { contrastBetween, evaluatePairs, isFailing, pairsOf, relativeLuminance } from '@shared/contrast';
-import { hasDarkPalette, withDarkPalette } from '@shared/color-scheme';
-import { PALETTE_MOODS, PALETTE_MOOD_INFO, darkSection, harmonizePalette, onBrandFor, paletteChanges, paletteSeed, strongShade } from '@shared/palette';
+import { contrastBetween, pairsOf, relativeLuminance } from '@shared/contrast';
+import { hasDarkPalette } from '@shared/color-scheme';
+import { PALETTE_MOODS, PALETTE_MOOD_INFO, darkPins, darkSection, harmonizePalette, onBrandFor, paletteChanges, paletteSeed, strongShade } from '@shared/palette';
 import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
@@ -203,21 +203,22 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
       const pairs = getTheme(state.site.themeId).contrastPairs ?? [];
       const palette = harmonizePalette({ brand: seed, mood: args.paletteMood, tokens: list, pairs, accent: accent ? toHex(accent) : undefined });
       const unreadable = palette.unreadable;
-      const accentPairs = new Set(pairsOf(pairs, 'color.accent').map((p) => p.id));
-      const byAccent = !!accent && unreadable.some((r) => accentPairs.has(r.pair.id));
+      // The accent is named only when it is what every unreadable pair hangs on, colors that follow it included.
+      const accentPairs = new Set(pairsOf(pairs, 'color.accent', list).map((p) => p.id));
+      const byAccent = !!accent && unreadable.every((r) => accentPairs.has(r.pair.id));
       const named = unreadable.map((r) => `${r.pair.use.toLowerCase()}${r.status === 'unknown' ? ' (cannot be checked)' : ''}`).join(', ');
       if (unreadable.length) issues.push({ field: byAccent ? 'accentColor' : 'paletteMood', message: `no ${args.paletteMood} palette keeps ${named} readable in this theme${byAccent ? ' with this accent color; send a lighter accentColor, or leave it out and one is made' : ''}` });
       else {
         // Only what the site does not show already: a link that still lands on the palette's color keeps following.
-        for (const [id, v] of paletteChanges(list, palette.values)) setToken(id, v);
+        const changes = paletteChanges(list, palette.values);
+        for (const [id, v] of changes) setToken(id, v);
+        // A dark palette visitors see keeps showing what it does: the colors it took from the light ones keep their present values.
+        if (hasDarkPalette(state.tokens)) {
+          for (const [tokenId, value] of darkPins(list, state.tokens.darkOverrides, changes.map(([id]) => id))) ops.push({ type: 'token.set', tokenId, value, scheme: 'dark' });
+        }
         if (palette.adjusted) warnings.push(`${seed} was made ${relativeLuminance(asRgb(parseHex(palette.brand)!)) > relativeLuminance(asRgb(parseHex(seed)!)) ? 'lighter' : 'darker'} (${palette.brand}) so brand-colored links stay readable on the page, cards and sections; no page color can carry it as it was.`);
         if (palette.page === 'dark') warnings.push(`With ${palette.brand}, this theme's colors read only on dark backgrounds, so the site's backgrounds are now dark.`);
-        if (hasDarkPalette(state.tokens)) {
-          // The dark palette keeps its own colors; say when the new light ones leave pairs there hard to read.
-          const light = list.map((t) => (Object.hasOwn(palette.values, t.id) ? { ...t, value: palette.values[t.id as keyof typeof palette.values]! } : t));
-          const dark = evaluatePairs(withDarkPalette(light, state.tokens.darkOverrides), pairs).filter(isFailing);
-          if (dark.length) warnings.push(`The dark palette kept its own colors, and ${dark.length === 1 ? 'one pair there is' : `${dark.length} pairs there are`} hard to read (${dark.map((r) => r.pair.use.toLowerCase()).join(', ')}). token.setColorScheme with regenerate: true makes the dark colors again from the new palette.`);
-        }
+        if (hasDarkPalette(state.tokens)) warnings.push('The dark palette kept its colors. token.setColorScheme with regenerate: true makes them again from the new palette.');
       }
     }
   } else {

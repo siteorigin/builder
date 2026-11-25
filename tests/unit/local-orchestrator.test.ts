@@ -763,6 +763,7 @@ describe('what a constrained local run sends first (#364)', () => {
     expect(JSON.stringify(body.response_format).includes('"theme":{"enum":["editorial","signal"]}'), label).toBe(theme > 0);
     expect(JSON.stringify(body.messages).includes('Switch the theme (the whole design; content stays)'), label).toBe(theme > 0);
     expect(JSON.stringify(body.response_format).includes('"paletteMood":{"enum":["neutral","tinted","warm","high-contrast"]}'), label).toBe(palette > 0);
+    expect(JSON.stringify(body.messages).includes('paletteMood re-colors the whole site from it, or from the current brand; an accentColor sent stays'), label).toBe(palette > 0);
     // Still the strict grammar, in its compact form, and the context unindented, with all it said before.
     expect(body.response_format.type).toBe('json_schema');
     expect(JSON.stringify(body.response_format.json_schema.schema)).not.toContain('"type":"string","enum"');

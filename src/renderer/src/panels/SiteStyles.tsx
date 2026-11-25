@@ -1437,7 +1437,7 @@ export function SiteStyles() {
       <Section title="Colors" id="tok-color" scope={changedNote(colorIds)}>
         <ColorSchemeControls state={st} palette={palette} onPalette={choosePalette} contrast={contrast} otherContrast={otherContrast} say={say} />
         {/* A palette is made for the light colors; the dark ones have their own "make again" beside them. */}
-        {palette === 'light' && <PaletteHarmony tokens={tokens} pairs={pairs ?? NO_PAIRS} revision={snap.revision} say={say} />}
+        {palette === 'light' && <PaletteHarmony tokens={tokens} pairs={pairs ?? NO_PAIRS} dark={dual ? (st.tokens.darkOverrides ?? {}) : null} revision={snap.revision} say={say} />}
         {[...COLOR_GROUPS, { label: 'Other colors', ids: colorIds.filter((id) => !COLOR_GROUPS.some((g) => g.ids.includes(id))) }]
           .map((g) => ({ ...g, list: g.ids.map(byId).filter((t): t is TokenDef => !!t && t.group === 'color') }))
           .filter((g) => g.list.length)

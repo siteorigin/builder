@@ -1,10 +1,10 @@
 import { useId, useMemo, useState } from 'react';
 import { CircleCheck, TriangleAlert } from 'lucide-react';
-import type { TokenDef } from '@shared/types';
+import type { TokenDef, TokensDoc } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { relativeLuminance, type ContrastPair } from '@shared/contrast';
 import { parseColor } from '@shared/color';
-import { PALETTE_MOODS, PALETTE_MOOD_INFO, harmonizePalette, paletteChanges, paletteSeed, type PaletteMood, type PaletteRole } from '@shared/palette';
+import { PALETTE_MOODS, PALETTE_MOOD_INFO, darkPins, harmonizePalette, paletteChanges, paletteSeed, type PaletteMood, type PaletteRole } from '@shared/palette';
 import { applyOps } from '../store';
 import { resolveCssColor } from '../lib/color';
 
@@ -32,7 +32,20 @@ const luminance = (hex: string) => relativeLuminance(parseColor(hex)!);
  * grounds, text, lines, hover, dark sections and accent, every pair the theme sets readable. Choosing a mood only
  * previews it here; one button applies it as one step, so one Undo puts every colour back as it was.
  */
-export function PaletteHarmony({ tokens, pairs, revision, say }: { tokens: TokenDef[]; pairs: readonly ContrastPair[]; revision: number; say: (text: string) => void }) {
+export function PaletteHarmony({
+  tokens,
+  pairs,
+  dark,
+  revision,
+  say
+}: {
+  tokens: TokenDef[];
+  pairs: readonly ContrastPair[];
+  /** The site's dark colours when visitors can see a dark palette: it keeps showing what it does. */
+  dark: TokensDoc['darkOverrides'] | null;
+  revision: number;
+  say: (text: string) => void;
+}) {
   const uid = useId();
   const [mood, setMood] = useState<PaletteMood>('neutral');
   const seed = useMemo(() => paletteSeed(tokens), [tokens]);
@@ -56,7 +69,10 @@ export function PaletteHarmony({ tokens, pairs, revision, say }: { tokens: Token
   // Pairs on other colours that cannot be measured are said, never counted as readable.
   const unknown = palette.results.filter((r) => r.status === 'unknown').length - unreadable.filter((r) => r.status === 'unknown').length;
   // Only what the site does not show already, so a colour that follows another and lands on the same one keeps following it.
-  const ops: EditOperation[] = paletteChanges(tokens, v).map(([tokenId, value]) => ({ type: 'token.set', tokenId, value }));
+  const changes = paletteChanges(tokens, v);
+  const ops: EditOperation[] = changes.map(([tokenId, value]) => ({ type: 'token.set', tokenId, value }));
+  // A dark palette visitors see keeps the colours it took from the light ones, so no pair there changes under them.
+  if (dark !== null) ops.push(...darkPins(tokens, dark, changes.map(([id]) => id)).map(([tokenId, value]): EditOperation => ({ type: 'token.set', tokenId, value, scheme: 'dark' })));
   const name = PALETTE_MOOD_INFO[mood].label;
   const apply = () =>
     void applyOps(ops, `Use the ${name.toLowerCase()} palette from the brand`, undefined, revision).then((ok) => ok && say(`${name} palette made from your brand color. You can undo this.`));
@@ -117,10 +133,11 @@ export function PaletteHarmony({ tokens, pairs, revision, say }: { tokens: Token
         </p>
       )}
       <div className="ss-harmony-apply">
-        <button className="btn btn-sm" disabled={!ops.length || unreadable.length > 0} onClick={apply}>
+        <button className="btn btn-sm" disabled={!changes.length || unreadable.length > 0} onClick={apply}>
           Generate harmonious palette from brand
         </button>
-        {!ops.length && <span className="ss-palette-note">This palette is in use.</span>}
+        {!changes.length && <span className="ss-palette-note">This palette is in use.</span>}
+        {dark !== null && changes.length > 0 && <span className="ss-palette-note">Your dark colors stay as they are; make them again from these under Dark.</span>}
       </div>
     </div>
   );

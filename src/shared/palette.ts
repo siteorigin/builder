@@ -21,7 +21,9 @@
 import type { TokenDef } from './types';
 import { READABLE_TEXT_COLORS, TEXT_CONTRAST, compositeOver, contrastBetween, evaluatePairs, isFailing, pairsOf, type ColorReader, type ContrastPair, type PairResult } from './contrast';
 import { oklabToLinearRgb, oklabToRgb, parseColor, rgbToOklab, toHex6 } from './color';
-import { resolvedCss } from './color-scheme';
+import { darkValue, resolvedCss } from './color-scheme';
+import { tokenVar } from './styles';
+import type { DarkColorValue, TokensDoc } from './types';
 
 export const PALETTE_MOODS = ['neutral', 'tinted', 'warm', 'high-contrast'] as const;
 export type PaletteMood = (typeof PALETTE_MOODS)[number];
@@ -280,6 +282,8 @@ const STAGES: PaletteRole[][] = [
 
 /** How finely the brand's lightness is searched when it has to move (OKLCH lightness). */
 const BRAND_STEP = 1 / 1024;
+/** How many steps past the first brand that works are still looked at: more than 8-bit rounding moves a colour. */
+const NEARBY_STEPS = 8;
 
 export interface PaletteHarmony {
   /** The colours to save, as #rrggbb: every role the theme has. */
@@ -344,17 +348,20 @@ export function harmonizePalette(input: HarmonyInput): PaletteHarmony {
   if (!chosen && brandCanFix()) {
     const seed = lchOf(requested);
     const tried = new Set([requested]);
-    for (let k = 1; !chosen && k * BRAND_STEP <= 1; k++) {
-      // Both directions at each step, and the one whose saved colour lands nearer the brand wins (darker on a tie).
-      const found = [-1, 1]
-        .map((dir) => seed.L + dir * k * BRAND_STEP)
-        .filter((L) => L >= 0 && L <= 1)
-        .map((L) => oklchHex(L, seed.C, seed.h))
-        .filter((hex) => !tried.has(hex) && tried.add(hex))
-        .map((hex) => carry(hex))
-        .filter((c) => c !== null);
-      chosen = found.sort((a, b) => Math.abs(lchOf(a.brand).L - seed.L) - Math.abs(lchOf(b.brand).L - seed.L))[0] ?? null;
+    // Both directions at each step. Saved colours round to 8 bits, so a few steps past the first that works may land
+    // nearer the brand: the nearest saved colour of those wins (darker on a tie).
+    const found: NonNullable<ReturnType<typeof carry>>[] = [];
+    for (let k = 1, last = Infinity; k <= last && k * BRAND_STEP <= 1; k++) {
+      for (const L of [seed.L - k * BRAND_STEP, seed.L + k * BRAND_STEP]) {
+        if (L < 0 || L > 1) continue;
+        const hex = oklchHex(L, seed.C, seed.h);
+        if (tried.has(hex)) continue;
+        tried.add(hex);
+        const c = carry(hex);
+        if (c) (found.push(c), (last = Math.min(last, k + NEARBY_STEPS)));
+      }
     }
+    chosen = found.sort((a, b) => Math.abs(lchOf(a.brand).L - seed.L) - Math.abs(lchOf(b.brand).L - seed.L))[0] ?? null;
   }
   // A theme of its own may pair colours no palette can make readable: keep the brand, and what fails on its best page.
   if (!chosen) {
@@ -401,7 +408,28 @@ export function harmonizePalette(input: HarmonyInput): PaletteHarmony {
     }
   }
   const results = measure(values);
-  const touched = new Set(roles.flatMap((id) => pairsOf(input.pairs, id, input.tokens).map((p) => p.id)));
+  // A pair that cannot be measured is safe only when the palette cannot have moved it: each end shows as it did,
+  // names no colour the palette changes (a `var(--so-color-brand)` inside a mix), and does not sit, see-through or
+  // unknown, on a page whose colour changed. Anything else might have been made unreadable without anyone knowing.
+  const next = input.tokens.map((t) => (Object.hasOwn(values, t.id) ? { ...t, value: values[t.id as PaletteRole]! } : t));
+  const asBefore = (id: string) => {
+    const [a, b] = [resolvedCss(input.tokens, id), resolvedCss(next, id)];
+    if (a === b) return true;
+    const [ca, cb] = [a ? read(a) : null, b ? read(b) : null];
+    return !!ca && !!cb && ca.r === cb.r && ca.g === cb.g && ca.b === cb.b && ca.a === cb.a;
+  };
+  const moved = roles.filter((id) => !asBefore(id)).map(tokenVar);
+  const pageMoved = !asBefore('color.background');
+  const touched = (pair: ContrastPair) => {
+    const grounds = typeof pair.bg === 'string' ? [pair.bg] : [pair.bg.mix[0], pair.bg.mix[2]];
+    const css = (id: string) => resolvedCss(next, id) ?? '';
+    // The text is seen over its ground; only a ground that is see-through (or might be) is seen over the page.
+    const overPage = (id: string) => {
+      const c = css(id) ? read(css(id)) : null;
+      return !c || c.a < 1;
+    };
+    return [pair.fg, ...grounds].some((id) => !asBefore(id) || moved.some((v) => css(id).includes(v))) || (pageMoved && !pair.varyingGround && grounds.some(overPage));
+  };
   return {
     values,
     page,
@@ -409,7 +437,7 @@ export function harmonizePalette(input: HarmonyInput): PaletteHarmony {
     brand,
     adjusted: brand !== requested,
     results,
-    unreadable: results.filter((r) => r.status === 'fail' || (r.status === 'unknown' && touched.has(r.pair.id)))
+    unreadable: results.filter((r) => r.status === 'fail' || (r.status === 'unknown' && touched(r.pair)))
   };
 }
 
@@ -426,11 +454,27 @@ export function paletteChanges(tokens: readonly TokenDef[], values: Partial<Reco
     if (!was) continue;
     // Keeping one that already lands on its colour leaves every colour kept before it landing where it did.
     const kept = after.map((t) => (t.id === id ? was : t));
+    // Exactly the saved colour, channel for channel: one that only rounds to it (an oklch() value) is measured otherwise.
     const shown = parseColor(resolvedCss(kept, id) ?? '');
-    if (shown && shown.a >= 1 && toHex6(shown) === hex) after = kept;
+    const saved = rgbOf(hex);
+    if (shown && shown.a >= 1 && shown.r === saved.r && shown.g === saved.g && shown.b === saved.b) after = kept;
     else out.push([id, hex]);
   }
   return out;
+}
+
+/**
+ * Dark values that keep a site's dark palette showing what it shows now while these light colours change: each one
+ * the dark palette takes from the light palette gets its present light value as a dark value of its own. The dark
+ * palette is the author's to remake from the new colours (token.setColorScheme with regenerate).
+ */
+export function darkPins(light: readonly TokenDef[], dark: TokensDoc['darkOverrides'], changed: readonly string[]): Array<[string, DarkColorValue]> {
+  const own = dark && typeof dark === 'object' ? dark : {};
+  return changed.flatMap((id): Array<[string, DarkColorValue]> => {
+    if (Object.hasOwn(own, id) && darkValue(own[id]) !== null) return [];
+    const v = darkValue(light.find((t) => t.id === id)?.value);
+    return v === null ? [] : [[id, v]];
+  });
 }
 
 /**

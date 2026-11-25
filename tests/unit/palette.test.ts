@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { TokenDef } from '@shared/types';
 import { parseColor, rgbToOklab } from '@shared/color';
 import { contrastBetween, evaluatePairs, type ContrastPair } from '@shared/contrast';
-import { PALETTE_MOODS, PALETTE_ROLES, darkSection, harmonizePalette, oklchHex, paletteChanges, paletteSeed, type PaletteMood } from '@shared/palette';
+import { PALETTE_MOODS, PALETTE_ROLES, darkPins, darkSection, harmonizePalette, oklchHex, paletteChanges, paletteSeed, type PaletteMood } from '@shared/palette';
 import { compositeOver } from '@shared/contrast';
 import { getTheme } from '@catalogue/index';
 
@@ -174,7 +174,7 @@ describe('the palette follows the brand (#357)', () => {
   });
   it('holds back a palette whose colours sit in a pair it cannot measure, and lets one through whose colours do not', () => {
     const custom = (id: string, value: string) => ({ id, label: id, group: 'color', value }) as TokenDef;
-    const tokens = [...(getTheme('foundation').tokens as TokenDef[]), custom('color.custom-ink', 'var(--ink, #fff)'), custom('color.custom-paper', 'var(--paper)')];
+    const tokens = [...(getTheme('foundation').tokens as TokenDef[]), custom('color.custom-ink', 'var(--ink, #fff)'), custom('color.custom-paper', '#f0e6d2')];
     const onPage: ContrastPair = { id: 'ink-page', use: 'Ink on the page', fg: 'color.custom-ink', bg: 'color.background', state: 'rest', group: 'ink' };
     const apart: ContrastPair = { id: 'ink-paper', use: 'Ink on paper', fg: 'color.custom-ink', bg: 'color.custom-paper', state: 'rest', group: 'ink' };
     const theme = getTheme('foundation').contrastPairs ?? [];
@@ -191,6 +191,27 @@ describe('the palette follows the brand (#357)', () => {
     expect(measured.unreadable).toEqual([]);
     expect(measured.page).toBe('dark');
     expect(measured.results.find((r) => r.pair.id === 'ink-page')?.status).toBe('pass');
+  });
+
+  it('follows every way a palette colour reaches a pair it cannot measure, and lets an untouched one through', () => {
+    const custom = (id: string, value: string) => ({ id, label: id, group: 'color', value }) as TokenDef;
+    const theme = getTheme('foundation').contrastPairs ?? [];
+    const pair = (id: string, fg: string, bg: string): ContrastPair => ({ id, use: id, fg, bg, state: 'rest', group: id });
+    const tokens = [
+      ...(getTheme('foundation').tokens as TokenDef[]),
+      custom('color.custom-ink', 'var(--ink)'),
+      // Brand by its CSS variable inside a mix: no token link, but the palette changes it all the same.
+      custom('color.custom-tint', 'color-mix(in srgb, var(--so-color-brand) 100%, #fff)'),
+      custom('color.custom-white', '#ffffff'),
+      custom('color.custom-veil', 'rgb(0 0 0 / 0.2)')
+    ];
+    const blocked = (p: ContrastPair, brand = '#f5c518') => harmonizePalette({ brand, mood: 'neutral', tokens, pairs: [...theme, p] }).unreadable.map((r) => r.pair.id);
+    expect(blocked(pair('tint-white', 'color.custom-tint', 'color.custom-white'))).toEqual(['tint-white']);
+    // A see-through ground is seen over the page, which the palette changed.
+    expect(blocked(pair('ink-veil', 'color.custom-ink', 'color.custom-veil'))).toEqual(['ink-veil']);
+    // Unknown ink on a brand the palette leaves exactly as it is: nothing it measures moved.
+    expect(blocked(pair('ink-brand', 'color.custom-ink', 'color.brand'), '#1f5a4c')).toEqual([]);
+    expect(blocked(pair('ink-brand', 'color.custom-ink', 'color.brand'), '#1e3a5f')).toEqual(['ink-brand']);
   });
 
   it('is held back, naming the pair, when a fixed accent cannot be read on dark sections', () => {
@@ -212,6 +233,17 @@ describe('the palette follows the brand (#357)', () => {
     // A link that would land elsewhere is replaced: Brand (strong) following Brand is not the hover shade.
     const linked = tokens.map((t) => (t.id === 'color.brand-strong' ? { ...t, value: { token: 'color.brand' } } : t)) as TokenDef[];
     expect(Object.fromEntries(paletteChanges(linked, h.values))['color.brand-strong']).toBe(h.values['color.brand-strong']);
+    // A value that only rounds to the palette's colour is measured otherwise, so it is saved as the palette has it.
+    const [L, a, b] = rgbToOklab(parseColor('#1e3a5f')!);
+    const near = base.map((t) => (t.id === 'color.brand' ? { ...t, value: `oklab(${L + 0.0004} ${a} ${b})` } : t)) as TokenDef[];
+    expect(parseColor(`oklab(${L + 0.0004} ${a} ${b})`)!.r).not.toBe(30);
+    expect(Object.fromEntries(paletteChanges(near, h.values))['color.brand']).toBe('#1e3a5f');
+  });
+
+  it('pins the colours a dark palette takes from the light ones, and leaves its own', () => {
+    const light = getTheme('foundation').tokens.map((t) => (t.id === 'color.brand' ? { ...t, value: { token: 'color.accent' } } : t)) as TokenDef[];
+    const pins = Object.fromEntries(darkPins(light, { 'color.background': '#101010' }, ['color.background', 'color.brand', 'color.text']));
+    expect(pins).toEqual({ 'color.brand': { token: 'color.accent' }, 'color.text': '#191a18' });
   });
 });
 
@@ -240,9 +272,15 @@ describe('colors the palette is made from and into', () => {
     expect(paletteSeed(set('color.brand', 'var(--x)'))).toBeNull();
   });
 
-  it('makes dark sections dark enough for translucent text on them, as it shows', () => {
+  it('makes dark sections dark enough for translucent text on them, as it shows, and no darker', () => {
     const text = parseColor('#ffffff96')!;
-    const section = parseColor(darkSection('#000000', '#ffffff96'))!;
-    expect(contrastBetween(compositeOver(text, section), section)).toBeGreaterThanOrEqual(7);
+    for (const brand of ['#000000', '#1e3a5f']) {
+      const section = parseColor(darkSection(brand, '#ffffff96'))!;
+      expect(contrastBetween(compositeOver(text, section), section), brand).toBeGreaterThanOrEqual(7);
+    }
+    // Opaque text reads at 7:1 on the first try, keeping the brand's hue.
+    const navy = darkSection('#1e3a5f', '#ffffff');
+    expect(lch(navy).L).toBeCloseTo(0.2, 2);
+    expect(Math.abs(lch(navy).h - lch('#1e3a5f').h)).toBeLessThan(10);
   });
 });

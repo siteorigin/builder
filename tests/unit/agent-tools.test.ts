@@ -791,7 +791,7 @@ describe('update_site_brand', () => {
     expect(schema.properties.paletteMood.description).toContain('tinted: brand-tinted');
     const s = session.state;
     // The warm-stone grounds and every other role now come from the navy, not only the four brand colors.
-    for (const id of ['color.brand', 'color.background', 'color.surface-alt', 'color.border', 'color.muted', 'color.brand-strong', 'color.inverse', 'color.accent', 'color.text']) {
+    for (const id of ['color.brand', 'color.background', 'color.surface', 'color.surface-alt', 'color.border', 'color.muted', 'color.brand-strong', 'color.inverse', 'color.accent', 'color.text']) {
       expect(s.tokens.overrides[id], id).toBe(expected.values[id as keyof typeof expected.values]);
     }
     expect(unreadable(s)).toEqual([]);
@@ -864,27 +864,25 @@ describe('update_site_brand', () => {
     expect(session.state.tokens).toEqual(before.tokens);
   });
 
-  it('keeps the dark palette’s own colors, and says which pairs there the new light ones leave hard to read', async () => {
-    // A dark palette whose brand shows the light one: a pastel reads on its dark grounds, a navy does not.
+  it('keeps a dark palette visitors see showing what it did, and says how to remake it from the new colors', async () => {
+    // A dark palette whose brand shows the light one: a pastel that reads on its dark grounds.
     const { session, adapter, run } = await setup([() => [call('p1', 'update_site_brand', { brandColor: '#1e3a5f', paletteMood: 'neutral' })], () => finish()], {}, 'business', (s) => {
       s.tokens.overrides['color.brand'] = '#a7c7e7';
       Object.assign(s, applyOperations(s, [{ type: 'token.setColorScheme', mode: 'system' }]).state);
       delete s.tokens.darkOverrides!['color.brand'];
     });
-    const dark = structuredClone(session.state.tokens.darkOverrides);
-    const brandText = ['brand-text-background', 'brand-text-surface', 'brand-text-surface-alt'];
-    for (const id of brandText) expect(unreadable(session.state, 'dark')).not.toContain(id);
+    const colors = (s: ProjectState) => effectiveTokens(s, 'dark').filter((t) => t.group === 'color');
+    const darkBefore = colors(session.state);
+    const failingBefore = unreadable(session.state, 'dark');
     await run('Make it navy');
-    expect(session.state.tokens.darkOverrides).toEqual(dark);
     expect(unreadable(session.state)).toEqual([]);
-    const failing = unreadable(session.state, 'dark');
-    expect(failing).toEqual(expect.arrayContaining(brandText));
-    expect(lastResult(adapter.requests[1]).warnings).toEqual([
-      `The dark palette kept its own colors, and ${failing.length} pairs there are hard to read (${evaluatePairs(effectiveTokens(session.state, 'dark'), getTheme('foundation').contrastPairs!)
-        .filter((r) => r.status === 'fail')
-        .map((r) => r.pair.use.toLowerCase())
-        .join(', ')}). token.setColorScheme with regenerate: true makes the dark colors again from the new palette.`
-    ]);
+    // The brand it took from the light palette is pinned at the pastel; every other dark color was its own already.
+    expect(session.state.tokens.darkOverrides!['color.brand']).toBe('#a7c7e7');
+    expect(colors(session.state)).toEqual(darkBefore);
+    expect(unreadable(session.state, 'dark')).toEqual(failingBefore);
+    expect(lastResult(adapter.requests[1]).warnings).toEqual(['The dark palette kept its colors. token.setColorScheme with regenerate: true makes them again from the new palette.']);
+    await session.undo();
+    expect(session.state.tokens.darkOverrides!['color.brand']).toBeUndefined();
   });
 
   it('refuses a theme that is not offered, naming the field, and changes nothing else in the call', async () => {
