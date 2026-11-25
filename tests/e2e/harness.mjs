@@ -77,6 +77,13 @@ export async function eventually(check, timeout = 10000, interval = 150) {
 
 export const step = (m) => console.log(`\n== ${m}`);
 
+/** The right panel opens on the AI (#696): a script that works in the Inspector opens its tab first, as a person would. */
+export async function openInspector(win) {
+  const tab = win.locator('#dock-tab-inspect');
+  if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click();
+  await win.locator('#dock-panel-inspect').waitFor();
+}
+
 /**
  * Every tab on the page names, in aria-controls, exactly one element: its own tabpanel, labelled by it back,
  * shown only while the tab is selected. At least two tabs must be found `within` the given element.

@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { createProject, eventually, launch } from '../harness.mjs';
+import { createProject, eventually, launch, openInspector } from '../harness.mjs';
 
 if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('preview mode capture: set DESIGN_CAPTURE=1 to run');
@@ -122,6 +122,7 @@ if ((await frame.locator('form.so-form__form').count()) === 0) {
   if (!(await win.locator('[role="tree"]').first().isVisible().catch(() => false))) await win.locator('.rail [aria-label="Layers"]').click();
   await win.locator('[role="tree"] .list-item', { hasText: 'Contact form' }).first().click();
 }
+await openInspector(win);
 await inspector.locator('.insp-name h3', { hasText: 'Contact form' }).waitFor({ timeout: 30000 });
 await inspector.getByLabel('Form service', { exact: true }).selectOption('endpoint');
 await inspector.getByLabel('Form endpoint URL', { exact: true }).fill(ENDPOINT);

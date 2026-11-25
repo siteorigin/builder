@@ -12,6 +12,7 @@ import { _electron as electron } from 'playwright';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openInspector } from '../harness.mjs';
 
 if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('editor shell capture harness: set DESIGN_CAPTURE=1 to run');
@@ -141,6 +142,7 @@ await win.waitForSelector('.editor');
 await frame.locator('h1').first().waitFor({ timeout: 120000 });
 await pause(1500);
 await openRail('Pages');
+await openInspector(win);
 
 // Rest: Pages open, the Inspector showing the page, nothing selected.
 await shot('shell-rest', '.side-panel .pages-list');

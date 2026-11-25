@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { answerChoosers, choosersShown, createProject, desktopCursor, eventually, launch, scratch, step } from './harness.mjs';
+import { answerChoosers, choosersShown, createProject, desktopCursor, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('saved-components');
 const { app, win, errors } = await launch(WORK);
@@ -69,6 +69,7 @@ step('The placement’s menus in the Inspector, on the canvas and in Layers offe
 await openRail('Layers');
 const row = (name) => win.locator('.list-item', { hasText: name }).first();
 await row('Feature band').click();
+await openInspector(win);
 await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Feature band' }).waitFor();
 await win.locator('#dock-panel-inspect').getByRole('button', { name: /^More actions for / }).click();
 await menu.getByRole('menuitem', { name: /Save to personal library/ }).waitFor();

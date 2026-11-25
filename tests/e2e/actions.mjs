@@ -158,6 +158,8 @@ try {
   failed(await call('ui.click', { target: { ref: heading.ref } }), 'STALE_REF', 'the heading’s old ref (its name changed)');
 
   step('the Inspector shows the committed text');
+  // The right panel opens on the AI (#696): the Inspector is chosen from its tab.
+  await click((await find({ role: 'tab', name: 'Inspector', scope: 'editor' })).ref);
   const field = await eventually(async () => {
     const f = await find({ role: 'textbox', name: 'Heading', scope: 'editor' });
     assert.equal(f.value, NEW_HEADING, 'the Inspector’s Heading field has the new text');

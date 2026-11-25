@@ -2,7 +2,7 @@
 // Inspector in Edit everywhere, marked in Layers, followed by the preview as values change, and undone and redone.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS: OUT, cleanup } = scratch('conditions');
 const { app, win, errors } = await launch(WORK);
@@ -35,6 +35,7 @@ const grid = () =>
 step('open the Services grid design');
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
+await openInspector(win);
 const compSection = win.locator('.section-head', { hasText: 'Component' });
 if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
 await win.getByRole('button', { name: 'Edit everywhere…' }).click();

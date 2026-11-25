@@ -295,13 +295,20 @@ function goToPlace(state: ProjectState, p: Pick<PlaceLabel, 'at' | 'field' | 'wh
  * Where Show goes for one use of an image: its element and field (in Component Studio for a component's design), where
  * a component's starting image is changed, its page's settings, or Site styles.
  */
-function showUse(state: ProjectState, u: ImageUseRow): (() => void) | undefined {
+export function showUse(state: ProjectState, u: ImageUseRow): (() => void) | undefined {
   if (u.at || u.definitionId) return goToPlace(state, u);
   const post = u.post;
   if (post) return () => void openPost(post.collectionId, post.entryId, post.n);
   if (u.setting === 'site') return openSiteStyles;
   const pageId = u.setting?.pageId;
-  return pageId ? () => selectPage(pageId, null) : undefined;
+  return pageId ? () => showPageSettings(pageId) : undefined;
+}
+
+/** A page's sharing image is changed in its settings: the page is selected with the Inspector open, whichever view
+ *  was showing (the AI is the right panel's default, #696), in Preview as in Edit. */
+function showPageSettings(pageId: string) {
+  selectPage(pageId, null);
+  setState({ rightTab: 'inspect', dockOpen: true });
 }
 
 /** For a use in a theme component, whose design and starting values can't be changed: how it is changed instead. */
@@ -347,7 +354,7 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
   }
   for (const p of Object.values(state.pages)) {
     const c = count(p.seo) + (p.seo.socialImage === assetId ? 1 : 0);
-    if (c) out.push({ key: `seo/${p.id}`, icon: 'page', where: p.title, what: 'Sharing image', count: c, go: () => selectPage(p.id, null) });
+    if (c) out.push({ key: `seo/${p.id}`, icon: 'page', where: p.title, what: 'Sharing image', count: c, go: () => showPageSettings(p.id) });
   }
   if (state.site.favicon === assetId) out.push({ key: 'favicon', icon: 'site', where: 'Site', what: 'Browser tab icon', count: 1, go: openSiteStyles });
   if (state.site.socialImage === assetId) out.push({ key: 'social', icon: 'site', where: 'Site', what: 'Sharing image', count: 1, go: openSiteStyles });

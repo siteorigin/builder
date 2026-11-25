@@ -1,9 +1,9 @@
 import './Editor.css';
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { Check, Component, NotebookPen, Sparkles, SlidersHorizontal, Palette, SquareDashed } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
-import { api, applyOps, errorText, getState, projectHistory, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
+import { api, applyOps, errorText, getState, projectHistory, RIGHT_TABS, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas, showEditedPage, stepVisitor, visitAddress } from './panels/Canvas';
 import { entryRoute } from '@shared/collections';
@@ -590,6 +590,13 @@ export function Editor() {
   const studied = useStore((s) => (s.definitionMode && s.snapshot && Object.hasOwn(s.snapshot.state.components, s.definitionMode.definitionId) ? s.snapshot.state.components[s.definitionMode.definitionId] : undefined));
   // Entering and leaving the mode is announced from a region that is always mounted, so it is heard.
   const modeAnnouncement = useTransitionAnnouncement(defName, (prev, next) => (next ? `Editing ${next} everywhere. Layout and style changes apply wherever it is used.` : prev ? `Finished editing ${prev} everywhere` : null));
+  const dockViews: Record<RightTab, { label: ReactNode; icon: ReactNode; extra?: ReactNode; panel: () => ReactNode }> = {
+    chat: { label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI', icon: <Sparkles />, extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined, panel: () => <Chat /> },
+    inspect: { label: 'Inspector', icon: <SlidersHorizontal />, panel: () => <Inspector /> },
+    styles: { label: 'Site styles', icon: <Palette />, panel: () => <SiteStyles /> },
+    // The project's private brief (#518), apart from Site details' visitor-facing description.
+    project: { label: 'Project', icon: <NotebookPen />, panel: () => <ProjectBrief /> }
+  };
 
   return (
     <div className={`editor${defining ? ' defining' : ''}${pageInspected ? '' : ' page-quiet'}${leftTab ? '' : ' no-sidebar'}`} inert={leaving || undefined}>
@@ -696,13 +703,8 @@ export function Editor() {
             keepMounted
             panelClassName="dock-panel"
             panelsStyle={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
-            options={[
-              { value: 'inspect', label: 'Inspector', icon: <SlidersHorizontal />, panel: () => <Inspector /> },
-              { value: 'chat', label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI', icon: <Sparkles />, extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined, panel: () => <Chat /> },
-              { value: 'styles', label: 'Site styles', icon: <Palette />, panel: () => <SiteStyles /> },
-              // The project's private brief (#518), apart from Site details' visitor-facing description.
-              { value: 'project', label: 'Project', icon: <NotebookPen />, panel: () => <ProjectBrief /> }
-            ]}
+            // The views run in RIGHT_TABS' order, the AI first, so the tabs and their arrow keys follow it (#696).
+            options={RIGHT_TABS.map((value) => ({ value, ...dockViews[value] }))}
           />
         </aside>
       </div>

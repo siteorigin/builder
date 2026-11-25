@@ -98,6 +98,8 @@
   /* One tab idiom: a short accent underline, as in dialog tabs. */
   .dock-tab[aria-selected='true']::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: -7px; height: 2px; border-radius: 2px; background: var(--accent); }
   .dock-tab[aria-selected='true'] svg { color: var(--accent-text); }
+  /* The AI tab's icon keeps the accent while another view is open: the one quiet mark that sets the assistant apart. */
+  #dock-tab-chat svg { color: var(--accent-text); }
   /* The AI tab's run mark sits in the tab's corner, so the tabs don't shift while a run starts and ends. It
      differs by shape as well as motion: a solid dot that pulses while the AI works, a still ring while it waits
      for an answer. */
@@ -111,11 +113,11 @@
   @keyframes live-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-fill) 45%, transparent); } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-fill) 0%, transparent); } }
   .dock-tabs .spacer + .icon-btn { margin-left: auto; }
   /* The dock's four views fit with their icons only in a wide dock. Narrower, each tab gives its name alone: plain words
-     are what tell the views apart. */
+     are what tell the views apart. The AI tab keeps its accent icon, the mark that sets it apart. */
   .dock > .dock-tabs { container: dock-views / inline-size; }
   @container dock-views (max-width: 361px) {
     .dock-tab { padding: 0 8px; }
-    .dock-tab > svg { display: none; }
+    .dock-tab:not(#dock-tab-chat) > svg { display: none; }
     .dock-tab[aria-selected='true']::after { left: 6px; right: 6px; }
   }
 

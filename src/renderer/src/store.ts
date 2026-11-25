@@ -21,9 +21,11 @@ export const api = window.builder;
 
 export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets';
 export type { PostRef };
-export type RightTab = 'inspect' | 'chat' | 'styles' | 'project';
-/** Every view of the right panel, for checking one remembered from an earlier opening. */
-export const RIGHT_TABS: readonly RightTab[] = ['inspect', 'chat', 'styles', 'project'];
+export type RightTab = 'chat' | 'inspect' | 'styles' | 'project';
+/** Every view of the right panel, in the order the dock shows them: the AI first, as the view a new window opens on. */
+export const RIGHT_TABS: readonly RightTab[] = ['chat', 'inspect', 'styles', 'project'];
+/** The view remembered from an earlier opening, or the AI when there is none or it names a view this version does not have. */
+export const restoreRightTab = (saved: unknown): RightTab => RIGHT_TABS.find((t) => t === saved) ?? 'chat';
 export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'repeat-as-list'; ref: ElementRef; workspaceKey?: string } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'swap-component'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions'; review?: boolean; opening?: string } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health'; section?: 'seo' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'post-import'; opening: string; preview: PostImportPreview } | { kind: 'paste-style'; ref: ElementRef; opening: string };
 
 export interface Rect {
@@ -313,7 +315,7 @@ export const useStore = create<State>((set) => ({
   mode: 'edit',
   leftTab: 'pages',
   layersView: 'layers',
-  rightTab: 'inspect',
+  rightTab: 'chat',
   frameReady: false,
   drafting: 0,
   refusedDrafts: 0,

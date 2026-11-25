@@ -6,7 +6,7 @@
 // Each capture is verified on screen after it settles; a state that did not render throws instead
 // of writing a plausible-looking wrong image. Files are named `{state}--{theme}.png`.
 import { _electron as electron } from 'playwright';
-import { MOD } from './harness.mjs';
+import { MOD, openInspector } from './harness.mjs';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -124,6 +124,7 @@ await shot('editor-pages', '.side-panel .list');
 
 // Section selected (hero) with its inspector.
 await frame.locator('h1').first().click();
+await openInspector(win);
 await pause(700);
 await shot('editor-section-selected', '.insp-head');
 

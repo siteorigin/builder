@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { MOD, createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('reveal');
 const { app, win, errors } = await launch(WORK);
@@ -19,6 +19,7 @@ const questions = frame.locator('.so-foundation-faq-list__root details');
 await questions.first().waitFor({ state: 'attached', timeout: 30000 });
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('[role="tree"] .list-item', { hasText: 'FAQ' }).first().click();
+await openInspector(win);
 const list = win.locator('#dock-panel-inspect [data-list="items"]');
 await list.waitFor();
 const rows = list.locator('.list-editor-head button.title');

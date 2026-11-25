@@ -4,7 +4,7 @@
 // placement edits its second card without touching the other placement.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS, cleanup } = scratch('repeat-as-list');
 const { app, win, errors } = await launch(WORK);
@@ -73,6 +73,7 @@ const staticPage = await pageDoc();
 step('Edit everywhere opens the design');
 if ((await win.locator('.rail [aria-label="Layers"]').getAttribute('aria-pressed')) !== 'true') await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator(`.layers-tree [data-node="${first}"]`).click();
+await openInspector(win);
 const componentSection = inspector.locator('.section-head', { hasText: 'Component' });
 await componentSection.waitFor();
 if ((await componentSection.getAttribute('aria-expanded')) === 'false') await componentSection.click();

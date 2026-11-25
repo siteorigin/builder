@@ -2,7 +2,7 @@
 // onto the existing Content with image section without its text, link or photo, then taken back with one Undo.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS: OUT, cleanup } = scratch('style-paste');
 const { app, win, errors } = await launch(WORK);
@@ -42,6 +42,7 @@ await width('Desktop');
 step('copy the hero’s style from its actions menu');
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('.list-item', { hasText: 'Split hero' }).first().click();
+await openInspector(win);
 await win.getByRole('button', { name: /^More actions for / }).click();
 await win.getByRole('menuitem', { name: 'Copy style' }).click();
 await win.locator('.toast', { hasText: 'Copied the style of Split hero' }).waitFor();
